@@ -58,6 +58,29 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
   };
 }
 
+/**
+ * All model ids a provider can resolve metadata for, under the same alias
+ * rules `lookupModelMetadata` applies. Contract tests sweep this universe so
+ * the declaration-to-wire invariant cannot silently shrink.
+ */
+export function modelMetadataIdsForProvider(providerType: ProviderType): string[] {
+  const metadataProviderType =
+    providerType === 'xai-oauth'
+      ? 'xai'
+      : providerType === 'opencode-free'
+        ? 'opencode'
+        : providerType;
+  return Array.from(
+    new Set([
+      ...Object.keys(generatedMetadata[metadataProviderType] ?? {}),
+      ...Object.keys(STATIC_MODEL_METADATA[providerType] ?? {}),
+      ...(metadataProviderType !== providerType
+        ? Object.keys(STATIC_MODEL_METADATA[metadataProviderType] ?? {})
+        : []),
+    ]),
+  );
+}
+
 export function lookupModelProviderOverride(
   providerType: ProviderType,
   modelId: string,
@@ -401,7 +424,6 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
       capabilities: { vision: false, reasoning: true, functionCalling: true },
     },
   },
-  'stepfun-ai-step-plan': {},
   'claude-subscription': CLAUDE_SUBSCRIPTION_MODEL_METADATA,
   openai: OPENAI_MODEL_OVERRIDES,
   google: GOOGLE_MODEL_OVERRIDES,
@@ -416,10 +438,6 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
   'gemini-cli': GOOGLE_MODEL_OVERRIDES,
   'openai-codex': OPENAI_OAUTH_MODEL_METADATA,
   siliconflow: SILICONFLOW_MODEL_OVERRIDES,
-  xai: {
-    // grok-4.5's Responses reasoning extras are wired in model-factory.ts;
-    // its effort set now comes from the models.dev snapshot.
-  },
   'tencent-coding-plan': {
     'kimi-k2.5': { capabilities: { vision: false } },
   },
@@ -439,7 +457,8 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
   'volcengine-coding-plan': VOLCENGINE_CODING_PLAN_MODEL_METADATA,
   'volcengine-agent-plan': VOLCENGINE_AGENT_PLAN_MODEL_METADATA,
   'tencent-token-plan': {
-    hy3: { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+    // hy3-preview is absent from the current snapshot; hy3's effort set now
+    // comes from the models.dev snapshot.
     'hy3-preview': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
   },
   deepinfra: {
@@ -475,7 +494,6 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     },
   },
   'ollama-cloud': ollamaCloudThinkingModels,
-  deepseek: {},
   'zai-coding-plan': {
     // glm-5.1 / glm-5v-turbo / glm-4.5-air are absent from the current
     // snapshot; their toggle facts are preserved here until they return.

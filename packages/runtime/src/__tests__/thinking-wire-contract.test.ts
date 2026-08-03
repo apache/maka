@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core';
-import { PROVIDER_REGISTRY, thinkingVariantsForModel } from '@maka/core';
-import { GENERATED_MODELS_DEV_METADATA } from '@maka/core/model-metadata.generated';
+import {
+  modelMetadataIdsForProvider,
+  PROVIDER_REGISTRY,
+  thinkingVariantsForModel,
+} from '@maka/core';
 import { buildProviderOptions } from '@maka/runtime';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -17,20 +20,9 @@ function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmCo
   };
 }
 
-// The metadata alias rules of lookupModelMetadata, mirrored so the contract
-// enumerates the same model universe the lookup resolves against.
-function generatedModelIds(providerType: string): string[] {
-  const key =
-    providerType === 'xai-oauth'
-      ? 'xai'
-      : providerType === 'opencode-free'
-        ? 'opencode'
-        : providerType;
-  return Object.keys(
-    GENERATED_MODELS_DEV_METADATA[key as keyof typeof GENERATED_MODELS_DEV_METADATA] ?? {},
-  );
-}
-
+// The metadata universe for each provider comes from the same alias rules
+// `lookupModelMetadata` applies (generated snapshot + static overrides), so
+// the sweep cannot silently shrink when the alias rules change.
 function wiresAnything(options: Record<string, unknown>): boolean {
   // The inner object must carry at least one field the SDK will translate;
   // `{ openai: {} }` would send nothing while still being non-empty at the top.
@@ -89,7 +81,7 @@ describe('thinking wire contract', () => {
       if (PROVIDER_REGISTRY[providerType].runtimeAdapter?.kind === 'unavailable') continue;
       const modelIds = new Set([
         ...PROVIDER_REGISTRY[providerType].fallbackModels,
-        ...generatedModelIds(providerType),
+        ...modelMetadataIdsForProvider(providerType),
       ]);
       for (const modelId of modelIds) {
         for (const level of thinkingVariantsForModel(providerType, modelId)) {

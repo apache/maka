@@ -241,6 +241,23 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
+  test('github-copilot routes thinking by the account-declared model protocol', () => {
+    const anthropic = {
+      ...conn('github-copilot'),
+      models: [{ id: 'claude-opus-4.8', apiProtocol: 'anthropic-messages' as const }],
+    };
+    assert.deepEqual(buildProviderOptions(anthropic, 'claude-opus-4.8', 'high'), {
+      anthropic: { effort: 'high' },
+    });
+    const responses = {
+      ...conn('github-copilot'),
+      models: [{ id: 'gpt-5.5', apiProtocol: 'openai-responses' as const }],
+    };
+    assert.deepEqual(buildProviderOptions(responses, 'gpt-5.5', 'high'), {
+      openai: { reasoningEffort: 'high' },
+    });
+  });
+
   test('xAI Grok 4.5 requests encrypted Responses reasoning under the native OpenAI namespace', () => {
     for (const providerType of ['xai', 'xai-oauth'] as const) {
       assert.deepEqual(
@@ -535,71 +552,10 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
   });
 });
 
-describe('buildProviderOptions: resolver/options drift guard', () => {
-  // Every displayed level must map to a real providerOptions fragment. For
-  // `off`, that fragment must be an actual disabled/none/budget-zero wire, not
-  // an empty object that only means "no override".
-  const cases: Array<{
-    providerType: LlmConnection['providerType'];
-    model: string;
-    slug?: string;
-  }> = [
-    { providerType: 'anthropic', model: 'claude-opus-4-8' },
-    { providerType: 'anthropic', model: 'claude-haiku-4-5' },
-    { providerType: 'claude-subscription', model: 'claude-opus-4-8' },
-    { providerType: 'openai', model: 'gpt-5.5' },
-    { providerType: 'openai', model: 'gpt-5' },
-    { providerType: 'openai-codex', model: 'gpt-5.5' },
-    { providerType: 'google', model: 'gemini-3-pro-preview' },
-    { providerType: 'google', model: 'gemini-3.5-flash' },
-    { providerType: 'deepseek', model: 'deepseek-v4-flash' },
-    { providerType: 'xai', model: 'grok-4.5' },
-    { providerType: 'deepinfra', model: 'moonshotai/Kimi-K2.7-Code' },
-    { providerType: 'groq', model: 'openai/gpt-oss-120b' },
-    { providerType: 'openrouter', model: 'openai/gpt-5.6-sol' },
-    { providerType: 'vercel', model: 'xai/grok-4.3' },
-    { providerType: 'ollama-cloud', model: 'glm-5.2' },
-    { providerType: 'ollama-cloud', model: 'gpt-oss:120b' },
-    { providerType: 'cloudflare-workers-ai', model: '@cf/moonshotai/kimi-k2.6' },
-    { providerType: 'zai-coding-plan', model: 'glm-5.2', slug: 'zai-coding-plan' },
-    { providerType: 'volcengine-ark', model: 'doubao-seed-2-0-pro-260215' },
-    { providerType: 'cohere', model: 'command-a-plus-05-2026' },
-  ];
-  for (const { providerType, model, slug } of cases) {
-    test(`every effort level for ${providerType}/${model} maps to a non-empty fragment`, () => {
-      const connection = conn(providerType, slug ?? providerType);
-      for (const level of thinkingVariantsForModel(providerType, model)) {
-        const opts = buildProviderOptions(connection, model, level as ThinkingLevel);
-        const nonEmpty = Object.keys(opts).some((k) => {
-          const v = (opts as Record<string, unknown>)[k];
-          return v !== null && typeof v === 'object' && Object.keys(v as object).length > 0;
-        });
-        assert.equal(nonEmpty, true, `${providerType}/${model} level=${level} produced no options`);
-        if (level === 'off')
-          assert.equal(
-            hasRealOffWire(opts),
-            true,
-            `${providerType}/${model} exposed off without a real disabled wire`,
-          );
-      }
-    });
-  }
-
-  test('models without a real off wire do not expose off', () => {
-    assert.equal(thinkingVariantsForModel('deepseek', 'deepseek-v4-flash').includes('off'), false);
-    assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-5.1').includes('off'), false);
-    assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air').includes('off'), false);
-  });
-
-  function hasRealOffWire(opts: Record<string, unknown>): boolean {
-    const serialized = JSON.stringify(opts);
-    return (
-      serialized.includes('"reasoningEffort":"none"') ||
-      serialized.includes('"type":"disabled"') ||
-      serialized.includes('"thinkingBudget":0') ||
-      serialized.includes('"thinking":false')
-    );
-  }
+test('models without a real off wire do not expose off', () => {
+  assert.equal(thinkingVariantsForModel('deepseek', 'deepseek-v4-flash').includes('off'), false);
+  assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-5.1').includes('off'), false);
+  assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air').includes('off'), false);
 });
 
 describe('changesBackendConfig', () => {
