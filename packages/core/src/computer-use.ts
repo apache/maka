@@ -234,26 +234,6 @@ export type ComputerUseActionOutcome =
       ok: false;
       error: ComputerUseErrorCode;
       message: string;
-      /**
-       * The message may be shown to the model.
-       *
-       * Set only by a backend that guarantees its diagnostics carry no text
-       * belonging to the observed application. `maka.cu/2` §1.2 makes that a
-       * protocol rule: `error.message` is a fixed sentence chosen by
-       * `error.code`, and application text is confined to the declared
-       * observation fields. cua-driver made no such promise, which is why the
-       * message was withheld from every backend alike.
-       *
-       * Withholding it costs more than it protects. The executor writes "say
-       * Backspace or ForwardDelete rather than delete"; the model was handed
-       * `unsupported_action` alone, and the tool description tells it that code
-       * means keyboard input is off in this build. One mistyped key name taught
-       * it that the keyboard does not work.
-       *
-       * Absent means withheld, so a backend that forgets this flag is quiet
-       * rather than leaky.
-       */
-      messageIsAppTextFree?: boolean;
       evidence?: ComputerUseDispatchEvidence;
       completedSubSteps?: number;
     };
@@ -294,10 +274,16 @@ export interface ComputerUseApprovalSummary {
  * run failed six of eleven calls on shapes copied from its own history, and the
  * telemetry file on this machine holds 29 such rejections.
  *
- * Same privacy boundary as the summary: typed text, written values and
- * coordinates are screen-derived and stay out. Element ids do not — an element
- * id is an index into one observation, and withholding it is what left the
- * model unable to see which control it had just acted on.
+ * Same privacy boundary as the summary: typed text and written values are what
+ * a person asked for or what a window held, and they stay out. Element ids do
+ * not — an element id is an index into one observation, and withholding it is
+ * what left the model unable to see which control it had just acted on.
+ *
+ * Nor do coordinates. A coordinate is not read off the screen: it is the
+ * model's own output, four digits it chose and sent. Reduced to `<point>` it
+ * left a model that clicked [412, 88] and missed unable to tell whether it had
+ * already tried that point — the repeated-and-thrash shape this projection
+ * exists to make visible, reintroduced by the projection itself.
  *
  * Accepts either dialect on input, so it can project raw arguments or an
  * approval summary recovered from storage.
@@ -309,7 +295,7 @@ export interface ComputerUseModelCallArgs {
   observation_id?: string;
   element_id?: string;
   /** Every other argument the call carried, values reduced to their shape. */
-  [key: string]: string | number | boolean | undefined;
+  [key: string]: string | number | boolean | readonly number[] | undefined;
 }
 
 /**
@@ -360,6 +346,25 @@ const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 ]);
 
 /**
+ * Geometry the model itself chose, projected verbatim.
+ *
+ * Independent of action, because these three names mean the same thing
+ * wherever they appear and none of them ever holds screen content: a
+ * coordinate, the drag origin, and the zoom rectangle are numbers the model
+ * wrote into the call. A model that clicked a point and missed has to be able
+ * to see which point, or its next call is the same call.
+ */
+const MODEL_CALL_GEOMETRY_ARGS = new Set(['coordinate', 'start_coordinate', 'region']);
+
+/** Integers only, so a mistyped `coordinate` still degrades to a shape. */
+function integerTuple(value: unknown): readonly number[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4) return undefined;
+  return value.every((entry) => typeof entry === 'number' && Number.isInteger(entry))
+    ? [...(value as number[])]
+    : undefined;
+}
+
+/**
  * A screen-derived or typed argument, kept as a shape.
  *
  * The value is what a person typed or what a window showed, so it stays out.
@@ -380,8 +385,16 @@ function shapeOf(value: unknown): string {
 export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArgs {
   const record = asRecord(args);
   const rawAction = ownDataProperty(record, 'action');
+  // The action the model sent, whatever it was. Collapsing an unrecognised name
+  // to `unknown` is the approval summary's job — there `knownAction` decides
+  // what a person is asked to allow. Here it erases the one thing the record is
+  // for: a model whose call was rejected for naming an action the schema does
+  // not carry reads its own history as `action: 'unknown'` and cannot connect
+  // the rejection to what it sent.
   const action =
-    typeof rawAction === 'string' && APPROVAL_ACTIONS.has(rawAction) ? rawAction : 'unknown';
+    typeof rawAction === 'string' && rawAction.length > 0
+      ? boundedDisplay(redactSecrets(rawAction), 64)
+      : 'unknown';
   const app = ownDataProperty(record, 'app');
   const windowId = ownDataProperty(record, 'window_id') ?? ownDataProperty(record, 'windowId');
   const observationId =
@@ -394,10 +407,14 @@ export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArg
   // worked and sends it again — and a real session refused eighteen calls for
   // missing exactly the fields the projection had removed. The privacy boundary
   // is about values, and only values are withheld.
-  const rest: Record<string, string | number | boolean> = {};
+  const rest: Record<string, string | number | boolean | readonly number[]> = {};
   const plain = MODEL_CALL_PLAIN_VALUES.get(action);
   for (const [key, value] of Object.entries(record ?? {})) {
     if (MODEL_CALL_NAMED_ARGS.has(key) || HOST_ONLY_ARGS.has(key)) continue;
+    if (MODEL_CALL_GEOMETRY_ARGS.has(key)) {
+      rest[key] = integerTuple(value) ?? shapeOf(value);
+      continue;
+    }
     if (plain?.has(key)) {
       rest[key] =
         typeof value === 'string'

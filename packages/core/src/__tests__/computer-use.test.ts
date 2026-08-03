@@ -351,21 +351,76 @@ describe('the call as the model reads it back', () => {
     expect(scroll).toEqual({
       action: 'scroll',
       observation_id: 'obs-1',
-      coordinate: '<point>',
+      coordinate: [10, 20],
       scroll_direction: 'down',
       scroll_amount: 3,
     });
   });
 
-  test('an action the tool cannot accept withholds every value', () => {
-    // `action` gates which arguments are plain, so an unrecognised action has
-    // no plain set and falls through to shapes rather than to the last one used.
+  test("a coordinate is the model's own output, so it reads it back", () => {
+    // Not screen-derived: four digits the model chose and sent. Reduced to
+    // `<point>`, a model that clicked and missed cannot tell whether it has
+    // already tried that point, which is the repeated-call shape this
+    // projection exists to make visible.
+    expect(
+      computerUseModelCallArgs({
+        action: 'left_click',
+        observation_id: 'obs-1',
+        coordinate: [412, 88],
+      }),
+    ).toEqual({ action: 'left_click', observation_id: 'obs-1', coordinate: [412, 88] });
+    expect(
+      computerUseModelCallArgs({
+        action: 'left_click_drag',
+        observation_id: 'obs-1',
+        start_coordinate: [10, 20],
+        coordinate: [412, 88],
+      }),
+    ).toEqual({
+      action: 'left_click_drag',
+      observation_id: 'obs-1',
+      start_coordinate: [10, 20],
+      coordinate: [412, 88],
+    });
+    expect(
+      computerUseModelCallArgs({ action: 'zoom', observation_id: 'obs-1', region: [1, 2, 3, 4] })
+        .region,
+    ).toEqual([1, 2, 3, 4]);
+  });
+
+  test('a geometry argument that is not integers still degrades to a shape', () => {
+    expect(
+      computerUseModelCallArgs({
+        action: 'left_click',
+        observation_id: 'obs-1',
+        coordinate: ['412', '88'],
+      }).coordinate,
+    ).toBe('<2 items>');
+    expect(
+      computerUseModelCallArgs({ action: 'left_click', observation_id: 'obs-1', coordinate: 'x' })
+        .coordinate,
+    ).toBe('<text>');
+  });
+
+  test('an action the tool cannot accept is reported as the model sent it', () => {
+    // Collapsing it to `unknown` is what `computerUseApprovalSummary` does, and
+    // there it is right: `knownAction` decides what a person is asked to allow.
+    // Here it erased the one thing this record is for — a model whose call was
+    // rejected for naming an action the schema does not carry could not connect
+    // the rejection to what it had sent.
     const projected = computerUseModelCallArgs({
       action: 'element_sequence',
       observation_id: 'obs-1',
       text: 'account balance 4,213.55',
     });
-    expect(projected.action).toBe('unknown');
+    expect(projected.action).toBe('element_sequence');
+    // It is still not a known action, so nothing about it is treated as plain.
     expect(projected.text).toBe('<text>');
+    expect(computerUseApprovalSummary({ action: 'element_sequence' }).action).toBe('unknown');
+  });
+
+  test('a non-string action is the only thing left that reads as unknown', () => {
+    expect(computerUseModelCallArgs({ action: 7 }).action).toBe('unknown');
+    expect(computerUseModelCallArgs({}).action).toBe('unknown');
   });
 });
