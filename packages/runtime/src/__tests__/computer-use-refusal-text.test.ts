@@ -82,6 +82,63 @@ function observationIdOf(modelText: string | undefined): string {
   return /observation_id=(\S+)/.exec(modelText ?? '')?.[1] ?? '';
 }
 
+/**
+ * A refusal written by the codec rather than by the tool.
+ *
+ * `summarize` is what turns an executor outcome into the line the model reads,
+ * and it is reached only after the tool has accepted the call and dispatched
+ * it. Every other surface in this file stops short of that.
+ */
+async function refusedDispatch(): Promise<{ text: string; modelText?: string }> {
+  return dispatchOnce({
+    ok: false as const,
+    error: 'dispatch_refused' as const,
+    message: 'AXPress returned -25205',
+    messageIsAppTextFree: true,
+    evidence: { path: 'ax_action' as const, effect: 'unverifiable' as const },
+  });
+}
+
+/** The same, for a dispatch that worked: `summarize` writes both headlines. */
+async function deliveredDispatch(): Promise<{ text: string; modelText?: string }> {
+  return dispatchOnce({ ok: true as const, tier: 'ax' as const, verified: true });
+}
+
+async function dispatchOnce(
+  outcome: Awaited<ReturnType<NonNullable<CuDispatchBackend['runSemantic']>>>['outcome'],
+): Promise<{ text: string; modelText?: string }> {
+  const backend: CuDispatchBackend = {
+    async preflight() {
+      return { accessibility: true, screenRecording: true };
+    },
+    async observeApp() {
+      return observation();
+    },
+    async captureObservation() {
+      return observation();
+    },
+    async run() {
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    },
+    async runSemantic() {
+      return { outcome };
+    },
+  };
+  const [tool] = buildComputerUseTools({ backend });
+  const context = ctx({ sessionId: `b6-${outcome.ok ? 'ok' : 'refused'}` });
+  const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, context)) as {
+    modelText?: string;
+  };
+  return (await tool.impl(
+    {
+      action: 'click_element',
+      observation_id: observationIdOf(observed.modelText),
+      element_id: '5',
+    } as never,
+    context,
+  )) as { text: string; modelText?: string };
+}
+
 describe('B1 — a blocked session says which call clears the block', () => {
   test('no_active_frame names observe rather than only the state', async () => {
     const result = await call(observeOnlyBackend(), {
@@ -427,6 +484,16 @@ describe('B6 — every failure names the tool the model actually calls', () => {
         } as never,
         context,
       )) as { text: string; modelText?: string },
+      // The executor's own refusal, which is where the wrong name actually
+      // was. Every surface sampled above is written by the tool; this one is
+      // written by `summarize` in the codec, which said `computer.<action>`
+      // — a tool the model cannot call — on every post-dispatch failure. The
+      // assertion below passed while that shipped, because nothing in the
+      // sample reached it.
+      await refusedDispatch(),
+      // Both branches of `summarize`: the failure headline and the ok one, and
+      // both said `computer.<action>`.
+      await deliveredDispatch(),
       await call(observeOnlyBackend(), { action: 'launch_app', app: 'Fixture' }),
       await call(observeOnlyBackend({ screenRecording: false }), {
         action: 'observe',
@@ -545,6 +612,47 @@ describe('B8 — a refusal is recorded as one, and says the thing that is true',
     assert.equal(result.error, 'withheld_value_replayed');
     assert.match(result.text, /placeholder from your own call record/);
     assert.match(result.text, /Nothing was sent/);
+  });
+
+  test('a placeholder in any argument is refused, not only in value and text', async () => {
+    // The guard named `value`, `text` and `steps[].value`, which were the three
+    // arguments a shape could reach when it was written. `observe`'s `query` and
+    // `menu`, `wait`'s `wait_for_text`, and a step's `label` are plain strings
+    // the schemas accept, so a placeholder there was acted on: a query that
+    // matches nothing answers `showing 0 of 1200`, which a model reads as proof
+    // the control does not exist.
+    const [tool] = buildComputerUseTools({ backend: observeOnlyBackend() });
+    const context = ctx();
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, context)) as {
+      modelText?: string;
+    };
+    const observationId = observationIdOf(observed.modelText);
+    const attempts: Array<[string, Record<string, unknown>]> = [
+      ['query', { action: 'observe', app: 'Fixture', query: '<text:2>' }],
+      ['menu', { action: 'observe', app: 'Fixture', menu: '<text:2>' }],
+      ['wait_for_text', { action: 'wait', duration: 1, wait_for_text: '<text:4>' }],
+      [
+        'steps[].label',
+        {
+          action: 'element_sequence',
+          observation_id: observationId,
+          steps: [{ label: '<text:1>' }],
+        },
+      ],
+      // Bare `<text>` is what the previous release wrote. A conversation that
+      // started under it still carries the string in history.
+      [
+        'value',
+        { action: 'set_value', observation_id: observationId, element_id: '5', value: '<text>' },
+      ],
+    ];
+
+    for (const [named, args] of attempts) {
+      const result = (await tool.impl(args as never, context)) as { text: string; error?: string };
+      assert.equal(result.error, 'withheld_value_replayed', `${named} was acted on`);
+      assert.match(result.text, new RegExp(named.replace(/[[\].]/g, '\\$&')));
+      assert.match(result.text, /Nothing was sent/);
+    }
   });
 
   test('a real value that merely contains a placeholder is still sent', async () => {

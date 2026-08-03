@@ -119,6 +119,66 @@ test('a refusal that did reach the window does not claim the frame survived', as
   assert.doesNotMatch(refused.modelText ?? refused.text, /is still current/);
 });
 
+test('a refusal that hands back a fresh observation does not also call the old one current', async () => {
+  // The two halves fired together and said opposite things. A refusal that
+  // dispatched nothing got the sentence "observation X is still current, use it
+  // rather than observing again"; a refusal whose code is in
+  // `REOBSERVABLE_FAILURES` got a fresh full observation, which
+  // `registerObservation` makes the current frame. `target_missing` with
+  // `path: "none"` is both, so the model was told to reuse a frame the same
+  // reply had just superseded — and the call it was told to make came back
+  // `stale_frame`, telling it to observe. Reproduced against the real tool
+  // before this: two consecutive refusals with contradictory instructions and
+  // no way to tell which to obey.
+  //
+  // The other test in this file uses `unsupported_action`, which is not in that
+  // set, so it only ever exercised the half that was right.
+  const missing = backend();
+  missing.runSemantic = async () => ({
+    outcome: {
+      ok: false as const,
+      error: 'target_missing' as const,
+      message: 'the element is gone',
+      messageIsAppTextFree: true,
+      evidence: { path: 'none', effect: 'unverifiable' as const },
+    },
+  });
+  const [tool] = buildComputerUseTools({ backend: missing });
+  const context = {
+    abortSignal: new AbortController().signal,
+    sessionId: 's4',
+    turnId: 't',
+    toolCallId: 'c',
+  } as never;
+  const observed = (await tool.impl(
+    { action: 'observe', app: 'com.apple.TextEdit', include_screenshot: false },
+    context,
+  )) as { modelText?: string; text: string };
+  const observationId = /observation_id=(\S+)/.exec(observed.modelText ?? observed.text)?.[1] ?? '';
+  const refused = (await tool.impl(
+    { action: 'click_element', observation_id: observationId, element_id: '1' },
+    context,
+  )) as { modelText?: string; text: string };
+  const text = refused.modelText ?? refused.text;
+
+  // A fresh observation was handed back, so the frame the action quoted is not
+  // the current one any more.
+  assert.match(text, /Fresh observation:/);
+  assert.doesNotMatch(text, /is still current/);
+  // And specifically not about the id the model is holding.
+  assert.ok(
+    !new RegExp(`${observationId}[^\\n]*is still current`).test(text),
+    'the superseded frame must not be described as current',
+  );
+
+  // The instruction the model is left with is the one the next call answers.
+  const next = (await tool.impl(
+    { action: 'click_element', observation_id: observationId, element_id: '0' },
+    context,
+  )) as { modelText?: string; text: string; error?: string };
+  assert.equal(next.error, 'stale_frame');
+});
+
 test('a frame that moves during dispatch does not erase the executor s own refusal', async () => {
   // The frame bookkeeping fails after the executor has already answered: the
   // epoch moved while the dispatch was in flight, so `confirmAction` is

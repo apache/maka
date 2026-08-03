@@ -354,6 +354,13 @@ describe('the call as the model reads it back', () => {
   test('the same argument name stays withheld where it carries screen or typed text', () => {
     // select_text names a substring of what the window is showing, and type
     // carries whatever a person asked to be written. Same key, opposite origin.
+    //
+    // The placeholder carries the value's length and not the value. A bare
+    // `<text>` was a fill-in-the-blank, and `text`/`value` are
+    // `z.string().max(8000)` with no lower bound and no pattern — so it was a
+    // legal call at the wire schema and at the strict union both, and a model
+    // replaying its own set_value typed those six characters into the user's
+    // field. `COMPUTER_USE_WITHHELD_VALUE` is what the tool refuses on.
     expect(
       computerUseModelCallArgs({
         action: 'select_text',
@@ -361,10 +368,10 @@ describe('the call as the model reads it back', () => {
         element_id: 'e12',
         text: 'account balance 4,213.55',
       }).text,
-    ).toBe('<text>');
+    ).toBe('<text:24>');
     expect(
       computerUseModelCallArgs({ action: 'type', observation_id: 'obs-1', text: 'hunter2' }).text,
-    ).toBe('<text>');
+    ).toBe('<text:7>');
     expect(
       computerUseModelCallArgs({
         action: 'set_value',
@@ -372,7 +379,7 @@ describe('the call as the model reads it back', () => {
         element_id: 'e12',
         value: 'hunter2',
       }).value,
-    ).toBe('<text>');
+    ).toBe('<text:7>');
   });
 
   test('an argument the model sent keeps its key even when its value is withheld', () => {
@@ -437,7 +444,7 @@ describe('the call as the model reads it back', () => {
     expect(
       computerUseModelCallArgs({ action: 'left_click', observation_id: 'obs-1', coordinate: 'x' })
         .coordinate,
-    ).toBe('<text>');
+    ).toBe('<text:1>');
   });
 
   test('an action the tool cannot accept is reported as the model sent it', () => {
@@ -446,15 +453,20 @@ describe('the call as the model reads it back', () => {
     // Here it erased the one thing this record is for — a model whose call was
     // rejected for naming an action the schema does not carry could not connect
     // the rejection to what it had sent.
+    //
+    // Written with `element_sequence`, which was the real example of a name the
+    // schema did not carry until the branch that adds the executor carried it.
+    // A test for an unknown action has to name one that stays unknown, or it
+    // asserts the catalog's contents by accident and fails the day it grows.
     const projected = computerUseModelCallArgs({
-      action: 'element_sequence',
+      action: 'summon_the_window',
       observation_id: 'obs-1',
       text: 'account balance 4,213.55',
     });
-    expect(projected.action).toBe('element_sequence');
-    // It is still not a known action, so nothing about it is treated as plain.
-    expect(projected.text).toBe('<text>');
-    expect(computerUseApprovalSummary({ action: 'element_sequence' }).action).toBe('unknown');
+    expect(projected.action).toBe('summon_the_window');
+    // It is not a known action, so nothing about it is treated as plain.
+    expect(projected.text).toBe('<text:24>');
+    expect(computerUseApprovalSummary({ action: 'summon_the_window' }).action).toBe('unknown');
   });
 
   test('a non-string action is the only thing left that reads as unknown', () => {

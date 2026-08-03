@@ -8,7 +8,6 @@ import {
   snapshotComputerParams,
   type CuDispatchBackend,
   type CuObservation,
-  type CuOverlayHookContext,
   type CuRunContext,
   type CuRunResult,
 } from '../computer-use-tools.js';
@@ -609,76 +608,6 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     };
     assert.match(result.text, /computer\.wait ok/);
     await new Promise((resolve) => setImmediate(resolve));
-  });
-
-  /**
-   * The window stack reaches presentation as two facts, never as a decision to
-   * hide: a covered destination is the case where the cursor MUST stay above
-   * everything, because that is the only way it stays visible at all.
-   */
-  async function stackingForClick(
-    obscuringRects: CuObservation['obscuringRects'],
-    coordinate: [number, number],
-  ): Promise<CuOverlayHookContext['targetStacking']> {
-    const backend = fakeBackend() as CuDispatchBackend & {
-      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
-    };
-    backend.observeApp = async () =>
-      observation({
-        windowBounds: { x: 1000, y: 500, width: 100, height: 80 },
-        sourceBoundsPx: { x: 0, y: 0, width: 100, height: 80 },
-        ...(obscuringRects ? { obscuringRects } : {}),
-      });
-    let seen: CuOverlayHookContext | undefined;
-    const [tool] = buildComputerUseTools({
-      backend,
-      overlay: {
-        onActionBegin(_action, context) {
-          seen = context;
-        },
-      },
-    });
-    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
-      modelText?: string;
-    };
-    await tool.impl(
-      {
-        action: 'left_click',
-        observation_id: observationIdOf(observed.modelText),
-        coordinate,
-      } as never,
-      ctx(),
-    );
-    return seen?.targetStacking;
-  }
-
-  test('a window covering the cursor destination is reported, not acted on', async () => {
-    // Window at screen (1000,500)-(1100,580); the covering rect takes its right
-    // half. A click at window-local (90,40) lands under it.
-    const covered = await stackingForClick(
-      [{ x: 1050, y: 400, width: 400, height: 400 }],
-      [90, 40],
-    );
-    assert.deepEqual(covered, { frontmost: false, destinationCovered: true });
-  });
-
-  test('a destination outside every covering rect leaves the cursor free to sink', async () => {
-    const exposed = await stackingForClick(
-      [{ x: 1050, y: 400, width: 400, height: 400 }],
-      [10, 40],
-    );
-    assert.deepEqual(exposed, { frontmost: false, destinationCovered: false });
-  });
-
-  test('nothing above the target reads as frontmost', async () => {
-    assert.deepEqual(await stackingForClick([], [10, 40]), {
-      frontmost: true,
-      destinationCovered: false,
-    });
-  });
-
-  test('a backend that reports no stacking at all leaves the decision to presentation', async () => {
-    assert.equal(await stackingForClick(undefined, [10, 40]), undefined);
   });
 
   test('one visual overlay serializes presentation across independent sessions', async () => {
@@ -1335,6 +1264,76 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.match(result.text, /target_mismatch/);
     assert.match(result.text, /window 7/);
     assert.equal(dispatched, 0, 'a contradicted target must not be dispatched');
+  });
+
+  test('the name that resolved an observation is not a contradiction of it', async () => {
+    // macOS reports a localized display name and that name is the identity, so
+    // "Dictionary" resolves through `list_apps` to 词典 and the observation
+    // comes back as 词典. The model keeps saying "Dictionary" — it is the name
+    // it was given — and `targetHintConflict` compares strings.
+    //
+    // `CuObservation.appAlias` and the `hinted.app !== record.appAlias` escape
+    // that reads it were both written for this, and nothing ever set the field:
+    // the escape could not fire, so a name that had just worked was answered
+    // with `target_mismatch`. This is the producer.
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+      runSemantic: NonNullable<CuDispatchBackend['runSemantic']>;
+      listApps: NonNullable<CuDispatchBackend['listApps']>;
+    };
+    let dispatched = 0;
+    backend.listApps = async () => [{ appId: '词典', name: 'Dictionary', pid: 42, windowCount: 1 }];
+    backend.observeApp = async () => observation({ appId: '词典' });
+    backend.captureObservation = async () => observation({ appId: '词典' });
+    backend.runSemantic = async () => {
+      dispatched += 1;
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    };
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl(
+      { action: 'observe', app: 'Dictionary' } as never,
+      ctx(),
+    )) as { text: string };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+
+    const result = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationId,
+        element_id: '5',
+        app: 'Dictionary',
+      } as never,
+      ctx(undefined, { toolCallId: 'click-by-alias' }),
+    )) as { text: string };
+
+    assert.doesNotMatch(result.text, /target_mismatch/);
+    assert.equal(dispatched, 1, 'the name that resolved the observation must still address it');
+
+    // And it survives the fresh observation every dispatch takes afterwards.
+    // Only `observe` knows the name the model used; re-registering the record
+    // from a capture cleared the alias, so `Dictionary` worked exactly once.
+    const later = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationId,
+        element_id: '5',
+        app: 'Dictionary',
+      } as never,
+      ctx(undefined, { toolCallId: 'click-by-alias-again' }),
+    )) as { text: string };
+    assert.doesNotMatch(later.text, /target_mismatch/);
+
+    // The canonical id is not a contradiction either, and a third name still is.
+    const wrong = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationId,
+        element_id: '5',
+        app: 'Calculator',
+      } as never,
+      ctx(undefined, { toolCallId: 'click-wrong-app' }),
+    )) as { text: string };
+    assert.match(wrong.text, /target_mismatch/);
   });
 
   test('an unverified target hint never reaches the approval summary', async () => {

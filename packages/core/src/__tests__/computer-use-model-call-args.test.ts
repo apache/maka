@@ -36,15 +36,95 @@ describe('the call a model reads back as its own', () => {
     );
   });
 
-  test('reduces a coordinate to a point rather than naming where on screen', () => {
+  test('a coordinate the model chose comes back whole, and a broken one degrades', () => {
+    // Written when this projection reduced every coordinate to `<point>`, and
+    // that was the wrong half of the rule: a coordinate is not read off the
+    // screen, it is four digits the model chose and sent. Reduced to a shape, a
+    // model that clicked and missed cannot tell whether it has already tried
+    // that point — the repeated-call shape this record exists to make visible.
     const readBack = computerUseModelCallArgs({
       action: 'left_click',
       observation_id: 'obs-1',
       coordinate: [812, 466],
     });
 
-    assert.equal(readBack.coordinate, '<point>');
-    assert.ok(!JSON.stringify(readBack).includes('812'));
+    assert.deepEqual(readBack.coordinate, [812, 466]);
+    // Only integers. Anything else is not a coordinate and is not echoed as one.
+    assert.equal(
+      computerUseModelCallArgs({
+        action: 'left_click',
+        observation_id: 'obs-1',
+        coordinate: ['812', '466'],
+      }).coordinate,
+      '<2 items>',
+    );
+  });
+
+  test('a window move reads back the place it asked for, and the verb it used', () => {
+    // Both were shapes: `window_action: "<text:4>"` against a
+    // `z.enum(['move','resize','minimize'])` and `position: "<point>"` against
+    // a tuple. The wire schema is `.strict()`, so a model replaying its own
+    // window move was rejected by the SDK before `impl` ran, and the rejection
+    // never reached the debug journal that wraps `impl`.
+    const readBack = computerUseModelCallArgs({
+      action: 'window_action',
+      observation_id: 'obs-1',
+      element_id: '0',
+      window_action: 'move',
+      position: [-193, -1080],
+    });
+
+    assert.equal(readBack.window_action, 'move');
+    assert.deepEqual(readBack.position, [-193, -1080]);
+  });
+
+  test('a scrolled element reads back which way and how far', () => {
+    const readBack = computerUseModelCallArgs({
+      action: 'scroll_element',
+      observation_id: 'obs-1',
+      element_id: '9',
+      scroll_direction: 'down',
+      scroll_amount: 3,
+    });
+
+    assert.equal(readBack.scroll_direction, 'down');
+    assert.equal(readBack.scroll_amount, 3);
+  });
+
+  test('a wait reads back what it was waiting for', () => {
+    // `wait_for_text` is a prediction about the screen, written before the
+    // screen shows it — the model's own words, not a value read off a window.
+    const readBack = computerUseModelCallArgs({
+      action: 'wait',
+      observation_id: 'obs-1',
+      duration: 5,
+      wait_for_text: 'Exporting',
+    });
+
+    assert.equal(readBack.wait_for_text, 'Exporting');
+    assert.equal(readBack.duration, 5);
+  });
+
+  test('a sequence stays a list of steps, with each label withheld', () => {
+    // `steps` reduced to `"<2 items>"` is a string where the schema wants an
+    // array, so a replayed sequence died off the wire and was never journalled.
+    // Projected member by member it stays an array: the call is refused by name
+    // for holding a placeholder, which the model can read and act on.
+    const readBack = computerUseModelCallArgs({
+      action: 'element_sequence',
+      observation_id: 'obs-1',
+      steps: [
+        { label: '7' },
+        { label: '账户余额', role: 'AXTextField', do: 'set_value', value: '4213.55' },
+      ],
+    });
+
+    assert.deepEqual(readBack.steps, [
+      { label: '<text:1>' },
+      { label: '<text:4>', role: 'AXTextField', do: 'set_value', value: '<text:7>' },
+    ]);
+    assert.ok(!JSON.stringify(readBack).includes('4213.55'));
+    assert.ok(!JSON.stringify(readBack).includes('账户余额'));
   });
 
   test('keeps a value the model chose itself', () => {
@@ -60,6 +140,10 @@ describe('the call a model reads back as its own', () => {
 
     assert.equal(readBack.query, '下载');
     assert.equal(readBack.include_screenshot, false);
+    assert.equal(
+      computerUseModelCallArgs({ action: 'observe', app: 'com.apple.TextEdit', menu: '文件' }).menu,
+      '文件',
+    );
   });
 
   test('never shows a host-only field as though the model had sent it', () => {

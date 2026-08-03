@@ -18,6 +18,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { COMPUTER_USE_WITHHELD_VALUE, computerUseModelCallArgs } from '@maka/core';
 import { computerWireParams } from '../computer-use-tools.js';
 import { computerActionNames, computerParams } from '../computer-use-codec.js';
 
@@ -156,3 +157,69 @@ test('every action in the strict union has a sample call above', () => {
     assert.ok(sampled.has(action), `${action} has no sample call in CALLS`);
   }
 });
+
+/**
+ * A call the model reads back has to be a call the model can send.
+ *
+ * `computerUseModelCallArgs` is what the transcript shows a model as its own
+ * previous call, and a model imitates the shape it is shown. Where that
+ * projection replaced an argument with a description of it, the replay was a
+ * string against a `z.enum` or a tuple: `window_action: "<text:4>"`,
+ * `scroll_direction: "<text:4>"`, `position: "<point>"`, `steps: "<2 items>"`.
+ * Those die at the `.strict()` wire schema, above `impl` — so they never reach
+ * the debug journal, which is the invisible failure this file exists to stop.
+ *
+ * Walks CALLS, which the test above holds to every action in the union, so an
+ * action added later cannot skip this by not being listed.
+ */
+for (const call of CALLS) {
+  const name =
+    call.action === 'window_action'
+      ? `window_action=${String(call.window_action)}`
+      : String(call.action);
+  test(`a ${name} call the model reads back is one it can send again`, () => {
+    const replay = computerUseModelCallArgs(call) as Record<string, unknown>;
+    const wire = computerWireParams.safeParse(replay);
+    assert.equal(
+      wire.success,
+      true,
+      `the record of this call cannot be resent: ${JSON.stringify(replay)} — ${JSON.stringify(wire.error?.issues)}`,
+    );
+    const strict = computerParams.safeParse(replay);
+    assert.equal(
+      strict.success,
+      true,
+      `the record of this call does not survive narrowing: ${JSON.stringify(strict.error?.issues)}`,
+    );
+  });
+}
+
+/**
+ * Passing the schemas is not enough on its own, and this says why.
+ *
+ * `query`, `menu` and `wait_for_text` are plain strings, so a placeholder in
+ * them was accepted by both schemas and acted on: a model that filtered a
+ * 1,200-element window with `query:"下载"`, replayed `query:"<text:2>"` and read
+ * `showing 0 of 1200` had been told the control does not exist. An argument the
+ * model chose from a set the tool publishes, or wrote itself, comes back whole.
+ */
+test('an argument the model chose itself is not replaced by a description of it', () => {
+  const withheldSomewhere = CALLS.flatMap((call) => {
+    const replay = computerUseModelCallArgs(call) as Record<string, unknown>;
+    return Object.entries(replay)
+      .filter(
+        ([key, value]) =>
+          typeof value === 'string' &&
+          COMPUTER_USE_WITHHELD_VALUE.test(value) &&
+          // What a person asked to have typed, and a verbatim quote of what a
+          // window is showing. These are the privacy boundary and stay out.
+          !(key === 'value' || (key === 'text' && MODEL_TEXT_IS_SCREEN_CONTENT.has(replay.action))),
+      )
+      .map(([key]) => `${String(call.action)}.${key}`);
+  });
+
+  assert.deepEqual(withheldSomewhere, []);
+});
+
+/** The two actions whose `text` is screen content rather than a closed-set name. */
+const MODEL_TEXT_IS_SCREEN_CONTENT: ReadonlySet<unknown> = new Set(['select_text', 'type']);

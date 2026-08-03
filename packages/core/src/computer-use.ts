@@ -436,6 +436,23 @@ export interface ComputerUseApprovalSummary {
  * Accepts either dialect on input, so it can project raw arguments or an
  * approval summary recovered from storage.
  */
+/**
+ * One step of an `element_sequence`, as the model reads it back.
+ *
+ * Projected member by member rather than as one shape, because `steps` is an
+ * array in both schemas and `"<2 items>"` is a string: a model replaying its own
+ * sequence sent `steps: "<2 items>"`, the `.strict()` wire schema rejected the
+ * call before `impl`, and the rejection never reached the debug journal. A step
+ * that keeps its own shape stays an array, so the call is refused by name
+ * instead of disappearing.
+ */
+export interface ComputerUseModelCallStep {
+  label: string;
+  role?: string;
+  do?: string;
+  value?: string;
+}
+
 export interface ComputerUseModelCallArgs {
   action: string;
   app?: string;
@@ -443,7 +460,13 @@ export interface ComputerUseModelCallArgs {
   observation_id?: string;
   element_id?: string;
   /** Every other argument the call carried, values reduced to their shape. */
-  [key: string]: string | number | boolean | readonly number[] | undefined;
+  [key: string]:
+    | string
+    | number
+    | boolean
+    | readonly number[]
+    | readonly ComputerUseModelCallStep[]
+    | undefined;
 }
 
 /**
@@ -491,12 +514,37 @@ const MODEL_CALL_NAMED_ARGS = new Set([
  * wrong for the rest — and the wrong half is the one that motivated this
  * projection: the model read back `press_key ... text: <text>` and could not
  * see which key it had pressed.
+ *
+ * The rule this map has to satisfy, and did not: an argument whose value is a
+ * choice from a set the tool publishes must come back as that choice, because
+ * the set is what the schema validates against. `window_action` came back as
+ * `"<text:4>"`, `scroll_element`'s direction as `"<text:4>"`, and both are
+ * `z.enum`s — so a model replaying its own call was rejected by the SDK before
+ * `impl` ran and the rejection never reached the debug journal. `observe`'s
+ * `query` and `menu` and `wait`'s `wait_for_text` are worse: they are plain
+ * strings, so the replay is accepted, and a model that filtered a 1,200-element
+ * window with `query:"下载"` and asked for that view again matched nothing and
+ * read `showing 0 of 1200` as proof the control does not exist.
+ *
+ * `query`, `menu` and `wait_for_text` are the model's own words in the sense
+ * that matters here: they are predicates it composed and sent, not a verbatim
+ * copy of a field's contents the way `select_text`'s substring is, and not a
+ * value a person asked to have typed the way `type` and `set_value` are. They
+ * go through `redactSecrets` and a length bound like every other plain value.
  */
 const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ['observe', new Set(['include_screenshot'])],
+  // `query` and `menu` name what to look at, not what was found there.
+  ['observe', new Set(['include_screenshot', 'query', 'menu'])],
   ['screenshot', new Set(['include_screenshot'])],
   ['scroll', new Set(['scroll_direction', 'scroll_amount'])],
-  ['wait', new Set(['duration'])],
+  // The semantic twin of `scroll`, added after this map was written.
+  ['scroll_element', new Set(['scroll_direction', 'scroll_amount'])],
+  // The verb, from the enum the schema publishes. `position` and `size` are
+  // geometry and are handled by MODEL_CALL_GEOMETRY_ARGS below.
+  ['window_action', new Set(['window_action'])],
+  // The text a wait is waiting for is a prediction about the screen, written
+  // before the screen shows it.
+  ['wait', new Set(['duration', 'wait_for_text', 'wait_for_text_gone'])],
   // The key name, from the set of key names the executor accepts.
   ['press_key', new Set(['text'])],
   ['key', new Set(['text'])],
@@ -506,15 +554,35 @@ const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 ]);
 
 /**
+ * Members of an `element_sequence` step that are the model's own choice.
+ *
+ * `do` is a two-value enum and `role` is an accessibility role name from a
+ * fixed vocabulary; both are rejected by the schema when they come back as a
+ * shape. `label` and `value` are not here: a label is the text a control shows,
+ * and a value is what a person asked to have written.
+ */
+const MODEL_CALL_PLAIN_STEP_MEMBERS = new Set(['do', 'role']);
+
+/**
  * Geometry the model itself chose, projected verbatim.
  *
- * Independent of action, because these three names mean the same thing
- * wherever they appear and none of them ever holds screen content: a
- * coordinate, the drag origin, and the zoom rectangle are numbers the model
- * wrote into the call. A model that clicked a point and missed has to be able
- * to see which point, or its next call is the same call.
+ * Independent of action, because these names mean the same thing wherever they
+ * appear and none of them ever holds screen content: a coordinate, the drag
+ * origin, the zoom rectangle, and the place and size a window was asked to take
+ * are numbers the model wrote into the call. A model that clicked a point and
+ * missed has to be able to see which point, or its next call is the same call.
+ *
+ * `position` and `size` joined late, with `window_action`. Reduced to
+ * `"<point>"` they were a string where the schema wants a tuple, so a replayed
+ * window move was rejected off the wire.
  */
-const MODEL_CALL_GEOMETRY_ARGS = new Set(['coordinate', 'start_coordinate', 'region']);
+const MODEL_CALL_GEOMETRY_ARGS = new Set([
+  'coordinate',
+  'start_coordinate',
+  'region',
+  'position',
+  'size',
+]);
 
 /** Integers only, so a mistyped `coordinate` still degrades to a shape. */
 function integerTuple(value: unknown): readonly number[] | undefined {
@@ -552,13 +620,43 @@ function shapeOf(value: unknown): string {
 }
 
 /**
+ * The steps of an `element_sequence`, each member projected on its own terms.
+ *
+ * Returns `undefined` for anything that is not a list of step-shaped objects,
+ * so a malformed `steps` still degrades to a shape rather than being echoed.
+ */
+function projectSteps(value: unknown): readonly ComputerUseModelCallStep[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) return undefined;
+  const projected: ComputerUseModelCallStep[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+    const step = asRecord(entry);
+    const out: ComputerUseModelCallStep = { label: shapeOf(ownDataProperty(step, 'label')) };
+    for (const member of MODEL_CALL_PLAIN_STEP_MEMBERS) {
+      const held = ownDataProperty(step, member);
+      if (typeof held === 'string' && held.length > 0) {
+        out[member as 'do' | 'role'] = boundedDisplay(redactSecrets(held), 64);
+      }
+    }
+    if ('value' in step) out.value = shapeOf(ownDataProperty(step, 'value'));
+    projected.push(out);
+  }
+  return projected;
+}
+
+/**
  * The marks a withheld argument leaves in the record the model reads back.
  *
  * Exported so the tool can refuse one instead of acting on it literally: the
  * record is the shape a model imitates, and these are the only strings in it
  * that were never a value.
+ *
+ * Bare `<text>` is here although nothing writes it any more. It is what the
+ * previous release wrote, and a conversation that started under that release
+ * carries it in history; a model replaying that call has to be refused too,
+ * not have those six characters typed into the user's field.
  */
-export const COMPUTER_USE_WITHHELD_VALUE = /^<(?:text:\d+|point|value|\d+ items?)>$/;
+export const COMPUTER_USE_WITHHELD_VALUE = /^<(?:text(?::\d+)?|point|value|\d+ items?)>$/;
 
 export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArgs {
   const record = asRecord(args);
@@ -585,12 +683,20 @@ export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArg
   // worked and sends it again — and a real session refused eighteen calls for
   // missing exactly the fields the projection had removed. The privacy boundary
   // is about values, and only values are withheld.
-  const rest: Record<string, string | number | boolean | readonly number[]> = {};
+  const rest: Record<
+    string,
+    string | number | boolean | readonly number[] | readonly ComputerUseModelCallStep[]
+  > = {};
   const plain = MODEL_CALL_PLAIN_VALUES.get(action);
   for (const [key, value] of Object.entries(record ?? {})) {
     if (MODEL_CALL_NAMED_ARGS.has(key) || HOST_ONLY_ARGS.has(key)) continue;
     if (MODEL_CALL_GEOMETRY_ARGS.has(key)) {
       rest[key] = integerTuple(value) ?? shapeOf(value);
+      continue;
+    }
+    if (key === 'steps') {
+      const steps = projectSteps(value);
+      rest[key] = steps ?? shapeOf(value);
       continue;
     }
     if (plain?.has(key)) {
@@ -755,40 +861,4 @@ function ownDataProperty(record: Record<string, unknown>, key: string): unknown 
     throw new Error(`Computer Use approval requires ${key} to be a plain data property`);
   }
   return descriptor.value;
-}
-
-/**
- * Whether the model may drive the machine at all.
- *
- * Computer Use is gated by the tool, not by the application it is pointed at.
- * That is how everything else in Maka is gated — `load_tools` admits tools,
- * plan mode strips them, the tool surface is assembled per turn — and adding an
- * application axis would be a second dimension nothing else has, paid for with
- * a per-app grant store and a revocation screen, to ask a question ("allow Maka
- * to use 词典?") that a person cannot weigh and will answer yes to.
- *
- * It also is not a substitute for the macOS grants. Accessibility and Screen
- * Recording are what actually let anything happen; this decides whether Maka
- * offers the capability to the model in the first place.
- *
- * Off by default. Turning on a capability that reads the screen and presses
- * buttons is a decision, not a migration.
- */
-export interface ComputerUseSettings {
-  readonly enabled: boolean;
-}
-
-export type ComputerUseSettingsPatch = Partial<{ enabled: boolean }>;
-
-export function defaultComputerUseSettings(): ComputerUseSettings {
-  return { enabled: false };
-}
-
-export function mergeComputerUseSettings(
-  current: ComputerUseSettings | undefined,
-  patch: ComputerUseSettingsPatch | undefined,
-): ComputerUseSettings {
-  const base = current ?? defaultComputerUseSettings();
-  if (!patch) return base;
-  return { enabled: typeof patch.enabled === 'boolean' ? patch.enabled : base.enabled };
 }

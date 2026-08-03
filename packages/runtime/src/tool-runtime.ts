@@ -817,10 +817,13 @@ export class ToolRuntime {
     // the model to call the tool with `approvalClass`, `rememberForTurnAllowed`
     // and `windowId` — two fields it does not take and one key in a dialect it
     // rejects. Same privacy boundary, names the tool accepts.
-    const modelFacingArgs =
-      tool.categoryHint === 'computer_use'
-        ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
-        : persistedArgs;
+    //
+    // The same projection as the audit record, since `computerUseModelCallArgs`
+    // became what both are written with. It was spelled out twice, which meant
+    // running it twice per call and leaving two expressions to drift apart. The
+    // two names stay because the roles are different — one is what the host
+    // records, one is what the model reads — and a divergence would go here.
+    const modelFacingArgs = persistedArgs;
     const now = this.input.now();
     const toolIntent = describeToolIntent(tool, persistedArgs);
     const trace = this.input.getRunTrace?.() ?? null;

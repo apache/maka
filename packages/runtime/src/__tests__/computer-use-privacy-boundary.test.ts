@@ -118,7 +118,7 @@ test('Computer Use snapshots execution args and persists the model-facing projec
     observation_id: 'frame-1',
     // The typed value never crosses; the key does, or the model reads back a
     // `type` call it never made.
-    text: '<text>',
+    text: '<text:11>',
     // The model's own four digits, so it can see that it already tried here.
     coordinate: [123, 456],
   };
@@ -452,7 +452,7 @@ test('Computer Use validation failures still persist a redacted call and result'
   const start = events.find((event) => event.type === 'tool_start');
   assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, {
     action: 'type',
-    text: '<text>',
+    text: '<text:12>',
     coordinate: [123, 456],
   });
   assert.equal(
