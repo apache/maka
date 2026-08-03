@@ -597,7 +597,7 @@ function projectText(
       ...(event.content.quotes !== undefined && event.content.quotes.length > 0
         ? { quotes: event.content.quotes }
         : {}),
-      ...(event.content.inlineReferences !== undefined && event.content.inlineReferences.length > 0
+      ...(event.content.inlineReferences !== undefined
         ? { inlineReferences: event.content.inlineReferences }
         : {}),
     });

@@ -11,7 +11,6 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
-  InlineReference,
   PlanReminder,
   QuoteRef,
   SessionSummary,
@@ -108,7 +107,10 @@ import { useKeepSystemAwake } from './use-keep-system-awake';
 import { useAppShellProjectContext } from './use-project-context';
 import { createAppShellSessionEventHandlers } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
-import { createAppShellChatActions } from './app-shell-chat-actions';
+import {
+  createAppShellChatActions,
+  type WorkspaceFileReferencePosition,
+} from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
 import {
   createAppShellRevisionActions,
@@ -143,6 +145,22 @@ import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
+
+function rebaseWorkspaceFileReferences(
+  sourceText: string,
+  projectedText: string,
+  references: readonly WorkspaceFileReferencePosition[],
+): WorkspaceFileReferencePosition[] {
+  const offset = sourceText.lastIndexOf(projectedText);
+  if (offset < 0) return [];
+  return references
+    .filter(
+      (reference) =>
+        reference.start >= offset &&
+        reference.start + reference.value.length <= offset + projectedText.length,
+    )
+    .map((reference) => ({ ...reference, start: reference.start - offset }));
+}
 import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
@@ -1577,7 +1595,7 @@ function AppShellContent({
 
   async function sendWithAttachments(
     text: string,
-    metadata?: { inlineReferences?: readonly InlineReference[] },
+    metadata?: { workspaceFileReferences?: readonly WorkspaceFileReferencePosition[] },
   ): Promise<boolean | void> {
     const revision = revisionDraftRef.current;
     const revisionSend = Boolean(
@@ -1654,8 +1672,14 @@ function AppShellContent({
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
-        ...(metadata?.inlineReferences?.length
-          ? { inlineReferences: metadata.inlineReferences }
+        ...(metadata?.workspaceFileReferences?.length
+          ? {
+              workspaceFileReferences: rebaseWorkspaceFileReferences(
+                text,
+                swarmCommand.task,
+                metadata.workspaceFileReferences,
+              ),
+            }
           : {}),
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
@@ -1690,8 +1714,14 @@ function AppShellContent({
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
-        ...(metadata?.inlineReferences?.length
-          ? { inlineReferences: metadata.inlineReferences }
+        ...(metadata?.workspaceFileReferences?.length
+          ? {
+              workspaceFileReferences: rebaseWorkspaceFileReferences(
+                text,
+                graphCommand.task,
+                metadata.workspaceFileReferences,
+              ),
+            }
           : {}),
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
@@ -1705,8 +1735,8 @@ function AppShellContent({
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       ...(quotes ? { quotes } : {}),
-      ...(metadata?.inlineReferences?.length
-        ? { inlineReferences: metadata.inlineReferences }
+      ...(metadata?.workspaceFileReferences?.length
+        ? { workspaceFileReferences: metadata.workspaceFileReferences }
         : {}),
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);

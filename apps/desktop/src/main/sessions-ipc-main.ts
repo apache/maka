@@ -445,7 +445,7 @@ export function registerSessionsIpc(
             .join(' '));
     const inlineReferences = mergeSentInlineReferences({
       displayText,
-      rendererReferences: sendCommand.inlineReferences,
+      workspaceFileReferences: sendCommand.workspaceFileReferences,
       receipts: skillInvocation.skillInvocation.receipts,
     });
     const voiceTargetHeader = sendCommand.voiceOperationId
@@ -476,7 +476,7 @@ export function registerSessionsIpc(
           : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(sendCommand.quotes ? { quotes: sendCommand.quotes } : {}),
-        ...(inlineReferences.length > 0 ? { inlineReferences } : {}),
+        inlineReferences,
       },
       {
         onRunStarted: async (_runId, header) => {

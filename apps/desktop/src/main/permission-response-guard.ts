@@ -1,6 +1,5 @@
 import type {
   BranchFromTurnInput,
-  InlineReference,
   QuoteRef,
   RegenerateTurnInput,
   ReviseBeforeTurnInput,
@@ -23,7 +22,11 @@ const MAX_QUOTE_TEXT_LENGTH = 32_000;
 const MAX_QUOTE_LABEL_LENGTH = 200;
 const MAX_INLINE_REFERENCE_COUNT = 32;
 const MAX_INLINE_REFERENCE_VALUE_LENGTH = 4_096;
-const MAX_INLINE_REFERENCE_LABEL_LENGTH = 200;
+
+interface WorkspaceFileReferencePosition {
+  value: string;
+  start: number;
+}
 
 interface NormalizedSendSessionCommand {
   type: 'send';
@@ -35,7 +38,7 @@ interface NormalizedSendSessionCommand {
   attachmentItems?: unknown;
   turnOrchestration?: TurnOrchestration;
   quotes?: QuoteRef[];
-  inlineReferences?: InlineReference[];
+  workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
 type NormalizedStopSessionInput = { source?: 'stop_button' };
 
@@ -139,25 +142,26 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
     ...normalizeOptionalQuotes(value.quotes),
-    ...normalizeOptionalInlineReferences(value.inlineReferences),
+    ...normalizeOptionalWorkspaceFileReferences(
+      value.workspaceFileReferences,
+      displayText ?? text,
+    ),
   };
 }
 
-function normalizeOptionalInlineReferences(input: unknown): { inlineReferences?: InlineReference[] } {
+function normalizeOptionalWorkspaceFileReferences(
+  input: unknown,
+  displayText: string,
+): { workspaceFileReferences?: WorkspaceFileReferencePosition[] } {
   if (input === undefined) return {};
   if (!Array.isArray(input) || input.length > MAX_INLINE_REFERENCE_COUNT) {
-    throw new Error('Invalid send inline references');
+    throw new Error('Invalid send workspace file references');
   }
-  const inlineReferences = input.map((entry) => {
-    const value = requireObject(entry, 'Invalid send inline reference');
-    if (value.kind !== 'workspace_file') {
-      // Skill references are accepted only after main has resolved them. The
-      // renderer is authoritative solely for file-token boundaries.
-      throw new Error('Invalid send inline reference kind');
-    }
+  const workspaceFileReferences = input.map((entry) => {
+    const value = requireObject(entry, 'Invalid send workspace file reference');
     const tokenValue = normalizeRequiredString(
       value.value,
-      'Invalid send inline reference value',
+      'Invalid send workspace file reference value',
       MAX_INLINE_REFERENCE_VALUE_LENGTH,
     );
     if (
@@ -168,17 +172,19 @@ function normalizeOptionalInlineReferences(input: unknown): { inlineReferences?:
         relativePath: tokenValue.slice(1),
       })
     ) {
-      throw new Error('Invalid send inline reference value');
+      throw new Error('Invalid send workspace file reference value');
     }
-    const label = normalizeOptionalString(
-      value.label,
-      'Invalid send inline reference label',
-      MAX_INLINE_REFERENCE_LABEL_LENGTH,
-    );
-    if (!label) throw new Error('Invalid send inline reference label');
-    return { kind: 'workspace_file' as const, value: tokenValue, label };
+    if (
+      typeof value.start !== 'number' ||
+      !Number.isSafeInteger(value.start) ||
+      value.start < 0 ||
+      displayText.slice(value.start, value.start + tokenValue.length) !== tokenValue
+    ) {
+      throw new Error('Invalid send workspace file reference start');
+    }
+    return { value: tokenValue, start: value.start };
   });
-  return inlineReferences.length > 0 ? { inlineReferences } : {};
+  return workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {};
 }
 
 function normalizeVoiceOperationId(input: unknown): string {

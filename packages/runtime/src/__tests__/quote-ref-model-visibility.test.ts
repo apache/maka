@@ -66,7 +66,12 @@ describe('inline quote refs are folded into model-facing text', () => {
         kind: 'text',
         text: 'inspect @docs/plan.md',
         inlineReferences: [
-          { kind: 'workspace_file', value: '@docs/plan.md', label: 'Secret UI label' },
+          {
+            kind: 'workspace_file',
+            value: '@docs/plan.md',
+            label: 'Secret UI label',
+            start: 8,
+          },
         ],
       }),
       'inspect @docs/plan.md',

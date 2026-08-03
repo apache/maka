@@ -203,11 +203,12 @@ export const SentReferenceHierarchy: Story = {
           ts: NOW,
           text: '请用 /skill:writer 对照 @packages/ui/src/chat-turn.tsx 检查这些材料。',
           inlineReferences: [
-            { kind: 'skill', value: '/skill:writer', label: 'writer' },
+            { kind: 'skill', value: '/skill:writer', label: 'writer', start: 3 },
             {
               kind: 'workspace_file',
               value: '@packages/ui/src/chat-turn.tsx',
               label: 'chat-turn.tsx',
+              start: 20,
             },
           ],
           attachments: [pdfAttachment, codeAttachment, imageAttachment],

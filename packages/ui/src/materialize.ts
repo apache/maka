@@ -117,7 +117,7 @@ export function materializeChat(messages: StoredMessage[]): ChatItem[] {
         ts: message.ts,
         ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
         ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
-        ...(message.inlineReferences && message.inlineReferences.length > 0
+        ...(message.inlineReferences !== undefined
           ? { inlineReferences: message.inlineReferences }
           : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),
@@ -484,7 +484,7 @@ export function materializeTurns(messages: StoredMessage[]): TurnViewModel[] {
         ts: message.ts,
         ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
         ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
-        ...(message.inlineReferences && message.inlineReferences.length > 0
+        ...(message.inlineReferences !== undefined
           ? { inlineReferences: message.inlineReferences }
           : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),

@@ -49,7 +49,7 @@ import {
 } from './chat-input-behavior.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
-import type { AttachmentRef, InlineReference, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
+import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import {
   Button as UiButton,
   ChatComposer as AstryxChatComposer,
@@ -74,7 +74,8 @@ import {
   inlineReferenceFileBasename,
   inlineReferenceToken,
   workspaceFileInlineReference,
-  workspaceFileInlineReferencesFromTokenValues,
+  workspaceFileReferencePositions,
+  type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
@@ -144,7 +145,7 @@ export interface ComposerHandle {
 }
 
 export interface ComposerSendMetadata {
-  inlineReferences?: readonly InlineReference[];
+  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -890,12 +891,8 @@ export const Composer = forwardRef<
     // file chips that still exist in the editor, not a second draft state.
     const text = composerWireText(textPort.getValue());
     if (!text) return;
-    const inlineReferences = workspaceFileInlineReferencesFromTokenValues(
-      Array.from(
-        editableNode()?.querySelectorAll<HTMLElement>('[data-astryx-token]') ?? [],
-        (token) => token.getAttribute('data-astryx-token-value'),
-      ),
-    );
+    const editable = editableNode();
+    const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
     sendPendingRef.current = true;
     setSendPending(true);
@@ -903,7 +900,7 @@ export const Composer = forwardRef<
     try {
       sent = await props.onSend(
         text,
-        inlineReferences.length > 0 ? { inlineReferences } : undefined,
+        workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
       );
     } finally {
       sendPendingRef.current = false;

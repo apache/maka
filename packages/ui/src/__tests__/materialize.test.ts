@@ -27,11 +27,12 @@ const codeAttachment: AttachmentRef = {
 describe('materializeChat attachments', () => {
   test('projects frozen inline references onto chat and turn user messages', () => {
     const inlineReferences = [
-      { kind: 'skill' as const, value: '/skill:writer', label: 'Writer' },
+      { kind: 'skill' as const, value: '/skill:writer', label: 'Writer', start: 4 },
       {
         kind: 'workspace_file' as const,
         value: '@docs/my plan.md',
         label: 'my plan.md',
+        start: 21,
       },
     ];
     const messages: StoredMessage[] = [
@@ -48,6 +49,21 @@ describe('materializeChat attachments', () => {
 
     assert.deepEqual(materializeChat(messages)[0]?.inlineReferences, inlineReferences);
     assert.deepEqual(materializeTurns(messages)[0]?.user?.inlineReferences, inlineReferences);
+  });
+
+  test('preserves an explicit empty reference projection as the new-format marker', () => {
+    const messages: StoredMessage[] = [
+      {
+        type: 'user',
+        id: 'm-empty',
+        turnId: 't-empty',
+        ts: 1,
+        text: 'plain text',
+        inlineReferences: [],
+      },
+    ];
+    assert.deepEqual(materializeChat(messages)[0]?.inlineReferences, []);
+    assert.deepEqual(materializeTurns(messages)[0]?.user?.inlineReferences, []);
   });
 
   test('projects user message attachments onto the chat item', () => {

@@ -208,7 +208,7 @@ const makaBridge = {
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
-            inlineReferences?: InlineReference[];
+            workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
           },
     ): Promise<
       | {

@@ -97,6 +97,8 @@ export {
   isInlineReference,
   isMessageContent,
   isStorageRef,
+  INLINE_REFERENCE_LABEL_MAX_LENGTH,
+  INLINE_REFERENCE_MAX_COUNT,
   messageContentsEqual,
   normalizeMessageContent,
   ToolOutcomeUnknownError,

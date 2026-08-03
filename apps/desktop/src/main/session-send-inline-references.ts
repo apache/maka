@@ -1,4 +1,10 @@
-import type { InlineReference } from '@maka/core';
+import {
+  INLINE_REFERENCE_LABEL_MAX_LENGTH,
+  INLINE_REFERENCE_MAX_COUNT,
+  isInlineReference,
+  type InlineReference,
+} from '@maka/core';
+import { posix } from 'node:path';
 import {
   skillInvocationInlineReferences,
   type SkillInvocationReceipt,
@@ -11,19 +17,45 @@ import {
  */
 export function mergeSentInlineReferences(input: {
   displayText: string;
-  rendererReferences?: readonly InlineReference[];
+  workspaceFileReferences?: ReadonlyArray<Pick<InlineReference, 'value' | 'start'>>;
   receipts: readonly SkillInvocationReceipt[];
 }): InlineReference[] {
-  const byValue = new Map<string, InlineReference>();
-  for (const reference of [
-    ...(input.rendererReferences ?? []),
-    ...skillInvocationInlineReferences(input.receipts),
-  ]) {
-    if (!input.displayText.includes(reference.value) || byValue.has(reference.value)) continue;
-    byValue.set(reference.value, reference);
+  const candidates: InlineReference[] = [
+    ...(input.workspaceFileReferences ?? []).map((reference) => ({
+      kind: 'workspace_file' as const,
+      value: reference.value,
+      label: posix.basename(reference.value.slice(1)),
+      start: reference.start,
+    })),
+    ...skillInvocationInlineReferences(input.receipts, input.displayText),
+  ].sort((left, right) => left.start - right.start || right.value.length - left.value.length);
+  const references: InlineReference[] = [];
+  let previousEnd = 0;
+  for (const candidate of candidates) {
+    if (references.length >= INLINE_REFERENCE_MAX_COUNT) break;
+    const reference = {
+      ...candidate,
+      label: truncateWithoutSplittingSurrogate(
+        candidate.label,
+        INLINE_REFERENCE_LABEL_MAX_LENGTH,
+      ),
+    };
+    if (
+      !isInlineReference(reference) ||
+      reference.start < previousEnd ||
+      input.displayText.slice(reference.start, reference.start + reference.value.length) !==
+        reference.value
+    ) {
+      continue;
+    }
+    references.push(reference);
+    previousEnd = reference.start + reference.value.length;
   }
-  return [...byValue.values()].sort((left, right) => {
-    const position = input.displayText.indexOf(left.value) - input.displayText.indexOf(right.value);
-    return position || right.value.length - left.value.length;
-  });
+  return references;
+}
+
+function truncateWithoutSplittingSurrogate(value: string, maxCodeUnits: number): string {
+  const truncated = value.slice(0, maxCodeUnits);
+  const lastCodeUnit = truncated.charCodeAt(truncated.length - 1);
+  return lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff ? truncated.slice(0, -1) : truncated;
 }

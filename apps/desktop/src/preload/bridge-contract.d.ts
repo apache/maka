@@ -245,7 +245,9 @@ export interface MakaBridge {
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: import('@maka/core').QuoteRef[];
-            inlineReferences?: import('@maka/core').InlineReference[];
+            workspaceFileReferences?: Array<
+              Pick<import('@maka/core').InlineReference, 'value' | 'start'>
+            >;
           },
     ): Promise<
       | {

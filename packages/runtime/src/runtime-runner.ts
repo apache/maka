@@ -738,9 +738,7 @@ export function buildInitialUserRuntimeEvent(input: InitialUserRuntimeEventInput
         ? { attachments: input.attachments }
         : {}),
       ...(input.quotes !== undefined && input.quotes.length > 0 ? { quotes: input.quotes } : {}),
-      ...(input.inlineReferences !== undefined && input.inlineReferences.length > 0
-        ? { inlineReferences: input.inlineReferences }
-        : {}),
+      ...(input.inlineReferences !== undefined ? { inlineReferences: input.inlineReferences } : {}),
     },
     ...(input.toolBoundaryProtocol
       ? { actions: { runtimeProtocol: { toolBoundary: input.toolBoundaryProtocol } } }

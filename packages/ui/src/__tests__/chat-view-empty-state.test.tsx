@@ -151,11 +151,12 @@ describe('ChatView sent inline references', () => {
               ts: 1,
               text: 'Use /skill:writer on @docs/chat turn.tsx',
               inlineReferences: [
-                { kind: 'skill', value: '/skill:writer', label: 'Writer' },
+                { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 4 },
                 {
                   kind: 'workspace_file',
                   value: '@docs/chat turn.tsx',
                   label: 'chat turn.tsx',
+                  start: 21,
                 },
               ],
             },

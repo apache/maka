@@ -18,6 +18,8 @@ test('a picked file mention becomes an inline token and sends as its path', asyn
   await expect(listbox.getByRole('option').first()).toBeVisible();
   await composer.press('Enter');
   await composer.pressSequentially('里的说明');
+  await composer.pressSequentially('；普通文本 @.maka/skills/agent-write/SKILL.md');
+  await composer.press('Escape');
 
   const token = composer.locator('[data-astryx-token]');
   await expect(token).toHaveAttribute(
@@ -33,17 +35,29 @@ test('a picked file mention becomes an inline token and sends as its path', asyn
   await composer.press('Enter');
   const bubble = page.getByLabel('你发送的消息').first();
   await expect(bubble).toBeVisible();
-  await expect(
-    bubble.locator('.maka-chat-message-bubble-user .astryx-badge'),
-  ).toHaveText('SKILL.md');
-  await expect(bubble).toContainText('看一下 SKILL.md 里的说明');
+  const sentFileBadges = bubble.locator('.maka-chat-message-bubble-user .astryx-badge');
+  await expect(sentFileBadges).toHaveCount(1);
+  await expect(sentFileBadges).toHaveText('SKILL.md');
+  await expect(bubble).toContainText(
+    '看一下 SKILL.md 里的说明；普通文本 @.maka/skills/agent-write/SKILL.md',
+  );
   // The transcript replays the selected token's label, while the model still
   // receives the exact serialized path with normalized spacing.
   await expect(
     page.getByText(
-      'Fake backend received: 看一下 @.maka/skills/agent-write/SKILL.md 里的说明',
+      'Fake backend received: 看一下 @.maka/skills/agent-write/SKILL.md 里的说明；普通文本 @.maka/skills/agent-write/SKILL.md',
     ),
   ).toBeVisible();
+
+  await page.reload();
+  const reloadedBubble = page.getByLabel('你发送的消息').first();
+  await expect(reloadedBubble).toBeVisible();
+  await expect(
+    reloadedBubble.locator('.maka-chat-message-bubble-user .astryx-badge'),
+  ).toHaveCount(1);
+  await expect(reloadedBubble).toContainText(
+    '普通文本 @.maka/skills/agent-write/SKILL.md',
+  );
 });
 
 /**

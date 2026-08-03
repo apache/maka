@@ -1,23 +1,38 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { workspaceFileInlineReferencesFromTokenValues } from '../inline-reference.js';
+import type { InlineReference } from '@maka/core';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { InlineReferenceText } from '../inline-reference.js';
 
-test('collects only surviving workspace-file token values with exact spaced paths', () => {
-  assert.deepEqual(
-    workspaceFileInlineReferencesFromTokenValues([
-      '@docs/my plan.md',
-      '/skill:writer',
-      '@docs/my plan.md',
-      'plain text',
-      '@packages/ui/src/chat-turn.tsx',
-    ]),
-    [
-      { kind: 'workspace_file', value: '@docs/my plan.md', label: 'my plan.md' },
-      {
-        kind: 'workspace_file',
-        value: '@packages/ui/src/chat-turn.tsx',
-        label: 'chat-turn.tsx',
-      },
-    ],
+test('fails plain instead of tokenizing a malformed empty reference', () => {
+  const markup = renderToStaticMarkup(
+    <InlineReferenceText
+      text="hello"
+      references={[
+        { kind: 'skill', value: '', label: 'Writer', start: 0 } as InlineReference,
+      ]}
+    />,
   );
+  assert.match(markup, />hello</);
+  assert.doesNotMatch(markup, /astryx-badge/);
+});
+
+test('renders only the selected occurrence of a repeated workspace value as a badge', () => {
+  const text = 'literal @docs/a.ts then selected @docs/a.ts';
+  const markup = renderToStaticMarkup(
+    <InlineReferenceText
+      text={text}
+      references={[
+        {
+          kind: 'workspace_file',
+          value: '@docs/a.ts',
+          label: 'a.ts',
+          start: text.lastIndexOf('@docs/a.ts'),
+        },
+      ]}
+    />,
+  );
+  assert.equal(markup.match(/astryx-badge/g)?.length, 1);
+  assert.match(markup, /literal @docs\/a\.ts then selected/);
+  assert.match(markup, />a\.ts</);
 });

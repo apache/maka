@@ -98,7 +98,7 @@ export function backfillRuntimeEventsFromStoredMessages(
             ...(message.quotes !== undefined && message.quotes.length > 0
               ? { quotes: message.quotes }
               : {}),
-            ...(message.inlineReferences !== undefined && message.inlineReferences.length > 0
+            ...(message.inlineReferences !== undefined
               ? { inlineReferences: message.inlineReferences }
               : {}),
           },

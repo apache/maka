@@ -112,7 +112,7 @@ export function storedMessageToRuntimeEvent(
           ...(message.quotes !== undefined && message.quotes.length > 0
             ? { quotes: message.quotes }
             : {}),
-          ...(message.inlineReferences !== undefined && message.inlineReferences.length > 0
+          ...(message.inlineReferences !== undefined
             ? { inlineReferences: message.inlineReferences }
             : {}),
         },
@@ -266,7 +266,7 @@ export function runtimeEventToStoredMessageDraft(
       ...(content.quotes !== undefined && content.quotes.length > 0
         ? { quotes: content.quotes }
         : {}),
-      ...(content.inlineReferences !== undefined && content.inlineReferences.length > 0
+      ...(content.inlineReferences !== undefined
         ? { inlineReferences: content.inlineReferences }
         : {}),
     };

@@ -78,19 +78,19 @@ describe('permission response IPC boundary', () => {
       normalizeSessionSendCommand({
         type: 'send',
         turnId: 'turn-1',
-        text: 'inspect the repository',
-        displayText: 'Inspect',
+        text: 'review @packages/ui/src/chat turn.tsx',
+        displayText: 'review @packages/ui/src/chat turn.tsx',
         skillIds: ['weekly-report', 'project:maka:writer'],
         attachmentItems: [{ approvalId: 'a', name: 'n' }],
         turnOrchestration: { mode: 'swarm', source: 'slash_command', ignored: true },
         quotes: [
           { text: 'the excerpt', label: '  Assistant  ', sourceTurnId: 'turn-9', extra: true },
         ],
-        inlineReferences: [
+        workspaceFileReferences: [
           {
-            kind: 'workspace_file',
             value: '@packages/ui/src/chat turn.tsx',
-            label: '  chat turn.tsx  ',
+            start: 7,
+            label: 'package.json',
             extra: true,
           },
         ],
@@ -99,17 +99,16 @@ describe('permission response IPC boundary', () => {
       {
         type: 'send',
         turnId: 'turn-1',
-        text: 'inspect the repository',
-        displayText: 'Inspect',
+        text: 'review @packages/ui/src/chat turn.tsx',
+        displayText: 'review @packages/ui/src/chat turn.tsx',
         skillIds: ['weekly-report', 'project:maka:writer'],
         attachmentItems: [{ approvalId: 'a', name: 'n' }],
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         quotes: [{ text: 'the excerpt', label: 'Assistant', sourceTurnId: 'turn-9' }],
-        inlineReferences: [
+        workspaceFileReferences: [
           {
-            kind: 'workspace_file',
             value: '@packages/ui/src/chat turn.tsx',
-            label: 'chat turn.tsx',
+            start: 7,
           },
         ],
       },
@@ -134,23 +133,21 @@ describe('permission response IPC boundary', () => {
       { type: 'send', text: 'hello', quotes: Array(17).fill({ text: 'x' }) },
       { type: 'send', text: 'hello', quotes: [{ text: '' }] },
       { type: 'send', text: 'hello', quotes: [{ text: 'x', sourceTurnId: 1 }] },
-      { type: 'send', text: 'hello', inlineReferences: {} },
+      { type: 'send', text: 'hello', workspaceFileReferences: {} },
       {
         type: 'send',
         text: 'hello',
-        inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer' }],
+        workspaceFileReferences: [{ value: '@a.ts', start: -1 }],
       },
       {
         type: 'send',
         text: 'hello',
-        inlineReferences: [{ kind: 'file', value: '@a.ts', label: 'a.ts' }],
+        workspaceFileReferences: [{ value: '@a.ts' }],
       },
       {
         type: 'send',
         text: 'hello',
-        inlineReferences: [
-          { kind: 'workspace_file', value: '@../secret', label: 'secret' },
-        ],
+        workspaceFileReferences: [{ value: '@../secret', start: 0 }],
       },
     ];
     for (const command of invalidCommands) {

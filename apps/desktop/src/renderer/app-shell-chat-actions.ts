@@ -39,6 +39,11 @@ export type PendingAttachment = {
   size: number;
   source: { type: 'approval'; approvalId: string; name: string } | { type: 'file'; file: File };
 };
+
+export interface WorkspaceFileReferencePosition {
+  value: string;
+  start: number;
+}
 import {
   isNoRealConnectionError,
   noRealConnectionReasonFromError,
@@ -84,7 +89,7 @@ export interface AppShellChatActions {
     options?: {
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
-      inlineReferences?: readonly InlineReference[];
+      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
       voiceOperationId?: string;
       onSessionResolved?: (sessionId: string) => void;
@@ -201,7 +206,7 @@ export function createAppShellChatActions(deps: {
       text,
       ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
       ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
-      ...(inlineReferences.length > 0 ? { inlineReferences: [...inlineReferences] } : {}),
+      inlineReferences: [...inlineReferences],
     };
   }
 
@@ -271,7 +276,7 @@ export function createAppShellChatActions(deps: {
     options: {
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
-      inlineReferences?: readonly InlineReference[];
+      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
       voiceOperationId?: string;
       onSessionResolved?: (sessionId: string) => void;
@@ -339,8 +344,8 @@ export function createAppShellChatActions(deps: {
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
           ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
-          ...(options.inlineReferences && options.inlineReferences.length > 0
-            ? { inlineReferences: [...options.inlineReferences] }
+          ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
+            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
             : {}),
         });
         if (!sendResult.ok) {
@@ -370,9 +375,7 @@ export function createAppShellChatActions(deps: {
             {
               replaceCurrentMessages: true,
               ...(quotes && quotes.length > 0 ? { quotes } : {}),
-              ...(sendResult.inlineReferences?.length
-                ? { inlineReferences: sendResult.inlineReferences }
-                : {}),
+              inlineReferences: sendResult.inlineReferences ?? [],
             },
           );
         }
@@ -397,8 +400,8 @@ export function createAppShellChatActions(deps: {
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(attachmentItems ? { attachmentItems } : {}),
         ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
-        ...(options.inlineReferences && options.inlineReferences.length > 0
-          ? { inlineReferences: [...options.inlineReferences] }
+        ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
+          ? { workspaceFileReferences: [...options.workspaceFileReferences] }
           : {}),
       });
       if (!sendResult.ok) {
@@ -422,9 +425,7 @@ export function createAppShellChatActions(deps: {
         sendResult.attachments,
         {
           ...(quotes && quotes.length > 0 ? { quotes } : {}),
-          ...(sendResult.inlineReferences?.length
-            ? { inlineReferences: sendResult.inlineReferences }
-            : {}),
+          inlineReferences: sendResult.inlineReferences ?? [],
         },
       );
       await refreshMessagesUntilTurn(sessionId, turnId);

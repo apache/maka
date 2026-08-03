@@ -38,7 +38,7 @@ import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
-import { inlineReferenceTokens } from './inline-reference.js';
+import { InlineReferenceText } from './inline-reference.js';
 
 function LocalizedChatMessage({
   accessibleLabel,
@@ -228,15 +228,13 @@ const MessageBody = memo(function MessageBody(props: {
           className="maka-chat-message-bubble maka-chat-message-bubble-user"
           metadata={userMetadata}
         >
-          <ChatTokenizedText
-            tokens={
-              props.inlineReferences
-                ? inlineReferenceTokens(props.inlineReferences)
-                : legacySentSkillTokens(props.text)
-            }
-          >
-            {props.text}
-          </ChatTokenizedText>
+          {props.inlineReferences ? (
+            <InlineReferenceText text={props.text} references={props.inlineReferences} />
+          ) : (
+            <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
+              {props.text}
+            </ChatTokenizedText>
+          )}
         </ChatMessageBubble>
       </>
     );
