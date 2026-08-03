@@ -559,6 +559,14 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
         }
       },
     });
+    // Thrown SYNCHRONOUSLY, and that is load-bearing. A refused turn never runs
+    // `onEvent` / `onStreamError` / `onDrained`, so no change ever names it —
+    // and a client's arm stays unconfirmed until its turn is named, holding Stop
+    // and the composer lock. Throwing synchronously is what carries the failure
+    // out through the `void streamEvents(...)` call in the send handler: it
+    // rejects that handler's promise instead of resolving `{ ok: true }`, so the
+    // client disarms in its own catch. Made async, this line would be swallowed
+    // by the `void` and latch the UI until restart.
     if (started.kind === 'unavailable') throw new Error(started.reason);
     return started.completion.then((outcome) => {
       const failureReason = outcome.kind === 'errored' || outcome.kind === 'suspended'

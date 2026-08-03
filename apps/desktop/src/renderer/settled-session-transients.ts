@@ -27,6 +27,11 @@ export function settledSessionTransientIds(options: {
   liveTurnBySession: Readonly<Record<string, LiveTurnProjection>>;
 }): string[] {
   return options.sessions.flatMap((session) => {
+    // The live runs first: a persisted status can disagree with them in both
+    // directions — it is written after the run starts and can be left behind
+    // entirely by a crash — so anything the runtime still reports as running
+    // keeps its transients regardless of what the header says.
+    if (session.runningTurnIds?.length) return [];
     if (session.status === 'running' || session.status === 'waiting_for_user') return [];
     const projection = options.liveTurnBySession[session.id];
     if (projection?.unconfirmed) return [];

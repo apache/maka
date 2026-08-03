@@ -118,25 +118,25 @@ import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
 describe('SessionManager running-turn projection', () => {
   test('names the turn a session is running, without persisting it', async () => {
     const store = new MemorySessionStore();
-    const runningTurnBySession = new Map<string, string>();
+    const runningTurnBySession = new Map<string, string[]>();
     const manager = new SessionManager({
       store,
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(1),
       runtimeKernel: {
-        runningTurnId: (sessionId: string) => runningTurnBySession.get(sessionId),
+        runningTurnIds: (sessionId: string) => runningTurnBySession.get(sessionId) ?? [],
       } as never,
     });
     const idle = await manager.createSession(makeInput({ name: 'Idle' }));
     const busy = await manager.createSession(makeInput({ name: 'Busy' }));
-    runningTurnBySession.set(busy.id, 'turn-live');
+    runningTurnBySession.set(busy.id, ['turn-live']);
 
     const listed = await manager.listSessions();
     const byId = new Map(listed.map((session) => [session.id, session]));
 
-    expect(byId.get(busy.id)?.runningTurnId).toEqual('turn-live');
-    expect(byId.get(idle.id)?.runningTurnId).toEqual(undefined);
+    expect(byId.get(busy.id)?.runningTurnIds).toEqual(['turn-live']);
+    expect(byId.get(idle.id)?.runningTurnIds).toEqual(undefined);
 
     // Nothing about it reached storage, which is what makes a restart honest.
     expect(
@@ -147,7 +147,7 @@ describe('SessionManager running-turn projection', () => {
     // and no crash-recovery pass in between.
     runningTurnBySession.delete(busy.id);
     const after = await manager.listSessions();
-    expect(after.find((session) => session.id === busy.id)?.runningTurnId).toEqual(undefined);
+    expect(after.find((session) => session.id === busy.id)?.runningTurnIds).toEqual(undefined);
   });
 
   test('lists sessions unchanged when the kernel cannot report runs', async () => {
@@ -164,7 +164,7 @@ describe('SessionManager running-turn projection', () => {
     const listed = await manager.listSessions();
 
     expect(listed.map((entry) => entry.id)).toEqual([session.id]);
-    expect(listed[0]?.runningTurnId).toEqual(undefined);
+    expect(listed[0]?.runningTurnIds).toEqual(undefined);
   });
 });
 

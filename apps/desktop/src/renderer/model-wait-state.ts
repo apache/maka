@@ -45,21 +45,23 @@ export type TurnPhase = 'waiting' | 'streamed';
  * nothing until a status round-trip landed, then had it retracted by any list
  * refresh that resolved before the runtime's `running` write.
  *
- * `runningTurnId` is read only when it names a turn OTHER than the arm's. For
- * the arm's own turn the local projection knows more — it sees the terminal
- * event first — so a snapshot taken before that event must not light Stop back
- * up. For any other turn (another client, an automation, one still running
- * across a reload) it is the only witness there is.
+ * `runningTurnIds` is read only for turns OTHER than the arm's. For the arm's
+ * own turn the local projection knows more — it sees the terminal event first —
+ * so a snapshot taken before that event must not light Stop back up. For any
+ * other turn (another client, an automation, one still running across a reload)
+ * it is the only witness there is. It is a set because a session can run
+ * concurrent turns, and the arm's own turn lingering in it must not hide a
+ * sibling that is genuinely still running.
  */
 export function deriveTurnActive(input: {
   /** The active session's live projection, if this renderer has one. */
   turnPhase: TurnPhase | undefined;
   armedTurnId: string | undefined;
-  /** The turn the authority is running for this session, if any. */
-  runningTurnId: string | undefined;
+  /** The turns the authority is running for this session. */
+  runningTurnIds: readonly string[] | undefined;
 }): boolean {
   if (input.turnPhase !== undefined) return true;
-  return input.runningTurnId !== undefined && input.runningTurnId !== input.armedTurnId;
+  return input.runningTurnIds?.some((turnId) => turnId !== input.armedTurnId) === true;
 }
 
 export interface ModelWaitInputs {

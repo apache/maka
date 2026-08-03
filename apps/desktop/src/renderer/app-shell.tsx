@@ -2274,7 +2274,7 @@ function AppShellContent({
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
                   // `turnActive` unions the send's zero-lag local arm with the
-                  // runtime's live `runningTurnId` (a turn this renderer did not
+                  // runtime's live `runningTurnIds` (turns this renderer did not
                   // send), so neither witness can veto the other — see
                   // `deriveTurnActive`. `activeStreamingLive` is folded in
                   // defensively for the rare replay where the arm was over-cleared.
@@ -2383,12 +2383,18 @@ function AppShellContent({
                   }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
+                  // Every "cannot change this mid-turn" gate reads `turnActive`,
+                  // the same witness Stop reads. Reading the persisted status
+                  // here instead left these toggles live through the whole
+                  // send→run-start window — long enough on a cold backend for a
+                  // mode change to land before the run registers and alter the
+                  // execution config of the turn already sent.
                   permissionModeDisabledReason={
                     activeId && pendingPermissionModeBySession[activeId] === true
                         ? shellCopy.permissionModeChanging
                       : activeStreamingLive
                           ? shellCopy.permissionModeStreaming
-                        : activeId && activeSessionForView?.status === 'running'
+                        : activeId && turnActive
                             ? shellCopy.permissionModeRunning
                           : activeId && activeSessionForView?.status === 'waiting_for_user'
                               ? shellCopy.permissionModeWaiting
@@ -2408,7 +2414,7 @@ function AppShellContent({
                       ? shellCopy.planModeChanging
                       : activeStreamingLive
                           ? shellCopy.planModeStreaming
-                        : activeId && activeSessionForView?.status === 'running'
+                        : activeId && turnActive
                             ? shellCopy.planModeRunning
                           : activeId && activeSessionForView?.status === 'waiting_for_user'
                               ? shellCopy.planModeWaiting
@@ -2424,7 +2430,7 @@ function AppShellContent({
                       ? shellCopy.swarmModeChanging
                       : activeStreamingLive
                           ? shellCopy.swarmModeStreaming
-                        : activeId && activeSessionForView?.status === 'running'
+                        : activeId && turnActive
                             ? shellCopy.swarmModeRunning
                           : activeId && activeSessionForView?.status === 'waiting_for_user'
                               ? shellCopy.swarmModeWaiting
@@ -2442,7 +2448,7 @@ function AppShellContent({
                       ? shellCopy.graphModeChanging
                       : activeStreamingLive
                           ? shellCopy.graphModeStreaming
-                        : activeId && activeSessionForView?.status === 'running'
+                        : activeId && turnActive
                             ? shellCopy.graphModeRunning
                           : activeId && activeSessionForView?.status === 'waiting_for_user'
                               ? shellCopy.graphModeWaiting

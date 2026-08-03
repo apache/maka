@@ -17,7 +17,7 @@ describe('is a turn running', () => {
     assert.equal(deriveTurnActive({
       turnPhase: 'waiting',
       armedTurnId: 'turn-1',
-      runningTurnId: undefined,
+      runningTurnIds: undefined,
     }), true);
   });
 
@@ -29,7 +29,7 @@ describe('is a turn running', () => {
     assert.equal(deriveTurnActive({
       turnPhase: 'streamed',
       armedTurnId: 'turn-1',
-      runningTurnId: undefined,
+      runningTurnIds: undefined,
     }), true);
   });
 
@@ -37,7 +37,7 @@ describe('is a turn running', () => {
     assert.equal(deriveTurnActive({
       turnPhase: undefined,
       armedTurnId: undefined,
-      runningTurnId: undefined,
+      runningTurnIds: undefined,
     }), false);
   });
 
@@ -47,7 +47,7 @@ describe('is a turn running', () => {
     assert.equal(deriveTurnActive({
       turnPhase: undefined,
       armedTurnId: undefined,
-      runningTurnId: 'turn-elsewhere',
+      runningTurnIds: ['turn-elsewhere'],
     }), true);
   });
 
@@ -58,7 +58,7 @@ describe('is a turn running', () => {
     assert.equal(deriveTurnActive({
       turnPhase: undefined,
       armedTurnId: 'turn-1',
-      runningTurnId: 'turn-1',
+      runningTurnIds: ['turn-1'],
     }), false);
   });
 
@@ -68,8 +68,35 @@ describe('is a turn running', () => {
     assert.equal(deriveTurnActive({
       turnPhase: undefined,
       armedTurnId: 'turn-1',
-      runningTurnId: 'turn-2',
+      runningTurnIds: ['turn-2'],
     }), true);
+  });
+
+  // A session can run concurrent turns. The arm's own turn lingering in the set
+  // — it has ended locally but the run has not been unregistered yet — must not
+  // hide a sibling that is genuinely still running.
+  it('opens for a sibling turn even while the settled arm lingers in the set', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: 'turn-1',
+      runningTurnIds: ['turn-1', 'turn-2'],
+    }), true);
+  });
+
+  it('closes when the only running turn is the arm the renderer already settled', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: 'turn-1',
+      runningTurnIds: ['turn-1'],
+    }), false);
+  });
+
+  it('closes on an empty set', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: undefined,
+      runningTurnIds: [],
+    }), false);
   });
 });
 

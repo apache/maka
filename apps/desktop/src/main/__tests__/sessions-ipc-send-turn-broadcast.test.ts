@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { createRunStartedHook } from '../session-send-resolve.js';
+import { createRunStartedHook, stoppedTurnBroadcasts } from '../session-send-resolve.js';
 
 function hookHarness(turnId: string, options: { commitFails?: boolean } = {}) {
   const answers: Array<{ sessionId: string; turnId: string }> = [];
@@ -82,5 +82,39 @@ describe('the broadcast that answers a send', () => {
 
     assert.deepEqual(harness.commits, []);
     assert.equal(harness.answers.length, 1, 'the answer is unconditional');
+  });
+});
+
+// Stop is the one turn ending a client can be waiting on without ever having
+// seen the turn start: pressed inside the send→run-start window, it is the only
+// thing that will ever answer that send. Unnamed, it cannot release the claim —
+// Stop would be the one control unable to undo Stop.
+describe('the broadcasts that announce a stop', () => {
+  it('names the turn it ended, on every reason', () => {
+    assert.deepEqual(stoppedTurnBroadcasts(['turn-1']), [
+      { reason: 'status-change', turnId: 'turn-1' },
+      { reason: 'turn-status-change', turnId: 'turn-1' },
+      { reason: 'message-appended', turnId: 'turn-1' },
+    ]);
+  });
+
+  // A session can carry concurrent runs; stopping ends all of them, and a
+  // client waiting on any one must hear its own turn named.
+  it('names every turn it ended', () => {
+    const named = stoppedTurnBroadcasts(['turn-1', 'turn-2'])
+      .filter((broadcast) => broadcast.reason === 'turn-status-change')
+      .map((broadcast) => broadcast.turnId);
+
+    assert.deepEqual(named, ['turn-1', 'turn-2']);
+  });
+
+  // Nothing was running, so nothing is being answered — an unnamed change is
+  // exactly what "not about any turn" means.
+  it('names nothing when there was no turn to stop', () => {
+    assert.deepEqual(stoppedTurnBroadcasts([]), [
+      { reason: 'status-change' },
+      { reason: 'turn-status-change' },
+      { reason: 'message-appended' },
+    ]);
   });
 });

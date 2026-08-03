@@ -98,6 +98,33 @@ describe('app shell session UI state controller', () => {
     }), ['sending']);
   });
 
+  // The live runs outrank the persisted status in BOTH directions. A status
+  // that has not caught up yet, or one a crash left behind, must not decide
+  // this while the runtime still reports the turn as running.
+  it('keeps transients while the runtime still reports a running turn', () => {
+    const sessions = [
+      { id: 'running', status: 'active', runningTurnIds: ['turn-live'] },
+    ] as SessionSummary[];
+
+    assert.deepEqual(settledSessionTransientIds({
+      activeId: 'running',
+      sessions,
+      liveTurnBySession: { running: answeredArm('turn-live') },
+    }), []);
+  });
+
+  it('settles once the runtime reports no running turn, whatever the status says', () => {
+    const sessions = [
+      { id: 'ended', status: 'active', runningTurnIds: [] as string[] },
+    ] as SessionSummary[];
+
+    assert.deepEqual(settledSessionTransientIds({
+      activeId: 'other',
+      sessions,
+      liveTurnBySession: { ended: answeredArm('turn-over') },
+    }), ['ended']);
+  });
+
   // A backgrounded session's arm is protected by the same bit — the guard must
   // not be an active-session special case, since a send can be backgrounded the
   // instant it is made.

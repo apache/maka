@@ -20,7 +20,7 @@ import { useDelayedFlag } from './use-delayed-flag';
  */
 export function useShellLiveTurn(options: {
   activeId: string | undefined;
-  /** Carries `runningTurnId` — the authority on a turn this renderer did not send. */
+  /** Carries `runningTurnIds` — the authority on turns this renderer did not send. */
   activeSession: SessionSummary | undefined;
   activeLiveTurn: LiveTurnProjection | undefined;
   liveTurnBySession: Record<string, LiveTurnProjection>;
@@ -76,7 +76,7 @@ export function useShellLiveTurn(options: {
   const turnActive = deriveTurnActive({
     turnPhase: activeTurnPhase,
     armedTurnId: activeLiveTurn?.turnId,
-    runningTurnId: activeSession?.runningTurnId,
+    runningTurnIds: activeSession?.runningTurnIds,
   });
   const modelWaitKind: ModelWaitKind = deriveModelWait({
     turnPhase: activeTurnPhase,

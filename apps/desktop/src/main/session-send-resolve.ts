@@ -80,3 +80,32 @@ export function createRunStartedHook(input: {
     }
   };
 }
+
+/** One `sessions:changed` to emit, in order. */
+export interface StoppedTurnBroadcast {
+  reason: 'status-change' | 'turn-status-change' | 'message-appended';
+  turnId?: string;
+}
+
+/**
+ * The broadcasts that announce a stop, naming the turns it ended.
+ *
+ * Stopping is the one turn ending a client can be waiting on without ever
+ * having seen the turn start — Stop pressed inside the send→run-start window.
+ * A client holds a local claim on a turn it submitted until it hears back about
+ * that exact turn, so an unnamed stop leaves the claim with nothing to release
+ * it, making Stop the one control unable to undo Stop.
+ *
+ * With no turn running there is nothing to name and the plain invalidations
+ * stand: something not tied to a turn is exactly what an unnamed change means.
+ */
+export function stoppedTurnBroadcasts(
+  stoppedTurnIds: readonly string[],
+): StoppedTurnBroadcast[] {
+  const reasons = ['status-change', 'turn-status-change', 'message-appended'] as const;
+  return reasons.flatMap((reason) =>
+    stoppedTurnIds.length === 0
+      ? [{ reason }]
+      : stoppedTurnIds.map((turnId) => ({ reason, turnId })),
+  );
+}

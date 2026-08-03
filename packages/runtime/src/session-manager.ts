@@ -885,13 +885,22 @@ export class SessionManager {
    * live run is the fact, so a client can name what is running and — because
    * nothing survives the process — a restart reports the truth by itself.
    */
+  /**
+   * The turns this session is running right now. Same live fact `listSessions`
+   * projects, for callers that need it about one session — notably to name the
+   * turns a change is about.
+   */
+  runningTurnIds(sessionId: string): string[] {
+    return this.runtimeKernel.runningTurnIds?.(sessionId) ?? [];
+  }
+
   async listSessions(filter?: SessionListFilter): Promise<SessionSummary[]> {
     const sessions = await this.deps.store.list(filter);
-    const runningTurnId = this.runtimeKernel.runningTurnId?.bind(this.runtimeKernel);
-    if (!runningTurnId) return sessions;
+    const runningTurnIds = this.runtimeKernel.runningTurnIds?.bind(this.runtimeKernel);
+    if (!runningTurnIds) return sessions;
     return sessions.map((session) => {
-      const turnId = runningTurnId(session.id);
-      return turnId === undefined ? session : { ...session, runningTurnId: turnId };
+      const turnIds = runningTurnIds(session.id);
+      return turnIds.length === 0 ? session : { ...session, runningTurnIds: turnIds };
     });
   }
 

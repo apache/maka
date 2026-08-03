@@ -155,11 +155,15 @@ export interface RuntimeKernelLike {
   retractQueue(sessionId: string): string;
   hasActiveRuns(sessionId: string): boolean;
   /**
-   * The turn of a run in flight for this session, if any. The same fact
+   * The turns of the runs in flight for this session. The same fact
    * `hasActiveRuns` reports, named — which is what lets a client tell a turn
    * that has not started yet from one that already ended.
+   *
+   * A set, not one turn: a session can carry concurrent runs, and a client
+   * asking "is anything OTHER than my own turn running" cannot answer that
+   * from an arbitrary one of them.
    */
-  runningTurnId?(sessionId: string): string | undefined;
+  runningTurnIds?(sessionId: string): string[];
   hasActiveRun?(sessionId: string, runId: string, turnId?: string): boolean;
   updateCachedHeader(sessionId: string, header: SessionHeader): void;
   invalidateBackend(sessionId: string): Promise<void>;
@@ -2404,11 +2408,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return this.backendGenerationsFor(sessionId).some((active) => active.activeRuns.size > 0);
   }
 
-  runningTurnId(sessionId: string): string | undefined {
+  runningTurnIds(sessionId: string): string[] {
+    const turnIds: string[] = [];
     for (const active of this.backendGenerationsFor(sessionId)) {
-      for (const run of active.activeRuns.values()) return run.turnId;
+      for (const run of active.activeRuns.values()) {
+        if (!turnIds.includes(run.turnId)) turnIds.push(run.turnId);
+      }
     }
-    return undefined;
+    return turnIds;
   }
 
   hasActiveRun(sessionId: string, runId: string, turnId?: string): boolean {

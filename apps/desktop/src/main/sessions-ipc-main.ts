@@ -28,7 +28,7 @@ import type { PreparedSkillInvocationMessage, SessionManager } from '@maka/runti
 import type { ArtifactStore, createSessionStore } from '@maka/storage';
 import type { ConnectionStore, SettingsStore } from '@maka/storage';
 import { runThreadSearch } from './search/thread-search.js';
-import { createRunStartedHook, resolveSessionSend } from './session-send-resolve.js';
+import { createRunStartedHook, resolveSessionSend, stoppedTurnBroadcasts } from './session-send-resolve.js';
 import { resizeImageForAttachment } from './attachment-resize-native.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
@@ -362,11 +362,21 @@ export function registerSessionsIpc(
     computerUseOverlay.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await stopAgentGraph?.(sessionId);
+    // Read before stopping, while the runs are still registered: ending a turn
+    // is a change about that turn, and this is the one end a client can be
+    // waiting on without having seen the turn start — Stop pressed during the
+    // send→run-start window. Unnamed, it would leave that client's claim with
+    // nothing to release it, making Stop the one control unable to undo Stop.
+    const stoppedTurnIds = runtime.runningTurnIds(sessionId);
     await runtime.stopSession(sessionId, normalizeStopSessionInput(input));
     await runtime.interruptActivePlanExecution(sessionId, 'user_stopped_execution').catch(() => null);
-    emitSessionsChanged('status-change', sessionId);
-    emitSessionsChanged('turn-status-change', sessionId);
-    emitSessionsChanged('message-appended', sessionId);
+    for (const broadcast of stoppedTurnBroadcasts(stoppedTurnIds)) {
+      emitSessionsChanged(
+        broadcast.reason,
+        sessionId,
+        ...(broadcast.turnId ? [{ turnId: broadcast.turnId }] : []),
+      );
+    }
   });
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
