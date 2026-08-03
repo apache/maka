@@ -154,6 +154,15 @@ export interface SessionEventFrame extends SubscriptionEnvelope {
   event: SessionToolEvent;
 }
 
+export type AgentGraphChangedReason = 'observation' | 'runtime_activity' | 'reconciled' | 'stopped';
+
+export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
+  kind: 'subscription.agent_graph_changed';
+  rootSessionId: string;
+  graphId: string;
+  reason: AgentGraphChangedReason;
+}
+
 export interface SubscriptionClosedFrame extends SubscriptionEnvelope {
   kind: 'subscription.closed';
   reason: 'slow_consumer' | 'session_removed';
@@ -163,6 +172,7 @@ export type SubscriptionFrame =
   | SessionProjectionFrame
   | SessionDeltaFrame
   | SessionEventFrame
+  | AgentGraphChangedFrame
   | SubscriptionClosedFrame;
 
 const SUBSCRIPTION_OPEN_ERRORS = [
@@ -247,6 +257,23 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       runId: requireEntityId(record.runId, 'runId'),
       event: decodeSessionToolEvent(record.event),
     };
+  } else if (record.kind === 'subscription.agent_graph_changed') {
+    assertExactKeys(record, 'Agent graph changed frame', [
+      'kind',
+      'hostEpoch',
+      'subscriptionId',
+      'sequence',
+      'rootSessionId',
+      'graphId',
+      'reason',
+    ]);
+    frame = {
+      kind: record.kind,
+      ...envelope,
+      rootSessionId: requireEntityId(record.rootSessionId, 'rootSessionId'),
+      graphId: requireEntityId(record.graphId, 'graphId'),
+      reason: requireAgentGraphChangedReason(record.reason),
+    };
   } else if (record.kind === 'subscription.closed') {
     assertExactKeys(record, 'subscription closed frame', [
       'kind',
@@ -270,6 +297,7 @@ export function isSubscriptionFrameKind(value: unknown): value is SubscriptionFr
     value === 'subscription.session_projection' ||
     value === 'subscription.session_delta' ||
     value === 'subscription.session_event' ||
+    value === 'subscription.agent_graph_changed' ||
     value === 'subscription.closed'
   );
 }
@@ -648,4 +676,16 @@ function requireSessionLifecycleStatus(value: unknown): SessionLifecycleStatus {
   )
     return value;
   throw invalidProtocolFrame('Invalid Session lifecycle status');
+}
+
+function requireAgentGraphChangedReason(value: unknown): AgentGraphChangedReason {
+  if (
+    value === 'observation' ||
+    value === 'runtime_activity' ||
+    value === 'reconciled' ||
+    value === 'stopped'
+  ) {
+    return value;
+  }
+  throw invalidProtocolFrame('Invalid Agent graph changed reason');
 }

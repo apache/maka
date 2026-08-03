@@ -96,7 +96,7 @@ test('isolates a sequence gap and continues requests on the same connection', as
 });
 
 test('rejects epoch and Session correlation changes per subscription', async () => {
-  for (const changed of ['epoch', 'session'] as const) {
+  for (const changed of ['epoch', 'session', 'graph'] as const) {
     await withProtocolPeer(
       async (transport, hostEpoch) => {
         const request = await acceptConnectionAndReadOpen(transport, hostEpoch);
@@ -107,14 +107,26 @@ test('rejects epoch and Session correlation changes per subscription', async () 
           ok: true,
           result: opened,
         });
-        await transport.write({
-          ...deltaFrame(
-            changed === 'epoch' ? 'different-epoch' : hostEpoch,
-            opened.subscriptionId,
-            1,
-          ),
-          ...(changed === 'session' ? { sessionId: 'session-2' } : {}),
-        });
+        await transport.write(
+          changed === 'graph'
+            ? {
+                kind: 'subscription.agent_graph_changed',
+                hostEpoch,
+                subscriptionId: opened.subscriptionId,
+                sequence: 1,
+                rootSessionId: 'session-2',
+                graphId: 'agent_graph_1',
+                reason: 'observation',
+              }
+            : {
+                ...deltaFrame(
+                  changed === 'epoch' ? 'different-epoch' : hostEpoch,
+                  opened.subscriptionId,
+                  1,
+                ),
+                ...(changed === 'session' ? { sessionId: 'session-2' } : {}),
+              },
+        );
         await answerClose(transport, opened.subscriptionId);
         await answerStatus(transport, hostEpoch);
       },

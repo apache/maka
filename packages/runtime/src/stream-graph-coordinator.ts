@@ -151,6 +151,17 @@ export type AgentGraphClientChangedListener = (
   event: AgentGraphClientChangedEvent,
 ) => void | Promise<void>;
 
+export class AgentGraphOperatorNotFoundError extends Error {
+  readonly name = 'AgentGraphOperatorNotFoundError';
+
+  constructor(
+    readonly graphId: string,
+    readonly operatorId: string,
+  ) {
+    super(`Agent graph operator ${operatorId} was not found in ${graphId}`);
+  }
+}
+
 interface AgentGraphClientSubscription {
   rootSessionId?: string;
   listener: AgentGraphClientChangedListener;
@@ -314,7 +325,7 @@ export class AgentGraphCoordinator {
       throw new Error(`Invalid materialized agent graph projection ${graphId}`);
     }
     if (!operator) {
-      throw new Error(`Agent graph operator ${operatorId} was not found`);
+      throw new AgentGraphOperatorNotFoundError(graphId, operatorId);
     }
     const inspection = decodeMaterializedAgentGraphOperatorInspection(operator.payload, {
       rootSessionId,

@@ -43,6 +43,7 @@ import {
 } from './child-agent-composition.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
+import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAutomationCoordinator } from './automation-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
@@ -88,6 +89,7 @@ export async function createExecutionRuntimeHostComposition(
   let automationStore:
     | Awaited<ReturnType<typeof openInteractiveAutomationAuthorityForWrite>>
     | undefined;
+  let graphClient: HostAgentGraphCoordinator | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
@@ -379,6 +381,11 @@ export async function createExecutionRuntimeHostComposition(
         void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result);
       },
     });
+    graphClient = new HostAgentGraphCoordinator({
+      authority: graphCoordinator,
+      sessions: stores.sessionStore,
+      continuity: continuityCoordinator,
+    });
     const observeBackendInvalidation = (completion: Promise<void>) => {
       void completion.catch(() => {
         backendInvalidationPoisoned = true;
@@ -575,6 +582,7 @@ export async function createExecutionRuntimeHostComposition(
       ...requireGoal(goal).handlers,
       ...sessionCatalog.handlers,
       ...executionInspect.handlers,
+      ...graphClient.handlers,
       ...sessionRevisions.handlers,
       ...sessionRetirement.handlers,
       ...messages.handlers,
@@ -651,6 +659,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           await graphSupervisorWake?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          graphClient?.close();
         } catch (error) {
           errors.push(error);
         }
@@ -786,6 +799,11 @@ export async function createExecutionRuntimeHostComposition(
     };
   } catch (error) {
     const errors: unknown[] = [error];
+    try {
+      graphClient?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
     try {
       graphControlStore?.close();
     } catch (closeError) {

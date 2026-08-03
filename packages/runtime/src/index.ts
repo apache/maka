@@ -237,6 +237,7 @@ export type {
 } from './stream-graph-read-model.js';
 export {
   AgentGraphCoordinator,
+  AgentGraphOperatorNotFoundError,
   agentGraphIdForRootSession,
   topologyFromProvisions,
 } from './stream-graph-coordinator.js';
