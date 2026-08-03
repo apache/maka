@@ -243,7 +243,10 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const store = createSessionStore(workspaceRoot);
 const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
-const projectCatalog = createProjectCatalog(workspaceRoot);
+const projectCatalog = createProjectCatalog(workspaceRoot, {
+  onLegacyImportFailure: (error) =>
+    console.error('[projects] projects.json could not be imported:', error),
+});
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
 const planStore = createSqlitePlanStore(workspaceRoot);
 const executionStoreWiring = await openDesktopExecutionStoreWiring(workspaceRoot);

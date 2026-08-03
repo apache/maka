@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createSqliteArtifactStore } from '../artifact-store.js';
+import { createProjectCatalog } from '../project-catalog.js';
 import { createSessionStore } from '../session-store.js';
 import {
   createOperationalStateBackup,
@@ -17,9 +18,21 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
   const stateRoot = join(base, 'state');
   const backupRoot = join(base, 'backup');
   const restoreRoot = join(base, 'restore');
+  const projectPath = join(base, 'project');
+  await mkdir(projectPath);
   const sessions = createSessionStore(stateRoot);
   try {
+    // The project catalog decides how every session is grouped, and its name,
+    // relink aliases and archive state exist nowhere else. Restoring sessions
+    // without it would silently reorganize the user's whole sidebar.
+    const catalog = createProjectCatalog(stateRoot, { now: () => 5 });
+    const project = await catalog.register(projectPath);
+    await catalog.rename(project.id, 'Renamed Project');
+    await catalog.archive(project.id);
+    catalog.close();
+
     const session = await sessions.create({
+      projectId: project.id,
       cwd: '/tmp/cwd',
       backend: 'fake',
       llmConnectionSlug: 'fake',
@@ -54,14 +67,31 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     await restoreOperationalStateBackup({ backupRoot, destinationRoot: restoreRoot });
 
     const restored = createSessionStore(restoreRoot);
+    const restoredCatalog = createProjectCatalog(restoreRoot);
     try {
       assert.equal((await restored.readMessages(session.id))[0]?.id, 'message-1');
       assert.equal(
         await readFile(join(restoreRoot, 'artifacts', artifact.relativePath), 'utf8'),
         'artifact',
       );
+      assert.equal(
+        (await restored.readHeaderSnapshot(session.id)).projectId,
+        project.id,
+        'a restored session still belongs to the project it was grouped under',
+      );
+      assert.deepEqual(await restoredCatalog.list(), [
+        {
+          id: project.id,
+          name: 'Renamed Project',
+          locations: [{ path: await realpath(projectPath), isWorktree: false }],
+          archivedAt: 5,
+          available: true,
+          preferredPath: await realpath(projectPath),
+        },
+      ]);
     } finally {
       await restored.close?.();
+      restoredCatalog.close();
     }
   } finally {
     await rm(base, { recursive: true, force: true });

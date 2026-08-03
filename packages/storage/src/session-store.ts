@@ -9,6 +9,7 @@ import {
   SessionMetadataVersionConflictError,
   type SqliteSessionMetadataStore,
   type StableSessionCreateProbe,
+  type UnresolvedProjectSession,
   type VersionedSessionIdentity,
 } from './sqlite-session-metadata-store.js';
 import { isDiscardableConversationCopy } from './session-conversation-copy.js';
@@ -151,8 +152,8 @@ export interface SessionStore {
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   /** Enumerate durable metadata without reading transcript bodies. */
   listHeaders(): Promise<SessionHeader[]>;
-  /** Sessions whose project membership was never decided, with their working directory. */
-  listSessionsWithUnresolvedProject(): Promise<Array<{ id: string; cwd: string }>>;
+  /** Sessions whose project membership was never decided, newest activity last. */
+  listSessionsWithUnresolvedProject(): Promise<UnresolvedProjectSession[]>;
   listForRecovery(): Promise<SessionHeader[]>;
   /** Read only the durable header without triggering connection-lock self-healing. */
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
@@ -533,7 +534,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       .sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  async listSessionsWithUnresolvedProject(): Promise<Array<{ id: string; cwd: string }>> {
+  async listSessionsWithUnresolvedProject(): Promise<UnresolvedProjectSession[]> {
     await this.ensureReady();
     return this.metadata.listSessionsWithUnresolvedProject();
   }

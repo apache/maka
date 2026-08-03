@@ -162,6 +162,17 @@ export interface VersionedSessionIdentity {
   readonly expectedVersion: number;
 }
 
+/**
+ * A session whose project membership was never decided, carried together with
+ * the moment it was last active so that resolving it later reconstructs the
+ * catalog's real recency order instead of collapsing every project to "now".
+ */
+export interface UnresolvedProjectSession {
+  readonly id: string;
+  readonly cwd: string;
+  readonly usedAt: number;
+}
+
 export type SessionRemovalProbe =
   | { readonly kind: 'present'; readonly record: SessionMetadataRecord }
   | { readonly kind: 'removed' }
@@ -1171,19 +1182,31 @@ export class SqliteSessionMetadataStore {
    * reports SQL NULL. Scoping the query this way keeps startup proportional to
    * the sessions that still need work rather than to the whole catalog.
    */
-  async listSessionsWithUnresolvedProject(): Promise<Array<{ id: string; cwd: string }>> {
+  async listSessionsWithUnresolvedProject(): Promise<UnresolvedProjectSession[]> {
     this.assertOpen();
+    // `json_type` distinguishes an absent `projectId` (never decided) from an
+    // explicit JSON `null` (detached on purpose); only the former is pending.
+    // Subagent sessions are excluded: they inherit their parent's project when
+    // spawned, and their working directory is often a throwaway worktree that
+    // must never become one of the user's project locations.
     const rows = this.db
       .prepare(`
-        SELECT session_id AS id, json_extract(payload_json, '$.cwd') AS cwd
+        SELECT
+          session_id AS id,
+          json_extract(payload_json, '$.cwd') AS cwd,
+          COALESCE(last_message_at, last_used_at) AS used_at
         FROM session_metadata
         WHERE json_type(payload_json, '$.projectId') IS NULL
-        ORDER BY session_id
+          AND subagent_parent_session_id IS NULL
+        ORDER BY used_at, session_id
       `)
-      .all() as Array<{ id?: unknown; cwd?: unknown }>;
+      .all() as Array<{ id?: unknown; cwd?: unknown; used_at?: unknown }>;
     return rows.flatMap((row) =>
-      typeof row.id === 'string' && typeof row.cwd === 'string' && row.cwd.length > 0
-        ? [{ id: row.id, cwd: row.cwd }]
+      typeof row.id === 'string' &&
+      typeof row.cwd === 'string' &&
+      row.cwd.length > 0 &&
+      typeof row.used_at === 'number'
+        ? [{ id: row.id, cwd: row.cwd, usedAt: row.used_at }]
         : [],
     );
   }
@@ -2614,10 +2637,9 @@ export class SqliteSessionMetadataStore {
           backend,
           llm_connection_slug,
           model,
-          project_id,
           metadata_version,
           committed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         header.id,
@@ -2645,7 +2667,6 @@ export class SqliteSessionMetadataStore {
         header.backend,
         header.llmConnectionSlug,
         header.model,
-        header.projectId ?? null,
         metadataVersion,
         committedAt,
       );
@@ -2856,7 +2877,6 @@ export class SqliteSessionMetadataStore {
           backend = ?,
           llm_connection_slug = ?,
           model = ?,
-          project_id = ?,
           metadata_version = ?,
           committed_at = ?
         WHERE session_id = ? AND metadata_version = ?
@@ -2879,7 +2899,6 @@ export class SqliteSessionMetadataStore {
         next.backend,
         next.llmConnectionSlug,
         next.model,
-        next.projectId ?? null,
         metadataVersion,
         committedAt,
         sessionId,

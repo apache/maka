@@ -141,8 +141,6 @@ describe('SQLite agent graph intent claims', () => {
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
-        DROP INDEX session_metadata_by_project;
-        ALTER TABLE session_metadata DROP COLUMN project_id;
         DROP TABLE project_aliases;
         DROP TABLE project_locations;
         DROP TABLE projects;

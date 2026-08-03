@@ -3,7 +3,7 @@ import type { SessionStore } from './session-store.js';
 
 export interface ProjectSessionBackfillResult {
   resolved: number;
-  failed: number;
+  failures: Array<{ cwd: string; reason: string }>;
 }
 
 /**
@@ -13,32 +13,54 @@ export interface ProjectSessionBackfillResult {
  * absent for "never decided" — and only the last state is backfilled here, so
  * a user who deliberately detached a session keeps that choice.
  *
- * Resolution costs one `git` subprocess plus a few `realpath` calls per
- * session, which is why the work is scoped to unresolved sessions by SQL
- * rather than filtered in memory: the cost is paid once per session for the
- * lifetime of the workspace, and later startups find nothing to do.
- *
- * A session whose path can no longer be resolved is left unresolved rather
- * than forced into a project, so a transient failure is retried next start
- * instead of being frozen into a wrong grouping.
+ * Sessions are grouped by working directory before resolution: an upgrade
+ * typically holds many sessions per project, and resolution costs a `git`
+ * subprocess plus a catalog write each time. Each directory carries the latest
+ * activity of the sessions that share it, so the rebuilt catalog keeps its real
+ * recency order rather than collapsing every project to the upgrade's timestamp.
  */
 export async function backfillSessionProjects(input: {
-  sessions: Pick<SessionStore, 'listSessionsWithUnresolvedProject' | 'updateHeader'>;
+  sessions: Pick<
+    SessionStore,
+    'listSessionsWithUnresolvedProject' | 'updateHeader' | 'readHeaderSnapshot'
+  >;
   catalog: Pick<ProjectCatalog, 'resolveHistoricalPath'>;
 }): Promise<ProjectSessionBackfillResult> {
   const pending = await input.sessions.listSessionsWithUnresolvedProject();
-  let resolved = 0;
-  let failed = 0;
-
+  const byDirectory = new Map<string, { usedAt: number; sessionIds: string[] }>();
   for (const session of pending) {
-    try {
-      const project = await input.catalog.resolveHistoricalPath(session.cwd);
-      await input.sessions.updateHeader(session.id, { projectId: project.id });
-      resolved += 1;
-    } catch {
-      failed += 1;
+    const group = byDirectory.get(session.cwd);
+    if (group) {
+      group.usedAt = Math.max(group.usedAt, session.usedAt);
+      group.sessionIds.push(session.id);
+    } else {
+      byDirectory.set(session.cwd, { usedAt: session.usedAt, sessionIds: [session.id] });
     }
   }
 
-  return { resolved, failed };
+  let resolved = 0;
+  const failures: Array<{ cwd: string; reason: string }> = [];
+
+  for (const [cwd, group] of byDirectory) {
+    let projectId: string;
+    try {
+      projectId = (await input.catalog.resolveHistoricalPath(cwd, group.usedAt)).id;
+    } catch (error) {
+      failures.push({ cwd, reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    for (const sessionId of group.sessionIds) {
+      try {
+        // Re-check instead of writing blind: the user can detach a session
+        // while this runs, and that decision must win over a stale plan.
+        if ((await input.sessions.readHeaderSnapshot(sessionId)).projectId !== undefined) continue;
+        await input.sessions.updateHeader(sessionId, { projectId });
+        resolved += 1;
+      } catch (error) {
+        failures.push({ cwd, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+
+  return { resolved, failures };
 }

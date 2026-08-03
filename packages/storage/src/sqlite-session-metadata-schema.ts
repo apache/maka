@@ -826,23 +826,6 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     CREATE INDEX project_aliases_by_project
       ON project_aliases(project_id, alias);
-
-    CREATE INDEX projects_by_recency
-      ON projects(archived_at, last_used_at DESC, project_id);
-
-    -- Project membership was already carried inside the header payload; lifting
-    -- it into its own column is what makes "group by project" a SQL query
-    -- instead of a full-table scan decoded in JS. NULL covers both "explicitly
-    -- no project" and "never resolved" — the two are distinguished by
-    -- json_type(payload_json, '$.projectId'), which is only needed by the
-    -- backfill path, so the column stays free of that redundancy.
-    ALTER TABLE session_metadata ADD COLUMN project_id TEXT;
-
-    UPDATE session_metadata
-      SET project_id = json_extract(payload_json, '$.projectId');
-
-    CREATE INDEX session_metadata_by_project
-      ON session_metadata(project_id, last_message_at DESC, session_id);
   `,
   ],
 ]);

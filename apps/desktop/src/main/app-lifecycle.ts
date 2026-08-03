@@ -190,8 +190,8 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
         sessions: sessionStore,
         catalog: projectCatalog,
       });
-      if (result.failed > 0) {
-        console.error(`[projects] could not resolve ${result.failed} session project(s)`);
+      for (const failure of result.failures) {
+        console.error(`[projects] could not resolve ${failure.cwd}: ${failure.reason}`);
       }
       if (result.resolved > 0) emitSessionsChanged('migrated');
     } catch (error) {
@@ -319,8 +319,10 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       await step('keep-awake', () => keepSystemAwake.apply(resolved.system.keepSystemAwake));
     }
     await step('usage readiness', () => ensureUsageReady());
-    await step('project resolution', () => resolveSessionProjectsOnStartup());
     await step('session recovery', () => recoverInterruptedSessionsOnStartup());
+    // After recovery: an interrupted session must come back before the sidebar
+    // learns how to group it, and resolution costs a git probe per directory.
+    await step('project resolution', () => resolveSessionProjectsOnStartup());
     let botRegistryReady = false;
     if (settings) {
       const resolved = settings;
