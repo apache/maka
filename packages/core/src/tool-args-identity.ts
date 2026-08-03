@@ -153,14 +153,22 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
  * the entry would shift everything after it.
  *
  * What it does not do: it never rebuilds a value that needed no change, so
- * symbol keys, getters and object identity survive untouched on that path; a
- * value it does rebuild is a plain-object spread, which keeps symbol keys and
- * loses nothing JSON could have seen. It descends into exactly the two shapes
- * the encoder accepts — a plain object and a null-prototype one, the shape
- * prototype-safe JSON parsing produces — and a null prototype is put back on
- * the rebuilt value, because that prototype is what keeps a `__proto__`
- * property as data. Anything with any other prototype is returned as-is
- * rather than flattened.
+ * symbol keys and object identity survive untouched on that path; a value it
+ * does rebuild is a plain-object spread, which keeps symbol keys and loses
+ * nothing JSON could have seen. An accessor survives that path too, and that
+ * is not a benefit to lean on: `canonicalizeStrictJson` throws on any getter it
+ * reaches, so at the call site a surviving getter kills the same write a
+ * surviving `undefined` would have. Nothing produces one today — provider
+ * metadata arrives as parsed plain objects — and widening this function to
+ * rebuild accessors would change what it means for callers that hand it
+ * anything else. Read this line as "getters are out of scope, and out of
+ * scope is fatal downstream", not as a shape this makes safe to pass.
+ *
+ * It descends into exactly the two shapes the encoder accepts — a plain object
+ * and a null-prototype one, the shape prototype-safe JSON parsing produces —
+ * and a null prototype is put back on the rebuilt value, because that prototype
+ * is what keeps a `__proto__` property as data. Anything with any other
+ * prototype is returned as-is rather than flattened.
  */
 export function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -205,8 +213,9 @@ export function stripUndefinedDeep<T>(value: T): T {
       changed = true;
     }
   }
-  // Unchanged values are returned as they came. Rebuilding one that needed
-  // nothing would drop symbol keys and re-run getters for no gain, and the
-  // common case by far is that nothing needs removing.
+  // Unchanged values are returned as they came, so the common case — nothing
+  // needed removing — keeps object identity. The spread above has already read
+  // any accessor once; returning the original leaves the accessor itself live,
+  // which the encoder refuses exactly as it refuses a surviving `undefined`.
   return (changed ? out : value) as unknown as T;
 }
