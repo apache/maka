@@ -20,13 +20,20 @@ bootstrap that reads a PID-validated, per-worktree session file, restoring the
 Vite URL and a curated environment-variable allowlist before importing the main
 process. macOS's Screen Recording “Quit & Reopen” action can therefore reconnect
 to the same HMR session without relying on command-line arguments that the
-system restart discards. Session files are written atomically with mode `0600`.
-It uses `~/Library/Application Support/Maka Dev` for development state, keeping
-development restarts isolated from the packaged Maka profile.
+system restart discards. Session files live in the ignored
+`apps/desktop/.maka-dev-session/` directory, outside the rebuildable app bundle,
+and are written atomically with mode `0600`. Startup is acknowledged only after
+the single-instance lock and main-process boot succeed; failures and timeouts are
+reported in the terminal instead of leaving a windowless supervisor running.
+
+The default profile is `~/Library/Application Support/Maka Dev-<worktree-id>`.
+This keeps development isolated from the packaged Maka profile and lets separate
+worktrees run concurrently. An explicit `--user-data-dir` still takes precedence.
 
 Only one supervised Maka Dev session can use a worktree at a time. Runtime
 preparation is protected by a PID lock, and shutdown targets the app PID recorded
 by that supervisor rather than every process sharing the development bundle ID.
+Runtime rebuilds refuse to proceed while that worktree has a live supervisor.
 
 Grant permissions to **Maka Dev**, not a generic Electron entry. Screen Recording
 changes require restarting the development app. Recreating the app or changing

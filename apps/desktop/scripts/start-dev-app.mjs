@@ -6,7 +6,9 @@ import {
   clearDevelopmentSession,
   createDevelopmentSession,
   quitMacosDevelopmentApp,
+  recoverStaleDevelopmentSession,
   resolveMacosDevelopmentLaunch,
+  waitForMacosDevelopmentApp,
   writeDevelopmentSession,
 } from './dev-app-runtime.mjs';
 
@@ -16,11 +18,13 @@ const cliArgs = process.argv.slice(2);
 const forwardedArgs = [desktopDir, ...cliArgs];
 const macosLaunch = await resolveMacosDevelopmentLaunch();
 if (macosLaunch) {
+  await recoverStaleDevelopmentSession();
   const userDataArg = cliArgs.find((arg) => arg.startsWith('--user-data-dir='));
   writeDevelopmentSession(createDevelopmentSession({
     supervisorPid: process.pid,
     env: process.env,
     userDataDir: userDataArg?.slice('--user-data-dir='.length),
+    electronArgs: cliArgs.filter((arg) => !arg.startsWith('--user-data-dir=')),
   }));
 }
 const electronBin =
@@ -64,5 +68,16 @@ child.on('exit', (code, signal) => {
 });
 process.on('SIGINT', () => void stop());
 process.on('SIGTERM', () => void stop());
+if (macosLaunch) {
+  void waitForMacosDevelopmentApp().then(
+    () => console.log('[dev-app] Maka Dev startup handshake complete'),
+    (error) => {
+      console.error(`[dev-app] ${error.message}`);
+      void stop().then(() => {
+        process.exitCode = 1;
+      });
+    },
+  );
+}
 // `open` exits immediately after handing the launch to LaunchServices. The
 // timer above keeps the supervisor alive so app restarts can recover its session.

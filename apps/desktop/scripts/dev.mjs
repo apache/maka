@@ -28,7 +28,9 @@ import {
   clearDevelopmentSession,
   createDevelopmentSession,
   quitMacosDevelopmentApp,
+  recoverStaleDevelopmentSession,
   resolveMacosDevelopmentLaunch,
+  waitForMacosDevelopmentApp,
   writeDevelopmentSession,
 } from './dev-app-runtime.mjs';
 
@@ -152,12 +154,14 @@ log('electron', `launching against ${devUrl} (renderer HMR live)`);
 const appArgs = [DESKTOP_DIR, ...process.argv.slice(2)];
 const macosLaunch = await resolveMacosDevelopmentLaunch();
 if (macosLaunch) {
+  await recoverStaleDevelopmentSession();
   const userDataArg = process.argv.slice(2).find((arg) => arg.startsWith('--user-data-dir='));
   writeDevelopmentSession(createDevelopmentSession({
     supervisorPid: process.pid,
     viteUrl: devUrl,
     env: process.env,
     userDataDir: userDataArg?.slice('--user-data-dir='.length),
+    electronArgs: process.argv.slice(2).filter((arg) => !arg.startsWith('--user-data-dir=')),
   }));
 }
 const electron = spawn(macosLaunch?.command ?? resolveElectronBin(), macosLaunch?.args ?? appArgs, {
@@ -207,5 +211,14 @@ electron.on('error', (err) => {
   console.error(`[dev] failed to start Electron: ${err.message}`);
   shutdown(1);
 });
+if (macosLaunch) {
+  void waitForMacosDevelopmentApp().then(
+    () => log('electron', 'Maka Dev startup handshake complete'),
+    (error) => {
+      console.error(`[dev] ${error.message}`);
+      shutdown(1);
+    },
+  );
+}
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
