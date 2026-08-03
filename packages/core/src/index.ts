@@ -930,6 +930,22 @@ export {
   validateWorkspacePrivacyContext,
 } from './incognito.js';
 
+// cron-expression.ts — shared five-field cron grammar and occurrence authority.
+export type {
+  CompiledCronExpression,
+  CompileCronExpressionResult,
+  CronCompatibilityProfile,
+  CronCompileError,
+  CronCompileErrorCode,
+  CronFieldName,
+  CronSearchBounds,
+} from './cron-expression.js';
+export {
+  CRON_COMPATIBILITY_PROFILES,
+  compileCronExpression,
+  matchesCronField,
+} from './cron-expression.js';
+
 // plan-reminders.ts (PR-PLAN-REMINDER-MVP-0)
 export type {
   CreatePlanReminderInput,

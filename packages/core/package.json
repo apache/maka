@@ -55,6 +55,7 @@
     "./search": "./dist/search.js",
     "./bot-events": "./dist/bot-events.js",
     "./bot-platform-hints": "./dist/bot-platform-hints.js",
+    "./cron-expression": "./dist/cron-expression.js",
     "./plan-reminders": "./dist/plan-reminders.js",
     "./agent-graph-control": "./dist/agent-graph-control.js",
     "./agent-graph-schedule": "./dist/agent-graph-schedule.js",
