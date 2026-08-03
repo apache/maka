@@ -2,3 +2,8 @@
 test-results/
 resources/workers/
 .maka-dev/
+# Siblings of .maka-dev/ not covered by the directory rule above:
+# RUNTIME_LOCK (`${DEV_RUNTIME_DIR}.lock`) and DEV_STATE_DIR
+# (`${DEV_RUNTIME_DIR}-state`, session/pid state that survives rebuilds).
+.maka-dev.lock
+.maka-dev-state/

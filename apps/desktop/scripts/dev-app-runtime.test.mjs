@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   createMacosDevelopmentLaunch,
   createDevelopmentSession,
   createRelaunchBootstrapSource,
+  developmentUserDataDir,
+  waitForDevelopmentAppLaunch,
   isDevelopmentRuntimeCurrent,
   rebuildDevelopmentRuntime,
   selectDevelopmentEnvironment,
@@ -49,6 +52,41 @@ test('boots the repository app and recovers a live supervisor session on reopen'
   assert.match(source, /candidate\.supervisorPid/);
   assert.match(source, /Object\.assign\(process\.env, session\.env\)/);
   assert.match(source, /appPidFile/);
+  // The single-instance lock must be acquired before app.pid is written, so a
+  // losing second instance never clobbers the winner's pid record.
+  assert.match(source, /app\.requestSingleInstanceLock\(\)/);
+  assert.ok(
+    source.indexOf('requestSingleInstanceLock') < source.indexOf('writeFileSync(appPidFile'),
+    'lock acquisition must precede the app.pid write',
+  );
+});
+
+test('forwards GitHub and Rive development credentials through the curated environment', () => {
+  const env = selectDevelopmentEnvironment({
+    GH_TOKEN: 'gh-token',
+    GITHUB_TOKEN: 'github-token',
+    RIVE_BIN: '/opt/rive/bin/rive',
+    UNRELATED_SECRET: 'do-not-forward',
+  });
+  assert.equal(env.GH_TOKEN, 'gh-token');
+  assert.equal(env.GITHUB_TOKEN, 'github-token');
+  assert.equal(env.RIVE_BIN, '/opt/rive/bin/rive');
+  assert.equal('UNRELATED_SECRET' in env, false);
+});
+
+test('isolates userData per linked worktree while keeping the primary profile stable', () => {
+  const support = join('/Users', 'dev', 'Library', 'Application Support');
+  // Primary checkout: `.git` is a directory -> historical profile, unchanged.
+  assert.equal(
+    developmentUserDataDir('/repo/main', support, () => false),
+    join(support, 'Maka Dev'),
+  );
+  // Linked worktree: `.git` is a file -> stable, checkout-specific profile.
+  const worktreeProfile = developmentUserDataDir('/repo/wt-a', support, () => true);
+  assert.match(worktreeProfile, /Maka Dev \([0-9a-f]{8}\)$/);
+  // Different worktrees get different profiles; same worktree is deterministic.
+  assert.notEqual(worktreeProfile, developmentUserDataDir('/repo/wt-b', support, () => true));
+  assert.equal(worktreeProfile, developmentUserDataDir('/repo/wt-a', support, () => true));
 });
 
 test('honors an explicit development user-data directory in the session', () => {
@@ -62,13 +100,24 @@ test('honors an explicit development user-data directory in the session', () => 
 
 test('reuses only an exact, valid development runtime cache', () => {
   const current = {
-    marker: { schemaVersion: 3, electronVersion: '43.1.1', bundleId: 'com.maka.dev' },
+    marker: {
+      schemaVersion: 3,
+      electronVersion: '43.1.1',
+      bundleId: 'com.maka.dev',
+      desktopDir: '/repo/apps/desktop',
+    },
     schemaVersion: 3,
     electronVersion: '43.1.1',
     bundleId: 'com.maka.dev',
+    desktopDir: '/repo/apps/desktop',
     signatureValid: true,
   };
   assert.equal(isDevelopmentRuntimeCurrent(current), true, 'exact cache hit');
+  assert.equal(
+    isDevelopmentRuntimeCurrent({ ...current, desktopDir: '/moved/apps/desktop' }),
+    false,
+    'repo moved: bootstrap path in the marker is stale',
+  );
   assert.equal(
     isDevelopmentRuntimeCurrent({ ...current, electronVersion: '44.0.0' }),
     false,
@@ -98,6 +147,63 @@ test('reuses only an exact, valid development runtime cache', () => {
     isDevelopmentRuntimeCurrent({ ...current, marker: 'corrupt' }),
     false,
     'corrupt marker shape',
+  );
+});
+
+test('resolves once the bootstrap records a live app owned by this supervisor', async () => {
+  let clock = 0;
+  let polls = 0;
+  const pid = await waitForDevelopmentAppLaunch({
+    supervisorPid: 100,
+    timeoutMs: 5000,
+    intervalMs: 250,
+    now: () => clock,
+    sleep: async () => {
+      clock += 250;
+    },
+    // App.pid only appears (owned by this supervisor) after two polls.
+    readRecord: () => (polls++ < 2 ? null : { pid: 4242, supervisorPid: 100 }),
+    isAlive: () => true,
+  });
+  assert.equal(pid, 4242);
+});
+
+test('rejects when no live app.pid appears before the launch deadline', async () => {
+  let clock = 0;
+  await assert.rejects(
+    () =>
+      waitForDevelopmentAppLaunch({
+        supervisorPid: 100,
+        timeoutMs: 1000,
+        intervalMs: 250,
+        now: () => clock,
+        sleep: async () => {
+          clock += 250;
+        },
+        readRecord: () => null, // bootstrap crashed: pid never written
+        isAlive: () => true,
+      }),
+    /did not start within 1000ms/,
+  );
+});
+
+test('ignores an app.pid owned by a different supervisor', async () => {
+  let clock = 0;
+  await assert.rejects(
+    () =>
+      waitForDevelopmentAppLaunch({
+        supervisorPid: 100,
+        timeoutMs: 1000,
+        intervalMs: 250,
+        now: () => clock,
+        sleep: async () => {
+          clock += 250;
+        },
+        // A stale record from another supervisor must not count as our launch.
+        readRecord: () => ({ pid: 4242, supervisorPid: 999 }),
+        isAlive: () => true,
+      }),
+    /did not start within/,
   );
 });
 

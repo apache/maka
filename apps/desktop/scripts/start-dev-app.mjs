@@ -7,6 +7,7 @@ import {
   createDevelopmentSession,
   quitMacosDevelopmentApp,
   resolveMacosDevelopmentLaunch,
+  waitForDevelopmentAppLaunch,
   writeDevelopmentSession,
 } from './dev-app-runtime.mjs';
 
@@ -66,3 +67,14 @@ process.on('SIGINT', () => void stop());
 process.on('SIGTERM', () => void stop());
 // `open` exits immediately after handing the launch to LaunchServices. The
 // timer above keeps the supervisor alive so app restarts can recover its session.
+// Probe for a live app instead of trusting `open`'s exit code: a crashed
+// bootstrap would otherwise leave this supervisor hanging on the keep-alive
+// timer with no window and no error.
+if (macosLaunch) {
+  waitForDevelopmentAppLaunch({ supervisorPid: process.pid }).catch((error) => {
+    console.error(`[dev-app] ${error.message}`);
+    void stop().then(() => {
+      process.exitCode = 1;
+    });
+  });
+}

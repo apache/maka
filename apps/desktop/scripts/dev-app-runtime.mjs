@@ -7,9 +7,11 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -18,18 +20,29 @@ import { createPackage } from '@electron/asar';
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT = resolve(DESKTOP_DIR, '..', '..');
 const DEV_RUNTIME_DIR = join(DESKTOP_DIR, '.maka-dev');
+// Session/pid state must survive a runtime rebuild (Electron upgrade,
+// prepare:dev-app), which `rmSync`s DEV_RUNTIME_DIR wholesale. Keeping them in a
+// sibling directory prevents an active app from becoming an unkillable orphan.
+const DEV_STATE_DIR = `${DEV_RUNTIME_DIR}-state`;
 const DEV_APP = join(DEV_RUNTIME_DIR, 'Maka Dev.app');
 const DEV_EXECUTABLE = join(DEV_APP, 'Contents', 'MacOS', 'Electron');
-const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
+// Per-worktree userData. A shared profile makes Chromium's single-instance lock
+// treat a second worktree's app as a duplicate -- it exits 0 while the
+// supervisor keeps serving Vite, yielding "looks launched, no window". Keying on
+// the checkout keeps the bundle id (com.maka.dev) stable for TCC while giving
+// each worktree an independent lock + profile.
+const DEV_USER_DATA_DIR = developmentUserDataDir(REPO_ROOT);
 const MARKER = join(DEV_RUNTIME_DIR, 'runtime.json');
-const SESSION_FILE = join(DEV_RUNTIME_DIR, 'session.json');
-const APP_PID_FILE = join(DEV_RUNTIME_DIR, 'app.pid');
+const SESSION_FILE = join(DEV_STATE_DIR, 'session.json');
+const APP_PID_FILE = join(DEV_STATE_DIR, 'app.pid');
 const RUNTIME_LOCK = `${DEV_RUNTIME_DIR}.lock`;
 const ELECTRON_PACKAGE = join(REPO_ROOT, 'node_modules', 'electron', 'package.json');
 const SOURCE_APP = join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'Electron.app');
 
 const DEV_BUNDLE_ID = 'com.maka.dev';
-const RUNTIME_SCHEMA_VERSION = 4;
+// Bumped to 5: marker now pins desktopDir (baked into the relaunch bootstrap),
+// so a moved repo invalidates the cache instead of loading a stale path.
+const RUNTIME_SCHEMA_VERSION = 5;
 const SESSION_SCHEMA_VERSION = 1;
 
 export async function resolveMacosDevelopmentLaunch() {
@@ -40,6 +53,28 @@ export async function resolveMacosDevelopmentLaunch() {
 
 export function shouldUseMacosDevelopmentApp(platform) {
   return platform === 'darwin';
+}
+
+// The primary checkout keeps the historical "Maka Dev" profile; linked git
+// worktrees (`.git` is a file, not a directory) get a stable per-checkout
+// profile so their apps do not collide on Chromium's single-instance lock.
+export function developmentUserDataDir(
+  repoRoot,
+  supportDir = join(homedir(), 'Library', 'Application Support'),
+  isLinkedWorktree = defaultIsLinkedWorktree,
+) {
+  const base = join(supportDir, 'Maka Dev');
+  if (!isLinkedWorktree(repoRoot)) return base;
+  const suffix = createHash('sha256').update(repoRoot).digest('hex').slice(0, 8);
+  return `${base} (${suffix})`;
+}
+
+function defaultIsLinkedWorktree(repoRoot) {
+  try {
+    return statSync(join(repoRoot, '.git')).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function createMacosDevelopmentLaunch(appPath) {
@@ -71,7 +106,10 @@ export async function quitMacosDevelopmentApp() {
   } catch {
     return false;
   }
-  await new Promise((resolve_) => setTimeout(resolve_, 500));
+  // SIGTERM triggers Electron's `before-quit` cleanup (window teardown, session
+  // flush). Give that a few seconds to finish before escalating; 500ms was too
+  // tight and killed apps mid-cleanup.
+  await new Promise((resolve_) => setTimeout(resolve_, 3000));
   if (isProcessAlive(pid)) {
     try {
       process.kill(pid, 'SIGKILL');
@@ -97,6 +135,16 @@ export async function prepareDevelopmentApp() {
   try {
     // Another process may have completed preparation before this lock landed.
     if (isCurrentRuntime(electronVersion)) return DEV_APP;
+    // A rebuild replaces the bundle and re-signs it. A live app from a previous
+    // supervisor holds the single-instance lock and cannot be quit by this
+    // process (supervisorPid mismatch), so rebuilding under it would brick the
+    // dev loop. Fail early and legibly instead.
+    const live = readLiveAppPid();
+    if (live !== null) {
+      throw new Error(
+        `Maka Dev is still running (PID ${live}). Quit it before rebuilding the dev runtime.`,
+      );
+    }
     await rebuildDevelopmentRuntime({
       reset: () => {
         rmSync(DEV_RUNTIME_DIR, { recursive: true, force: true });
@@ -127,7 +175,7 @@ export async function prepareDevelopmentApp() {
       writeMarker: () => {
         writeFileSync(
           MARKER,
-          `${JSON.stringify({ schemaVersion: RUNTIME_SCHEMA_VERSION, electronVersion, bundleId: DEV_BUNDLE_ID }, null, 2)}\n`,
+          `${JSON.stringify({ schemaVersion: RUNTIME_SCHEMA_VERSION, electronVersion, bundleId: DEV_BUNDLE_ID, desktopDir: DESKTOP_DIR }, null, 2)}\n`,
         );
       },
     });
@@ -184,12 +232,23 @@ export function createRelaunchBootstrapSource(
     "const userDataDir = session?.userDataDir || defaultUserDataDir;",
     'app.setAppPath(desktopDir);',
     "app.setPath('userData', userDataDir);",
-    "require('node:fs').writeFileSync(appPidFile, `${JSON.stringify({ pid: process.pid, supervisorPid: session?.supervisorPid })}\n`, { mode: 0o600 });",
-    'process.chdir(desktopDir);',
-    "import(pathToFileURL(join(desktopDir, 'dist/main/main.js')).href).catch((error) => {",
-    "  console.error('[maka-dev] relaunch bootstrap failed', error);",
-    '  app.exit(1);',
-    '});',
+    // Acquire the single-instance lock BEFORE recording app.pid. A losing
+    // second instance (another worktree/supervisor already owns userData) must
+    // exit without clobbering the winner's pid record -- otherwise the
+    // supervisor loses the handle it needs to quit the live app. main.ts calls
+    // requestSingleInstanceLock again; a same-process re-acquire returns true,
+    // so the surviving instance boots normally.
+    'if (!app.requestSingleInstanceLock()) {',
+    '  app.exit(0);',
+    '} else {',
+    "  require('node:fs').mkdirSync(require('node:path').dirname(appPidFile), { recursive: true });",
+    "  require('node:fs').writeFileSync(appPidFile, `${JSON.stringify({ pid: process.pid, supervisorPid: session?.supervisorPid })}\n`, { mode: 0o600 });",
+    '  process.chdir(desktopDir);',
+    "  import(pathToFileURL(join(desktopDir, 'dist/main/main.js')).href).catch((error) => {",
+    "    console.error('[maka-dev] relaunch bootstrap failed', error);",
+    '    app.exit(1);',
+    '  });',
+    '}',
     '',
   ].join('\n');
 }
@@ -214,7 +273,7 @@ export function selectDevelopmentEnvironment(env, viteUrl) {
 }
 
 export function writeDevelopmentSession(session) {
-  mkdirSync(DEV_RUNTIME_DIR, { recursive: true });
+  mkdirSync(DEV_STATE_DIR, { recursive: true });
   if (existsSync(SESSION_FILE)) {
     try {
       const current = JSON.parse(readFileSync(SESSION_FILE, 'utf8'));
@@ -248,6 +307,9 @@ function isAllowedDevelopmentEnvironmentKey(key) {
       'DEEPSEEK_API_KEY',
       'TAVILY_API_KEY',
       'COPILOT_GITHUB_TOKEN',
+      'GH_TOKEN',
+      'GITHUB_TOKEN',
+      'RIVE_BIN',
       'HTTP_PROXY',
       'HTTPS_PROXY',
       'ALL_PROXY',
@@ -272,6 +334,7 @@ function isCurrentRuntime(electronVersion) {
       schemaVersion: RUNTIME_SCHEMA_VERSION,
       electronVersion,
       bundleId: DEV_BUNDLE_ID,
+      desktopDir: DESKTOP_DIR,
       signatureValid:
         spawnSync('codesign', ['--verify', '--deep', '--strict', DEV_APP]).status === 0,
     });
@@ -288,6 +351,7 @@ export function isDevelopmentRuntimeCurrent(input) {
     marker.schemaVersion === input.schemaVersion &&
     marker.electronVersion === input.electronVersion &&
     marker.bundleId === input.bundleId &&
+    marker.desktopDir === input.desktopDir &&
     input.signatureValid
   );
 }
@@ -326,6 +390,59 @@ function isProcessAlive(pid) {
     return true;
   } catch {
     return false;
+  }
+}
+
+// Returns the pid of a currently-running dev app if app.pid records one that is
+// still alive, else null. Used to refuse a rebuild that would orphan it.
+function readLiveAppPid() {
+  if (!existsSync(APP_PID_FILE)) return null;
+  try {
+    const record = JSON.parse(readFileSync(APP_PID_FILE, 'utf8'));
+    const pid = record.pid;
+    if (Number.isSafeInteger(pid) && pid > 0 && isProcessAlive(pid)) return pid;
+  } catch {}
+  return null;
+}
+
+// `open -n -a` returns 0 the moment LaunchServices accepts the request, long
+// before (or even if never) the app boots. The bootstrap only writes app.pid
+// AFTER it wins the single-instance lock, so a live pid owned by this supervisor
+// is the launch's liveness signal. Without this probe a crashed bootstrap leaves
+// `npm start` hanging on the keep-alive timer with no window and no error.
+export async function waitForDevelopmentAppLaunch(options = {}) {
+  const {
+    supervisorPid = process.pid,
+    timeoutMs = 15000,
+    intervalMs = 250,
+    // Injectable for tests; default to wall clock + real state.
+    now = () => Date.now(),
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    readRecord = defaultReadAppPidRecord,
+    isAlive = isProcessAlive,
+  } = options;
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    const record = readRecord();
+    if (record && record.supervisorPid === supervisorPid) {
+      const pid = record.pid;
+      if (Number.isSafeInteger(pid) && pid > 0 && isAlive(pid)) return pid;
+    }
+    if (now() >= deadline) {
+      throw new Error(
+        `Maka Dev did not start within ${timeoutMs}ms (no live app.pid). ` +
+          'The bootstrap likely crashed; check the system log (Console.app) for "maka-dev".',
+      );
+    }
+    await sleep(intervalMs);
+  }
+}
+
+function defaultReadAppPidRecord() {
+  try {
+    return JSON.parse(readFileSync(APP_PID_FILE, 'utf8'));
+  } catch {
+    return null;
   }
 }
 
