@@ -21,7 +21,7 @@
     "apps/desktop"
   ],
   "scripts": {
-    "postinstall": "patch-package --error-on-fail && install-electron",
+    "postinstall": "node scripts/apply-dependency-patches.mjs && install-electron",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
