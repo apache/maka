@@ -90,6 +90,32 @@ export class CuaFrameState {
     return { ok: true, epoch: this.invalidate() };
   }
 
+  /**
+   * Record that an action was tried and leave the frame alive.
+   *
+   * For a refusal the executor never dispatched. `confirmAction` invalidates,
+   * because an action that ran may have changed the window the frame describes
+   * — but one that was refused before any dispatch changed nothing, and
+   * invalidating on its behalf costs the model an `observe` to get back a frame
+   * that was never stale. Measured on a real save-as-PDF run: three rounds of
+   * `click_element` → refused → `click_element` → `reobserve_required` →
+   * `observe`, 9 of 23 calls, before it found the route.
+   *
+   * The action is still retired rather than released, so sending the same one
+   * again is `duplicate_action` — which is the truth, and is a better answer
+   * than letting it be refused identically forever.
+   */
+  retireAction(action: CuaBoundAction): CuaActionConfirmationResult {
+    const rejection = this.validateAction(action);
+    if (rejection) return { ok: false, reason: rejection };
+    if (!this.claimedActions.has(action.fingerprint)) {
+      return { ok: false, reason: 'action_not_claimed' };
+    }
+    this.claimedActions.delete(action.fingerprint);
+    this.consumedActions.add(action.fingerprint);
+    return { ok: true, epoch: this.epoch };
+  }
+
   isConsumed(frame: CuaFrameIdentity, actionFingerprint: string): boolean {
     return this.consumedActions.has(
       bindCuaAction(frame, actionFingerprint, this.requireTarget(frame)).fingerprint,

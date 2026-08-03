@@ -23,6 +23,7 @@ import type {
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { createDurableTurnHarness } from './durable-turn-harness.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
+import { latestObservationIn } from './observation-text-reader.js';
 
 const servers: Array<{ close(): Promise<void> }> = [];
 
@@ -213,15 +214,9 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         containsToolResult(requestBodies[3]?.messages, 'toolu-3'),
         'final semantic tool result must be reinjected into the closing provider request',
       );
-      const finalObservations = collectJsonObjects(requestBodies[3]?.messages);
+      const finalObservation = latestObservationIn(requestBodies[3]?.messages);
       assert.ok(
-        finalObservations.some(
-          (entry) =>
-            Array.isArray(entry.elements) &&
-            entry.elements.some(
-              (element) => (element as Record<string, unknown>).value === 'provider-loop',
-            ),
-        ),
+        finalObservation?.elements.some((element) => element.value === 'provider-loop'),
         'final provider request must contain the post-action observation',
       );
     });
@@ -799,14 +794,9 @@ function failingSemanticBackend(value: { current: string }): CuDispatchBackend {
 }
 
 function semanticInputFromMessages(messages: unknown) {
-  const values = collectJsonObjects(messages);
-  const observation = values.find(
-    (value) => typeof value.observation_id === 'string' && Array.isArray(value.elements),
-  );
+  const observation = latestObservationIn(messages);
   assert.ok(observation, 'provider request must include the observation tool result');
-  const field = (observation.elements as Array<Record<string, unknown>>).find(
-    (element) => element.label === 'CUA Lab Set Value Field',
-  );
+  const field = observation.elements.find((element) => element.label === 'CUA Lab Set Value Field');
   assert.ok(field);
   return {
     action: 'set_value',
@@ -814,31 +804,6 @@ function semanticInputFromMessages(messages: unknown) {
     element_id: field.element_id,
     value: 'provider-loop',
   };
-}
-
-function collectJsonObjects(value: unknown): Array<Record<string, unknown>> {
-  if (typeof value === 'string') {
-    const candidates = [value];
-    const marker = value.lastIndexOf('Fresh observation:\n');
-    if (marker >= 0) candidates.push(value.slice(marker + 'Fresh observation:\n'.length));
-    return candidates.flatMap((candidate) => {
-      try {
-        const parsed = JSON.parse(candidate);
-        if (Array.isArray(parsed)) return parsed.flatMap(collectJsonObjects);
-        return parsed && typeof parsed === 'object'
-          ? [
-              parsed as Record<string, unknown>,
-              ...Object.values(parsed as Record<string, unknown>).flatMap(collectJsonObjects),
-            ]
-          : [];
-      } catch {
-        return [];
-      }
-    });
-  }
-  if (Array.isArray(value)) return value.flatMap(collectJsonObjects);
-  if (!value || typeof value !== 'object') return [];
-  return Object.values(value).flatMap(collectJsonObjects);
 }
 
 function containsToolResult(value: unknown, toolUseId: string): boolean {

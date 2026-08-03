@@ -46,6 +46,7 @@ import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
+import { describeComputerUseArgsViolation } from './computer-use-codec.js';
 import { createToolOutputDeltaEmitter } from './tool-output-delta.js';
 import { truncateToolOutput } from './tool-output.js';
 import { stableHash } from './request-shape.js';
@@ -811,6 +812,15 @@ export class ToolRuntime {
       tool.categoryHint === 'computer_use'
         ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
         : permissionArgs;
+    // What the model will read back as its own call. The approval summary is
+    // the host's projection for deciding a permission, and using it here taught
+    // the model to call the tool with `approvalClass`, `rememberForTurnAllowed`
+    // and `windowId` — two fields it does not take and one key in a dialect it
+    // rejects. Same privacy boundary, names the tool accepts.
+    const modelFacingArgs =
+      tool.categoryHint === 'computer_use'
+        ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
+        : persistedArgs;
     const now = this.input.now();
     const toolIntent = describeToolIntent(tool, persistedArgs);
     const trace = this.input.getRunTrace?.() ?? null;
@@ -891,10 +901,29 @@ export class ToolRuntime {
         ? computerUseSemanticSignature(permissionArgs)
         : undefined;
     if (permissionArgsError !== undefined) {
+      // Computer Use keeps its own formatter: the generic one relays whatever
+      // the error carries, and these arguments can hold typed text. The
+      // replacement names the offending fields and nothing else, so a model
+      // that got the shape wrong can fix it instead of re-sending it.
+      const violation =
+        tool.categoryHint === 'computer_use'
+          ? describeComputerUseArgsViolation(permissionArgsError, executionArgs)
+          : undefined;
       const msg =
         tool.categoryHint === 'computer_use'
-          ? 'Computer Use arguments failed validation'
-          : formatSyntheticToolErrorText(permissionArgsError);
+          ? violation
+            ? `Computer Use arguments failed validation: ${violation}`
+            : 'Computer Use arguments failed validation'
+          : // Same correction Computer Use gets, from the same place: the
+            // tool's own schema. Relaying only the error taught nothing about
+            // the shape the tool does accept, so a model that got the keys
+            // wrong could only re-send them.
+            formatToolArgsViolationText({
+              toolName: tool.name,
+              parameters: tool.parameters,
+              args: executionArgs,
+              error: permissionArgsError,
+            });
       await this.writeSyntheticToolResult(toolUseId, turnId, msg, queue);
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -908,7 +937,18 @@ export class ToolRuntime {
         errorClass: 'InvalidArguments',
         argsSummary:
           tool.categoryHint === 'computer_use'
-            ? summarizePersistedArgs(persistedArgs)
+            ? // The key names the model actually sent, which nothing else keeps.
+              // Persisted arguments are the host's approval projection and the
+              // model-facing record is the corrected one, so a call refused for
+              // its shape left no trace of the shape it had — and diagnosing a
+              // run where twenty of twenty-seven calls were refused had to
+              // infer it from the wording of the refusal. Names only: a value
+              // here can be typed text.
+              `${summarizePersistedArgs(persistedArgs)} sent=${Object.keys(
+                (executionArgs as Record<string, unknown> | null) ?? {},
+              )
+                .sort()
+                .join(',')}`
             : summarizeArgs(tool.name, executionArgs),
         bytesIn: byteLength(persistedArgs),
         bytesOut: byteLength(msg),
@@ -1047,6 +1087,7 @@ export class ToolRuntime {
         tool,
         startEvent: startEv,
         persistedArgs,
+        modelFacingArgs,
         abortSignal: ctx.abortSignal,
         ...(invocationId ? { invocationId } : {}),
         ...(runId ? { runId } : {}),
@@ -1381,6 +1422,8 @@ export class ToolRuntime {
     tool: MakaTool;
     startEvent: ToolStartEvent;
     persistedArgs: unknown;
+    /** The projection the model replays as its own call. */
+    modelFacingArgs: unknown;
     abortSignal: AbortSignal;
     invocationId?: string;
     runId?: string;
@@ -1424,7 +1467,7 @@ export class ToolRuntime {
         kind: 'function_call',
         id: input.startEvent.toolUseId,
         name: input.tool.name,
-        args: structuredClone(input.persistedArgs),
+        args: structuredClone(input.modelFacingArgs),
         ...(input.startEvent.providerOptions !== undefined
           ? { providerOptions: structuredClone(input.startEvent.providerOptions) }
           : {}),
@@ -1536,10 +1579,13 @@ export class ToolRuntime {
     const existing = this.stepAdmissions.get(stepId) ?? { callCount: 0 };
     const exclusive = tool.executionSemantics === 'exclusive_step';
     if (existing.exclusiveToolName) {
-      return `Tool ${tool.name} cannot share an assistant step with exclusive tool ${existing.exclusiveToolName}. Retry it in a separate step.`;
+      // Say first that nothing happened. A model reading only "cannot share a
+      // step" cannot tell a refusal apart from a failure and may re-send a call
+      // that did run.
+      return `Tool ${tool.name} did not run: ${existing.exclusiveToolName} cannot share an assistant step with other tool calls. Send ${tool.name} again in a later step.`;
     }
     if (exclusive && existing.callCount > 0) {
-      return `Exclusive tool ${tool.name} cannot share an assistant step with other tool calls. Retry it in a separate step.`;
+      return `Tool ${tool.name} did not run: it cannot share an assistant step with other tool calls. Send ${tool.name} again in a step where it is the only call.`;
     }
     existing.callCount += 1;
     if (exclusive) existing.exclusiveToolName = tool.name;
@@ -2196,6 +2242,108 @@ export function formatSyntheticToolErrorText(error: unknown): string {
   return `${redacted.slice(0, TOOL_ERROR_RESULT_MAX_CHARS - 1)}…`;
 }
 
+function stringKeys(shape: object): string[] {
+  return Object.keys(shape).filter((key) => key.length > 0);
+}
+
+/**
+ * The argument names one call to this tool accepts, or undefined when the
+ * schema cannot answer that question for the call at hand.
+ *
+ * Computer Use learned this the expensive way: a refusal that named only what
+ * was wrong left the model re-sending the same wrong shape, twenty times in a
+ * twenty-seven call run. Every other tool refuses the same way, and every other
+ * tool also carries the answer in its own schema.
+ *
+ * Undefined and `[]` are different answers and callers must keep them apart:
+ * `[]` means the schema says this call takes nothing, undefined means the
+ * schema was not readable here — a union with no resolvable branch, a provider
+ * schema that is not a plain object. Rendering undefined as an empty list would
+ * tell a model its call takes no arguments when in fact nothing is known.
+ *
+ * Names only, never values: these arguments carry file contents, shell
+ * commands and typed text. Field names are the model's own input vocabulary.
+ */
+export function toolParameterFields(parameters: unknown, args?: unknown): string[] | undefined {
+  try {
+    return readSchemaFields(parameters, args);
+  } catch {
+    // Schemas are third-party objects with getters; an unreadable one degrades
+    // to "no field list", never to a wrong one.
+    return undefined;
+  }
+}
+
+function readSchemaFields(schema: unknown, args: unknown): string[] | undefined {
+  if (!schema || typeof schema !== 'object') return undefined;
+  const candidate = schema as {
+    shape?: unknown;
+    options?: unknown;
+    jsonSchema?: unknown;
+    _zod?: { def?: { discriminator?: unknown } };
+  };
+  // z.object(...), including one carrying .refine()/.superRefine() checks —
+  // those keep the object type in Zod 4 and so keep .shape.
+  if (candidate.shape && typeof candidate.shape === 'object') {
+    return stringKeys(candidate.shape as object);
+  }
+  if (Array.isArray(candidate.options)) {
+    const discriminator = candidate._zod?.def?.discriminator;
+    // A plain union has no key that says which branch was meant. Merging the
+    // branches would advertise combinations the schema rejects, so say nothing.
+    if (typeof discriminator !== 'string') return undefined;
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return undefined;
+    const selector = (args as Record<string, unknown>)[discriminator];
+    if (selector === undefined) return undefined;
+    for (const option of candidate.options) {
+      const optionShape = (option as { shape?: unknown }).shape;
+      if (!optionShape || typeof optionShape !== 'object') continue;
+      const literal = (optionShape as Record<string, { value?: unknown }>)[discriminator];
+      if (literal?.value === selector) return stringKeys(optionShape as object);
+    }
+    // The discriminator itself is wrong; which branch was meant is unknown.
+    return undefined;
+  }
+  // Provider schemas (MCP tools and anything declared through `jsonSchema`).
+  const json = candidate.jsonSchema;
+  if (json && typeof json === 'object') {
+    const properties = (json as { properties?: unknown }).properties;
+    if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+      return stringKeys(properties as object);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Model-facing text for a call refused before it ran because its arguments did
+ * not fit the tool. The relayed error says what was wrong; the field list says
+ * what would be right, which is the half a model cannot reconstruct and will
+ * otherwise guess at by re-sending the same call.
+ */
+export function formatToolArgsViolationText(input: {
+  toolName: string;
+  parameters?: unknown;
+  args?: unknown;
+  error: unknown;
+}): string {
+  const fields = toolParameterFields(input.parameters, input.args);
+  const guidance =
+    fields === undefined
+      ? ''
+      : fields.length > 0
+        ? ` ${input.toolName} takes ${fields.map((field) => `\`${field}\``).join(', ')}.`
+        : ` ${input.toolName} takes no arguments.`;
+  const prefix = `Tool "${input.toolName}" arguments failed validation: `;
+  // The guidance is the part worth keeping, so a long relayed error is what
+  // gives way to the cap, not the field list.
+  const budget = TOOL_ERROR_RESULT_MAX_CHARS - prefix.length - guidance.length;
+  const detail = formatSyntheticToolErrorText(input.error);
+  const bounded =
+    detail.length <= Math.max(budget, 1) ? detail : `${detail.slice(0, Math.max(budget - 1, 0))}…`;
+  return `${prefix}${bounded}${guidance}`;
+}
+
 function sandboxBoundaryFailureSignal(
   metadata: ReturnType<typeof serializeSandboxError>,
 ): Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'] {
@@ -2317,8 +2465,10 @@ function buildTerminalFailureMessage(
   const stdoutView = view(stdout);
   if (stdoutView) parts.push(`--- stdout ---\n${stdoutView}`);
   if (sandboxDenied) {
+    // Naming only the marker left the model knowing a boundary could be widened
+    // and not by what: the tool that widens it is `request_sandbox_boundary`.
     parts.push(
-      '该失败很可能来自 Maka sandbox。请先尝试不扩大边界的替代方案；只有工具明确返回 sandbox_boundary_required 和具体 expansion 时，才能请求会话边界扩张。不要从命令文本猜测权限，也不要静默绕过 sandbox。',
+      '该失败很可能来自 Maka sandbox。请先尝试不扩大边界的替代方案；只有工具明确返回 sandbox_boundary_required 和具体 expansion 时，才能调用 request_sandbox_boundary 请求会话边界扩张，并在 expansion 里只写那一条路径。不要从命令文本猜测权限，也不要静默绕过 sandbox。',
     );
   }
   return parts.join('\n\n');

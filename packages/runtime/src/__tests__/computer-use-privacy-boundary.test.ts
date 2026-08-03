@@ -322,6 +322,74 @@ test('Computer Use persists which element a call targeted', async () => {
   );
 });
 
+test('the model reads its own call back in the names the tool accepts', async () => {
+  // The record replayed to the model used to be the host's approval
+  // projection: `approvalClass`, `rememberForTurnAllowed`, `windowId`. Two of
+  // those are not arguments at all and the third is a key the tool rejects, so
+  // the model went on calling it that way — six of eleven calls on a real
+  // desktop run, and 29 rejections in this machine's telemetry.
+  const events: SessionEvent[] = [];
+  const runtimeEvents: unknown[] = [];
+  const runtime = createTestToolRuntime({
+    sessionId: 'session-1',
+    header: header(),
+    connection: connection(),
+    modelId: 'mock-model',
+    appendMessage: async () => {},
+    newId: nextId(),
+    now: () => 1,
+    getPermissionPauseTarget: () => null,
+    getCurrentRunId: () => 'run-1',
+    runtimeCommitSink: {
+      commitToolPrepared: async (input) => {
+        runtimeEvents.push(input.runtimeEvent);
+        return { status: 'committed' as const, created: true, runtimeEventSeq: 1 };
+      },
+      commitToolOutcome: async () => ({
+        status: 'committed' as const,
+        created: true,
+        runtimeEventSeq: 2,
+      }),
+    },
+  });
+  const tool: MakaTool = {
+    name: 'maka_computer',
+    description: 'test',
+    parameters: {},
+    categoryHint: 'computer_use',
+    impl: async () => ({ ok: true }),
+  };
+  await runtime.settleToolCall({
+    tool,
+    turnId: 'turn-1',
+    toolCallId: 'tool-1',
+    input: {
+      action: 'click_element',
+      app: 'Example',
+      window_id: 12747,
+      observation_id: 'frame-1',
+      element_id: '7',
+    },
+    abortSignal: new AbortController().signal,
+    eventSink: {
+      push: (event) => events.push(event),
+      pushAndWaitUntilConsumed: async (event) => {
+        events.push(event);
+      },
+    },
+  });
+  const call = runtimeEvents.find(
+    (event) => (event as { content?: { kind?: string } }).content?.kind === 'function_call',
+  ) as { content: { args: Record<string, unknown> } } | undefined;
+  assert.deepEqual(call?.content.args, {
+    action: 'click_element',
+    app: 'Example',
+    window_id: 12747,
+    observation_id: 'frame-1',
+    element_id: '7',
+  });
+});
+
 test('Computer Use validation failures still persist a redacted call and result', async () => {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];

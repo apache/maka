@@ -153,6 +153,77 @@ describe('CuaFrameState', () => {
     );
   });
 
+  // A refusal the executor never dispatched must not cost the frame.
+  //
+  // Measured on a real save-as-PDF run: `click_element` was refused
+  // `unsupported_action` with `path: "none"`, the frame was invalidated anyway,
+  // and `unsupported_action` is not one of the codes that hands back a fresh
+  // observation — so the next call was `reobserve_required` and the one after it
+  // was an `observe` that changed nothing. Three rounds of that, 9 of 23 calls,
+  // before the model found the route it needed.
+  test('an action that never ran is retired without spending the frame', () => {
+    const state = createState();
+    const frame = state.observe(observation());
+    const first = bindCuaSemanticActionToObservation(frame, {
+      type: 'click_element',
+      elementId: '2',
+    }) as NonNullable<ReturnType<typeof bindCuaSemanticActionToObservation>>;
+
+    assert.equal(state.claimAction(first).ok, true);
+    const retired = state.retireAction(first);
+
+    assert.equal(retired.ok, true);
+    // The epoch does not move, so the frame the model is holding still names
+    // the window it is looking at.
+    assert.equal(retired.ok && retired.epoch, frame.epoch);
+    assert.equal(state.activeObservation()?.frameId, frame.frameId);
+  });
+
+  test('a retired frame still accepts a different action', () => {
+    const state = createState();
+    const frame = state.observe(observation());
+    const bind = (elementId: string) =>
+      bindCuaSemanticActionToObservation(frame, {
+        type: 'click_element',
+        elementId,
+      }) as NonNullable<ReturnType<typeof bindCuaSemanticActionToObservation>>;
+
+    const refused = bind('2');
+    state.claimAction(refused);
+    state.retireAction(refused);
+
+    // The point of keeping the frame: the model can address something else with
+    // the observation it already has, which is the round trip being saved.
+    assert.deepEqual(state.claimAction(bind('7')), { ok: true });
+  });
+
+  test('the same action is not offered twice after being retired', () => {
+    const state = createState();
+    const frame = state.observe(observation());
+    const action = bindCuaSemanticActionToObservation(frame, {
+      type: 'click_element',
+      elementId: '2',
+    }) as NonNullable<ReturnType<typeof bindCuaSemanticActionToObservation>>;
+
+    state.claimAction(action);
+    state.retireAction(action);
+
+    // Retired, not released. Sending it again is `duplicate_action`, which is
+    // the truth and is a better answer than being refused identically forever.
+    assert.deepEqual(state.claimAction(action), { ok: false, reason: 'duplicate_action' });
+  });
+
+  test('retiring an action nobody claimed is refused rather than silently accepted', () => {
+    const state = createState();
+    const frame = state.observe(observation());
+    const action = bindCuaSemanticActionToObservation(frame, {
+      type: 'click_element',
+      elementId: '2',
+    }) as NonNullable<ReturnType<typeof bindCuaSemanticActionToObservation>>;
+
+    assert.deepEqual(state.retireAction(action), { ok: false, reason: 'action_not_claimed' });
+  });
+
   test('semantic actions bind element identity to the observed window', () => {
     const state = createState();
     const observation = state.observe({

@@ -585,6 +585,7 @@ export type {
   ComputerUseActionOutcome,
   ComputerUseApprovalClass,
   ComputerUseApprovalSummary,
+  ComputerUseModelCallArgs,
   ComputerUseDispatchEvidence,
   ComputerUseDispatchTier,
   ComputerUseDisplayIdentity,

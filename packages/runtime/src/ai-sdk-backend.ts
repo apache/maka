@@ -103,6 +103,7 @@ import {
   TOOL_ERROR_RESULT_MAX_CHARS,
   ToolRuntime,
   formatSyntheticToolErrorText,
+  formatToolArgsViolationText,
   type MakaTool,
   type MakaToolContext,
   type ToolRuntimeInput,
@@ -1384,6 +1385,8 @@ export class AiSdkBackend implements AgentBackend {
                 return repairMakaToolCall({
                   toolCall,
                   availableToolNames: currentRepairToolNames(),
+                  toolParameters: (name) =>
+                    providerTools.find((candidate) => candidate.name === name)?.parameters,
                   error,
                 });
               },
@@ -3333,6 +3336,8 @@ export function repairMakaToolCall(input: {
   toolCall: RepairableAiSdkToolCall;
   availableToolNames: readonly string[];
   error: unknown;
+  /** Schema lookup for the tool that was called, when the caller has one. */
+  toolParameters?: (toolName: string) => unknown;
 }): RepairableAiSdkToolCall | null {
   const requestedName = input.toolCall.toolName;
   if (requestedName === INVALID_TOOL_NAME) return null;
@@ -3350,9 +3355,49 @@ export function repairMakaToolCall(input: {
     toolName: INVALID_TOOL_NAME,
     input: JSON.stringify({
       tool: requestedName,
-      error: formatSyntheticToolErrorText(input.error),
+      error: describeUnrepairableToolCall(input),
     }),
   };
+}
+
+/**
+ * What the model is told about a call that could not be repaired.
+ *
+ * Two different failures arrive here. A name that matches nothing: the caller
+ * is holding the list of names that would have worked and used to drop it,
+ * leaving the model with its own wrong name and a validator's complaint — the
+ * same dead end `tool-availability` avoids by naming what is available.
+ * Arguments the tool's schema rejected: the schema knows which fields the call
+ * takes, so say them rather than let the model re-send the shape just refused.
+ */
+function describeUnrepairableToolCall(input: {
+  toolCall: RepairableAiSdkToolCall;
+  availableToolNames: readonly string[];
+  error: unknown;
+  toolParameters?: (toolName: string) => unknown;
+}): string {
+  const requestedName = input.toolCall.toolName;
+  const known = input.availableToolNames.includes(requestedName);
+  if (!known) {
+    const available = input.availableToolNames.join(', ');
+    const detail = formatSyntheticToolErrorText(input.error);
+    return available ? `${detail} Available tools: ${available}.` : detail;
+  }
+  return formatToolArgsViolationText({
+    toolName: requestedName,
+    parameters: input.toolParameters?.(requestedName),
+    args: parseToolCallInput(input.toolCall.input),
+    error: input.error,
+  });
+}
+
+function parseToolCallInput(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
 }
 
 function buildInvalidMakaTool(): MakaTool<{ tool?: string; error?: string }, never> {
