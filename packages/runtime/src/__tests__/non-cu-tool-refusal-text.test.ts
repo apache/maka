@@ -21,6 +21,7 @@ import {
   AGENT_LIST_TOOL_NAME,
   AGENT_OUTPUT_TOOL_NAME,
   AGENT_SPAWN_TOOL_NAME,
+  buildChildAgentTools,
   buildSubagentOutputTool,
   buildSubagentProjectionTools,
   buildSubagentSpawnTool,
@@ -30,6 +31,7 @@ import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import { buildGoalTools, GOAL_SET_TOOL_NAME, GOAL_STATUS_TOOL_NAME } from '../goal-tools.js';
 import type { GoalControlDecline } from '../goal-continuation.js';
+import { GoalContinuationCoordinator } from '../goal-continuation.js';
 import { GoalManager } from '../goal-state.js';
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
@@ -62,10 +64,14 @@ function ctx(extra: Partial<MakaToolContext> = {}): MakaToolContext {
 }
 
 async function refusalOf(run: () => unknown | Promise<unknown>): Promise<string> {
+  return (await errorOf(run)).message;
+}
+
+async function errorOf(run: () => unknown | Promise<unknown>): Promise<Error> {
   try {
     await run();
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return error instanceof Error ? error : new Error(String(error));
   }
   throw new Error('expected the call to be refused');
 }
@@ -158,6 +164,92 @@ describe('E1 — capability-missing refusals name the tool and a fallback', () =
       ),
     );
     assertActionable(text, AGENT_SWARM_TOOL_NAME, ['resume_run_ids']);
+  });
+
+  test('agent_swarm resume does not point at new items when new items are gone too', async () => {
+    // The shape ToolRuntime actually produces. `buildChildAgentContext`
+    // returns `{}` wholesale when `getCurrentRunId()` is falsy, so spawn and
+    // resume leave together; "drop resume_run_ids and send that work as new
+    // items instead" then walks the model into the spawn refusal, which tells
+    // it retrying fails the same way. Following the advice is the assertion.
+    const tool = buildAgentSwarmTool();
+    const context = ctx();
+    assert.equal(context.spawnChildSession, undefined, 'this test needs the no-capability shape');
+
+    const text = await refusalOf(() => tool.impl({ resume_run_ids: ['run-1'] } as never, context));
+    assertNoHostInternals(text);
+    assert.ok(
+      !/Drop resume_run_ids and send that work as new items/.test(text),
+      `must not prescribe a move this context cannot make: ${text}`,
+    );
+    assert.ok(/do it yourself with the tools you already have/.test(text), text);
+
+    const followed = await refusalOf(() =>
+      tool.impl(
+        {
+          items: [
+            {
+              item_id: 'item-0',
+              profile: 'local_read',
+              task: 'task-0',
+              write_back: 'summary',
+              isolation: 'same_workspace',
+            },
+          ],
+        },
+        context,
+      ),
+    );
+    assert.ok(
+      /Retrying agent_swarm will fail the same way/.test(followed),
+      `the prescribed move really is a dead end here: ${followed}`,
+    );
+  });
+
+  test('the missing host callback still reaches an operator', async () => {
+    // Three distinct failures used to be three distinct sentences naming the
+    // callback. The sentences merged into model-facing advice; the callback
+    // name has to keep travelling, or a log cannot tell them apart.
+    const tool = buildAgentSwarmTool();
+    const spawn = await errorOf(() =>
+      tool.impl(
+        {
+          items: [
+            {
+              item_id: 'item-0',
+              profile: 'local_read',
+              task: 'task-0',
+              write_back: 'summary',
+              isolation: 'same_workspace',
+            },
+          ],
+        },
+        ctx(),
+      ),
+    );
+    assert.equal(
+      (spawn.cause as Error | undefined)?.message,
+      'spawnChildSession capability is unavailable in this runtime context',
+    );
+
+    const resume = await errorOf(() =>
+      tool.impl(
+        { resume_run_ids: ['run-1'] } as never,
+        ctx({ spawnChildSession: (async () => ({})) as never }),
+      ),
+    );
+    assert.equal(
+      (resume.cause as Error | undefined)?.message,
+      'Child AgentRun resume capability is unavailable in this runtime context',
+    );
+
+    const spawned = await errorOf(() =>
+      buildSubagentSpawnTool().impl({ profile: 'local_read', task: 'look' }, ctx()),
+    );
+    assert.equal(
+      (spawned.cause as Error | undefined)?.message,
+      'spawnChildSession capability is unavailable in this runtime context',
+    );
   });
 
   // ToolRuntime injects `askUserQuestion` and `requestSandboxBoundary`
@@ -283,8 +375,10 @@ describe('E2 — goal turn-ownership refusals', () => {
   }
 
   test('a turn that is already bound to a goal is told so, and reading it is still useful', async () => {
-    // The one permanent cause where GoalStatus does tell the model something
-    // it does not know: a goal exists and this turn is bound to it.
+    // GoalStatus does tell the model something it does not know here — that a
+    // goal exists and this turn is bound to it — so it is still offered. It is
+    // offered as the last step, not as a way back to GoalSet, because the
+    // binding cannot be undone within the turn (see E2b).
     const text = await refusal(
       GOAL_SET_TOOL_NAME,
       undefined,
@@ -294,7 +388,7 @@ describe('E2 — goal turn-ownership refusals', () => {
 
     assert.ok(/already bound to a goal/.test(text), text);
     assert.ok(text.includes(GOAL_STATUS_TOOL_NAME), text);
-    assert.ok(!/call GoalSet again/i.test(text), text);
+    assert.ok(/do not call GoalSet again in this turn/.test(text), text);
   });
 
   test('GoalResume is not told it tried to arm a second goal', async () => {
@@ -355,6 +449,105 @@ describe('E2 — goal turn-ownership refusals', () => {
       assert.ok(!/^Goal authority is unavailable\.$/.test(text), `${name}: ${text}`);
       assert.ok(!text.includes(GOAL_STATUS_TOOL_NAME), `${name}: ${text}`);
     }
+  });
+});
+
+/**
+ * The seam E2 cannot reach.
+ *
+ * E2 hands `buildGoalTools` a stub whose `activationStanding` returns a chosen
+ * cause, which settles what the sentence says about a cause but not whether
+ * that cause can be got out of. Only the real coordinator knows that, because
+ * the answer lives in when `observedControlLease` is rewritten — once at
+ * `beginObservedTurn`, and after that only by a mutation that succeeded.
+ *
+ * So these drive `GoalContinuationCoordinator` and `GoalManager` themselves,
+ * take the refusal the model would read, and then do what a model that believed
+ * it would do.
+ */
+describe('E2b — the goal refusals that a real coordinator produces are read to the end', () => {
+  function realGoalTools() {
+    let id = 0;
+    const goalManager = new GoalManager({ generateId: () => `g-${++id}`, now: () => 1000 });
+    const coordinator = new GoalContinuationCoordinator({
+      goalManager,
+      evaluator: { evaluate: async () => '{}', close: async () => {} },
+      getRecentContext: async () => 'recent context',
+      admitTurn: () => ({ kind: 'unavailable', reason: 'not in this test' }),
+      scheduler: { setTimeout: () => 0, clearTimeout: () => {} },
+    } as never);
+    const tools = buildGoalTools({ goalManager, goalContinuation: coordinator, now: () => 1000 });
+    return {
+      coordinator,
+      call: (name: string, turnId: string, args: Record<string, unknown> = {}) =>
+        String(
+          tools.find((candidate) => candidate.name === name)!.impl(args as never, ctx({ turnId })),
+        ),
+    };
+  }
+
+  test('goal_changed does not invite a GoalSet that declines forever', () => {
+    const { coordinator, call } = realGoalTools();
+    // One turn registers before any goal exists; a second arms one and clears
+    // it. The lease has moved on, nothing is active, and the first turn is now
+    // past the "unfinished goal is active" guard and into the gate.
+    coordinator.beginObservedTurn('session-1', 'turn-a');
+    coordinator.beginObservedTurn('session-1', 'turn-b');
+    call(GOAL_SET_TOOL_NAME, 'turn-b', { condition: 'someone else' });
+    call('GoalClear', 'turn-b');
+    assert.equal(
+      (coordinator.activationStanding('session-1', 'turn-a') as { reason?: string }).reason,
+      'goal_changed',
+      'the scenario must really produce goal_changed',
+    );
+
+    const first = call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' });
+    assertNoHostInternals(first);
+    // Reading is still worth doing, and is still offered.
+    assert.ok(first.includes(GOAL_STATUS_TOOL_NAME), first);
+
+    // The whole finding: a model that does what the sentence says next must not
+    // arrive back at this call. `mutateGoal` is what refreshes the observed
+    // lease, and every mutation this turn can reach declines too, so nothing
+    // the model calls changes the answer.
+    assert.ok(
+      /do not call GoalSet again in this turn/.test(first),
+      `goal_changed is permanent within the turn and must say so: ${first}`,
+    );
+    assert.equal(call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' }), first);
+    call('GoalClear', 'turn-a');
+    assert.equal(
+      call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' }),
+      first,
+      'no call available to this turn can change the refusal',
+    );
+  });
+
+  test('the GoalSet arm of goal_already_armed does not invite a retry either', () => {
+    const { coordinator, call } = realGoalTools();
+    // Reachable from GoalSet only once the armed goal has left `active` —
+    // otherwise the "unfinished goal is active" guard answers first. A later
+    // turn clears it, which leaves turn-a holding a controlLease it cannot
+    // release: releasing it needs a mutation, and the moved lease declines
+    // every mutation this turn makes.
+    coordinator.beginObservedTurn('session-1', 'turn-a');
+    call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' });
+    coordinator.beginObservedTurn('session-1', 'turn-c');
+    call('GoalClear', 'turn-c');
+    assert.equal(
+      (coordinator.activationStanding('session-1', 'turn-a') as { reason?: string }).reason,
+      'goal_already_armed',
+    );
+
+    const first = call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'again' });
+    assertNoHostInternals(first);
+    assert.ok(/already bound to a goal/.test(first), first);
+    assert.ok(
+      /do not call GoalSet again in this turn/.test(first),
+      `goal_already_armed is permanent within the turn and must say so: ${first}`,
+    );
+    call('GoalClear', 'turn-a');
+    assert.equal(call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'again' }), first);
   });
 });
 
@@ -448,6 +641,25 @@ describe('E3 — an internal filesystem mismatch does not read as an argument co
     assert.ok(/does not mean no files match/.test(glob), glob);
   });
 
+  test('every one of them says whose fault it is not', async () => {
+    // The sentence that keeps a model from "fixing" arguments that were fine.
+    // Nothing asserted it, so it could have been dropped from all five
+    // messages without turning a test red.
+    for (const [name, args] of [
+      ['Grep', { pattern: 'needle' }],
+      ['Glob', { pattern: '**/*.ts' }],
+      ['Read', { path: 'a.txt' }],
+      ['Write', { path: 'a.txt', content: 'x' }],
+      ['Edit', { path: 'a.txt', old_string: 'x', new_string: 'y' }],
+    ] as const) {
+      const text = await refuseWith(name, args);
+      assert.ok(
+        text.includes('This is an internal failure, not a problem with your arguments'),
+        `${name} must not read as an argument complaint: ${text}`,
+      );
+    }
+  });
+
   test('the worker-protocol violation still reaches an operator', async () => {
     // The model-facing sentence cannot name the worker, but an operator reading
     // a log needs to know this was a mismatched result and not, say, a missing
@@ -475,11 +687,22 @@ describe('E5 — background task refs and capacity', () => {
       newId: () => 'shell-run-1',
       now: () => 1,
     });
-    const text = await refusalOf(() =>
+    const error = await errorOf(() =>
       manager.stopBackgroundTask('session-1', 'task-3-secret-value', NO_ABORT),
     );
-    assert.ok(text.includes('maka://runtime/background-tasks/<id>'), text);
-    assert.ok(!text.includes('task-3-secret-value'), `must not echo the rejected ref: ${text}`);
+    assert.ok(error.message.includes('maka://runtime/background-tasks/<id>'), error.message);
+    assert.ok(
+      !error.message.includes('task-3-secret-value'),
+      `must not echo the rejected ref: ${error.message}`,
+    );
+    // The ref itself is the only thing that distinguishes this failure from the
+    // other two call sites in a log, so it travels as the cause rather than
+    // being dropped — the same split `builtin-tools.ts` uses.
+    assert.ok(error.cause instanceof Error, 'the rejected ref must still reach an operator');
+    assert.equal(
+      (error.cause as Error).message,
+      'Unsupported runtime background task ref: task-3-secret-value',
+    );
   });
 
   test('the Read({ref}) path gets the canonical form too', async () => {
@@ -503,7 +726,43 @@ describe('E5 — background task refs and capacity', () => {
     assert.ok(!text.includes('task-3-secret-value'), `must not echo the rejected ref: ${text}`);
   });
 
-  test('a full shell slot names StopBackgroundTask', async () => {
+  /**
+   * The seam the earlier version of these tests could not see.
+   *
+   * A refusal is read by whichever agent made the call, and `Bash` is on the
+   * `implementation` child list, so a child agent reaches the manager-wide cap
+   * exactly like a parent does. `buildToolsForAgentDefinition` is a strict name
+   * allowlist, so the child's schema is decided here and nowhere else. Asserting
+   * against a hand-written list of names would restate the message; asking the
+   * real builder which names a child never receives is what catches the next
+   * refusal that reaches for one.
+   */
+  const parentTools = buildBuiltinTools({
+    backgroundTasks: { stopBackgroundTask: async () => ({}) } as never,
+    ptyControls: { writeStdin: async () => ({}) } as never,
+  });
+  const childToolNames = new Set(buildChildAgentTools(parentTools).map((tool) => tool.name));
+  const parentOnlyToolNames = parentTools
+    .map((tool) => tool.name)
+    .filter((name) => !childToolNames.has(name));
+
+  function assertNamesNoToolAChildLacks(text: string): void {
+    // Guards the guard: if `Bash` ever leaves the child lists, a child can no
+    // longer reach this refusal and the assertion below stops meaning anything.
+    assert.ok(childToolNames.has('Bash'), 'a child agent must still be able to run Bash');
+    assert.ok(
+      parentOnlyToolNames.includes('StopBackgroundTask'),
+      'StopBackgroundTask must still be a parent-only tool for this test to bite',
+    );
+    for (const name of parentOnlyToolNames) {
+      assert.ok(
+        !text.includes(name),
+        `refusal names ${name}, which no child agent receives: ${text}`,
+      );
+    }
+  }
+
+  test('a full shell slot does not send the caller to a tool it may not have', async () => {
     const cwd = await workspace();
     const manager = new ShellRunProcessManager({
       store: createSqliteShellRunStore(cwd),
@@ -523,15 +782,14 @@ describe('E5 — background task refs and capacity', () => {
         abortSignal: NO_ABORT,
       } as never),
     );
-    // The counters are manager-wide and StopBackgroundTask takes a
-    // session-scoped ref, so the session that hits the cap may own none of the
-    // runs holding it. The sentence may offer that move, but not promise it.
-    assert.ok(text.includes('StopBackgroundTask'), text);
+    assertNamesNoToolAChildLacks(text);
+    // The counters are manager-wide, so the session that hits the cap may own
+    // none of the runs holding it: the move that always exists is waiting.
     assert.ok(/shared across sessions/.test(text), `must not promise an unavailable move: ${text}`);
-    assert.ok(/wait for a running task to finish/.test(text), text);
+    assert.ok(/Wait for a running background task to finish/.test(text), text);
   });
 
-  test('a full PTY slot names StopBackgroundTask', async () => {
+  test('a full PTY slot does not send the caller to a tool it may not have', async () => {
     const cwd = await workspace();
     const manager = new ShellRunProcessManager({
       store: createSqliteShellRunStore(cwd),
@@ -552,9 +810,13 @@ describe('E5 — background task refs and capacity', () => {
         abortSignal: NO_ABORT,
       } as never),
     );
-    assert.ok(text.includes('StopBackgroundTask'), text);
+    assertNamesNoToolAChildLacks(text);
     assert.ok(/PTY/.test(text), text);
     assert.ok(/shared across sessions/.test(text), text);
+    // The one move that is both available and immediate: the same command
+    // without `pty`, which the caller reaches by dropping a parameter it
+    // already knows about rather than by finding a tool.
+    assert.ok(/non-interactive background task/.test(text), text);
   });
 });
 

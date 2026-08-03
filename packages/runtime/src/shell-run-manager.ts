@@ -86,6 +86,19 @@ type LifecycleCause = 'timeout' | 'cancel' | 'shutdown';
 const BACKGROUND_TASK_REF_HELP =
   'That is not a runtime background task ref. Use the ref exactly as it was returned when the ' +
   'background task started — the form is maka://runtime/background-tasks/<id>.';
+
+/**
+ * The model reads {@link BACKGROUND_TASK_REF_HELP}; an operator reads the
+ * `cause`. Dropping the rejected string outright would have made three call
+ * sites indistinguishable in a log, so it travels the way `builtin-tools.ts`
+ * carries its worker-protocol violations: out of the transcript, in every
+ * stack.
+ */
+function backgroundTaskRefError(ref: string): Error {
+  return new Error(BACKGROUND_TASK_REF_HELP, {
+    cause: new Error(`Unsupported runtime background task ref: ${ref}`),
+  });
+}
 type DriverExit =
   | { mode: 'pipes'; value: PipeProcessExit }
   | { mode: 'pty'; value: PtyProcessExit };
@@ -297,7 +310,7 @@ export class ShellRunProcessManager
   async writeStdin(input: ShellRunWriteInput): Promise<ShellRunToolResult> {
     validateWriteStdinInput(input);
     const target = parseShellRunResourceRef(input.ref);
-    if (!target) throw new Error(BACKGROUND_TASK_REF_HELP);
+    if (!target) throw backgroundTaskRefError(input.ref);
     const live = this.liveResource(input.sessionId, target.shellRunId);
     if (!live) return this.writeStdinWithoutLive(input, target.shellRunId);
     if (live.mode !== 'pty') throw new Error('WriteStdin requires a PTY background task ref');
@@ -441,7 +454,7 @@ export class ShellRunProcessManager
     abortSignal: AbortSignal,
   ): Promise<ToolResultContent> {
     const target = parseShellRunResourceRef(ref);
-    if (!target) throw new Error(BACKGROUND_TASK_REF_HELP);
+    if (!target) throw backgroundTaskRefError(ref);
     const live = this.liveResource(sessionId, target.shellRunId);
     if (!live) return this.stopWithoutLive(sessionId, target.shellRunId, abortSignal);
     if (live.driverExit) {
@@ -1485,7 +1498,7 @@ export class ShellRunProcessManager
     abortSignal: AbortSignal,
   ): Promise<ShellRunToolResult> {
     const target = parseShellRunResourceRef(ref);
-    if (!target) throw new Error(BACKGROUND_TASK_REF_HELP);
+    if (!target) throw backgroundTaskRefError(ref);
     const live = this.liveResource(sessionId, target.shellRunId);
     let record: ShellRunRecord;
     if (live) {
@@ -1737,26 +1750,32 @@ export class ShellRunProcessManager
   }
 
   private reserveSlot(mode: ShellMode): ShellRunSlotReservation {
-    // The counters are manager-wide and `StopBackgroundTask` takes a
-    // session-scoped ref, so the session that hits the cap may own none of the
-    // runs holding it. Saying "stop one" flatly would promise a move that can
-    // be unavailable; this offers it as a condition and names waiting as the
-    // path that always exists.
+    // The counters are manager-wide, so the session that hits the cap may own
+    // none of the runs holding it. Hedging on ownership — "stop one of yours
+    // if you started any" — is the wrong hedge, because the caller that most
+    // often hits this cap does not have the tool either. `Bash` reaches this
+    // path from a child agent, and `buildToolsForAgentDefinition` is a strict
+    // name allowlist: the `implementation` definition is granted Read, Glob,
+    // Grep, Write, Edit and Bash, and neither StopBackgroundTask nor
+    // WriteStdin is on any child list. Naming the tool would send that caller
+    // to look for a schema entry it does not have. So the refusal describes
+    // the action instead of naming the tool, and leads with waiting, which is
+    // the one move available to every caller.
     if (this.reservedShellRuns >= this.maxLiveShellRuns) {
       throw new Error(
         `No free background task slot: the runtime is at its limit of ${this.maxLiveShellRuns} ` +
           'live background tasks. The limit is shared across sessions, so some of them may not be ' +
-          'yours. Stop one of yours with StopBackgroundTask if you started any, or wait for a ' +
-          'running task to finish.',
+          'yours. Wait for a running background task to finish and try again, or, if you have a ' +
+          'tool for stopping background tasks, stop one you started.',
       );
     }
     if (mode === 'pty' && this.reservedPtyRuns >= this.maxLivePtyRuns) {
       throw new Error(
         `No free interactive (PTY) background task slot: the runtime is at its limit of ` +
           `${this.maxLivePtyRuns} live interactive tasks. The limit is shared across sessions, so ` +
-          'some of them may not be yours. Stop one of yours with StopBackgroundTask if you started ' +
-          'any, or wait for a running task to finish. A non-interactive background task does not ' +
-          'use this limit.',
+          'some of them may not be yours. Run this command as a non-interactive background task, ' +
+          'which does not use this limit, or wait for a running interactive task to finish and ' +
+          'try again.',
       );
     }
     this.reservedShellRuns += 1;

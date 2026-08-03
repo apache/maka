@@ -25,6 +25,11 @@ export function buildAskUserQuestionTool(): MakaTool<
       questions: z.array(questionSchema).min(1).max(3),
     }),
     impl: ({ questions }, context) => {
+      // Unreachable from any ToolRuntime-driven call: ToolRuntime injects
+      // `askUserQuestion` into every tool context unconditionally, so this
+      // guard answers only an embedder that assembles its own MakaToolContext.
+      // It is kept, and worded for a model, because that embedder exists and
+      // its caller is still a model.
       if (!context.askUserQuestion)
         throw new Error(
           'AskUserQuestion is not available on this surface, so the user was not asked anything. ' +

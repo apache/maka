@@ -2137,11 +2137,12 @@ describe('ShellRunProcessManager', () => {
               pty: true,
             }),
           ),
-        // Names the tool that frees a slot, which the old wording did not —
-        // and offers it as a condition rather than a promise, because the
-        // counter is manager-wide while StopBackgroundTask takes a
-        // session-scoped ref.
-        /No free interactive \(PTY\) background task slot: the runtime is at its limit of 1 .*StopBackgroundTask if you started any, or wait for a running task to finish/s,
+        // Names no tool at all. The counters are manager-wide, and the caller
+        // that most often hits this cap is a child agent, whose tool list is a
+        // strict allowlist that carries Bash but not StopBackgroundTask. The
+        // sentence describes the move instead; `non-cu-tool-refusal-text.test`
+        // asserts that against the real child tool set.
+        /No free interactive \(PTY\) background task slot: the runtime is at its limit of 1 .*Run this command as a non-interactive background task/s,
       );
 
       const pipeRun = await manager.runBackgroundBash(
@@ -2162,7 +2163,7 @@ describe('ShellRunProcessManager', () => {
               command: waitForeverCommand(),
             }),
           ),
-        /No free background task slot: the runtime is at its limit of 2 .*StopBackgroundTask if you started any, or wait for a running task to finish/s,
+        /No free background task slot: the runtime is at its limit of 2 .*Wait for a running background task to finish and try again/s,
       );
 
       await manager.stopBackgroundTask('session-1', ptyRun.ref, NO_ABORT);

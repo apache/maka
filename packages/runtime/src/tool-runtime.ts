@@ -1856,6 +1856,11 @@ export class ToolRuntime {
       // guards the same condition, but ToolRuntime injects the callback
       // unconditionally a few lines above, so that guard answers only an
       // embedder that builds its own context — never a production tool call.
+      //
+      // This one does fire in production. The desktop app supplies both store
+      // callbacks unconditionally (`session-stream.ts`), but the CLI supplies
+      // them only on the `tui` surface (`runtime-bootstrap.ts`), so every
+      // non-TUI CLI surface reaches here for any call that is not a hosted run.
       throw new Error(SANDBOX_BOUNDARY_UNAVAILABLE);
     }
     const normalized = await normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd);

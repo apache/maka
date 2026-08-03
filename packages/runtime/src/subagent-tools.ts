@@ -183,6 +183,9 @@ export function buildSubagentSpawnTool(
         throw new Error(
           'agent_spawn is not available in this session, so no child agent was started. ' +
             'Retrying agent_spawn will fail the same way — do the task yourself with the tools you already have.',
+          {
+            cause: new Error('spawnChildSession capability is unavailable in this runtime context'),
+          },
         );
       }
       const boundTask = input.task_id
@@ -364,10 +367,17 @@ export function buildSubagentListTool(): MakaTool<Record<string, never>, unknown
     parameters: z.object({}),
     categoryHint: 'read',
     impl: async (_input, ctx) => {
+      // Not reachable from the desktop app or the CLI: both pass
+      // `listChildAgents` to ToolRuntime unconditionally
+      // (`session-stream.ts`, `runtime-bootstrap.ts`), and ToolRuntime hands
+      // it straight to the tool context. `harbor-cell.ts` passes it only when
+      // its own context carries one, so a headless embedder can still land
+      // here — which is why this stays a sentence rather than being deleted.
       if (!ctx.listChildAgents) {
         throw new Error(
           'agent_list is not available in this session, so no agent catalog or child run list could be read. ' +
             'Retrying agent_list will fail the same way — pick a child agent profile from the agent_spawn schema instead.',
+          { cause: new Error('listChildAgents capability is unavailable in this runtime context') },
         );
       }
       return await ctx.listChildAgents();
@@ -453,9 +463,15 @@ export function buildSubagentOutputTool(): MakaTool<
     categoryHint: 'read',
     impl: async (input, ctx) => {
       if (!ctx.readChildAgentOutput) {
+        // Same reachability as `agent_list` above.
         throw new Error(
           'agent_output is not available in this session, so no child output could be read. ' +
             'Retrying agent_output will fail the same way — use the summary the agent_spawn or agent_swarm call already returned for that child.',
+          {
+            cause: new Error(
+              'readChildAgentOutput capability is unavailable in this runtime context',
+            ),
+          },
         );
       }
       const explicitLocator =

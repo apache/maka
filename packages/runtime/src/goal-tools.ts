@@ -36,10 +36,26 @@ export const GOAL_RESUME_TOOL_NAME = 'GoalResume';
  * for this session", satisfies the condition, retries, and receives the
  * identical refusal, forever.
  *
- * So a retry is prescribed only where a retry can succeed. Everywhere else the
- * sentence says the turn cannot do this and asks the model to move on. Reading
- * the goal is always safe, so GoalStatus is still offered where it would tell
- * the model something it does not know.
+ * So a retry is prescribed only where a retry can succeed — and that turned out
+ * to be nowhere. `goal_changed` reads like a race, and it is one, but the loser
+ * of that race cannot re-enter it: `observedControlLease` is written once in
+ * `beginObservedTurn` and refreshed only by a mutation that succeeds, so once
+ * the lease has moved on, every gate this turn passes through declines with the
+ * same cause until the turn ends. Driven against the real coordinator — one
+ * turn registers, a second arms a goal and clears it — GoalSet declines
+ * `goal_changed` on the first call and on the fourth, and GoalStatus in between
+ * reports a goal that only makes the model want to call again.
+ *
+ * `goal_already_armed` is the same shape. It is reachable from GoalSet only
+ * once the armed goal has left `active` — otherwise the "unfinished goal is
+ * active" guard answers first — and by then `registration.controlLease` is set
+ * and nothing this turn can call will clear it, because clearing it requires a
+ * mutation that the moved lease also declines.
+ *
+ * Every branch therefore ends by closing the retry. Reading the goal is still
+ * safe, so GoalStatus is still offered where it would tell the model something
+ * it does not know; it is offered as the last thing to do, not as a step on the
+ * way back to the call that just failed.
  *
  * The advice also has to know which tool it is answering. `goal_already_armed`
  * is produced by the activation gate, and GoalResume goes through that gate too
@@ -56,13 +72,15 @@ function declineAdvice(reason: GoalControlDecline, tool: string): string {
   switch (reason) {
     case 'goal_changed':
       return (
-        'the session goal changed while this turn was running. ' +
-        'Call GoalStatus to see the current goal, then act on what it reports.'
+        'the session goal changed while this turn was running, and this turn can act only on the ' +
+        'goal it observed. Call GoalStatus to see the current goal, then report what it shows; ' +
+        `do not call ${tool} again in this turn, because it will decline the same way.`
       );
     case 'goal_already_armed':
       return tool === GOAL_SET_TOOL_NAME
-        ? 'this turn is already bound to a goal, so it cannot arm a second one. ' +
-            'Call GoalStatus to see the current goal.'
+        ? 'this turn is already bound to a goal, and a turn can bind only once, so it cannot arm ' +
+            'a second one. Call GoalStatus to see that goal, then report what it shows; do not ' +
+            'call GoalSet again in this turn, because it will decline the same way.'
         : 'this turn is already bound to a goal, and a turn can bind only once, so ' +
             `${tool} cannot take another. Call GoalStatus to see the current goal. ` +
             `Do not call ${tool} again in this turn; report what GoalStatus shows.`;
