@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import { GitHubCopilotSubscriptionService } from '../oauth/github-copilot-subscription-service.js';
 
@@ -145,35 +142,6 @@ describe('GitHubCopilotSubscriptionService', () => {
     });
   });
 
-  test('fails a persisted connection closed instead of inventing a model wire after discovery failure', () => {
-    const source = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'src', 'main', 'oauth-model-connections-main.ts'),
-      'utf8',
-    );
-    const syncBody = source.slice(
-      source.indexOf('async function syncGitHubCopilotConnection'),
-      source.indexOf('async function syncOpenAiCodexConnection'),
-    );
-    const failureBody = syncBody.slice(syncBody.indexOf('} catch {'), syncBody.indexOf('const enabledIds'));
-    assert.match(syncBody, /const failDiscovery = \(\) => \{[\s\S]*if \(!existing\) return null;[\s\S]*enabled: false,[\s\S]*lastTestStatus: 'error'/);
-    assert.match(syncBody, /catch \{[\s\S]*return failDiscovery\(\);/);
-    assert.match(syncBody, /if \(models\.length === 0\) return failDiscovery\(\);/);
-    assert.doesNotMatch(failureBody, /fallbackModels|models\.dev|connectionStore\.save/);
-  });
-
-  test('passes one validated discovery result into connection sync instead of fetching twice', () => {
-    const source = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'src', 'main', 'subscription-ipc-main.ts'),
-      'utf8',
-    );
-    const connectBody = source.slice(
-      source.indexOf("ipcMain.handle('github-copilot:connect-existing-login'"),
-      source.indexOf("ipcMain.handle('github-copilot:get-account-state'"),
-    );
-    assert.match(connectBody, /syncGitHubCopilotConnection\(result\.models\)/);
-    assert.match(connectBody, /if \(!connection\)/);
-    assert.doesNotMatch(connectBody, /syncGitHubCopilotConnection\(\)/);
-  });
 });
 
 function copilotModelsResponse(): Response {

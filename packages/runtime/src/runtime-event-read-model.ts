@@ -275,6 +275,12 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.workspaceFact) {
+      // Workspace epoch/version facts belong to the store-owned control-plane
+      // stream. They are canonical recovery inputs, never chat messages.
+      projected = true;
+    }
+
     if (event.actions?.artifactDelta) {
       // Artifact counters are storage bookkeeping. The tool result that owns the
       // artifact owns its row; this delta has none of its own.
@@ -590,6 +596,9 @@ function projectText(
         : {}),
       ...(event.content.quotes !== undefined && event.content.quotes.length > 0
         ? { quotes: event.content.quotes }
+        : {}),
+      ...(event.content.inlineReferences !== undefined
+        ? { inlineReferences: event.content.inlineReferences }
         : {}),
     });
     return true;

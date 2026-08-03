@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef, useState } from 'react';
-import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
+import { useRef, useState } from 'react';
+import type { Meta, StoryObj } from '@storybook/react-vite';
+import { userEvent } from 'storybook/test';
 import { ToastProvider } from '@maka/ui';
 import type {
   AppSettings,
@@ -31,7 +32,6 @@ import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import type { ConnectionsBridge } from '../../src/renderer/settings/ProvidersPanel';
 import { withScopedMakaBridge } from '../maka-bridge';
-
 const STORY_PLATFORM = 'darwin' as const;
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -202,40 +202,6 @@ const usageStats: UsageStats = {
   pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
 };
 
-const emptyUsageStats: UsageStats = {
-  summary: {
-    totalRequests: 0,
-    totalCostUsd: 0,
-    totalTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheTokens: 0,
-    cacheMiss: 0,
-    cacheRead: 0,
-    cacheCreation: 0,
-    reasoning: 0,
-  },
-  logs: [],
-  byProvider: [],
-  byModel: [],
-  byTool: [],
-  pricing: [],
-};
-
-/**
- * #1364: Memory page fixtures.
- *
- * The bridge used to have no `memory` / `workspaceInstructions` / `app.openPath`
- * channels at all, so the Memory story booted into two error toasts (载入本地
- * 记忆失败 / 载入项目指令失败) and an empty page — no entry list, no backup
- * candidates, no prompt preview ever rendered. The default story now gets a
- * clean empty state; `MemoryPopulated` covers the list surfaces with
- * deliberately long titles, contents, and tag sets.
- *
- * Mutations echo the same state back: stories only exercise the read path,
- * and a mutation that "succeeds" without changing anything keeps the page
- * deterministic if someone clicks around.
- */
 function makeMemoryEntry(input: {
   id: string;
   title: string;
@@ -449,7 +415,7 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
         state: 'degraded',
         source: 'runtime_probe',
         lastCheckedAt: NOW - 5 * 60_000,
-        reason: 'cua-driver 未响应握手，已回落到只读观察模式。',
+        reason: 'maka-cu 未响应握手，已回落到只读观察模式。',
       },
       osPermissions: [
         { id: 'accessibility', required: true, status: 'granted' },
@@ -535,15 +501,15 @@ const healthSignals: HealthSignal[] = [
     relatedCapabilityId: 'computer_use',
   },
   {
-    id: 'probe:cua-driver',
-    label: 'cua-driver 运行态探测',
+    id: 'probe:maka-cu',
+    label: 'maka-cu 运行态探测',
     scope: 'capability',
     layer: 'runtime_probe',
     status: 'warning',
     source: 'runtime_probe',
     checkedAt: NOW - 5 * 60_000,
     message: '探测超时，已回落到只读观察模式。',
-    detail: 'cua-driver 未在 3000ms 内完成握手；下一次探测会在功能被调用时自动触发。',
+    detail: 'maka-cu 未在 3000ms 内完成握手；下一次探测会在功能被调用时自动触发。',
     relatedCapabilityId: 'computer_use',
     blocksCapability: true,
   },
@@ -560,8 +526,6 @@ const healthSignals: HealthSignal[] = [
 ];
 
 const healthSnapshot: HealthSnapshot = buildHealthSnapshot(NOW - 45_000, healthSignals);
-
-const emptyHealthSnapshot: HealthSnapshot = buildHealthSnapshot(NOW - 45_000, []);
 
 const makaBridge = {
   settings: {
@@ -652,13 +616,6 @@ const makaBridge = {
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
-const withEmptyHealthBridge = withScopedMakaBridge({
-  ...makaBridge,
-  health: {
-    getSnapshot: async () => emptyHealthSnapshot,
-  },
-} satisfies Record<string, unknown>);
-
 // #1364: list-page variants — empty vs populated vs long-content, per the
 // tracking issue's expected deliverables.
 
@@ -685,129 +642,59 @@ const withUsagePopulatedBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-/** #1364 review follow-up: empty stats alone are not the empty BASELINE —
- *  with default settings (`showDetails: false`) the first render is the
- *  summary-only Banner and the EmptyState never mounts. Reuse the details-on
- *  requests-tab settings so the story opens on the actual empty state. */
-const withUsageEmptyBridge = withScopedMakaBridge({
-  ...makaBridge,
-  settings: {
-    ...makaBridge.settings,
-    get: async () => usagePopulatedSettings,
-    update: async (
-      patch: Parameters<typeof window.maka.settings.update>[0],
-    ): Promise<UpdateAppSettingsResult> => ({
-      settings: mergeSettings(usagePopulatedSettings, patch),
-    }),
-    usageStats: async (): Promise<UsageStats> => emptyUsageStats,
-  },
-} satisfies Record<string, unknown>);
-
-/** Configured Tavily key + live-query results with long titles/URLs/snippets.
- *  Built by hand, not via `mergeSettings`: the merge treats the masked
- *  `apiKey` sentinel as "keep current key" and would drop it. */
-const webSearchConfiguredSettings: AppSettings = (() => {
-  const base = createDefaultSettings();
-  return {
-    ...base,
-    webSearch: {
-      ...base.webSearch,
-      enabled: true,
-      providers: {
-        tavily: {
-          ...base.webSearch.providers.tavily,
-          apiKey: '••••••',
-          credentialSource: 'saved',
-          credentialStatus: 'valid',
-          credentialCheckedAt: new Date(NOW - 20 * 60_000).toISOString(),
-        },
+const subagentStorySettings = mergeSettings(createDefaultSettings(), {
+  subagents: {
+    presets: [
+      {
+        id: 'fast-reader',
+        name: '快速代码阅读',
+        description: '适合快速、低成本地搜索并理解大型仓库。',
+        profile: 'local_read',
+        connectionSlug: 'zai-live',
+        model: 'glm-4.7',
+        enabled: true,
       },
-    },
-  };
-})();
-
-const webSearchLiveResults = [
-  {
-    provider: 'tavily' as const,
-    title:
-      'Electron 窗口在 macOS Sequoia 上 vibrancy 失效的完整排查记录：从 NSVisualEffectView 到 CSS backdrop-filter 的九层封装',
-    url: 'https://blog.example-engineering-weekly.com/posts/2026/07/electron-vibrancy-regression-macos-sequoia-troubleshooting-notes-part-three',
-    snippet:
-      '本文覆盖 vibrancy 在 Sequoia 15.4 上的三类失效场景：窗口层级变化后 material 不再刷新、data-vibrancy 属性与 CSS 级联的竞态、以及 transparent 窗口在外接显示器上的合成器回退。附带最小复现仓库与九个已验证的 workaround，其中第七个（延迟一帧重设 backgroundColor）对 Electron 33 仍然有效。',
-    source: 'blog.example-engineering-weekly.com',
-  },
-  {
-    provider: 'tavily' as const,
-    title: 'Tavily API rate limits',
-    url: 'https://docs.tavily.com/rate-limits',
-    snippet: 'Standard plans allow 100 requests per minute.',
-    source: 'docs.tavily.com',
-  },
-  {
-    provider: 'tavily' as const,
-    title: 'https://raw.githubusercontent.com/example/monorepo/refs/heads/main/packages/runtime/ARCHITECTURE.md',
-    url: 'https://raw.githubusercontent.com/example/monorepo/refs/heads/main/packages/runtime/ARCHITECTURE.md',
-    snippet: 'Runtime architecture notes.',
-    source: 'raw.githubusercontent.com',
-  },
-];
-
-const withWebSearchConfiguredBridge = withScopedMakaBridge({
-  ...makaBridge,
-  settings: {
-    ...makaBridge.settings,
-    get: async () => webSearchConfiguredSettings,
-    update: async (
-      patch: Parameters<typeof window.maka.settings.update>[0],
-    ): Promise<UpdateAppSettingsResult> => ({
-      settings: mergeSettings(webSearchConfiguredSettings, patch),
-    }),
-  },
-  webSearch: {
-    test: async () => ({ ok: true as const, results: webSearchLiveResults }),
-    query: async () => ({ ok: true as const, results: webSearchLiveResults }),
-  },
-} satisfies Record<string, unknown>);
-
-/** #1362: the proxy form (protocol/host/port layout, auth layout, bypass field)
- *  only renders behind two enabled switches — without this fixture no story
- *  exercises either horizontal Astryx FormLayout.
- *  Hostile widths: a long internal proxy hostname, a service-account
- *  username, and identity fields with long CJK content. */
-const generalProxySettings = mergeSettings(createDefaultSettings(), {
-  network: {
-    proxy: {
-      enabled: true,
-      protocol: 'socks5',
-      host: 'corp-egress-gateway.ap-southeast-1.internal.example-infra.net',
-      port: 18080,
-      authEnabled: true,
-      username: 'svc-maka-desktop-proxy-rotation-2026',
-      password: 'storybook-proxy-password',
-      bypassList: [
-        'metaso.cn',
-        'baidu.com',
-        'artifact-registry.ap-southeast-1.internal.example-infra.net',
-        '*.observability.example-infra.net',
-      ],
-    },
-  },
-  personalization: {
-    displayName: '陆逊（基础设施与开发者体验平台组 · 桌面端）',
-    assistantTone:
-      '回答尽量简短，先给结论再给理由；涉及命令行操作时给出完整命令并注明工作目录；不确定的事情直接说不确定，不要编造。',
+      {
+        id: 'implementation-review',
+        name: '实现与验证',
+        description: '需要修改代码、运行测试并产出可合并补丁时使用。',
+        profile: 'implementation',
+        connectionSlug: 'openai-review',
+        model: 'gpt-5',
+        thinkingLevel: 'high',
+        enabled: true,
+      },
+      {
+        id: 'orphaned-route',
+        name: '外部资料检索',
+        description: '连接被删除后仍处于启用状态，用于展示失效路由。',
+        profile: 'web_research',
+        connectionSlug: 'removed-connection',
+        model: 'legacy-search-model',
+        enabled: true,
+      },
+      {
+        id: 'retired-researcher',
+        name: '旧研究配置',
+        description: '保留用于展示已停用配置。',
+        profile: 'web_research',
+        connectionSlug: 'removed-connection',
+        model: 'legacy-search-model',
+        enabled: false,
+      },
+    ],
   },
 });
 
-const withGeneralProxyBridge = withScopedMakaBridge({
+const withSubagentSettingsBridge = withScopedMakaBridge({
   ...makaBridge,
   settings: {
     ...makaBridge.settings,
-    get: async () => generalProxySettings,
+    get: async () => subagentStorySettings,
     update: async (
       patch: Parameters<typeof window.maka.settings.update>[0],
     ): Promise<UpdateAppSettingsResult> => ({
-      settings: mergeSettings(generalProxySettings, patch),
+      settings: mergeSettings(subagentStorySettings, patch),
     }),
   },
 } satisfies Record<string, unknown>);
@@ -898,74 +785,6 @@ function makeBotAttentionBridge(settings: AppSettings) {
 
 const withBotAttentionBridge = withScopedMakaBridge(makeBotAttentionBridge(botAttentionSettings));
 
-type VoiceStoryOutcome = 'denied' | 'success';
-
-function withVoiceCaptureOutcome(outcome: VoiceStoryOutcome): Decorator {
-  return (Story) => {
-    useLayoutEffect(() => {
-      const permissions = navigator.permissions as Permissions & {
-        query(descriptor: PermissionDescriptor): Promise<PermissionStatus>;
-      };
-      const permissionsQuery = Object.getOwnPropertyDescriptor(permissions, 'query');
-      const mediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
-      const mediaRecorder = Object.getOwnPropertyDescriptor(globalThis, 'MediaRecorder');
-      const stream = {
-        getTracks: () => [{ stop: noop }],
-      } as unknown as MediaStream;
-      const permissionsQueryMock = async () => ({
-        state: outcome === 'denied' ? 'denied' : 'granted',
-      });
-      const mediaDevicesMock = {
-        getUserMedia: async () => {
-          if (outcome === 'denied') {
-            throw new DOMException('Microphone access denied for the story', 'NotAllowedError');
-          }
-          return stream;
-        },
-      };
-
-      class StoryMediaRecorder extends EventTarget {
-        state: RecordingState = 'inactive';
-
-        start() {
-          this.state = 'recording';
-        }
-
-        stop() {
-          this.state = 'inactive';
-          const dataEvent = new Event('dataavailable');
-          Object.defineProperty(dataEvent, 'data', {
-            value: new Blob(['storybook voice capture']),
-          });
-          this.dispatchEvent(dataEvent);
-          this.dispatchEvent(new Event('stop'));
-        }
-      }
-
-      Object.defineProperty(permissions, 'query', {
-        configurable: true,
-        value: permissionsQueryMock,
-      });
-      Object.defineProperty(navigator, 'mediaDevices', {
-        configurable: true,
-        value: mediaDevicesMock,
-      });
-      Object.defineProperty(globalThis, 'MediaRecorder', {
-        configurable: true,
-        value: StoryMediaRecorder,
-      });
-
-      return () => {
-        restoreProperty(permissions, 'query', permissionsQueryMock, permissionsQuery);
-        restoreProperty(navigator, 'mediaDevices', mediaDevicesMock, mediaDevices);
-        restoreProperty(globalThis, 'MediaRecorder', StoryMediaRecorder, mediaRecorder);
-      };
-    }, []);
-
-    return <Story />;
-  };
-}
-
 function SettingsStory(props: {
   section: SettingsSection;
   connections?: LlmConnection[];
@@ -973,14 +792,26 @@ function SettingsStory(props: {
 }) {
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
+  // Fidelity: the theme and palette pickers are the 外观 page's whole content,
+  // and with static props + noop handlers the selection could never move — the
+  // story showed a picker that looked interactive and wasn't. The real app
+  // holds both in AppShell state and applies them optimistically on click.
+  const [themePref, setThemePref] = useState<ThemePreference>('auto');
+  const [themePalette, setThemePalette] = useState<ThemePalette>('default');
 
   return (
     <ToastProvider>
+      {/* `100dvh`, not `100%`: `SettingsSurface` is a `Layout height="fill"`,
+          which needs a bounded ancestor to hand its content pane a scroll
+          box. Under Storybook's fullscreen body a percentage height resolves
+          against an auto-height parent, so every page taller than the
+          viewport stretched the whole surface instead of scrolling inside it
+          — 权限与能力 reached 1942px in a 720px frame with no way down. */}
       <div
         data-maka-e2e-fixture="true"
         style={{
           background: 'var(--surface-canvas)',
-          height: '100%',
+          height: '100dvh',
           minHeight: 640,
         }}
       >
@@ -989,10 +820,10 @@ function SettingsStory(props: {
           defaultSlug={props.defaultSlug === undefined ? 'zai-live' : props.defaultSlug}
           onRefresh={async () => undefined}
           onClose={noop}
-          themePref={'auto' as ThemePreference}
-          onThemeChange={noop}
-          themePalette={'default' as ThemePalette}
-          onThemePaletteChange={noop}
+          themePref={themePref}
+          onThemeChange={setThemePref}
+          themePalette={themePalette}
+          onThemePaletteChange={setThemePalette}
           onUiLocalePreferenceChange={noop}
           uiLocaleUpdateGate={uiLocaleUpdateGate}
           requestedSection={props.section}
@@ -1005,26 +836,14 @@ function SettingsStory(props: {
   );
 }
 
-function restoreProperty(
-  target: object,
-  property: PropertyKey,
-  ownedValue: unknown,
-  descriptor: PropertyDescriptor | undefined,
-) {
-  if (Reflect.get(target, property) !== ownedValue) return;
-  if (descriptor) {
-    Object.defineProperty(target, property, descriptor);
-  } else {
-    Reflect.deleteProperty(target, property);
-  }
-}
-
 async function waitForStoryButton(
   canvasElement: HTMLElement,
   predicate: (button: HTMLButtonElement) => boolean,
 ): Promise<HTMLButtonElement> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button')).find(predicate);
+    const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button')).find(
+      predicate,
+    );
     if (button) return button;
     await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
   }
@@ -1039,37 +858,57 @@ async function waitForStoryCondition(predicate: () => boolean, errorMessage: str
   throw new Error(errorMessage);
 }
 
-async function runVoiceStoryCapture(
-  canvasElement: HTMLElement,
-  expectedStatusText: string,
-  expectedPermissionText: string,
-) {
-  const button = await waitForStoryButton(
+async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise<HTMLButtonElement> {
+  const selector = await waitForStoryButton(
     canvasElement,
-    (candidate) => candidate.textContent?.includes('运行录音自检') === true,
+    (candidate) => candidate.textContent?.includes('跟随对话默认') === true,
   );
-  button.click();
-  await waitForStoryCondition(() => {
-    const status = canvasElement.querySelector<HTMLElement>('[role="status"]');
-    const permission = Array.from(canvasElement.querySelectorAll<HTMLElement>('dt')).find(
-      (term) => term.textContent?.trim() === '麦克风权限',
-    )?.nextElementSibling;
-    return button.dataset.pending !== 'true'
-      && status?.textContent?.includes(expectedStatusText) === true
-      && permission?.textContent?.trim() === expectedPermissionText;
-  }, `Voice story did not reach the expected state: ${expectedStatusText}`);
+  await userEvent.click(selector);
+  await waitForStoryCondition(
+    () => selector.getAttribute('aria-expanded') === 'true',
+    'Daily Review model selector did not open',
+  );
+  return selector;
 }
 
-async function openFirstActiveBotChannel(canvasElement: HTMLElement) {
-  const button = await waitForStoryButton(
-    canvasElement,
-    (candidate) => candidate.closest('.settingsRemoteAccessChannelRow') !== null,
-  );
-  button.click();
-  await waitForStoryCondition(
-    () => canvasElement.querySelector('.settingsBotDetail') !== null,
-    'Remote Access story did not open the channel detail',
-  );
+function assertDailyReviewSettingsBounds(
+  canvasElement: HTMLElement,
+  selector: HTMLButtonElement,
+): void {
+  const time = canvasElement.querySelector<HTMLInputElement>('input[type="text"]');
+  const page = canvasElement.querySelector<HTMLElement>('.settingsPageStack');
+  // The rows kit (#1972) retired `.settingsFormLayout`. A control now lives in
+  // its row's capped end slot, so `.settingsRowEnd` is the container this
+  // contract has always meant: the bound the control must not overflow.
+  const timeForm = time?.closest<HTMLElement>('.settingsRowEnd');
+  const selectorForm = selector.closest<HTMLElement>('.settingsRowEnd');
+  const listbox = document.querySelector<HTMLElement>('[role="listbox"]');
+  const popover = listbox?.closest<HTMLElement>('[popover]');
+  if (!time || !page || !timeForm || !selectorForm || !popover) {
+    throw new Error('Daily Review bounds contract could not resolve its production elements');
+  }
+
+  const withinHorizontally = (inner: DOMRect, outer: DOMRect) =>
+    inner.left >= outer.left - 1 && inner.right <= outer.right + 1;
+  const timeRect = time.getBoundingClientRect();
+  const selectorRect = selector.getBoundingClientRect();
+  const popoverRect = popover.getBoundingClientRect();
+  const pageRect = page.getBoundingClientRect();
+  const doesNotCoverTrigger =
+    popoverRect.top >= selectorRect.bottom - 1
+    || popoverRect.bottom <= selectorRect.top + 1;
+  const valid =
+    withinHorizontally(timeRect, timeForm.getBoundingClientRect())
+    && withinHorizontally(selectorRect, selectorForm.getBoundingClientRect())
+    && popoverRect.width > 0
+    && popoverRect.height > 0
+    && withinHorizontally(popoverRect, pageRect)
+    && popoverRect.left >= -1
+    && popoverRect.right <= window.innerWidth + 1
+    && doesNotCoverTrigger;
+  if (!valid) {
+    throw new Error(`Daily Review controls overflow at ${window.innerWidth}px`);
+  }
 }
 
 // Real path: sidebar footer 设置 → 模型.
@@ -1077,15 +916,35 @@ export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
 };
+// Real path: sidebar footer 设置 → 子 Agent, with multiple approved model routes.
+export const Subagents: Story = {
+  decorators: [withSubagentSettingsBridge],
+  render: () => <SettingsStory section="subagents" />,
+};
+
+// Real path: 设置 → 子 Agent → 配置“实现与验证”. A second story because the
+// editor is a route level, not a disclosure: it replaces the list, shares no
+// content with it, and is where this page's pixel work happens. Landed on the
+// implementation preset because it renders the most of the level at once — the
+// settled read-only subagent_id, the capability warning, the degraded model
+// option, and the delete section. It renders them; what they must be is pinned
+// in the e2e journeys, not here.
+export const SubagentEditor: Story = {
+  decorators: [withSubagentSettingsBridge],
+  render: () => <SettingsStory section="subagents" />,
+  play: async ({ canvasElement }) => {
+    const button = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.getAttribute('aria-label') === '配置“实现与验证”',
+    );
+    await userEvent.click(button);
+  },
+};
+
 // Real path: 设置 → 通用.
 export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
-};
-// Real path: 设置 → 通用 on a fresh workspace with no model connections.
-export const GeneralEmptyModelCatalog: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="general" connections={[]} defaultSlug={null} />,
 };
 // Real path: 设置 → 外观.
 export const Appearance: Story = {
@@ -1093,16 +952,6 @@ export const Appearance: Story = {
   render: () => <SettingsStory section="appearance" />,
 };
 /** #1362: proxy + auth enabled so the full form-grid stack renders. */
-// Real path: 设置 → 通用 → 代理服务器 on → 代理认证 on.
-export const GeneralProxyConfigured: Story = {
-  decorators: [withGeneralProxyBridge],
-  render: () => <SettingsStory section="general" />,
-};
-// Real path: 设置 → 使用统计.
-export const Usage: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="usage" />,
-};
 /**
  * #1364: the requests Astryx Table with hostile-width content (dated preview
  * model ids, namespaced MCP tool names). No story rendered a table at
@@ -1114,21 +963,10 @@ export const UsageRequestsPopulated: Story = {
   decorators: [withUsagePopulatedBridge],
   render: () => <SettingsStory section="usage" />,
 };
-// Real path: same tab on a fresh workspace with no recorded traffic.
-export const UsageEmpty: Story = {
-  decorators: [withUsageEmptyBridge],
-  render: () => <SettingsStory section="usage" />,
-};
-// Real path: 设置 → 记忆.
-export const Memory: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="memory" />,
-};
 /**
  * #1364: entry list (long title / content / tag set), archived group, and
- * backup-candidate rows. The default story is the clean empty state — the
- * bridge used to lack the `memory` channel entirely, so the page booted
- * into error toasts instead of either state.
+ * backup-candidate rows. The bridge used to lack the `memory` channel
+ * entirely, so the page booted into error toasts instead of any state.
  */
 // Real path: 设置 → 记忆, on a workspace with saved memories and backup candidates.
 export const MemoryPopulated: Story = {
@@ -1140,59 +978,40 @@ export const WebSearch: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="search" />,
 };
-/**
- * #1364: configured key + live-query results with a long title, a bare-URL
- * title, and a long snippet — the result list's wrapping surface. The play
- * step drives the real query path against the story bridge.
- */
-// Real path: 设置 → 联网搜索 with a saved Tavily key → type a query → 搜索.
-export const WebSearchResults: Story = {
-  decorators: [withWebSearchConfiguredBridge],
-  render: () => <SettingsStory section="search" />,
-  play: async ({ canvasElement }) => {
-    const input = await waitForStoryCondition(
-      () => canvasElement.querySelector<HTMLInputElement>('input[aria-label="联网搜索真实查询"]') !== null,
-      'Web search story did not render the query input',
-    ).then(() => canvasElement.querySelector<HTMLInputElement>('input[aria-label="联网搜索真实查询"]')!);
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    setValue?.call(input, 'electron vibrancy sequoia');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    const search = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '搜索' && !candidate.disabled,
-    );
-    search.click();
-    await waitForStoryCondition(
-      () => canvasElement.querySelectorAll('.settingsWebSearchResult').length > 0,
-      'Web search story did not render live results',
-    );
-  },
-};
 // Real path: 设置 → 语音.
 export const Voice: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="voice" />,
 };
-// Real path: 设置 → 语音 → 测试录音, when the microphone is authorized and the pipeline works.
-export const VoiceSuccess: Story = {
-  decorators: [withSettingsBridge, withVoiceCaptureOutcome('success')],
-  render: () => <SettingsStory section="voice" />,
-  play: async ({ canvasElement }) => {
-    await runVoiceStoryCapture(canvasElement, '录音链路可用', '已授权');
-  },
-};
-// Real path: same test, when macOS has denied microphone access.
+/**
+ * The idle story above cannot show the page's only error surface. `permissionSnapshot`
+ * already reports microphone `denied` on darwin, and `runCaptureSmoke` returns on that
+ * snapshot before it ever reaches `getUserMedia` — so the real path gets here with no
+ * MediaRecorder mock at all, which is why the old decorator-driven story was both
+ * heavier and wrong.
+ */
+// Real path: 设置 → 语音 → 运行录音自检, when macOS has denied microphone access.
 export const VoicePermissionDenied: Story = {
-  decorators: [withSettingsBridge, withVoiceCaptureOutcome('denied')],
+  decorators: [withSettingsBridge],
   render: () => <SettingsStory section="voice" />,
   play: async ({ canvasElement }) => {
-    await runVoiceStoryCapture(canvasElement, '麦克风权限被拒绝', '已拒绝');
+    const button = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('运行录音自检') === true,
+    );
+    button.click();
+    // The page renders several `[role="status"]` regions and the capture result
+    // is not the first one, so this must scan them all — taking `querySelector`
+    // here is what left the previous voice stories asserting against an empty
+    // node and passing on a state they never reached.
+    await waitForStoryCondition(
+      () =>
+        Array.from(canvasElement.querySelectorAll<HTMLElement>('[role="status"]')).some(
+          (region) => region.textContent?.includes('麦克风权限被拒绝') === true,
+        ),
+      'Voice story did not reach the denied state',
+    );
   },
-};
-// Real path: 设置 → 远程接入.
-export const BotChat: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="bot-chat" />,
 };
 // Real path: same page when a bound channel needs attention — e.g. a WeChat session that
 // has to be re-scanned.
@@ -1200,35 +1019,51 @@ export const BotChatNeedsAttention: Story = {
   decorators: [withBotAttentionBridge],
   render: () => <SettingsStory section="bot-chat" />,
 };
-// Real path: 设置 → 远程接入 → click that channel → its detail panel.
-export const BotChatNeedsAttentionDetail: Story = {
-  decorators: [withBotAttentionBridge],
-  render: () => <SettingsStory section="bot-chat" />,
-  play: async ({ canvasElement }) => {
-    await openFirstActiveBotChannel(canvasElement);
-  },
-};
 // Real path: 设置 → 每日回顾.
 export const DailyReview: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="daily-review" />,
+};
+
+// Real path at a narrow desktop window.
+// Real path: Settings → Daily Review at a narrow window.
+export const DailyReviewNarrow: Story = {
+  ...DailyReview,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
+// Real path with the Astryx model selector expanded.
+// Real path: Settings → Daily Review → Analysis model.
+export const DailyReviewModelSelectorOpen: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="daily-review" />,
+  play: async ({ canvasElement }) => {
+    await openDailyReviewModelSelector(canvasElement);
+  },
+};
+
+// Real path: Settings → Daily Review → Analysis model at the minimum window width.
+export const DailyReviewModelSelectorOpenNarrow: Story = {
+  decorators: [withSettingsBridge],
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+  render: () => <SettingsStory section="daily-review" />,
+  play: async ({ canvasElement }) => {
+    const selector = await openDailyReviewModelSelector(canvasElement);
+    assertDailyReviewSettingsBounds(canvasElement, selector);
+  },
 };
 // Real path: 设置 → 数据.
 export const Data: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="data" />,
 };
-// Real path: 设置 → 权限与能力, with diagnostics collapsed — the state the page opens in.
-export const PermissionCenter: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="permissions" />,
-};
 /**
- * The capability layers grid and guidance block are hidden until diagnostics are expanded, so the
- * collapsed story gives those layouts no baseline at all — which is exactly
- * where the remaining overflow was hiding.
+ * The expanded state, not the collapsed one the page opens in: the capability layers grid
+ * and the guidance block are hidden until diagnostics are expanded, so the collapsed story
+ * gives those layouts no baseline at all — which is exactly where the remaining overflow
+ * was hiding. Everything the collapsed story shows is still on screen here.
  */
-// Real path: same page after clicking 展开详情.
+// Real path: 设置 → 权限与能力 → 展开详情.
 export const PermissionCenterDiagnosticsExpanded: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,
@@ -1240,9 +1075,7 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
     toggle.click();
     await waitForStoryCondition(
       () =>
-        canvasElement
-          .querySelector('.settingsCapabilityList')
-          ?.getAttribute('data-diagnostics-open') === 'true',
+        canvasElement.querySelector('[data-diagnostics="open"]') !== null,
       'Permission Center story did not expand the capability diagnostics',
     );
   },
@@ -1251,11 +1084,6 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
 // reporting.
 export const HealthCenter: Story = {
   decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="health" />,
-};
-// Real path: same page with nothing to report yet.
-export const HealthCenterEmpty: Story = {
-  decorators: [withEmptyHealthBridge],
   render: () => <SettingsStory section="health" />,
 };
 // Real path: 设置 → 关于 (also reachable from 反馈 in the topbar).

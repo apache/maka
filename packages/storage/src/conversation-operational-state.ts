@@ -1,3 +1,4 @@
+import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
@@ -24,6 +25,9 @@ class SqliteConversationOperationalStateStore implements ConversationOperational
 
   async purge(sessionId: string): Promise<void> {
     if (!isRuntimeStorageSafeId(sessionId)) throw new Error('Invalid session id');
+    if (sessionId === WORKSPACE_AUTHORITY_SESSION_ID) {
+      throw new Error('Workspace authority control-plane state cannot be purged as a conversation');
+    }
     this.#lease.transaction('write', () => {
       const database = this.#lease.database;
       database

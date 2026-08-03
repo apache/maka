@@ -3,15 +3,16 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type {
+  AgentRunEvent,
+  AgentRunEventType,
+  AgentRunHeader,
+  EmittedAgentRunEvent,
+  RuntimeEvent,
+} from '@maka/core';
 import { createSessionStore } from '@maka/storage';
+import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import {
-  createLegacyAgentRunStoreForTest,
-  createLegacyRuntimeEventStoreForTest,
-} from '@maka/storage/legacy-execution-test-support';
-import {
-  AGENT_RUN_INSPECT_DOCUMENT_VERSION,
-  SESSION_INSPECT_DOCUMENT_VERSION,
   inspectAgentRunDocument,
   inspectSessionDocument,
   renderAgentRunInspectTree,
@@ -22,8 +23,8 @@ describe('versioned execution inspect documents', () => {
   test('reports unknown tool outcomes without copying Runtime payloads', async () => {
     await withWorkspace(async (root) => {
       const sessionStore = createSessionStore(root);
-      const runStore = createLegacyAgentRunStoreForTest(root);
-      const runtimeStore = createLegacyRuntimeEventStoreForTest(root);
+      const runStore = createSqliteAgentRunStore(root);
+      const runtimeStore = createWorkspaceRuntimeStore(root);
       const session = await sessionStore.create({
         cwd: '/tmp/workspace',
         backend: 'fake',
@@ -64,7 +65,7 @@ describe('versioned execution inspect documents', () => {
         agentRunId: RUN_ID,
       });
 
-      assert.equal(document.schemaVersion, AGENT_RUN_INSPECT_DOCUMENT_VERSION);
+      assert.equal(document.schemaVersion, 'maka.agent_run_inspect.v1');
       assert.deepEqual(document.tools.callsWithoutResponse, [
         {
           toolCallId: 'tool-pending',
@@ -90,8 +91,8 @@ describe('versioned execution inspect documents', () => {
   test('projects a Session as bounded AgentRun documents without reading messages', async () => {
     await withWorkspace(async (root) => {
       const sessionStore = createSessionStore(root);
-      const runStore = createLegacyAgentRunStoreForTest(root);
-      const runtimeStore = createLegacyRuntimeEventStoreForTest(root);
+      const runStore = createSqliteAgentRunStore(root);
+      const runtimeStore = createWorkspaceRuntimeStore(root);
       const session = await sessionStore.create({
         cwd: '/tmp/workspace',
         name: 'Inspectable session',
@@ -126,7 +127,7 @@ describe('versioned execution inspect documents', () => {
         session.id,
       );
 
-      assert.equal(document.schemaVersion, SESSION_INSPECT_DOCUMENT_VERSION);
+      assert.equal(document.schemaVersion, 'maka.session_inspect.v1');
       assert.equal(document.session.name, 'Inspectable session');
       assert.equal(document.session.revisionRootSessionId, 'root-session');
       assert.equal(document.session.revisionParentSessionId, 'previous-version');
@@ -161,7 +162,7 @@ function runHeader(sessionId: string): AgentRunHeader {
   };
 }
 
-function runEvent(sessionId: string, type: AgentRunEvent['type']): AgentRunEvent {
+function runEvent(sessionId: string, type: AgentRunEventType): EmittedAgentRunEvent {
   return { id: `op-${type}`, type, runId: RUN_ID, sessionId, turnId: TURN_ID, ts: TS + 1 };
 }
 

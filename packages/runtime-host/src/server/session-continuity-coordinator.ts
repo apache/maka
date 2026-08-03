@@ -6,6 +6,8 @@ import {
   RUNTIME_HOST_MAX_FRAME_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
+  type AgentGraphChangedFrame,
+  type AgentGraphChangedReason,
   type SessionAssistantDelta,
   type SessionContinuitySnapshot,
   type SessionDeltaFrame,
@@ -93,6 +95,14 @@ interface PendingRefresh {
   inFlight: boolean;
 }
 
+interface PendingAgentGraphChange {
+  event: {
+    rootSessionId: string;
+    graphId: string;
+    reason: AgentGraphChangedReason;
+  };
+}
+
 export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly handlers: SessionContinuityOperationHandlerMap = {
     'subscription.open': async (input, context) => {
@@ -116,6 +126,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly #sessions = new Map<string, SessionProjectionState>();
   readonly #subscriptions = new Map<string, Subscriber>();
   readonly #pendingRefreshes = new Map<string, PendingRefresh>();
+  readonly #pendingAgentGraphChanges = new Map<string, PendingAgentGraphChange>();
   readonly #hostEpoch: string;
   readonly #readCanonical: ReadCanonicalSessionProjection;
   #closed = false;
@@ -203,6 +214,46 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           this.onPublicationFailure(error);
         },
       );
+  }
+
+  /** Coalesce process-local graph invalidations onto the root Session sequence. */
+  enqueueAgentGraphChanged(event: {
+    rootSessionId: string;
+    graphId: string;
+    reason: AgentGraphChangedReason;
+  }): void {
+    if (this.#closed) return;
+    const pending = this.#pendingAgentGraphChanges.get(event.rootSessionId);
+    if (pending) {
+      pending.event = { ...event };
+      return;
+    }
+    const change: PendingAgentGraphChange = { event: { ...event } };
+    this.#pendingAgentGraphChanges.set(event.rootSessionId, change);
+    void this.sessionAdmission
+      .enqueueDetached(event.rootSessionId, () => {
+        if (this.#pendingAgentGraphChanges.get(event.rootSessionId) !== change) return;
+        this.#pendingAgentGraphChanges.delete(event.rootSessionId);
+        if (this.#closed) return;
+        const state = this.#sessions.get(event.rootSessionId);
+        if (!state) return;
+        for (const subscriber of state.subscribers.values()) {
+          const frame: AgentGraphChangedFrame = {
+            kind: 'subscription.agent_graph_changed',
+            hostEpoch: this.#hostEpoch,
+            subscriptionId: subscriber.subscriptionId,
+            sequence: subscriber.nextSequence,
+            ...change.event,
+          };
+          this.#enqueue(subscriber, frame);
+        }
+      })
+      .catch((error: unknown) => {
+        if (this.#pendingAgentGraphChanges.get(event.rootSessionId) === change) {
+          this.#pendingAgentGraphChanges.delete(event.rootSessionId);
+        }
+        this.onPublicationFailure(error);
+      });
   }
 
   async holdTerminalPublication(
@@ -335,6 +386,26 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     });
   }
 
+  async retireSessions(
+    sessionIds: readonly string[],
+    admission: SessionAdmissionLease,
+  ): Promise<void> {
+    for (const sessionId of new Set(sessionIds)) {
+      await this.#runInSessionLane(
+        sessionId,
+        () => {
+          const state = this.#sessions.get(sessionId);
+          if (!state) return;
+          for (const subscriber of state.subscribers.values()) {
+            this.#enqueueSessionRemoved(subscriber);
+          }
+          this.#sessions.delete(sessionId);
+        },
+        admission,
+      );
+    }
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -342,6 +413,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     this.#sessions.clear();
     this.#subscriptions.clear();
     this.#pendingRefreshes.clear();
+    this.#pendingAgentGraphChanges.clear();
   }
 
   async #open(
@@ -466,7 +538,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       this.#evictSlowSubscriber(subscriber);
       return;
     }
-    const terminalBytes = slowConsumerFrameBytes(subscriber, this.#hostEpoch);
+    const terminalBytes = terminalFrameByteBudget(subscriber, this.#hostEpoch);
     if (
       subscriber.queue.length >= MAX_SUBSCRIBER_QUEUED_FRAMES - 1 ||
       subscriber.queuedBytes + encodedBytes + terminalBytes > MAX_SUBSCRIBER_QUEUED_BYTES
@@ -548,6 +620,29 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       wireBytes += wireCharacterBytes;
     }
     if (chunk.length > 0 && subscriber.phase === 'open') this.#enqueue(subscriber, frame(chunk));
+  }
+
+  #enqueueSessionRemoved(subscriber: Subscriber): void {
+    if (subscriber.phase !== 'open' || subscriber.terminalQueued) return;
+    const frame: SubscriptionFrame = {
+      kind: 'subscription.closed',
+      hostEpoch: this.#hostEpoch,
+      subscriptionId: subscriber.subscriptionId,
+      sequence: subscriber.nextSequence,
+      reason: 'session_removed',
+    };
+    const encodedBytes = encodeProtocolFrame(frame).byteLength;
+    if (
+      subscriber.queue.length >= MAX_SUBSCRIBER_QUEUED_FRAMES ||
+      subscriber.queuedBytes + encodedBytes > MAX_SUBSCRIBER_QUEUED_BYTES
+    ) {
+      throw new Error('Session removal terminal headroom was not preserved');
+    }
+    subscriber.queue.push({ frame, encodedBytes });
+    subscriber.queuedBytes += encodedBytes;
+    subscriber.nextSequence += 1;
+    subscriber.terminalQueued = true;
+    if (subscriber.activated) this.#pump(subscriber);
   }
 
   #pump(subscriber: Subscriber): void {
@@ -693,6 +788,19 @@ function slowConsumerFrameBytes(subscriber: Subscriber, hostEpoch: string): numb
     sequence: subscriber.nextSequence + 1,
     reason: 'slow_consumer',
   }).byteLength;
+}
+
+function terminalFrameByteBudget(subscriber: Subscriber, hostEpoch: string): number {
+  return Math.max(
+    slowConsumerFrameBytes(subscriber, hostEpoch),
+    encodeProtocolFrame({
+      kind: 'subscription.closed',
+      hostEpoch,
+      subscriptionId: subscriber.subscriptionId,
+      sequence: subscriber.nextSequence + 1,
+      reason: 'session_removed',
+    }).byteLength,
+  );
 }
 
 function immutableClone<T>(value: T): T {

@@ -21,6 +21,8 @@ import { evaluateHistoryCompactCheckpointReplay } from '../history-compact.js';
 import type { HistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
+import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
+import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
@@ -41,6 +43,8 @@ interface MidTurnFixture {
   anchor: RuntimeEvent;
   /** The fixture's durable RuntimeEvent ledger for the current turn/run. */
   ledger: RuntimeEvent[];
+  /** Canonical accounting records settled during the turn (#1679). */
+  modelCalls: ModelCallAttempt[];
   ledgerReads: number;
   events: SessionEvent[];
   messages: unknown[];
@@ -75,6 +79,12 @@ interface MidTurnFixtureOptions {
   activeToolResultPrune?: boolean;
   /** Enable semantic compaction so it competes with the capacity hook. */
   semanticCompact?: boolean;
+  /**
+   * Summarize through the real `buildLlmHistorySummarizer` against a mock
+   * provider, so the compaction settles a canonical record instead of the
+   * stubbed string the other cases return.
+   */
+  meteredSummarizer?: boolean;
   /** Override the checkpoint recorder (e.g. to simulate a write failure). */
   record?: (checkpoint: HistoryCompactCheckpoint) => void;
   /** Make the prior turns large so folding them rescues an over-window turn. */
@@ -242,6 +252,23 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ledger.push(mapped);
   };
 
+  const modelCalls: ModelCallAttempt[] = [];
+  const summarizerModel = new MockLanguageModelV4({
+    doGenerate: {
+      content: [{ type: 'text', text: 'MID_TURN_SUMMARY_SENTINEL' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: {
+        inputTokens: { total: 31, noCache: 31, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 7, text: 7, reasoning: 0 },
+        raw: { input_tokens: 31, output_tokens: 7 },
+      },
+      warnings: [],
+    },
+  });
+  const meteredSummarize = buildLlmHistorySummarizer({
+    resolveModel: () => summarizerModel,
+  });
+
   const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
@@ -333,9 +360,20 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     summarizeHistoryCompact: async (input) => {
       fixture.summarizerCalls += 1;
       summarizedSources.push(JSON.stringify(input.source.foldedRuntimeEvents));
+      // The real summarizer is what carries the accounting the backend hands
+      // it, so the metered case must go through it rather than a stub.
+      if (options.meteredSummarizer) return await meteredSummarize(input);
       const summary = options.summarize ? await options.summarize() : 'MID_TURN_SUMMARY_SENTINEL';
       return summary;
     },
+    ...(options.meteredSummarizer
+      ? {
+          recordProviderRequestCapture: async () => ({ artifactId: 'artifact-mid-turn-capture' }),
+          recordModelCallAttempt: (attempt: ModelCallAttempt) => {
+            modelCalls.push(attempt);
+          },
+        }
+      : {}),
     recordHistoryCompactCheckpoint: (checkpoint) => {
       if (options.record) return options.record(checkpoint);
       recorded.push(checkpoint);
@@ -348,8 +386,17 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       return ledger.filter((event) => event.turnId === turnId);
     },
     allowMidTurnHistoryCompaction: true,
-    recordLlmCall: (record) => {
-      llmCalls.push(record as (typeof llmCalls)[number]);
+    // The send-level record is gone (#1679); its diagnostics moved to the run
+    // trace, which is what these assertions observe now.
+    recordRunTrace: (event) => {
+      if (event.type !== 'send_diagnostics_recorded') return;
+      // Same fail-closed rule the send-level record enforced: a send with no
+      // usable usage evidence produces no usage row at all (#972). The trace
+      // still fires for its context diagnostics; only usage-bearing sends land
+      // here.
+      const data = event.data as (typeof llmCalls)[number] | undefined;
+      if (data?.totalTokens === undefined) return;
+      llmCalls.push(data);
     },
     newId: idGenerator(),
     now: monotonicClock(),
@@ -369,6 +416,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     priorEvents,
     anchor,
     ledger,
+    modelCalls,
     events,
     messages,
     llmCalls,
@@ -476,6 +524,39 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       100_000,
     );
     assert.equal(fit.fits, true);
+  });
+
+  test('a mid-turn compaction settles a canonical record for the run it interrupts', async () => {
+    // End-to-end over the backend glue, not the summarizer in isolation: the
+    // accounting identity is built inside `AiSdkCompaction` from the backend's
+    // live `runId`, which only exists while a send is in flight. A stubbed
+    // resolver in a unit test cannot show that the real one resolves.
+    const fixture = buildFixture({ meteredSummarizer: true });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    const attempts = fixture.modelCalls.map((attempt) => decodeModelCallAttempt(attempt));
+    const compaction = attempts.find((attempt) => attempt.callKind === 'history_compact');
+    assert.ok(compaction, 'the compaction call must settle its own canonical record');
+    assert.equal(compaction.sessionId, 'session-1');
+    assert.equal(compaction.runId, 'run-1', 'attributed to the run the send is executing');
+    assert.equal(compaction.turnId, 'turn-1');
+    assert.equal(compaction.status, 'completed');
+    assert.equal(compaction.usageBasis, 'reported');
+    assert.equal(compaction.inputTokens, 31);
+    assert.equal(compaction.outputTokens, 7);
+    // The send's own steps meter separately: one auxiliary call is not folded
+    // into the turn it interrupts.
+    assert.equal(
+      attempts.filter((attempt) => attempt.callKind === 'history_compact').length,
+      1,
+      'one summarization is one record',
+    );
+    assert.equal(
+      attempts.some((attempt) => attempt.callKind === 'main'),
+      true,
+      'and the send it interrupts still records its own',
+    );
   });
 
   test('recovery re-projection with ctx.branch replays the checkpoint without the raw span', async () => {

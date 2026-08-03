@@ -6,7 +6,8 @@ import { describe, test } from 'node:test';
 import type { HarborCellOutput } from '../cell-output.js';
 import type { TaskRunner } from '../fixed-prompt-controller.js';
 import { assertHarnessAbReportCompleted, buildHarnessAbReport } from '../harness-ab-report.js';
-import { runHarnessAbComparison } from '../harness-ab-run.js';
+import { runHarnessAbComparison, runHarnessArmCohort } from '../harness-ab-run.js';
+import type { HarnessAbArmId } from '../harness-ab-manifest.js';
 import { HarborInfraError } from '../harbor-task-runner.js';
 import { hashHeadlessSystemPrompt } from '../system-prompts.js';
 import { tokenSummary } from './helpers/cell-output-fixtures.js';
@@ -436,7 +437,161 @@ describe('runHarnessAbComparison', () => {
   });
 });
 
-function harnessArm(id: 'maka' | 'opencode', calls: string[], beforeRun?: () => Promise<void>) {
+describe('runHarnessArmCohort', () => {
+  test('resumes a two-arm prefix by running only the missing third-arm cells', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-harness-cohort-resume-'));
+    try {
+      const promptPath = join(dir, 'empty-system-prompt.txt');
+      const resultsJsonlPath = join(dir, 'results.jsonl');
+      await writeFile(promptPath, '', 'utf8');
+      const calls: string[] = [];
+      const maka = harnessArm('maka', calls);
+      const codex = harnessArm('codex', calls);
+      const claude = harnessArm('claude-code', calls);
+      const common = {
+        runId: 'deepseek-three-way-resume',
+        runRoot: dir,
+        resultsJsonlPath,
+        systemPromptPath: promptPath,
+        resumeFingerprint: 'sha256:manifest',
+        pairConcurrency: 1,
+        armExecution: 'sequential' as const,
+      };
+
+      await runHarnessAbComparison({
+        ...common,
+        evaluationTasks: [
+          { id: 'a', path: '/tasks/a' },
+          { id: 'b', path: '/tasks/b' },
+        ],
+        arms: [maka, codex],
+      });
+      assert.equal(calls.length, 4);
+
+      const resumed = await runHarnessArmCohort({
+        ...common,
+        evaluationTasks: [
+          { id: 'a', path: '/tasks/a' },
+          { id: 'b', path: '/tasks/b' },
+          { id: 'c', path: '/tasks/c' },
+        ],
+        arms: [maka, codex, claude],
+      });
+
+      assert.deepEqual(resumed.commonCohort, {
+        groups: 3,
+        comparableGroups: 3,
+        excludedGroupIds: [],
+      });
+      assert.deepEqual(calls, [
+        'a:maka',
+        'a:codex',
+        'b:codex',
+        'b:maka',
+        'a:claude-code',
+        'b:claude-code',
+        'c:claude-code',
+        'c:maka',
+        'c:codex',
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports all pairwise projections from one three-arm cohort', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-harness-cohort-'));
+    try {
+      const promptPath = join(dir, 'empty-system-prompt.txt');
+      await writeFile(promptPath, '', 'utf8');
+      const calls: string[] = [];
+      const summary = await runHarnessArmCohort({
+        runId: 'deepseek-three-way',
+        runRoot: dir,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        systemPromptPath: promptPath,
+        resumeFingerprint: 'sha256:manifest',
+        evaluationTasks: [
+          { id: 'a', path: '/tasks/a' },
+          { id: 'b', path: '/tasks/b' },
+        ],
+        arms: [
+          harnessArm('maka', calls),
+          harnessArm('codex', calls),
+          harnessArm('claude-code', calls),
+        ],
+        pairConcurrency: 1,
+        armExecution: 'sequential',
+      });
+
+      assert.deepEqual(summary.armIds, ['maka', 'codex', 'claude-code']);
+      assert.deepEqual(summary.commonCohort, {
+        groups: 2,
+        comparableGroups: 2,
+        excludedGroupIds: [],
+      });
+      assert.deepEqual(
+        summary.pairwise.map(({ baselineArmId, candidateArmId }) => [
+          baselineArmId,
+          candidateArmId,
+        ]),
+        [
+          ['maka', 'codex'],
+          ['maka', 'claude-code'],
+          ['codex', 'claude-code'],
+        ],
+      );
+      assert.deepEqual(calls, [
+        'a:maka',
+        'a:codex',
+        'a:claude-code',
+        'b:codex',
+        'b:claude-code',
+        'b:maka',
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('excludes an unscored arm cell from the common cohort', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-harness-cohort-exclusion-'));
+    try {
+      const promptPath = join(dir, 'empty-system-prompt.txt');
+      await writeFile(promptPath, '', 'utf8');
+      const calls: string[] = [];
+      const codex = harnessArm('codex', calls);
+      const meteredRunner = codex.harborRunner;
+      codex.harborRunner = async (input) => {
+        const output = await meteredRunner(input);
+        const { tokenSummary: _tokenSummary, ...cell } = output.cell;
+        return { ...output, cell };
+      };
+
+      const summary = await runHarnessArmCohort({
+        runId: 'deepseek-three-way-exclusion',
+        runRoot: dir,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        systemPromptPath: promptPath,
+        resumeFingerprint: 'sha256:manifest',
+        evaluationTasks: [{ id: 'a', path: '/tasks/a' }],
+        arms: [harnessArm('maka', calls), codex, harnessArm('claude-code', calls)],
+        pairConcurrency: 1,
+        armExecution: 'sequential',
+      });
+
+      assert.deepEqual(summary.commonCohort, {
+        groups: 1,
+        comparableGroups: 0,
+        excludedGroupIds: ['r0-a'],
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+function harnessArm(id: HarnessAbArmId, calls: string[], beforeRun?: () => Promise<void>) {
   const config = {
     id: `harness-${id}`,
     backend: 'ai-sdk' as const,

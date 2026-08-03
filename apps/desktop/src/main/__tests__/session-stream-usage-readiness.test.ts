@@ -10,6 +10,7 @@ import {
   type BackendFactoryContext,
 } from '@maka/runtime';
 import {
+  createSqliteModelCallLedger,
   createSqlitePlanStore,
   createSqliteTelemetryRepo,
 } from '@maka/storage';
@@ -30,6 +31,7 @@ test('the first Desktop backend waits for canonical telemetry readiness', async 
   const root = await mkdtemp(join(tmpdir(), 'maka-desktop-usage-ready-'));
   const loadGate = deferred();
   const telemetryRepo = createSqliteTelemetryRepo(root);
+  const modelCallLedger = createSqliteModelCallLedger(root);
   const planStore = createSqlitePlanStore(root);
   await planStore.ready();
   let lookupPricing = buildPricingLookup();
@@ -68,6 +70,7 @@ test('the first Desktop backend waits for canonical telemetry readiness', async 
       },
       mcpManager: {},
       telemetryRepo,
+      modelCallLedger,
       ensureUsageReady,
       artifactStore: {},
       deepResearchTools: [],
@@ -96,6 +99,7 @@ test('the first Desktop backend waits for canonical telemetry readiness', async 
     await backend.dispose();
   } finally {
     planStore.close();
+    await modelCallLedger.close().catch(() => undefined);
     await telemetryRepo.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }

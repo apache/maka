@@ -17,6 +17,20 @@ export {
   type ParseMakaRunArgsResult,
 } from './run-command.js';
 export {
+  decodeActivationRequest,
+  parseMakaActivateArgs,
+  runMakaActivationCli,
+  type MakaActivationContext,
+  type MakaActivationBlockedReason,
+  type MakaActivationDeps,
+  type MakaActivationOptions,
+  type MakaActivationRequest,
+  type MakaActivationRuntime,
+  type MakaActivationRequiredAction,
+  type MakaActivationStatus,
+  type ParseMakaActivateArgsResult,
+} from './activation-command.js';
+export {
   selectMakaRunSession,
   type MakaRunSessionSelection,
   type MakaRunSessionSelectionDeps,

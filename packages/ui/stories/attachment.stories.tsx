@@ -117,11 +117,11 @@ function user(id: string, turnId: string, text: string, attachments: AttachmentR
   return { type: 'user', id, turnId, ts: NOW, text, attachments };
 }
 
-function Frame({ children }: { children: React.ReactNode }) {
+function Frame({ children, width = 960 }: { children: React.ReactNode; width?: number }) {
   return (
     <div
       style={{
-        width: 960,
+        width,
         maxWidth: 'calc(100vw - 48px)',
         margin: '0 auto',
         background: 'var(--background)',
@@ -188,35 +188,37 @@ export const ImageThumbnails: Story = {
   ),
 };
 
-// Real path: attach a file → the skeleton shown while its bytes are still being
-// ingested.
-export const PendingSkeleton: Story = {
+// Real path: send one prompt with every durable reference kind → file tokens sit
+// above the bubble, while inline Skill/file tokens, quote and image keep their own hierarchy.
+// The narrow frame verifies wrapping without inventing a second product layout.
+export const SentReferenceHierarchy: Story = {
   render: () => (
-    <Frame>
-      {/* No reader wired — the thumbnail stays in the pending skeleton state. */}
+    <Frame width={420}>
       <AttachmentChat
         {...baseChat}
-        onReadAttachmentBytes={undefined}
-        messages={[user('u3', 't3', '这张图还在读。', [attachment('image', 'loading.png', 'image/png', 1024)])]}
+        messages={[{
+          type: 'user',
+          id: 'u3',
+          turnId: 't3',
+          ts: NOW,
+          text: '请用 /skill:writer 对照 @packages/ui/src/chat-turn.tsx 检查这些材料。',
+          inlineReferences: [
+            { kind: 'skill', value: '/skill:writer', label: 'writer', start: 3 },
+            {
+              kind: 'workspace_file',
+              value: '@packages/ui/src/chat-turn.tsx',
+              label: 'chat-turn.tsx',
+              start: 20,
+            },
+          ],
+          attachments: [pdfAttachment, codeAttachment, imageAttachment],
+          quotes: [{
+            text: 'Inline references preserve the exact Composer token after send and reload.',
+            label: 'Architecture note',
+            sourceTurnId: 't2',
+          }],
+        }]}
       />
     </Frame>
   ),
-};
-
-// Real path: click an image attachment in a turn → the lightbox.
-export const Lightbox: Story = {
-  render: () => (
-    <Frame>
-      <AttachmentChat
-        {...baseChat}
-        messages={[user('u4', 't4', '点击图片放大查看。', [imageAttachment])]}
-      />
-    </Frame>
-  ),
-  play: async ({ canvasElement }) => {
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-    await new Promise((resolve) => window.setTimeout(resolve, 100));
-    const btn = canvasElement.querySelector<HTMLButtonElement>('button[aria-label^="查看图片"]');
-    btn?.click();
-  },
 };

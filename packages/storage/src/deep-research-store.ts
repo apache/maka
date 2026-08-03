@@ -1,6 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   isDeepResearchEvent,
@@ -21,13 +20,10 @@ import {
   type DeepResearchStore,
 } from '@maka/core/deep-research-run';
 import { assertSafeSessionId } from './session-store.js';
-import { appendJsonl } from './jsonl-append.js';
 import { chainWrite } from './write-queue.js';
 import {
   acquireOperationalStateDatabase,
-  completeOperationalStoreCutover,
   type OperationalStateDatabaseLease,
-  type OperationalStoreCutoverFailpoint,
 } from './operational-state-store.js';
 
 export type { DeepResearchStore } from '@maka/core/deep-research-run';
@@ -37,36 +33,26 @@ export interface CreateDeepResearchStoreOptions {
   now?: () => number;
 }
 
-export function createDeepResearchStore(
+export interface SqliteDeepResearchStore extends DeepResearchStore {
+  ready(): Promise<void>;
+  close(): void;
+}
+
+export type CreateSqliteDeepResearchStoreOptions = CreateDeepResearchStoreOptions;
+
+export function createSqliteDeepResearchStore(
   workspaceRoot: string,
-  options: CreateDeepResearchStoreOptions = {},
-): DeepResearchStore {
-  return new FileDeepResearchStore(
+  options: CreateSqliteDeepResearchStoreOptions = {},
+): SqliteDeepResearchStore {
+  return new SqliteDeepResearchStoreImpl(
     workspaceRoot,
     options.newId ?? randomUUID,
     options.now ?? Date.now,
   );
 }
 
-export interface SqliteDeepResearchStore extends DeepResearchStore {
-  ready(): Promise<void>;
-  close(): void;
-}
-
-export interface CreateSqliteDeepResearchStoreOptions extends CreateDeepResearchStoreOptions {
-  failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
-}
-
-export function createSqliteDeepResearchStore(
-  workspaceRoot: string,
-  options: CreateSqliteDeepResearchStoreOptions = {},
-): SqliteDeepResearchStore {
-  return new SqliteDeepResearchStoreImpl(workspaceRoot, options);
-}
-
-class FileDeepResearchStore implements DeepResearchStore {
-  private readonly sessionsRoot: string;
-  private readonly durabilityRoot: string;
+class SqliteDeepResearchStoreImpl implements SqliteDeepResearchStore {
+  readonly #lease: OperationalStateDatabaseLease;
   private readonly writeQueues = new Map<string, Promise<void>>();
   private readonly subscribers = new Set<(event: DeepResearchChangedEvent) => void>();
 
@@ -75,8 +61,15 @@ class FileDeepResearchStore implements DeepResearchStore {
     private readonly newId: () => string,
     private readonly now: () => number,
   ) {
-    this.sessionsRoot = join(workspaceRoot, 'sessions');
-    this.durabilityRoot = workspaceRoot;
+    this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
+  }
+
+  ready(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  close(): void {
+    this.#lease.close();
   }
 
   async read(sessionId: string): Promise<DeepResearchRun | undefined> {
@@ -86,38 +79,7 @@ class FileDeepResearchStore implements DeepResearchStore {
 
   async readEvents(sessionId: string): Promise<DeepResearchEvent[]> {
     assertSafeSessionId(sessionId);
-    const canonical = await this.readCanonicalEvents(sessionId);
-    if (canonical) return canonical;
-    let text: string;
-    try {
-      text = await readFile(this.eventsPath(sessionId), 'utf8');
-    } catch (error) {
-      if (isNodeError(error) && error.code === 'ENOENT') return [];
-      throw error;
-    }
-    const events: DeepResearchEvent[] = [];
-    const lines = text.split(/\r?\n/);
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index]!.trim();
-      if (!line) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch (error) {
-        throw new Error(
-          `Invalid deep research event JSONL line ${index + 1}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-      if (!isDeepResearchEvent(parsed)) {
-        throw new Error(
-          `Invalid deep research event JSONL line ${index + 1}: unexpected event shape`,
-        );
-      }
-      events.push(parsed);
-    }
-    return events;
+    return readSqliteDeepResearchEvents(this.#lease.database, sessionId);
   }
 
   subscribe(listener: (event: DeepResearchChangedEvent) => void): () => void {
@@ -377,164 +339,10 @@ class FileDeepResearchStore implements DeepResearchStore {
   }
 
   private async appendEvent(sessionId: string, event: DeepResearchEvent): Promise<void> {
-    if (await this.appendCanonicalEvent(sessionId, event)) return;
-    const path = this.eventsPath(sessionId);
-    await mkdir(dirname(path), { recursive: true });
-    await appendJsonl(path, `${JSON.stringify(event)}\n`, {
-      durable: true,
-      durabilityRoot: this.durabilityRoot,
-    });
-  }
-
-  protected async readCanonicalEvents(
-    _sessionId: string,
-  ): Promise<DeepResearchEvent[] | undefined> {
-    return undefined;
-  }
-
-  protected async appendCanonicalEvent(
-    _sessionId: string,
-    _event: DeepResearchEvent,
-  ): Promise<boolean> {
-    return false;
-  }
-
-  private eventsPath(sessionId: string): string {
-    return join(this.sessionsRoot, sessionId, 'deep-research', 'events.jsonl');
-  }
-}
-
-class SqliteDeepResearchStoreImpl extends FileDeepResearchStore implements SqliteDeepResearchStore {
-  readonly #lease: OperationalStateDatabaseLease;
-  readonly #ready: Promise<void>;
-
-  constructor(workspaceRoot: string, options: CreateSqliteDeepResearchStoreOptions) {
-    super(workspaceRoot, options.newId ?? randomUUID, options.now ?? Date.now);
-    const root = resolve(workspaceRoot);
-    this.#lease = acquireOperationalStateDatabase(root);
-    this.#ready = importLegacyDeepResearchState(root, this.#lease, options.failpoint);
-  }
-
-  ready(): Promise<void> {
-    return this.#ready;
-  }
-
-  close(): void {
-    this.#lease.close();
-  }
-
-  protected override async readCanonicalEvents(sessionId: string): Promise<DeepResearchEvent[]> {
-    await this.#ready;
-    return readSqliteDeepResearchEvents(this.#lease.database, sessionId);
-  }
-
-  protected override async appendCanonicalEvent(
-    sessionId: string,
-    event: DeepResearchEvent,
-  ): Promise<boolean> {
-    await this.#ready;
     this.#lease.transaction('write', () => {
       insertDeepResearchEvent(this.#lease.database, sessionId, event);
     });
-    return true;
   }
-}
-
-interface LegacyDeepResearchLedger {
-  sessionId: string;
-  events: DeepResearchEvent[];
-}
-
-async function importLegacyDeepResearchState(
-  root: string,
-  lease: OperationalStateDatabaseLease,
-  failpoint?: (point: OperationalStoreCutoverFailpoint) => void,
-): Promise<void> {
-  const ledgers = await readLegacyDeepResearchLedgers(root);
-  const fingerprint = `sha256:${createHash('sha256')
-    .update(JSON.stringify(ledgers))
-    .digest('hex')}`;
-  completeOperationalStoreCutover(lease, {
-    storeName: 'workflow_deep_research',
-    sourcePath: join(root, 'sessions'),
-    sourceFingerprint: fingerprint,
-    failpoint,
-    importAndValidate: (database) => {
-      let eventCount = 0;
-      for (const ledger of ledgers) {
-        for (const event of ledger.events) {
-          insertOrValidateDeepResearchEvent(database, ledger.sessionId, event);
-          eventCount += 1;
-        }
-      }
-      const persisted = database
-        .prepare('SELECT COUNT(*) AS count FROM workflow_deep_research_events')
-        .get() as { count?: unknown };
-      if (persisted.count !== eventCount) {
-        throw new Error('Deep Research cutover row-count validation failed');
-      }
-      return { sessions: ledgers.length, events: eventCount };
-    },
-  });
-}
-
-async function readLegacyDeepResearchLedgers(root: string): Promise<LegacyDeepResearchLedger[]> {
-  const sessionsRoot = join(root, 'sessions');
-  let entries;
-  try {
-    entries = await readdir(sessionsRoot, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw error;
-  }
-  const ledgers: LegacyDeepResearchLedger[] = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isDirectory()) continue;
-    assertSafeSessionId(entry.name);
-    let text: string;
-    try {
-      text = await readFile(
-        join(sessionsRoot, entry.name, 'deep-research', 'events.jsonl'),
-        'utf8',
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw error;
-    }
-    const events = decodeLegacyDeepResearchEvents(text, entry.name);
-    const projection = projectDeepResearchEvents(events);
-    if (projection.diagnostics.length > 0) {
-      throw new Error(
-        `Deep Research ledger projection failed: ${projection.diagnostics.join('; ')}`,
-      );
-    }
-    ledgers.push({ sessionId: entry.name, events });
-  }
-  return ledgers;
-}
-
-function decodeLegacyDeepResearchEvents(text: string, sessionId: string): DeepResearchEvent[] {
-  const events: DeepResearchEvent[] = [];
-  for (const [index, line] of text.split(/\r?\n/).entries()) {
-    if (!line.trim()) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch (error) {
-      throw new Error(
-        `Invalid deep research event JSONL line ${index + 1}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-    if (!isDeepResearchEvent(parsed) || parsed.sessionId !== sessionId) {
-      throw new Error(
-        `Invalid deep research event JSONL line ${index + 1}: unexpected event shape`,
-      );
-    }
-    events.push(parsed);
-  }
-  return events;
 }
 
 function readSqliteDeepResearchEvents(
@@ -586,27 +394,6 @@ function insertDeepResearchEvent(
     .run(sessionId, row.sequence, event.eventId, JSON.stringify(event));
 }
 
-function insertOrValidateDeepResearchEvent(
-  database: DatabaseSync,
-  sessionId: string,
-  event: DeepResearchEvent,
-): void {
-  const existing = database
-    .prepare(`
-      SELECT record_json
-      FROM workflow_deep_research_events
-      WHERE session_id = ? AND event_id = ?
-    `)
-    .get(sessionId, event.eventId) as { record_json?: unknown } | undefined;
-  if (existing) {
-    if (existing.record_json !== JSON.stringify(event)) {
-      throw new Error(`Deep Research cutover conflict: ${event.eventId}`);
-    }
-    return;
-  }
-  insertDeepResearchEvent(database, sessionId, event);
-}
-
 function refsFromContext(context: DeepResearchMutationContext): { refs?: DeepResearchEventRefs } {
   const refs: DeepResearchEventRefs = {
     ...(context.runId ? { runId: context.runId } : {}),
@@ -614,10 +401,6 @@ function refsFromContext(context: DeepResearchMutationContext): { refs?: DeepRes
     ...(context.toolCallId ? { toolCallId: context.toolCallId } : {}),
   };
   return Object.keys(refs).length > 0 ? { refs } : {};
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && 'code' in error;
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {

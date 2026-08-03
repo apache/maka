@@ -1,6 +1,11 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core';
+import type {
+  ProjectRecord,
+  SessionBlockedReason,
+  SessionStatus,
+  SessionSummary,
+} from '@maka/core';
 import { SessionListPanel } from '../src/session-list-panel.js';
 
 const NOW = Date.now();
@@ -67,6 +72,11 @@ function panelProps(input: {
   activeId?: string;
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
+  viewMode?: SessionListPanelProps['viewMode'];
+  groups?: SessionListPanelProps['groups'];
+  projectActions?: SessionListPanelProps['projectActions'];
+  worktreeSessionIds?: SessionListPanelProps['worktreeSessionIds'];
+  childSessionsByParentId?: SessionListPanelProps['childSessionsByParentId'];
 }): SessionListPanelProps {
   return {
     selection: { section: 'sessions', filter: 'chats' },
@@ -74,13 +84,35 @@ function panelProps(input: {
     ...(input.activeId ? { activeId: input.activeId } : {}),
     ...(input.streamingSessionIds ? { streamingSessionIds: input.streamingSessionIds } : {}),
     ...(input.staleSessionIds ? { staleSessionIds: input.staleSessionIds } : {}),
+    ...(input.groups ? { groups: input.groups } : {}),
+    ...(input.projectActions ? { projectActions: input.projectActions } : {}),
+    ...(input.worktreeSessionIds ? { worktreeSessionIds: input.worktreeSessionIds } : {}),
+    ...(input.childSessionsByParentId
+      ? { childSessionsByParentId: input.childSessionsByParentId }
+      : {}),
     onSelectSession: noop,
     onSelect: noop,
     onOpenSettings: noop,
     onNew: noop,
-    viewMode: 'conversation',
+    viewMode: input.viewMode ?? 'conversation',
     onViewModeChange: noop,
     rowActions,
+  };
+}
+
+function makeProject(
+  input: Partial<ProjectRecord> & Pick<ProjectRecord, 'id' | 'name'>,
+): ProjectRecord {
+  return {
+    id: input.id,
+    name: input.name,
+    available: input.available ?? true,
+    preferredPath: input.preferredPath ?? `/workspace/${input.id}`,
+    locations: input.locations ?? [
+      { path: input.preferredPath ?? `/workspace/${input.id}`, isWorktree: false },
+    ],
+    ...(input.archivedAt !== undefined ? { archivedAt: input.archivedAt } : {}),
+    ...(input.aliases ? { aliases: input.aliases } : {}),
   };
 }
 
@@ -98,7 +130,7 @@ function StoryFrame(props: {
     if (!focusActiveRow && !openActiveRowMenu) return;
     let menuTimeout: number | undefined;
     const focusTimeout = window.setTimeout(() => {
-      const activeRow = ref.current?.querySelector<HTMLElement>('.astryx-list-item[aria-current="true"]');
+      const activeRow = ref.current?.querySelector<HTMLElement>('[data-maka-contract="session-row"] [aria-current="true"]');
       activeRow?.querySelector<HTMLButtonElement>(':scope > button')?.focus({ preventScroll: true });
       if (openActiveRowMenu) {
         menuTimeout = window.setTimeout(() => {
@@ -127,34 +159,6 @@ function StoryFrame(props: {
     </div>
   );
 }
-
-const coreSessions = [
-  makeSession({
-    id: 'session-running',
-    name: '生成本周 benchmark 对比表',
-    status: 'running',
-    lastMessageAt: NOW - 2 * 60 * 1000,
-  }),
-  makeSession({
-    id: 'session-active',
-    name: 'Harbor adapter metadata 对齐',
-    lastMessageAt: NOW - 18 * 60 * 1000,
-    hasUnread: true,
-  }),
-  makeSession({
-    id: 'session-stale',
-    name: '旧连接里的模型选择',
-    lastMessageAt: NOW - 42 * 60 * 1000,
-    backend: 'fake',
-    llmConnectionSlug: 'removed-connection',
-  }),
-  makeSession({
-    id: 'session-pinned',
-    name: 'PR #390 Storybook polish tracking',
-    lastMessageAt: NOW - 76 * 60 * 1000,
-    isFlagged: true,
-  }),
-];
 
 const statusSessions = [
   makeSession({
@@ -203,23 +207,6 @@ const statusSessions = [
   }),
 ];
 
-const longListSessions = Array.from({ length: 36 }, (_, index) => makeSession({
-  id: `long-list-${index + 1}`,
-  name: `${index % 6 === 0 ? '已置顶 ' : ''}会话 ${String(index + 1).padStart(2, '0')} · ${
-    [
-      '整理发布前检查项',
-      '跟进 UI 回归截图',
-      '复盘运行时工具输出',
-      '确认 provider 配置',
-      '收敛 PR body',
-      '处理 review 反馈',
-    ][index % 6]
-  }`,
-  lastMessageAt: NOW - index * 47 * 60 * 1000,
-  isFlagged: index === 0 || index === 6,
-  hasUnread: index === 4 || index === 17,
-}));
-
 const longTitleSessions = [
   makeSession({
     id: 'long-title-active',
@@ -251,18 +238,6 @@ export const Empty: Story = {
   ),
 };
 
-// Real path: a workspace with enough history that the conversation list scrolls.
-export const LongList: Story = {
-  render: () => (
-    <StoryFrame>
-      <SessionListPanel {...panelProps({
-        sessions: longListSessions,
-        activeId: 'long-list-4',
-      })} />
-    </StoryFrame>
-  ),
-};
-
 // Real path: the same list once its rows carry lifecycle state (running / waiting /
 // failed), which the row shows as an indicator rather than a bucket (#1459).
 export const ConversationStates: Story = {
@@ -273,54 +248,6 @@ export const ConversationStates: Story = {
         activeId: 'status-waiting',
         streamingSessionIds: new Set(['status-running']),
         staleSessionIds: new Set(['status-blocked']),
-      })} />
-    </StoryFrame>
-  ),
-};
-
-// Real path: sidebar → 扩展 — the list keeps the conversation heading and view switch
-// while a non-conversation module is selected (#1458).
-export const ExtensionSelected: Story = {
-  render: () => (
-    <StoryFrame>
-      <SessionListPanel
-        {...panelProps({
-          sessions: coreSessions,
-          activeId: 'session-active',
-          streamingSessionIds: new Set(['session-running']),
-          staleSessionIds: new Set(['session-stale']),
-        })}
-        selection={{ section: 'extensions', module: 'skills' }}
-        viewMode="conversation"
-        onViewModeChange={noop}
-      />
-    </StoryFrame>
-  ),
-};
-
-// Real path: hover a conversation row → its inline actions appear.
-export const RowActions: Story = {
-  render: () => (
-    <StoryFrame focusActiveRow>
-      <SessionListPanel {...panelProps({
-        sessions: coreSessions,
-        activeId: 'session-active',
-        streamingSessionIds: new Set(['session-running']),
-        staleSessionIds: new Set(['session-stale']),
-      })} />
-    </StoryFrame>
-  ),
-};
-
-// Real path: hover a conversation row → ⋯ → the row menu is open.
-export const RowMenuOpen: Story = {
-  render: () => (
-    <StoryFrame openActiveRowMenu>
-      <SessionListPanel {...panelProps({
-        sessions: coreSessions,
-        activeId: 'session-active',
-        streamingSessionIds: new Set(['session-running']),
-        staleSessionIds: new Set(['session-stale']),
       })} />
     </StoryFrame>
   ),
@@ -338,4 +265,165 @@ export const LongTitlesAndNarrow: Story = {
       })} />
     </StoryFrame>
   ),
+};
+
+// Real path: time-sort with both flagged and unflagged sessions — two
+// SideNavSection zones (置顶 / 最近), not a single labeled exception.
+export const PinnedAndRecentSections: Story = {
+  render: () => (
+    <StoryFrame>
+      <SessionListPanel
+        {...panelProps({
+          sessions: [
+            makeSession({
+              id: 'pinned-a',
+              name: '发布风险清单',
+              isFlagged: true,
+              lastMessageAt: NOW - 40 * 60 * 1000,
+            }),
+            makeSession({
+              id: 'pinned-b',
+              name: '长期跟踪的客户反馈',
+              isFlagged: true,
+              status: 'running',
+              lastMessageAt: NOW - 5 * 60 * 1000,
+            }),
+            makeSession({
+              id: 'recent-a',
+              name: '刚结束的 smoke 回归',
+              status: 'done',
+              lastMessageAt: NOW - 12 * 60 * 1000,
+            }),
+            makeSession({
+              id: 'recent-b',
+              name: '整理 compact controls',
+              lastMessageAt: NOW - 2 * 60 * 60 * 1000,
+            }),
+          ],
+          activeId: 'recent-a',
+          streamingSessionIds: new Set(['pinned-b']),
+        })}
+      />
+    </StoryFrame>
+  ),
+};
+
+// Real path: a parent session that spawned a linked child agent — child sits
+// under the parent with data-subagent + native Bot leading icon.
+export const NestedSubagentSessions: Story = {
+  render: () => {
+    const parent = makeSession({
+      id: 'parent-main',
+      name: '重构侧栏会话树',
+      status: 'running',
+      lastMessageAt: NOW - 3 * 60 * 1000,
+    });
+    const child = makeSession({
+      id: 'child-agent',
+      name: 'explore: 扫描 SideNav 用法',
+      status: 'done',
+      lastMessageAt: NOW - 2 * 60 * 1000,
+    });
+    const sibling = makeSession({
+      id: 'peer-session',
+      name: '无子代理的普通会话',
+      lastMessageAt: NOW - 20 * 60 * 1000,
+    });
+    return (
+      <StoryFrame>
+        <SessionListPanel
+          {...panelProps({
+            sessions: [parent, sibling],
+            activeId: 'child-agent',
+            streamingSessionIds: new Set(['parent-main']),
+            childSessionsByParentId: new Map([[parent.id, [child]]]),
+          })}
+        />
+      </StoryFrame>
+    );
+  },
+};
+
+// Real path: group-by-project — collapsible project rows, sessions flush under
+// the project (zero nest padding), worktree mark + count badge.
+export const ProjectGroups: Story = {
+  render: () => {
+    const maka = makeProject({
+      id: 'project-maka',
+      name: 'maka-agent',
+      preferredPath: '/workspace/maka-agent',
+      locations: [
+        { path: '/workspace/maka-agent', isWorktree: false },
+        { path: '/workspace/maka-agent/.worktree/sidebar', isWorktree: true },
+      ],
+    });
+    const docs = makeProject({
+      id: 'project-docs',
+      name: '产品文档',
+      preferredPath: '/workspace/docs',
+    });
+    const missing = makeProject({
+      id: 'project-missing',
+      name: '旧版桌面端',
+      available: false,
+    });
+    const sessions = [
+      makeSession({
+        id: 'proj-main',
+        name: '主仓会话',
+        lastMessageAt: NOW - 4 * 60 * 1000,
+      }),
+      makeSession({
+        id: 'proj-worktree',
+        name: 'worktree 上的修复',
+        status: 'running',
+        lastMessageAt: NOW - 1 * 60 * 1000,
+      }),
+      makeSession({
+        id: 'proj-docs',
+        name: '文档站改版',
+        lastMessageAt: NOW - 30 * 60 * 1000,
+      }),
+    ];
+    return (
+      <StoryFrame height={720}>
+        <SessionListPanel
+          {...panelProps({
+            sessions,
+            activeId: 'proj-worktree',
+            streamingSessionIds: new Set(['proj-worktree']),
+            viewMode: 'project',
+            worktreeSessionIds: new Set(['proj-worktree']),
+            groups: [
+              {
+                id: `project:${maka.id}`,
+                label: maka.name,
+                project: maka,
+                sessions: [sessions[0]!, sessions[1]!],
+              },
+              {
+                id: `project:${docs.id}`,
+                label: docs.name,
+                project: docs,
+                sessions: [sessions[2]!],
+              },
+              {
+                id: `project:${missing.id}`,
+                label: missing.name,
+                project: missing,
+                sessions: [],
+              },
+            ],
+            projectActions: {
+              onNew: noop,
+              onRename: noop,
+              onArchive: noop,
+              onRestore: noop,
+              onRelink: noop,
+            },
+          })}
+        />
+      </StoryFrame>
+    );
+  },
 };

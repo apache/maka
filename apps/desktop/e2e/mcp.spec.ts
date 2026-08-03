@@ -6,6 +6,23 @@ const fixtureServer = path.resolve(
   '../../packages/mcp/dist/__fixtures__/stdio-server.js',
 );
 
+test('module navigation removes the hidden chat surface from layout and hit testing', async ({ window: page }) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('navigation', { name: '对话列表' }).getByRole('button', { name: '扩展', exact: true }).click();
+  await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
+
+  const hiddenChat = page.locator('.maka-chat-layout[hidden]');
+  await expect(hiddenChat).toHaveCount(1);
+  await expect(hiddenChat).toHaveCSS('display', 'none');
+  expect(await hiddenChat.boundingBox()).toBeNull();
+  expect(
+    await page.evaluate(() => {
+      const target = document.elementFromPoint(window.innerWidth * 0.75, window.innerHeight - 100);
+      return Boolean(target?.closest('.maka-chat-layout'));
+    }),
+  ).toBe(false);
+});
+
 test('MCP module completes stdio add, discovery, disable, JSON import, and delete', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   const sidebar = page.getByRole('navigation', { name: '对话列表' });
@@ -14,7 +31,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await expect(sidebar.getByRole('button', { name: 'MCP', exact: true })).toHaveCount(0);
   await extensions.click();
   await expect(extensions).toHaveAttribute('aria-current', 'page');
-  await expect(sidebar.getByRole('button', { name: '会话分组方式' })).toBeVisible();
+  await expect(sidebar.getByRole('radiogroup', { name: '会话分组方式' })).toBeVisible();
   await expect(sidebar.locator('.maka-session-list')).toBeVisible();
 
   const extensionSelector = page.locator('.maka-module-hub-selector');

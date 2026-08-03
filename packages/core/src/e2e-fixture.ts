@@ -1,3 +1,4 @@
+import type { ToolActivityStatus } from './tool-result-status.js';
 import type { BotOnboardingProvider } from './bot-onboarding.js';
 import type { SandboxBoundaryRequestEvent, ToolOutputStream, ToolResultContent } from './events.js';
 import type { SettingsSection } from './settings.js';
@@ -54,7 +55,6 @@ export type E2eFixtureScenario =
   | 'settings-daily-review'
   | 'settings-permissions'
   | 'settings-voice'
-  | 'settings-search'
   | 'settings-usage'
   | 'settings-health'
   | 'module-skills'
@@ -148,7 +148,7 @@ export interface E2eFixtureLiveTool {
   stepId?: string;
   displayName?: string;
   intent?: string;
-  status: 'pending' | 'waiting_permission' | 'running' | 'completed' | 'errored' | 'interrupted';
+  status: ToolActivityStatus;
   args: unknown;
   result?: ToolResultContent;
   durationMs?: number;
@@ -202,8 +202,6 @@ export interface E2eFixtureState {
    * test-only component branch.
    */
   composerText?: string;
-  /** Fixture-only structured Skill Chips rendered through the real composer state. */
-  composerSkills?: Array<{ id: string; name: string }>;
   /**
    * When set, open Settings → 模型 with this connection's detail sheet
    * expanded (rather than just the section). Seeded by `oauth-relogin` so the

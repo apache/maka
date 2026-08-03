@@ -8,7 +8,7 @@ import {
   type RootTurnAdmissionStore,
   type RootTurnSourceMessage,
 } from '@maka/storage';
-import { createLegacyAgentRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore } from '@maka/storage';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
@@ -85,6 +85,8 @@ test('fails closed when a known durable admission identity drifts', async () => 
       ...multiSourceAdmitInput('session', 'turn-1', 10),
       previousRootTurnId: null,
     });
+    const firstInput = first.admission.normalizedInput;
+    assert.ok(firstInput);
     const owner = new RootAdmissionOwner(store);
     await owner.recoverSession('session');
     owner.assertKnownAdmission(first.admission);
@@ -96,7 +98,7 @@ test('fails closed when a known durable admission identity drifts', async () => 
       () =>
         owner.assertKnownAdmission({
           ...first.admission,
-          normalizedInput: { ...first.admission.normalizedInput, displayText: 'drifted' },
+          normalizedInput: { ...firstInput, displayText: 'drifted' },
         }),
       /identity changed/,
     );
@@ -118,8 +120,8 @@ test('fails closed when a known durable admission identity drifts', async () => 
         owner.assertKnownAdmission({
           ...first.admission,
           normalizedInput: {
-            ...first.admission.normalizedInput,
-            attachments: first.admission.normalizedInput.attachments?.map((attachment, index) =>
+            ...firstInput,
+            attachments: firstInput.attachments?.map((attachment, index) =>
               index === 0 ? { ...attachment, name: 'drifted.png' } : attachment,
             ),
           },
@@ -180,14 +182,18 @@ test('snapshots recovered admissions without retaining mutable caller references
   const owner = new RootAdmissionOwner(store);
   const [snapshot] = await owner.recoverSession('session');
   assert.ok(snapshot);
+  const snapshotInput = snapshot.normalizedInput;
+  const admissionInput = admission.normalizedInput;
+  assert.ok(snapshotInput);
+  assert.ok(admissionInput);
   const mutableSources = admission.sourceMessages as RootTurnSourceMessage[];
   assert.throws(
     () =>
       owner.assertKnownAdmission({
         ...snapshot,
         normalizedInput: {
-          ...snapshot.normalizedInput,
-          quotes: [...(snapshot.normalizedInput.quotes ?? [])].reverse(),
+          ...snapshotInput,
+          quotes: [...(snapshotInput.quotes ?? [])].reverse(),
         },
       }),
     /identity changed/,
@@ -197,8 +203,8 @@ test('snapshots recovered admissions without retaining mutable caller references
       owner.assertKnownAdmission({
         ...snapshot,
         normalizedInput: {
-          ...snapshot.normalizedInput,
-          quotes: snapshot.normalizedInput.quotes?.map((quote, index) =>
+          ...snapshotInput,
+          quotes: snapshotInput.quotes?.map((quote, index) =>
             index === 0 ? { ...quote, sourceTurnId: 'turn-drifted' } : quote,
           ),
         },
@@ -206,14 +212,14 @@ test('snapshots recovered admissions without retaining mutable caller references
     /identity changed/,
   );
 
-  admission.normalizedInput.displayText = 'mutated display';
-  admission.normalizedInput.attachments![0]!.name = 'mutated.png';
-  admission.normalizedInput.attachments![0]!.ref = {
+  admissionInput.displayText = 'mutated display';
+  admissionInput.attachments![0]!.name = 'mutated.png';
+  admissionInput.attachments![0]!.ref = {
     kind: 'external_file',
     absolutePath: '/mutated.png',
   };
-  admission.normalizedInput.quotes![0]!.text = 'mutated quote';
-  admission.normalizedInput.quotes!.reverse();
+  admissionInput.quotes![0]!.text = 'mutated quote';
+  admissionInput.quotes!.reverse();
   mutableSources[0]!.content.text = 'mutated source';
   mutableSources[0]!.content.attachments![0]!.ref = {
     kind: 'external_file',
@@ -223,13 +229,13 @@ test('snapshots recovered admissions without retaining mutable caller references
   mutableSources[0]!.placement = 'next_turn';
   mutableSources.reverse();
 
-  assert.equal(snapshot.normalizedInput.displayText, 'display text\n\nfollowup text');
-  assert.equal(snapshot.normalizedInput.attachments?.[0]?.name, 'image.png');
-  assert.deepEqual(snapshot.normalizedInput.attachments?.[0]?.ref, {
+  assert.equal(snapshotInput.displayText, 'display text\n\nfollowup text');
+  assert.equal(snapshotInput.attachments?.[0]?.name, 'image.png');
+  assert.deepEqual(snapshotInput.attachments?.[0]?.ref, {
     kind: 'workspace_file',
     relativePath: 'image.png',
   });
-  assert.deepEqual(snapshot.normalizedInput.quotes, [
+  assert.deepEqual(snapshotInput.quotes, [
     { text: 'first excerpt', label: 'Assistant', sourceTurnId: 'turn-source-1' },
     { text: 'second excerpt', sourceTurnId: 'turn-source-2' },
   ]);
@@ -241,12 +247,12 @@ test('snapshots recovered admissions without retaining mutable caller references
     ],
   );
   assert.ok(Object.isFrozen(snapshot));
-  assert.ok(Object.isFrozen(snapshot.normalizedInput));
-  assert.ok(Object.isFrozen(snapshot.normalizedInput.attachments));
-  assert.ok(Object.isFrozen(snapshot.normalizedInput.attachments?.[0]));
-  assert.ok(Object.isFrozen(snapshot.normalizedInput.attachments?.[0]?.ref));
-  assert.ok(Object.isFrozen(snapshot.normalizedInput.quotes));
-  assert.ok(Object.isFrozen(snapshot.normalizedInput.quotes?.[0]));
+  assert.ok(Object.isFrozen(snapshotInput));
+  assert.ok(Object.isFrozen(snapshotInput.attachments));
+  assert.ok(Object.isFrozen(snapshotInput.attachments?.[0]));
+  assert.ok(Object.isFrozen(snapshotInput.attachments?.[0]?.ref));
+  assert.ok(Object.isFrozen(snapshotInput.quotes));
+  assert.ok(Object.isFrozen(snapshotInput.quotes?.[0]));
   assert.ok(Object.isFrozen(snapshot.sourceMessages));
   assert.ok(Object.isFrozen(snapshot.sourceMessages[0]));
   assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content));
@@ -256,7 +262,7 @@ test('snapshots recovered admissions without retaining mutable caller references
   assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content.quotes));
   assert.ok(Object.isFrozen(snapshot.sourceMessages[0]?.content.quotes?.[0]));
   assert.throws(() => {
-    snapshot.normalizedInput.quotes![0]!.text = 'returned mutation';
+    snapshotInput.quotes![0]!.text = 'returned mutation';
   }, TypeError);
   assert.doesNotThrow(() => owner.assertKnownAdmission(snapshot));
   assert.throws(() => owner.assertKnownAdmission(admission), /identity changed/);
@@ -274,15 +280,19 @@ test('returns an owned frozen admission instead of the mutable store result', as
   await owner.recoverSession('session');
 
   const result = await owner.admitRootTurn(quotedMultiSourceAdmitInput('session', 'turn-1', 10));
+  const resultInput = result.admission.normalizedInput;
+  const durableInput = durableAdmission.normalizedInput;
+  assert.ok(resultInput);
+  assert.ok(durableInput);
   assert.notEqual(result.admission, durableAdmission);
   assert.ok(Object.isFrozen(result));
   assert.ok(Object.isFrozen(result.admission));
-  assert.ok(Object.isFrozen(result.admission.normalizedInput.quotes));
-  assert.ok(Object.isFrozen(result.admission.normalizedInput.quotes?.[0]));
+  assert.ok(Object.isFrozen(resultInput.quotes));
+  assert.ok(Object.isFrozen(resultInput.quotes?.[0]));
 
-  durableAdmission.normalizedInput.quotes![0]!.text = 'store mutation';
+  durableInput.quotes![0]!.text = 'store mutation';
   durableAdmission.sourceMessages[0]!.content.quotes![0]!.label = 'Store mutation';
-  assert.deepEqual(result.admission.normalizedInput.quotes, [
+  assert.deepEqual(resultInput.quotes, [
     { text: 'first excerpt', label: 'Assistant', sourceTurnId: 'turn-source-1' },
     { text: 'second excerpt', sourceTurnId: 'turn-source-2' },
   ]);
@@ -379,11 +389,11 @@ function mutableAdmission(): RootTurnAdmission {
 }
 
 async function withStore(
-  run: (store: ReturnType<typeof createLegacyAgentRunStoreForTest>) => Promise<void>,
+  run: (store: ReturnType<typeof createSqliteAgentRunStore>) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-root-admission-owner-'));
   try {
-    await run(createLegacyAgentRunStoreForTest(root));
+    await run(createSqliteAgentRunStore(root));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

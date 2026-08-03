@@ -1,77 +1,48 @@
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { it } from 'node:test';
 
 import {
   UI_LOCALES,
   UI_LOCALE_PREFERENCES,
   isUiLocale,
   isUiLocalePreference,
-  resolveUiLocale,
   resolveSystemUiLocale,
+  resolveUiLocale,
   uiLocaleToIntlLocale,
-  type UiCatalog,
 } from '../index.js';
 
-// @ts-expect-error Every catalog must include English; no implicit fallback.
-const missingEnglishCatalog: UiCatalog<string> = { zh: '中文' };
-void missingEnglishCatalog;
-
-describe('UI locale contract', () => {
-  it('exposes the complete supported locale and preference sets', () => {
-    assert.deepEqual([...UI_LOCALES], ['zh', 'en']);
-    assert.deepEqual([...UI_LOCALE_PREFERENCES], ['auto', 'zh', 'en']);
-  });
-
-  it('accepts only supported resolved locales', () => {
-    assert.equal(isUiLocale('zh'), true);
-    assert.equal(isUiLocale('en'), true);
-    assert.equal(isUiLocale('auto'), false);
-    assert.equal(isUiLocale('ja'), false);
-    assert.equal(isUiLocale(null), false);
-  });
-
-  it('accepts only supported persisted preferences', () => {
-    assert.equal(isUiLocalePreference('auto'), true);
-    assert.equal(isUiLocalePreference('zh'), true);
-    assert.equal(isUiLocalePreference('en'), true);
-    assert.equal(isUiLocalePreference('ja'), false);
-    assert.equal(isUiLocalePreference(undefined), false);
-  });
-
-  it('resolves the first supported system language and falls back to English', () => {
-    assert.equal(resolveSystemUiLocale(['zh-CN', 'en-US']), 'zh');
-    assert.equal(resolveSystemUiLocale(['ja-JP', 'en-GB']), 'en');
-    assert.equal(resolveSystemUiLocale(['fr-FR', 'de-DE']), 'en');
-    assert.equal(resolveSystemUiLocale([]), 'en');
-  });
-
-  it('resolves auto from the supported system locale', () => {
-    assert.equal(resolveUiLocale('auto', 'zh'), 'zh');
-    assert.equal(resolveUiLocale('auto', 'en'), 'en');
-  });
-
-  it('preserves an explicit supported preference', () => {
-    assert.equal(resolveUiLocale('zh', 'en'), 'zh');
-    assert.equal(resolveUiLocale('en', 'zh'), 'en');
-  });
-
-  it('gives a test override precedence over every persisted preference', () => {
-    assert.equal(resolveUiLocale('auto', 'zh', 'en'), 'en');
-    assert.equal(resolveUiLocale('en', 'en', 'zh'), 'zh');
-    assert.equal(resolveUiLocale('zh', 'en', null), 'zh');
-  });
-
-  it('maps the resolved locale to the Intl locale used by formatters', () => {
-    assert.equal(uiLocaleToIntlLocale('zh'), 'zh-CN');
-    assert.equal(uiLocaleToIntlLocale('en'), 'en');
-  });
-
-  it('provides a compile-time complete catalog shape', () => {
-    const catalog = {
-      zh: { label: '中文' },
-      en: { label: 'English' },
-    } satisfies UiCatalog<{ label: string }>;
-
-    assert.deepEqual(Object.keys(catalog), ['zh', 'en']);
-  });
+it('validates and resolves the complete UI locale contract', () => {
+  assert.deepEqual([...UI_LOCALES], ['zh', 'en']);
+  assert.deepEqual([...UI_LOCALE_PREFERENCES], ['auto', 'zh', 'en']);
+  for (const [value, expected] of [
+    ['zh', true],
+    ['en', true],
+    ['auto', false],
+    ['ja', false],
+    [null, false],
+  ] as const) {
+    assert.equal(isUiLocale(value), expected);
+  }
+  for (const [value, expected] of [
+    ['auto', true],
+    ['zh', true],
+    ['en', true],
+    ['ja', false],
+    [undefined, false],
+  ] as const) {
+    assert.equal(isUiLocalePreference(value), expected);
+  }
+  assert.equal(resolveSystemUiLocale(['zh-CN', 'en-US']), 'zh');
+  assert.equal(resolveSystemUiLocale(['ja-JP', 'en-GB']), 'en');
+  assert.equal(resolveSystemUiLocale(['fr-FR', 'de-DE']), 'en');
+  assert.equal(resolveSystemUiLocale([]), 'en');
+  assert.equal(resolveUiLocale('auto', 'zh'), 'zh');
+  assert.equal(resolveUiLocale('auto', 'en'), 'en');
+  assert.equal(resolveUiLocale('zh', 'en'), 'zh');
+  assert.equal(resolveUiLocale('en', 'zh'), 'en');
+  assert.equal(resolveUiLocale('auto', 'zh', 'en'), 'en');
+  assert.equal(resolveUiLocale('en', 'en', 'zh'), 'zh');
+  assert.equal(resolveUiLocale('zh', 'en', null), 'zh');
+  assert.equal(uiLocaleToIntlLocale('zh'), 'zh-CN');
+  assert.equal(uiLocaleToIntlLocale('en'), 'en');
 });

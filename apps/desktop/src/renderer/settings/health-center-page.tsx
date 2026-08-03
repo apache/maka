@@ -5,12 +5,13 @@ import type {
   HealthSnapshot,
 } from '@maka/core';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core';
-import { Item } from '@astryxdesign/core';
-import { Button, Badge, RelativeTime, SectionHeader, StatTile, useUiLocale, Banner } from '@maka/ui';
+import { Text, VStack } from '@astryxdesign/core';
+import { Button, RelativeTime, StatusDot, useUiLocale, Banner } from '@maka/ui';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
-import { statusBadgeVariant } from './settings-status-badge';
+import { statusDotVariant } from './settings-status-badge';
 
 /**
  * PR-UI-9 — Health Center read-only page. Consumes `window.maka.health.getSnapshot()`
@@ -26,7 +27,7 @@ import { statusBadgeVariant } from './settings-status-badge';
  *
  * Read-only boundary: no test buttons, no repair flows. Test/repair entries
  * will be wired in PR-HC-2 once typed actions are exposed.
- */
+*/
 export function HealthCenterPage() {
   const locale = useUiLocale();
   const copy = getHealthCenterCopy(locale);
@@ -64,13 +65,13 @@ export function HealthCenterPage() {
 
   if (error || !snapshot) {
     return (
-      <div className="settingsHealthPage">
+      <SettingsPage>
         <Banner
           status="error"
           title={copy.readFailed}
           description={error ?? copy.noData}
           endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />} />
-      </div>
+      </SettingsPage>
     );
   }
 
@@ -78,26 +79,26 @@ export function HealthCenterPage() {
   const signalsByLayer = groupSignalsByLayer(snapshot.signals);
   const blocksSendCount = snapshot.signals.filter((signal) => signal.blocksSend).length;
   const blocksCapabilityCount = snapshot.signals.filter((signal) => signal.blocksCapability).length;
+  const summaryParts: Array<{ key: string; label: string; count: number; tone: 'neutral' | 'warning' | 'destructive' }> = [
+    { key: 'ok', label: copy.statuses.ok.label, count: snapshot.summary.ok, tone: 'neutral' },
+    { key: 'info', label: copy.statuses.info.label, count: snapshot.summary.info, tone: 'neutral' },
+    { key: 'warning', label: copy.statuses.warning.label, count: snapshot.summary.warning, tone: 'warning' },
+    { key: 'error', label: copy.statuses.error.label, count: snapshot.summary.error, tone: 'destructive' },
+    { key: 'unknown', label: copy.statuses.unknown.label, count: snapshot.summary.unknown, tone: 'neutral' },
+  ];
 
   return (
-    <div className="settingsHealthPage">
-      {/* Polish wave Item 5: the intro was a second gray PageHeader banner
-          restating the page title. Converged onto SectionHeader — the unique
-          layer explainer + runtime caveat stay as the subtitle; the read-only
-          badge, last-read timestamp, and refresh move into the action slot. */}
-      <SectionHeader
-        as="h3"
-        title={copy.title}
-        subtitle={
+    <SettingsPage>
+      <SettingsSection
+        description={(
           <>
             {copy.subtitle} <strong>{copy.validationWarning}</strong>
           </>
-        }
-        action={
-          <>
-            <Badge variant="neutral" label={copy.badge} />
-            <small className="whitespace-nowrap text-[length:var(--font-size-caption)] text-foreground-secondary">
-              {copy.lastRead}<RelativeTime ts={healthCheckedAtMs} className="settingsHelpInlineTime" />
+        )}
+        action={(
+          <div className="settingsFormRowControlCluster">
+            <small className="settingsHealthMetaLabel">
+              {copy.lastRead}<RelativeTime ts={healthCheckedAtMs} />
             </small>
             <Button
               variant="secondary"
@@ -105,77 +106,53 @@ export function HealthCenterPage() {
               onClick={() => setRefreshTick((tick) => tick + 1)}
               label={copy.refresh}
             />
-          </>
-        }
-      />
+          </div>
+        )}
+      >
+        <p className="settingsHealthSummaryLine" aria-label={copy.summaryAria}>
+          {summaryParts.map((part) => (
+            <span key={part.key} data-tone={part.count > 0 ? part.tone : 'neutral'}>
+              {part.label} {part.count}
+            </span>
+          ))}
+        </p>
+      </SettingsSection>
 
-      {/* PR-HEALTH-SUMMARY-LIST-A11Y-0 (round 19/30): fifth
-          application of the ARIA list semantics fix. Was
-          `<section role="list">` containing 5 `<div
-          role="listitem">` tiles — switched to semantic
-          `<ul>` / `<li>`. The HealthSummaryTile component
-          drops its `role="listitem"` because the `<li>`
-          wrapper already carries it. */}
-      <ul aria-label={copy.summaryAria} className="settingsHealthSummary">
-        <HealthSummaryTile tone="neutral" label={copy.statuses.ok.label} count={snapshot.summary.ok} />
-        <HealthSummaryTile tone="info" label={copy.statuses.info.label} count={snapshot.summary.info} />
-        <HealthSummaryTile tone="warning" label={copy.statuses.warning.label} count={snapshot.summary.warning} />
-        <HealthSummaryTile tone="destructive" label={copy.statuses.error.label} count={snapshot.summary.error} />
-        <HealthSummaryTile tone="neutral" label={copy.statuses.unknown.label} count={snapshot.summary.unknown} />
-      </ul>
-
-      {(blocksSendCount > 0 || blocksCapabilityCount > 0) && (
-        <div className="settingsHealthBlockers" role="status">
-          {blocksSendCount > 0 && (
-            <Badge className="settingsHealthBlockerBadge" variant="error" label={copy.blockers.send(blocksSendCount)} />
-          )}
-          {blocksCapabilityCount > 0 && (
-            <Badge className="settingsHealthBlockerBadge" variant="warning" label={copy.blockers.capability(blocksCapabilityCount)} />
-          )}
-        </div>
+      {blocksSendCount > 0 && (
+        <Banner
+          status="error"
+          role="status"
+          title={copy.blockers.send(blocksSendCount)}
+          description={blocksCapabilityCount > 0 ? copy.blockers.capability(blocksCapabilityCount) : undefined}
+        />
+      )}
+      {blocksSendCount === 0 && blocksCapabilityCount > 0 && (
+        <Banner
+          status="warning"
+          role="status"
+          title={copy.blockers.capability(blocksCapabilityCount)}
+        />
       )}
 
-      {HEALTH_SIGNAL_LAYERS.map((layer) => {
-        const signals = signalsByLayer[layer];
-        if (!signals || signals.length === 0) return null;
-        const layerCopy = copy.layers[layer];
-        return (
-          <section key={layer} className="settingsHealthLayer" aria-label={copy.layerAria(layerCopy.label)}>
-            <header>
-              <h4>{layerCopy.label}</h4>
-              <small>{layerCopy.description}</small>
-            </header>
-            <ul className="settingsHealthSignalList" aria-label={copy.layerListAria(layerCopy.label)}>
-              {signals.map((signal) => (
-                <HealthSignalRow key={signal.id} signal={signal} copy={copy} />
-              ))}
-            </ul>
-          </section>
-        );
-      })}
+      <SettingsSection>
+        {HEALTH_SIGNAL_LAYERS.flatMap((layer) => {
+          const signals = signalsByLayer[layer];
+          if (!signals || signals.length === 0) return [];
+          const layerCopy = copy.layers[layer];
+          return [
+            <VStack key={`${layer}-head`} gap={0} className="settingsRowsSubheading">
+              <Text type="supporting" size="sm" weight="medium">{layerCopy.label}</Text>
+              <Text type="supporting" size="sm" color="secondary">{layerCopy.description}</Text>
+            </VStack>,
+            ...signals.map((signal) => (
+              <HealthSignalRow key={signal.id} signal={signal} copy={copy} />
+            )),
+          ];
+        })}
+      </SettingsSection>
 
-      <p className="settingsHealthFootnote">
-        {copy.footnote}
-      </p>
-    </div>
-  );
-}
-
-function HealthSummaryTile(props: {
-  tone: 'neutral' | 'info' | 'success' | 'warning' | 'destructive';
-  label: string;
-  count: number;
-}) {
-  // Convergence R4: same StatTile as the permission summary — the two
-  // recipes were literal twins hand-rolled twice.
-  return (
-    <StatTile
-      as="li"
-      className="settingsHealthSummaryTile"
-      label={props.label}
-      value={props.count}
-      tone={props.tone}
-    />
+      <Text as="p" type="supporting" size="sm" color="secondary">{copy.footnote}</Text>
+    </SettingsPage>
   );
 }
 
@@ -184,14 +161,12 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
   const statusCopy = copy.statuses[signal.status];
   const detail = copy.signalDetail(signal);
   return (
-    <Item
-      as="li"
+    <SettingsRow
       align="start"
-      className="settingsHealthSignalRow"
       label={(
         <span className="settingsHealthSignalIdentity">
-            <strong className="text-[length:var(--font-size-ui)] font-semibold text-foreground">{copy.signalLabel(signal)}</strong>
-            <small className="text-[length:var(--font-size-caption)] uppercase tracking-wider text-muted-foreground">{copy.scopes[signal.scope]}</small>
+            <strong className="settingsHealthSignalLabel">{copy.signalLabel(signal)}</strong>
+            <small className="settingsHealthSignalScope">{copy.scopes[signal.scope]}</small>
         </span>
       )}
       description={(
@@ -200,13 +175,18 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
           {detail && <small>{detail}</small>}
           <span className="settingsHealthSignalMeta">
             <span>{copy.source}{copy.sources[signal.source]}</span>
-            <span>{copy.checked}<RelativeTime ts={signal.checkedAt} className="settingsHelpInlineTime" /></span>
-            {signal.blocksSend && <Badge variant="error" label={copy.blocksSend} />}
-            {signal.blocksCapability && <Badge variant="warning" label={copy.blocksCapability} />}
+            <span>{copy.checked}<RelativeTime ts={signal.checkedAt} /></span>
+            {signal.blocksSend && <span data-tone="destructive">{copy.blocksSend}</span>}
+            {signal.blocksCapability && <span data-tone="warning">{copy.blocksCapability}</span>}
           </span>
         </span>
       )}
-      endContent={<Badge variant={statusBadgeVariant(statusCopy.tone)} label={statusCopy.label} />}
+      end={(
+        <span className="settingsStatus">
+          <StatusDot variant={statusDotVariant(statusCopy.tone)} label={statusCopy.label} />
+          <span>{statusCopy.label}</span>
+        </span>
+      )}
     />
   );
 }

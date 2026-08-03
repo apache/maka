@@ -4,29 +4,44 @@ import { AlertOctagon, Ban, Check, Copy, GitBranch, Info, Loader2, Pencil, Refre
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
-import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream.js';
+import { redactSecrets } from './redact.js';
+import { isProgressiveStreamingEnabled } from './streaming-presentation.js';
 import {
+  Badge,
   Button as UiButton,
   ChatMessage,
   ChatMessageBubble,
   ChatMessageMetadata,
   ChatSystemMessage,
+  ChatTokenizedText,
+  HStack,
   IconButton as UiIconButton,
+  Thumbnail,
+  Token,
+  useLightbox,
 } from '@astryxdesign/core';
+import { useStreamingText } from '@astryxdesign/core/hooks';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
-import { Dialog } from '@astryxdesign/core/Dialog';
-import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
+import {
+  isInFlightToolStatus,
+  SKILL_INVOCATION_TOKEN_SOURCE,
+  type AttachmentRef,
+  type InlineReference,
+  type ProviderRetryEvent,
+  type QuoteRef,
+} from '@maka/core';
 import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
-import { AttachmentFileCard } from './attachment-file-card.js';
+import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants, TextShimmer } from './primitives/chat.js';
 import { ToolTrow } from './tool-activity.js';
+import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
+import { InlineReferenceText } from './inline-reference.js';
 
 function LocalizedChatMessage({
   accessibleLabel,
@@ -58,14 +73,19 @@ export type ReadAttachmentBytes = (
   relativePath: string,
 ) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
 
+function legacySentSkillTokens(text: string) {
+  const values = new Set(
+    [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
+  );
+  return [...values].map((value) => ({ value, label: value, variant: 'neutral' as const }));
+}
+
 /**
  * One chat message body: user verbatim; assistant/system via Markdown.
  * Memoized so streaming list re-renders do not re-parse settled bubbles.
  */
 function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentBytes?: ReadAttachmentBytes }) {
-  const copy = getConversationCopy(useUiLocale()).messages;
   const [src, setSrc] = useState<string | undefined>(undefined);
-  const [lightboxOpen, setLightboxOpen] = useState(false);
   const { onReadAttachmentBytes } = props;
   useEffect(() => {
     if (props.attachment.ref.kind !== 'session_file') return;
@@ -85,39 +105,32 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
   }, [props.attachment, onReadAttachmentBytes]);
   if (!src) {
     return (
-      <span className="maka-user-attachment-thumb-pending h-32 w-32 rounded-md border border-[var(--border)] bg-[var(--foreground-alpha-6)] grid place-items-center text-[color:var(--muted-foreground)]" aria-hidden="true">
-        <Loader2 className="h-5 w-5 animate-spin" />
-      </span>
+      <Thumbnail
+        className="maka-user-attachment-thumbnail"
+        alt={props.attachment.name}
+        label={props.attachment.name}
+        isLoading
+      />
     );
   }
+  return <LoadedAttachmentImage src={src} name={props.attachment.name} />;
+}
+
+function LoadedAttachmentImage(props: { src: string; name: string }) {
+  const lightbox = useLightbox({
+    media: { src: props.src, alt: props.name },
+    hasZoom: true,
+  });
   return (
     <>
-      <button
-        type="button"
-        className="group relative inline-flex rounded-md overflow-hidden border border-[var(--border)] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-        onClick={() => setLightboxOpen(true)}
-        aria-label={copy.imageAriaLabel(props.attachment.name)}
-      >
-        <img className="h-32 w-32 object-cover transition group-hover:opacity-90" src={src} alt={props.attachment.name} />
-      </button>
-      <Dialog
-        isOpen={lightboxOpen}
-        onOpenChange={setLightboxOpen}
-        padding={0}
-        purpose="info"
-        width="auto"
-        maxHeight="90vh"
-        aria-label={copy.imageAriaLabel(props.attachment.name)}
-      >
-        <Layout
-          height="auto"
-          content={
-            <LayoutContent padding={0} isScrollable={false}>
-              <img className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl" src={src} alt={props.attachment.name} />
-            </LayoutContent>
-          }
-        />
-      </Dialog>
+      <Thumbnail
+        className="maka-user-attachment-thumbnail"
+        src={props.src}
+        alt={props.name}
+        label={props.name}
+        onClick={() => lightbox.open()}
+      />
+      {lightbox.element}
     </>
   );
 }
@@ -128,6 +141,7 @@ const MessageBody = memo(function MessageBody(props: {
   ts?: number;
   attachments?: readonly AttachmentRef[];
   quotes?: readonly QuoteRef[];
+  inlineReferences?: readonly InlineReference[];
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /** When set on a user message, show an edit affordance that starts a revision draft. */
   onEditUserMessage?: () => void;
@@ -137,12 +151,14 @@ const MessageBody = memo(function MessageBody(props: {
   const locale = useUiLocale();
   const copyText = getConversationCopy(locale).messages;
   if (props.role === 'user') {
+    const nonImageAttachments = props.attachments?.filter((attachment) => attachment.kind !== 'image') ?? [];
+    const imageAttachments = props.attachments?.filter((attachment) => attachment.kind === 'image') ?? [];
     const editActionLabel = props.editDisabled
       ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
       : copyText.editMessage;
     const userMetadata = (
       <ChatMessageMetadata
-        className="maka-message-meta opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/usermsg:opacity-100 focus-within:opacity-100"
+        className="maka-message-meta"
         timestamp={
           props.ts !== undefined ? (
             <small
@@ -179,40 +195,56 @@ const MessageBody = memo(function MessageBody(props: {
       />
     );
     return (
-      <ChatMessageBubble
-        className="maka-chat-message-bubble maka-chat-message-bubble-user"
-        metadata={userMetadata}
-      >
-        <span>{props.text}</span>
+      <>
+        {nonImageAttachments.length > 0 ? (
+          <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachment-tokens">
+            {nonImageAttachments.map((attachment, index) => (
+              <Token
+                key={`${attachment.name}-${index}`}
+                size="sm"
+                label={attachment.name}
+                icon={<AttachmentKindIcon kind={attachment.kind} />}
+                description={attachment.bytes !== undefined ? formatBytes(attachment.bytes) : undefined}
+              />
+            ))}
+          </HStack>
+        ) : null}
         {props.quotes && props.quotes.length > 0 ? (
-          <div className="maka-user-quotes flex flex-wrap items-start gap-1 mt-1">
+          <div className="maka-user-quotes">
             {props.quotes.map((quote, index) => (
               <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
             ))}
           </div>
         ) : null}
-        {props.attachments && props.attachments.length > 0 ? (
-          <div className="maka-user-attachments flex flex-wrap gap-1.5 mt-2">
-            {props.attachments.map((attachment, index) => (
-              attachment.kind === 'image' ? (
-                <AttachmentImage key={`${attachment.name}-${index}`} attachment={attachment} onReadAttachmentBytes={props.onReadAttachmentBytes} />
-              ) : (
-                <AttachmentFileCard
-                  key={`${attachment.name}-${index}`}
-                  name={attachment.name}
-                  kind={attachment.kind}
-                  size={attachment.bytes}
-                />
-              )
+        {imageAttachments.length > 0 ? (
+          <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachments">
+            {imageAttachments.map((attachment, index) => (
+              <AttachmentImage
+                key={`${attachment.name}-${index}`}
+                attachment={attachment}
+                onReadAttachmentBytes={props.onReadAttachmentBytes}
+              />
             ))}
-          </div>
+          </HStack>
         ) : null}
-      </ChatMessageBubble>
+        <ChatMessageBubble
+          className="maka-chat-message-bubble maka-chat-message-bubble-user"
+          metadata={userMetadata}
+        >
+          {props.inlineReferences ? (
+            <InlineReferenceText text={props.text} references={props.inlineReferences} />
+          ) : (
+            <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
+              {props.text}
+            </ChatTokenizedText>
+          )}
+        </ChatMessageBubble>
+      </>
     );
   }
   return (
     <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
-      <Markdown text={props.text} />
+      <Markdown text={props.text} density="compact" />
     </ChatMessageBubble>
   );
 });
@@ -356,7 +388,7 @@ export const TurnView = memo(function TurnView(props: {
       ? item.live === true
       : item.kind === 'text'
         ? item.live === true
-        : item.items.some((tool) => tool.status === 'pending' || tool.status === 'running' || tool.status === 'waiting_permission'),
+        : item.items.some((tool) => isInFlightToolStatus(tool.status)),
   );
   // #1307: the collapsed "Processing" fold is derived at render time from the
   // flat timeline. Settled turn identities are stable (memoized projections),
@@ -388,24 +420,33 @@ export const TurnView = memo(function TurnView(props: {
           ))}
         </Marker>
       )}
-      {/* Automation provenance: a turn injected by a scheduled automation is
-          NOT something the user typed — say so above the bubble instead of
-          impersonating the user. Id stays in the tooltip (no raw ids inline). */}
-      {turn.user?.automationOrigin && (
+      {/* Host provenance keeps non-user prompts from impersonating the user.
+          Durable ids stay in tooltips instead of the transcript body. */}
+      {turn.user?.hostOrigin?.kind === 'automation' && (
         <Marker
           variant="automation-origin"
           role="note"
-          title={copy.automationTitle(turn.user.automationOrigin.automationId)}
+          title={copy.automationTitle(turn.user.hostOrigin.automationId)}
         >
           <Timer size={12} aria-hidden="true" />
           <span>{copy.automationTriggered}</span>
         </Marker>
       )}
-      {turn.user?.agentGraphOrigin && (
+      {turn.user?.hostOrigin?.kind === 'goal' && (
         <Marker
           variant="automation-origin"
           role="note"
-          title={copy.agentGraphTitle(turn.user.agentGraphOrigin.graphId)}
+          title={copy.goalTitle(turn.user.hostOrigin.goalId)}
+        >
+          <RefreshCcw size={12} aria-hidden="true" />
+          <span>{copy.goalContinued}</span>
+        </Marker>
+      )}
+      {turn.user?.hostOrigin?.kind === 'agent_graph' && (
+        <Marker
+          variant="automation-origin"
+          role="note"
+          title={copy.agentGraphTitle(turn.user.hostOrigin.graphId)}
         >
           <GitBranch size={12} aria-hidden="true" />
           <span>{copy.agentGraphTriggered}</span>
@@ -415,7 +456,7 @@ export const TurnView = memo(function TurnView(props: {
         <LocalizedChatMessage
           accessibleLabel={copy.userAriaLabel}
           sender="user"
-          className="maka-chat-message group/usermsg"
+          className="maka-chat-message maka-user-message"
         >
           <MessageBody
             role="user"
@@ -423,11 +464,10 @@ export const TurnView = memo(function TurnView(props: {
             ts={turn.user.ts}
             attachments={turn.user.attachments}
             quotes={turn.user.quotes}
+            inlineReferences={turn.user.inlineReferences}
             onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
-              props.onEditUserMessage &&
-              !turn.user.automationOrigin &&
-              !turn.user.agentGraphOrigin
+              props.onEditUserMessage && !turn.user.hostOrigin
                 ? () => props.onEditUserMessage?.(turn.turnId)
                 : undefined
             }
@@ -469,9 +509,9 @@ export const TurnView = memo(function TurnView(props: {
           accessibleLabel={copy.assistantAriaLabel}
           sender="assistant"
           data-turn-status={turn.status}
-          className="maka-chat-message group/answer"
+          className="maka-chat-message maka-assistant-answer"
         >
-          <div className="flex min-w-0 w-full flex-col gap-2">
+          <div className="maka-assistant-answer-content">
             {turn.status === 'aborted' && (
               <Marker variant="aborted" role="status">
                 <Ban size={12} aria-hidden="true" />
@@ -503,7 +543,7 @@ export const TurnView = memo(function TurnView(props: {
             )}
             {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
-                and Codex-style tool trow in the order the model produced them.
+                and Astryx tool group in the order the model produced them.
                 #1307: runs of reasoning + tools between answer texts render
                 through the derived fold as collapsed Processing blocks. */}
             {foldedTimeline.map((item, index) =>
@@ -554,7 +594,7 @@ export const TurnView = memo(function TurnView(props: {
                actionable footer here: the live tail's derived status is
                `completed`, so a real `TurnFooterActions` would render a
                clickable regenerate/branch on a still-streaming answer. */
-            <div aria-hidden="true" className="mt-0.5 h-8" />
+            <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
           ) : (
             props.footerActions && props.footerActions.length > 0 && (
               <TurnFooterActions
@@ -718,13 +758,13 @@ const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
 export function ModelProcessingIndicator() {
   const copy = getConversationCopy(useUiLocale()).messages;
   return (
-    <div className="flex items-center gap-2 py-0.5" role="status" aria-live="polite">
+    <div className="maka-turn-processing" role="status" aria-live="polite">
       <Loader2
         size={16}
         aria-hidden="true"
-        className="shrink-0 animate-spin text-[color:var(--muted-foreground)]"
+        className="maka-turn-processing-spinner"
       />
-      <TextShimmer active className="min-w-0 truncate text-[length:var(--font-size-base)]">{copy.processing}</TextShimmer>
+      <TextShimmer active className="maka-turn-indicator-text">{copy.processing}</TextShimmer>
     </div>
   );
 }
@@ -733,11 +773,11 @@ export function ModelContinuingIndicator() {
   const copy = getConversationCopy(useUiLocale()).messages;
   return (
     <div
-      className="flex items-center py-0.5 text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)] opacity-70 [animation:maka-stream-fade-in_var(--duration-emphasized)_var(--ease-out-strong)_both]"
+      className="maka-turn-continuing"
       role="status"
       aria-live="polite"
     >
-      <span className="min-w-0 truncate">{copy.continuing}</span>
+      <span className="maka-turn-indicator-text">{copy.continuing}</span>
     </div>
   );
 }
@@ -754,49 +794,52 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
       : copy.providerRetryStarted(props.retry.attempt, props.retry.maxAttempts);
   return (
     <div
-      className="flex items-center gap-2 py-0.5 text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]"
+      className="maka-turn-status"
       role="status"
       aria-live="polite"
     >
-      <RefreshCcw size={16} aria-hidden="true" className="shrink-0" />
-      <span className="min-w-0 truncate">{text}</span>
+      <RefreshCcw size={16} aria-hidden="true" className="maka-turn-status-icon" />
+      <span className="maka-turn-indicator-text">{text}</span>
     </div>
   );
 }
 
 function StreamingAssistantBubble(props: { text: string; live: boolean; truncated?: boolean; onSettled?: () => void }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  // Redact before smoother so typewriter prefixes never leak mid-token.
-  const snap = useStreamSnap();
-  const safeText = prepareSmoothStreamText(props.text);
-  const { displayed, catchingUp } = useSmoothStreamContent(safeText, {
-    streaming: props.live,
-    snap,
-  });
   const settledRef = useRef(false);
 
   useEffect(() => {
     settledRef.current = false;
-  }, [safeText, props.live]);
+  }, [props.text, props.live]);
 
   useEffect(() => {
-    if (props.live || catchingUp || settledRef.current) return;
+    if (props.live || settledRef.current) return;
     settledRef.current = true;
     props.onSettled?.();
-  }, [props.live, catchingUp, props.onSettled]);
+  }, [props.live, props.onSettled]);
 
   return (
     <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming">
-      <Markdown text={displayed} streaming />
+      <Markdown text={props.text} streaming={props.live} density="compact" />
       {props.truncated && (
-        <div
-          className="mt-1.5 inline-block cursor-help rounded-[var(--radius-control)] border border-[oklch(from_var(--warning)_l_c_h_/_0.24)] bg-[oklch(from_var(--warning)_l_c_h_/_0.05)] px-1 text-xs text-[color:var(--warning-text,var(--info-text))]"
-          role="status"
-          aria-live="polite"
-          title={copy.outputTruncatedTitle}
-        >
-          {copy.truncated}
-        </div>
+        <Tooltip content={copy.outputTruncatedTitle}>
+          {/* Colour-name archive, not the semantic one: Astryx paints
+              `warning` as a solid dark-mode-invariant fill and `yellow` as a
+              tint. This note replaced a 5% wash with a hairline; a solid block
+              inside the message body would outweigh the message. */}
+          <Badge
+            variant="yellow"
+            label={copy.truncated}
+            className="maka-turn-truncation-badge"
+            role="status"
+            aria-live="polite"
+            /* Same reason as the stale pill: the Tooltip's popover is
+               `display: none` until hovered, so `aria-describedby` computes to
+               nothing and the `title` this replaced was the only description
+               this badge ever had. Announced with the reason attached. */
+            aria-label={`${copy.truncated}. ${copy.outputTruncatedTitle}`}
+          />
+        </Tooltip>
       )}
     </ChatMessageBubble>
   );
@@ -808,7 +851,7 @@ function timelineEntryKey(item: TurnTimelineItem, index: number): string {
   return `${item.kind}-${item.messageId}`;
 }
 
-/** Render one timeline entry: reasoning disclosure / answer bubble / tool trow. */
+/** Render one timeline entry: reasoning disclosure / answer bubble / tool group. */
 function TurnTimelineEntry(props: {
   item: TurnTimelineItem;
   onStreamingSettled?: (messageId?: string) => void;
@@ -844,49 +887,18 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
 
 function DeepThinking(props: { text: string; live: boolean; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const snap = useStreamSnap();
-  // Defense-in-depth: redact before smoother so prefixes never leak mid-token.
-  const safeText = prepareSmoothStreamText(props.text);
-  const { displayed } = useSmoothStreamContent(safeText, { streaming: props.live, snap });
-  const visibleText = props.live ? displayed : safeText;
+  const safeText = redactSecrets(props.text);
+  const displayed = useStreamingText(safeText, isProgressiveStreamingEnabled(props.live));
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
     <ChatReasoning
-      className="min-w-0"
+      className="maka-deep-thinking"
       label={label}
       isStreaming={props.live}
       title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
       data-deep-thinking={props.live ? 'live' : undefined}
     >
-      {visibleText}
+      {displayed}
     </ChatReasoning>
   );
-}
-
-/** Snap streaming smoother under reduced-motion / e2e-fixture / OS preference. */
-function useStreamSnap(): boolean {
-  const [snap, setSnap] = useState(() => readStreamSnap());
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const onChange = () => setSnap(readStreamSnap());
-    setSnap(readStreamSnap());
-    if (typeof mq.addEventListener === 'function') {
-      mq.addEventListener('change', onChange);
-      return () => mq.removeEventListener('change', onChange);
-    }
-    return undefined;
-  }, []);
-  return snap;
-}
-
-function readStreamSnap(): boolean {
-  if (typeof document === 'undefined' || typeof window === 'undefined') return true;
-  const root = document.documentElement;
-  if (root.dataset.makaReducedMotion === 'true') return true;
-  if (root.dataset.makaE2eFixture === 'true') return true;
-  if (typeof window.matchMedia === 'function') {
-    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  }
-  return false;
 }

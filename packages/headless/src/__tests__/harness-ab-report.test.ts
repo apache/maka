@@ -5,6 +5,9 @@ import type { FixedPromptTaskInfraFailedEvent } from '../fixed-prompt-controller
 import {
   assertHarnessAbReportCompleted,
   buildHarnessAbReport,
+  buildHarnessCohortReport,
+  renderHarnessCohortReportCsv,
+  renderHarnessCohortReportMarkdown,
   renderHarnessAbReportCsv,
   renderHarnessAbReportMarkdown,
 } from '../harness-ab-report.js';
@@ -56,8 +59,138 @@ describe('harness A/B report', () => {
     } as Pick<HarnessAbRunManifest, 'arms'>;
     assert.throws(
       () => buildHarnessAbReport(summary, undefined, 'metered', partialManifest),
-      /execution placement must be declared for both arms/,
+      /execution placement must be declared for every arm/,
     );
+  });
+
+  test('renders a three-arm common cohort with native protocol disclosure', () => {
+    const events = {
+      maka: [usage('a', true, 100, 20, 25, 0.001)],
+      codex: [usage('a', false, 120, 30, 30, 0.002)],
+      'claude-code': [usage('a', true, 110, 10, 28, 0.0015)],
+    };
+    const comparison = (baselineArmId: keyof typeof events, candidateArmId: keyof typeof events) =>
+      summarizeAbComparison({
+        runId: 'deepseek-three-way',
+        roundId: `${baselineArmId}-vs-${candidateArmId}`,
+        baselineArmId,
+        candidateArmId,
+        evaluationTaskIds: ['a'],
+        baselineRuns: [events[baselineArmId]],
+        candidateRuns: [events[candidateArmId]],
+      });
+    const report = buildHarnessCohortReport(
+      {
+        runId: 'deepseek-three-way',
+        armIds: ['maka', 'codex', 'claude-code'],
+        taskCount: 1,
+        commonCohort: { groups: 1, comparableGroups: 1, excludedGroupIds: [] },
+        pairwise: [
+          comparison('maka', 'codex'),
+          comparison('maka', 'claude-code'),
+          comparison('codex', 'claude-code'),
+        ],
+      },
+      {
+        snapshotFingerprint: `sha256:${'a'.repeat(64)}`,
+        annotations: [{ taskId: 'a', state: 'passed' }],
+        warnings: ['frozen Oracle warning'],
+      },
+      'metered',
+      {
+        arms: [
+          harnessManifestArm('maka', 'anthropic-messages'),
+          harnessManifestArm('codex', 'openai-chat'),
+          harnessManifestArm('claude-code', 'openai-responses'),
+        ],
+      },
+    );
+
+    assert.equal(report.arms.length, 3);
+    assert.deepEqual(
+      report.arms.map(({ armId, passed, evaluated, passRate, inputTokens, infraFailed }) => ({
+        armId,
+        passed,
+        evaluated,
+        passRate,
+        inputTokens,
+        infraFailed,
+      })),
+      [
+        { armId: 'maka', passed: 1, evaluated: 1, passRate: 1, inputTokens: 100, infraFailed: 0 },
+        { armId: 'codex', passed: 0, evaluated: 1, passRate: 0, inputTokens: 120, infraFailed: 0 },
+        {
+          armId: 'claude-code',
+          passed: 1,
+          evaluated: 1,
+          passRate: 1,
+          inputTokens: 110,
+          infraFailed: 0,
+        },
+      ],
+    );
+    assert.deepEqual(report.measurement.protocolByArm, {
+      maka: 'anthropic-messages',
+      codex: 'openai-chat',
+      'claude-code': 'openai-responses',
+    });
+    const escapedCsv = renderHarnessCohortReportCsv({
+      ...report,
+      tasks: [{ ...report.tasks[0]!, taskId: 'task,"quoted"' }],
+    });
+    assert.match(escapedCsv, /^"task,""quoted""",maka,/m);
+    assert.deepEqual(report.tasks[0]?.arms, [
+      {
+        armId: 'maka',
+        observed: 1,
+        valid: 1,
+        passed: 1,
+        passRate: 1,
+        completed: 1,
+        budgetExhausted: 0,
+        infraFailed: 0,
+        plumbingFailed: 0,
+        attestationWarnings: 0,
+        missing: 0,
+      },
+      {
+        armId: 'codex',
+        observed: 1,
+        valid: 1,
+        passed: 0,
+        passRate: 0,
+        completed: 1,
+        budgetExhausted: 0,
+        infraFailed: 0,
+        plumbingFailed: 0,
+        attestationWarnings: 0,
+        missing: 0,
+      },
+      {
+        armId: 'claude-code',
+        observed: 1,
+        valid: 1,
+        passed: 1,
+        passRate: 1,
+        completed: 1,
+        budgetExhausted: 0,
+        infraFailed: 0,
+        plumbingFailed: 0,
+        attestationWarnings: 0,
+        missing: 0,
+      },
+    ]);
+    assert.match(renderHarnessCohortReportMarkdown(report), /Common cohort: 1\/1/);
+    assert.match(
+      renderHarnessCohortReportCsv(report),
+      /^task_id,arm_id,observed,valid,passed,pass_rate,completed,budget_exhausted,infra_failed,plumbing_failed,attestation_warnings,missing\n/,
+    );
+    assert.match(renderHarnessCohortReportCsv(report), /a,claude-code,1,1,1,1,1,0,0,0,0,0/);
+    assert.deepEqual(report.oracleEvidence?.stateCounts, { passed: 1 });
+    assert.ok(report.pairwise.every((pair) => pair.oracleEvidence?.stateCounts.passed === 1));
+    assert.ok(report.pairwise.every((pair) => pair.execution?.arms.length === 2));
+    assert.match(renderHarnessCohortReportMarkdown(report), /Oracle evidence: passed 1\./);
+    assert.match(renderHarnessCohortReportMarkdown(report), /Warning: frozen Oracle warning/);
   });
 
   test('keeps effectiveness and economy as separate reproducible axes', () => {
@@ -458,6 +591,20 @@ describe('harness A/B report', () => {
     );
   });
 });
+
+function harnessManifestArm(
+  id: 'maka' | 'codex' | 'claude-code',
+  transport: 'openai-chat' | 'openai-responses' | 'anthropic-messages',
+) {
+  return {
+    id,
+    kind: 'harness' as const,
+    fingerprint: `${id}-fingerprint`,
+    metadata: {
+      config: { transport, execution: { placement: 'task-container' } },
+    },
+  };
+}
 
 function usage(
   taskId: string,

@@ -7,7 +7,6 @@ import {
   FolderOpen,
   MessageSquare,
   Plus,
-  Search,
   Settings,
   Sparkles,
 } from '@maka/ui/icons';
@@ -121,10 +120,6 @@ const paletteCommands: Command[] = [
   },
 ];
 
-const loadingSearchModalDeps = {
-  searchThread: () => new Promise<SearchResponse>(() => undefined),
-} satisfies SearchModalDeps;
-
 function searchModalDeps(response: SearchResponse): SearchModalDeps {
   return {
     searchThread: async () => response,
@@ -198,15 +193,6 @@ async function enterQuery(canvasElement: HTMLElement, selector: string, value: s
   await wait(260);
 }
 
-async function pressPaletteKey(canvasElement: HTMLElement, key: string) {
-  const input = canvasElement.ownerDocument.querySelector<HTMLInputElement>(
-    '[role="dialog"] input',
-  );
-  if (!input) return;
-  input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
-  await wait(0);
-}
-
 // Real path: ⌘K (or 更多操作 → 打开命令面板) → the palette with commands grouped by kind.
 export const CommandPaletteGroupedResults: Story = {
   render: () => (
@@ -214,58 +200,6 @@ export const CommandPaletteGroupedResults: Story = {
       commands={paletteCommands}
     />
   ),
-};
-
-// Real path: ⌘K → type a query that matches nothing. There is no
-// no-commands-at-all state to render: `buildCommandList` always emits
-// 新建对话 first (command-palette-commands.ts), so the palette's empty branch
-// is only ever reached through a query — and its copy says so
-// ("没有匹配的命令 / 换个关键词").
-export const CommandPaletteNoMatch: Story = {
-  render: () => (
-    <CommandPaletteFrame
-      commands={paletteCommands}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '[role="dialog"] input', 'zzzzz-no-such-command');
-  },
-};
-
-// Real path: ⌘K then ↓↓ — the keyboard-driven selection ring, which the mouse path never
-// shows.
-export const CommandPaletteKeyboardFocusedSelection: Story = {
-  render: () => (
-    <CommandPaletteFrame
-      commands={paletteCommands}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await pressPaletteKey(canvasElement, 'ArrowDown');
-    await pressPaletteKey(canvasElement, 'ArrowDown');
-  },
-};
-
-// Real path: titlebar 搜索 icon (app-shell-chrome-actions.tsx) → the modal before anything
-// is typed.
-export const SearchModalEmpty: Story = {
-  render: () => (
-    <SearchModalFrame
-      deps={searchModalDeps([])}
-    />
-  ),
-};
-
-// Real path: same modal → type a query → the in-flight state.
-export const SearchModalLoading: Story = {
-  render: () => (
-    <SearchModalFrame
-      deps={loadingSearchModalDeps}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'benchmark');
-  },
 };
 
 // Real path: same modal with matches, grouped by session with the matched excerpt.
@@ -280,47 +214,3 @@ export const SearchModalResults: Story = {
   },
 };
 
-// Real path: same modal with a query that matches nothing.
-export const SearchModalNoResults: Story = {
-  render: () => (
-    <SearchModalFrame
-      deps={searchModalDeps([])}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'unmatched');
-  },
-};
-
-// Real path: same modal when the search index is unavailable.
-export const SearchModalError: Story = {
-  render: () => (
-    <SearchModalFrame
-      deps={searchModalDeps({
-        ok: false,
-        reason: 'provider_error',
-        message: '搜索索引暂时不可用，请稍后重试。',
-      })}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'benchmark');
-  },
-};
-
-// Real path: same modal with incognito on — search is disabled rather than silently
-// empty.
-export const SearchModalBlocked: Story = {
-  render: () => (
-    <SearchModalFrame
-      deps={searchModalDeps({
-        ok: false,
-        reason: 'incognito_active',
-        message: 'Search is disabled while incognito is active.',
-      })}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'benchmark');
-  },
-};

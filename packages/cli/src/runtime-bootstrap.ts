@@ -25,6 +25,7 @@ import {
   createProviderRequestCaptureRecorder,
   createFilesystemWorkerLaunchSpecProvider,
   createLocalContinuationSafetyInspector,
+  createConfiguredSubagentCatalog,
   drainGoalTurn,
   FilesystemWorkerClient,
   buildDefaultContextBudgetPolicy,
@@ -44,6 +45,7 @@ import {
   generateSessionTitle as generateRuntimeSessionTitle,
   loadHistoryCompactBlocksFromArtifacts,
   replayPlanItemsToModelMessages,
+  recoverAgentGraphSupervisorContextOverflow,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
   projectEffectiveProductToolSurface,
@@ -53,6 +55,7 @@ import {
   type HostCapabilitiesResolver,
   type MakaTool,
   type InvocationResult,
+  type InvocationSource,
   type ShellRunUpdate,
   type SkillSource,
   type ModelMessage,
@@ -69,6 +72,7 @@ import {
   createGitWorktreeChildExecutor,
   createReadImageSnapshotter,
   createSessionStore,
+  isSessionNotFoundError,
   createSettingsStore,
   createSqliteShellRunStore,
   assertSessionBundleRootLayout,
@@ -161,7 +165,7 @@ export interface SessionRecapGenerator {
 }
 
 export interface CreateMakaCliRuntimeContextInput {
-  surface: 'tui' | 'run';
+  surface: 'tui' | 'run' | 'activation';
   /** Legacy root; both new roots default to this path. */
   workspaceRoot: string;
   /** Optional portable session-owned state root. */
@@ -177,6 +181,10 @@ export interface CreateMakaCliRuntimeContextInput {
   /** Canonical cwd used for one resumed session without rewriting its stored header. */
   sessionCwdOverride?: { sessionId: string; cwd: string };
   runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
+  /** Invocation provenance used by hosted activation callers. */
+  runtimeSource?: InvocationSource;
+  /** Enables authoritative safe-boundary continuation for hosted activation callers. */
+  safeBoundaryResumeEnabled?: boolean;
   onSessionTitleChanged?: (sessionId: string) => void;
   /**
    * Optional cron executor. When provided, the Automation tool advertises the
@@ -248,6 +256,10 @@ export async function createMakaCliRuntimeContext(
   const connectionStore = createConnectionStore(configRoot);
   const credentialStore = createFileCredentialStore(configRoot);
   const settingsStore = createSettingsStore(configRoot);
+  const subagentCatalog = createConfiguredSubagentCatalog({
+    getSettings: () => settingsStore.get(),
+    getConnection: (slug) => connectionStore.get(slug),
+  });
   // Read-only scanner over other agents' local session stores (~/.claude,
   // ~/.codex). Independent of the Maka workspace — takes no workspaceRoot.
   const foreignSessions = createForeignSessionStore();
@@ -342,20 +354,12 @@ export async function createMakaCliRuntimeContext(
     generateId: () => randomUUID(),
     now: () => Date.now(),
   });
-  // Durable persistence is tied to cron capability. A cron-disabled host is
-  // heartbeat-only, and heartbeats are never durable — so it has NO durable
-  // automations of its own. Critically, the CLI shares the desktop's workspace
-  // (resolveMakaWorkspaceRoot reconstructs the Electron userData path), so its
-  // automations.json IS the desktop's. store.sync() is a full-file overwrite,
-  // so a heartbeat-only CLI writing its (empty) durable list would erase the
-  // desktop's crons, and loading+reconciling crons it can't run would mutate
-  // them. It therefore does neither — it leaves durable state entirely to the
-  // host that owns it. (Two cron-enabled hosts sharing a store is the separate,
-  // still-deferred leader-lock concern.)
+  // A heartbeat-only CLI owns no durable Automations and must not reconcile the
+  // shared authority. A cron-enabled host persists through the same operational
+  // SQLite authority as Desktop.
   const cronEnabled = input.automationCreateFreshRun !== undefined;
-  const automationStore = createAutomationStore<AutomationDefinition>(configRoot);
-  // If the durable store fails to READ, we must not WRITE over it (a full sync
-  // would erase unread crons). Disable persistence loudly until restart.
+  const automationStore = createAutomationStore(stateRoot);
+  // If the authority cannot be read, do not attempt a later replacement write.
   let durableStoreReadable = true;
   const syncAutomations = cronEnabled
     ? (): void => {
@@ -696,6 +700,7 @@ export async function createMakaCliRuntimeContext(
                   toolCallId: childInput.toolCallId,
                 },
                 agentProfile: childInput.agentProfile,
+                ...(childInput.subagentId ? { subagentId: childInput.subagentId } : {}),
                 prompt: childInput.prompt,
                 ...(childInput.swarm ? { swarm: childInput.swarm } : {}),
                 abortSignal: childInput.abortSignal,
@@ -737,6 +742,10 @@ export async function createMakaCliRuntimeContext(
           }),
         providerOptions: buildProviderOptions(ready.connection, ready.model, header.thinkingLevel),
       }),
+      // The canonical metering sink (#1679). Without it this composition root
+      // produces diagnostics and no accounting at all — for `/compact` and for
+      // ordinary sends alike.
+      ...(ctx.recordModelCallAttempt ? { recordModelCallAttempt: ctx.recordModelCallAttempt } : {}),
       recordHistoryCompactCheckpoint: ctx.recordHistoryCompactCheckpoint,
       loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
       allowMidTurnHistoryCompaction: ctx.allowMidTurnHistoryCompaction,
@@ -803,9 +812,14 @@ export async function createMakaCliRuntimeContext(
       : {}),
     shellRuns,
     backends,
-    safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
+    subagentCatalog,
+    runtimeSource: input.runtimeSource ?? (input.surface === 'activation' ? 'gateway' : undefined),
+    safeBoundaryResumeEnabled:
+      input.safeBoundaryResumeEnabled ??
+      (input.surface === 'activation' || process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1'),
     onContinuationLifecycleEvent: (event) => {
-      console.info('[runtime-resume]', JSON.stringify(event));
+      const writeDiagnostic = input.surface === 'activation' ? console.error : console.info;
+      writeDiagnostic('[runtime-resume]', JSON.stringify(event));
     },
     inspectContinuationSafety: createLocalContinuationSafetyInspector({
       readSessionCwd: async (sessionId) => (await store.readHeader(sessionId)).cwd,
@@ -881,7 +895,14 @@ export async function createMakaCliRuntimeContext(
       activityRegistry: goalContinuation.activities,
       wakeStore: agentGraphControlStore,
       readSnapshot: (rootSessionId) => agentGraphCoordinator!.getSnapshot(rootSessionId),
-      startTurn: async (sessionId, message, activity, abortSignal) => {
+      startTurn: async (sessionId, message, activity, abortSignal, isCurrent) => {
+        if (!(await isCurrent())) {
+          return {
+            kind: 'superseded',
+            turnId: message.turnId,
+            reason: 'Agent graph supervisor checkpoint was superseded before execution.',
+          };
+        }
         let stopPromise: Promise<void> | undefined;
         const stop = (): void => {
           stopPromise ??= runtime.stopSession(sessionId, { source: 'graph_supervisor' });
@@ -899,6 +920,15 @@ export async function createMakaCliRuntimeContext(
           await stopPromise;
         }
       },
+      isSessionDeliverable: async (sessionId) => {
+        try {
+          const header = await store.readHeader(sessionId);
+          return !header.isArchived && header.status !== 'archived';
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return false;
+          throw error;
+        }
+      },
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {
         const runs = (await runStore.listSessionRuns(rootSessionId)).filter(
           (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
@@ -910,41 +940,13 @@ export async function createMakaCliRuntimeContext(
         }
         return runs[0]?.status ?? 'missing';
       },
-      recoverContextOverflow: async (rootSessionId, { abortSignal }) => {
-        abortSignal.throwIfAborted();
-        let recovery:
-          | {
-              estimatedTokensBefore?: number;
-              estimatedTokensAfter?: number;
-              droppedTurns?: number;
-              droppedEvents?: number;
-              historyCompactedEvents?: number;
-              historyCompactBlocksWritten?: number;
-            }
-          | undefined;
-        for await (const event of runtime.compactSession(rootSessionId, {
-          turnId: randomUUID(),
-          minRecentTurns: 0,
-        })) {
-          abortSignal.throwIfAborted();
-          if (event.type === 'token_usage' && event.contextBudget) {
-            const diagnostic = event.contextBudget;
-            recovery = {
-              estimatedTokensBefore: diagnostic.estimatedTokensBefore,
-              estimatedTokensAfter: diagnostic.estimatedTokensAfter,
-              droppedTurns: diagnostic.droppedTurns,
-              droppedEvents: diagnostic.droppedEvents,
-              ...(diagnostic.historyCompactedEvents !== undefined
-                ? { historyCompactedEvents: diagnostic.historyCompactedEvents }
-                : {}),
-              ...(diagnostic.historyCompactBlocksWritten !== undefined
-                ? { historyCompactBlocksWritten: diagnostic.historyCompactBlocksWritten }
-                : {}),
-            };
-          }
-        }
-        return recovery;
-      },
+      recoverContextOverflow: (rootSessionId, { abortSignal }) =>
+        recoverAgentGraphSupervisorContextOverflow({
+          rootSessionId,
+          compactTurnId: randomUUID(),
+          abortSignal,
+          compactSession: (sessionId, input) => runtime.compactSession(sessionId, input),
+        }),
       newId: randomUUID,
       onDiagnostic: (diagnostic) => {
         console.warn('[agent-graph-supervisor-wake]', JSON.stringify(diagnostic));

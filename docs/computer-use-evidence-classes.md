@@ -6,7 +6,7 @@ the qualification boundary and is not descriptive copy.
 ## real-runtime
 
 A live provider used the production Runtime, Computer Use tool, owned fixture,
-and cua-driver path. Provider qualification additionally requires:
+and executor path. Provider qualification additionally requires:
 
 - `complete/end_turn`;
 - enforced or explicitly reported policy provenance;

@@ -79,28 +79,6 @@ export function useAppShellSessionList(toastApi: ToastApi) {
     ]);
   }
 
-  // Sending locally precedes the persisted running status. Open the UI gate
-  // optimistically, then let session refresh reconcile it. The restore only
-  // applies while this exact optimistic status still owns the entry, so a
-  // newer backend update always wins.
-  function markSessionRunningOptimistic(sessionId: string): (() => void) | undefined {
-    const prior = sessionsRef.current.find((entry) => entry.id === sessionId);
-    if (!prior || prior.status === 'running') return undefined;
-    const priorStatus = prior.status;
-    setSessions((current) => current.map((entry) => (
-      entry.id === sessionId && entry.status !== 'running'
-        ? { ...entry, status: 'running' as const }
-        : entry
-    )));
-    return () => {
-      setSessions((current) => current.map((entry) => (
-        entry.id === sessionId && entry.status === 'running'
-          ? { ...entry, status: priorStatus }
-          : entry
-      )));
-    };
-  }
-
   function markSessionReadLocally(sessionId: string, readMessages: readonly StoredMessage[]): void {
     setSessions((current) => applyLocalSessionRead(
       sessionReadBoundariesRef.current,
@@ -118,7 +96,6 @@ export function useAppShellSessionList(toastApi: ToastApi) {
     refreshSessions,
     seedSessions,
     upsertSessionSummary,
-    markSessionRunningOptimistic,
     markSessionReadLocally,
   };
 }

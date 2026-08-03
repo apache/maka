@@ -1,3 +1,4 @@
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
 import {
   gateSkillsByHostCapabilities,
   loadSkillInstructionsFromScan,
@@ -5,7 +6,7 @@ import {
   type LoadedSkillInstructions,
   type LoadSkillInstructionsResult,
 } from './skills-context.js';
-import { scanSkills, type SkillSource } from './skills-discovery.js';
+import { scanSkills, type ScannedSkill, type SkillSource } from './skills-discovery.js';
 import {
   boundSkillInvocationRequest,
   failedSkillInvocationReceipt,
@@ -19,10 +20,12 @@ const MAX_SKILL_INVOCATION_REQUESTS = 50;
 
 /**
  * Explicit skill invocation (issue #1148): the shared, client-agnostic
- * contract behind the TUI and Desktop `/skill:<name>` tokens. This module
- * owns the shared token syntax, lists what can be invoked, resolves refs/ids/
- * names against one scan, and composes the final user message with the
- * loaded instructions injected. UI rendering stays client-local.
+ * contract behind the TUI and Desktop `/skill:<name>` tokens. The token
+ * grammar itself is `SKILL_INVOCATION_TOKEN_SOURCE` in `@maka/core`, shared
+ * with the clients that render a draft; this module parses against it, lists
+ * what can be invoked, resolves refs/ids/names against one scan, and composes
+ * the final user message with the loaded instructions injected. UI rendering
+ * stays client-local.
  *
  * The trust model matches the always-on skill catalog: skill instructions
  * are user-provided content, lower priority than system/developer/safety/
@@ -84,7 +87,7 @@ export type PreparedSkillInvocationMessage =
       skillInvocation: SkillInvocationResult;
     };
 
-export const SKILL_INVOCATION_TOKEN_SOURCE = String.raw`(?:^|(?<=\s))\/skill:([A-Za-z0-9._-]+)`;
+export { SKILL_INVOCATION_TOKEN_SOURCE };
 
 /** Parse distinct invocation tokens in first-appearance order. */
 export function parseSkillInvocationTokens(text: string): SkillInvocationToken[] {
@@ -217,6 +220,39 @@ export async function prepareSkillInvocationMessage(input: {
   source: SkillSource;
   host?: HostCapabilities;
 }): Promise<PreparedSkillInvocationMessage> {
+  return prepareSkillInvocation({
+    text: input.text,
+    ...(input.skillIds ? { skillIds: input.skillIds } : {}),
+    resolve: (requests) => resolveSkillInvocations(input.source, input.host, requests),
+  });
+}
+
+/** Prepare explicit invocation against one Host-owned immutable inventory read. */
+export async function prepareSkillInvocationMessageFromInventory(input: {
+  text: string;
+  skillIds?: readonly string[];
+  inventory: readonly ScannedSkill[];
+  host?: HostCapabilities;
+}): Promise<PreparedSkillInvocationMessage> {
+  const inventory = [...input.inventory];
+  return prepareSkillInvocation({
+    text: input.text,
+    ...(input.skillIds ? { skillIds: input.skillIds } : {}),
+    resolve: (requests) =>
+      Promise.resolve(
+        requests.map((request) => ({
+          request,
+          result: loadSkillInstructionsFromScan(inventory, request, input.host),
+        })),
+      ),
+  });
+}
+
+async function prepareSkillInvocation(input: {
+  text: string;
+  skillIds?: readonly string[];
+  resolve(requests: readonly string[]): Promise<SkillInvocationResolution[]>;
+}): Promise<PreparedSkillInvocationMessage> {
   const passthrough: PreparedSkillInvocationMessage = {
     disposition: 'passthrough',
     sendText: input.text,
@@ -244,7 +280,7 @@ export async function prepareSkillInvocationMessage(input: {
     new Set(tokens.map((token) => token.name.toLowerCase())),
   );
   try {
-    const resolved = await resolveSkillInvocations(input.source, input.host, requests);
+    const resolved = await input.resolve(requests);
     const loaded: LoadedSkillInstructions[] = [];
     const loadedIds = new Set<string>();
     const failures: SkillInvocationFailure[] = [];

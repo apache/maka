@@ -134,7 +134,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
             <div className="maka-error-actions">
               <UiButton
                 variant="secondary"
-                className="maka-error-copy-action min-w-[5.5rem]"
+                className="maka-error-copy-action"
                 data-copy-state={copyState}
                 isDisabled={copyPending}
                 aria-busy={copyPending ? 'true' : undefined}

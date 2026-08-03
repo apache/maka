@@ -42,17 +42,15 @@ export function QuoteRefChip(props: {
   return (
     <span
       className={cn(
-        'maka-quote-chip inline-flex gap-1 bg-[var(--foreground-alpha-6)] ring-1 ring-inset ring-[color:var(--foreground-alpha-12)] pl-2',
-        expanded
-          ? 'w-full max-w-full items-start rounded-md py-1'
-          : 'max-w-[15rem] items-center rounded-full py-0.5',
-        props.onRemove ? 'pr-0.5' : 'pr-2',
+        'maka-quote-chip',
+        expanded ? 'maka-quote-chip-expanded' : 'maka-quote-chip-collapsed',
+        props.onRemove ? 'maka-quote-chip-removable' : 'maka-quote-chip-readonly',
         props.className,
       )}
       title={expanded ? undefined : full}
     >
       <TextQuote
-        className={cn('h-3 w-3 shrink-0 text-muted-foreground', expanded && 'mt-0.5')}
+        className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
         aria-hidden="true"
       />
       <button
@@ -66,21 +64,21 @@ export function QuoteRefChip(props: {
             }
           : { tabIndex: -1 })}
         className={cn(
-          'min-w-0 flex-1 text-left text-xs text-foreground-secondary',
-          expanded ? 'max-h-32 overflow-y-auto whitespace-pre-wrap break-words' : 'truncate',
+          'maka-quote-chip-text',
+          expanded ? 'maka-quote-chip-text-expanded' : 'maka-quote-chip-text-clipped',
         )}
       >
-        {label ? <span className="text-muted-foreground">{label} </span> : null}
+        {label ? <span className="maka-quote-chip-label">{label} </span> : null}
         {props.quote.text}
       </button>
       {props.onRemove && (
         <button
           type="button"
           onClick={props.onRemove}
-          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-[var(--foreground-alpha-10)] hover:text-foreground transition"
+          className="maka-quote-chip-remove"
           aria-label={copy.removeQuoteAriaLabel}
         >
-          <X className="h-3 w-3" />
+          <X />
         </button>
       )}
     </span>

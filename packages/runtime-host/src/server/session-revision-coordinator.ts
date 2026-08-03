@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
-import type { SessionConversationCopy, SessionHeader, StoredMessage } from '@maka/core/session';
+import {
+  sessionRevisionFamilyId,
+  type SessionConversationCopy,
+  type SessionHeader,
+  type StoredMessage,
+} from '@maka/core/session';
 import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
@@ -36,6 +41,7 @@ import type {
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import { projectSessionCatalogRecord } from './session-catalog-coordinator.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import { purgeSessionSidecars } from './session-sidecar-purge.js';
 
 type ConversationCopyKind = 'branch' | 'revision';
 type ConversationCopyOutcome = OperationOutcome<SessionRevisionOperationKey>;
@@ -178,6 +184,12 @@ export class HostSessionRevisionCoordinator {
     if (sourceHeader.conversationCopy?.state === 'preparing') {
       return copyFailure('not_found', 'Source Session does not exist');
     }
+    if (kind === 'revision' && (sourceHeader.isArchived || sourceHeader.status === 'archived')) {
+      return copyFailure(
+        'operation_conflict',
+        'Archived Session revision families cannot create active revisions',
+      );
+    }
     if (sourceHeader.subagentParent) {
       return copyFailure(
         'operation_conflict',
@@ -217,6 +229,19 @@ export class HostSessionRevisionCoordinator {
       ]);
     } catch {
       return copyFailure('persistence_failed', 'Source conversation lineage is unavailable');
+    }
+    if (
+      kind === 'revision' &&
+      sessionHeaders.some(
+        (candidate) =>
+          sessionRevisionFamilyId(candidate) === sessionRevisionFamilyId(sourceHeader) &&
+          (candidate.isArchived || candidate.status === 'archived'),
+      )
+    ) {
+      return copyFailure(
+        'operation_conflict',
+        'Archived Session revision families cannot create active revisions',
+      );
     }
     const copyTurnIds = plan.copyTurnIds;
     if (
@@ -537,17 +562,15 @@ export class HostSessionRevisionCoordinator {
   async #discard(header: SessionHeader): Promise<void> {
     const copy = header.conversationCopy;
     if (!copy) throw new Error('Session is not a conversation copy');
-    const sidecars = await Promise.allSettled([
-      this.#artifacts.purgeSessionArtifacts(header.id),
-      this.#taskLedger.purgeConversationTaskLedger(header.id),
-      this.#stores.purgeConversationOperationalState(header.id),
-    ]);
-    const failures = sidecars.flatMap((result) =>
-      result.status === 'rejected' ? [result.reason] : [],
+    await purgeSessionSidecars(
+      {
+        artifacts: this.#artifacts,
+        taskLedger: this.#taskLedger,
+        purgeOperationalState: (sessionId) =>
+          this.#stores.purgeConversationOperationalState(sessionId),
+      },
+      header.id,
     );
-    if (failures.length > 0) {
-      throw new AggregateError(failures, `Conversation copy ${header.id} could not be purged`);
-    }
     await this.#stores.sessionStore.discardStableConversationCopy(
       header.id,
       copy.requestFingerprint,

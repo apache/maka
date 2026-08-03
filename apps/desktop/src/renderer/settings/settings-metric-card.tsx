@@ -4,9 +4,11 @@ import { StatTile } from '@maka/ui';
  *  sites keep their name; the recipe lives in the primitive. */
 export function MetricCard(props: { title: string; value: string; detail?: string }) {
   return (
+    /* Detail audit: was emphasis="filled" — gray-plate tiles while the
+       Permission/Health summaries use the outlined StatTile. One tile
+       language across every settings summary strip. */
     <StatTile
       className="settingsMetricCard"
-      emphasis="filled"
       label={props.title}
       value={props.value}
       detail={props.detail}

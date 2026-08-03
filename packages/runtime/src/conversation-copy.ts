@@ -2,13 +2,18 @@ import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunStore,
+  EmittedAgentRunEvent,
   RuntimeEvent,
   RuntimeEventStore,
   StorageRef,
   StoredMessage,
   ToolResultContent,
 } from '@maka/core';
-import { decodeCanonicalToolResultContent, isSessionInlineRun } from '@maka/core';
+import {
+  decodeCanonicalToolResultContent,
+  isEmittedAgentRunEventType,
+  isSessionInlineRun,
+} from '@maka/core';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import {
   buildHistoryCompactCheckpoint,
@@ -475,7 +480,7 @@ function cloneAgentRunEvent(
   checkpointIds: Map<string, string>,
   operationalEventIds: ReadonlyMap<string, string>,
   providerTraceIds: ReadonlyMap<string, string>,
-): AgentRunEvent | null {
+): EmittedAgentRunEvent | null {
   if (event.type === 'event_corrupt') {
     throw new Error(`Cannot copy corrupt AgentRun event ${event.id}`);
   }
@@ -703,7 +708,12 @@ function toolOperationIdMap(
   return result;
 }
 
-function isCopiedAgentRunEvent(event: AgentRunEvent): boolean {
+function isCopiedAgentRunEvent(event: AgentRunEvent): event is EmittedAgentRunEvent {
+  // The rewriters below know which of this build's payloads carry source-owned references. A type
+  // this build does not emit cannot even be checked for them, so it is dropped rather than carried
+  // into the target with source identities intact. The ledger's `type` is open, so such an event
+  // may predate a retired writer or postdate this build entirely (#1942).
+  if (!isEmittedAgentRunEventType(event.type)) return false;
   // Active/semantic blocks hash the exact provider-visible source. Rewriting
   // target-owned RuntimeEvent and Artifact references invalidates that
   // evidence, so a copied Session starts without these derived diagnostics.

@@ -78,7 +78,7 @@ import type {
   VoiceFinishCaptureResult,
   VoiceRealtimeClientSession,
   DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
   WebSearchProvider,
   WebSearchResponse,
@@ -98,6 +98,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import type { SessionTrace } from '@maka/core/session-trace';
 import type {
   AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
@@ -120,6 +121,7 @@ import type {
 } from '@maka/core/mcp';
 import type {
   AttachmentRef,
+  InlineReference,
   OnboardingMilestoneId,
   QuoteRef,
 } from '@maka/core';
@@ -207,12 +209,14 @@ const makaBridge = {
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
+            workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
           },
     ): Promise<
       | {
           ok: true;
           turnId: string;
           attachments: AttachmentRef[];
+          inlineReferences: InlineReference[];
           skillInvocation: import('@maka/runtime').SkillInvocationResult;
         }
       | {
@@ -929,6 +933,12 @@ const makaBridge = {
       return ipcRenderer.invoke('notifications:runEnded', payload);
     },
   },
+  inspector: {
+    /** Read-only per-session causal trace (#1625). Never writes runtime state. */
+    trace(sessionId: string): Promise<Result<SessionTrace>> {
+      return ipcRenderer.invoke('inspector:trace', sessionId);
+    },
+  },
   usage: {
     summary(query: UsageQuery): Promise<Result<UsageSummaryV2>> {
       return ipcRenderer.invoke('usage:summary', query);
@@ -959,7 +969,7 @@ const makaBridge = {
     setConfig(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig> {
       return ipcRenderer.invoke('daily-review:setConfig', patch);
     },
-    runOnce(input: { mode: DailyReviewMode; day?: number; modelKey?: string }): Promise<{ archiveId: string }> {
+    runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
       return ipcRenderer.invoke('daily-review:runOnce', input);
     },
     list(): Promise<DailyReviewArchiveSummary[]> {

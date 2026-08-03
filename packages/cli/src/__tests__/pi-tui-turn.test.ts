@@ -31,7 +31,7 @@ describe('Maka Pi TUI turn', () => {
       },
       lifecycle: {
         activities,
-        beginExternalTurn: (sessionId, turnId) => {
+        beginObservedTurn: (sessionId, turnId) => {
           sequence.push('register');
           assert.equal(sessionId, 'session-1');
           assert.equal(turnId, 'turn-1');
@@ -88,7 +88,7 @@ describe('Maka Pi TUI turn', () => {
       },
       lifecycle: {
         activities,
-        beginExternalTurn: () => ({
+        beginObservedTurn: () => ({
           kind: 'registered',
           settle: async () => {},
         }),
@@ -123,7 +123,7 @@ describe('Maka Pi TUI turn', () => {
       },
       lifecycle: {
         activities,
-        beginExternalTurn: () => {
+        beginObservedTurn: () => {
           registrations++;
           return {
             kind: 'registered',

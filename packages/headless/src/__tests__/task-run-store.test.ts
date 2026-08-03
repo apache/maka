@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
-import { appendFile, lstat, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,7 +128,7 @@ function completedEvents(taskRunId = 'tr-1', taskId = 'task-1', configId = 'cfg-
 }
 
 describe('TaskRunStore', () => {
-  test('binds file readers and writers to Headless leases', async () => {
+  test('binds SQLite readers and writers to Headless leases', async () => {
     const base = await mkdtemp(join(tmpdir(), 'maka-task-run-lease-'));
     const headlessRoot = join(base, 'headless');
     const interactiveRoot = join(base, 'interactive');
@@ -155,7 +155,9 @@ describe('TaskRunStore', () => {
           (error: unknown) =>
             error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
         );
-        await assert.rejects(() => lstat(join(interactiveRoot, 'task-runs')), { code: 'ENOENT' });
+        await assert.rejects(() => lstat(join(interactiveRoot, 'runtime.sqlite')), {
+          code: 'ENOENT',
+        });
       } finally {
         await owner.close();
       }
@@ -188,16 +190,16 @@ describe('TaskRunStore', () => {
     assert.deepEqual(await store.readEvents('tr-concurrent'), events);
   });
 
-  test('file-backed store appends and replays events after restart', async () => {
+  test('SQLite store appends and replays events after restart', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'maka-task-run-store-'));
     try {
-      const store = await openFileTaskRunWriter(storageRoot);
-      const events = completedEvents('tr-file');
+      const store = await openSqliteTaskRunWriter(storageRoot);
+      const events = completedEvents('tr-sqlite');
       for (const event of events) await store.appendEvent(event.taskRunId, event);
 
-      const restarted = await openFileTaskRunReader(storageRoot);
-      assert.deepEqual(await restarted.readEvents('tr-file'), events);
-      assert.equal((await restarted.project('tr-file')).status, 'completed');
+      const restarted = await openSqliteTaskRunReader(storageRoot);
+      assert.deepEqual(await restarted.readEvents('tr-sqlite'), events);
+      assert.equal((await restarted.project('tr-sqlite')).status, 'completed');
     } finally {
       await rm(storageRoot, { recursive: true, force: true });
     }
@@ -206,8 +208,8 @@ describe('TaskRunStore', () => {
   test('atomically publishes the first ledger across independent writers', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'maka-task-run-store-'));
     try {
-      const first = await openFileTaskRunWriter(storageRoot);
-      const second = await openFileTaskRunWriter(storageRoot);
+      const first = await openSqliteTaskRunWriter(storageRoot);
+      const second = await openSqliteTaskRunWriter(storageRoot);
       const taskRunId = 'concurrent-first-write';
       const firstEvent = completedEvents(taskRunId)[0]!;
       const secondEvent: TaskEvent = {
@@ -224,7 +226,7 @@ describe('TaskRunStore', () => {
         second.appendEvent(taskRunId, secondEvent),
       ]);
 
-      const reader = await openFileTaskRunReader(storageRoot);
+      const reader = await openSqliteTaskRunReader(storageRoot);
       assert.deepEqual(
         (await reader.readEvents(taskRunId)).map((event) => event.id).sort(),
         [firstEvent.id, secondEvent.id].sort(),
@@ -235,21 +237,17 @@ describe('TaskRunStore', () => {
     }
   });
 
-  test('serializes large ledger appends across independent processes', async () => {
+  test('serializes appends across independent processes', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'maka-task-run-store-'));
     const children: ChildProcess[] = [];
     try {
-      const taskRunId = 'concurrent-large-write';
-      const writer = await openFileTaskRunWriter(storageRoot);
+      const taskRunId = 'concurrent-process-write';
+      const writer = await openSqliteTaskRunWriter(storageRoot);
       await writer.appendEvent(taskRunId, completedEvents(taskRunId)[0]!);
 
-      const instructions = [
-        `first:${'a'.repeat(768 * 1024)}:first`,
-        `second:${'b'.repeat(768 * 1024)}:second`,
-      ];
-      const events: TaskEvent[] = instructions.map((instruction, index) => ({
+      const events: TaskEvent[] = ['first', 'second'].map((instruction, index) => ({
         type: 'task_run_queued',
-        id: `large-${index + 1}`,
+        id: `process-${index + 1}`,
         taskRunId,
         taskId: `task-${index + 1}`,
         configId: 'cfg-1',
@@ -273,7 +271,7 @@ describe('TaskRunStore', () => {
       await Promise.all(writers.map((prepared) => prepared.ready));
       await Promise.all(writers.map((prepared) => prepared.append()));
 
-      const reader = await openFileTaskRunReader(storageRoot);
+      const reader = await openSqliteTaskRunReader(storageRoot);
       const replayed = await reader.readEvents(taskRunId);
       assert.deepEqual(
         replayed
@@ -297,52 +295,27 @@ describe('TaskRunStore', () => {
     }
   });
 
-  test('keeps distinct task run identities in separate ledgers', async () => {
+  test('keeps distinct task run identities separate', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'maka-task-run-store-'));
     try {
-      const store = await openFileTaskRunWriter(storageRoot);
-      const first = completedEvents('run/a', 'slash-task', 'slash-config');
-      const second = completedEvents('run?a', 'question-task', 'question-config');
-      for (let index = 0; index < first.length; index += 1) {
-        await store.appendEvent('run/a', first[index]!);
-        await store.appendEvent('run?a', second[index]!);
-      }
+      const store = await openSqliteTaskRunWriter(storageRoot);
+      const first = completedEvents('run/a', 'slash-task', 'slash-config')[0]!;
+      const second = completedEvents('run?a', 'question-task', 'question-config')[0]!;
+      await store.appendEvent('run/a', first);
+      await store.appendEvent('run?a', second);
 
       assert.deepEqual(await store.listTaskRunIds(), ['run/a', 'run?a']);
-      assert.deepEqual(await store.readEvents('run/a'), first);
-      assert.deepEqual(await store.readEvents('run?a'), second);
-
-      const firstProjection = await store.project('run/a');
-      assert.equal(firstProjection.taskId, 'slash-task');
-      assert.deepEqual(firstProjection.events, first);
-      const secondProjection = await store.project('run?a');
-      assert.equal(secondProjection.taskId, 'question-task');
-      assert.deepEqual(secondProjection.events, second);
-
-      const taskRunDir = join(storageRoot, 'task-runs');
-      const ledgerNames = (await readdir(taskRunDir))
-        .filter((name) => name.endsWith('.jsonl'))
-        .sort();
-      assert.equal(ledgerNames.length, 2);
-      assert.notEqual(ledgerNames[0], ledgerNames[1]);
-      for (const ledgerName of ledgerNames) {
-        const identities = new Set(
-          (await readFile(join(taskRunDir, ledgerName), 'utf8'))
-            .trim()
-            .split('\n')
-            .map((line) => (JSON.parse(line) as TaskEvent).taskRunId),
-        );
-        assert.equal(identities.size, 1);
-      }
+      assert.deepEqual(await store.readEvents('run/a'), [first]);
+      assert.deepEqual(await store.readEvents('run?a'), [second]);
     } finally {
       await rm(storageRoot, { recursive: true, force: true });
     }
   });
 
-  test('rejects empty and malformed task run identities before writing a ledger', async () => {
+  test('rejects invalid task run and event identities before writing', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'maka-task-run-store-'));
     try {
-      const store = await openFileTaskRunWriter(storageRoot);
+      const store = await openSqliteTaskRunWriter(storageRoot);
       await assert.rejects(
         () => store.appendEvent('', completedEvents('')[0]!),
         /taskRunId must not be empty/,
@@ -352,95 +325,23 @@ describe('TaskRunStore', () => {
         () => store.appendEvent(malformedId, completedEvents(malformedId)[0]!),
         /taskRunId must be well-formed Unicode/,
       );
-      await assert.rejects(() => lstat(join(storageRoot, 'task-runs')), { code: 'ENOENT' });
-    } finally {
-      await rm(storageRoot, { recursive: true, force: true });
-    }
-  });
-
-  test('keeps long domain identities independent from filesystem component limits', async () => {
-    const storageRoot = await mkdtemp(join(tmpdir(), 'maka-task-run-store-'));
-    try {
-      const store = await openFileTaskRunWriter(storageRoot);
-      const taskRunId = 'long-task-run/'.repeat(64);
-      const event = completedEvents(taskRunId)[0]!;
-      await store.appendEvent(taskRunId, event);
-
-      assert.deepEqual(await store.listTaskRunIds(), [taskRunId]);
-      assert.deepEqual(await store.readEvents(taskRunId), [event]);
-    } finally {
-      await rm(storageRoot, { recursive: true, force: true });
-    }
-  });
-
-  test('discovers identity without scanning corrupt history and repairs a partial tail', async () => {
-    const storageRoot = await mkdtemp(join(tmpdir(), 'maka-task-run-store-'));
-    try {
-      const store = await openFileTaskRunWriter(storageRoot);
-      const events = completedEvents('tr-corrupt');
-      await store.appendEvent('tr-corrupt', events[0] as TaskEvent);
-      const [ledgerName] = (await readdir(join(storageRoot, 'task-runs'))).filter((name) =>
-        name.endsWith('.jsonl'),
+      await assert.rejects(
+        () => store.appendEvent('owned-run', completedEvents('other-run')[0]!),
+        /taskRunId mismatch/,
       );
-      assert.ok(ledgerName);
-
-      await appendFile(
-        join(storageRoot, 'task-runs', ledgerName),
-        'not-json\n{"type":"task_run_completed","id":"partial"',
-        'utf8',
-      );
-
-      assert.deepEqual(await store.listTaskRunIds(), ['tr-corrupt']);
-      const replayed = await store.readEvents('tr-corrupt');
-      assert.equal(replayed.length, 2);
-      assert.equal(replayed[1]?.type, 'event_corrupt');
-      assert.match((replayed[1] as { error?: string }).error ?? '', /Unexpected/);
-      const records = await store.readEventRecords('tr-corrupt');
-      assert.deepEqual(
-        records.map((record) => record.cursor.sequence),
-        [0, 1],
-      );
-      assert.equal(records[1]?.cursor.eventId, 'corrupt-2');
-
-      const completed = completedEvents('tr-corrupt').at(-1)!;
-      await store.appendEvent('tr-corrupt', completed);
-      assert.deepEqual(
-        (await store.readEvents('tr-corrupt')).map((event) => event.id),
-        [events[0]!.id, 'corrupt-2', completed.id],
-      );
-    } finally {
-      await rm(storageRoot, { recursive: true, force: true });
-    }
-  });
-
-  test('rejects a durable event whose identity differs from its ledger', async () => {
-    const storageRoot = await mkdtemp(join(tmpdir(), 'maka-task-run-store-'));
-    try {
-      const store = await openFileTaskRunWriter(storageRoot);
-      await store.appendEvent('owned-run', completedEvents('owned-run')[0]!);
-      const [ledgerName] = (await readdir(join(storageRoot, 'task-runs'))).filter((name) =>
-        name.endsWith('.jsonl'),
-      );
-      assert.ok(ledgerName);
-      await appendFile(
-        join(storageRoot, 'task-runs', ledgerName),
-        `${JSON.stringify(completedEvents('other-run')[0])}\n`,
-        'utf8',
-      );
-
-      await assert.rejects(() => store.readEvents('owned-run'), /contains event for other-run/);
+      await assert.rejects(() => lstat(join(storageRoot, 'runtime.sqlite')), { code: 'ENOENT' });
     } finally {
       await rm(storageRoot, { recursive: true, force: true });
     }
   });
 });
 
-async function openFileTaskRunWriter(storageRoot: string) {
+async function openSqliteTaskRunWriter(storageRoot: string) {
   const capability = await resolveStorageRoot({ path: storageRoot, kind: 'headless' });
   return openHeadlessTaskRunWriter(createHeadlessRootLease(capability, 'write'));
 }
 
-async function openFileTaskRunReader(storageRoot: string) {
+async function openSqliteTaskRunReader(storageRoot: string) {
   const capability = await resolveStorageRoot({ path: storageRoot, kind: 'headless' });
   return openHeadlessTaskRunReader(createHeadlessRootLease(capability, 'read'));
 }

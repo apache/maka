@@ -16,8 +16,77 @@ import {
   type HostCapabilities,
   type LoadedSkillInstructions,
 } from '../skills.js';
+import { skillInvocationInlineReferences } from '../skill-invocation-receipt.js';
 
 describe('skill invocation', () => {
+  it('projects successful receipt occurrences by request or canonical Skill id', () => {
+    const displayText = 'Use /skill:writer-id, not /skill:missing';
+    assert.deepEqual(
+      skillInvocationInlineReferences(
+        [
+          {
+            invocation: 'explicit',
+            request: 'workspace:skills:writer-id',
+            success: true,
+            ref: 'workspace:skills:writer-id',
+            id: 'writer-id',
+            name: 'Writer',
+            scope: 'workspace',
+            source: 'maka',
+            truncated: false,
+          },
+          {
+            invocation: 'explicit',
+            request: 'missing',
+            success: false,
+            reason: 'not_found',
+          },
+          {
+            invocation: 'model_tool',
+            request: 'researcher',
+            success: true,
+            ref: 'workspace:skills:researcher',
+            id: 'researcher',
+            name: 'Researcher',
+            scope: 'workspace',
+            source: 'maka',
+            truncated: false,
+          },
+        ],
+        displayText,
+      ),
+      [
+        {
+          kind: 'skill',
+          value: '/skill:writer-id',
+          label: 'Writer',
+          start: displayText.indexOf('/skill:writer-id'),
+        },
+      ],
+    );
+  });
+
+  it('bounds successful Skill references to canonical transcript limits', () => {
+    const receipts = Array.from({ length: 40 }, (_, index) => ({
+      invocation: 'explicit' as const,
+      request: `skill-${index}`,
+      success: true as const,
+      ref: `project:agents:skill-${index}`,
+      id: `skill-${index}`,
+      name: `${'x'.repeat(199)}😀tail`,
+      scope: 'project' as const,
+      source: 'agents' as const,
+      truncated: false,
+    }));
+    const references = skillInvocationInlineReferences(
+      receipts,
+      receipts.map((receipt) => `/skill:${receipt.id}`).join(' '),
+    );
+    assert.equal(references.length, 32);
+    assert.equal(references[0]?.label.length, 199);
+    assert.equal(references[0]?.label.endsWith('\ud83d'), false);
+  });
+
   it('lists only enabled, host-eligible skills as slim entries', async () => {
     await withWorkspace(async (workspaceRoot, homeDir) => {
       await writeSkill(

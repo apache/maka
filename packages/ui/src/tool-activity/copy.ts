@@ -1,50 +1,25 @@
-import type { ToolActivityKind, UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core';
 
 type BackgroundTerminalStatus = 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'orphaned';
 type WebCredentialCopyKey = 'env' | 'settings' | 'missing' | 'unknown';
 type WebGuidanceKey = 'env' | 'settings' | 'rate_limited' | 'not_configured' | 'timed_out' | 'privacy_mode' | 'unknown';
 
 export interface ToolActivityCopy {
+  /** The two outcomes a tool row spells out next to its name. */
   status: {
-    pending: string;
-    running: string;
-    waitingPermission: string;
-    completed: string;
-    failed: string;
     sandboxBlocked: string;
     interrupted: string;
-    cancelled: string;
-    timedOut: string;
-  };
-  group: {
-    ariaLabel: string;
-    title: string;
-    callCount: (count: number) => string;
-    failedSuffix: string;
-    sandboxBlockedSuffix: string;
   };
   output: {
     redacted: string;
     redactedAriaLabel: string;
     truncated: string;
-    close: string;
-    closeAriaLabel: string;
   };
   copy: { idle: string; pending: string; copied: string; failed: string };
   sandboxBlocked: {
     title: string;
     description: string;
     copyAriaLabel: (label: string) => string;
-  };
-  summary: {
-    kind: Record<ToolActivityKind, (count: number) => string>;
-    failed: (count: number) => string;
-    sandboxBlocked: (count: number) => string;
-    join: (clauses: readonly string[]) => string;
-    live: (summary: string) => string;
-    /** Live current-activity label when a processing group's tools are done
-     *  and only reasoning is still streaming. */
-    thinkingActivity: string;
   };
   automation: {
     created: (name: string) => string;
@@ -158,16 +133,10 @@ export interface ToolActivityCopy {
 
 const TOOL_ACTIVITY_COPY = {
   zh: {
-    status: { pending: '排队中', running: '运行中', waitingPermission: '等待权限', completed: '已完成', failed: '失败', sandboxBlocked: '可能被沙箱阻止', interrupted: '已中断', cancelled: '已取消', timedOut: '已超时' },
-    group: { ariaLabel: '工具调用记录', title: '工具调用', callCount: (count) => `${count} 次调用`, failedSuffix: '失败', sandboxBlockedSuffix: '可能被沙箱阻止' },
-    output: { redacted: '[已脱敏]', redactedAriaLabel: '已脱敏', truncated: '输出已截断', close: '关闭', closeAriaLabel: '关闭预览' },
+    status: { sandboxBlocked: '可能被沙箱阻止', interrupted: '已中断' },
+    output: { redacted: '[已脱敏]', redactedAriaLabel: '已脱敏', truncated: '输出已截断' },
     copy: { idle: '复制', pending: '复制中…', copied: '已复制', failed: '复制失败' },
     sandboxBlocked: { title: '操作可能被沙箱阻止', description: '沙箱可能阻止了该调用中的至少一项操作。失败前可能已经产生部分结果，请检查输出和工作区状态后再决定是否重试。', copyAriaLabel: (label) => `${label}沙箱诊断信息` },
-    summary: {
-      kind: { read: (n) => `读取 ${n} 个文件`, search: (n) => `搜索 ${n} 次`, websearch: (n) => `联网搜索 ${n} 次`, webfetch: (n) => `抓取 ${n} 个网页`, edit: (n) => `编辑 ${n} 个文件`, command: (n) => `运行 ${n} 条命令`, explore: (n) => `探索 ${n} 次`, browser: (n) => `浏览器操作 ${n} 次`, tool: (n) => `调用 ${n} 个工具` },
-      failed: (n) => `${n} 个失败`, sandboxBlocked: (n) => `${n} 个可能被沙箱阻止`, join: (clauses) => clauses.join('，'), live: (summary) => `正在${summary}`,
-      thinkingActivity: '深度思考',
-    },
     automation: { created: (name) => `自动化任务已创建：${name}`, nextFire: (value) => `下次触发：${value}`, deleted: '自动化任务已删除', notFound: '未找到该任务（可能已完成或已删除）', list: (count) => `自动化任务列表 (${count})`, empty: '当前会话暂无自动化任务' },
     loadTools: { displayName: '加载工具组', loaded: (namespace) => namespace ? `已加载 ${namespace} 工具组` : '已加载工具组', count: (n) => `新增 ${n} 个可用工具：`, footer: '下一步即可调用' },
     permissionDenied: '用户已拒绝权限请求',
@@ -189,16 +158,10 @@ const TOOL_ACTIVITY_COPY = {
     },
   },
   en: {
-    status: { pending: 'Pending', running: 'Running', waitingPermission: 'Waiting for permission', completed: 'Completed', failed: 'Failed', sandboxBlocked: 'Possibly blocked by sandbox', interrupted: 'Interrupted', cancelled: 'Cancelled', timedOut: 'Timed out' },
-    group: { ariaLabel: 'Tool call history', title: 'Tool calls', callCount: (count) => `${count} ${count === 1 ? 'call' : 'calls'}`, failedSuffix: 'Failed', sandboxBlockedSuffix: 'Possibly blocked by sandbox' },
-    output: { redacted: '[Redacted]', redactedAriaLabel: 'Redacted', truncated: 'Output truncated', close: 'Close', closeAriaLabel: 'Close preview' },
+    status: { sandboxBlocked: 'Possibly blocked by sandbox', interrupted: 'Interrupted' },
+    output: { redacted: '[Redacted]', redactedAriaLabel: 'Redacted', truncated: 'Output truncated' },
     copy: { idle: 'Copy', pending: 'Copying…', copied: 'Copied', failed: 'Copy failed' },
     sandboxBlocked: { title: 'Operation may have been blocked by sandbox', description: 'The sandbox may have blocked at least one action in this call. Some effects may have occurred before it failed; check the output and workspace state before retrying.', copyAriaLabel: (label) => `${label} sandbox diagnostics` },
-    summary: {
-      kind: { read: (n) => `Read ${n} ${n === 1 ? 'file' : 'files'}`, search: (n) => `Searched ${n} ${n === 1 ? 'time' : 'times'}`, websearch: (n) => `Ran ${n} web ${n === 1 ? 'search' : 'searches'}`, webfetch: (n) => `Fetched ${n} web ${n === 1 ? 'page' : 'pages'}`, edit: (n) => `Edited ${n} ${n === 1 ? 'file' : 'files'}`, command: (n) => `Ran ${n} ${n === 1 ? 'command' : 'commands'}`, explore: (n) => `Explored ${n} ${n === 1 ? 'time' : 'times'}`, browser: (n) => `Performed ${n} browser ${n === 1 ? 'action' : 'actions'}`, tool: (n) => `Called ${n} ${n === 1 ? 'tool' : 'tools'}` },
-      failed: (n) => `${n} failed`, sandboxBlocked: (n) => `${n} possibly blocked by sandbox`, join: (clauses) => clauses.join(', '), live: (summary) => `Working: ${summary}`,
-      thinkingActivity: 'Thinking',
-    },
     automation: { created: (name) => `Automation created: ${name}`, nextFire: (value) => `Next run: ${value}`, deleted: 'Automation deleted', notFound: 'Automation not found (it may have completed or been deleted)', list: (count) => `Automations (${count})`, empty: 'No automations in this conversation' },
     loadTools: { displayName: 'Load tools', loaded: (namespace) => namespace ? `Loaded ${namespace} tools` : 'Loaded tools', count: (n) => `Added ${n} available ${n === 1 ? 'tool' : 'tools'}:`, footer: 'Ready to use' },
     permissionDenied: 'User denied the permission request',

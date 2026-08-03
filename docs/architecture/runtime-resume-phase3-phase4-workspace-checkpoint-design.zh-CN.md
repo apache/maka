@@ -1,7 +1,13 @@
 # Runtime Resume Phase 3–4 实施路线
 
+> 路线更新（2026-08-01）：workspace 主线已从“通用 checkpoint 抽象优先”切换为
+> **Git-native managed workspace**。本文保留 Recovery/Continuation 已落地协议与旧路线的历史论证；
+> 新实现不再以通用 per-file checkpoint、native manifest 或 CAS object store 为前置。
+> 当前 M0 的 baseline-only 权威合同见
+> [Workspace Version Authority v1](./runtime-workspace-version-authority-v1.zh-CN.md)。
+
 - 状态：Implementation tracked
-- 更新日期：2026-07-27
+- 更新日期：2026-08-01
 - 事实权威：immutable RuntimeEvents
 - 主要平台：Linux、macOS；Windows 有限支持
 - 拆分审计：`runtime-resume-extraction-ledger.zh-CN.md`

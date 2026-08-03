@@ -151,7 +151,6 @@ export function BotOnboardingModal(props: {
       className="settingsBotOnboardingModal"
       width={520}
       aria-label={copy.ariaLabel}
-      padding={0}
       purpose="form"
     >
       <Layout

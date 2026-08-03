@@ -308,7 +308,7 @@ export function ArtifactPane(props: {
     // Defer to the next frame so the Esc handler doesn't unfocus + refocus
     // in the same tick.
     requestAnimationFrame(() => {
-      const composer = document.querySelector<HTMLTextAreaElement>('.maka-composer textarea, [data-composer-textarea]');
+      const composer = document.querySelector<HTMLElement>('.maka-composer [contenteditable="true"]');
       composer?.focus();
     });
   }

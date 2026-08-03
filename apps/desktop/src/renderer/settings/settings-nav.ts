@@ -13,6 +13,7 @@ import {
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
+  Workflow,
   type LucideProps,
 } from '@maka/ui/icons';
 import type { SettingsSection, UiLocale } from '@maka/core';
@@ -60,6 +61,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'general', Icon: SettingsIcon, enabled: true, group: 'preferences' },
   { id: 'appearance', Icon: Palette, enabled: true, group: 'preferences' },
   { id: 'models', Icon: Cpu, enabled: true, group: 'capabilities' },
+  { id: 'subagents', Icon: Workflow, enabled: true, group: 'capabilities' },
   { id: 'memory', Icon: Brain, enabled: true, group: 'capabilities' },
   { id: 'voice', Icon: Mic, enabled: true, group: 'capabilities' },
   { id: 'bot-chat', Icon: Bot, enabled: true, group: 'capabilities' },

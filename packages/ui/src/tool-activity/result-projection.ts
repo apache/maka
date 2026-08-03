@@ -1,9 +1,8 @@
 import { isShellOutput, type UiLocale } from '@maka/core';
 import type { ToolActivityItem } from '../materialize.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
-import { isConnectorTool } from './presentation.js';
+import { isConnectorTool } from './display-name.js';
 import { getToolActivityCopy } from './copy.js';
-import { isSandboxDeniedTool } from './sandbox-denial.js';
 
 // Mirror of runtime's AUTOMATION_TOOL_NAME. @maka/ui must not depend on
 // @maka/runtime, so the unified Automation tool's name is duplicated here as
@@ -145,26 +144,4 @@ export function withLiveStreamFallback(
   };
   if (result.kind === 'shell_run') return { ...result, output };
   return { ...result, output };
-}
-
-export function toolStatusLabel(item: ToolActivityItem, locale: UiLocale = 'zh'): string {
-  const copy = getToolActivityCopy(locale).status;
-  // Outer label follows call status. Panel notes still show task cancel state.
-  if (item.status === 'interrupted' && isCancelledToolResult(item.result)) return copy.cancelled;
-  if (isSandboxDeniedTool(item)) return copy.sandboxBlocked;
-  if (
-    (item.result?.kind === 'terminal' || item.result?.kind === 'shell_run')
-    && item.result.status === 'timed_out'
-    && item.status !== 'completed'
-  ) {
-    return copy.timedOut;
-  }
-  return {
-    pending: copy.pending,
-    waiting_permission: copy.waitingPermission,
-    running: copy.running,
-    completed: copy.completed,
-    errored: copy.failed,
-    interrupted: copy.interrupted,
-  }[item.status];
 }

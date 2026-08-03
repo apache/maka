@@ -251,8 +251,17 @@ export function buildIsolatedWriteTool(
 ): MakaTool {
   return {
     name: 'Write',
-    description: 'Write content to a file in the isolated headless task workspace.',
-    parameters: z.object({ path: z.string(), content: z.string() }),
+    description:
+      'Write content to a file in the isolated headless task workspace using a path ' +
+      'relative to the session cwd. Absolute paths and parent traversal are rejected.',
+    parameters: z.object({
+      path: z
+        .string()
+        .describe(
+          'Path relative to the session cwd. Absolute paths and parent traversal are rejected.',
+        ),
+      content: z.string(),
+    }),
     impl: async ({ path, content }, ctx) => {
       const { cwd } = ctx;
       const normalizedPath = normalizeWorkspacePath(path, cwd, 'Write path');
@@ -336,8 +345,17 @@ export function buildIsolatedGlobTool(
     name: 'Glob',
     description: 'Find files in the isolated headless task workspace matching a glob pattern.',
     parameters: z.object({
-      pattern: z.string(),
-      cwd: z.string().optional(),
+      pattern: z
+        .string()
+        .describe(
+          'Relative glob pattern without an absolute path or "..", for example "**/*.txt".',
+        ),
+      cwd: z
+        .string()
+        .optional()
+        .describe(
+          'Optional search directory inside the session cwd. Absolute or relative directory paths are accepted.',
+        ),
     }),
     impl: async ({ pattern, cwd: relCwd }, ctx) => {
       const { cwd } = ctx;

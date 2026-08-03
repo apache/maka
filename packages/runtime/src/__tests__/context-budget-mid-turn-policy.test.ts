@@ -101,6 +101,60 @@ describe('window-bounded reserve derivation (issue #882 PR 3 review P2)', () => 
   });
 });
 
+describe('tool-result prune policy env plumbing', () => {
+  test('provides bounded active and stale defaults', () => {
+    const policy = buildDefaultContextBudgetPolicy(connection(), { env: {} });
+    assert.deepEqual(policy?.activeToolResultPrune, {
+      enabled: true,
+      maxCurrentResultEstimatedTokens: 2_048,
+      minStepNumber: 1,
+    });
+    assert.deepEqual(policy?.staleToolResultPrune, {
+      enabled: true,
+      maxResultEstimatedTokens: 2_048,
+      minRecentTurnsFull: 2,
+    });
+  });
+
+  test('applies explicit bounds and stale recent-turn precedence', () => {
+    const policy = buildDefaultContextBudgetPolicy(connection(), {
+      env: {
+        MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MAX_ESTIMATED_TOKENS: '4096',
+        MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_STEP_NUMBER: '3',
+        MAKA_CONTEXT_STALE_TOOL_RESULT_MAX_TOKENS: '8192',
+        MAKA_CONTEXT_MIN_RECENT_TURNS: '4',
+        MAKA_CONTEXT_STALE_TOOL_RESULT_MIN_RECENT_TURNS: '5',
+      },
+    });
+    assert.equal(policy?.activeToolResultPrune?.maxCurrentResultEstimatedTokens, 4_096);
+    assert.equal(policy?.activeToolResultPrune?.minStepNumber, 3);
+    assert.equal(policy?.staleToolResultPrune?.maxResultEstimatedTokens, 8_192);
+    assert.equal(policy?.staleToolResultPrune?.minRecentTurnsFull, 5);
+  });
+
+  test('honors explicit disablement and rejects malformed booleans', () => {
+    const disabled = buildDefaultContextBudgetPolicy(connection(), {
+      env: {
+        MAKA_CONTEXT_ACTIVE_TOOL_RESULT_PRUNE: 'false',
+        MAKA_CONTEXT_STALE_TOOL_RESULT_PRUNE: 'off',
+      },
+    });
+    assert.equal(disabled?.activeToolResultPrune, undefined);
+    assert.equal(disabled?.staleToolResultPrune, undefined);
+    assert.equal(
+      buildDefaultContextBudgetPolicy(connection(), { env: { MAKA_CONTEXT_BUDGET: 'off' } }),
+      undefined,
+    );
+    assert.throws(
+      () =>
+        buildDefaultContextBudgetPolicy(connection(), {
+          env: { MAKA_CONTEXT_STALE_TOOL_RESULT_PRUNE: 'maybe' },
+        }),
+      /MAKA_CONTEXT_STALE_TOOL_RESULT_PRUNE must be a boolean/,
+    );
+  });
+});
+
 function gpt4Connection(): LlmConnection {
   return {
     slug: 'openai-main',

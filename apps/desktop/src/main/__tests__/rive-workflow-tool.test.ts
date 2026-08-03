@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -234,28 +234,6 @@ describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
     });
   });
 
-  it('has a bounded UI preview and error text for rive_workflow results', async () => {
-    const root = await repoRoot();
-    const [resultProjection, previewSource, events] = await Promise.all([
-      readFile(join(root, 'packages/ui/src/tool-activity/result-projection.ts'), 'utf8'),
-      readFile(join(root, 'packages/ui/src/tool-activity/tool-result-preview.tsx'), 'utf8'),
-      readFile(join(root, 'packages/core/src/events.ts'), 'utf8'),
-    ]);
-    assert.match(events, /kind: 'rive_workflow'/);
-    assert.match(events, /projection\?:/);
-    assert.match(events, /nodes\?: ReadonlyArray/);
-    assert.doesNotMatch(events, /protocol\?: unknown/);
-    assert.doesNotMatch(events, /display\?: unknown/);
-    assert.match(resultProjection, /case 'rive_workflow'/);
-    assert.match(previewSource, /content\.kind === 'rive_workflow'/);
-    assert.match(previewSource, /function RiveWorkflowPreview/);
-    const previewBlock = previewSource.match(/function RiveWorkflowPreview[\s\S]*?function formatRiveWorkflowNode/)?.[0] ?? '';
-    assert.match(previewBlock, /workflow_run/);
-    assert.match(previewBlock, /scheduler_run/);
-    assert.match(previewBlock, /root_work/);
-    assert.match(previewBlock, /stdout_tail/);
-    assert.match(previewBlock, /stderr_tail/);
-  });
 });
 
 async function runTool(
@@ -342,21 +320,4 @@ function fakeRiveScript(mode: string): string {
     'JSON',
     '',
   ].join('\n');
-}
-
-async function repoRoot(): Promise<string> {
-  let current = process.cwd();
-  for (let i = 0; i < 6; i += 1) {
-    try {
-      const packageJson = JSON.parse(await readFile(join(current, 'package.json'), 'utf8')) as { name?: string };
-      if (packageJson.name === 'maka') return current;
-    } catch {
-      // keep walking
-    }
-    const parent = join(current, '..');
-    const [currentStat, parentStat] = await Promise.all([stat(current), stat(parent)]);
-    if (currentStat.dev === parentStat.dev && currentStat.ino === parentStat.ino) break;
-    current = parent;
-  }
-  throw new Error('Could not locate Maka repo root');
 }

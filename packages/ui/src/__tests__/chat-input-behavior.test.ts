@@ -2,48 +2,92 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   createChatInputActionOwner,
-  detectMentionTrigger,
   fileTransferContainsFiles,
-  focusTextInputAtEnd,
+  composerWireText,
+  createTriggerSearchSource,
   isChatInputComposing,
   mentionQueryMatches,
   skillMentionQuery,
 } from '../chat-input-behavior.js';
-import {
-  addUniqueComposerSkillSelection,
-} from '../use-composer-skill-draft.js';
 
 describe('shared chat input behavior', () => {
-  it('recognizes IME composition from either the native flag or Process key', () => {
+  it('strips the token anchor from the wire text without touching real spaces', () => {
+    // U+00A0 is what `insertToken` puts after a chip; the editor must keep it
+    // (upstream's backspace-eats-the-token check keys on that codepoint) and
+    // only the send path normalizes it. Asserted on codepoints because every
+    // text matcher in the E2E layer folds U+00A0 into a plain space.
+    assert.equal(composerWireText('a\u00a0b'), 'a b');
+    assert.equal(composerWireText('@path\u00a0tail\u00a0more'), '@path tail more');
+    assert.equal(composerWireText('a b'), 'a b');
+    assert.equal(composerWireText('  \u00a0trim\u00a0  '), 'trim');
+    assert.equal(composerWireText('line\none'), 'line\none');
+  });
+
+  it('answers the sync/async probe without searching, and abandons a superseded search', async () => {
+    const calls: string[] = [];
+    let settle: ((items: string[]) => void) | undefined;
+    const source = createTriggerSearchSource<string>((query) => {
+      calls.push(query);
+      return new Promise<string[]>((resolve) => {
+        settle = resolve;
+      });
+    });
+
+    // `useTriggerMenu` probes with search('') before every keystroke's real
+    // search and uses only `instanceof Promise`. It must not cost a lookup.
+    const probe = source.search('');
+    assert.ok(probe instanceof Promise);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await probe, []);
+
+    // A real search always follows cancel().
+    source.cancel();
+    const first = source.search('a');
+    assert.deepEqual(calls, ['a']);
+
+    // The next query supersedes it. The older promise must never settle, or a
+    // slow `a` landing after a fast `ab` would repopulate the menu behind the
+    // query the user can see.
+    source.cancel();
+    const resolveFirst = settle!;
+    const second = source.search('ab');
+    assert.deepEqual(calls, ['a', 'ab']);
+    resolveFirst(['stale']);
+    settle!(['fresh']);
+
+    // Drain the microtask queue first: racing against an already-resolved
+    // promise would win on tick count alone and prove nothing.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sentinel = Symbol('pending');
+    const raced = await Promise.race([first, Promise.resolve(sentinel)]);
+    assert.equal(raced, sentinel, 'superseded search must never settle');
+    assert.deepEqual(await second, ['fresh']);
+  });
+
+  it('recognizes composition and file transfers across browser event shapes', () => {
     assert.equal(isChatInputComposing({ key: 'Enter', nativeEvent: { isComposing: true } }), true);
     assert.equal(isChatInputComposing({ key: 'Process', nativeEvent: {} }), true);
     assert.equal(isChatInputComposing({ nativeEvent: {} }, true), true);
     assert.equal(isChatInputComposing({ key: 'Enter', nativeEvent: {} }), false);
-  });
-
-  it('recognizes file drag and paste payloads without depending on one event type', () => {
+    // The bare-native shape: the composer's IME guard is a native listener, so
+    // it hands this function a real KeyboardEvent with no `nativeEvent` of its
+    // own. Reading `isComposing` off the event itself is the only reason this
+    // helper takes both shapes.
+    assert.equal(isChatInputComposing({ key: 'Enter', isComposing: true } as never), true);
+    assert.equal(isChatInputComposing({ key: 'Enter', isComposing: false } as never), false);
     assert.equal(fileTransferContainsFiles(['text/plain', 'Files'], 0), true);
     assert.equal(fileTransferContainsFiles(['text/plain'], 1), true);
     assert.equal(fileTransferContainsFiles(['text/plain'], 0), false);
   });
 
-  it('focuses a text input and moves its selection to the visible value end', () => {
-    const calls: Array<string | [number, number]> = [];
-    const input = {
-      value: 'hello',
-      focus: () => calls.push('focus'),
-      setSelectionRange: (start: number, end: number) => calls.push([start, end]),
-    };
-    focusTextInputAtEnd(input);
-    assert.deepEqual(calls, ['focus', [5, 5]]);
-  });
-
-  it('owns async input actions synchronously and releases only the active action', async () => {
+  it('serializes async actions and releases only their owned pending state', async () => {
     const states: Array<string | null> = [];
     const owner = createChatInputActionOwner<string>((action) => states.push(action));
     let release!: () => void;
-    const first = owner.run('drop', () => new Promise<string>((resolve) => { release = () => resolve('done'); }));
-    assert.equal(owner.pending, 'drop');
+    const first = owner.run(
+      'drop',
+      () => new Promise<string>((resolve) => (release = () => resolve('done'))),
+    );
     assert.equal(await owner.run('paste', async () => 'ignored'), undefined);
     release();
     assert.equal(await first, 'done');
@@ -51,11 +95,11 @@ describe('shared chat input behavior', () => {
     assert.deepEqual(states, ['drop', null]);
   });
 
-  it('reset invalidates late completion cleanup', async () => {
+  it('does not let late completion clear state after reset', async () => {
     const states: Array<string | null> = [];
     const owner = createChatInputActionOwner<string>((action) => states.push(action));
     let release!: () => void;
-    const action = owner.run('drop', () => new Promise<void>((resolve) => { release = resolve; }));
+    const action = owner.run('drop', () => new Promise<void>((resolve) => (release = resolve)));
     owner.reset();
     release();
     await action;
@@ -63,117 +107,16 @@ describe('shared chat input behavior', () => {
   });
 });
 
-describe('detectMentionTrigger', () => {
-  it('fires an @ trigger at start-of-input', () => {
-    assert.deepEqual(detectMentionTrigger('@', 1), { trigger: '@', query: '', start: 0 });
-    assert.deepEqual(detectMentionTrigger('@src', 4), { trigger: '@', query: 'src', start: 0 });
-  });
-
-  it('fires an @ trigger after whitespace (word boundary)', () => {
-    assert.deepEqual(detectMentionTrigger('open @src/app', 13), { trigger: '@', query: 'src/app', start: 5 });
-    assert.deepEqual(detectMentionTrigger('a\n@x', 4), { trigger: '@', query: 'x', start: 2 });
-  });
-
-  it('does NOT fire mid-word (no boundary before the trigger)', () => {
-    assert.equal(detectMentionTrigger('foo@bar', 7), null);
-    assert.equal(detectMentionTrigger('a/b', 3), null);
-    assert.equal(detectMentionTrigger('user@host.com', 13), null);
-  });
-
-  it('returns null when there is no trigger before the caret', () => {
-    assert.equal(detectMentionTrigger('hello world', 11), null);
-    assert.equal(detectMentionTrigger('@later', 0), null); // caret before the @
-  });
-
-  it('allows single spaces in an @ query (filenames with spaces)', () => {
-    assert.deepEqual(detectMentionTrigger('@my file', 8), { trigger: '@', query: 'my file', start: 0 });
-  });
-
-  it('kills an @ query on a double space', () => {
-    assert.equal(detectMentionTrigger('@my  file', 9), null);
-  });
-
-  it('kills an @ query on a newline', () => {
-    assert.equal(detectMentionTrigger('@line\nmore', 10), null);
-  });
-
-  it('fires a / trigger as a single token', () => {
-    assert.deepEqual(detectMentionTrigger('/', 1), { trigger: '/', query: '', start: 0 });
-    assert.deepEqual(detectMentionTrigger('/deep', 5), { trigger: '/', query: 'deep', start: 0 });
-    assert.deepEqual(detectMentionTrigger('run /skill', 10), { trigger: '/', query: 'skill', start: 4 });
-  });
-
-  it('kills a / query on ANY space or newline', () => {
-    assert.equal(detectMentionTrigger('/deep research', 14), null);
-    assert.equal(detectMentionTrigger('/a\nb', 4), null);
-  });
-
-  it('a path-internal slash does not hijack the @ trigger (only boundary triggers count)', () => {
-    // The `/` in `@foo/bar` is not at a word boundary, so it is part of the `@`
-    // query, not a competing `/` trigger. The `@` stays active with the full path.
-    assert.deepEqual(detectMentionTrigger('@foo/bar', 8), { trigger: '@', query: 'foo/bar', start: 0 });
-    assert.deepEqual(detectMentionTrigger('@src/app', 8), { trigger: '@', query: 'src/app', start: 0 });
-  });
-
-  it('the nearest boundary-anchored trigger wins', () => {
-    // A `/` typed at a boundary after an `@…` wins as the active trigger.
-    assert.deepEqual(detectMentionTrigger('@a /b', 5), { trigger: '/', query: 'b', start: 3 });
-  });
-
-  it('detects the trigger relative to the caret, not the value end', () => {
-    // Caret sits right after `@sr`; the trailing `c/app` is ignored.
-    assert.deepEqual(detectMentionTrigger('@src/app', 3), { trigger: '@', query: 'sr', start: 0 });
-  });
-});
-
-describe('mentionQueryMatches', () => {
-  it('matches case-insensitively', () => {
-    assert.equal(mentionQueryMatches('APP', 'src/app.tsx'), true);
-  });
-
-  it('requires every whitespace-separated token (AND-of-substring)', () => {
-    assert.equal(mentionQueryMatches('src app', 'src/app.tsx'), true);
+describe('mention filtering', () => {
+  it('matches case-insensitive AND tokens and treats an empty query as universal', () => {
+    assert.equal(mentionQueryMatches('SRC APP', 'src/app.tsx'), true);
     assert.equal(mentionQueryMatches('src app', 'src/main.tsx'), false);
-  });
-
-  it('matches everything on an empty query', () => {
     assert.equal(mentionQueryMatches('', 'anything'), true);
   });
-});
 
-describe('Skill mention filtering', () => {
-  it('supports direct /skill: filtering and bare names', () => {
+  it('normalizes /skill prefixes while preserving bare queries', () => {
     assert.equal(skillMentionQuery('skill:wri'), 'wri');
     assert.equal(skillMentionQuery('SKILL:wri'), 'wri');
     assert.equal(skillMentionQuery('writer'), 'writer');
-  });
-});
-
-describe('structured Skill selections', () => {
-  it('deduplicates ids case-insensitively and preserves first-selection order', () => {
-    const first = addUniqueComposerSkillSelection([], { id: 'alpha', name: 'Alpha' });
-    const second = addUniqueComposerSkillSelection(first, { id: 'beta', name: 'Beta' });
-    const duplicate = addUniqueComposerSkillSelection(second, {
-      id: 'ALPHA',
-      name: 'Renamed Alpha',
-    });
-    assert.deepEqual(duplicate, [
-      { id: 'alpha', name: 'Alpha' },
-      { id: 'beta', name: 'Beta' },
-    ]);
-  });
-
-  it('keeps same-id selections from different stable refs distinct', () => {
-    const project = {
-      ref: 'project:maka:writer',
-      id: 'writer',
-      name: 'Project Writer',
-    };
-    const user = {
-      ref: 'user:agents:writer',
-      id: 'writer',
-      name: 'User Writer',
-    };
-    assert.deepEqual(addUniqueComposerSkillSelection([project], user), [project, user]);
   });
 });

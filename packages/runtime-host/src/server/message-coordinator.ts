@@ -67,6 +67,7 @@ export interface HostMessageSessionHeader {
 
 export type HostMessageRootState =
   | { readonly kind: 'idle' }
+  | { readonly kind: 'reserved' }
   | ({ readonly kind: 'active' } & RuntimeMessageRunIdentity);
 
 export interface HostMessageStartInput {
@@ -278,6 +279,23 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       return { hostEpoch: this.#hostEpoch, queueRevision: 0, steering: [], followup: [] };
     }
     return this.#project(state);
+  }
+
+  hasLiveSessionState(sessionId: string): boolean {
+    const state = this.#sessions.get(sessionId);
+    return state ? hasLiveMessageState(state) : false;
+  }
+
+  retireSessions(sessionIds: readonly string[]): void {
+    for (const sessionId of new Set(sessionIds)) {
+      const state = this.#sessions.get(sessionId);
+      if (state && hasLiveMessageState(state)) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Cannot retire a Session with live Message state',
+        );
+      }
+      this.#sessions.delete(sessionId);
+    }
   }
 
   bindRun(identity: RuntimeMessageRunIdentity): RuntimeMessageRunOwner {
@@ -516,14 +534,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         }
         if (!header) return failure('not_found', 'Session does not exist');
         if (header.isArchived) return failure('session_archived', 'Session is archived');
+        if (header.unavailableReason) {
+          return failure('operation_unavailable', header.unavailableReason);
+        }
         const rootState = await this.#root.readRootState(input.sessionId);
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
         }
         if (rootState.kind === 'idle') {
-          if (header.unavailableReason) {
-            return failure('operation_unavailable', header.unavailableReason);
-          }
           const existingState = this.#sessions.get(input.sessionId);
           if (existingState && hasLiveMessageState(existingState)) {
             throw new RuntimeMessageAuthorityInvariantError(
@@ -555,6 +573,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           }
           const result = { disposition: 'turn_started', turnId: started.turnId } as const;
           return success(result);
+        }
+        if (rootState.kind === 'reserved') {
+          return failure('session_busy', 'A Goal continuation is reserving the next root Turn');
         }
         const state = this.#requireState(input.sessionId);
         if (state.phase !== 'open') {

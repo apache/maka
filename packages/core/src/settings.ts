@@ -21,6 +21,7 @@ import {
   type UiLocalePreference,
 } from './ui-locale.js';
 import { defaultVoiceSettings, normalizeVoiceSettings, type VoiceSettings } from './voice.js';
+import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
 
 export { UI_LOCALE_PREFERENCES, isUiLocalePreference } from './ui-locale.js';
 export type { UiLocalePreference } from './ui-locale.js';
@@ -65,6 +66,7 @@ export const SETTINGS_SECTIONS = [
   'memory',
   'daily-review',
   'models',
+  'subagents',
   'usage',
   'voice',
   'bot-chat',
@@ -279,6 +281,7 @@ export interface AppSettings {
   notifications: NotificationSettings;
   system: SystemSettings;
   voice: VoiceSettings;
+  subagents: SubagentSettings;
 }
 
 export interface UsageRequestLog {
@@ -360,6 +363,7 @@ export type UpdateAppSettingsInput = Partial<{
     realtime: Partial<VoiceSettings['realtime']>;
   }>;
   webSearch: WebSearchSettingsPatch;
+  subagents: SubagentSettings;
 }>;
 
 export type PersonalizationSettingsWarning =
@@ -437,6 +441,7 @@ export function createDefaultSettings(): AppSettings {
       keepSystemAwake: false,
     },
     voice: defaultVoiceSettings(),
+    subagents: { presets: [] },
   };
 }
 
@@ -504,6 +509,10 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       },
     }),
     webSearch: mergeWebSearchSettings(current.webSearch, patch.webSearch),
+    subagents:
+      patch.subagents === undefined
+        ? current.subagents
+        : normalizeSubagentSettings(patch.subagents),
   };
 }
 
@@ -525,6 +534,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     notifications: value.notifications,
     system: value.system,
     voice: value.voice,
+    subagents: value.subagents,
   });
   // PR110b: milestones bypass the generic patch surface so we can
   // sanitize them with the closed-enum + at-most-one validator on
@@ -601,6 +611,7 @@ export function normalizeSettings(input: unknown): AppSettings {
         typeof base.system.keepSystemAwake === 'boolean' ? base.system.keepSystemAwake : false,
     },
     voice: normalizeVoiceSettings(base.voice),
+    subagents: normalizeSubagentSettings(base.subagents),
   };
 }
 

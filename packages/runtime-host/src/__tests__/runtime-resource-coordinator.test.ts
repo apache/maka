@@ -273,6 +273,7 @@ describe('Host Runtime Resource coordinator', () => {
 
   test('holds Host residency for a live background process and closes startup on drain', async () => {
     const harness = createHarness();
+    assert.equal(await harness.coordinator.hasLiveSessionResources(SESSION_ID), true);
     let callerCompletion = 0;
     const result = await harness.coordinator.runBackgroundBash(
       backgroundInput(() => {
@@ -284,6 +285,17 @@ describe('Host Runtime Resource coordinator', () => {
     harness.finishBackground({ successful: true });
     assert.equal(harness.activeResidencies, 0);
     assert.equal(callerCompletion, 1);
+    harness.updates = [
+      resourceUpdate(0, {
+        result: {
+          ...pipeSnapshot(0),
+          status: 'completed',
+          exitCode: 0,
+          completedAt: 2,
+        },
+      }),
+    ];
+    assert.equal(await harness.coordinator.hasLiveSessionResources(SESSION_ID), false);
 
     harness.coordinator.beginDrain();
     assert.equal(harness.terminateCount, 1);

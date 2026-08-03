@@ -2,14 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
-import { ToolActivity, ToolTrow } from '../tool-activity.js';
+import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
-import {
-  createToolDisclosureState,
-  deriveToolActivityPresentation as derivePresentation,
-  setToolDisclosureOpen,
-  syncToolDisclosureState,
-} from '../tool-activity/presentation.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -20,76 +14,12 @@ function renderToStaticMarkup(node: ReactNode): string {
   }));
 }
 
-function deriveToolActivityPresentation(item: ToolActivityItem) {
-  return derivePresentation(item, 'zh');
-}
-
+/** The collapsed row. Astryx owns its expansion, so detail asserts use ToolCallDetail. */
 function renderTool(item: ToolActivityItem): string {
   return renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
 }
 
 describe('tool activity presentation', () => {
-  it('prefers a declared semantic kind over the legacy tool-name fallback', () => {
-    const item: ToolActivityItem = {
-      toolUseId: 'tool-kind',
-      toolName: 'Read',
-      activityKind: 'command',
-      status: 'running',
-      args: {},
-    };
-
-    assert.equal(deriveToolActivityPresentation(item).kind, 'command');
-  });
-
-  it('preserves a manual expansion across ordinary status changes', () => {
-    const running: ToolActivityItem = {
-      toolUseId: 'tool-manual',
-      toolName: 'Bash',
-      status: 'running',
-      args: { command: 'npm test' },
-    };
-    const completed: ToolActivityItem = {
-      ...running,
-      status: 'completed',
-    };
-    const initial = createToolDisclosureState(deriveToolActivityPresentation(running));
-    const expanded = setToolDisclosureOpen(initial, true);
-
-    assert.deepEqual(
-      syncToolDisclosureState(expanded, deriveToolActivityPresentation(completed)),
-      { open: true, manuallySet: true },
-    );
-  });
-
-  it('keeps a tool collapsed when it errors, even after an earlier manual collapse', () => {
-    const running: ToolActivityItem = {
-      toolUseId: 'tool-error',
-      toolName: 'Bash',
-      status: 'running',
-      args: { command: 'npm test' },
-    };
-    const errored: ToolActivityItem = {
-      ...running,
-      status: 'errored',
-    };
-
-    // An error is not an attention state: the initial disclosure stays closed…
-    assert.deepEqual(
-      createToolDisclosureState(deriveToolActivityPresentation(errored)),
-      { open: false, manuallySet: false },
-    );
-
-    // …and an earlier manual collapse is not overridden when the tool errors.
-    const collapsed = setToolDisclosureOpen(
-      createToolDisclosureState(deriveToolActivityPresentation(running)),
-      false,
-    );
-    assert.deepEqual(
-      syncToolDisclosureState(collapsed, deriveToolActivityPresentation(errored)),
-      { open: false, manuallySet: true },
-    );
-  });
-
   it('presents a command sandbox denial as blocked instead of failed', () => {
     const item: ToolActivityItem = {
       toolUseId: 'tool-sandbox-blocked',
@@ -113,14 +43,13 @@ describe('tool activity presentation', () => {
       },
     };
 
+    // The row says "blocked", never "failed"; the raw stderr stays available to
+    // assistive tech via Astryx's errorMessage but is not the visible word.
     const collapsed = renderTool(item);
-    assert.match(collapsed, /1 个可能被沙箱阻止/);
-    assert.doesNotMatch(collapsed, /1 个失败/);
+    assert.match(collapsed, /可能被沙箱阻止/);
+    assert.doesNotMatch(collapsed, /失败/);
 
-    const expanded = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [item],
-      open: true,
-    }));
+    const expanded = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
     assert.match(expanded, /可能被沙箱阻止/);
     assert.match(expanded, /操作可能被沙箱阻止/);
     assert.match(expanded, /失败前可能已经产生部分结果/);
@@ -129,8 +58,8 @@ describe('tool activity presentation', () => {
   });
 
   it('keeps an ordinary filesystem permission error as Astryx error detail, not a sandbox block', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-filesystem-denied',
         toolName: 'Read',
         activityKind: 'read',
@@ -141,8 +70,7 @@ describe('tool activity presentation', () => {
           kind: 'text',
           text: 'Filesystem access was denied.',
         },
-      } satisfies ToolActivityItem],
-      open: true,
+      } satisfies ToolActivityItem,
     }));
 
     assert.match(markup, /astryx-codeblock/);
@@ -152,8 +80,8 @@ describe('tool activity presentation', () => {
   });
 
   it('shows diagnostic flags without exposing transport chunk counts', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-output',
         toolName: 'Bash',
         status: 'errored',
@@ -164,8 +92,7 @@ describe('tool activity presentation', () => {
           { seq: 3, stream: 'stderr', text: 'failed\n', redacted: false, createdAt: 3 },
         ],
         outputTruncated: true,
-      } satisfies ToolActivityItem],
-      open: true,
+      } satisfies ToolActivityItem,
     }));
 
     assert.doesNotMatch(markup, /stdout\s+2/i);
@@ -184,15 +111,14 @@ describe('tool activity presentation', () => {
       status: 'failed',
       exitCode: 1,
     } as unknown as NonNullable<ToolActivityItem['result']>;
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-malformed-terminal',
         toolName: 'Bash',
         status: 'errored',
         args: { command: 'npm test' },
         result: malformed,
-      } satisfies ToolActivityItem],
-      open: true,
+      } satisfies ToolActivityItem,
     }));
 
     assert.match(markup, /npm test/);
@@ -201,11 +127,11 @@ describe('tool activity presentation', () => {
   });
 
   it('never dumps pretty JSON for an arbitrary tool result object', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-custom',
         toolName: 'CustomInspect',
-        status: 'waiting_permission',
+        status: 'running',
         args: { target: 'packages/ui', depth: 2 },
         result: {
           kind: 'json',
@@ -215,7 +141,7 @@ describe('tool activity presentation', () => {
             detail: 'line one\nline two',
           },
         },
-      } satisfies ToolActivityItem],
+      } satisfies ToolActivityItem,
     }));
 
     assert.match(markup, /packages\/ui|target: packages\/ui/);
@@ -234,14 +160,14 @@ describe('tool activity presentation', () => {
       { 'access token: alpha beta': true },
     ];
     for (const args of cases) {
-      const markup = renderToStaticMarkup(createElement(ToolActivity, {
-        items: [{
+      const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+        item: {
           toolUseId: 'tool-secret',
           toolName: 'CustomInspect',
-          status: 'waiting_permission',
+          status: 'running',
           args,
           result: { kind: 'json', value: { ok: true } },
-        } satisfies ToolActivityItem],
+        } satisfies ToolActivityItem,
       }));
       assert.doesNotMatch(
         markup,
@@ -252,8 +178,8 @@ describe('tool activity presentation', () => {
   });
 
   it('keeps error diagnostics when a list field is also present', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-mixed',
         toolName: 'CustomInspect',
         status: 'errored',
@@ -262,8 +188,7 @@ describe('tool activity presentation', () => {
           kind: 'json',
           value: { results: [], error: 'permission denied', ok: false },
         },
-      } satisfies ToolActivityItem],
-      open: true,
+      } satisfies ToolActivityItem,
     }));
 
     assert.match(markup, /permission denied/);
@@ -321,8 +246,8 @@ describe('tool activity presentation', () => {
   });
 
   it('renders a failed WriteStdin as operation metadata without its ShellRun panel', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-pty-control',
         toolName: 'WriteStdin',
         activityKind: 'command',
@@ -362,8 +287,7 @@ describe('tool activity presentation', () => {
             resize: { cols: 100, rows: 30, applied: true, changed: true },
           },
         },
-      } satisfies ToolActivityItem],
-      open: true,
+      } satisfies ToolActivityItem,
     }));
 
     assert.match(markup, /未排队：echo x\\n/);
@@ -374,12 +298,12 @@ describe('tool activity presentation', () => {
   });
 
   it('keeps pre-handoff live output when shell_run lands with empty streams', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-shell-run-empty',
         toolName: 'Bash',
         activityKind: 'command',
-        status: 'waiting_permission',
+        status: 'running',
         args: { command: 'npm test' },
         outputChunks: [
           { seq: 1, stream: 'stdout', text: 'starting-live-output\n', redacted: true, createdAt: 1 },
@@ -396,7 +320,7 @@ describe('tool activity presentation', () => {
           updatedAt: 2,
           revision: 1,
         },
-      } satisfies ToolActivityItem],
+      } satisfies ToolActivityItem,
     }));
 
     assert.match(markup, /starting-live-output/);
@@ -408,12 +332,12 @@ describe('tool activity presentation', () => {
   });
 
   it('keeps redacted/truncated meta when live chunks are empty bodies', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-shell-run-empty-meta',
         toolName: 'Bash',
         activityKind: 'command',
-        status: 'waiting_permission',
+        status: 'running',
         args: { command: 'npm test' },
         outputChunks: [
           { seq: 1, stream: 'stdout', text: '', redacted: true, createdAt: 1 },
@@ -430,7 +354,7 @@ describe('tool activity presentation', () => {
           updatedAt: 2,
           revision: 1,
         },
-      } satisfies ToolActivityItem],
+      } satisfies ToolActivityItem,
     }));
 
     assert.match(markup, /已脱敏/);
@@ -440,8 +364,8 @@ describe('tool activity presentation', () => {
   });
 
   it('surfaces terminal cancel and runtime truncation flags', () => {
-    const cancelled = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const cancelled = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-cancel',
         toolName: 'Bash',
         status: 'interrupted',
@@ -454,7 +378,7 @@ describe('tool activity presentation', () => {
           exitCode: 130,
           output: pipeOutput(),
         },
-      } satisfies ToolActivityItem],
+      } satisfies ToolActivityItem,
     }));
     assert.match(cancelled, /已取消/);
     assert.doesNotMatch(cancelled, /失败 · 退出码 130/);
@@ -479,14 +403,14 @@ describe('tool activity presentation', () => {
         },
       } satisfies ToolActivityItem],
     }));
-    assert.match(cancelledTrow, /运行 1 条命令/);
-    assert.doesNotMatch(cancelledTrow, /1 个失败/);
+    assert.match(cancelledTrow, /已中断/);
+    assert.doesNotMatch(cancelledTrow, /失败/);
 
-    const truncated = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
+    const truncated = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
         toolUseId: 'tool-trunc',
         toolName: 'Bash',
-        status: 'waiting_permission',
+        status: 'running',
         args: { command: 'run' },
         result: {
           kind: 'terminal',
@@ -496,10 +420,85 @@ describe('tool activity presentation', () => {
           exitCode: 0,
           output: { ...pipeOutput('tail only'), stdoutTruncated: true },
         },
-      } satisfies ToolActivityItem],
+      } satisfies ToolActivityItem,
     }));
     assert.match(truncated, /tail only/);
     assert.match(truncated, /输出已截断/);
+  });
+
+  // The bug this replaced: a running command rendered in a bespoke trow and
+  // switched to Astryx chrome the moment it settled. Crossing a status
+  // boundary must not change which component draws the row.
+  it('draws every status through the same Astryx row', () => {
+    const base = {
+      toolUseId: 'tool-status-sweep',
+      toolName: 'Bash',
+      activityKind: 'command' as const,
+      intent: '运行测试',
+      args: { command: 'npm test' },
+    };
+    for (const status of ['pending', 'running', 'completed', 'errored', 'interrupted'] as const) {
+      const markup = renderTool({ ...base, status });
+      assert.match(markup, /astryx-chat-tool-calls/, `${status} renders through Astryx`);
+    }
+  });
+
+  // Expansion is Astryx's call, not the product's: a settled group stays
+  // collapsed even when an earlier row failed, and the collapsed header shows
+  // the last call alone. Accepting that density trade-off is what "one visual
+  // language" costs — a bespoke group summary is exactly what this PR removed.
+  describe('group expansion follows Astryx', () => {
+    const trailingSuccess = {
+      toolUseId: 'ok-1',
+      toolName: 'Read',
+      activityKind: 'read' as const,
+      status: 'completed' as const,
+      args: {},
+    };
+
+    function renderGroup(first: ToolActivityItem): string {
+      return renderToStaticMarkup(createElement(ToolTrow, { items: [first, trailingSuccess] }));
+    }
+
+    it('stays collapsed when a settled group holds an interrupted call', () => {
+      const markup = renderGroup({
+        toolUseId: 'cut-1',
+        toolName: 'Bash',
+        activityKind: 'command',
+        status: 'interrupted',
+        args: { command: 'sleep 600' },
+      });
+      assert.match(markup, /aria-expanded="false"/);
+    });
+
+    // Two items on purpose: Astryx renders a lone call as a bare row that owns
+    // its own expansion, so defaultIsExpanded only reaches a real group.
+    it('opens while any call in the group is still running', () => {
+      const markup = renderGroup({
+        toolUseId: 'live-1',
+        toolName: 'Bash',
+        activityKind: 'command',
+        status: 'running',
+        args: { command: 'npm test' },
+      });
+      assert.match(markup, /aria-expanded="true"/);
+    });
+
+    // `pending` is in flight too: tool_start opens a call there and it only
+    // reaches `running` once output arrives, so a tool that never streams stays
+    // pending for its whole life. With parallel calls the last one can settle
+    // first, and the collapsed header would then show a green check for a group
+    // whose sibling is still working.
+    it('opens when a parallel call is still pending behind a settled one', () => {
+      const markup = renderGroup({
+        toolUseId: 'quiet-1',
+        toolName: 'Bash',
+        activityKind: 'command',
+        status: 'pending',
+        args: { command: 'sleep 600' },
+      });
+      assert.match(markup, /aria-expanded="true"/);
+    });
   });
 });
 

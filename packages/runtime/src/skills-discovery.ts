@@ -27,12 +27,6 @@ import type { MakaToolContext } from './tool-runtime.js';
 export type SkillScope = 'project' | 'workspace' | 'user' | 'custom';
 export type SkillDiscoverySource = 'maka' | 'agents' | 'legacy' | 'custom';
 
-export interface SkillRuntimePreference {
-  enabled: boolean;
-  pinned: boolean;
-  updatedAt?: string;
-}
-
 export interface SkillDiscoveryEntry {
   dir: string;
   containmentRoot: string;

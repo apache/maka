@@ -4,6 +4,13 @@ import type {
   ImmutableRuntimePrefixV1,
   RuntimeBoundaryDigest,
 } from './runtime-boundary.js';
+import type {
+  WorkspaceEpochRecordV1,
+  WorkspaceHeadRecordV1,
+  WorkspaceProjectionRebuildResult,
+  WorkspaceVersionRecordV1,
+} from './workspace-version-authority.js';
+import { WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1 } from './workspace-version-authority.js';
 
 export const TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 = 'tool_recovery_bundle_v1' as const;
 export const RUNTIME_CONTINUATION_AUTHORITY_V1 = 'runtime_continuation_authority_v1' as const;
@@ -95,4 +102,18 @@ export interface RuntimeContinuationAuthorityStore extends RuntimeEventStore {
     claim: ContinuationClaimV1;
     event: RuntimeEvent;
   }): Promise<{ created: boolean; runtimeEventSeq: number }>;
+}
+
+export interface RuntimeWorkspaceVersionAuthorityStore extends RuntimeEventStore {
+  readonly workspaceVersionAuthorityCapability: typeof WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
+  readWorkspaceEpoch(
+    workspaceId: string,
+    workspaceEpochId: string,
+  ): Promise<WorkspaceEpochRecordV1 | undefined>;
+  readWorkspaceVersion(workspaceVersionId: string): Promise<WorkspaceVersionRecordV1 | undefined>;
+  readWorkspaceHead(
+    workspaceId: string,
+    workspaceEpochId: string,
+  ): Promise<WorkspaceHeadRecordV1 | undefined>;
+  rebuildWorkspaceVersionProjections(): Promise<WorkspaceProjectionRebuildResult>;
 }

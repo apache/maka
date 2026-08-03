@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BotChannelSettings } from '@maka/core';
 import type { WechatBridgeQrCodeResult } from '@maka/runtime';
-import { Button, FormLayout, TextInput, useUiLocale, Banner } from '@maka/ui';
+import { Button, EmptyState, FormLayout, Spinner, TextInput, useUiLocale, Banner } from '@maka/ui';
+import { CircleCheckBig } from '@maka/ui/icons';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Dialog,
@@ -153,7 +154,6 @@ export function WechatQrLoginModal(props: {
       onOpenChange={props.onOpenChange}
       className="settingsWechatQrModal"
       width={360}
-      padding={0}
       purpose="info"
     >
       <Layout
@@ -166,20 +166,27 @@ export function WechatQrLoginModal(props: {
         }
         content={
           <LayoutContent padding={0}>
+            {/* Astryx convergence (task #136): the four hand-tinted
+                `data-tone` placeholder panes are EmptyState / Spinner now —
+                the QR frame keeps its bespoke white plate (a QR code needs a
+                light background regardless of theme). */}
             <div className="settingsWechatQrBody">
           {loading ? (
-            <div className="settingsWechatQrState" data-tone="loading">
-              {copy.generating}
-            </div>
+            <EmptyState isCompact headingLevel={4} icon={<Spinner size="lg" />} title={copy.generating} />
           ) : loggedIn ? (
-            <div className="settingsWechatQrState" data-tone="success">
-              {copy.loggedIn}
-            </div>
+            <EmptyState
+              isCompact
+              headingLevel={4}
+              icon={<CircleCheckBig size={24} aria-hidden="true" />}
+              title={copy.loggedIn}
+            />
           ) : expired ? (
-            <div className="settingsWechatQrState" data-tone="warning">
-              {copy.expired}
-              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.refreshing : copy.refresh} />
-            </div>
+            <EmptyState
+              isCompact
+              headingLevel={4}
+              title={copy.expired}
+              actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.refreshing : copy.refresh} />}
+            />
           ) : qrDataUrl ? (
             <>
               <div className="settingsWechatQrFrame">
@@ -188,16 +195,22 @@ export function WechatQrLoginModal(props: {
               <p className="settingsWechatQrCaption">{copy.waiting}</p>
             </>
           ) : error ? (
-            <div className="settingsWechatQrState" data-tone="error" role="alert">
-              <strong>{error.error}</strong>
-              <span>{error.hint}</span>
-              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.retrying : copy.retry} />
+            <div role="alert">
+              <EmptyState
+                isCompact
+                headingLevel={4}
+                title={error.error}
+                description={error.hint}
+                actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.retrying : copy.retry} />}
+              />
             </div>
           ) : (
-            <div className="settingsWechatQrState" data-tone="loading">
-              {copy.bridgeGenerating}
-              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.fetching : copy.fetchAgain} />
-            </div>
+            <EmptyState
+              isCompact
+              headingLevel={4}
+              title={copy.bridgeGenerating}
+              actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.fetching : copy.fetchAgain} />}
+            />
           )}
             </div>
           </LayoutContent>

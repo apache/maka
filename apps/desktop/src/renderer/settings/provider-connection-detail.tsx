@@ -1,15 +1,13 @@
-import { useState } from 'react';
-import { Collapsible } from '@astryxdesign/core';
+import { useState, type ReactNode } from 'react';
+import { Banner, Divider, Grid, Heading, HStack, Link, Text, VStack } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
   Button,
   RelativeTime,
-  Selector,
   TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
-  Banner,
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
@@ -21,6 +19,7 @@ import {
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
+import type { StatusTone } from './settings-status-badge';
 import {
   useConnectionDetail,
   type ConnectionDetailProps,
@@ -67,12 +66,10 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
     }
   }
   return (
-    <div className="providerConnectionDetail">
-      <p>
-        {copy.unknownDescription(connection.providerType)}
-      </p>
+    <VStack gap={3} hAlign="start">
+      <Text>{copy.unknownDescription(connection.providerType)}</Text>
       <Button variant="destructive" onClick={remove} isDisabled={deleting} label={deleting ? copy.deleting : copy.deleteUnused} />
-    </div>
+    </VStack>
   );
 }
 
@@ -93,15 +90,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     busy,
     testing,
     fetchingModels,
-    settingDefaultModel,
-    settingDefault,
     deleting,
     detailActionBusy,
     supportsApiKey,
     needsOAuth,
     usesGitHubCopilotLogin,
     oauthLoginService,
-    hasFixedOAuthBaseUrl,
     supportsRemoteDiscovery,
     credentialProbePending,
     hasUsableCredential,
@@ -111,191 +105,286 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     issue,
     lastTestMessage,
     lastTestAtMs,
+    savedBaseUrl,
     save,
     updateEnabledModels,
-    updateDefaultModel,
     runTest,
     refreshModels,
-    setAsDefault,
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  const defaultModelOptions = modelChoices
-    .filter((entry) => entry.canUseAsChatDefault)
-    .map((entry) => ({
-      value: entry.id,
-      label: entry.displayName?.trim() || entry.id,
-    }));
-  if (
-    connection.defaultModel &&
-    !defaultModelOptions.some((option) => option.value === connection.defaultModel)
-  ) {
-    defaultModelOptions.push({
-      value: connection.defaultModel,
-      label: connection.defaultModel,
-    });
+  // One row is a form at a time, the way the settings-sidebar template does it.
+  // Opening a row discards the other's draft: leaving an abandoned draft in
+  // state meant it reappeared when the user came back to that row, and — until
+  // `save` became per-field — rode along with the next save.
+  const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | null>(null);
+  function openRow(row: 'key' | 'endpoint') {
+    if (row === 'key') setBaseUrl(savedBaseUrl);
+    else setApiKey('');
+    setEditingRow(row);
   }
+  // Most of the 60 providers publish a fixed endpoint; editing it there can
+  // only break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in
+  // a per-connection URL. So the row exists only where the address is genuinely
+  // the user's: a service with no published endpoint (the *-compatible ones), or
+  // a local runtime whose port is a convention rather than a fact. A derived
+  // endpoint (Cloudflare builds one from the account id) is nobody's to type,
+  // and neither is an account-authorized one — `gemini-cli` is OAuth with an
+  // empty baseUrl, so keying off "OAuth with a fixed URL" let it slip through.
+  const showsEndpoint = !needsOAuth
+    && !defaults.baseUrlTemplate
+    && (!defaults.baseUrl || defaults.category === 'local');
 
   return (
-    <div className="providerEditor providerConnectionManager">
-      {supportsApiKey && (
-        <div className="providerCredentialTask">
-          <PasswordInput
-            value={apiKey}
-            onChange={setApiKey}
-            placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
-            label={copy.modelKeyAria(display.name)}
-            description={apiKeyStatusHint}
-            isDisabled={detailActionBusy}
-          />
-          <div className="providerCredentialActions">
-            {defaults.signupUrl && (
-              <a
-                className="providerExternalLink"
-                href={defaults.signupUrl}
-                target="_blank"
-                rel="noreferrer noopener"
-                aria-label={copy.getModelKey}
-              >
-                {copy.getModelKey}
-              </a>
-            )}
-            {/* Persistent button (disabled until a new key is typed) so the
-                credential actions row keeps a fixed height — no jitter when the
-                user starts pasting a key. */}
-            <Button variant="primary" isDisabled={detailActionBusy || !hasApiKeyChange} onClick={save} label={busy ? copy.saving : copy.updateKey} />
-          </div>
-        </div>
-      )}
-      {issue && (
-        <div className="providerConnectionIssue" data-tone={issue.tone} role="status">
-          <strong>{issue.label}</strong>
-          {(lastTestMessage || Number.isFinite(lastTestAtMs)) && (
-            <span>
-              {lastTestMessage && lastTestMessage !== issue.label ? lastTestMessage : null}
-              {lastTestMessage && lastTestMessage !== issue.label && Number.isFinite(lastTestAtMs) ? ' · ' : null}
-              {Number.isFinite(lastTestAtMs) && <RelativeTime ts={lastTestAtMs} />}
-            </span>
-          )}
-        </div>
-      )}
-      {needsOAuth && (
-        usesGitHubCopilotLogin ? (
-          <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
-        ) : oauthLoginService ? (
-          <OAuthReloginNotice
-            service={oauthLoginService}
-            hasSecret={hasSecret}
-            onRelogin={refreshAfterRelogin}
-          />
-        ) : (
+    /* Three sections, each a heading with a sentence beside its controls, one
+       Divider between them — the `settings` template's form language.
+       The two settled values (key, endpoint) are rows in the
+       settings-sidebar template's language: a row reports its state and
+       carries one link, and only becomes a form when the user asks it to. A
+       credential and an endpoint are set once and then read; a permanent input
+       box for each was the page telling the user to fill in something that is
+       already filled in. */
+    <VStack gap={8}>
+      <DetailSection
+        title={copy.credentials}
+        /* One claim, not four phrasings of it: the credential never leaves this
+           machine. The endpoint is not a secret, so it did not need a variant. */
+        description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
+      >
+        {issue && (
           <Banner
-            status="info"
-            title={hasSecret === true
-              ? copy.oauthLoggedIn
-              : hasSecret === 'loading'
-                ? copy.oauthLoading
-                : hasSecret === 'error'
-                  ? copy.oauthUnknown
-                  : copy.oauthWaiting}
-            description={hasSecret === true
-              ? copy.oauthLoggedInDetail
-              : hasSecret === 'loading'
-                ? copy.oauthLoadingDetail
-                : hasSecret === 'error'
-                  ? copy.oauthUnknownDetail
-                  : copy.oauthWaitingDetail} />
-        )
-      )}
-      {credentialProbePending && (
-        <p className="providerError" role="alert">
-          {hasSecret === 'loading'
-            ? copy.credentialLoadingDetail
-            : copy.credentialUnknownDetail}
-        </p>
-      )}
-      <section className="providerModelSettings" aria-label={copy.modelManagement}>
-        <Selector
-          label={copy.connectionDefaultModel}
-          description={copy.connectionDefaultModelHelp}
-          options={defaultModelOptions}
-          value={connection.defaultModel}
-          onChange={(model) => void updateDefaultModel(model)}
-          isDisabled={detailActionBusy || defaultModelOptions.length === 0}
-          disabledMessage={defaultModelOptions.length === 0 ? copy.noModels : undefined}
-          isLoading={settingDefaultModel}
-          placeholder={copy.noModels}
-          width="100%"
-        />
+            status={connectionIssueStatus(issue.tone)}
+            role="status"
+            title={issue.label}
+            description={(lastTestMessage || Number.isFinite(lastTestAtMs)) ? (
+              <>
+                {lastTestMessage && lastTestMessage !== issue.label ? lastTestMessage : null}
+                {lastTestMessage && lastTestMessage !== issue.label && Number.isFinite(lastTestAtMs) ? ' · ' : null}
+                {Number.isFinite(lastTestAtMs) && <RelativeTime ts={lastTestAtMs} />}
+              </>
+            ) : undefined}
+          />
+        )}
+        {needsOAuth && (
+          usesGitHubCopilotLogin ? (
+            <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
+          ) : oauthLoginService ? (
+            <OAuthReloginNotice
+              service={oauthLoginService}
+              hasSecret={hasSecret}
+              onRelogin={refreshAfterRelogin}
+            />
+          ) : (
+            <Banner
+              status="info"
+              title={hasSecret === true
+                ? copy.oauthLoggedIn
+                : hasSecret === 'loading'
+                  ? copy.oauthLoading
+                  : hasSecret === 'error'
+                    ? copy.oauthUnknown
+                    : copy.oauthWaiting}
+              description={hasSecret === true
+                ? copy.oauthLoggedInDetail
+                : hasSecret === 'loading'
+                  ? copy.oauthLoadingDetail
+                  : hasSecret === 'error'
+                    ? copy.oauthUnknownDetail
+                    : copy.oauthWaitingDetail} />
+          )
+        )}
+        {credentialProbePending && (
+          <Banner
+            status="warning"
+            role="alert"
+            title={hasSecret === 'loading'
+              ? copy.credentialLoadingDetail
+              : copy.credentialUnknownDetail}
+          />
+        )}
+        {(supportsApiKey || showsEndpoint) && (
+          <VStack gap={0}>
+            <Divider />
+            {supportsApiKey && (
+              <ExpandableSettingRow
+                label={copy.modelKey}
+                value={apiKeyStatusHint}
+                actionLabel={hasSecret === true ? copy.change : copy.set}
+                isEditing={editingRow === 'key'}
+                isDisabled={detailActionBusy}
+                canSave={hasApiKeyChange}
+                saveLabel={busy ? copy.saving : copy.save}
+                cancelLabel={copy.cancel}
+                onEdit={() => openRow('key')}
+                onCancel={() => { setApiKey(''); setEditingRow(null); }}
+                onSave={async () => { if (await save('key')) setEditingRow(null); }}
+              >
+                <PasswordInput
+                  value={apiKey}
+                  onChange={setApiKey}
+                  placeholder={copy.pasteModelKey}
+                  label={copy.modelKeyAria(display.name)}
+                  isLabelHidden
+                  isDisabled={detailActionBusy}
+                />
+                {defaults.signupUrl && (
+                  <Link
+                    href={defaults.signupUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    aria-label={copy.getModelKey}
+                  >
+                    {copy.getModelKey}
+                  </Link>
+                )}
+              </ExpandableSettingRow>
+            )}
+            {showsEndpoint && (
+              <ExpandableSettingRow
+                label={copy.endpoint}
+                value={savedBaseUrl || copy.endpointDefault}
+                actionLabel={copy.edit}
+                isEditing={editingRow === 'endpoint'}
+                isDisabled={detailActionBusy}
+                canSave={hasBaseUrlChange}
+                saveLabel={busy ? copy.saving : copy.save}
+                cancelLabel={copy.cancel}
+                onEdit={() => openRow('endpoint')}
+                onCancel={() => { setBaseUrl(savedBaseUrl); setEditingRow(null); }}
+                onSave={async () => { if (await save('endpoint')) setEditingRow(null); }}
+              >
+                <TextInput
+                  label={copy.endpoint}
+                  isLabelHidden
+                  value={baseUrl}
+                  onChange={setBaseUrl}
+                  placeholder={defaults.baseUrl}
+                  isDisabled={detailActionBusy}
+                />
+              </ExpandableSettingRow>
+            )}
+          </VStack>
+        )}
+      </DetailSection>
+      {/* The rows draw the closing rule themselves; without them the section
+          still needs one. Two rules with a gap between them read as an empty
+          row, so only ever one. */}
+      {!supportsApiKey && !showsEndpoint && <Divider />}
+      <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
         <EnabledModelManager
           modelChoices={modelChoices}
           enabledModelIds={enabledModelIds}
-          defaultModel={connection.defaultModel}
           disabled={detailActionBusy}
           onChange={(next) => void updateEnabledModels(next)}
         />
-        <div className="providerModelActions">
+        <HStack gap={2} vAlign="center" wrap="wrap">
           <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
           {supportsRemoteDiscovery && (
             <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
           )}
-        </div>
-      </section>
-      <Collapsible
-        className="providerAdvancedSettings"
-        defaultIsOpen={false}
-        trigger={copy.advanced}
-      >
-        <div className="providerAdvancedSettingsBody">
-          <div className="providerEndpointSettings">
-            <ConnectionEndpointField
-              baseUrl={baseUrl}
-              defaultsBaseUrl={defaults.baseUrl}
-              fixedOAuth={hasFixedOAuthBaseUrl}
-              disabled={detailActionBusy}
-              onChange={setBaseUrl}
-            />
-            {/* Persistent button (disabled until the endpoint is edited) so the
-                advanced settings body height stays constant while typing. An
-                OAuth-fixed endpoint is readOnly with no dirty path — no jitter
-                risk — so it renders no permanently-disabled Save at all. */}
-            {!hasFixedOAuthBaseUrl && (
-              <div className="providerEndpointActions">
-                <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
-              </div>
-            )}
-          </div>
-        </div>
-      </Collapsible>
-      <div className="providerConnectionActions">
-        {!props.isDefault && connection.enabled && (
-          <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
-        )}
-        <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
-      </div>
-    </div>
+        </HStack>
+      </DetailSection>
+      <Divider />
+      {/* Deletion is last, and the only thing beside it is its own warning —
+          no quiet action next to the destructive one for a mis-aimed cursor. */}
+      <DetailSection title={copy.dangerZone} description={copy.deleteRowHelp}>
+        <HStack>
+          {/* The heading beside it already says 删除连接; repeating it on the
+              button was the same three words twice in one row. */}
+          <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.delete} />
+        </HStack>
+      </DetailSection>
+    </VStack>
   );
 }
 
-function ConnectionEndpointField(props: {
-  baseUrl: string;
-  defaultsBaseUrl: string | undefined;
-  fixedOAuth: boolean;
-  disabled: boolean;
-  onChange(value: string): void;
+/**
+ * One section of the form, in the `settings` template's shape: the heading and
+ * its one-sentence explanation in the first grid cell, the controls in the
+ * second. At the settings column's width the grid is one column, so it reads
+ * as heading → sentence → controls; it splits into two columns for free if the
+ * shell ever widens.
+ */
+/**
+ * A settled value: its name, what it currently is, and one link to change it.
+ * Editing swaps the row in place for the control plus save / cancel — the
+ * settings-sidebar template's ExpandableRow, which is the shape Astryx uses for
+ * exactly this (a password that is already set, an address already on file).
+ *
+ * The Divider trails each row, as in the template, so a stack of rows carries
+ * its own separators without the caller interleaving them.
+ */
+function ExpandableSettingRow(props: {
+  label: string;
+  value: string;
+  actionLabel: string;
+  isEditing: boolean;
+  isDisabled: boolean;
+  canSave: boolean;
+  saveLabel: string;
+  cancelLabel: string;
+  onEdit(): void;
+  onCancel(): void;
+  onSave(): void | Promise<void>;
+  children: ReactNode;
 }) {
-  const copy = getProviderSettingsCopy(useUiLocale()).detail;
   return (
-    <TextInput
-      label={copy.endpoint}
-      description={props.fixedOAuth ? copy.oauthFixed : undefined}
-      value={props.baseUrl}
-      onChange={(value) => props.onChange(value)}
-      placeholder={props.defaultsBaseUrl}
-      isDisabled={props.disabled || props.fixedOAuth}
-      disabledMessage={props.fixedOAuth ? copy.oauthFixed : undefined}
-    />
+    <>
+      {props.isEditing ? (
+        <VStack gap={3} paddingBlock={4}>
+          <Text type="body" weight="semibold">{props.label}</Text>
+          {props.children}
+          <HStack gap={2}>
+            <Button
+              variant="primary"
+              isDisabled={props.isDisabled || !props.canSave}
+              onClick={() => void props.onSave()}
+              label={props.saveLabel}
+            />
+            <Button variant="ghost" isDisabled={props.isDisabled} onClick={props.onCancel} label={props.cancelLabel} />
+          </HStack>
+        </VStack>
+      ) : (
+        <HStack hAlign="between" vAlign="start" gap={4} paddingBlock={4}>
+          <VStack gap={0}>
+            <Text type="body" weight="semibold">{props.label}</Text>
+            <Text type="supporting" color="secondary">{props.value}</Text>
+          </VStack>
+          {/* A button, not a Link: this opens a form, it does not navigate. As
+              a link it announced itself as one, ignored Space, and pointed at
+              "#". Astryx has no link-styled variant, and ghost is the right
+              weight for a row affordance anyway. */}
+          <Button variant="ghost" size="sm" isDisabled={props.isDisabled} onClick={props.onEdit} label={props.actionLabel} />
+        </HStack>
+      )}
+      <Divider />
+    </>
   );
+}
+
+function DetailSection(props: { title: string; description: string; children: ReactNode }) {
+  return (
+    /* `columnGap`, not `gap`: the template's 10 is the gutter BETWEEN the two
+       columns. At this column's width the grid is one column, and a 10-step
+       row gap there reads as a hole between a heading and the thing it
+       labels. */
+    <Grid columns={{ minWidth: 320 }} columnGap={10} rowGap={4} role="region" aria-label={props.title}>
+      <VStack gap={1}>
+        <Heading level={3}>{props.title}</Heading>
+        <Text type="supporting" color="secondary">{props.description}</Text>
+      </VStack>
+      <VStack gap={4}>{props.children}</VStack>
+    </Grid>
+  );
+}
+
+/** The list's three status tones against Banner's four; `neutral` has no
+ * Banner equivalent, so it takes the quietest one rather than borrowing an
+ * alarm color it does not mean. */
+function connectionIssueStatus(tone: StatusTone): 'error' | 'success' | 'info' {
+  if (tone === 'destructive') return 'error';
+  if (tone === 'success') return 'success';
+  return 'info';
 }
 
 function GitHubCopilotReloginNotice(props: {
@@ -343,7 +432,7 @@ function GitHubCopilotReloginNotice(props: {
 }
 
 // The OAuth notice for a re-loginable connection. The 重新登录 button drives
-// the SAME shared browser-loopback flow the OAuth catalog cards use, so an
+// the SAME shared browser-assisted OAuth flow the catalog cards use, so an
 // expired connection can be re-authorized right where the problem surfaces.
 // The button shows in every credential state except 'loading' — an EXPIRED
 // token still reads hasSecret===true, so it must not hide behind

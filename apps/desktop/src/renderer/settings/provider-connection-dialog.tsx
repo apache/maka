@@ -13,6 +13,8 @@ export function ProviderConnectionDialog(props: {
   providerType: ProviderType;
   isOpen: boolean;
   onOpenChange(isOpen: boolean): void;
+  /** Trailing header slot — the provider's category badge on the create path. */
+  headerEndContent?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -22,8 +24,12 @@ export function ProviderConnectionDialog(props: {
       className="providerConnectionDialog"
       width={520}
       maxHeight="calc(100dvh - 80px)"
-      padding={0}
       purpose="form"
+      /* The dialog's own inset, not a header override: at the 16px default the
+       * provider mark and the close button sit one plate-height from the top
+       * edge and read as pinned to it. Astryx exposes this as a parameter, so
+       * the fix stays inside the primitive's vocabulary. */
+      padding={6}
     >
       <Layout
         header={
@@ -31,14 +37,13 @@ export function ProviderConnectionDialog(props: {
             startContent={<ProviderLogo type={props.providerType} compact />}
             title={props.title}
             subtitle={props.subtitle}
+            endContent={props.headerEndContent}
             onOpenChange={props.onOpenChange}
           />
         }
         content={
-          <LayoutContent padding={0}>
-            <div className="providerConnectionDialogBody">
-              {props.children}
-            </div>
+          <LayoutContent padding={6} isScrollable>
+            {props.children}
           </LayoutContent>
         }
       />

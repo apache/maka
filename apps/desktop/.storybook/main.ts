@@ -1,6 +1,5 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import tailwindcss from '@tailwindcss/vite';
 import type { StorybookConfig } from '@storybook/react-vite';
 import { mergeConfig, type UserConfig } from 'vite';
 
@@ -25,7 +24,6 @@ const config: StorybookConfig = {
   },
   async viteFinal(baseConfig) {
     return mergeConfig(baseConfig, {
-      plugins: [tailwindcss()],
       resolve: {
         alias: [
           // @maka/core's public barrel also exports the Node-only runtime
@@ -38,7 +36,6 @@ const config: StorybookConfig = {
           { find: '@maka/ui/artifact-preview-registry', replacement: resolve(UI_SRC, 'artifact-preview-registry.ts') },
           { find: '@maka/ui/assistant-stream', replacement: resolve(UI_SRC, 'assistant-stream.ts') },
           { find: '@maka/ui/maka-uri', replacement: resolve(UI_SRC, 'maka-uri.ts') },
-          { find: '@maka/ui/smooth-stream', replacement: resolve(UI_SRC, 'smooth-stream.ts') },
           { find: /^@maka\/ui$/, replacement: resolve(UI_SRC, 'index.ts') },
         ],
       },

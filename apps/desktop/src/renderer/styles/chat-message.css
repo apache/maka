@@ -23,15 +23,20 @@
   width: 100%;
 }
 
+/* The conversation reading tier is Astryx's body role: 14px with the 20px
+   4px-grid leading the type scale computes for it. The leading used to be a
+   hand-rolled 1.6154em (21px) that matched neither Maka's --leading-* tiers
+   nor Astryx's. */
 .maka-chat-message-bubble {
-  font-size: var(--font-size-base);
-  line-height: 1.6154em;
+  font: var(--maka-text-body);
 }
 
+/* Geometry (radius, padding, max-width) belongs to ChatMessageBubble: under
+   `density="compact"` it resolves --radius-container plus the compact padding
+   step, so re-declaring them here only forked the primitive. What stays is the
+   product tint and the verbatim-text rule — Maka renders user input as typed,
+   which the primitive has no opinion about. */
 .maka-chat-message-bubble-user {
-  max-width: min(100%, 640px);
-  padding: var(--space-2-5) var(--space-3);
-  border-radius: var(--radius-surface);
   background: var(--chat-user-bg);
   color: var(--chat-user-foreground, var(--foreground));
   white-space: pre-wrap;
@@ -50,31 +55,52 @@
   gap: var(--space-1);
 }
 
-/* Chat activity disclosure: one trigger dialect for reasoning / tool rows /
-   product trow. !important beats StyleX `.x*:not(#\#)` atoms (see sidebar.css). */
-.maka-turn .astryx-chat-tool-calls [role="button"],
-.maka-turn .astryx-chat-reasoning [role="button"],
-.maka-turn [data-trow] .astryx-collapsible-trigger {
-  /* Hand reserved for links (native-cursor convention). */
-  cursor: default !important;
-}
+/* Cursor for tool/reasoning disclosure triggers is owned by
+   styles/native-cursor.css (role=button + default !important). */
 
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
-  font-family: var(--font-family-body) !important;
+  font: var(--maka-text-label);
+}
+
+/* Reasoning and tool-call rows read at BODY size, not supporting size.
+   Astryx puts the label and preview on inner spans styled as `supporting`
+   (12px on this scale). Measured on main they rendered at 9.75px — Astryx's
+   sm tier at 0.75rem against the old 13px root — which made them the least
+   legible text in the product, and they carry real content — what the agent is
+   thinking and which tool is running — not metadata.
+   Cursor makes the same call: its tool rows sit at body size and lean
+   entirely on --text-secondary/tertiary for de-emphasis. Weight and colour
+   already do that here, so size does not need to.
+
+   Rebinding the role token rather than restyling the spans. Astryx's
+   supporting atoms are `font-size: var(--text-supporting-size)` and
+   `line-height: var(--text-supporting-leading)`, so redefining those two on
+   the trigger reaches every span that opts into the role, at any depth,
+   through inheritance — no !important, since nothing else declares them
+   here, and no dependency on child order.
+   The earlier form of this rule selected `> span:not(:last-child)`, which
+   read as "every span except the chevron". It was wrong for exactly the
+   reason positional selectors are: ChatReasoning wraps its label, duration
+   and preview in a `<div>` (packages/ui/src/astryx-chat-reasoning.tsx), so
+   the rule enlarged the leading icon wrapper and left the reasoning text at
+   supporting size — the one row the retune was for. */
+.maka-turn :is(.astryx-chat-reasoning, .astryx-chat-tool-calls) [role="button"] {
+  --text-supporting-size: var(--text-body-size);
+  --text-supporting-leading: var(--maka-line-body);
 }
 
 .maka-turn .astryx-chat-reasoning [role="button"] > span:last-child,
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child {
-  width: 14px !important;
-  height: 14px !important;
+  width: 14px;
+  height: 14px;
   margin-inline-start: auto;
 }
 
 .maka-turn .astryx-chat-reasoning [role="button"] > span:last-child svg,
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child svg,
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child > * {
-  width: 0.75rem !important;
-  height: 0.75rem !important;
+  width: 10px;
+  height: 10px;
 }
 
 @media (hover: hover) {
@@ -86,30 +112,45 @@
   }
 }
 
-/* Product trow (permission / sandbox / interrupted): Collapsible defaults large. */
+/* Product trow (permission / sandbox / interrupted): Collapsible defaults large.
+
+   Nothing in this file declares !important any more, including the icon-box
+   sizes above. Astryx's StyleX atoms live in the earlier astryx-components
+   layer, so product CSS in `components` already wins on cascade order alone,
+   whatever their specificity — verified by deleting all eight of them and
+   re-measuring: the disclosure chevrons still render 14x14 with a 10x10 svg.
+   Everything here that is not running prose snaps to --maka-line-body, which
+   is declared with the type tiers in maka-tokens.css, so a turn reads as one
+   rhythm rather than a stack of differently-spaced blocks. */
 .maka-turn [data-trow] .astryx-collapsible-trigger {
+  font: var(--maka-text-label);
   min-height: 24px;
   gap: var(--spacing-1-5, 6px);
   padding-block: 2px;
   border-radius: var(--radius-element);
-  font-family: var(--font-family-body) !important;
-  font-size: var(--text-supporting-size) !important;
-  font-weight: var(--font-weight-medium, 500) !important;
-  color: var(--color-text-secondary) !important;
+  color: var(--color-text-secondary);
 }
 
 .maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child {
-  width: 14px !important;
-  height: 14px !important;
+  width: 14px;
+  height: 14px;
 }
 
 .maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child svg,
 .maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child > * {
-  width: 0.75rem !important;
-  height: 0.75rem !important;
+  width: 10px;
+  height: 10px;
 }
 
-/* Row detail open: same 0fr→1fr medium motion as group/reasoning. */
+/* Row detail open: same 0fr→1fr medium motion as group/reasoning.
+
+   The Astryx duration/ease below are deliberate, not a leak of the product
+   scale. Astryx ChatToolCalls animates its own group open with
+   `grid-template-rows --duration-medium --ease-standard`; a detail row that
+   expands beside one has to share that clock or the two disclosures visibly
+   desync. Product motion belongs on the maka-tokens scale — this is the
+   exception that follows a neighbouring Astryx component, so retune it only
+   when ChatToolCalls moves. */
 @keyframes maka-chat-tool-detail-open {
   from { grid-template-rows: 0fr; }
   to { grid-template-rows: 1fr; }
@@ -133,7 +174,8 @@
 }
 
 /* --- Assistant bubble shell ----------------------------------------------- */
-/* User message: a tinted, width-capped Astryx bubble anchored to the right. */
+/* User message: a tinted Astryx bubble anchored to the right, sized by the
+   primitive's own compact-density geometry. */
 /* Assistant: no bubble — just text on background, like an editor. The
    Markdown typography and block rhythm belong to Astryx, so the shell keeps
    only container geometry.
@@ -146,15 +188,22 @@
 /* --- User-turn meta row (relocated from tool-output.css) ----------------- */
 /* PR-CHAT-CHROME-FOLLOWUP-0 / PR5 CHAT-MESSAGE-TIME-0: the relative time is
    always visible now (it was `opacity: 0` until hover, which hid it on
-   touch + from assistive tech). It stays quiet — caption tier (11px) at
+   touch + from assistive tech). It stays quiet — caption tier at
    normal weight, muted — and rides in the user turn's meta row beneath
    the block. Aligned to the same tier the footer-action cva uses (text-xs). */
+/* #1879: height off the control ruler, not off the line box. `inline-block`
+   let the leading decide the box — measured, bumping this element's own
+   leading to 40px took the box from 20px to 40px and carried the meta row
+   with it. `--h-control-xs` is 20px, the value the supporting leading
+   already resolves to, so the pin is pixel-neutral today and load-bearing
+   the next time a leading moves. Safe to pin because `white-space: nowrap`
+   below makes single-line a property of this box rather than an assumption. */
 .maka-message-time-inline {
-  display: inline-block;
+  font: var(--maka-text-supporting);
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-normal);
-  line-height: var(--leading-none);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -173,6 +222,41 @@
    packages/ui/src/primitives/chat.tsx); the layout is now location-
    independent instead of keyed on a `[data-role="assistant"]` descendant. */
 
+/* --- Conversation heading scale ------------------------------------------- */
+/* Astryx's heading ladder (20/18/16/14…) is a DOCUMENT scale, and the
+   transcript is not a document. An agent turn emits `##` freely, so a ladder
+   that steps 1.4× per level shreds one reply into visually unrelated slabs.
+   Flatten it to two steps — h1 for a genuine section break, everything below
+   at body size — and let weight 600 plus colour carry the hierarchy, which is
+   what the rest of the conversation already does.
+   Cursor (1.43/1.32/1.21), Claude Code (1.14/1.07/1.0) and Codex
+   (1.71/1.43/1.21) all flatten here relative to their own document styles;
+   Claude Code goes furthest and merges h4–h6 into `strong`. Two steps sits
+   inside that range.
+   Every level shares the transcript baseline so headings do not add rhythm of
+   their own.
+   Scoped to `.maka-turn`, not to the Markdown contract alone. The contract is
+   emitted by the shared MarkdownBody, whose other caller is the Daily Review
+   panel — and a review report IS a document, so the argument above does not
+   apply to it. It keeps Astryx's full ladder.
+   Bare tags are the whole story: Astryx's Markdown renderer emits plain
+   h1–h6 with stylex props (Markdown.js `const Tag = \`h${level}\``). The
+   .astryx-heading.level-N classes come from the standalone Heading
+   component, which Markdown never mounts. */
+/* The one heading in a turn that is not at the body size, and so the one that
+   cannot take the body baseline with it: at 16px, --maka-line-body's 20px is
+   on the 4px grid but is the 14px tier's line box, one step tighter than the
+   tier this heading actually sits at. It takes its own tier's leading (24px);
+   the turn still reads as one rhythm because 24 is the next step of the same
+   grid, not a different one. */
+.maka-turn [data-maka-contract="markdown"] h1 {
+  font: var(--maka-text-heading-3);
+}
+
+.maka-turn [data-maka-contract="markdown"] :is(h2, h3, h4, h5, h6) {
+  font: var(--maka-text-heading-4);
+}
+
 .maka-chat-message pre:not([data-maka-contract="markdown"] pre) {
   margin: 0;
   font: inherit;
@@ -182,10 +266,10 @@
    boundary so raw-pre treatment cannot become a second code-block authority. */
 .maka-chat-message[data-sender="system"]
   pre:not([data-maka-contract="markdown"] pre) {
+  font: var(--maka-text-supporting);
   display: inline-flex;
   border-radius: var(--radius-pill);
   background: oklch(from var(--info) l c h / 0.08);
   color: var(--info-text);
   padding: var(--space-0-5) var(--space-1-5);
-  font-size: var(--font-size-caption);
 }

@@ -70,7 +70,7 @@ export function AgentSwarmPreview(props: {
                 <small>{rowMeta}</small>
                 {summary.length > 0 && <p>{redactSecrets(summary)}</p>}
                 {item.failureClass && (
-                  <span className="text-[color:var(--destructive)]">
+                  <span className="maka-agent-preview-failure">
                     {redactSecrets(item.failureClass)}
                   </span>
                 )}

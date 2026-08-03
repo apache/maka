@@ -120,6 +120,8 @@ export interface SubagentSessionRuntime {
   agentId: string;
   agentName: string;
   profile: string;
+  /** User-approved model route selected at spawn time. Absent for legacy profile spawns. */
+  presetId?: string;
   systemPrompt: string;
   toolNames: string[];
   categoryPolicy: Partial<Record<ToolCategory, PolicyDecision>>;
@@ -265,6 +267,26 @@ export interface SessionSummary {
   status: SessionStatus;
   blockedReason?: SessionBlockedReason;
   statusUpdatedAt?: number;
+  /**
+   * The turns the runtime is running for this session right now. Omitted when
+   * there are none.
+   *
+   * Projected from the live runs, never persisted: "a run is in flight" is a
+   * fact about the running process, so it must read false again after a crash.
+   * `status` cannot serve that purpose — it is written to storage, so a crash
+   * between a turn's end and its status write leaves `running` behind forever,
+   * and it carries no turn identity, reading the same before a turn starts and
+   * after it ends.
+   *
+   * A set rather than one turn because a session can carry concurrent runs: a
+   * client asking "is anything OTHER than the turn I sent still running" cannot
+   * answer that from an arbitrary one of them.
+   *
+   * Only populated where the runtime is in a position to know: session LISTS
+   * come from the authority holding the runs. A summary returned by a mutation
+   * (rename, model change) describes the header alone and omits it.
+   */
+  runningTurnIds?: string[];
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagentParent?: SubagentSessionParent;
@@ -293,6 +315,12 @@ export interface SessionSummary {
   collaborationMode?: CollaborationMode;
   /** Defaults to `default` when absent on legacy summaries. */
   orchestrationMode?: OrchestrationMode;
+}
+
+export function sessionRevisionFamilyId(
+  session: Pick<SessionSummary, 'id' | 'revisionRootSessionId'>,
+): string {
+  return session.revisionRootSessionId ?? session.id;
 }
 
 /**
@@ -343,7 +371,7 @@ const SUBAGENT_SESSION_RUNTIME_SHAPE = defineObjectShape<SubagentSessionRuntime>
     'toolNames',
     'categoryPolicy',
   ],
-  ['permissionCeiling'],
+  ['permissionCeiling', 'presetId'],
 );
 const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionSpawn>()(
   ['schemaVersion', 'requestFingerprint', 'initialTurnId', 'initialRunId'],
@@ -402,6 +430,7 @@ export function isSubagentSessionRuntime(value: unknown): value is SubagentSessi
     (value.definitionVersion as number) < 1 ||
     !isSessionLineageId(value.agentId) ||
     !isSessionLineageId(value.profile) ||
+    (value.presetId !== undefined && !isSessionLineageId(value.presetId)) ||
     typeof value.agentName !== 'string' ||
     value.agentName.length === 0 ||
     value.agentName.length > SUBAGENT_RUNTIME_NAME_MAX_CHARS ||
@@ -603,6 +632,24 @@ export interface SessionChangedEvent {
   sessionId?: string;
   connectionSlug?: string;
   modelId?: string;
+  /**
+   * The turn this change is ABOUT, when the change has a turn to name.
+   *
+   * Naming the turn is what makes a notification a causal answer to a specific
+   * send rather than a bare invalidation: the session fields alone carry no
+   * turn identity, and `status` reads the same before a turn starts and after
+   * it ends.
+   *
+   * Emitter obligation, and its exact edge: a change about a turn some CLIENT
+   * may be waiting on — one it submitted, so it holds a local claim until it
+   * hears back — must name that turn. Its start, its refusal to start, and its
+   * end all qualify. Changes with no single turn behind them (a rename, a
+   * catalog migration) leave it unset, as do turns no client submitted and none
+   * is waiting on — a linked child agent's own turns, for instance, which are
+   * reported by `SessionSummary.runningTurnIds` instead. A client must never
+   * read an unset change as an answer about a turn it is waiting on.
+   */
+  turnId?: string;
   ts: number;
 }
 
@@ -629,6 +676,7 @@ export interface UserMessage extends MessageContent {
    * hand-type. Mirrors TurnOrigin in runtime-inputs. */
   origin?:
     | { kind: 'automation'; automationId: string }
+    | { kind: 'goal'; goalId: string }
     | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
 }
 
@@ -782,6 +830,15 @@ export interface TurnStateMessage {
 export interface TurnRecord {
   turnId: string;
   status: TurnStatus;
+  /**
+   * Whether `status` came from a `turn_state` message or was reconstructed by
+   * `inferLegacyTurnStatus` for a session written before them. Only a recorded
+   * status is evidence about this turn; an inferred one is a reading of old
+   * data, and callers reconciling against live state must not treat the two
+   * alike. Absent on hand-built records, which are treated as non-evidence;
+   * `deriveTurnRecords` is the only place that can know.
+   */
+  statusSource?: 'recorded' | 'inferred';
   parentTurnId?: string;
   retriedFromTurnId?: string;
   regeneratedFromTurnId?: string;
@@ -815,7 +872,7 @@ export interface SystemNoteMessage {
 
 const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text'],
-  ['displayText', 'attachments', 'quotes', 'origin'],
+  ['displayText', 'attachments', 'quotes', 'inlineReferences', 'origin'],
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
@@ -885,8 +942,10 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
 );
 type MessageOrigin = NonNullable<UserMessage['origin']>;
 type AutomationOrigin = Extract<MessageOrigin, { kind: 'automation' }>;
+type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
 type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
 const AUTOMATION_ORIGIN_SHAPE = defineObjectShape<AutomationOrigin>()(['kind', 'automationId'], []);
+const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
 const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
   ['kind', 'graphId', 'wakeId', 'attemptId'],
   [],
@@ -925,11 +984,17 @@ function decodeStoredMessage(
         hasMessageEnvelope(message, true) &&
         (message.origin === undefined || isMessageOrigin(message.origin))
       ) {
-        const { displayText, attachments, quotes, origin, ...envelope } = message;
+        const { displayText, attachments, quotes, inlineReferences, origin, ...envelope } = message;
         try {
           return {
             ...envelope,
-            ...decodeMessageContent({ text: message.text, displayText, attachments, quotes }),
+            ...decodeMessageContent({
+              text: message.text,
+              displayText,
+              attachments,
+              quotes,
+              inlineReferences,
+            }),
             ...(origin !== undefined ? { origin } : {}),
           } as unknown as UserMessage;
         } catch {
@@ -1078,6 +1143,15 @@ function isAutomationOrigin(value: unknown): value is AutomationOrigin {
   );
 }
 
+function isGoalOrigin(value: unknown): value is GoalOrigin {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, GOAL_ORIGIN_SHAPE) &&
+    value.kind === 'goal' &&
+    typeof value.goalId === 'string'
+  );
+}
+
 function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
   return (
     isRecord(value) &&
@@ -1090,7 +1164,7 @@ function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
 }
 
 function isMessageOrigin(value: unknown): value is MessageOrigin {
-  return isAutomationOrigin(value) || isAgentGraphOrigin(value);
+  return isAutomationOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
 }
 
 function isOptionalFiniteDuration(value: unknown): boolean {
@@ -1127,6 +1201,7 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
       return {
         turnId,
         status: latestState.status,
+        statusSource: 'recorded',
         ...(latestState.parentTurnId ? { parentTurnId: latestState.parentTurnId } : {}),
         ...(latestState.retriedFromTurnId
           ? { retriedFromTurnId: latestState.retriedFromTurnId }
@@ -1145,6 +1220,7 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
     return {
       turnId,
       status: inferLegacyTurnStatus(bucket),
+      statusSource: 'inferred',
       partialOutputRetained,
     };
   });

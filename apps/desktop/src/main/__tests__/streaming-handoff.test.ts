@@ -66,7 +66,7 @@ describe('single live-turn handoff', () => {
       steps: [{
         stepId: 'assistant-1',
         thinking: { text: '先检查', truncated: false, complete: true },
-        text: { text: '最终答案', truncated: false, complete: false },
+        text: { text: '最终答案', truncated: false, complete: true },
         tools: [{
           toolUseId: 'tool-1',
           toolName: 'Bash',
@@ -142,7 +142,8 @@ describe('single live-turn handoff', () => {
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
-    assert.equal(markup.split(text).length - 1, 1);
+    assert.equal((markup.match(/maka-bubble-streaming/g) ?? []).length, 1);
+    assert.equal(markup.split(text).length - 1, 0);
   });
 
   it('reduces events into the projection and settles only after committed history refreshes', async () => {

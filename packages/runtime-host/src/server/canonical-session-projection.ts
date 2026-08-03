@@ -5,6 +5,7 @@ import type {
   SessionContinuityIdentity,
   SessionInteractionProjection,
   SessionMessageQueueProjection,
+  GoalProjection,
   TurnSnapshot,
 } from '../protocol/index.js';
 import {
@@ -17,6 +18,7 @@ import type { HostMessageCoordinator } from './message-coordinator.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
 import { projectSessionInteractions } from './interaction-projection.js';
 import type { RootAdmissionOwner } from './root-admission-owner.js';
+import { worstCaseGoalProjection } from './goal-projection.js';
 
 type CanonicalSessionProjectionStores = Pick<
   ExecutionStoresWriter<'interactive'>,
@@ -26,6 +28,7 @@ type CanonicalSessionProjectionStores = Pick<
 export interface CanonicalSessionProjection {
   readonly session: SessionContinuityIdentity;
   readonly rootTurn: TurnSnapshot | null;
+  readonly goal: GoalProjection | null;
   readonly queue: SessionMessageQueueProjection;
   readonly interactions: SessionInteractionProjection;
 }
@@ -39,17 +42,20 @@ export interface CanonicalSessionProjectionReaderOptions {
   readonly stores: CanonicalSessionProjectionStores;
   readonly rootAdmissions: RootAdmissionOwner;
   readonly messages: Pick<HostMessageCoordinator, 'projection'>;
+  readonly readGoal?: (sessionId: string) => GoalProjection | null;
 }
 
 export class CanonicalSessionProjectionReader {
   readonly #stores: CanonicalSessionProjectionStores;
   readonly #rootAdmissions: RootAdmissionOwner;
   readonly #messages: Pick<HostMessageCoordinator, 'projection'>;
+  readonly #readGoal: (sessionId: string) => GoalProjection | null;
 
   constructor(options: CanonicalSessionProjectionReaderOptions) {
     this.#stores = options.stores;
     this.#rootAdmissions = options.rootAdmissions;
     this.#messages = options.messages;
+    this.#readGoal = options.readGoal ?? (() => null);
   }
 
   async read(sessionId: string): Promise<CanonicalSessionProjection | null> {
@@ -83,9 +89,11 @@ export class CanonicalSessionProjectionReader {
 
     const interactions = projectSessionInteractions(
       await this.#stores.interactionStore.listSessionPending(sessionId),
+      await this.#stores.sessionStore.listPendingSandboxBoundaryRequests(sessionId),
     );
     // The Session lane barrier must remain held through this final synchronous read.
     const queue = this.#messages.projection(sessionId);
+    const goal = this.#readGoal(sessionId);
     const session: SessionContinuityIdentity = {
       sessionId: header.id,
       metadataRevision,
@@ -95,7 +103,7 @@ export class CanonicalSessionProjectionReader {
       isArchived: header.isArchived,
       ...(header.archivedAt !== undefined ? { archivedAt: header.archivedAt } : {}),
     };
-    return { session, rootTurn, queue, interactions };
+    return { session, rootTurn, goal, queue, interactions };
   }
 
   async fitsCandidate(
@@ -107,6 +115,7 @@ export class CanonicalSessionProjectionReader {
     const candidateProjection = {
       ...canonical,
       ...candidate,
+      goal: worstCaseGoalProjection(sessionId),
       queue: worstCaseMessageQueueProjection(candidate.queue ?? canonical.queue),
     };
     const snapshotInput = sessionContinuitySnapshotInput(
@@ -152,6 +161,7 @@ function sessionContinuitySnapshotInput(
     session: canonical.session,
     projectionRevision,
     rootTurn: canonical.rootTurn,
+    goal: canonical.goal,
     queue: canonical.queue,
     interactions: canonical.interactions,
   };

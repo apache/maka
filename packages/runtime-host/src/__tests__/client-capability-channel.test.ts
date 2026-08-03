@@ -30,6 +30,7 @@ test('Client Capability channel closes a provider after its final registration i
   const channel = new ClientCapabilityChannel({
     write: async () => undefined,
     replace: async (input) => {
+      assert.equal(Object.hasOwn(input, 'services'), false);
       replacements.push(input.registrationId);
       return { registrationId: input.registrationId, revision: replacements.length };
     },
@@ -61,4 +62,64 @@ test('Client Capability channel closes a provider after its final registration i
   assert.equal(closeCalls, 1);
   channel.close(new Error('test complete'));
   assert.equal(closeCalls, 1);
+});
+
+test('Client Capability channel runs a self-described Host service through admission', async () => {
+  let registrationId = '';
+  let accepted = false;
+  const written: unknown[] = [];
+  let channel!: ClientCapabilityChannel;
+  const provider: ClientCapabilityProvider = {
+    offers: () => [],
+    services: () => [{ serviceId: 'vendor_service', version: '1' }],
+    callService: async (frame, options) => {
+      assert.equal(frame.method, 'present');
+      assert.equal(accepted, false);
+      await options.accept();
+      accepted = true;
+      return { kind: 'presented' };
+    },
+  };
+  channel = new ClientCapabilityChannel({
+    write: async (frame) => {
+      written.push(frame);
+      if (frame.kind === 'client.capability.accepted') {
+        queueMicrotask(() =>
+          channel.accept({
+            kind: 'client.capability.admitted',
+            invocationId: frame.invocationId,
+          }),
+        );
+      }
+    },
+    replace: async (input) => {
+      registrationId = input.registrationId;
+      return { registrationId, revision: 1 };
+    },
+    unregister: async (input) => ({ registrationId: input.registrationId, revision: 2 }),
+    onFailure: (error) => {
+      throw error;
+    },
+  });
+  await channel.replace(provider, 1_000);
+  channel.accept({
+    kind: 'client.capability.service_call',
+    invocationId: 'service_invocation',
+    registrationId,
+    serviceId: 'vendor_service',
+    version: '1',
+    method: 'present',
+    input: {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(accepted, true);
+  assert.deepEqual(written, [
+    { kind: 'client.capability.accepted', invocationId: 'service_invocation' },
+    {
+      kind: 'client.capability.result',
+      invocationId: 'service_invocation',
+      result: { content: [], structuredContent: { kind: 'presented' } },
+    },
+  ]);
+  channel.close(new Error('test complete'));
 });

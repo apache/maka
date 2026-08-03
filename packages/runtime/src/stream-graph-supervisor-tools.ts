@@ -28,9 +28,11 @@ import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 
 export const VIEW_AGENT_GRAPH_TOOL_NAME = 'view_agent_graph';
 export const UPDATE_AGENT_GRAPH_TOOL_NAME = 'update_agent_graph';
+export const YIELD_AGENT_GRAPH_TOOL_NAME = 'yield_agent_graph';
 export const AGENT_GRAPH_SUPERVISOR_TOOL_NAMES = [
   VIEW_AGENT_GRAPH_TOOL_NAME,
   UPDATE_AGENT_GRAPH_TOOL_NAME,
+  YIELD_AGENT_GRAPH_TOOL_NAME,
 ] as const;
 
 const TOOL_VIEW_MAX_TERMINAL_WORK = 64;
@@ -65,7 +67,7 @@ const addWorkSchema = z
     agent_id: identitySchema
       .optional()
       .describe(
-        'Catalog profile for NEW graph work (for example "implementation"). Set agent_id OR operator_id, never both.',
+        'Catalog agent id for NEW graph work (for example "implementation"). Set agent_id OR operator_id, never both.',
       ),
     operator_id: identitySchema
       .optional()
@@ -217,6 +219,17 @@ const viewSchema = z
     }
   });
 
+const yieldSchema = z
+  .object({
+    reason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(AGENT_GRAPH_SCHEDULE_MAX_REASON_CHARS)
+      .describe('Why the supervisor has no immediate decision until the graph changes.'),
+  })
+  .strict();
+
 export interface ViewAgentGraphToolInput {
   mode?: 'latest' | 'page';
   cursor?: string;
@@ -241,6 +254,10 @@ export interface UpdateAgentGraphToolInput {
     result_ids: string[];
     reason: string;
   };
+}
+
+export interface YieldAgentGraphToolInput {
+  reason: string;
 }
 
 export interface AgentGraphScheduleWorkView extends AgentGraphScheduledWork {
@@ -333,10 +350,28 @@ export type UpdateAgentGraphToolResult = {
   nextCursor?: string;
 };
 
+/** Cooperative successful end-of-turn signal consumed by the Runtime tool loop. */
+export type YieldAgentGraphToolResult = {
+  kind: 'agent_graph_yielded';
+  pendingWorkCount: number;
+  liveOperatorCount: number;
+  reason: string;
+};
+
+export interface AgentGraphYieldPermit {
+  acquire(input: {
+    scheduleRevision: number;
+    observation: AgentGraphSupervisorObservation;
+  }): Promise<boolean>;
+  cancel(): void;
+}
+
 export interface BuildAgentGraphSupervisorToolsInput {
   graphId: string;
   scheduleStore: AgentGraphScheduleStore;
   observeGraph(): Promise<AgentGraphSupervisorObservation>;
+  /** Register before state reads so runtime/reconciliation transitions cannot escape yield admission. */
+  prepareYieldPermit?(): AgentGraphYieldPermit;
   /** Host ownership check performed before append-only schedule admission. */
   authorizeScheduleUpdate?(request: AgentGraphScheduleUpdateRequest): unknown | Promise<unknown>;
   /**
@@ -362,6 +397,7 @@ export function buildAgentGraphSupervisorTools(
 ): [
   MakaTool<ViewAgentGraphToolInput, ViewAgentGraphToolResult>,
   MakaTool<UpdateAgentGraphToolInput, UpdateAgentGraphToolResult>,
+  MakaTool<YieldAgentGraphToolInput, YieldAgentGraphToolResult>,
 ] {
   const graphId = requireIdentity(input.graphId, 'graph id');
   const viewTool: MakaTool<ViewAgentGraphToolInput, ViewAgentGraphToolResult> = {
@@ -417,7 +453,55 @@ export function buildAgentGraphSupervisorTools(
       };
     },
   };
-  return [viewTool, updateTool];
+  const yieldTool: MakaTool<YieldAgentGraphToolInput, YieldAgentGraphToolResult> = {
+    name: YIELD_AGENT_GRAPH_TOOL_NAME,
+    displayName: 'Yield agent graph',
+    description:
+      'End this supervisor turn successfully while scheduled graph work continues. Call this after the current scheduling wave has no immediate decision; do not poll, sleep, or emit a waiting message. The host will start a new supervisor turn at the next durable graph checkpoint. This does not finish or close the graph.',
+    parameters: yieldSchema,
+    categoryHint: 'subagent',
+    recoveryMode: 'replay_safe',
+    executionSemantics: 'exclusive_step',
+    impl: async ({ reason }) => {
+      const permit = input.prepareYieldPermit?.();
+      try {
+        const [updates, observation] = await Promise.all([
+          input.scheduleStore.listAgentGraphScheduleUpdates(graphId),
+          input.observeGraph(),
+        ]);
+        assertGraphObservation(graphId, observation);
+        const schedule = projectAgentGraphSchedule(graphId, updates);
+        if (schedule.closed) {
+          throw new Error('Agent graph is already finished; yield is no longer valid');
+        }
+        const pendingWorkCount = schedule.work.filter((work) => work.status === 'requested').length;
+        if (pendingWorkCount === 0) {
+          throw new Error('Agent graph has no pending scheduled work to yield for');
+        }
+        const liveOperatorCount = observation.projection.operators.filter(
+          (operator) =>
+            observation.projection.state.operators[operator.operatorId]?.status === 'running',
+        ).length;
+        const acquired = permit
+          ? await permit.acquire({ scheduleRevision: schedule.revision, observation })
+          : liveOperatorCount > 0;
+        if (!acquired) {
+          throw new Error(
+            'Agent graph has no in-flight work or pending reconciliation that can produce a future supervisor checkpoint; inspect results and finish or update the graph instead',
+          );
+        }
+        return {
+          kind: 'agent_graph_yielded',
+          pendingWorkCount,
+          liveOperatorCount,
+          reason,
+        };
+      } finally {
+        permit?.cancel();
+      }
+    },
+  };
+  return [viewTool, updateTool, yieldTool];
 }
 
 function resolveViewCursor(input: ViewAgentGraphToolInput): string | undefined {

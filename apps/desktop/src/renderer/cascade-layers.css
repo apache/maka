@@ -1,22 +1,46 @@
-/* Single owner of the renderer cascade layer order (#1565). Later PRs may
-   append layers; never reorder existing ones. maka.legacy is declared last
-   so legacy product CSS keeps beating components/utilities, exactly as its
-   unlayered form did.
+/* Single owner of the renderer cascade order. Astryx establishes the generic
+   substrate; Maka tokens and product compositions extend it.
 
-   The astryx-* layers (PR 2) hold Astryx's own sheets. Astryx ships them
-   UNLAYERED, and unlayered CSS beats every layer — importing them without a
-   layer() wrapper would put Astryx above maka.legacy and repaint the app on
-   mount. Wrapped, they sit below maka.legacy: buried by legacy CSS until a
-   slice deletes the legacy rule, at which point Astryx takes over exactly
-   there. astryx-components sits above base (its component rules must beat
-   Tailwind preflight's element resets) but below components/utilities/
-   maka.legacy (product CSS keeps winning until its slice removes it).
+   astryx-tokens (our generated Astryx theme) sits AFTER astryx-components
+   (the component library's own CSS) because that is what a theme is for:
+   astryx.css ships the neutral defaults on `:root`, and a theme layered
+   before it can never override them there.
 
-   These are deliberately top-level names, NOT astryx.* sub-layers: a
-   sub-layer's position is its parent's, and a parent layer is ordered by its
-   FIRST occurrence — `astryx.reset, theme, base, astryx.components` would
-   collapse every astryx.* layer to the `astryx.reset` slot at the bottom,
-   and Tailwind preflight in `base` would beat every Astryx component rule.
-   The dot in maka.legacy is safe only because it is the sole maka.* layer,
-   so there is no second sub-layer to mis-order against. */
-@layer astryx-reset, astryx-tokens, theme, base, astryx-components, components, utilities, maka.legacy;
+   The old order did not merely leak at `:root` — it made the generated theme
+   INERT. Measured on main with CDP, at both `<html>` and the inner Theme
+   wrapper: `--font-size-lg` resolved to 13.8125px and `--font-size-xl` to
+   16.25px, which are Astryx's neutral 1.0625rem and 1.25rem against the old
+   13px root, not the values makaTheme.ts generated. Same probes on this
+   branch return 16px and 18px, the Maka ladder. Whatever the exact
+   interaction between `@scope` and layer order is, the observable fact is
+   that a whole generated theme was shipping and applying nowhere.
+
+   This is also the order Astryx itself prescribes: its README integration
+   snippet declares `reset, theme, base, astryx-base, astryx-theme,
+   components, utilities` — the theme AFTER the component sheet. The old
+   order was the deviation, not this one.
+
+   Promoting the theme is NOT typography-only, and it should not be read as
+   such — but "67 class rules changed" would also be wrong. What decides is
+   whether a declaration is CONTESTED (both maka.css and an Astryx StyleX atom
+   set it, so layer order picks the winner) or UNCONTESTED (only one side sets
+   it, so order is irrelevant). Compared declaration by declaration, the 67
+   `.astryx-*` rules split three ways:
+
+     44  contested, same used value — 35 Heading/Text atoms and 9 categorical
+         Badges resolve to the same token either way. Nothing moves.
+     11  contested, different value — the destructive Button, 5 semantic
+         Badges, 4 StatusDots, and the info Banner background. THESE move.
+     12  uncontested — the gray Badge plus local custom-property rebinds on
+         Banner, Switch, ProgressBar, Card and Section. Already in effect
+         under the old order; Card/Section padding in particular does NOT
+         change, despite looking like it would.
+
+   Spot-checked live rather than taken on trust: the destructive Button goes
+   from solid rgb(165,12,37)/white to rgb(250,206,203)/rgb(165,12,37), and the
+   accent StatusDot from rgb(38,38,38) to rgb(0,116,226). Those values come
+   from `astryx theme build` on the neutral base Maka extends, so they are
+   Astryx's own design rather than anything invented here — they were simply
+   never taking effect. Product CSS still owns `components`, which stays
+   last. */
+@layer reset, theme, base, astryx-components, astryx-tokens, components;

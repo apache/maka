@@ -1,8 +1,9 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { createQuoteCompanionCleanupAuthority } from '../quote-companion-cleanup.js';
 
 const roots: string[] = [];
@@ -89,6 +90,18 @@ describe('quote companion cleanup authority', () => {
 });
 
 async function readPendingIds(workspaceRoot: string): Promise<string[]> {
-  const raw = await readFile(join(workspaceRoot, 'quote-companion-cleanup.json'), 'utf8');
-  return (JSON.parse(raw) as { pendingSessionIds: string[] }).pendingSessionIds;
+  const database = new DatabaseSync(join(workspaceRoot, 'runtime.sqlite'), { readOnly: true });
+  try {
+    return (
+      database
+        .prepare(`
+          SELECT session_id AS sessionId
+          FROM workflow_quote_companion_cleanup
+          ORDER BY tracked_at, session_id
+        `)
+        .all() as Array<{ sessionId: string }>
+    ).map(({ sessionId }) => sessionId);
+  } finally {
+    database.close();
+  }
 }

@@ -67,7 +67,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setMessageLoadPending,
     messageRetryPendingRef,
     stopPendingRef,
-    sessionUiState: sessionUi.state,
+    sessionUiController: sessionUi.controller,
     liveTurnBySessionRef: sessionUi.liveTurnBySessionRef,
     sessionEventHealthBySessionRef: sessionUi.sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: sessionUi.setMessageLoadErrorBySession,
@@ -79,6 +79,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setSessionEventHealthBySession: sessionUi.setSessionEventHealthBySession,
     setPendingPermissionModeBySession: sessionUi.setPendingPermissionModeBySession,
     setPendingSessionModelBySession: sessionUi.setPendingSessionModelBySession,
+    confirmLiveTurn: sessionUi.confirmLiveTurn,
     clearTurnTransientState: sessionUi.clearTurnTransientState,
   };
 }

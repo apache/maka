@@ -38,8 +38,12 @@ function ThinkingIcon() {
   );
 }
 
-/** Match Astryx Icon `size="xsm"` (0.75rem) used by ChatToolCalls chevrons. */
+/** Match Astryx Icon `size="xsm"` (12px) used by ChatToolCalls chevrons. */
 function ChevronDownIcon() {
+  // The attributes carry the size. There used to be a `0.75rem` inline style
+  // beside them, which disagreed with them (9.75px) for as long as the root
+  // was pinned to 13px; the type-scale convergence removed that pin, so the
+  // duplicate is now merely redundant instead of wrong. Drop it either way.
   return (
     <svg
       width="12"
@@ -47,7 +51,6 @@ function ChevronDownIcon() {
       viewBox="0 0 12 12"
       fill="none"
       aria-hidden="true"
-      style={{ width: '0.75rem', height: '0.75rem' }}
     >
       <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
@@ -142,7 +145,13 @@ export function ChatReasoning(props: ChatReasoningProps) {
       </div>
       <div className={isExpanded ? 'xrvj5dj xb0j27v x1tu4anv' : 'xrvj5dj xihq33y xb0j27v'}>
         <div className="xb3r6kr x2lwn1j">
-          <div className="x1xye8es x1f43n9v x141an7d x1ltkj2j x9ynric xv1l7n4">{children}</div>
+          {/* Product class on the reasoning body: the official component's
+              atoms deliberately own no white-space (children are assumed
+              pre-rendered), so without it the inherited `white-space: normal`
+              collapses every newline in the thinking text. Maka restores the
+              pre-wrap reading contract on this class — see
+              `.maka-chat-reasoning-content` in styles.css. */}
+          <div className="maka-chat-reasoning-content x1xye8es x1f43n9v x141an7d x1ltkj2j x9ynric xv1l7n4">{children}</div>
         </div>
       </div>
     </div>

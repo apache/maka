@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, test } from 'node:test';
-import { buildFixtureEnv, isDeniedEnvKey } from './fixture-env.mjs';
+import { buildFixtureEnv } from './fixture-env.mjs';
 
 const originals = new Map();
 function setEnv(key, value) {
@@ -16,32 +16,14 @@ afterEach(() => {
   originals.clear();
 });
 
-test('fixture isolation rejects inherited capture controls and credentials', () => {
-  for (const key of [
-    'VITE_DEV_SERVER_URL',
-    'MAKA_E2E',
-    'MAKA_E2E_FIXTURE',
-    'MAKA_E2E_FIXTURE_THEME',
-    'MAKA_E2E_FIXTURE_LOCALE',
-    'MAKA_E2E_FIXTURE_PLATFORM',
-    'MAKA_E2E_SHOW_WINDOW',
-    'MAKA_E2E_USER_DATA_DIR',
-    'ANTHROPIC_API_KEY',
-    'OPENAI_API_KEY',
-    'SOME_API_TOKEN',
-    'X_API_SECRET',
-  ]) {
-    assert.equal(isDeniedEnvKey(key), true, `${key} must not be inherited`);
-  }
-  assert.equal(isDeniedEnvKey('PATH'), false);
-});
-
 test('fixture launch state comes only from explicit arguments', () => {
   setEnv('CI', 'true');
   setEnv('MAKA_E2E_SHOW_WINDOW', '1');
   setEnv('MAKA_E2E_FIXTURE_THEME', 'dark');
   setEnv('MAKA_E2E_FIXTURE_LOCALE', 'en');
   setEnv('ANTHROPIC_API_KEY', 'sk-real-key');
+  setEnv('SOME_API_TOKEN', 'secret-token');
+  setEnv('X_API_SECRET', 'secret-value');
 
   const env = buildFixtureEnv('/tmp/data', '/tmp/data/home', {
     scenario: 'first-run',
@@ -55,6 +37,8 @@ test('fixture launch state comes only from explicit arguments', () => {
   assert.equal(env.MAKA_E2E_FIXTURE_THEME, 'light');
   assert.equal(env.MAKA_E2E_FIXTURE_LOCALE, undefined);
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(env.SOME_API_TOKEN, undefined);
+  assert.equal(env.X_API_SECRET, undefined);
   assert.equal(env.HOME, '/tmp/data/home');
   assert.equal(env.USERPROFILE, '/tmp/data/home');
   assert.equal(env.MAKA_E2E_USER_DATA_DIR, '/tmp/data');

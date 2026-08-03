@@ -12,7 +12,7 @@ describe('session read error copy', () => {
         {
           message: 'SessionProjectionCache.readMessages failed',
           details: {
-            error: 'EPERM: operation not permitted, open C:\\Users\\alice\\AppData\\Roaming\\Maka\\workspaces\\default\\sessions\\s1\\session.jsonl',
+            error: 'EPERM: operation not permitted, open C:\\Users\\alice\\AppData\\Roaming\\Maka\\workspaces\\default\\runtime.sqlite',
           },
         },
       ],
@@ -22,7 +22,7 @@ describe('session read error copy', () => {
 
     assert.equal(message, `${MARKER}读取进行中的对话缓存失败：本地会话文件暂时不可用，请稍后重试。`);
     assert.equal(message.includes('C:\\Users'), false);
-    assert.equal(message.includes('session.jsonl'), false);
+    assert.equal(message.includes('runtime.sqlite'), false);
   });
 
   it('classifies durable runtime ledger read failures', () => {
@@ -32,7 +32,7 @@ describe('session read error copy', () => {
         {
           message: 'RuntimeEventStore.readRuntimeEvents failed',
           details: {
-            error: 'Invalid RuntimeEvent JSONL line 2 for run run_1: Unexpected token',
+            error: 'Invalid SQLite RuntimeEvent at sequence 2 for run run_1',
           },
         },
       ],
@@ -56,7 +56,7 @@ describe('session read error copy', () => {
   });
 
   it('does not classify path-shaped text without an explicit code or diagnostic', () => {
-    const error = new Error('EPERM: operation not permitted, rename C:\\Users\\alice\\session.jsonl.tmp -> session.jsonl');
+    const error = new Error('EPERM: operation not permitted, open C:\\Users\\alice\\runtime.sqlite');
 
     assert.equal(
       sessionReadMessagesFailureMessage(error),

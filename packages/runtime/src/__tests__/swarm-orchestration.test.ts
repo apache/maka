@@ -66,7 +66,6 @@ function harness() {
     now: () => 1,
     getPermissionPauseTarget: () => null,
   });
-  runtime.beginTurn('turn-1');
   return {
     runtime,
     calls,

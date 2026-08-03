@@ -7,6 +7,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
+  AgentGraphClientTerminalCursorError,
   assessSandboxBoundaryExpansion,
   assertExecutionBoundaryCapacity,
   assertAgentGraphScheduleUpdateRequest,
@@ -19,6 +20,7 @@ import {
   decodeAgentGraphIntentClaim,
   decodeExecutionBoundary,
   createGenesisExecutionBoundary,
+  SANDBOX_BOUNDARY_CLOSURE_REASONS,
   SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
   validateSandboxBoundaryExpansion,
   isSubagentSessionParent,
@@ -56,7 +58,11 @@ import {
   type SettleSandboxBoundaryRequest,
   type SessionHeader,
   type SessionListFilter,
+  type StoredMessage,
   type SubagentSessionParent,
+  type SupersedeAgentGraphSupervisorWakesRequest,
+  decodeStoredMessageForRead,
+  decodeStoredMessageForRecovery,
 } from '@maka/core';
 import {
   assertSafeSessionId,
@@ -71,6 +77,7 @@ import {
   configureSqliteSessionMetadataDatabase,
   migrateSqliteSessionMetadataDatabase,
   readSqliteSessionMetadataSchemaVersion,
+  SQLITE_AGENT_GRAPH_CONTROL_TABLES,
 } from './sqlite-session-metadata-schema.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import {
@@ -81,6 +88,7 @@ import {
 export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
 
 const require = createRequire(import.meta.url);
+const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
 
 function loadSqliteModule(): typeof import('node:sqlite') {
   const emitWarning = process.emitWarning;
@@ -104,7 +112,6 @@ function loadSqliteModule(): typeof import('node:sqlite') {
 export type SqliteSessionMetadataStoreFailpoint =
   | 'after_session_row_write'
   | 'after_session_labels_write'
-  | 'after_session_import_marker_write'
   | 'after_agent_graph_intent_claim_write'
   | 'after_agent_graph_schedule_update_write'
   | 'after_agent_graph_operator_provision_write'
@@ -150,6 +157,51 @@ export interface SessionAuthoritySnapshot {
   boundary: ExecutionBoundary;
 }
 
+export interface VersionedSessionIdentity {
+  readonly sessionId: string;
+  readonly expectedVersion: number;
+}
+
+/**
+ * A session whose project membership was never decided.
+ *
+ * `usedAt` is the moment it was last active, so resolving it later rebuilds the
+ * catalog's real recency order instead of collapsing every project to "now".
+ * `revision` is the metadata version this row was read at, so the write that
+ * assigns a project can fence itself against anything that touched the session
+ * in between — including a user detaching it while resolution is still running.
+ */
+export interface UnresolvedProjectSession {
+  readonly id: string;
+  readonly cwd: string;
+  readonly usedAt: number;
+  readonly revision: number;
+}
+
+export type SessionRemovalProbe =
+  | { readonly kind: 'present'; readonly record: SessionMetadataRecord }
+  | { readonly kind: 'removed' }
+  | { readonly kind: 'absent' };
+
+function uniqueVersionedSessionIdentities(
+  sessions: readonly VersionedSessionIdentity[],
+): VersionedSessionIdentity[] {
+  if (sessions.length === 0) throw new Error('Session lifecycle requires at least one Session');
+  const unique = new Map<string, VersionedSessionIdentity>();
+  for (const identity of sessions) {
+    assertSafeSessionId(identity.sessionId);
+    if (!Number.isSafeInteger(identity.expectedVersion) || identity.expectedVersion < 1) {
+      throw new Error(`Invalid Session metadata version: ${identity.expectedVersion}`);
+    }
+    const existing = unique.get(identity.sessionId);
+    if (existing && existing.expectedVersion !== identity.expectedVersion) {
+      throw new Error(`Conflicting Session metadata versions for ${identity.sessionId}`);
+    }
+    unique.set(identity.sessionId, identity);
+  }
+  return [...unique.values()].sort((left, right) => left.sessionId.localeCompare(right.sessionId));
+}
+
 export interface IdempotentSubagentSessionMetadataResult {
   record: SessionMetadataRecord;
   created: boolean;
@@ -192,21 +244,6 @@ export interface SessionConfigurationMetadataUpdate {
 export interface IdempotentAgentGraphOperatorMetadataResult
   extends AgentGraphOperatorProvisionResult {
   record: SessionMetadataRecord;
-}
-
-export interface SessionMetadataImportEntry {
-  header: SessionHeader;
-  initialBoundary?: ExecutionBoundary;
-  source: {
-    path: string;
-    fingerprint: string;
-  };
-}
-
-export interface SessionMetadataImportResult {
-  created: boolean[];
-  sourcesAlreadyImported: number;
-  sourcesTombstoned: number;
 }
 
 export class SessionMetadataConflictError extends Error {
@@ -393,6 +430,19 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async readSandboxBoundaryRequest(
+    sessionId: string,
+    requestId: string,
+  ): Promise<SandboxBoundaryRequest | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeBoundaryRequestId(requestId);
+    return this.transaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      return this.readSandboxBoundaryRequestSync(sessionId, requestId);
+    });
+  }
+
   async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -451,6 +501,12 @@ export class SqliteSessionMetadataStore {
     assertSafeBoundaryRequestId(input.requestId);
     if (input.decision !== 'allow' && input.decision !== 'deny') {
       throw new Error('Invalid sandbox boundary decision');
+    }
+    if (
+      input.closureReason !== undefined &&
+      !SANDBOX_BOUNDARY_CLOSURE_REASONS.includes(input.closureReason)
+    ) {
+      throw new Error('Invalid sandbox boundary closure reason');
     }
 
     return this.transaction(() => {
@@ -938,6 +994,173 @@ export class SqliteSessionMetadataStore {
     return this.hasTombstone(sessionId);
   }
 
+  async probeRemoval(sessionId: string): Promise<SessionRemovalProbe> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.readTransaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (record) return { kind: 'present', record };
+      return this.hasTombstone(sessionId) ? { kind: 'removed' } : { kind: 'absent' };
+    });
+  }
+
+  async listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]> {
+    this.assertOpen();
+    if (sessionId !== undefined) assertSafeSessionId(sessionId);
+    const rows =
+      sessionId === undefined
+        ? this.db
+            .prepare(`
+              SELECT session_id AS sessionId
+              FROM session_metadata_tombstones
+              WHERE cleanup_pending = 1
+              ORDER BY session_id
+            `)
+            .all()
+        : this.db
+            .prepare(`
+              SELECT pending.session_id AS sessionId
+              FROM session_metadata_tombstones target
+              JOIN session_metadata_tombstones pending
+                ON pending.retirement_unit_id = target.retirement_unit_id
+              WHERE target.session_id = ?
+                AND pending.cleanup_pending = 1
+              ORDER BY pending.session_id
+            `)
+            .all(sessionId);
+    return (rows as unknown as Array<{ readonly sessionId: string }>).map((row) => row.sessionId);
+  }
+
+  async reconcileOrphanedAgentGraphRetirements(): Promise<string[]> {
+    this.assertOpen();
+    return this.transaction(() => {
+      const rows = this.db
+        .prepare(`
+          SELECT
+            child.session_id,
+            child.payload_json,
+            child.metadata_version,
+            child.committed_at,
+            child.subagent_parent_session_id AS parent_session_id,
+            provision.graph_id,
+            provision.work_id,
+            provision.operator_id,
+            parent_tombstone.retirement_unit_id
+          FROM agent_graph_operator_provisions provision
+          JOIN session_metadata child
+            ON child.session_id = provision.target_session_id
+          JOIN session_metadata_tombstones parent_tombstone
+            ON parent_tombstone.session_id = child.subagent_parent_session_id
+          LEFT JOIN session_metadata live_parent
+            ON live_parent.session_id = child.subagent_parent_session_id
+          WHERE live_parent.session_id IS NULL
+          ORDER BY child.session_id
+        `)
+        .all() as unknown as OrphanedAgentGraphOperatorRow[];
+      const deletedAt = this.now();
+      const reconciled: string[] = [];
+      for (const row of rows) {
+        const record = decodeRecord(row);
+        const parent = record.header.subagentParent;
+        if (
+          !parent?.graph ||
+          parent.parentSessionId !== row.parent_session_id ||
+          parent.graph.graphId !== row.graph_id ||
+          parent.graph.workId !== row.work_id ||
+          parent.graph.operatorId !== row.operator_id ||
+          !row.retirement_unit_id
+        ) {
+          throw new SessionMetadataConflictError(
+            `Cannot reconcile invalid graph operator Session ${row.session_id}`,
+          );
+        }
+        const deleted = this.db
+          .prepare('DELETE FROM session_metadata WHERE session_id = ?')
+          .run(row.session_id);
+        if (deleted.changes !== 1) {
+          throw new SessionMetadataConflictError(
+            `Agent Graph retirement reconciliation lost Session ${row.session_id}`,
+          );
+        }
+        this.db
+          .prepare(`
+            INSERT INTO session_metadata_tombstones(
+              session_id,
+              deleted_at,
+              retirement_unit_id,
+              cleanup_pending
+            )
+            VALUES (?, ?, ?, 1)
+          `)
+          .run(row.session_id, deletedAt, row.retirement_unit_id);
+        this.db
+          .prepare(`
+            UPDATE session_metadata_tombstones
+            SET cleanup_pending = 1
+            WHERE session_id = ?
+          `)
+          .run(row.parent_session_id);
+        reconciled.push(row.session_id);
+      }
+      this.db
+        .prepare(`
+          WITH graph_roots(root_session_id) AS (
+            SELECT root_session_id
+            FROM agent_graph_client_projections
+            UNION
+            SELECT source_session_id
+            FROM agent_graph_schedule_updates
+            UNION
+            SELECT root_session_id
+            FROM agent_graph_supervisor_wakes
+          )
+          UPDATE session_metadata_tombstones
+          SET cleanup_pending = 1
+          WHERE cleanup_pending = 0
+            AND session_id IN (SELECT root_session_id FROM graph_roots)
+            AND session_id NOT IN (SELECT session_id FROM session_metadata)
+        `)
+        .run();
+      return reconciled;
+    });
+  }
+
+  async listTombstonedSessionIdsAmong(sessionIds: readonly string[]): Promise<string[]> {
+    this.assertOpen();
+    const unique = [...new Set(sessionIds)].sort();
+    for (const sessionId of unique) assertSafeSessionId(sessionId);
+    const tombstoned: string[] = [];
+    for (let offset = 0; offset < unique.length; offset += 100) {
+      const batch = unique.slice(offset, offset + 100);
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => '?').join(', ');
+      const rows = this.db
+        .prepare(`
+          SELECT session_id AS sessionId
+          FROM session_metadata_tombstones
+          WHERE session_id IN (${placeholders})
+          ORDER BY session_id
+        `)
+        .all(...batch) as unknown as Array<{ readonly sessionId: string }>;
+      tombstoned.push(...rows.map((row) => row.sessionId));
+    }
+    return tombstoned.sort();
+  }
+
+  async completeSessionRetirementCleanup(sessionId: string): Promise<void> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    this.transaction(() => {
+      this.db
+        .prepare(`
+          UPDATE session_metadata_tombstones
+          SET cleanup_pending = 0
+          WHERE session_id = ?
+        `)
+        .run(sessionId);
+    });
+  }
+
   async list(filter: SessionListFilter = {}): Promise<SessionMetadataRecord[]> {
     this.assertOpen();
     const { where, parameters } = buildSessionListPredicate(filter);
@@ -952,6 +1175,47 @@ export class SqliteSessionMetadataStore {
       `)
       .all(...parameters) as unknown as SessionMetadataRow[];
     return rows.map(decodeRecord);
+  }
+
+  /**
+   * Sessions whose project membership was never resolved.
+   *
+   * `projectId` is deliberately three-valued: a project id means resolved,
+   * `null` means the user chose no project, and an absent key means nobody has
+   * decided yet. Only the third state may be backfilled, and SQL can tell them
+   * apart through `json_type` — `null` reports `'null'` while an absent key
+   * reports SQL NULL. Scoping the query this way keeps startup proportional to
+   * the sessions that still need work rather than to the whole catalog.
+   */
+  async listSessionsWithUnresolvedProject(): Promise<UnresolvedProjectSession[]> {
+    this.assertOpen();
+    // `json_type` distinguishes an absent `projectId` (never decided) from an
+    // explicit JSON `null` (detached on purpose); only the former is pending.
+    // Subagent sessions are excluded: they inherit their parent's project when
+    // spawned, and their working directory is often a throwaway worktree that
+    // must never become one of the user's project locations.
+    const rows = this.db
+      .prepare(`
+        SELECT
+          session_id AS id,
+          json_extract(payload_json, '$.cwd') AS cwd,
+          COALESCE(last_message_at, last_used_at) AS used_at,
+          metadata_version AS revision
+        FROM session_metadata
+        WHERE json_type(payload_json, '$.projectId') IS NULL
+          AND subagent_parent_session_id IS NULL
+        ORDER BY used_at, session_id
+      `)
+      .all() as Array<{ id?: unknown; cwd?: unknown; used_at?: unknown; revision?: unknown }>;
+    return rows.flatMap((row) =>
+      typeof row.id === 'string' &&
+      typeof row.cwd === 'string' &&
+      row.cwd.length > 0 &&
+      typeof row.used_at === 'number' &&
+      typeof row.revision === 'number'
+        ? [{ id: row.id, cwd: row.cwd, usedAt: row.used_at, revision: row.revision }]
+        : [],
+    );
   }
 
   async listCatalogPage(
@@ -988,6 +1252,84 @@ export class SqliteSessionMetadataStore {
   async readCatalogRevision(): Promise<SessionCatalogRevisionState> {
     this.assertOpen();
     return this.readCatalogRevisionSync();
+  }
+
+  async appendMessages(
+    sessionId: string,
+    messages: readonly StoredMessage[],
+    projection: SessionCatalogMessageProjection,
+  ): Promise<void> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertCatalogMessageProjection(projection);
+    if (messages.length === 0) return;
+    const encoded = messages.map((message) => {
+      const json = JSON.stringify(message);
+      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      return { message: canonical, json };
+    });
+    this.transaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const row = this.db
+        .prepare(
+          'SELECT COALESCE(MAX(sequence), -1) AS last_sequence FROM session_messages WHERE session_id = ?',
+        )
+        .get(sessionId) as { last_sequence?: unknown };
+      if (
+        typeof row.last_sequence !== 'number' ||
+        !Number.isSafeInteger(row.last_sequence) ||
+        row.last_sequence < -1
+      ) {
+        throw new Error(`Invalid Session message sequence for ${sessionId}`);
+      }
+      const insert = this.db.prepare(`
+        INSERT INTO session_messages(
+          session_id, sequence, message_id, message_type, message_ts, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      let sequence = row.last_sequence + 1;
+      for (const entry of encoded) {
+        insert.run(
+          sessionId,
+          sequence,
+          entry.message.id,
+          entry.message.type,
+          entry.message.ts,
+          entry.json,
+        );
+        sequence += 1;
+      }
+      this.updateCatalogProjectionSync(sessionId, projection, false);
+    });
+  }
+
+  async readMessages(sessionId: string): Promise<StoredMessage[]> {
+    return this.readMessagesWith(sessionId, decodeStoredMessageForRead);
+  }
+
+  async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
+    return this.readMessagesWith(sessionId, decodeStoredMessageForRecovery);
+  }
+
+  async readPreviewMessages(sessionId: string, limit = 10): Promise<StoredMessage[]> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128) {
+      throw new Error('Session message preview limit must be between 1 and 128');
+    }
+    if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+    const rows = this.db
+      .prepare(`
+        SELECT record_json
+        FROM session_messages
+        WHERE session_id = ?
+        ORDER BY sequence DESC
+        LIMIT ?
+      `)
+      .all(sessionId, limit) as Array<{ record_json?: unknown }>;
+    return rows
+      .reverse()
+      .map((row, index) => decodeStoredMessageRow(row.record_json, sessionId, index, false));
   }
 
   async beginCatalogProjectionWrite(): Promise<void> {
@@ -1422,7 +1764,9 @@ export class SqliteSessionMetadataStore {
       }
       const now = this.now();
       const failureReason =
-        request.status === 'retryable_failed' ? request.failureReason : undefined;
+        request.status === 'retryable_failed' || request.status === 'superseded'
+          ? request.failureReason
+          : undefined;
       const completedAt = request.status === 'waiting_permission' ? null : now;
       this.db
         .prepare(`
@@ -1455,6 +1799,47 @@ export class SqliteSessionMetadataStore {
           wake.status,
         );
       return this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId);
+    });
+  }
+
+  async supersedeAgentGraphSupervisorWakes(
+    request: SupersedeAgentGraphSupervisorWakesRequest,
+  ): Promise<number> {
+    this.assertOpen();
+    const sessionIds = [...new Set(request.rootSessionIds)];
+    sessionIds.forEach(assertSafeSessionId);
+    if (!request.reason.trim() || request.reason.length > 4_000) {
+      throw new Error(
+        'Agent graph supervisor wake supersession reason must be non-empty and bounded',
+      );
+    }
+    if (sessionIds.length === 0) return 0;
+    return this.transaction(() => {
+      const now = this.now();
+      const placeholders = sessionIds.map(() => '?').join(', ');
+      this.db
+        .prepare(`
+          UPDATE agent_graph_supervisor_wake_attempts
+          SET status = 'superseded', failure_reason = ?, completed_at = ?
+          WHERE status IN ('running', 'waiting_permission')
+            AND EXISTS (
+              SELECT 1
+              FROM agent_graph_supervisor_wakes wakes
+              WHERE wakes.graph_id = agent_graph_supervisor_wake_attempts.graph_id
+                AND wakes.wake_id = agent_graph_supervisor_wake_attempts.wake_id
+                AND wakes.root_session_id IN (${placeholders})
+            )
+        `)
+        .run(request.reason, now, ...sessionIds);
+      const updated = this.db
+        .prepare(`
+          UPDATE agent_graph_supervisor_wakes
+          SET status = 'superseded', failure_reason = ?, updated_at = ?
+          WHERE root_session_id IN (${placeholders})
+            AND status IN ('pending', 'running', 'waiting_permission', 'retryable_failed')
+        `)
+        .run(request.reason, now, ...sessionIds);
+      return Number(updated.changes);
     });
   }
 
@@ -1574,6 +1959,19 @@ export class SqliteSessionMetadataStore {
       .all(graphId) as unknown as AgentGraphOperatorProvisionRow[];
     return rows.map((row) =>
       decodeAgentGraphOperatorProvision(JSON.parse(row.payloadJson) as unknown),
+    );
+  }
+
+  async purgeAgentGraphControlState(graphId: string): Promise<number> {
+    this.assertOpen();
+    assertGraphLookupIdentity(graphId, 'graph id');
+    return this.transaction(() =>
+      AGENT_GRAPH_CONTROL_DELETE_TABLES.reduce(
+        (removed, table) =>
+          removed +
+          Number(this.db.prepare(`DELETE FROM ${table} WHERE graph_id = ?`).run(graphId).changes),
+        0,
+      ),
     );
   }
 
@@ -1711,6 +2109,9 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertAgentGraphClientProjectionRequest(request);
     return this.transaction(() => {
+      if (!this.readRecordSync(request.rootSessionId)) {
+        throw new SessionNotFoundError(request.rootSessionId);
+      }
       const current = this.db
         .prepare(`
           SELECT
@@ -1995,7 +2396,9 @@ export class SqliteSessionMetadataStore {
         `)
         .get(graphId, input.before.recordId) as { eventTime?: unknown } | undefined;
       if (cursor?.eventTime !== input.before.eventTime) {
-        throw new Error('Agent graph terminal activity cursor is stale or invalid');
+        throw new AgentGraphClientTerminalCursorError(
+          'Agent graph terminal activity cursor is stale or invalid',
+        );
       }
     }
     const rows = this.db
@@ -2081,139 +2484,109 @@ export class SqliteSessionMetadataStore {
     return this.transaction(() => this.updateHeaderSync(sessionId, patch, options));
   }
 
+  async setLifecycleVersioned(
+    sessions: readonly VersionedSessionIdentity[],
+    state: 'active' | 'archived',
+  ): Promise<SessionMetadataRecord[]> {
+    this.assertOpen();
+    const identities = uniqueVersionedSessionIdentities(sessions);
+    const now = this.now();
+    const patch: Partial<SessionHeader> =
+      state === 'archived'
+        ? {
+            isArchived: true,
+            archivedAt: now,
+            status: 'archived',
+            statusUpdatedAt: now,
+          }
+        : {
+            isArchived: false,
+            archivedAt: undefined,
+            status: 'active',
+            blockedReason: undefined,
+            statusUpdatedAt: now,
+          };
+    return this.transaction(() =>
+      identities.map(({ sessionId, expectedVersion }) =>
+        this.updateHeaderSync(sessionId, patch, {
+          expectedVersion,
+          skipNoop: true,
+        }),
+      ),
+    );
+  }
+
+  async removeVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]> {
+    this.assertOpen();
+    const identities = uniqueVersionedSessionIdentities(sessions);
+    const retirementSessionIds = new Set(identities.map(({ sessionId }) => sessionId));
+    const retirementUnitId = identities[0]!.sessionId;
+    return this.transaction(() => {
+      const present: VersionedSessionIdentity[] = [];
+      for (const identity of identities) {
+        const record = this.readRecordSync(identity.sessionId);
+        if (!record) {
+          if (this.hasTombstone(identity.sessionId)) continue;
+          throw new SessionNotFoundError(identity.sessionId);
+        }
+        if (record.metadataVersion !== identity.expectedVersion) {
+          throw new SessionMetadataVersionConflictError(
+            identity.sessionId,
+            identity.expectedVersion,
+            record.metadataVersion,
+          );
+        }
+        this.assertSessionCanBeRemoved(identity.sessionId, retirementSessionIds);
+        present.push(identity);
+      }
+      const deletedAt = this.now();
+      for (const { sessionId } of present) {
+        const deleted = this.db
+          .prepare('DELETE FROM session_metadata WHERE session_id = ?')
+          .run(sessionId);
+        if (deleted.changes !== 1) {
+          throw new SessionMetadataConflictError(
+            `Session metadata remove lost its admitted row: ${sessionId}`,
+          );
+        }
+        this.db
+          .prepare(`
+            INSERT INTO session_metadata_tombstones(
+              session_id,
+              deleted_at,
+              retirement_unit_id,
+              cleanup_pending
+            )
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(session_id) DO NOTHING
+          `)
+          .run(sessionId, deletedAt, retirementUnitId);
+      }
+      return identities.map((identity) => identity.sessionId);
+    });
+  }
+
   async remove(sessionId: string): Promise<boolean> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     return this.transaction(() => {
-      const graphOwner = this.db
-        .prepare(`
-          SELECT graph_id AS graphId, work_id AS workId
-          FROM agent_graph_operator_provisions
-          WHERE target_session_id = ?
-        `)
-        .get(sessionId) as { graphId: string; workId: string } | undefined;
-      if (graphOwner) {
-        throw new SessionMetadataConflictError(
-          `Cannot remove graph operator Session ${sessionId}; owned by ${graphOwner.graphId}/${graphOwner.workId}`,
-        );
-      }
+      this.assertSessionCanBeRemoved(sessionId);
       const deleted =
         this.db.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(sessionId)
           .changes === 1;
       this.db
         .prepare(`
-          INSERT INTO session_metadata_tombstones(session_id, deleted_at)
-          VALUES (?, ?)
+          INSERT INTO session_metadata_tombstones(
+            session_id,
+            deleted_at,
+            retirement_unit_id,
+            cleanup_pending
+          )
+          VALUES (?, ?, ?, 1)
           ON CONFLICT(session_id) DO NOTHING
         `)
-        .run(sessionId, this.now());
+        .run(sessionId, this.now(), sessionId);
       return deleted;
-    });
-  }
-
-  async importEntries(
-    entries: readonly SessionMetadataImportEntry[],
-  ): Promise<SessionMetadataImportResult> {
-    this.assertOpen();
-    const sourcePaths = new Set<string>();
-    const normalized = entries.map((entry) => {
-      const header = normalizeSessionHeader(entry.header);
-      assertSafeSessionId(header.id);
-      if (!entry.source.path || !entry.source.fingerprint) {
-        throw new Error(`Invalid session metadata import source for ${header.id}`);
-      }
-      if (sourcePaths.has(entry.source.path)) {
-        throw new Error(`Duplicate session metadata import source: ${entry.source.path}`);
-      }
-      sourcePaths.add(entry.source.path);
-      return {
-        header,
-        ...(entry.initialBoundary
-          ? {
-              initialBoundary: {
-                ...decodeExecutionBoundary(entry.initialBoundary),
-                revision: 0,
-              },
-            }
-          : {}),
-        source: entry.source,
-      };
-    });
-    return this.transaction(() => {
-      const created: boolean[] = [];
-      let sourcesAlreadyImported = 0;
-      let sourcesTombstoned = 0;
-      for (const entry of normalized) {
-        if (this.hasTombstone(entry.header.id)) {
-          sourcesTombstoned += 1;
-          continue;
-        }
-        const source = this.db
-          .prepare(`
-            SELECT fingerprint
-            FROM session_metadata_import_sources
-            WHERE source_path = ?
-          `)
-          .get(entry.source.path) as { fingerprint: string } | undefined;
-        if (source?.fingerprint === entry.source.fingerprint) {
-          const existing = this.readRecordSync(entry.header.id);
-          if (!existing) {
-            throw new SessionMetadataConflictError(
-              `Imported session metadata is missing: ${entry.header.id}`,
-            );
-          }
-          sourcesAlreadyImported += 1;
-          continue;
-        }
-        const existing = this.readRecordSync(entry.header.id);
-        if (existing) {
-          if (!isDeepStrictEqual(existing.header, entry.header)) {
-            throw new SessionMetadataConflictError(
-              `Session metadata import conflict for ${entry.header.id}`,
-            );
-          }
-          if (
-            entry.initialBoundary &&
-            !isDeepStrictEqual(
-              this.readCurrentExecutionBoundarySync(entry.header.id),
-              entry.initialBoundary,
-            )
-          ) {
-            throw new SessionMetadataConflictError(
-              `Session execution boundary import conflict for ${entry.header.id}`,
-            );
-          }
-          if (entry.header.subagentSpawn) {
-            this.assertMatchingSubagentSpawnClaim(entry.header);
-          }
-          created.push(false);
-        } else {
-          if (entry.header.subagentSpawn) {
-            const claim = this.tryClaimSubagentSpawn(entry.header, this.now());
-            if (!claim.created && claim.childSessionId !== entry.header.id) {
-              throw new SessionMetadataConflictError(
-                `Child-session spawn identity already belongs to ${claim.childSessionId}`,
-              );
-            }
-            this.assertMatchingSubagentSpawnClaim(entry.header);
-          }
-          this.insertHeader(entry.header, 1, this.now(), entry.initialBoundary);
-          created.push(true);
-        }
-        this.db
-          .prepare(`
-            INSERT INTO session_metadata_import_sources(
-              source_path, fingerprint, session_id, imported_at
-            ) VALUES (?, ?, ?, ?)
-            ON CONFLICT(source_path) DO UPDATE SET
-              fingerprint = excluded.fingerprint,
-              session_id = excluded.session_id,
-              imported_at = excluded.imported_at
-          `)
-          .run(entry.source.path, entry.source.fingerprint, entry.header.id, this.now());
-        this.options.failpoint?.('after_session_import_marker_write');
-      }
-      return { created, sourcesAlreadyImported, sourcesTombstoned };
     });
   }
 
@@ -2604,7 +2977,7 @@ export class SqliteSessionMetadataStore {
           ? 'ask'
           : record.header.permissionMode);
     if ((projectedMode === 'bypass') !== (kind === 'bypass')) {
-      throw new Error('Execution boundary kind and legacy permission mode disagree');
+      throw new Error('Execution boundary kind and projected permission mode disagree');
     }
 
     let boundary: ExecutionBoundary = current;
@@ -2691,6 +3064,33 @@ export class SqliteSessionMetadataStore {
       `)
       .get(sessionId) as SessionMetadataRow | undefined;
     return row ? decodeRecord(row) : undefined;
+  }
+
+  private readMessagesWith(
+    sessionId: string,
+    decode: (value: unknown) => StoredMessage,
+  ): StoredMessage[] {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+    const rows = this.db
+      .prepare(`
+        SELECT record_json
+        FROM session_messages
+        WHERE session_id = ?
+        ORDER BY sequence
+      `)
+      .all(sessionId) as Array<{ record_json?: unknown }>;
+    return rows.map((row, index) => {
+      if (typeof row.record_json !== 'string') {
+        throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
+      }
+      try {
+        return decode(JSON.parse(row.record_json) as unknown);
+      } catch (error) {
+        throw new Error(`Invalid Session message row ${index} for ${sessionId}`, { cause: error });
+      }
+    });
   }
 
   private readCatalogPreviewSync(sessionId: string): string | undefined {
@@ -3196,6 +3596,68 @@ export class SqliteSessionMetadataStore {
     );
   }
 
+  private assertSessionCanBeRemoved(
+    sessionId: string,
+    retirementSessionIds?: ReadonlySet<string>,
+  ): void {
+    const graphOwner = this.db
+      .prepare(`
+        SELECT graph_id AS graphId, work_id AS workId, operator_id AS operatorId
+        FROM agent_graph_operator_provisions
+        WHERE target_session_id = ?
+      `)
+      .get(sessionId) as { graphId: string; workId: string; operatorId: string } | undefined;
+    if (graphOwner) {
+      const parent = this.readRecordSync(sessionId)?.header.subagentParent;
+      if (
+        !retirementSessionIds?.has(parent?.parentSessionId ?? '') ||
+        parent?.graph?.graphId !== graphOwner.graphId ||
+        parent.graph.workId !== graphOwner.workId ||
+        parent.graph.operatorId !== graphOwner.operatorId
+      ) {
+        throw new SessionMetadataConflictError(
+          `Cannot remove graph operator Session ${sessionId}; owned by ${graphOwner.graphId}/${graphOwner.workId}`,
+        );
+      }
+    }
+    const ownedOperators = this.db
+      .prepare(`
+        SELECT
+          child.session_id,
+          child.payload_json,
+          child.metadata_version,
+          child.committed_at,
+          provision.graph_id,
+          provision.work_id,
+          provision.operator_id
+        FROM agent_graph_operator_provisions provision
+        JOIN session_metadata child
+          ON child.session_id = provision.target_session_id
+        WHERE child.subagent_parent_session_id = ?
+        ORDER BY child.session_id
+      `)
+      .all(sessionId) as unknown as OwnedAgentGraphOperatorRow[];
+    for (const row of ownedOperators) {
+      const parent = decodeRecord(row).header.subagentParent;
+      if (
+        !parent?.graph ||
+        parent.parentSessionId !== sessionId ||
+        parent.graph.graphId !== row.graph_id ||
+        parent.graph.workId !== row.work_id ||
+        parent.graph.operatorId !== row.operator_id
+      ) {
+        throw new SessionMetadataConflictError(
+          `Cannot remove Session ${sessionId}; graph operator ${row.session_id} has invalid ownership`,
+        );
+      }
+      if (!retirementSessionIds?.has(row.session_id)) {
+        throw new SessionMetadataConflictError(
+          `Cannot remove Session ${sessionId}; graph operator ${row.session_id} is outside the retirement unit`,
+        );
+      }
+    }
+  }
+
   private transaction<T>(operation: () => T): T {
     if (this.databaseLease) return this.databaseLease.transaction('write', operation);
     this.db.exec('BEGIN IMMEDIATE');
@@ -3256,6 +3718,17 @@ interface SessionMetadataRow {
   payload_json: string;
   metadata_version: number;
   committed_at: number;
+}
+
+interface OwnedAgentGraphOperatorRow extends SessionMetadataRow {
+  graph_id: string;
+  work_id: string;
+  operator_id: string;
+}
+
+interface OrphanedAgentGraphOperatorRow extends OwnedAgentGraphOperatorRow {
+  parent_session_id: string;
+  retirement_unit_id: string | null;
 }
 
 interface SessionMetadataCatalogRow extends SessionMetadataRow {
@@ -3468,9 +3941,14 @@ function decodeAgentGraphSupervisorWakeRow(
 ): AgentGraphSupervisorWakeRecord {
   if (
     row.schemaVersion !== AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION ||
-    !['pending', 'running', 'waiting_permission', 'delivered', 'retryable_failed'].includes(
-      row.status,
-    ) ||
+    ![
+      'pending',
+      'running',
+      'waiting_permission',
+      'delivered',
+      'superseded',
+      'retryable_failed',
+    ].includes(row.status) ||
     !Number.isSafeInteger(row.attemptCount) ||
     row.attemptCount < 0 ||
     !Number.isSafeInteger(row.createdAt) ||
@@ -3504,7 +3982,9 @@ function decodeAgentGraphSupervisorWakeAttemptRow(
   row: AgentGraphSupervisorWakeAttemptRow,
 ): AgentGraphSupervisorWakeAttemptRecord {
   if (
-    !['running', 'waiting_permission', 'delivered', 'retryable_failed'].includes(row.status) ||
+    !['running', 'waiting_permission', 'delivered', 'superseded', 'retryable_failed'].includes(
+      row.status,
+    ) ||
     !Number.isSafeInteger(row.startedAt) ||
     row.startedAt < 0 ||
     (row.completedAt !== null && (!Number.isSafeInteger(row.completedAt) || row.completedAt < 0))
@@ -3744,12 +4224,13 @@ function assertAgentGraphSupervisorWakeCompletion(
   if (
     request.status !== 'waiting_permission' &&
     request.status !== 'delivered' &&
+    request.status !== 'superseded' &&
     request.status !== 'retryable_failed'
   ) {
     throw new Error('Invalid agent graph supervisor wake completion status');
   }
   if (
-    request.status === 'retryable_failed' &&
+    (request.status === 'retryable_failed' || request.status === 'superseded') &&
     (!request.failureReason?.trim() || request.failureReason.length > 4_000)
   ) {
     throw new Error('Agent graph supervisor wake failure reason must be non-empty and bounded');
@@ -3868,5 +4349,22 @@ function assertGraphEventTime(value: number): void {
 function assertGraphIntentId(value: string): void {
   if (!/^graph_intent_[a-f0-9]{32}$/.test(value)) {
     throw new Error('Invalid agent graph intent id');
+  }
+}
+
+function decodeStoredMessageRow(
+  value: unknown,
+  sessionId: string,
+  index: number,
+  recovery: boolean,
+): StoredMessage {
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return recovery ? decodeStoredMessageForRecovery(parsed) : decodeStoredMessageForRead(parsed);
+  } catch (error) {
+    throw new Error(`Invalid Session message row ${index} for ${sessionId}`, { cause: error });
   }
 }

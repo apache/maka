@@ -102,6 +102,7 @@ export interface UserMessageInput extends MessageContent {
 /** Non-user trigger source for a turn. */
 export type TurnOrigin =
   | { kind: 'automation'; automationId: string }
+  | { kind: 'goal'; goalId: string }
   | {
       kind: 'agent_graph';
       graphId: string;

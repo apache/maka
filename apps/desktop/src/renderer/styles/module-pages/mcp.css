@@ -34,16 +34,13 @@
 }
 
 .maka-mcp-hero strong {
+  font: var(--maka-text-heading-3);
   color: var(--foreground);
-  font-size: 1.2em;
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-tight);
 }
 
 .maka-mcp-hero span {
+  font: var(--maka-text-body);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .maka-mcp-hero-signal {
@@ -75,10 +72,8 @@
 }
 
 .maka-mcp-hero-signal small {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-tight);
 }
 
 /* Tab row rhythm mirrors the skills page (.maka-skill-tabs-bar): an
@@ -141,8 +136,7 @@
 }
 
 .maka-mcp-market-icon span {
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-bold);
+  font: var(--maka-text-heading-3);
   letter-spacing: var(--tracking-normal);
 }
 
@@ -182,31 +176,38 @@
 }
 
 .maka-mcp-market-copy strong {
+  font: var(--maka-text-heading-3);
   color: var(--foreground);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-mcp-market-copy small {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .maka-mcp-market-copy p {
+  font: var(--maka-text-body);
   display: -webkit-box;
   margin: 0;
   overflow: hidden;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
+/* #1879: was a bare 34px square — one of the off-ruler literals
+   (22/26/30/34/38) the control ruler exists to end, named as such in
+   maka-tokens.css. It is the install branch of a slot whose other branch
+   renders `<Button size="sm">` (mcp-page.tsx), i.e. an Astryx control at
+   `--size-element-sm` = 28px, so the row changed height depending on whether
+   a server was installed. `--h-control-md` resolves to that same
+   `--size-element-sm`: the two branches now agree by deriving from one token
+   rather than by two rules happening to match. Square icon control, so width
+   and height take the same tier. */
 .maka-mcp-install-button {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: var(--h-control-md);
+  height: var(--h-control-md);
   display: grid;
   flex: 0 0 auto;
   place-items: center;
@@ -237,6 +238,8 @@
   width: 19px;
   height: 19px;
 }
+
+.maka-mcp-install-spinner { animation: maka-spin 1s linear infinite; }
 
 .maka-mcp-install-cancel {
   opacity: 0;
@@ -310,10 +313,16 @@
   white-space: nowrap;
 }
 
-.maka-mcp-server-description code,
+/* Two inherited sizes hid under one family-only rule: the tool chips and the
+   error <pre> sit in 14px card body, the description code sits in the 12px
+   description. Naming a role forces that split into the open. */
 .maka-mcp-tool-list code,
 .maka-mcp-server-details pre {
-  font-family: var(--font-mono);
+  font: var(--maka-text-code);
+}
+
+.maka-mcp-server-description code {
+  font: var(--maka-text-supporting);
 }
 
 .maka-mcp-server-actions {
@@ -323,15 +332,15 @@
 }
 
 .maka-mcp-server-error {
+  font: var(--maka-text-body);
   margin: 0 var(--space-3) var(--space-3);
   color: var(--destructive-text);
-  font-size: var(--font-size-ui);
 }
 
 .maka-mcp-server-details {
+  font: var(--maka-text-supporting);
   margin: 0 var(--space-3) var(--space-3);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .maka-mcp-tool-list {
@@ -413,11 +422,10 @@
 }
 
 .maka-mcp-json-form > p {
+  font: var(--maka-text-supporting);
   margin: 0;
   padding-inline: var(--space-4);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .maka-mcp-editor-footer {

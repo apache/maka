@@ -405,3 +405,50 @@ PR A–C 合并后：
 3. 保持 Draft 并关闭，不 squash/merge；
 4. PR body 与 review thread 保留为历史证据；
 5. PR D 可独立推进，不阻塞 #1346 关闭。
+
+## 10. Git-native workspace M0：Baseline Authority 提取账本
+
+Continuation Authority 合并后，workspace plane 不再从 #1346 移植通用 file checkpoint carrier。
+新的首个平铺切片从最新 `upstream/main` 建立，只证明：
+
+> 经专用 writer 提交的同一 `(workspaceId, workspaceEpochId)`，其 epoch-opened fact、
+> baseline-accepted fact、epoch/version/head projection 对外只能全可见或全不可见；并发只能接受一个
+> baseline identity。若 projection 被外部删除，reader 必须 fail closed，不能把损坏态当作未创建。
+
+### 10.1 文件归属
+
+| 文件 | 本切片职责 |
+|---|---|
+| `core/workspace-version-authority.ts` | exact v1 facts、semantic lane、deterministic authority spine、pure scanner |
+| `core/runtime-event.ts` | typed `actions.workspaceFact` 与 control-plane stream 说明 |
+| `core/runtime-event-store.ts` | baseline authority capability 与专用 writer contract |
+| `storage/runtime-event-authority.ts` | workspace fact/authority stream generic-writer reservation |
+| `storage/sqlite-runtime-schema.ts` | schema 7、三张 projection、capability marker |
+| `storage/sqlite-runtime-store.ts` | atomic baseline bundle、read cross-check、rebuild、failpoints |
+| `storage/agent-run-store.ts` | JSONL 与 conversation copy fail closed |
+| `storage/conversation-operational-state.ts` | ordinary Session purge 不得删除 authority stream |
+| `runtime/runtime-event-read-model.ts` | workspace control fact 对聊天 projection 不可见 |
+
+### 10.2 明确不迁移
+
+- #1346 local/Git file checkpoint carrier 与自动 redo；
+- mutation prepared/settled/no-op fact；
+- Git worktree owner、host lifecycle 与 Desktop/CLI 接线；
+- workspace-version/T2 原子接受、head CAS、undo/publish；
+- #1346 未发布实验数据库兼容。
+
+### 10.3 证明矩阵
+
+- exact decoder/lane 与跨事实 identity/cause；
+- baseline atomic commit、exact retry、conflict；
+- canonical scan 与 projection compare 位于同一个 SQLite read snapshot；
+- 五个事务内 failpoint 全回滚；
+- projection delete/rebuild、canonical corruption fail closed；
+- SQLite/JSONL/tool/recovery/continuation/copy writer bypass；
+- 两进程 exact/conflicting baseline arbitration；
+- 两进程 schema 6→7 migration；
+- Linux/macOS process-kill crash harness；
+- workspace fact 不进入 UI/provider message projection。
+
+详细协议与剩余边界见
+[Workspace Version Authority v1](./runtime-workspace-version-authority-v1.zh-CN.md)。

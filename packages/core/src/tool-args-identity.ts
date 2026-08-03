@@ -130,3 +130,92 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
   }
   return result;
 }
+
+/**
+ * The same value with every `undefined`-valued property removed.
+ *
+ * Provider metadata is handed to Maka as the SDK parsed it, and a field the
+ * response did not carry arrives as an explicit `undefined` — Anthropic's
+ * `caller` object comes through as `{ type: 'direct', toolId: undefined }` when
+ * there is no tool id. JSON drops such a property, so the value no longer
+ * round-trips, and `encodeCanonicalRuntimeEvent` refuses it. That refusal is
+ * correct: an immutable event must mean the same thing after it is read back.
+ *
+ * The cost of not doing this was total. The refused write marked the runtime
+ * event store unavailable, the turn's terminal write then threw, and every turn
+ * that called any tool died a tenth of a second after the tool returned —
+ * `load_tools` succeeded, reported the group loaded, and the turn ended there.
+ *
+ * Dropping the key is lossless in the only sense that matters: JSON cannot tell
+ * an absent property from one set to `undefined`, so this writes down what
+ * would have been persisted anyway. The same reasoning gives an array hole a
+ * `null` rather than a removal — JSON writes one there regardless, and removing
+ * the entry would shift everything after it.
+ *
+ * What it does not do: it never rebuilds a value that needed no change, so
+ * symbol keys and object identity survive untouched on that path; a value it
+ * does rebuild is a plain-object spread, which keeps symbol keys and loses
+ * nothing JSON could have seen. An accessor survives that path too, and that
+ * is not a benefit to lean on: `canonicalizeStrictJson` throws on any getter it
+ * reaches, so at the call site a surviving getter kills the same write a
+ * surviving `undefined` would have. Nothing produces one today — provider
+ * metadata arrives as parsed plain objects — and widening this function to
+ * rebuild accessors would change what it means for callers that hand it
+ * anything else. Read this line as "getters are out of scope, and out of
+ * scope is fatal downstream", not as a shape this makes safe to pass.
+ *
+ * It descends into exactly the two shapes the encoder accepts — a plain object
+ * and a null-prototype one, the shape prototype-safe JSON parsing produces —
+ * and a null prototype is put back on the rebuilt value, because that prototype
+ * is what keeps a `__proto__` property as data. Anything with any other
+ * prototype is returned as-is rather than flattened.
+ */
+export function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    // An array hole is not a property that can be dropped: JSON writes it as
+    // `null`, so leaving the position empty produces a value that does not
+    // round-trip and the encoder refuses it just the same. Writing `null` is
+    // not inventing a value — it is writing down what would be persisted.
+    // `map` would not do: it skips holes and leaves them exactly as they were.
+    let changedEntry = false;
+    const mapped = Array.from({ length: value.length }, (_unused, index) => {
+      if (!Object.hasOwn(value, index) || value[index] === undefined) {
+        changedEntry = true;
+        return null;
+      }
+      const entry = value[index];
+      const next = stripUndefinedDeep(entry);
+      if (next !== entry) changedEntry = true;
+      return next;
+    });
+    return (changedEntry ? mapped : value) as unknown as T;
+  }
+  if (value === null || typeof value !== 'object') return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  let changed = false;
+  // Spread rather than assignment, and the prototype restored afterwards: both
+  // keep a `__proto__` property as the data the encoder will read back.
+  const out: Record<string, unknown> = { ...record };
+  if (prototype === null) Object.setPrototypeOf(out, null);
+  for (const key of keys) {
+    const entry = record[key];
+    if (entry === undefined) {
+      delete out[key];
+      changed = true;
+      continue;
+    }
+    const next = stripUndefinedDeep(entry);
+    if (next !== entry) {
+      out[key] = next;
+      changed = true;
+    }
+  }
+  // Unchanged values are returned as they came, so the common case — nothing
+  // needed removing — keeps object identity. The spread above has already read
+  // any accessor once; returning the original leaves the accessor itself live,
+  // which the encoder refuses exactly as it refuses a surviving `undefined`.
+  return (changed ? out : value) as unknown as T;
+}

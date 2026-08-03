@@ -12,7 +12,7 @@
     "./assistant-stream": "./dist/assistant-stream.js",
     "./icons": "./dist/icons.js",
     "./maka-uri": "./dist/maka-uri.js",
-    "./smooth-stream": "./dist/smooth-stream.js"
+    "./styles.css": "./src/styles.css"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
@@ -24,11 +24,10 @@
   "dependencies": {
     "@astryxdesign/core": "0.2.0",
     "@maka/core": "0.1.0",
-    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.577.0",
-    "react": "^19.2.1",
-    "tailwind-merge": "^3.6.0"
+    "mermaid": "^11.16.0",
+    "react": "^19.2.1"
   },
   "devDependencies": {
     "@types/react": "^19.2.7"

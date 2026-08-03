@@ -1,27 +1,120 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+
 import {
   MODEL_PROCESSING_DELAY_MS,
   createDelayedFlag,
   deriveModelWait,
+  deriveTurnActive,
   type DelayedFlagScheduler,
 } from '../../renderer/model-wait-state.js';
 
+// The gate this whole change exists for: a send must show Stop at once and must
+// not lose it mid-turn. Both regressions came from letting a session-level
+// witness speak for the local arm, which is why these read as one suite.
+describe('is a turn running', () => {
+  it('opens on the local arm alone, with no session-level confirmation', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: 'waiting',
+      armedTurnId: 'turn-1',
+      runningTurnIds: undefined,
+    }), true);
+  });
+
+  // The runtime writes `status: 'running'` only at the END of `AgentRun.begin`,
+  // so every list refreshed between the send and that write still describes an
+  // idle session. ANDing such a witness in — the shape this replaced — is what
+  // made Stop appear late and flicker off mid-turn.
+  it('stays open across a session snapshot that predates the run', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: 'streamed',
+      armedTurnId: 'turn-1',
+      runningTurnIds: undefined,
+    }), true);
+  });
+
+  it('closes when neither witness reports a turn', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: undefined,
+      runningTurnIds: undefined,
+    }), false);
+  });
+
+  // A turn this renderer did not send: another client, an automation, or one
+  // still running across a reload. There is no local arm to speak for it.
+  it('opens for a running turn this renderer never armed', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: undefined,
+      runningTurnIds: ['turn-elsewhere'],
+    }), true);
+  });
+
+  // The arm saw its own terminal event; a list fetched just before it did not.
+  // Reading that snapshot as authority would light Stop back up after the turn
+  // visibly ended.
+  it('does not let a stale snapshot revive the arm\'s own finished turn', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: 'turn-1',
+      runningTurnIds: ['turn-1'],
+    }), false);
+  });
+
+  // A new turn started elsewhere while this renderer still holds the previous
+  // one's terminal projection.
+  it('opens when the authority names a turn other than the settled arm', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: 'turn-1',
+      runningTurnIds: ['turn-2'],
+    }), true);
+  });
+
+  // A session can run concurrent turns. The arm's own turn lingering in the set
+  // — it has ended locally but the run has not been unregistered yet — must not
+  // hide a sibling that is genuinely still running.
+  it('opens for a sibling turn even while the settled arm lingers in the set', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: 'turn-1',
+      runningTurnIds: ['turn-1', 'turn-2'],
+    }), true);
+  });
+
+  it('closes when the only running turn is the arm the renderer already settled', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: 'turn-1',
+      runningTurnIds: ['turn-1'],
+    }), false);
+  });
+
+  it('closes on an empty set', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: undefined,
+      runningTurnIds: [],
+    }), false);
+  });
+});
+
 const HEAD = {
   turnPhase: 'waiting',
-  streamingText: '',
-  thinkingText: '',
+  hasStreamingText: false,
+  hasThinkingText: false,
   hasInFlightTools: false,
 } as const;
 
 function fakeScheduler() {
   let now = 0;
-  let seq = 0;
-  const timers = new Map<number, { at: number; fn: () => void }>();
+  let sequence = 0;
+  const timers = new Map<number, { at: number; run: () => void }>();
   const scheduler: DelayedFlagScheduler = {
-    setTimeout(fn, ms) {
-      const id = ++seq;
-      timers.set(id, { at: now + ms, fn });
+    setTimeout(run, delay) {
+      const id = ++sequence;
+      timers.set(id, { at: now + delay, run });
       return id;
     },
     clearTimeout(handle) {
@@ -30,123 +123,73 @@ function fakeScheduler() {
   };
   return {
     scheduler,
-    advance(ms: number) {
-      now += ms;
-      for (const [id, timer] of [...timers.entries()]) {
-        if (timer.at <= now) {
-          timers.delete(id);
-          timer.fn();
-        }
+    advance(duration: number) {
+      now += duration;
+      for (const [id, timer] of [...timers]) {
+        if (timer.at > now) continue;
+        timers.delete(id);
+        timer.run();
       }
     },
     pending: () => timers.size,
   };
 }
 
-describe('deriveModelWait', () => {
-  it("is 'processing' at the turn head — armed, waiting for the first token", () => {
-    assert.equal(deriveModelWait(HEAD), 'processing');
+describe('model wait state', () => {
+  it('derives head, active-content, tool, and mid-turn wait states', () => {
+    for (const [input, expected] of [
+      [HEAD, 'processing'],
+      [{ ...HEAD, turnPhase: undefined }, 'none'],
+      [{ ...HEAD, hasStreamingText: true }, 'none'],
+      [{ ...HEAD, hasThinkingText: true }, 'none'],
+      [{ ...HEAD, hasInFlightTools: true }, 'none'],
+      [{ ...HEAD, turnPhase: 'streamed', hasInFlightTools: true }, 'none'],
+      [{ ...HEAD, turnPhase: 'streamed' }, 'continuing'],
+    ] as const) {
+      assert.equal(deriveModelWait(input), expected);
+    }
   });
 
-  it("is 'none' when no turn is in flight", () => {
-    assert.equal(deriveModelWait({ ...HEAD, turnPhase: undefined }), 'none');
-  });
-
-  it("is 'none' once answer text is streaming", () => {
-    assert.equal(deriveModelWait({ ...HEAD, streamingText: 'hi' }), 'none');
-  });
-
-  it("is 'none' once reasoning is streaming", () => {
-    assert.equal(deriveModelWait({ ...HEAD, thinkingText: 'because' }), 'none');
-  });
-
-  it("is 'none' while a tool is in flight", () => {
-    assert.equal(deriveModelWait({ ...HEAD, hasInFlightTools: true }), 'none');
-  });
-
-  it("a mid-turn lull after content is 'continuing', NOT 'processing' (#646)", () => {
-    // Once the turn has streamed (phase 'streamed'), a tool settling back to an
-    // idle state is the calm "继续中…" hint — the prominent "正在处理…" must not
-    // re-fire in every step-to-step gap (the regression this split fixes).
-    const running = deriveModelWait({ ...HEAD, turnPhase: 'streamed', hasInFlightTools: true });
-    const settled = deriveModelWait({ ...HEAD, turnPhase: 'streamed', hasInFlightTools: false });
-    assert.equal(running, 'none');
-    assert.equal(settled, 'continuing');
-  });
-
-  it("the head wait stays 'processing' only until the first content event flips the phase", () => {
-    assert.equal(deriveModelWait({ ...HEAD, turnPhase: 'waiting' }), 'processing');
-    assert.equal(deriveModelWait({ ...HEAD, turnPhase: 'streamed' }), 'continuing');
-  });
-});
-
-describe('createDelayedFlag', () => {
-  it('reveals only after the delay elapses with the condition held true', () => {
-    const clock = fakeScheduler();
-    const flag = createDelayedFlag({ delayMs: MODEL_PROCESSING_DELAY_MS, scheduler: clock.scheduler });
-    flag.setCondition(true);
-    clock.advance(MODEL_PROCESSING_DELAY_MS - 1);
-    assert.equal(flag.get(), false, 'still hidden just before the delay');
-    clock.advance(1);
-    assert.equal(flag.get(), true, 'revealed at the delay boundary');
-  });
-
-  it('never reveals when the condition drops before the delay (fast response, no flash)', () => {
-    const clock = fakeScheduler();
-    const flag = createDelayedFlag({ delayMs: MODEL_PROCESSING_DELAY_MS, scheduler: clock.scheduler });
-    flag.setCondition(true);
-    clock.advance(100);
-    flag.setCondition(false);
-    clock.advance(MODEL_PROCESSING_DELAY_MS);
-    assert.equal(flag.get(), false);
-    assert.equal(clock.pending(), 0, 'the pending reveal timer was cancelled');
-  });
-
-  it('hides immediately when the condition drops after being visible', () => {
-    const clock = fakeScheduler();
-    const flag = createDelayedFlag({ delayMs: MODEL_PROCESSING_DELAY_MS, scheduler: clock.scheduler });
-    flag.setCondition(true);
-    clock.advance(MODEL_PROCESSING_DELAY_MS);
-    assert.equal(flag.get(), true);
-    flag.setCondition(false);
-    assert.equal(flag.get(), false);
-  });
-
-  it('re-arms on a fresh rising edge', () => {
-    const clock = fakeScheduler();
-    const flag = createDelayedFlag({ delayMs: MODEL_PROCESSING_DELAY_MS, scheduler: clock.scheduler });
-    flag.setCondition(true);
-    clock.advance(MODEL_PROCESSING_DELAY_MS);
-    flag.setCondition(false);
-    flag.setCondition(true);
-    clock.advance(MODEL_PROCESSING_DELAY_MS - 1);
-    assert.equal(flag.get(), false, 'the second window is delayed too');
-    clock.advance(1);
-    assert.equal(flag.get(), true);
-  });
-
-  it('emits onChange only on real transitions', () => {
+  it('delays rising edges, hides immediately, re-arms, and emits only transitions', () => {
     const clock = fakeScheduler();
     const changes: boolean[] = [];
     const flag = createDelayedFlag({
       delayMs: MODEL_PROCESSING_DELAY_MS,
       scheduler: clock.scheduler,
-      onChange: (v) => changes.push(v),
+      onChange: (visible) => changes.push(visible),
     });
+
     flag.setCondition(true);
-    flag.setCondition(true); // redundant, no timer churn
-    clock.advance(MODEL_PROCESSING_DELAY_MS);
+    flag.setCondition(true);
+    clock.advance(MODEL_PROCESSING_DELAY_MS - 1);
+    assert.equal(flag.get(), false);
+    clock.advance(1);
+    assert.equal(flag.get(), true);
+
     flag.setCondition(false);
-    assert.deepEqual(changes, [true, false]);
+    assert.equal(flag.get(), false);
+    flag.setCondition(true);
+    clock.advance(MODEL_PROCESSING_DELAY_MS - 1);
+    assert.equal(flag.get(), false);
+    clock.advance(1);
+    assert.equal(flag.get(), true);
+    assert.deepEqual(changes, [true, false, true]);
   });
 
-  it('dispose cancels a pending reveal', () => {
-    const clock = fakeScheduler();
-    const flag = createDelayedFlag({ delayMs: MODEL_PROCESSING_DELAY_MS, scheduler: clock.scheduler });
-    flag.setCondition(true);
-    flag.dispose();
-    clock.advance(MODEL_PROCESSING_DELAY_MS);
-    assert.equal(flag.get(), false);
-    assert.equal(clock.pending(), 0);
+  it('cancels a pending reveal when the condition drops or the owner disposes', () => {
+    for (const cancel of ['condition', 'dispose'] as const) {
+      const clock = fakeScheduler();
+      const flag = createDelayedFlag({
+        delayMs: MODEL_PROCESSING_DELAY_MS,
+        scheduler: clock.scheduler,
+      });
+      flag.setCondition(true);
+      clock.advance(100);
+      if (cancel === 'condition') flag.setCondition(false);
+      else flag.dispose();
+      clock.advance(MODEL_PROCESSING_DELAY_MS);
+      assert.equal(flag.get(), false, cancel);
+      assert.equal(clock.pending(), 0, cancel);
+    }
   });
 });

@@ -116,6 +116,65 @@ describe('Client Capability protocol', () => {
     );
   });
 
+  test('keeps Host services open-world and outside model tool offers', () => {
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request',
+        operation: 'client.capability.replace',
+        input: {
+          registrationId: 'registration',
+          offers: [],
+          services: [{ serviceId: 'vendor_service', version: 'vendor-v4' }],
+        },
+      }),
+      {
+        requestId: 'request',
+        operation: 'client.capability.replace',
+        input: {
+          registrationId: 'registration',
+          offers: [],
+          services: [{ serviceId: 'vendor_service', version: 'vendor-v4' }],
+        },
+      },
+    );
+    assert.deepEqual(
+      decodeHostFrame({
+        kind: 'client.capability.service_call',
+        invocationId: 'invocation',
+        registrationId: 'registration',
+        serviceId: 'vendor_service',
+        version: 'vendor-v4',
+        method: 'present',
+        input: { value: 'hello' },
+      }),
+      {
+        kind: 'client.capability.service_call',
+        invocationId: 'invocation',
+        registrationId: 'registration',
+        serviceId: 'vendor_service',
+        version: 'vendor-v4',
+        method: 'present',
+        input: { value: 'hello' },
+      },
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request',
+          operation: 'client.capability.replace',
+          input: {
+            registrationId: 'registration',
+            offers: [],
+            services: [
+              { serviceId: 'same_service', version: '1' },
+              { serviceId: 'same_service', version: '1' },
+            ],
+          },
+        }),
+      (error: unknown) => error instanceof RuntimeHostProtocolError,
+    );
+  });
+
   test('rejects empty, duplicate, recursive, and over-budget provider data', () => {
     assert.throws(
       () => decodeClientFrame(replaceFrame([])),

@@ -2,12 +2,12 @@
 
 [中文](./frontend-css-governance.zh-CN.md)
 
-Maka's frontend styling combines Tailwind v4 with handwritten renderer CSS. Some renderer surfaces still override shared `@maka/ui` primitives, so cascade order is an explicit contract rather than an implementation detail.
+Maka's frontend styling combines Astryx, `@maka/ui` product compositions, and renderer surface CSS. Cascade order is an explicit contract rather than an implementation detail.
 
 ## 1. Entry file
 
 - `apps/desktop/src/renderer/styles.css` is an entry file only.
-- It may contain `@import`, `@source`, `@theme`, and other top-level orchestration statements.
+- It may contain `@import` and other top-level orchestration statements.
 - New per-surface selector blocks belong in `apps/desktop/src/renderer/styles/**/*.css`.
 - Historical recipes at the end of `maka-tokens.css` and `reference-shell.css` are transitional exceptions. Do not add new surface rules to them.
 
@@ -19,28 +19,17 @@ Maka's frontend styling combines Tailwind v4 with handwritten renderer CSS. Some
 
 ## 2. Layers
 
-- Pure presentation rules that do not override shared primitives or Tailwind utilities should use `@layer base` or `@layer components` where practical.
+- Pure presentation rules should use `@layer base` or `@layer components` where practical.
 - Use `@import "./file.css" layer(components)` only when the build chain explicitly supports it.
 - Do not place `@import` inside an `@layer` block.
-- A selector that must override a shared primitive's Tailwind utility must remain outside `@layer components` until the primitive seam is fixed.
 
-## 3. Rules that must outrank Tailwind utilities
-
-These selectors depend on beating Tailwind utilities on the same element. Since #1565 PR 1 they do so by living in the `maka.legacy` layer, which `cascade-layers.css` declares after `utilities` (before that they relied on being unlayered). The declaration in `cascade-layers.css` is append-only: later migration PRs may add layers but must never reorder the existing five.
-
-- `.maka-nav-row`
-- `html[data-os="darwin"] .maka-nav-row`
-- `.settingsHealthRefresh`
-- `.settingsPermissionRefresh`
-- `.settingsBotList button`
-
-This is a convention, not a test-enforced guard: the static cascade contract was removed with the rest of the source-scanning suite. A change here is verified by looking at the rendered surface (Storybook or the app), not by a regex over the CSS.
+Astryx reset and component layers come first; Maka base tokens and product `components` come later. Keep layer ownership at the closest existing seam instead of adding a higher-priority compatibility layer.
 
 ## 4. `!important`
 
 - `!important` is allowed by default only for accessibility helpers such as `.maka-visually-hidden`, and for reduced-motion or e2e-fixture overrides.
 - Every other use requires an adjacent `Justified:` comment.
-- Prefer a JSX utility-class reset when the primitive can express the behavior directly.
+- Prefer fixing the primitive API or semantic class when it can express the behavior directly.
 
 ## 5. Tokens
 
@@ -72,7 +61,7 @@ catching only what a linter should.
 When changing renderer CSS:
 
 1. Move real rule blocks out of `styles.css` into surface files.
-2. Layer only rules that do not override shared utilities.
+2. Keep generic component chrome in Astryx and product composition in `@maka/ui` or the matching renderer surface.
 3. Remove dead selectors.
 4. Remove remaining `!important` only after primitive and layer ownership is stable.
 
@@ -81,4 +70,4 @@ When changing renderer CSS:
 - Make CI guards trustworthy before structural convergence.
 - Delete dead CSS before aesthetic refactoring.
 - Resolve shared `Button`, `Textarea`, and `EmptyState` overrides at the component API seam instead of accumulating renderer specificity.
-- Every change to Tailwind cascade order requires the narrowest relevant regression check on the rendered surface.
+- Every change to cascade order requires the narrowest relevant regression check on the rendered surface.

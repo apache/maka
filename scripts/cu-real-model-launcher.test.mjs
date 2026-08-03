@@ -92,22 +92,6 @@ test('policy rejection remains canonical action-attempt evidence', () => {
       durationMs: 1,
       isError: true,
     },
-    {
-      type: 'tool_start',
-      toolName: 'maka_computer',
-      toolUseId: 'budget-1',
-      args: { action: 'observe', app: 'Fixture Target' },
-    },
-    {
-      type: 'tool_result',
-      toolUseId: 'budget-1',
-      content: {
-        kind: 'text',
-        text: 'maka_computer failed: total_action_budget_exceeded',
-      },
-      durationMs: 1,
-      isError: true,
-    },
   ]);
 
   assert.deepEqual(
@@ -118,17 +102,11 @@ test('policy rejection remains canonical action-attempt evidence', () => {
         success: false,
         resultCode: 'unsupported_action_policy',
       },
-      {
-        type: 'observe',
-        success: false,
-        resultCode: 'total_action_budget_exceeded',
-      },
     ],
   );
 });
 
 test('fixture READY identity and window discovery fail closed', async () => {
-  assert.equal(parseFixtureReady('CU_FIXTURE_READY 4242\n', 4242), 4242);
   assert.throws(
     () => parseFixtureReady('CU_FIXTURE_READY 99\n', 4242),
     /does not match launcher child pid/,

@@ -45,21 +45,20 @@
   }
 
 .maka-error-copy h2 {
+    font: var(--maka-text-heading-4);
     margin: 0;
     color: var(--foreground);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-semibold);
   }
 
 .maka-error-copy p {
+    font: var(--maka-text-body);
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
     max-width: 56ch;
   }
 
 .maka-error-stack {
+    font: var(--maka-text-supporting);
     margin: var(--space-1) 0 0;
     max-height: 220px;
     padding: var(--space-2-5) var(--space-3);
@@ -68,9 +67,6 @@
     background: var(--foreground-3);
     color: var(--foreground-secondary);
     overflow: auto;
-    font-family: var(--font-mono);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -81,6 +77,8 @@
     gap: var(--space-2);
     margin-top: var(--space-1-5);
   }
+
+.maka-error-copy-action { min-width: 72px; }
 
 .maka-error-copy-action[data-copy-state="pending"] {
     cursor: progress;

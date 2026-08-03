@@ -2,17 +2,12 @@
 
 [English](./frontend-css-governance.md)
 
-本仓库的前端样式体系基于 Tailwind v4，加上 renderer 侧手写 CSS。
-当前仍存在一部分 renderer surface 对共享 `@maka/ui` primitive 的覆盖，因此级联顺序必须被明确约束，不能随意改动。
+本仓库的前端样式体系由 Astryx、`@maka/ui` 产品组合样式和 renderer surface CSS 组成。级联顺序必须被明确约束，不能随意改动。
 
 ## 1. 入口文件规则
 
 - `apps/desktop/src/renderer/styles.css` 只能作为样式入口文件使用。
-- 它只允许包含：
-  - `@import`
-  - `@source`
-  - `@theme`
-  - 顶层入口编排语句
+- 它只允许包含 `@import` 和顶层入口编排语句。
 - 新增的 per-surface selector 规则块必须放在 `apps/desktop/src/renderer/styles/**/*.css`。
 - `maka-tokens.css` 尾部的历史 recipe 和 `reference-shell.css` 是待收敛的 transitional exceptions；不要继续向这两个例外增加 surface 规则。
 
@@ -24,24 +19,13 @@
 
 ## 2. Layer 规则
 
-- 纯展示、不会去覆盖共享 primitive / Tailwind utility 的规则，应尽量放进：
+- 纯展示规则应尽量放进：
   - `@layer base`
   - `@layer components`
 - 只有在构建链明确支持时，才使用 `@import "./file.css" layer(components)`。
 - 不要使用 `@layer { @import ... }` 这种写法。
-- 如果一个 selector 需要覆盖共享 primitive 自带的 Tailwind utility，就不要把它放进 `@layer components`。
 
-## 3. 必须压过 Tailwind Utility 的规则
-
-下面这些选择器依赖在同一元素上压过 Tailwind utility。自 #1565 PR 1 起，它们靠位于 `maka.legacy` 层实现（`cascade-layers.css` 把该层声明在 `utilities` 之后；在此之前靠保持 unlayered）。`cascade-layers.css` 里的层序声明只允许追加：后续迁移 PR 可以增加新层，但绝不能重排既有五层。除非共享 primitive 的实现先改掉，否则不能把这些选择器塞进 `@layer components`：
-
-- `.maka-nav-row`
-- `html[data-os="darwin"] .maka-nav-row`
-- `.settingsHealthRefresh`
-- `.settingsPermissionRefresh`
-- `.settingsBotList button`
-
-这是约定，不是测试护栏：静态级联契约已随源码扫描测试套件一起删除。改动这里靠看真实渲染结果（Storybook 或 app）验证，而不是靠正则扫 CSS。
+Astryx reset 和组件层在前，Maka base token 与产品 `components` 在后。应在最近的现有职责缝隙解决覆盖，不再增加更高优先级的兼容层。
 
 ## 4. `!important` 使用规则
 
@@ -50,7 +34,7 @@
   - reduced-motion / e2e-fixture 这类测试或可访问性覆盖
 - 其他任何 `!important` 都必须同时满足：
   - 就地写明 `Justified:` 注释
-- 如果一个元素的 primitive reset 可以直接通过 JSX utility class 完成，优先把 reset 下沉到 JSX，不要继续在 CSS 里叠更多 `!important`。
+- 如果 primitive API 或语义类可以直接表达，优先在该职责层解决，不要继续叠更多 `!important`。
 
 ## 5. Token 规则
 
@@ -88,7 +72,7 @@
 调整 renderer CSS 时，建议按下面顺序推进：
 
 1. 把 `styles.css` 中的真实规则块迁到子文件。
-2. 只把“不会覆盖共享 utility”的规则放进 layer。
+2. 通用组件外观留给 Astryx，产品组合样式放在 `@maka/ui` 或对应 renderer surface。
 3. 清理 dead selector。
 4. 只有在 primitive / layer 架构已经稳定后，再移除剩余 `!important`。
 
@@ -97,4 +81,4 @@
 - 先保证 CI 护栏可信，再做结构收敛。
 - 先删 dead CSS，再谈样式“美化性重构”。
 - 对共享 `Button` / `Textarea` / `EmptyState` 这类 primitive 的覆盖，优先从组件接口层解决，不要长期依赖 renderer CSS 强压。
-- 任何会影响 Tailwind utility 级联顺序的改动，都必须配合对真实渲染结果的最小回归验证一起提交。
+- 任何会影响级联顺序的改动，都必须配合对真实渲染结果的最小回归验证一起提交。

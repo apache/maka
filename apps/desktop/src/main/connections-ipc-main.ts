@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import type { IpcMain } from 'electron';
 import {
   buildConnectionModelCatalogEntries,
   generalizedErrorMessageChinese,
@@ -30,6 +30,7 @@ interface ConnectionInputNormalizerDeps {
 }
 
 interface ConnectionsIpcDeps extends ConnectionInputNormalizerDeps {
+  ipcMain: Pick<IpcMain, 'handle'>;
   credentialStore: CredentialStore;
   syncOAuthModelConnections: () => Promise<void>;
   resolveConnectionSecret: (slug: string) => Promise<string | null>;
@@ -137,6 +138,7 @@ async function normalizeUpdateConnectionInput(
 
 export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
   const {
+    ipcMain,
     connectionStore,
     credentialStore,
     syncOAuthModelConnections,

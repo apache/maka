@@ -16,10 +16,6 @@ export * from './plan-reminder-copy.js';
 export * from './tool-activity/copy.js';
 export * from './tool-activity/sandbox-denial.js';
 export * from './chat-input-behavior.js';
-export * from './composer-mention-popup.js';
-export * from './composer-skill-picker.js';
-export * from './use-composer-skill-draft.js';
-export * from './use-mention-popup.js';
 export * from './runtime-resume-copy.js';
 export * from './input-history.js';
 export * from './daily-review-helpers.js';
@@ -34,7 +30,6 @@ export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';
 export * from './redact.js';
-export * from './smooth-stream.js';
 export * from './thinking-stream.js';
 export * from './task-ledger-panel.js';
 export * from './toast.js';
@@ -50,10 +45,10 @@ export * from './maka-wordmark.js';
 // #1565 PR 3: Card is the Astryx primitive now (the thin data-slot recipe is
 // retired); same barrel slot, implementation swapped behind it.
 export { Card, type CardProps, type CardVariant } from '@astryxdesign/core';
-// `markerVariants` / `toolVariants` are deliberately NOT re-exported here:
-// they are internal styling tables that the chat call sites apply via relative
-// import, so keeping them off the package barrel preserves the governance goal
-// — they stay renamable/removable without a public-API break.
+// `markerVariants` is deliberately NOT re-exported here: it is an internal
+// styling table that the chat call sites apply via relative import, so keeping
+// it off the package barrel preserves the governance goal — it stays
+// renamable/removable without a public-API break.
 //
 // `previewVariants` (#332 PR4) IS re-exported: its file-diff parts have a second,
 // cross-package consumer — `apps/desktop`'s `artifact-preview.tsx` — which is the
@@ -74,40 +69,6 @@ export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
 // CSS stay at the call site; the primitive converges STRUCTURE only.
 export { PageHeader } from './primitives/page-header.js';
 export type { PageHeaderProps } from './primitives/page-header.js';
-// Streaming UI rework: Codex-style tool "trow" grouping helpers. Pure bucketing
-// + summary used by the timeline tool renderer (ToolTrow) and unit-tested.
-export {
-  summarizeTrowTools,
-  trowActivityKind,
-  isTrowRunning,
-  trowNeedsAttention,
-  type TrowActivityKind,
-} from './tool-activity/trow-summary.js';
-// #646 run→done seam: a tool row shimmers while running and settles by the
-// light band stopping (no opacity fade — parallel settles don't stack).
-// Unit-tested.
-export {
-  isToolRowRunning,
-  isToolRowSettled,
-} from './tool-activity/tool-row-motion.js';
-// Streaming UI rework: per-word fade-in for streamed text (replaces the ▎
-// caret). Pure append-record ring + tokenizer are unit-tested; the hook feeds
-// markdown-body's rehype pass.
-export {
-  useStreamFade,
-  tokenizeFade,
-  updateFadeRing,
-  createFadeRing,
-  fadeBoundary,
-  fadeAgeAt,
-  FADE_MS,
-  MAX_FADE_BATCHES,
-  type StreamFade,
-  type FadeToken,
-  type FadeRingState,
-  type FadeBatch,
-} from './stream-fade.js';
-
 // #1565 PR 2: Astryx i18n adapter — appended, never reordered (barrel freeze).
 export * from './astryx-i18n.js';
 
@@ -115,6 +76,8 @@ export * from './astryx-i18n.js';
 // @maka/ui surface intact; the mechanical atom cut follows separately.
 export {
   Button,
+  MoreMenu,
+  type MoreMenuProps,
   type ButtonProps,
   type ButtonVariant,
   type ButtonSize,
@@ -155,6 +118,9 @@ export {
   type NumberInputProps,
   InputGroup,
   type InputGroupProps,
+  InputGroupText,
+  StatusDot,
+  type StatusDotVariant,
   Switch,
   type SwitchProps,
   CheckboxInput,

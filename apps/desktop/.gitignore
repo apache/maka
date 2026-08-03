@@ -1,3 +1,5 @@
 # Playwright E2E run artifacts: traces, videos, screenshots, last-run state.
 test-results/
 resources/workers/
+.maka-dev/
+.maka-dev-session/

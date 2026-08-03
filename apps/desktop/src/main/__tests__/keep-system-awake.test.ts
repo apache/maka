@@ -120,4 +120,73 @@ describe('keep-system-awake controller', () => {
     assert.equal(fake.startCalls.length, 2);
     assert.equal(controller.isActive(), true);
   });
+
+  it('a named hold keeps the blocker alive after the setting is turned off', () => {
+    // The two callers are independent. Computer Use holding the machine awake
+    // for a run in progress must survive the user turning 保持系统唤醒 off,
+    // which is why this is refcounted rather than one boolean.
+    const fake = createFakeBlocker();
+    const controller = createKeepSystemAwakeController(fake.blocker);
+
+    controller.apply(true);
+    controller.hold('computer-use:s1');
+    controller.apply(false);
+
+    assert.equal(controller.isActive(), true);
+    assert.equal(fake.stopCalls.length, 0);
+
+    controller.release('computer-use:s1');
+    assert.equal(controller.isActive(), false);
+    assert.equal(fake.stopCalls.length, 1);
+  });
+
+  it('the setting survives a hold being released', () => {
+    const fake = createFakeBlocker();
+    const controller = createKeepSystemAwakeController(fake.blocker);
+
+    controller.hold('computer-use:s1');
+    controller.apply(true);
+    controller.release('computer-use:s1');
+
+    assert.equal(controller.isActive(), true);
+    assert.equal(fake.stopCalls.length, 0);
+  });
+
+  it('holding twice for the same reason is one hold', () => {
+    // The caller is driven by every action of a session, not by a state
+    // change, so it must not have to de-duplicate before calling.
+    const fake = createFakeBlocker();
+    const controller = createKeepSystemAwakeController(fake.blocker);
+
+    controller.hold('computer-use:s1');
+    controller.hold('computer-use:s1');
+    controller.release('computer-use:s1');
+
+    assert.equal(fake.startCalls.length, 1);
+    assert.equal(controller.isActive(), false);
+  });
+
+  it('releasing something never held is a no-op', () => {
+    const fake = createFakeBlocker();
+    const controller = createKeepSystemAwakeController(fake.blocker);
+
+    controller.apply(true);
+    controller.release('computer-use:never-started');
+
+    assert.equal(controller.isActive(), true);
+    assert.equal(fake.stopCalls.length, 0);
+  });
+
+  it('two holds need two releases', () => {
+    const fake = createFakeBlocker();
+    const controller = createKeepSystemAwakeController(fake.blocker);
+
+    controller.hold('computer-use:s1');
+    controller.hold('computer-use:s2');
+    controller.release('computer-use:s1');
+    assert.equal(controller.isActive(), true);
+
+    controller.release('computer-use:s2');
+    assert.equal(controller.isActive(), false);
+  });
 });

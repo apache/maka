@@ -1,8 +1,11 @@
 import {
+  INTERACTION_CLOSURE_REASONS,
   interactionCanonicalOutcomesEquivalent,
+  projectInteractionSandboxBoundaryRequest,
   type InteractionAnswer,
   type InteractionCanonicalOutcome,
 } from '@maka/core/interaction';
+import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 import { RuntimeInteractionInvariantError, type RuntimeUserQuestionOutcome } from '@maka/runtime';
 import type {
   InteractionRecord,
@@ -60,10 +63,74 @@ export function projectPendingInteraction(
 
 export function projectSessionInteractions(
   pending: readonly StoredInteractionRequest[],
+  sandboxBoundaries: readonly SandboxBoundaryRequest[] = [],
 ): SessionInteractionProjection {
   return {
-    pending: [...pending].sort(compareStoredInteractionRequests).map(projectPendingInteraction),
+    pending: [
+      ...pending.map((request) => ({
+        createdAt: request.createdAt,
+        interactionId: request.requestId,
+        snapshot: projectPendingInteraction(request),
+      })),
+      ...sandboxBoundaries.map((request) => ({
+        createdAt: request.createdAt,
+        interactionId: request.requestId,
+        snapshot: projectPendingSandboxBoundaryInteraction(request),
+      })),
+    ]
+      .sort(
+        (left, right) =>
+          left.createdAt - right.createdAt || left.interactionId.localeCompare(right.interactionId),
+      )
+      .map(({ snapshot }) => snapshot),
   };
+}
+
+export function projectSandboxBoundaryInteraction(
+  request: SandboxBoundaryRequest,
+): InteractionSnapshot {
+  const base = sandboxBoundaryInteractionBase(request);
+  if (request.status === 'pending') {
+    return {
+      ...base,
+      revision: INTERACTION_PENDING_REVISION,
+      status: 'pending',
+      outcome: null,
+    };
+  }
+  const closureReason = INTERACTION_CLOSURE_REASONS.find(
+    (reason) => reason === request.outcomeReason,
+  );
+  if (closureReason) {
+    return {
+      ...base,
+      revision: INTERACTION_RESOLVED_REVISION,
+      status: 'closed',
+      outcome: {
+        kind: 'closure',
+        reason: closureReason,
+        committedAt: requireSandboxBoundarySettledAt(request),
+      },
+    };
+  }
+  return {
+    ...base,
+    revision: INTERACTION_RESOLVED_REVISION,
+    status: 'answered',
+    outcome: sandboxBoundaryCanonicalOutcome(request),
+  };
+}
+
+export function projectPendingSandboxBoundaryInteraction(
+  request: SandboxBoundaryRequest,
+): InteractionPendingSnapshot {
+  const snapshot = projectSandboxBoundaryInteraction(request);
+  if (snapshot.status !== 'pending') {
+    throw new RuntimeInteractionInvariantError(
+      `Sandbox boundary Interaction ${request.requestId} is already resolved`,
+    );
+  }
+  return snapshot;
 }
 
 export function compareStoredInteractionRequests(
@@ -138,6 +205,11 @@ function canonicalOutcomeForHistoricalAnswer(
   if (answer.kind === 'question') {
     return questionCanonicalOutcome(answer, committedAt);
   }
+  if (answer.kind === 'sandbox_boundary') {
+    throw new RuntimeInteractionInvariantError(
+      'Sandbox boundary answers require their canonical boundary settlement',
+    );
+  }
   return answer.decision === 'deny'
     ? {
         kind: 'permission_answer',
@@ -153,4 +225,45 @@ function canonicalOutcomeForHistoricalAnswer(
         reviewer: 'user',
         committedAt,
       };
+}
+
+function sandboxBoundaryInteractionBase(request: SandboxBoundaryRequest) {
+  if (!request.turnId || !request.runId) {
+    throw new RuntimeInteractionInvariantError(
+      `Sandbox boundary ${request.requestId} has no hosted Run provenance`,
+    );
+  }
+  return {
+    schemaVersion: INTERACTION_SCHEMA_VERSION,
+    interactionId: request.requestId,
+    sessionId: request.sessionId,
+    turnId: request.turnId,
+    runId: request.runId,
+    request: projectInteractionSandboxBoundaryRequest(request),
+  } as const;
+}
+
+function sandboxBoundaryCanonicalOutcome(
+  request: SandboxBoundaryRequest,
+): Extract<InteractionCanonicalOutcome, { kind: 'sandbox_boundary_decision' }> {
+  if (request.status === 'pending') {
+    throw new RuntimeInteractionInvariantError(
+      `Sandbox boundary Interaction ${request.requestId} is still pending`,
+    );
+  }
+  return {
+    kind: 'sandbox_boundary_decision',
+    decision: request.status === 'denied' ? 'deny' : 'allow',
+    status: request.status,
+    committedAt: requireSandboxBoundarySettledAt(request),
+  };
+}
+
+function requireSandboxBoundarySettledAt(request: SandboxBoundaryRequest): number {
+  if (request.settledAt === undefined) {
+    throw new RuntimeInteractionInvariantError(
+      `Sandbox boundary Interaction ${request.requestId} has no settlement timestamp`,
+    );
+  }
+  return request.settledAt;
 }

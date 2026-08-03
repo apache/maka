@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import { createSqliteTelemetryRepo } from '@maka/storage';
+import { createSqliteModelCallLedger, createSqliteTelemetryRepo } from '@maka/storage';
 import { registerUsageIpc, type UsageIpcDeps } from '../usage-ipc-main.js';
 
 type Handler = (...args: any[]) => any;
@@ -21,6 +21,7 @@ test('usage IPC leaves settings usage session-derived while detailed usage waits
   const root = await mkdtemp(join(tmpdir(), 'maka-usage-ipc-ready-'));
   const seeded = createSqliteTelemetryRepo(root);
   const telemetryRepo = createSqliteTelemetryRepo(root, { createIfMissing: false });
+  const modelCallLedger = createSqliteModelCallLedger(root);
   const ready = deferred();
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
@@ -42,6 +43,7 @@ test('usage IPC leaves settings usage session-derived while detailed usage waits
         },
       },
       telemetryRepo,
+      modelCallLedger,
       ensureUsageReady: async () => {
         calls.push('ready:start');
         await ready.promise;
@@ -65,23 +67,13 @@ test('usage IPC leaves settings usage session-derived while detailed usage waits
     assert.equal(summary.data.totalRequests, 1);
     assert.deepEqual(calls, ['settings', 'ready:start', 'ready:end']);
   } finally {
-    await Promise.allSettled([seeded.close(), telemetryRepo.close()]);
+    await Promise.allSettled([seeded.close(), modelCallLedger.close(), telemetryRepo.close()]);
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('pricing IPC mutations serialize through the canonical SQLite repo after legacy import', async () => {
+test('pricing IPC mutations serialize through the canonical SQLite repo', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-usage-ipc-pricing-'));
-  const legacy = pricing('openai:legacy');
-  await writeFile(
-    join(root, 'telemetry.json'),
-    JSON.stringify({
-      usageRecords: [],
-      toolInvocations: [],
-      pricingOverrides: [legacy],
-    }),
-    'utf8',
-  );
   const telemetryRepo = createSqliteTelemetryRepo(root);
   const handlers = new Map<string, Handler>();
   const firstWrite = deferred();
@@ -131,11 +123,11 @@ test('pricing IPC mutations serialize through the canonical SQLite repo after le
     assert.ok(list);
     assert.ok(put);
     assert.ok(reset);
-    assert.deepEqual(await list({}), { ok: true, data: [legacy] });
+    assert.deepEqual(await list({}), { ok: true, data: [] });
 
     const first = put({}, pricing('openai:first'));
     const second = put({}, pricing('openai:second'));
-    const third = reset({}, 'openai:legacy');
+    const third = reset({}, 'openai:first');
     await firstWriteStarted.promise;
     assert.deepEqual(events, ['upsert:openai:first']);
 
@@ -145,17 +137,17 @@ test('pricing IPC mutations serialize through the canonical SQLite repo after le
     assert.equal((await third).ok, true);
     assert.deepEqual(
       telemetryRepo.listPricingOverrides().map((item) => item.modelKey),
-      ['openai:first', 'openai:second'],
+      ['openai:second'],
     );
     assert.deepEqual(events, [
       'upsert:openai:first',
-      'refresh:2',
+      'refresh:1',
       'notify:usage:pricing:changed',
       'upsert:openai:second',
-      'refresh:3',
-      'notify:usage:pricing:changed',
-      'delete:openai:legacy',
       'refresh:2',
+      'notify:usage:pricing:changed',
+      'delete:openai:first',
+      'refresh:1',
       'notify:usage:pricing:changed',
     ]);
   } finally {

@@ -1,6 +1,6 @@
-import { useReducer, useRef } from 'react';
+import { useRef } from 'react';
 import type { SessionEventStreamSnapshot } from '@maka/core';
-import type { InteractionQueues, LiveTurnProjection } from '@maka/ui';
+import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -12,7 +12,6 @@ export interface AppShellSessionUiState {
   liveTurnBySession: Record<string, LiveTurnProjection>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
-  sessionEventHealthBySession: Record<string, SessionEventStreamSnapshot>;
   pendingPermissionModeBySession: Record<string, boolean>;
   pendingSessionModelBySession: Record<string, boolean>;
 }
@@ -26,7 +25,6 @@ const SESSION_UI_MAP_KEYS = [
   'liveTurnBySession',
   'shellRunUpdatesBySession',
   'interactionBySession',
-  'sessionEventHealthBySession',
   'pendingPermissionModeBySession',
   'pendingSessionModelBySession',
 ] as const satisfies readonly AppShellSessionUiStateMapKey[];
@@ -38,10 +36,11 @@ void allSessionUiMapsAreListed;
 // `useSettledSessionTransientReconcile` heals a session whose turn ended while
 // its SessionEvent stream wasn't being followed, and must drop only the live
 // projection. The independently-scoped maps (message load error / retry, pending
-// permission-mode / model toggles, the permission queue, event-stream health,
-// stop-pending) each have their own lifecycle and must survive a mere turn
-// settle — a full `clearAppShellSessionUiStateForSession` (session deletion)
-// would wipe them too.
+// permission-mode / model toggles, the permission queue, stop-pending) each have
+// their own lifecycle and must survive a mere turn settle — a full
+// `clearAppShellSessionUiStateForSession` (session deletion) would wipe them too.
+// Event-stream health is scoped the same way but lives outside this state; see
+// `sessionEventHealthBySessionRef`.
 const TURN_TRANSIENT_MAP_KEYS = [
   'liveTurnBySession',
 ] as const satisfies readonly AppShellSessionUiStateMapKey[];
@@ -50,14 +49,11 @@ export function createInitialAppShellSessionUiState(): AppShellSessionUiState {
   return Object.fromEntries(SESSION_UI_MAP_KEYS.map((key) => [key, {}])) as unknown as AppShellSessionUiState;
 }
 
-function omitSessionKey<K extends AppShellSessionUiStateMapKey>(
-  current: AppShellSessionUiState[K],
-  sessionId: string,
-): AppShellSessionUiState[K] {
+function omitSessionKey<T extends Record<string, unknown>>(current: T, sessionId: string): T {
   if (!(sessionId in current)) return current;
   const next = { ...current };
   delete (next as Record<string, unknown>)[sessionId];
-  return next as AppShellSessionUiState[K];
+  return next;
 }
 
 function updateAppShellSessionUiStateMap<K extends AppShellSessionUiStateMapKey>(
@@ -103,18 +99,31 @@ export function clearAppShellTurnTransientForSession(
 
 export function createAppShellSessionUiStateController(
   initialState: AppShellSessionUiState = createInitialAppShellSessionUiState(),
-  onChange: (state: AppShellSessionUiState) => void = () => {},
 ) {
   let currentState = initialState;
   const liveTurnBySessionRef = { current: currentState.liveTurnBySession };
-  const sessionEventHealthBySessionRef = { current: currentState.sessionEventHealthBySession };
+  // Written by the event-health probes and read back by them alone. Kept off
+  // `currentState` so a probe never notifies a subscriber.
+  const sessionEventHealthBySessionRef: { current: Record<string, SessionEventStreamSnapshot> } = {
+    current: {},
+  };
+  const listeners = new Set<() => void>();
 
   function replaceState(next: AppShellSessionUiState): void {
     if (next === currentState) return;
     currentState = next;
     liveTurnBySessionRef.current = next.liveTurnBySession;
-    sessionEventHealthBySessionRef.current = next.sessionEventHealthBySession;
-    onChange(next);
+    // Synchronous, immediately after the swap. Never schedule this: the
+    // terminal-turn handoff reads the state it announces (#1985).
+    for (const listener of [...listeners]) listener();
+  }
+
+  /** Subscribe to state replacements. Stable identity, for `useSyncExternalStore`. */
+  function subscribe(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   }
 
   function updateMap<K extends AppShellSessionUiStateMapKey>(
@@ -133,6 +142,7 @@ export function createAppShellSessionUiStateController(
 
   return {
     getState: () => currentState,
+    subscribe,
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
@@ -141,10 +151,30 @@ export function createAppShellSessionUiStateController(
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),
     setInteractionBySession: createMapSetter('interactionBySession'),
-    setSessionEventHealthBySession: createMapSetter('sessionEventHealthBySession'),
+    setSessionEventHealthBySession: ((updater) => {
+      sessionEventHealthBySessionRef.current = updater(sessionEventHealthBySessionRef.current);
+    }) satisfies StateUpdater<Record<string, SessionEventStreamSnapshot>>,
     setPendingPermissionModeBySession: createMapSetter('pendingPermissionModeBySession'),
     setPendingSessionModelBySession: createMapSetter('pendingSessionModelBySession'),
+    /**
+     * The authority said something about `turnId` — it started, failed to
+     * start, or ended. Drop that arm's `unconfirmed` claim so a session list
+     * may settle it again. An answer about a turn this session is not on says
+     * nothing, and leaves the state untouched.
+     */
+    confirmLiveTurn: (sessionId: string, turnId: string) => {
+      updateMap('liveTurnBySession', (current) => {
+        const armed = current[sessionId];
+        if (!armed) return current;
+        const confirmed = confirmLiveTurn(armed, turnId);
+        return confirmed === armed ? current : { ...current, [sessionId]: confirmed! };
+      });
+    },
     clearSessionUiState: (sessionId: string) => {
+      sessionEventHealthBySessionRef.current = omitSessionKey(
+        sessionEventHealthBySessionRef.current,
+        sessionId,
+      );
       replaceState(clearAppShellSessionUiStateForSession(currentState, sessionId));
     },
     clearTurnTransientState: (sessionId: string) => {
@@ -153,21 +183,25 @@ export function createAppShellSessionUiStateController(
   };
 }
 
+export type AppShellSessionUiStateController = ReturnType<typeof createAppShellSessionUiStateController>;
+
+/**
+ * Owns the controller for the component's lifetime. Deliberately does NOT
+ * subscribe: readers select what they need through
+ * `useAppShellSessionUiSelector`, so no single component re-renders for every
+ * write to the store (#1985).
+ */
 export function useAppShellSessionUiState() {
-  const [, forceRender] = useReducer((version: number) => version + 1, 0);
-  const controllerRef = useRef<ReturnType<typeof createAppShellSessionUiStateController> | null>(null);
+  const controllerRef = useRef<AppShellSessionUiStateController | null>(null);
 
   if (!controllerRef.current) {
-    controllerRef.current = createAppShellSessionUiStateController(
-      createInitialAppShellSessionUiState(),
-      () => forceRender(),
-    );
+    controllerRef.current = createAppShellSessionUiStateController();
   }
 
   const controller = controllerRef.current;
 
   return {
-    state: controller.getState(),
+    controller,
     liveTurnBySessionRef: controller.liveTurnBySessionRef,
     sessionEventHealthBySessionRef: controller.sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: controller.setMessageLoadErrorBySession,
@@ -179,6 +213,7 @@ export function useAppShellSessionUiState() {
     setSessionEventHealthBySession: controller.setSessionEventHealthBySession,
     setPendingPermissionModeBySession: controller.setPendingPermissionModeBySession,
     setPendingSessionModelBySession: controller.setPendingSessionModelBySession,
+    confirmLiveTurn: controller.confirmLiveTurn,
     clearSessionUiState: controller.clearSessionUiState,
     clearTurnTransientState: controller.clearTurnTransientState,
   };

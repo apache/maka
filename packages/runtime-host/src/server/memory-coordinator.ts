@@ -42,6 +42,7 @@ import {
 import { MemoryProjectionError, projectMemoryQuery } from './memory-projection.js';
 import type { ConnectionContext, MemoryOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
+import { ConnectionBoundChunkUploads } from './connection-bound-chunk-uploads.js';
 
 const PENDING_DOCUMENT_DEFAULT = '# Maka Pending Memory\n';
 const MAX_ACTIVE_UPLOADS = 8;
@@ -64,15 +65,9 @@ export interface HostMemoryCoordinatorDeps {
   readonly newId?: () => string;
 }
 
-interface UploadState {
-  readonly hostEpoch: string;
-  readonly connectionId: string;
+interface MemoryUploadMetadata {
   readonly expectedRevision: MemoryRevision;
-  readonly totalBytes: number;
   readonly contentSha256: MemoryRevision;
-  readonly bytes: Buffer;
-  nextOffset: number;
-  touchedAt: number;
 }
 
 /** Canonical Runtime Host authority for the transparent Memory bundle. */
@@ -88,7 +83,7 @@ export class HostMemoryCoordinator {
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #newId: () => string;
-  readonly #uploads = new Map<string, UploadState>();
+  readonly #uploads: ConnectionBoundChunkUploads<MemoryUploadMetadata>;
   readonly #acceptedMutations = new Set<Promise<void>>();
   #policyAccess: 'enabled' | 'disabled' | 'incognito_active' | undefined;
   #draining = false;
@@ -101,6 +96,14 @@ export class HostMemoryCoordinator {
     this.#requestDrain = deps.requestDrain ?? (() => {});
     this.#now = deps.now ?? Date.now;
     this.#newId = deps.newId ?? randomUUID;
+    this.#uploads = new ConnectionBoundChunkUploads(
+      {
+        maxActive: MAX_ACTIVE_UPLOADS,
+        maxStagedBytes: MAX_STAGED_UPLOAD_BYTES,
+        ttlMs: UPLOAD_TTL_MS,
+      },
+      this.#now,
+    );
   }
 
   async recover(): Promise<void> {
@@ -129,9 +132,7 @@ export class HostMemoryCoordinator {
   }
 
   releaseConnection(connectionId: string): void {
-    for (const [uploadId, upload] of this.#uploads) {
-      if (upload.connectionId === connectionId) this.#uploads.delete(uploadId);
-    }
+    this.#uploads.releaseConnection(connectionId);
   }
 
   readPromptProjection(sessionId: string): Promise<HostMemoryPromptProjection> {
@@ -198,7 +199,7 @@ export class HostMemoryCoordinator {
     if (this.#draining) return hostDraining();
     const accepted = this.#activation.runMutation(async () => {
       try {
-        this.#sweepExpiredUploads();
+        this.#uploads.sweepExpired();
         const policy = await this.#runtimePolicyStores.runtimePolicy.getSnapshot();
         const blocked = blockedByPolicy(policy.policy);
         if (blocked) {
@@ -245,26 +246,18 @@ export class HostMemoryCoordinator {
     if (snapshot.revision !== input.expectedRevision) {
       return revisionConflict(input.expectedRevision, snapshot.revision);
     }
-    if (
-      this.#uploads.size >= MAX_ACTIVE_UPLOADS ||
-      this.#stagedByteCapacity() + input.totalBytes > MAX_STAGED_UPLOAD_BYTES
-    ) {
-      return rejected('upload_conflict');
-    }
     const uploadId = this.#newId();
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(uploadId) || this.#uploads.has(uploadId)) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(uploadId)) {
       throw new Error('Memory upload id generator returned an invalid or duplicate id');
     }
-    this.#uploads.set(uploadId, {
-      hostEpoch: context.hostEpoch,
-      connectionId: context.connectionId,
+    const opened = this.#uploads.open(uploadId, context, input.totalBytes, {
       expectedRevision: input.expectedRevision,
-      totalBytes: input.totalBytes,
       contentSha256: input.contentSha256,
-      bytes: Buffer.alloc(input.totalBytes),
-      nextOffset: 0,
-      touchedAt: this.#now(),
     });
+    if (opened.kind === 'capacity_exhausted') return rejected('upload_conflict');
+    if (opened.kind === 'owned_existing' || opened.kind === 'identity_conflict') {
+      throw new Error('Memory upload id generator returned an invalid or duplicate id');
+    }
     return { ok: true, result: { kind: 'upload_opened', uploadId, nextOffset: 0 } };
   }
 
@@ -272,39 +265,22 @@ export class HostMemoryCoordinator {
     input: Extract<MemoryMutateInput, { kind: 'replace_chunk' }>,
     context: ConnectionContext,
   ): OperationOutcome<'memory.mutate'> {
-    const upload = this.#ownedUpload(input.uploadId, context);
-    if (!upload) return rejected('upload_not_found');
     const chunk = Buffer.from(input.chunkBase64, 'base64');
-    const end = input.offset + chunk.byteLength;
-    if (end > upload.totalBytes || input.offset > upload.nextOffset) {
-      return rejected('upload_conflict');
-    }
-    if (input.offset < upload.nextOffset) {
-      if (end > upload.nextOffset || !upload.bytes.subarray(input.offset, end).equals(chunk)) {
-        return rejected('upload_conflict');
-      }
-      upload.touchedAt = this.#now();
-      return {
-        ok: true,
-        result: {
-          kind: 'chunk_accepted',
-          uploadId: input.uploadId,
-          nextOffset: upload.nextOffset,
-        },
-      };
-    }
-    chunk.copy(upload.bytes, input.offset);
-    upload.nextOffset = end;
-    upload.touchedAt = this.#now();
+    const accepted = this.#uploads.accept(input.uploadId, context, input.offset, chunk);
+    if (accepted.kind === 'not_found') return rejected('upload_not_found');
+    if (accepted.kind === 'conflict') return rejected('upload_conflict');
     return {
       ok: true,
-      result: { kind: 'chunk_accepted', uploadId: input.uploadId, nextOffset: upload.nextOffset },
+      result: {
+        kind: 'chunk_accepted',
+        uploadId: input.uploadId,
+        nextOffset: accepted.nextOffset,
+      },
     };
   }
 
   #abortReplace(uploadId: string, context: ConnectionContext): OperationOutcome<'memory.mutate'> {
-    const upload = this.#ownedUpload(uploadId, context);
-    if (upload) this.#uploads.delete(uploadId);
+    this.#uploads.abort(uploadId, context);
     return { ok: true, result: { kind: 'upload_aborted', uploadId } };
   }
 
@@ -312,11 +288,12 @@ export class HostMemoryCoordinator {
     uploadId: string,
     context: ConnectionContext,
   ): Promise<OperationOutcome<'memory.mutate'>> {
-    const upload = this.#ownedUpload(uploadId, context);
-    if (!upload) return rejected('upload_not_found');
-    if (upload.nextOffset !== upload.totalBytes) return rejected('upload_incomplete');
-    this.#uploads.delete(uploadId);
-    if (revision(upload.bytes) !== upload.contentSha256) return rejected('invalid_content');
+    const consumed = this.#uploads.consumeComplete(uploadId, context);
+    if (consumed.kind === 'not_found') return rejected('upload_not_found');
+    if (consumed.kind === 'incomplete') return rejected('upload_incomplete');
+    const upload = consumed.upload;
+    if (revision(upload.bytes) !== upload.metadata.contentSha256)
+      return rejected('invalid_content');
 
     let content: string;
     try {
@@ -330,12 +307,12 @@ export class HostMemoryCoordinator {
       return rejected(parsed.reason === 'oversize' ? 'oversize' : 'invalid_content');
 
     const snapshot = await this.#store.read();
-    if (snapshot.revision !== upload.expectedRevision) {
-      return revisionConflict(upload.expectedRevision, snapshot.revision);
+    if (snapshot.revision !== upload.metadata.expectedRevision) {
+      return revisionConflict(upload.metadata.expectedRevision, snapshot.revision);
     }
     if (snapshot.pending.kind === 'safe_mode') return rejected('safe_mode');
     return this.#commitBundle({
-      expectedRevision: upload.expectedRevision,
+      expectedRevision: upload.metadata.expectedRevision,
       memory: encodeText(redacted),
       pending: documentBytesOrNull(snapshot.pending),
       backup: 'save',
@@ -514,13 +491,6 @@ export class HostMemoryCoordinator {
     };
   }
 
-  #ownedUpload(uploadId: string, context: ConnectionContext): UploadState | undefined {
-    const upload = this.#uploads.get(uploadId);
-    return upload?.hostEpoch === context.hostEpoch && upload.connectionId === context.connectionId
-      ? upload
-      : undefined;
-  }
-
   #trackAcceptedMutation(operation: Promise<unknown>): void {
     const completion = operation.then(
       () => undefined,
@@ -530,19 +500,6 @@ export class HostMemoryCoordinator {
     void completion.then(() => {
       this.#acceptedMutations.delete(completion);
     });
-  }
-
-  #sweepExpiredUploads(): void {
-    const cutoff = this.#now() - UPLOAD_TTL_MS;
-    for (const [uploadId, upload] of this.#uploads) {
-      if (upload.touchedAt <= cutoff) this.#uploads.delete(uploadId);
-    }
-  }
-
-  #stagedByteCapacity(): number {
-    let total = 0;
-    for (const upload of this.#uploads.values()) total += upload.totalBytes;
-    return total;
   }
 
   async #refreshForCurrentPolicy(): Promise<void> {

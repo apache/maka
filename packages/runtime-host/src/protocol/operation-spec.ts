@@ -9,6 +9,7 @@ export type HostOperationErrorCode =
   | 'session_archived'
   | 'session_busy'
   | 'operation_conflict'
+  | 'capability_unavailable'
   | 'invalid_request'
   | 'persistence_failed'
   | 'commit_outcome_unknown'

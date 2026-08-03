@@ -27,8 +27,8 @@ test('tool catalogs are complete and independently selectable', () => {
   const zh = getToolActivityCopy('zh');
   const en = getToolActivityCopy('en');
 
-  assert.equal(zh.status.running, '运行中');
-  assert.equal(en.status.running, 'Running');
+  assert.equal(zh.status.interrupted, '已中断');
+  assert.equal(en.status.interrupted, 'Interrupted');
   assert.equal(zh.sandboxBlocked.title, '操作可能被沙箱阻止');
   assert.equal(en.sandboxBlocked.title, 'Operation may have been blocked by sandbox');
 });
@@ -37,4 +37,26 @@ test('selectors accept only resolved UI locales', () => {
   const select = (locale: UiLocale) => getConversationCopy(locale).composer.sendLabel;
   assert.equal(select('zh'), '发送');
   assert.equal(select('en'), 'Send');
+});
+
+test('thinking-level labels stay short single tokens (default / off / low…xhigh)', () => {
+  const zh = getConversationCopy('zh').model;
+  assert.equal(zh.defaultLevel, '默认');
+  assert.deepEqual(zh.level, {
+    off: '关',
+    minimal: '最少',
+    low: '低',
+    medium: '中',
+    high: '高',
+    xhigh: '超高',
+    max: '最高',
+  });
+  // Guard against multi-character compound labels that force a wide popout
+  // (e.g. “高等”, “Extra high”) on the content-sized thinking Selector.
+  for (const label of Object.values(zh.level)) {
+    assert.ok(label.length <= 2, `zh thinking label too long: ${label}`);
+    assert.doesNotMatch(label, /等$/);
+  }
+  assert.equal(getConversationCopy('en').model.level.high, 'High');
+  assert.equal(getConversationCopy('en').model.level.xhigh, 'Extra high');
 });

@@ -5,80 +5,22 @@
    Transparent local MEMORY.md surface. Editor is intentionally plain
    textarea chrome; no rich text, no hidden extraction.
    ──────────────────────────────────────────────────────────────── */
-.settingsMemoryPreview {
-    display: grid;
-    /* #1363 review follow-up: explicit column — the implicit auto track
-       sized to the reused .settingsConnectionMeta row's intrinsic width
-       (~247px) and pushed the card past the 480px floor's content column. */
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-1);
-    padding: var(--space-2-5) var(--space-3);
-    border: var(--border-width-hairline) solid var(--foreground-10);
-    border-radius: var(--radius-surface);
-    background: var(--foreground-3);
-  }
-.settingsMemoryPreview strong {
-    font-size: var(--font-size-ui);
-    color: var(--foreground);
-  }
-.settingsMemoryPreview small {
-    font-size: var(--font-size-caption);
+/* Prompt preview body (now a SettingsField inside its own section — the
+   muted wrapper card and its header chrome are gone; the <pre> is the one
+   owned surface). */
+.settingsMemoryInjectState {
     color: var(--muted-foreground);
+    font: var(--maka-text-supporting);
   }
-.settingsMemoryPreview p {
-    margin: 0;
+.settingsMemoryInjectState[data-active="true"] {
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-.settingsMemoryPromptPreview {
-    display: grid;
-    gap: var(--space-2);
-    padding: var(--space-3);
-    border: var(--border-width-hairline) solid var(--foreground-10);
-    border-radius: var(--radius-surface);
-    background: var(--foreground-3);
-  }
-.settingsMemoryPromptPreview[data-active="true"] {
-    border-color: var(--border-strong);
-    background: var(--state-selected-bg);
-  }
-.settingsMemoryPromptPreviewHeader {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    /* #1364: the trailing cluster (injection Chip + copy button) is an
-       inline-flex that cannot shrink; at the 480px window floor it overflowed
-       the card by ~13px. Let it wrap under the title instead. */
-    flex-wrap: wrap;
-    gap: var(--space-3);
-  }
-.settingsMemoryPromptPreviewHeader strong {
-    color: var(--foreground);
-    font-size: var(--font-size-ui);
-  }
-.settingsMemoryPromptPreviewHeader div {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2-5);
-  }
-.settingsMemoryPromptPreviewHeader span {
-    flex-shrink: 0;
-    color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-  }
-.settingsMemoryPromptPreview[data-active="true"] .settingsMemoryPromptPreviewHeader span {
-    color: var(--foreground);
   }
 .settingsMemoryPromptPreview small {
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
+    font: var(--maka-text-supporting);
   }
 .settingsMemoryPromptPreviewBudget {
-    font-family: var(--font-mono);
+    font: var(--maka-text-code);
     color: var(--foreground-secondary);
   }
 .settingsMemoryPromptPreview pre {
@@ -90,17 +32,14 @@
     border-radius: var(--radius-control);
     background: var(--background);
     color: var(--foreground-secondary);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
+    font: var(--maka-text-code);
     white-space: pre-wrap;
     word-break: break-word;
   }
 .settingsMemoryPromptPreview p {
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    font: var(--maka-text-body);
   }
 .settingsMemoryEntryPreviewNotice {
     display: grid;
@@ -112,12 +51,11 @@
   }
 .settingsMemoryEntryPreviewNotice strong {
     color: var(--foreground);
-    font-size: var(--font-size-ui);
+    font: var(--maka-text-body);
   }
 .settingsMemoryEntryPreviewNotice small {
     color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
+    font: var(--maka-text-supporting);
   }
 .settingsMemorySaveSummary {
     display: grid;
@@ -129,35 +67,28 @@
   }
 .settingsMemorySaveSummary strong {
     color: var(--foreground);
-    font-size: var(--font-size-ui);
+    font: var(--maka-text-body);
   }
 .settingsMemorySaveSummary small {
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
+    font: var(--maka-text-body);
   }
 .settingsMemorySaveSummaryTime {
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-  }
-.settingsMemoryBackupState {
-    color: var(--foreground-secondary);
-  }
-.settingsMemoryBackupState[data-empty="true"] {
-    color: var(--muted-foreground);
+    font: var(--maka-text-supporting);
   }
 .settingsMemoryBackupList {
     display: grid;
     /* #1363 review follow-up: same explicit column as the preview card. */
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-1-5);
-    padding: var(--space-2) var(--space-2-5);
-    border: var(--border-width-hairline) solid var(--foreground-10);
-    border-radius: var(--radius-surface);
-    background: var(--foreground-3);
+    /* The box border/fill is gone: the block sits inside the 记忆文件与备份
+       card now (SettingsField), which already owns the surface — a second
+       bordered fill made it a card-in-card. */
   }
 .settingsMemoryBackupList strong {
     color: var(--foreground);
-    font-size: var(--font-size-ui);
+    font: var(--maka-text-body);
   }
 /* PR-MEMORY-BACKUP-LIST-A11Y-0 (round 16/30): selector
      targeted the old `<div role="list">`. Container is now a
@@ -168,9 +99,9 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1-5);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
   }
 .settingsMemoryBackupCandidates > li {
     margin: 0;
@@ -178,23 +109,23 @@
   }
 .settingsMemoryBackupList small {
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
+    font: var(--maka-text-supporting);
   }
 .settingsMemoryBackupCandidate {
-    display: inline-flex;
+    /* Was a bordered pill per candidate — pills inside a box inside the
+       card. A candidate is a row: description left, actions right, wrapping
+       under on the narrow floor. */
+    display: flex;
     align-items: center;
-    /* #1363 review follow-up: text + three action buttons are ~218px
-       intrinsically — on the floor column the buttons flow to a second
-       line inside the pill instead of bleeding out of it. */
+    justify-content: space-between;
     flex-wrap: wrap;
     gap: var(--space-1-5);
-    padding: var(--space-0-5) var(--space-1-5);
-    border: var(--border-width-hairline) solid var(--foreground-10);
-    border-radius: var(--radius-pill);
-    background: var(--background);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
+    font: var(--maka-text-body);
+  }
+.settingsMemoryBackupCandidate > span {
+    flex: 1 1 220px;
+    min-width: 0;
   }
 
 .settingsMemoryEntryGroups {
@@ -217,44 +148,26 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
-    font-size: var(--font-size-ui);
+    font: var(--maka-text-body);
     color: var(--foreground-secondary);
   }
 
 .settingsMemoryEntryGroupHeader strong {
     color: var(--foreground);
-    font-size: var(--font-size-ui);
-  }
-
-.settingsMemoryEntryDraftNotice {
-    margin: 0;
-    padding: var(--space-1-5) var(--space-2);
-    border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.30);
-    border-radius: var(--radius-surface);
-    background: oklch(from var(--warning) l c h / 0.08);
-    color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    font: var(--maka-text-body);
   }
 
 .settingsMemoryEntryList {
-    /* PR-MEMORY-ENTRY-LIST-A11Y-0 (round 18/30): switched from
-       `<div role="list">` to semantic `<ul>`. Reset the UA's
-       bullet + padding-left so the grouped-card border + radius
-       stays the same. */
+    /* Semantic <ul>; open idiom — entries are edge-to-edge rows divided by
+       hairlines, no bordered/filled list container. */
     list-style: none;
     margin: 0;
     padding: 0;
     display: grid;
-    /* #1363 review follow-up: explicit column — the widest entry card's
-       intrinsic width (its nowrap actions row) sized the implicit track
-       past the 480px floor's content column. */
+    /* #1363 review follow-up: explicit column — the widest entry row's
+       intrinsic width must not size the track past the content column. */
     grid-template-columns: minmax(0, 1fr);
     gap: 0;
-    border: var(--border-width-hairline) solid var(--foreground-10);
-    border-radius: var(--radius-surface);
-    overflow: hidden;
-    background: var(--foreground-2);
   }
 
 .settingsMemoryEntryList > li {
@@ -262,15 +175,13 @@
     padding: 0;
   }
 
-.settingsMemoryEntryCard {
+.settingsMemoryEntryRow {
     display: grid;
-    /* #1363 review follow-up: third layer of the same implicit-track leak —
-       the card is a grid too, and its auto column sized to the widest
-       child instead of the list's column. */
+    /* #1363 review follow-up: explicit column, same leak as the list above. */
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-0-5);
-    padding: var(--space-2) var(--space-3);
-    border-bottom: var(--border-width-hairline) solid var(--foreground-8);
+    padding-block: var(--space-2);
+    border-bottom: var(--border-width-hairline) solid var(--border);
   }
 
 /* PR-MEMORY-ENTRY-DIVIDER-FIX-0 (WAWQAQ msg `610c0e5a`): after
@@ -280,17 +191,17 @@
      between-card divider disappeared. Target the last `<li>` in
      the list instead. */
 
-.settingsMemoryEntryList > li:last-child .settingsMemoryEntryCard {
+.settingsMemoryEntryList > li:last-child .settingsMemoryEntryRow {
     border-bottom: 0;
   }
 
-.settingsMemoryEntryCard strong {
-    font-size: var(--font-size-ui);
+.settingsMemoryEntryRow strong {
+    font: var(--maka-text-body);
     color: var(--foreground);
   }
 
-.settingsMemoryEntryCard small {
-    font-size: var(--font-size-caption);
+.settingsMemoryEntryRow small {
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
   }
 
@@ -304,35 +215,16 @@
     min-width: 0;
   }
 
-.settingsMemoryPromptScope {
-    width: max-content;
-    max-width: 100%;
-    padding: var(--space-0-5) var(--space-1-5);
-    border: var(--border-width-hairline) solid var(--foreground-10);
-    border-radius: var(--radius-control);
-    background: var(--foreground-5);
-    color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
-  }
-
-.settingsMemoryPromptScope[data-active="true"] {
-    border-color: var(--border-strong);
-    background: var(--state-selected-bg);
-    color: var(--foreground-secondary);
-  }
-
 .settingsMemoryDirtyState[data-dirty="true"] {
     color: var(--warning-text, var(--info-text));
-    font-weight: var(--font-weight-semibold);
+    font: var(--maka-text-label);
   }
 
-.settingsMemoryEntryCard p,
+.settingsMemoryEntryRow p,
   .settingsMemoryEntryEmpty {
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    font: var(--maka-text-body);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -354,7 +246,7 @@
 
 .settingsMemoryFilter small {
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
+  font: var(--maka-text-supporting);
   white-space: nowrap;
 }
 
@@ -362,47 +254,24 @@
   .settingsMemoryListEmpty {
     display: grid;
     gap: var(--space-1);
-    padding: var(--space-2-5) var(--space-3);
-    border: var(--border-width-hairline) solid var(--foreground-10);
-    border-radius: var(--radius-surface);
-    background: var(--foreground-3);
+    padding-block: var(--space-2);
   }
 
 .settingsMemoryFilterEmpty strong,
   .settingsMemoryListEmpty strong {
     color: var(--foreground);
-    font-size: var(--font-size-ui);
+    font: var(--maka-text-body);
   }
 
 .settingsMemoryFilterEmpty small,
   .settingsMemoryListEmpty small {
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    font: var(--maka-text-body);
   }
 
 .settingsMemoryManualAdd {
   display: grid;
   gap: var(--space-2);
-  padding: var(--space-2-5) var(--space-3);
-  border: var(--border-width-hairline) solid var(--foreground-10);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-2);
-}
-
-.settingsMemoryManualAddHeader {
-  display: grid;
-  gap: var(--space-0-5);
-}
-
-.settingsMemoryManualAddHeader strong {
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-}
-
-.settingsMemoryManualAddHeader small {
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .settingsMemoryDraftWarning {
@@ -416,48 +285,12 @@
 
 .settingsMemoryDraftWarning strong {
   color: var(--foreground);
-  font-size: var(--font-size-ui);
+  font: var(--maka-text-body);
 }
 
 .settingsMemoryDraftWarning small {
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
-}
-
-/* Memory page meta row — relocated from connection.css — issue #546 PR1. */
-/* Memory page meta row: the absolute MEMORY.md path used to render
-     full-width mono text that shoved the sibling status words into a
-     cramped vertical stack. Give the path its own full row with
-     head-side ellipsis (RTL trick keeps the meaningful .../MEMORY.md
-     tail visible; title= carries the full path on hover). */
-.settingsMemoryMeta {
-    flex-wrap: wrap;
-    row-gap: var(--space-1);
-    /* Detail audit round 2: the hairline alone still read as orphaned
-       fragments floating between two cards (user screenshot). A quiet
-       filled strip gives the path + status words a real container. */
-    padding: var(--space-1-5) var(--space-2-5);
-    border-radius: var(--radius-control);
-    background: var(--foreground-3);
-  }
-.settingsMemoryPath {
-    /* The component already shortens the path for display
-       (displayMemoryPath); this is just the safety net so an
-       unexpectedly long tail can never shove the status words into a
-       cramped stack again. */
-    flex: 1 1 100%;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-/* #1363 review follow-up: scoped to the preview card — the shared
-   .settingsConnectionMeta stays nowrap on the wide connection cards, but
-   inside this card its two file-state clusters wrap on a narrow column. */
-.settingsMemoryPreview .settingsConnectionMeta {
-  flex-wrap: wrap;
+  font: var(--maka-text-supporting);
 }
 
 .settingsMemoryBackupCandidate > span {

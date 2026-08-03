@@ -152,7 +152,7 @@ Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, cod
 apps/desktop/       Electron main / preload / React renderer
 
 packages/core/      Pure contracts for Sessions, Events, Permissions, and Connections
-packages/storage/   SQLite operational state, legacy importers, and payload stores
+packages/storage/   SQLite operational state, configuration, and payload stores
 packages/runtime/   AgentRun, model adapters, tools, context, and recovery
 packages/headless/  TaskRun, Autonomous Loop, Self-check, eval, and AHE
 packages/cli/       TUI and non-interactive CLI
@@ -168,17 +168,18 @@ Maka stores workspace data under Electron `userData` by default:
 
 ```text
 <Electron userData>/workspaces/default/
+  runtime.sqlite
   llm-connections.json
   credentials.json
   settings.json
-  sessions/
+  artifacts/
 ```
 
 Current boundaries that matter:
 
-- Sessions and connection metadata live in the local filesystem;
+- Sessions, messages, execution ledgers, workflows, usage, Automations, Daily Review, and Headless TaskRuns live in `runtime.sqlite`;
 - Runtime credentials such as API keys, bot tokens, and proxy passwords currently live in local plaintext `credentials.json`, behind the OS account boundary, with POSIX directory mode `0700` and file mode `0600` enforced;
-- Subscription OAuth tokens (Claude, Codex, GitHub Copilot, and the Cursor/Antigravity previews) live in the same `credentials.json` — the single authority for desktop, TUI, and headless; Electron `safeStorage` only decrypts pre-existing legacy token files once at desktop startup (#1125);
+- Subscription OAuth tokens (Claude, Codex, GitHub Copilot, and the Cursor/Antigravity previews) live in the same `credentials.json` — the single authority for desktop, TUI, and headless. Pre-existing Electron `safeStorage` credential/token files are not imported; affected users must re-authenticate;
 - Renderer does not receive plaintext credentials. File writes, Shell, and dangerous tool calls pass through the permission engine;
 - Headless real-model evaluation fails closed by default and requires an explicit external isolation boundary.
 
@@ -186,65 +187,30 @@ Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/R
 
 ## Runtime storage and recovery
 
-RuntimeEvent persistence is always canonical in `runtime.sqlite`. On the first
-write, Maka batch-idempotently imports legacy RuntimeEvent JSONL without
-rewriting it. Legacy-only workspaces remain available to read-only inspection
-until that first write.
+`runtime.sqlite` is the sole operational authority. It owns RuntimeEvents,
+session metadata and message history, Agent Graph control, core execution state,
+workflow state, usage and pricing, Artifact metadata, Automations, Daily Review,
+and Headless TaskRuns. Artifact payload bytes remain regular files under
+`artifacts/`; connections, credentials, settings, MCP configuration, skills,
+and device identity remain configuration files.
 
-Session metadata and Agent Graph control tables now use the same process-local
-operational database owner and the same `runtime.sqlite` transaction authority.
-The first operational open copies a WAL-consistent `sessions.sqlite` source
-into `runtime.sqlite`, validates every source row, and records the source digest
-and result in `cutover_journal`. An interrupted copy resumes without partial
-rows; a legacy database changed after cutover fails closed. The old database is
-retained as migration evidence but is no longer a production writer. Session
-transcript bodies remain append-only JSONL.
+This storage generation does not import earlier File/JSONL authorities. On
+upgrade, legacy session titles may still be discoverable through current
+metadata, but conversation history that exists only in legacy transcript files
+is not copied into `session_messages` and opens as an empty thread. Likewise,
+pre-version or `safeStorage`-encrypted credential/token files are not migrated;
+users with only those copies must re-authenticate. This data-loss boundary is
+intentional for this release and must be considered before upgrading an
+existing workspace.
 
-Core execution state now shares that authority too: AgentRun headers and event
-ledgers, event projections, root-turn admissions and source proofs,
-Interactions, Host Epoch message receipts, and ShellRun records are canonical
-in `runtime.sqlite` across CLI, Desktop, Runtime Host, and Headless. Each legacy
-file store is fingerprinted and imported through its own durable
-`cutover_journal` entry before the corresponding repository opens. Copy and
-validation are one SQLite transaction, retries are idempotent, and a changed
-legacy source after cutover fails closed. The legacy files are retained only as
-migration evidence; new execution writes do not modify them.
-
-Workflow state is migrating in reviewable slices. Task Ledger events and
-projections, Plan events and projections, Deep Research events, and Plan
-Reminder records are now canonical in `runtime.sqlite`.
-Desktop and Runtime Host production wiring opens these SQLite repositories;
-their JSON/JSONL predecessors are read only during a fingerprinted, crash-safe
-cutover and are never updated by later mutations.
-
-Usage telemetry and pricing authority now use that same operational database.
-Legacy `telemetry.json` and `pricing.json` sources are decoded together and
-fingerprinted before their rows and pricing revision are committed atomically.
-After cutover, Desktop and Runtime Host write only `runtime.sqlite`; the source
-files remain unchanged as migration evidence.
-
-Artifact metadata and lifecycle state now follow the same rule. Payload bytes
-remain files, but their records are canonical in `runtime.sqlite` after a
-fingerprinted `metadata.jsonl` cutover. Payload publication keeps its durable
-staging/link protocol: recovery removes bytes whose metadata transaction did not
-commit and preserves committed bytes while cleaning staging residue. Purge
-intent recovery likewise completes against the SQLite metadata authority.
-
-Selected-session bundle export now reads that SQLite authority through a
-WAL-consistent snapshot, verifies that retained legacy evidence still matches
-its completed cutover, and writes only the selected Artifact rows into the
-bundle's `runtime.sqlite`. Payload bytes are copied under the Artifact writer
-lock, cross-session rows and payloads are excluded, and bundles no longer emit
-`artifacts/metadata.jsonl`.
-
-Full operational backup now uses the shared database owner's online SQLite
-backup API rather than copying `runtime.sqlite` or its WAL sidecars. A strict
-manifest binds the standalone database snapshot to every active session
-transcript and canonical Artifact payload by size and SHA-256. Restore verifies
-SQLite integrity, foreign keys, supported schema versions, relational identity
-sets, transcript decodability, and the exact manifested file tree before
-atomically publishing a new state root. Interrupted backup or restore staging
-is removed and can be retried without changing either source.
+Full operational backup uses the database owner's online SQLite backup API and
+copies canonical Artifact payloads under the Artifact writer lock. Its manifest
+binds every file by size and SHA-256. Validation checks the standalone SQLite
+snapshot's integrity, foreign keys, schema registry and required tables,
+decodes canonical session-message and Artifact records, and verifies Artifact
+payload sizes against SQLite metadata before restore. Backup and restore use
+owner-only file modes, file and directory synchronization, staging, and atomic
+publication.
 
 Headless trajectory hydration now consumes a frozen selected-session export
 from that SQLite Artifact authority. The cell publishes `trajectory-state`
@@ -253,21 +219,6 @@ standalone `runtime.sqlite` first and then only the payloads referenced by the
 validated snapshot. It does not copy a live WAL or fall back to
 `artifacts/metadata.jsonl`. Missing, corrupt, unsupported, or mismatched
 evidence fails closed to a summary trajectory instead of mixing authorities.
-
-The remaining storage work is deliberately classified rather than implied
-complete:
-
-- Artifact metadata no longer exposes a production JSONL writer;
-  `artifacts/metadata.jsonl` is accepted only as fingerprinted, read-only
-  cutover evidence, and can be removed after the migration/cutover matrix is
-  complete;
-- StoredMessage transcript bodies remain append-only JSONL;
-- automation, connections, credentials, settings, MCP configuration, skills,
-  and device identity are configuration state and stay outside this operational
-  migration;
-- Headless TaskRun evaluation ledgers, imported foreign-session caches, Daily
-  Review archives, and quote-cleanup bookkeeping are separate product/evaluation
-  domains and are not part of issue #1649.
 
 Runtime continuation remains opt-in:
 

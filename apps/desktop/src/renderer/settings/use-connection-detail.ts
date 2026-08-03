@@ -27,7 +27,7 @@ import {
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
 
-// Maps an OAuth model-connection provider type to the browser-loopback login
+// Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
 // the loopback / polling services (Codex, Antigravity) are one-button-drivable
 // here; Claude's paste-code flow and plain API-key providers return null so the
@@ -69,7 +69,7 @@ export interface ConnectionDetailProps {
 
 // Controller for the API/OAuth model connection detail sheet. Owns the whole
 // mutually-exclusive action state machine (save / test / fetch-models /
-// save-enabled-models / set-default / delete, all gated through one keyed
+// save-enabled-models / delete, all gated through one keyed
 // action guard) plus the credential-presence probe and the prop-sync effects.
 // The sheet view (provider-connection-detail.tsx) is a thin render over this
 // return; extracting it kept the 12 useState + 4 refs + 4 effects together so
@@ -99,11 +99,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [testing, setTesting] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingEnabledModels, setSavingEnabledModels] = useState(false);
-  const [settingDefaultModel, setSettingDefaultModel] = useState(false);
-  const [settingDefault, setSettingDefault] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const connectionDetailActionGuard = useKeyedActionGuard<
-    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'set-default-model' | 'set-default' | 'delete'
+    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'delete'
   >();
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
@@ -112,7 +110,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const needsOAuth = defaults.authKind === 'oauth_token';
   const oauthLoginService = needsOAuth ? oauthLoginServiceFor(connection.providerType) : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
-  const hasFixedOAuthBaseUrl = needsOAuth && Boolean(defaults.baseUrl);
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
@@ -123,7 +120,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     : supportsApiKey
       ? copy.keyTroubleshooting
       : copy.endpointTroubleshooting;
-  const savedBaseUrl = connection.baseUrl ?? defaults.baseUrl;
+  // `?? ''` to match the `baseUrl` draft's own initializer: a provider with
+  // neither a saved nor a default endpoint compared '' against undefined, so
+  // `hasBaseUrlChange` was permanently true and its save button never rested.
+  const savedBaseUrl = connection.baseUrl ?? defaults.baseUrl ?? '';
   const draftBaseUrl = baseUrl;
   const hasApiKeyChange = apiKey.length > 0;
   const hasBaseUrlChange = draftBaseUrl !== savedBaseUrl;
@@ -143,8 +143,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     testing ||
     fetchingModels ||
     savingEnabledModels ||
-    settingDefaultModel ||
-    settingDefault ||
     deleting;
   const issue = connectionChipStatus(connection, locale);
   const lastTestMessage = connectionLastTestMessageDisplay(connection.lastTestMessage, locale);
@@ -194,9 +192,17 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     );
 
     if (connection.slug !== previousSnapshot.slug || (apiKey.length === 0 && localStillSynced)) {
-      setBaseUrl(nextSnapshot.baseUrl);
-      setModels(nextSnapshot.models);
-      setModelSource(nextSnapshot.modelSource);
+      // Only when the draft actually differs. `connectionDetailSnapshot` builds
+      // `connection.models ?? []` fresh every call, so for a connection with no
+      // models array this wrote a new-but-equal array on every pass — a new
+      // identity for the `models` dep, which re-ran the effect, which wrote
+      // another one. The page never settled; React cut it off at the update
+      // depth limit and the whole panel unmounted.
+      if (!localAlreadyMatchesNext) {
+        setBaseUrl(nextSnapshot.baseUrl);
+        setModels(nextSnapshot.models);
+        setModelSource(nextSnapshot.modelSource);
+      }
       syncedConnectionSnapshotRef.current = nextSnapshot;
       return;
     }
@@ -228,26 +234,36 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     modelsFetchedAt: connection.modelsFetchedAt,
   });
 
-  async function save() {
+  /**
+   * Save ONE row. The patch used to carry both fields whichever row asked for
+   * it, so an abandoned endpoint draft rode along with the next key save — the
+   * user typed an address, changed their mind without cancelling, replaced the
+   * key, and the address they never confirmed was written. A row owns its own
+   * field; nothing else travels with it.
+   *
+   * Returns whether the write landed, so a failed save keeps the row open with
+   * the draft intact instead of collapsing as if it had succeeded.
+   */
+  async function save(field: 'key' | 'endpoint'): Promise<boolean> {
     const releaseSave = connectionDetailActionGuard.beginExclusive('save');
-    if (!releaseSave) return;
+    if (!releaseSave) return false;
     const lifecycle = connectionDetailLifecycleRef.current;
     setBusy(true);
     let saved = false;
     try {
-      await props.bridge.update(connection.slug, {
-        baseUrl,
-        ...(apiKey ? { apiKey } : {}),
-      });
+      await props.bridge.update(
+        connection.slug,
+        field === 'key' ? { apiKey } : { baseUrl },
+      );
       saved = true;
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      const wroteNewKey = apiKey.length > 0;
-      setApiKey('');
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
+      const wroteNewKey = field === 'key' && apiKey.length > 0;
+      if (wroteNewKey) setApiKey('');
       const nextHasSecret = probesCredential ? await props.bridge.hasSecret(connection.slug) : true;
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
       setHasSecret(nextHasSecret);
       await props.onChanged();
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
       // Auto-fetch live model list as soon as the secret is in place. Without
       // this, the user lands on a Settings · 模型 row whose `defaultModel`
       // dropdown only contains the static fallback list (e.g. Z.ai → just
@@ -256,12 +272,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (
         supportsRemoteDiscovery &&
         (!requiresCredential || nextHasSecret) &&
-        (wroteNewKey || hasBaseUrlChange || models.length === 0)
+        (wroteNewKey || field === 'endpoint' || models.length === 0)
       ) {
         void refreshModels({ silent: true });
       }
+      return true;
     } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
       if (saved && probesCredential) {
         setHasSecret('error');
       }
@@ -269,6 +286,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         saved ? copy.refreshFailed : copy.saveFailed,
         providerPanelActionErrorMessage(error, locale),
       );
+      return saved;
     } finally {
       releaseSave();
       if (isConnectionDetailCurrent(lifecycle)) setBusy(false);
@@ -277,10 +295,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
 
   async function updateEnabledModels(nextIds: string[]) {
     if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return;
-    const next = connectionEnabledModelIds({
-      defaultModel: connection.defaultModel,
-      enabledModelIds: nextIds,
-    });
+    // The selection is passed through as stated. Merging the default back in
+    // here made unchecking it a silent no-op: the recomputed list equalled the
+    // current one, `modelIdListsEqual` short-circuited, and nothing was ever
+    // written. The store owns what follows from the selection.
+    const next = [...new Set(nextIds.map((id) => id.trim()).filter(Boolean))];
     if (modelIdListsEqual(next, enabledModelIds)) return;
     const previous = enabledModelIds;
     const lifecycle = connectionDetailLifecycleRef.current;
@@ -307,40 +326,20 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  async function updateDefaultModel(nextModel: string) {
-    const model = nextModel.trim();
-    if (!model || model === connection.defaultModel) return;
-    const releaseSetDefaultModel = connectionDetailActionGuard.beginExclusive('set-default-model');
-    if (!releaseSetDefaultModel) return;
-    const lifecycle = connectionDetailLifecycleRef.current;
-    setSettingDefaultModel(true);
-    let saved = false;
-    try {
-      await props.bridge.update(connection.slug, { defaultModel: model });
-      saved = true;
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      await props.onChanged();
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.success(copy.defaultModelSet(model));
-    } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.error(
-        saved ? copy.refreshFailed : copy.defaultModelSaveFailed,
-        providerPanelActionErrorMessage(error, locale),
-      );
-    } finally {
-      releaseSetDefaultModel();
-      if (isConnectionDetailCurrent(lifecycle)) setSettingDefaultModel(false);
-    }
-  }
-
   async function runTest() {
     const releaseTest = connectionDetailActionGuard.beginExclusive('test');
     if (!releaseTest) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setTesting(true);
     try {
-      const result: ConnectionTestResult = await props.bridge.test(connection.slug, { model: connection.defaultModel });
+      // No model argument: `resolveConnectionTestModel` already picks one from
+      // the enabled ids, then the provider fallbacks, and drops any candidate
+      // the fetched inventory doesn't list. Naming `connection.defaultModel`
+      // here handed that choice to the layer with the least information — and
+      // to a field this page no longer owns, which is '' once the user enables
+      // no models. Left unset, a zero-model connection still verifies its
+      // credential against a fallback instead of failing with 'No model to test'.
+      const result: ConnectionTestResult = await props.bridge.test(connection.slug);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
         toast.success(
@@ -409,31 +408,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } finally {
       releaseFetch();
       if (isConnectionDetailCurrent(lifecycle)) setFetchingModels(false);
-    }
-  }
-
-  async function setAsDefault() {
-    const releaseSetDefault = connectionDetailActionGuard.beginExclusive('set-default');
-    if (!releaseSetDefault) return;
-    if (!connection.enabled) {
-      releaseSetDefault();
-      toast.error(copy.connectionDisabled, copy.connectionDisabledDetail);
-      return;
-    }
-    const lifecycle = connectionDetailLifecycleRef.current;
-    setSettingDefault(true);
-    try {
-      await props.bridge.setDefault(connection.slug);
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      await props.onChanged();
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.success(copy.defaultSet(connection.name));
-    } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.error(copy.switchDefaultFailed, providerPanelActionErrorMessage(error, locale));
-    } finally {
-      releaseSetDefault();
-      if (isConnectionDetailCurrent(lifecycle)) setSettingDefault(false);
     }
   }
 
@@ -506,30 +480,26 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     busy,
     testing,
     fetchingModels,
-    settingDefaultModel,
-    settingDefault,
     deleting,
     detailActionBusy,
     supportsApiKey,
     needsOAuth,
     usesGitHubCopilotLogin,
     oauthLoginService,
-    hasFixedOAuthBaseUrl,
     supportsRemoteDiscovery,
     credentialProbePending,
     hasUsableCredential,
     apiKeyStatusHint,
     hasApiKeyChange,
     hasBaseUrlChange,
+    savedBaseUrl,
     issue,
     lastTestMessage,
     lastTestAtMs,
     save,
     updateEnabledModels,
-    updateDefaultModel,
     runTest,
     refreshModels,
-    setAsDefault,
     remove,
     refreshAfterRelogin,
   };

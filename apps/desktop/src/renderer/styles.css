@@ -1,170 +1,47 @@
 @import "./cascade-layers.css";
-@import "tailwindcss";
-@source "../../../../packages/ui/src";
-
-/* Astryx substrate (#1565 PR 2). Each import is wrapped in its astryx-*
-   layer — see cascade-layers.css for why unlayered Astryx would invert the
-   whole cascade, and why the layers are top-level names rather than
-   astryx.* sub-layers.
-
-   Two Astryx sheets are deliberately NOT imported yet — each targets bare
-   elements or shadows product tokens, which no layer order can bury (a rule
-   wins wherever no product rule competes; a custom property on the Theme
-   wrapper wins by tree distance):
-   - reset.css (cursor on buttons, small/code sizing) replaces Tailwind
-     preflight and lands with the slice that removes it (PR 12).
-   - tailwind-theme.css: the existing @theme inline bridge below stays the
-     single source for utility tokens until Tailwind leaves in PR 12.
-   Layer slots for them are already reserved in cascade-layers.css.
-
-   maka.css below lands with the first Astryx atom consumers: an `astryx
-   theme build` of the Maka-named theme (a pure extends of neutral). The CLI
-   cannot drop the @scope'd element-typography block at the source (--no-prose
-   was removed for build⇄runtime parity), so scripts/build-astryx-theme.mjs
-   strips it post-build — safe because built themes skip runtime injection,
-   making the imported file the only CSS source. Its internal @layer
-   astryx-theme nests into the astryx-tokens slot below. */
+/* Astryx owns the generic reset and component substrate. Maka's theme and
+   product compositions occupy later named layers; see cascade-layers.css. */
+@import "@astryxdesign/core/reset.css";
 @import "@astryxdesign/core/astryx.css" layer(astryx-components);
 @import "./astryx-theme/maka.css" layer(astryx-tokens);
+@import "@maka/ui/styles.css" layer(components);
 
 /* Bundled Geist fallbacks; maka-tokens.css owns the product font stacks. */
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
-/* maka-tokens.css stays unlayered: it declares its own @layer base/
-   utilities/components blocks that must keep merging into the top-level
-   Tailwind layers. Wrapping the import would nest them under maka.legacy
-   and raise them above the utilities layer. Residual asymmetry: its few
-   unlayered non-token rules (.maka-shimmer and svg.lucide) now beat all maka.legacy rules unconditionally, no longer
-   by source order — do not add competing declarations for them under
-   styles/. */
+/* Token declarations choose their own base/theme/component layer. */
 @import "./maka-tokens.css";
-@import "./reference-shell.css" layer(maka.legacy);
-@import "./styles/base.css" layer(maka.legacy);
-@import "./styles/shell-layout.css" layer(maka.legacy);
-@import "./styles/sidebar.css" layer(maka.legacy);
-@import "./styles/search-modal.css" layer(maka.legacy);
-@import "./styles/prompt-suggestions.css" layer(maka.legacy);
-@import "./styles/deep-research.css" layer(maka.legacy);
-@import "./styles/onboarding.css" layer(maka.legacy);
-@import "./styles/empty-state.css" layer(maka.legacy);
-@import "./styles/module-pages.css" layer(maka.legacy);
-@import "./styles/settings/select.css" layer(maka.legacy);
-@import "./styles/model-switcher.css" layer(maka.legacy);
-@import "./styles/chat-header.css" layer(maka.legacy);
-@import "./styles/task-ledger.css" layer(maka.legacy);
-@import "./styles/plan-mode.css" layer(maka.legacy);
-@import "./styles/agent-graph.css" layer(maka.legacy);
-@import "./styles/error.css" layer(maka.legacy);
-@import "./styles/help.css" layer(maka.legacy);
-@import "./styles/palette.css" layer(maka.legacy);
-@import "./styles/hero.css" layer(maka.legacy);
+@import "./reference-shell.css" layer(components);
+@import "./styles/base.css" layer(components);
+/* Single owner of the native-cursor convention (hand only on links). Product
+   components follow Astryx in the declared cascade, so this remains explicit
+   without a compatibility layer. */
+@import "./styles/native-cursor.css" layer(components);
+@import "./styles/shell-layout.css" layer(components);
+@import "./styles/sidebar.css" layer(components);
+@import "./styles/search-modal.css" layer(components);
+@import "./styles/prompt-suggestions.css" layer(components);
+@import "./styles/deep-research.css" layer(components);
+@import "./styles/onboarding.css" layer(components);
+@import "./styles/module-pages.css" layer(components);
+@import "./styles/settings/select.css" layer(components);
+@import "./styles/model-switcher.css" layer(components);
+@import "./styles/chat-header.css" layer(components);
+@import "./styles/task-ledger.css" layer(components);
+@import "./styles/plan-mode.css" layer(components);
+@import "./styles/agent-graph.css" layer(components);
+@import "./styles/error.css" layer(components);
+@import "./styles/help.css" layer(components);
+@import "./styles/palette.css" layer(components);
+@import "./styles/hero.css" layer(components);
 @import "./styles/chat-message.css" layer(components);
-@import "./styles/composer.css" layer(maka.legacy);
-@import "./styles/composer-mention.css" layer(maka.legacy);
-@import "./styles/chat-detail.css" layer(maka.legacy);
-@import "./styles/settings.css" layer(maka.legacy);
-@import "./styles/interaction-prompts.css" layer(maka.legacy);
-@import "./styles/daily-review.css" layer(maka.legacy);
-@import "./styles/theme-glass.css" layer(maka.legacy);
-@import "./styles/prompt-rail.css" layer(maka.legacy);
-@import "./styles/quote-chip.css" layer(maka.legacy);
-@import "./styles/quote-side-panel.css" layer(maka.legacy);
-@import "./styles/astryx-mount.css" layer(maka.legacy);
-
-@theme inline {
-  --color-background: var(--background);
-  --color-background-elevated: var(--background-elevated);
-  --color-foreground: var(--foreground);
-  --color-foreground-dimmed: var(--foreground-dimmed);
-  --color-card: var(--background);
-  --color-card-foreground: var(--foreground);
-  --color-popover: var(--background-elevated);
-  --color-popover-foreground: var(--foreground);
-  --color-primary: var(--action);
-  --color-primary-foreground: var(--action-foreground);
-  --color-action: var(--action);
-  --color-action-foreground: var(--action-foreground);
-  --color-secondary: var(--foreground-5);
-  --color-secondary-foreground: var(--foreground);
-  --color-muted: var(--foreground-5);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: oklch(from var(--accent) 0.985 min(c, 0.003) h);
-  --color-link: var(--link);
-  --color-focus-ring: var(--focus-ring);
-  --color-status-running: var(--status-running);
-  --color-nav-active: var(--nav-active);
-  --color-toast-accent: var(--toast-accent);
-  --color-control: var(--control);
-  --color-control-foreground: var(--control-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-text: var(--destructive-text);
-  --color-destructive-foreground: oklch(from var(--destructive) 0.985 min(c, 0.003) h);
-  --color-info: var(--info);
-  --color-info-foreground: var(--info-text);
-  --color-success: var(--success);
-  --color-success-foreground: var(--success-text);
-  --color-warning: var(--warning);
-  --color-warning-foreground: var(--warning-text);
-  --color-border: var(--border);
-  --color-border-strong: var(--border-strong);
-  --color-input: var(--border-strong);
-  --color-ring: var(--ring);
-  --color-foreground-2: var(--foreground-2);
-  --color-foreground-3: var(--foreground-3);
-  --color-foreground-5: var(--foreground-5);
-  --color-foreground-8: var(--foreground-8);
-  --color-foreground-10: var(--foreground-10);
-  --color-foreground-secondary: var(--foreground-secondary);
-  --color-hover: var(--state-hover-bg);
-  --color-active: var(--state-selected-bg);
-  --color-user-message-bubble: var(--user-message-bubble);
-
-  --radius-sm: var(--radius-control);
-  --radius-md: var(--radius-surface);
-  --radius-lg: var(--radius-surface);
-  --radius-xl: var(--radius-modal);
-
-  --text-xs: var(--font-size-caption);
-  --text-sm: var(--font-size-ui);
-  --text-base: var(--font-size-base);
-
-  /* fix(#546): pin the text-* paired line-heights to the 4-tier leading
-     scale. Without these, bare `text-xs`/`text-sm` utilities carry
-     Tailwind's stock ratios (1.333/1.4286) — off-tier values that PR1
-     (#526) removed everywhere else. 11px caption is the snug zone;
-     13px body (base == ui after the #546 re-tier) stays normal so prose
-     keeps a ≥1.5 ratio (WCAG 1.4.12 headroom at the denser body size). */
-  --text-xs--line-height: var(--leading-snug);
-  --text-sm--line-height: var(--leading-snug);
-  --text-base--line-height: var(--leading-normal);
-
-  /* PR-LEADING-CONVERGE-0 (#520 PR1): bridge --leading-* to Tailwind
-     leading-* utilities so `var(--leading-*)` in CSS and `leading-*`
-     in TSX share one source — same inline-bridge pattern as --text-*. */
-  --leading-none: var(--leading-none);
-  --leading-tight: var(--leading-tight);
-  --leading-snug: var(--leading-snug);
-  --leading-normal: var(--leading-normal);
-
-  /* Bridge --font-weight-* to Tailwind font-* utilities. */
-  --font-weight-normal: var(--font-weight-normal);
-  --font-weight-medium: var(--font-weight-medium);
-  --font-weight-semibold: var(--font-weight-semibold);
-  --font-weight-bold: var(--font-weight-bold);
-
-  /* Bridge --tracking-* to Tailwind utilities. No tight tier: Maka is
-     CJK-first and does not tighten CJK letter spacing. */
-  --tracking-normal: var(--tracking-normal);
-  --tracking-wide: var(--tracking-wide);
-  --tracking-wider: var(--tracking-wider);
-  --tracking-widest: var(--tracking-widest);
-
-  /* Export the 4px ruler to Tailwind so the p-N,
-     gap-N, m-N utilities share one source with hand-written var(--space-N).
-     Without this, Tailwind default --spacing 0.25rem (3.75px under 15px
-     root) would keep p-2 at 7.5px while var(--space-2) is 8px — two scales. */
-  --spacing: 4px;
-
-  --shadow-maka-panel: 0 0 0 1px var(--border), 0 1px 2px oklch(from var(--foreground) l c h / 0.04), 0 14px 40px oklch(from var(--foreground) l c h / 0.08);
-}
+@import "./styles/composer.css" layer(components);
+@import "./styles/composer-mention.css" layer(components);
+@import "./styles/chat-detail.css" layer(components);
+@import "./styles/settings.css" layer(components);
+@import "./styles/interaction-prompts.css" layer(components);
+@import "./styles/daily-review.css" layer(components);
+@import "./styles/theme-glass.css" layer(components);
+@import "./styles/prompt-rail.css" layer(components);
+@import "./styles/quote-side-panel.css" layer(components);
+@import "./styles/astryx-mount.css" layer(components);

@@ -8,6 +8,8 @@ import {
   type CreateArtifactInput,
   type DurableArtifactAttachmentReader,
 } from './artifact-store.js';
+
+export { sanitizeArtifactName } from './artifact-store.js';
 import {
   assertStorageRootLease,
   createStorageRootLeaseIdentityGuard,
@@ -38,6 +40,7 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
   listPage: ArtifactAuthorityStore['listPage'];
+  listTurnArtifacts: ArtifactAuthorityStore['listTurnArtifacts'];
   getInSession: ArtifactAuthorityStore['getInSession'];
   readTextInSession: ArtifactAuthorityStore['readTextInSession'];
   readBinaryInSession: ArtifactAuthorityStore['readBinaryInSession'];
@@ -169,6 +172,7 @@ function createWriterFacade(
     access: 'write',
     [writerBrand]: true,
     listPage: (sessionId, options) => run(() => store.listPage(sessionId, options)),
+    listTurnArtifacts: (sessionId, turnId) => run(() => store.listTurnArtifacts(sessionId, turnId)),
     getInSession: (sessionId, artifactId) => run(() => store.getInSession(sessionId, artifactId)),
     readTextInSession: (sessionId, artifactId, options) =>
       run(() => store.readTextInSession(sessionId, artifactId, options)),

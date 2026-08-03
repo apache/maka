@@ -23,7 +23,7 @@
  *     changes locale, platform, theme, or window visibility.
  * @param {string} key
  */
-export function isDeniedEnvKey(key) {
+function isDeniedEnvKey(key) {
   return (
     key === 'VITE_DEV_SERVER_URL' ||
     key.startsWith('MAKA_E2E') ||

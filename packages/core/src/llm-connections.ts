@@ -115,9 +115,14 @@ export interface LlmConnection extends RuntimeExecutionConnection {
 }
 
 /**
- * Return the model ids exposed by a connection, preserving the invariant that
- * its default model is always enabled. Missing legacy state intentionally
- * resolves to the default model only, never the full discovered catalog.
+ * Read-time normalizer: the model ids a stored connection exposes.
+ *
+ * A row written before `enabledModelIds` existed carries only `defaultModel`,
+ * so reading one resolves to the default model alone — never the full
+ * discovered catalog. This is a migration shim for reads, NOT the rule for
+ * writes: merging the default into a selection the user just made would
+ * re-assert a choice they withdrew. Explicit selections go through
+ * `reconcileConnectionAfterEnabledModelsChange`.
  */
 export function connectionEnabledModelIds(connection: {
   defaultModel?: unknown;
@@ -137,6 +142,43 @@ export function connectionEnabledModelIds(connection: {
 }
 
 /**
+ * THE rule for a connection's model selection:
+ * **`defaultModel` is either absent, or a member of `enabledModelIds`.**
+ *
+ * Applied when the user states a new enabled set. Dropping a model that
+ * happens to be the default drops the default with it, rather than moving the
+ * default to some other member of the set: which model a new chat starts on is
+ * 设置 · 通用's one control, and picking a replacement here would answer that
+ * question on the user's behalf from a page that no longer asks it. The
+ * connection is then simply not the workspace default — the readiness gate
+ * reports `missing_model` for it, which is what it is.
+ *
+ * The old behavior merged the default back into every write, which made
+ * unchecking the default a silent no-op: the recomputed list equalled the
+ * current one, the write short-circuited, and the box re-checked itself.
+ */
+export function reconcileConnectionAfterEnabledModelsChange(
+  connection: { defaultModel?: unknown },
+  nextEnabledModelIds: readonly unknown[],
+): {
+  defaultModel: string;
+  enabledModelIds: string[];
+} {
+  const enabled = new Set<string>();
+  for (const candidate of nextEnabledModelIds) {
+    if (typeof candidate !== 'string') continue;
+    const id = candidate.trim();
+    if (id) enabled.add(id);
+  }
+  const previousDefault =
+    typeof connection.defaultModel === 'string' ? connection.defaultModel.trim() : '';
+  return {
+    defaultModel: enabled.has(previousDefault) ? previousDefault : '',
+    enabledModelIds: [...enabled],
+  };
+}
+
+/**
  * After a successful live model discovery, keep the connection usable.
  *
  * Fetching models used to leave a stale `defaultModel` (e.g. retired
@@ -144,11 +186,26 @@ export function connectionEnabledModelIds(connection: {
  * readiness gate then fails with `model_not_enabled` — the "pull models and
  * the connection breaks" regression. Prefer an already-enabled id that is
  * still live; otherwise take the first discovered id.
+ *
+ * Repair is all this does for a default that is set. An ABSENT default is not
+ * a stale one, so there is nothing here to repair: the user cleared it by
+ * unchecking that model, and picking a replacement — the first still-enabled
+ * id, or the first live one — would re-assert the choice they withdrew on
+ * every refresh.
+ *
+ * The single exception is a connection that has never had models to choose
+ * from: four providers ship no `fallbackModels` (LM Studio and the three
+ * *-compatible ones), so for them discovery is the only place a first default
+ * can come from. `hasModelInventory` marks that case and nothing else — a
+ * non-empty inventory, fetched or a cached fallback catalog, means the user
+ * has had a list in front of them.
  */
 export function reconcileConnectionAfterModelFetch(
   connection: {
     defaultModel?: unknown;
     enabledModelIds?: unknown;
+    /** Whether this connection already had a non-empty inventory before this fetch. */
+    hasModelInventory?: boolean;
   },
   models: readonly { id?: unknown }[],
 ): {
@@ -180,8 +237,20 @@ export function reconcileConnectionAfterModelFetch(
     };
   }
 
+  if (!previousDefault) {
+    // Nothing to repair. Seed one only for a connection that has never had a
+    // list to pick from; otherwise the absence is the user's answer.
+    if (connection.hasModelInventory || previousEnabled.length > 0) {
+      return {
+        defaultModel: '',
+        enabledModelIds: previousEnabled.filter((id) => live.has(id)),
+      };
+    }
+    return { defaultModel: liveIds[0]!, enabledModelIds: [liveIds[0]!] };
+  }
+
   const defaultModel =
-    (previousDefault && live.has(previousDefault) ? previousDefault : undefined) ??
+    (live.has(previousDefault) ? previousDefault : undefined) ??
     previousEnabled.find((id) => live.has(id)) ??
     liveIds[0]!;
 

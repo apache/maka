@@ -51,35 +51,18 @@ html[data-os="darwin"] .maka-session-panel {
    the darwin text/label overrides remain in this file.
 ============================================================================= */
 
-/* L7 — group label was 9.5px UPPERCASE + 0.08em tracking on the
-   sidebar, which read as "old Windows admin tool" not "macOS native
-   sidebar". QoderWork uses plain quaternary text at body size. Drop
-   the size / transform / tracking on macOS; the natural color step
-   from --color-text-quaternary is enough hierarchy. */
-html[data-os="darwin"] .maka-list-group-label {
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: var(--tracking-normal);
-  text-transform: none;
-  color: var(--color-text-quaternary);
-}
-
 /* Product content inherits one foreground while Astryx owns the navigation
-   item chrome and its state colors. */
+   item chrome and its state colors. Section title size is pinned in
+   sidebar.css (.maka-session-list .astryx-side-nav-section …). */
 html[data-os="darwin"] .maka-session-list {
   color: var(--foreground);
 }
 
 html[data-os="darwin"] .maka-session-panel-footer {
-    /* PR-FE-BUG-HUNT-8 (kenji aesthetic-audit reminder 9, finding #2):
-       drop the 180deg footer linear-gradient. Even though it was a
-       subtle transparent→30% surface-canvas fade, it's exactly the
-       "上面灰下面白" pattern WAWQAQ called out twice (`1e693dee` /
-       `5d3b10e5`). The 50% glass base on the panel already provides
-       material depth; the footer only needs a hairline border-top
-       to separate it from the scroll area. No gradient. No seam. */
-    border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.05);
-    background: oklch(from var(--surface-canvas) l c h / 0.15);
+    /* Hairline + equal padding live on the sticky shell (sidebar.css).
+       Footer section stays transparent so Settings is the same SideNavItem. */
+    border-top: 0;
+    background: transparent;
   }
 
 /* =============================================================================

@@ -1,0 +1,87 @@
+/**
+ * Native cursor convention (product-wide, single owner).
+ *
+ * macOS / Maka: the hand cursor is for links only.
+ *
+ * ## Why role/button rules alone were not enough for model + thinking pickers
+ *
+ * Astryx Button / DropdownMenu: one interactive node (the `<button>`). Our
+ * `button { cursor: default }` covers the whole hit target → stable.
+ *
+ * Astryx Selector (model picker, thinking level, Settings selectors):
+ *
+ *   div.astryx-selector          ← styles.triggerContainer sets StyleX
+ *                                   cursor:pointer (atomic class x1ypdohk)
+ *     button[… x1ypdohk …]       ← label only
+ *     span                       ← chevron is a SIBLING of the button
+ *       Icon
+ *
+ * Product ghost chrome (height/hover fill) is painted on that outer div.
+ * Hover over the label hits the button (role rules win → arrow). Hover over
+ * the chevron or pill padding hits the shell / inherits from it → hand.
+ * That is the “sometimes pointer, sometimes not” bug — not cascade flicker.
+ *
+ * Fix: also neutralize `.astryx-selector` / `.astryx-multi-selector` shells
+ * (stable themeProps class names), not only button/role nodes.
+ *
+ * `!important` stays only in this file so one authority beats StyleX without
+ * per-control patches. :where() keeps specificity zero for later exceptions.
+ */
+
+/* 1. Generic interactive roles (Button, menu rows, options, labels, trees…).
+ * Astryx FieldLabel / TreeListItem set StyleX cursor:pointer on <label> and
+ * [role=treeitem] — cover them here so the product rule stays one sheet. */
+:where(
+  button,
+  label,
+  [role="button"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [role="menuitemcheckbox"],
+  [role="option"],
+  [role="switch"],
+  [role="tab"],
+  [role="combobox"],
+  [role="radio"],
+  [role="checkbox"],
+  [role="treeitem"]
+):not(:disabled):not([aria-disabled="true"]),
+:where(
+  button,
+  label,
+  [role="button"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [role="menuitemcheckbox"],
+  [role="option"],
+  [role="switch"],
+  [role="tab"],
+  [role="treeitem"]
+):not(:disabled):not([aria-disabled="true"])
+  :where(svg, span, div, p, i, img, path) {
+  cursor: default !important;
+}
+
+/* 2. Selector / MultiSelector field shell — see header comment. */
+:where(.astryx-selector, .astryx-multi-selector):not([aria-disabled="true"]),
+:where(.astryx-selector, .astryx-multi-selector):not([aria-disabled="true"])
+  :where(*) {
+  cursor: default !important;
+}
+
+/* Links keep the hand. */
+:where(a[href], area[href], [role="link"]):not([aria-disabled="true"]),
+:where(a[href], area[href], [role="link"]):not([aria-disabled="true"])
+  :where(svg, span, div, p, i, img) {
+  cursor: pointer !important;
+}
+
+/* Editable fields need the I-beam (beats combobox / selector-shell rules). */
+:where(
+  input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  textarea,
+  select,
+  [contenteditable="true"]
+):not(:disabled):not([aria-disabled="true"]) {
+  cursor: text !important;
+}

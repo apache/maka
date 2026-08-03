@@ -25,12 +25,17 @@
 }
 
 .maka-palette-hint {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
   font-variant-numeric: tabular-nums;
 }
 
 .maka-palette-empty {
+  gap: 10px;
+  padding-block: 26px;
   color: var(--muted-foreground);
+}
+
+@media (min-width: 768px) {
+  .maka-palette-empty { padding-block: 32px; }
 }

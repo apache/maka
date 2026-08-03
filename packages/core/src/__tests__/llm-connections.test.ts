@@ -180,3 +180,43 @@ test('model reconciliation keeps live choices and repairs stale defaults', () =>
     { defaultModel: 'saved', enabledModelIds: ['saved'] },
   );
 });
+
+test('model reconciliation never invents a default the user cleared', () => {
+  // Unchecking the default leaves a legitimate {no default, some enabled}
+  // state. Repair had nothing to repair here, so it reached for "the first
+  // still-enabled id" and handed the choice back — on every refresh, and on
+  // every OAuth resync that runs before a connection list read.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      { defaultModel: '', enabledModelIds: ['kept', 'retired'], hasModelInventory: true },
+      [{ id: 'kept' }, { id: 'fresh' }],
+    ),
+    { defaultModel: '', enabledModelIds: ['kept'] },
+  );
+  // Same with nothing enabled at all.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      { defaultModel: '', enabledModelIds: [], hasModelInventory: true },
+      [{ id: 'fresh' }],
+    ),
+    { defaultModel: '', enabledModelIds: [] },
+  );
+  // The one exception: a connection that has never had a list to pick from.
+  // The four providers with no `fallbackModels` are created with an empty
+  // default, so discovery is the only place their first one can come from.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      { defaultModel: '', enabledModelIds: [], hasModelInventory: false },
+      [{ id: 'first-live' }, { id: 'other' }],
+    ),
+    { defaultModel: 'first-live', enabledModelIds: ['first-live'] },
+  );
+  // Not an exception: a selection exists, so the user has had the list.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      { defaultModel: '', enabledModelIds: ['picked'], hasModelInventory: false },
+      [{ id: 'picked' }, { id: 'other' }],
+    ),
+    { defaultModel: '', enabledModelIds: ['picked'] },
+  );
+});

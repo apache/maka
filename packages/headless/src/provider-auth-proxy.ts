@@ -158,7 +158,7 @@ export function summarizeProviderTelemetry(
 }
 
 export type ProviderAuthProxyMode = 'bearer' | 'x-api-key';
-export type ProviderUsageProtocol = 'anthropic-sse' | 'openai-chat-sse';
+export type ProviderUsageProtocol = 'anthropic-sse' | 'openai-chat-sse' | 'openai-responses-sse';
 
 export interface ProviderUpstreamCredential {
   value: string;
@@ -171,7 +171,8 @@ export type ProviderUpstreamCredentialResolver = (
 
 type ProviderAuthProxyRouteConfig = {
   upstreamBaseUrl: string;
-  authMode?: ProviderAuthProxyMode;
+  clientAuthMode?: ProviderAuthProxyMode;
+  upstreamAuthMode?: ProviderAuthProxyMode;
   usageProtocol?: ProviderUsageProtocol;
   /** Injectable monotonic clock for deterministic tests. */
   now?: () => number;
@@ -228,7 +229,8 @@ interface ProviderAuthProxyRoute {
   readonly upstreamBasePath: string;
   readonly resolveUpstreamCredential: ProviderUpstreamCredentialResolver;
   readonly token: string;
-  readonly authMode: ProviderAuthProxyMode;
+  readonly clientAuthMode: ProviderAuthProxyMode;
+  readonly upstreamAuthMode: ProviderAuthProxyMode;
   readonly usageProtocol?: ProviderUsageProtocol;
   readonly usage: ProviderUsageAccumulator;
   readonly telemetry: ProviderTelemetryAccumulator;
@@ -269,7 +271,8 @@ export async function startProviderAuthProxyHub(
       upstreamBasePath: route.upstreamBasePath,
       resolveUpstreamCredential: route.resolveUpstreamCredential,
       token: route.token,
-      authMode: route.authMode,
+      clientAuthMode: route.clientAuthMode,
+      upstreamAuthMode: route.upstreamAuthMode,
       usageProtocol: route.usageProtocol,
       usage: route.usage,
       telemetry: route.telemetry,
@@ -357,7 +360,8 @@ function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAut
     upstreamBasePath,
     resolveUpstreamCredential,
     token: randomBytes(32).toString('hex'),
-    authMode: input.authMode ?? 'bearer',
+    clientAuthMode: input.clientAuthMode ?? 'bearer',
+    upstreamAuthMode: input.upstreamAuthMode ?? 'bearer',
     ...(input.usageProtocol ? { usageProtocol: input.usageProtocol } : {}),
     usage: new ProviderUsageAccumulator(),
     telemetry: new ProviderTelemetryAccumulator(),
@@ -371,8 +375,10 @@ function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAut
 
 function routeAuthorized(request: IncomingMessage, route: ProviderAuthProxyRoute): boolean {
   const presentedCredential =
-    route.authMode === 'x-api-key' ? request.headers['x-api-key'] : request.headers.authorization;
-  return authorized(presentedCredential, route.token, route.authMode);
+    route.clientAuthMode === 'x-api-key'
+      ? request.headers['x-api-key']
+      : request.headers.authorization;
+  return authorized(presentedCredential, route.token, route.clientAuthMode);
 }
 
 function closeProviderAuthProxyRoute(
@@ -396,7 +402,8 @@ async function forwardProviderRequest(input: {
   upstreamBasePath: string;
   resolveUpstreamCredential: ProviderUpstreamCredentialResolver;
   token: string;
-  authMode: ProviderAuthProxyMode;
+  clientAuthMode: ProviderAuthProxyMode;
+  upstreamAuthMode: ProviderAuthProxyMode;
   usageProtocol?: ProviderUsageProtocol;
   usage: ProviderUsageAccumulator;
   telemetry: ProviderTelemetryAccumulator;
@@ -407,10 +414,10 @@ async function forwardProviderRequest(input: {
   let requestTelemetry: MutableProviderRequestTelemetry | null = null;
   try {
     const presentedCredential =
-      input.authMode === 'x-api-key'
+      input.clientAuthMode === 'x-api-key'
         ? input.request.headers['x-api-key']
         : input.request.headers.authorization;
-    if (!authorized(presentedCredential, input.token, input.authMode)) {
+    if (!authorized(presentedCredential, input.token, input.clientAuthMode)) {
       input.response.writeHead(401).end('unauthorized');
       return;
     }
@@ -443,7 +450,7 @@ async function forwardProviderRequest(input: {
       if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
       else headers.set(name, value);
     }
-    if (input.authMode === 'x-api-key') headers.set('x-api-key', upstreamCredential.value);
+    if (input.upstreamAuthMode === 'x-api-key') headers.set('x-api-key', upstreamCredential.value);
     else headers.set('authorization', `Bearer ${upstreamCredential.value}`);
     for (const [name, value] of Object.entries(upstreamCredential.headers ?? {})) {
       headers.set(name, value);
@@ -692,11 +699,12 @@ class SseUsageParser {
       if (!isRecord(event)) continue;
       if (this.protocol === 'anthropic-sse' && event.type === 'message_stop')
         this.terminalEvent = true;
+      if (this.protocol === 'openai-responses-sse' && event.type === 'response.completed')
+        this.terminalEvent = true;
       const generated = generatedDelta(this.protocol, event);
       observation.output ||= generated.output;
       observation.reasoning ||= generated.reasoning;
-      const usage =
-        this.protocol === 'anthropic-sse' ? anthropicUsage(event) : openAiChatUsage(event);
+      const usage = usageFromEvent(this.protocol, event);
       if (!usage) continue;
       this.sawUsage = true;
       this.usage.input = Math.max(this.usage.input, usage.input);
@@ -734,6 +742,21 @@ function generatedDelta(
         delta.partial_json.length > 0);
     return { output, reasoning };
   }
+  if (protocol === 'openai-responses-sse') {
+    const reasoning =
+      (event.type === 'response.reasoning_summary_text.delta' ||
+        event.type === 'response.reasoning_text.delta') &&
+      typeof event.delta === 'string' &&
+      event.delta.length > 0;
+    const output =
+      reasoning ||
+      (typeof event.type === 'string' &&
+        event.type.startsWith('response.') &&
+        event.type.endsWith('.delta') &&
+        typeof event.delta === 'string' &&
+        event.delta.length > 0);
+    return { output, reasoning };
+  }
   const choices = Array.isArray(event.choices) ? event.choices : [];
   let output = false;
   let reasoning = false;
@@ -751,6 +774,15 @@ function generatedDelta(
       isRecord(delta.function_call);
   }
   return { output, reasoning };
+}
+
+function usageFromEvent(
+  protocol: ProviderUsageProtocol,
+  event: Record<string, unknown>,
+): ProviderTokenUsage | null {
+  if (protocol === 'anthropic-sse') return anthropicUsage(event);
+  if (protocol === 'openai-responses-sse') return openAiResponsesUsage(event);
+  return openAiChatUsage(event);
 }
 
 function anthropicUsage(event: Record<string, unknown>): ProviderTokenUsage | null {
@@ -795,6 +827,27 @@ function openAiChatUsage(event: Record<string, unknown>): ProviderTokenUsage | n
     output: nonNegativeNumber(event.usage.completion_tokens),
     ...(hasAnyNumber(completionDetails ?? {}, ['reasoning_tokens'])
       ? { reasoning: nonNegativeNumber(completionDetails?.reasoning_tokens) }
+      : {}),
+  };
+}
+
+function openAiResponsesUsage(event: Record<string, unknown>): ProviderTokenUsage | null {
+  const usage =
+    isRecord(event.response) && isRecord(event.response.usage)
+      ? event.response.usage
+      : isRecord(event.usage)
+        ? event.usage
+        : null;
+  if (!usage || !hasAnyNumber(usage, ['input_tokens', 'output_tokens'])) return null;
+  const inputDetails = isRecord(usage.input_tokens_details) ? usage.input_tokens_details : null;
+  const outputDetails = isRecord(usage.output_tokens_details) ? usage.output_tokens_details : null;
+  return {
+    input: nonNegativeNumber(usage.input_tokens),
+    cacheRead: nonNegativeNumber(inputDetails?.cached_tokens),
+    cacheWrite: 0,
+    output: nonNegativeNumber(usage.output_tokens),
+    ...(hasAnyNumber(outputDetails ?? {}, ['reasoning_tokens'])
+      ? { reasoning: nonNegativeNumber(outputDetails?.reasoning_tokens) }
       : {}),
   };
 }

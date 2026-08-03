@@ -1,9 +1,0 @@
-{
-  "slice": "pr7-markdown-core",
-  "scopes": [
-    {
-      "name": "markdown",
-      "selectors": ["[data-maka-contract=\"markdown\"]", "[data-maka-contract=\"markdown-flow\"]"]
-    }
-  ]
-}

@@ -11,7 +11,9 @@
  *         └→ ui
  *
  *   libs (tsc --build tsconfig.lib.json) ─── covers core+storage+runtime+ui
- *   preload (esbuild)                     ─── parallel, no tsc dependency
+ *     ├─→ preload (esbuild)
+ *     └─→ filesystem worker (esbuild)
+ *   cursor overlay (esbuild)              ─── independent
  *   main (esbuild)                        ─── fast app bundle for Electron
  *   Vite dev server + Electron            ─── fork
  */
@@ -22,6 +24,15 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
+import {
+  clearDevelopmentSession,
+  createDevelopmentSession,
+  quitMacosDevelopmentApp,
+  recoverStaleDevelopmentSession,
+  resolveMacosDevelopmentLaunch,
+  waitForMacosDevelopmentApp,
+  writeDevelopmentSession,
+} from './dev-app-runtime.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
@@ -65,15 +76,19 @@ function resolveElectronBin() {
 const TIMER_START = Date.now();
 
 // Phase 1: all library packages via `tsc --build` (single process, shared
-// .tsbuildinfo, sub-project incremental detection).  Also runs preload
-// (esbuild is fast) in parallel since it has no tsc dependency.
-log('build', 'libraries — starting (tsc --build + preload)');
+// .tsbuildinfo, sub-project incremental detection). The preload bundle imports
+// workspace package dist files, so it starts only after that build is ready.
+log('build', 'libraries — starting (tsc --build)');
+const librariesBuild = runNodeTool(REPO_ROOT, TSC_CLI, ['--build', 'tsconfig.lib.json']).then(
+  () => log('build', 'libraries (all) — done'),
+  (e) => {
+    log('build', `libraries — FAILED: ${e.message}`);
+    throw e;
+  },
+);
 await Promise.all([
-  runNodeTool(REPO_ROOT, TSC_CLI, ['--build', 'tsconfig.lib.json']).then(
-    () => log('build', 'libraries (all) — done'),
-    (e) => { log('build', `libraries — FAILED: ${e.message}`); throw e; },
-  ),
-  runNodeTool(REPO_ROOT, RUNTIME_WORKER_BUILD, []).then(
+  librariesBuild,
+  librariesBuild.then(() => runNodeTool(REPO_ROOT, RUNTIME_WORKER_BUILD, [])).then(
     () => log('build', 'filesystem worker bundle — done'),
     (e) => { log('build', `filesystem worker bundle — FAILED: ${e.message}`); throw e; },
   ),
@@ -81,7 +96,7 @@ await Promise.all([
   // esbuild's postinstall swaps that file for a platform-native binary,
   // and executing a Mach-O file with node throws SyntaxError (broke
   // `npm run dev` on any machine where postinstall ran).
-  esbuildBuild({
+  librariesBuild.then(() => esbuildBuild({
     absWorkingDir: DESKTOP_DIR,
     entryPoints: ['src/preload/preload.ts'],
     bundle: true,
@@ -90,7 +105,7 @@ await Promise.all([
     outfile: 'dist/preload/preload.cjs',
     external: ['electron'],
     logLevel: 'warning',
-  }).then(
+  })).then(
     () => log('build', 'preload — done'),
     (e) => { log('build', `preload — FAILED: ${e.message}`); throw e; },
   ),
@@ -136,7 +151,20 @@ if (!devUrl) {
 }
 
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
-const electron = spawn(resolveElectronBin(), ['.', ...process.argv.slice(2)], {
+const appArgs = [DESKTOP_DIR, ...process.argv.slice(2)];
+const macosLaunch = await resolveMacosDevelopmentLaunch();
+if (macosLaunch) {
+  await recoverStaleDevelopmentSession();
+  const userDataArg = process.argv.slice(2).find((arg) => arg.startsWith('--user-data-dir='));
+  writeDevelopmentSession(createDevelopmentSession({
+    supervisorPid: process.pid,
+    viteUrl: devUrl,
+    env: process.env,
+    userDataDir: userDataArg?.slice('--user-data-dir='.length),
+    electronArgs: process.argv.slice(2).filter((arg) => !arg.startsWith('--user-data-dir=')),
+  }));
+}
+const electron = spawn(macosLaunch?.command ?? resolveElectronBin(), macosLaunch?.args ?? appArgs, {
   cwd: DESKTOP_DIR,
   stdio: 'inherit',
   env: { ...process.env, VITE_DEV_SERVER_URL: devUrl },
@@ -146,6 +174,10 @@ let shuttingDown = false;
 async function shutdown(code, options = {}) {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (macosLaunch) {
+    await quitMacosDevelopmentApp();
+    clearDevelopmentSession();
+  }
   if (options.killElectron !== false) {
     await terminateProcessTree(electron);
   }
@@ -168,10 +200,25 @@ function terminateProcessTree(child) {
   return Promise.resolve();
 }
 
-electron.on('exit', (code) => shutdown(code ?? 0, { killElectron: false }));
+if (!macosLaunch) {
+  electron.on('exit', (code) => shutdown(code ?? 0, { killElectron: false }));
+} else {
+  electron.on('exit', (code) => {
+    if (code && code !== 0) shutdown(code, { killElectron: false });
+  });
+}
 electron.on('error', (err) => {
   console.error(`[dev] failed to start Electron: ${err.message}`);
   shutdown(1);
 });
+if (macosLaunch) {
+  void waitForMacosDevelopmentApp().then(
+    () => log('electron', 'Maka Dev startup handshake complete'),
+    (error) => {
+      console.error(`[dev] ${error.message}`);
+      shutdown(1);
+    },
+  );
+}
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));

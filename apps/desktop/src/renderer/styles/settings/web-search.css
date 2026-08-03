@@ -25,33 +25,14 @@
 }
 
 .settingsWebSearchStatusCluster small {
+  font: var(--maka-text-code);
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-family: var(--font-mono);
   white-space: nowrap;
 }
 
-.settingsWebSearchKeyField,
-.settingsWebSearchQueryField {
-  width: min(100%, 360px);
-  /* #1364: a text input never shrinks below its intrinsic `size` width on its
-     own (~180px) — at the 480px window floor that overflowed the row. */
-  min-width: 0;
-  justify-self: end;
-}
-
-.settingsWebSearchActionButtons {
-  justify-content: flex-end;
-}
-
-.settingsWebSearchQueryIntroRow {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .settingsWebSearchDisabledReason {
+  font: var(--maka-text-body);
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
   text-align: right;
   /* #1364: the hint names an env var (TAVILY_API_KEY) — an unbreakable token
      wider than the whole content column at the 480px window floor. */
@@ -73,7 +54,7 @@
     background: var(--foreground-3);
   }
 .settingsWebSearchResult a {
-    font-weight: var(--font-weight-semibold);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
     text-decoration: none;
     /* #1364: Tavily titles are sometimes a bare URL — one unbreakable token
@@ -85,8 +66,8 @@
     text-decoration: underline;
   }
 .settingsWebSearchResult small {
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
     text-transform: uppercase;
     letter-spacing: var(--tracking-wider);
     /* #1364: the source is a hostname — one unbreakable token, and long ones
@@ -94,30 +75,17 @@
     overflow-wrap: anywhere;
   }
 .settingsWebSearchResult p {
+    font: var(--maka-text-body);
     margin: 0;
-    font-size: var(--font-size-ui);
     color: var(--foreground-secondary);
-    line-height: var(--leading-normal);
     white-space: pre-wrap;
     word-break: break-word;
   }
 
 @media (max-width: 720px) {
-  .settingsWebSearchEnableRow,
-  .settingsWebSearchKeyRow,
-  .settingsWebSearchCredentialActionRow,
-  .settingsWebSearchQueryInputRow,
-  .settingsWebSearchSearchRow {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .settingsWebSearchControlCluster,
   .settingsWebSearchSearchControls,
-  .settingsWebSearchActionButtons {
-    justify-content: flex-start;
-  }
-
-  .settingsWebSearchStatusCluster {
+    .settingsWebSearchStatusCluster {
     justify-content: flex-start;
     margin-left: 0;
   }
@@ -131,13 +99,7 @@
     white-space: normal;
   }
 
-  .settingsWebSearchKeyField,
-  .settingsWebSearchQueryField {
-    width: 100%;
-    justify-self: stretch;
-  }
-
-  .settingsWebSearchDisabledReason {
+    .settingsWebSearchDisabledReason {
     text-align: left;
   }
 }

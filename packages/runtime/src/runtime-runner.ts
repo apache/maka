@@ -132,6 +132,7 @@ export interface InitialUserRuntimeEventInput {
   origin?: TurnOrigin;
   attachments?: InvocationRequest['attachments'];
   quotes?: InvocationRequest['quotes'];
+  inlineReferences?: InvocationRequest['inlineReferences'];
   toolBoundaryProtocol?: ToolBoundaryProtocol;
 }
 
@@ -329,6 +330,9 @@ export class RuntimeRunner {
           text: request.text,
           ...(request.attachments !== undefined ? { attachments: request.attachments } : {}),
           ...(request.quotes !== undefined ? { quotes: request.quotes } : {}),
+          ...(request.inlineReferences !== undefined
+            ? { inlineReferences: request.inlineReferences }
+            : {}),
           ...(this.toolBoundaryProtocol ? { toolBoundaryProtocol: this.toolBoundaryProtocol } : {}),
         });
       events.push(userEvent);
@@ -341,11 +345,13 @@ export class RuntimeRunner {
     //    non-completed terminal status, denied permission, non-terminal error,
     //    or incomplete model finish maps the result to 'failed'.
     let failure: InvocationFailure | undefined;
+    let rawFinishFailure: InvocationFailure | undefined;
     let terminalSeen = false;
     try {
       for await (const ev of this.flow.run(ctx, flowInput)) {
         events.push(ev);
         failure ??= failureFromRuntimeEvent(ev);
+        rawFinishFailure ??= failureFromRawFinishReason(ev.actions?.tokenUsage?.rawFinishReason);
         if (isTerminalRuntimeEvent(ev)) {
           terminalSeen = true;
           if (this.stopOnTerminal) {
@@ -366,9 +372,15 @@ export class RuntimeRunner {
       };
     }
 
+    // A cooperative Graph yield intentionally ends on a tool-call step and
+    // carries no final assistant text. Its explicit completed terminal fact is
+    // authoritative over the provider's raw `tool-calls` finish reason.
+    const graphYielded = hasCompletedGraphYield(events);
+    if (!failure && !graphYielded) failure = rawFinishFailure;
+
     let status: InvocationResultStatus = failure ? 'failed' : 'completed';
     const finalOutput = status === 'completed' ? finalOutputFromEvents(events) : undefined;
-    if (status === 'completed' && finalOutput === undefined) {
+    if (status === 'completed' && finalOutput === undefined && !graphYielded) {
       status = 'failed';
       failure = {
         class: 'missing_final_output',
@@ -577,6 +589,9 @@ function snapshotInvocationRequest(
     ...(request.quotes !== undefined
       ? { quotes: cloneAndFreezeSnapshotValue(request.quotes) }
       : {}),
+    ...(request.inlineReferences !== undefined
+      ? { inlineReferences: cloneAndFreezeSnapshotValue(request.inlineReferences) }
+      : {}),
     ...(request.context !== undefined
       ? { context: cloneAndFreezeSnapshotValue(request.context) }
       : {}),
@@ -723,6 +738,7 @@ export function buildInitialUserRuntimeEvent(input: InitialUserRuntimeEventInput
         ? { attachments: input.attachments }
         : {}),
       ...(input.quotes !== undefined && input.quotes.length > 0 ? { quotes: input.quotes } : {}),
+      ...(input.inlineReferences !== undefined ? { inlineReferences: input.inlineReferences } : {}),
     },
     ...(input.toolBoundaryProtocol
       ? { actions: { runtimeProtocol: { toolBoundary: input.toolBoundaryProtocol } } }
@@ -799,11 +815,16 @@ function failureFromRuntimeEvent(event: RuntimeEvent): InvocationFailure | undef
     };
   }
 
-  const rawFinishReason = event.actions?.tokenUsage?.rawFinishReason;
-  const finishFailure = failureFromRawFinishReason(rawFinishReason);
-  if (finishFailure) return finishFailure;
-
   return undefined;
+}
+
+function hasCompletedGraphYield(events: readonly RuntimeEvent[]): boolean {
+  return events.some(
+    (event) =>
+      isTerminalRuntimeEvent(event) &&
+      event.status === 'completed' &&
+      event.actions?.stateDelta?.stopReason === 'graph_yield',
+  );
 }
 
 function failureFromTerminalEvent(event: RuntimeEvent): InvocationFailure | undefined {

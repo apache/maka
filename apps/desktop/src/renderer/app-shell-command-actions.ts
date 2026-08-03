@@ -11,7 +11,7 @@ import type {
   UiLocale,
 } from '@maka/core';
 import { formatDailyReviewMarkdown } from '@maka/ui';
-import type { NavSelection } from '@maka/ui';
+import type { DailyReviewMarkdownActionInput, NavSelection } from '@maka/ui';
 import { buildCommandList, buildSessionCommands } from './command-palette-commands.js';
 import type { Command } from './command-palette-types.js';
 import { renderConversationMarkdown } from './conversation-markdown.js';
@@ -66,7 +66,7 @@ export interface AppShellCommandListOptions {
   openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
-  saveDailyReviewMarkdown: (input: { markdown: string; label: string; summary: DailyReviewSummary }) => Promise<void>;
+  saveDailyReviewMarkdown: (input: DailyReviewMarkdownActionInput) => Promise<void>;
   setNavSelection: (selection: NavSelection) => void;
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setThemePref: (themePref: ThemePreference) => void;
@@ -290,7 +290,13 @@ export function buildAppShellCommandList(
       try {
         const summary = await dailyReviewBridge.fetchDay(0, 1);
         const markdown = formatDailyReviewMarkdown(summary, copy.today, options.uiLocale);
-        await saveDailyReviewMarkdown({ markdown, label: copy.today, summary });
+        await saveDailyReviewMarkdown({
+          day: summary.day,
+          range: 1,
+          totals: summary.totals,
+          markdown,
+          label: copy.today,
+        });
       } catch (err) {
         toastApi.error(
           copy.saveFailedTitle,

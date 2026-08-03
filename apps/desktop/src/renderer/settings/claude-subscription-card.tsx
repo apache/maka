@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { type SubscriptionAccountState, type UiLocale } from '@maka/core';
+import { FieldStatus, ProgressBar, StatusDot } from '@astryxdesign/core';
 import {
-  Badge,
+  Banner,
   Button,
+  Divider,
+  HStack,
   RelativeTime,
+  Text,
   TextArea,
+  VStack,
   useMountedRef,
   useToast,
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { statusBadgeVariant, type StatusTone } from './settings-status-badge';
+import { statusDotVariant, type StatusTone } from './settings-status-badge';
 import {
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
@@ -20,7 +25,7 @@ import {
  * Claude Pro / Max subscription card: the paste-code OAuth flow (browser →
  * copy the `#`-delimited authorization code back) behind the experimental
  * gate. Extracted from provider-oauth-section.tsx (#1042); the browser
- * loopback flow used by the other OAuth providers lives in
+ * loopback/PKCE flow used by the other OAuth providers lives in
  * `useOAuthLoginFlow` — Claude deliberately keeps its own card because it
  * needs the manual authorization-code step and the experimental gate.
  */
@@ -112,28 +117,23 @@ export function ClaudeSubscriptionCard() {
   }, []);
 
   if (experimentalGateError) {
+    // Astryx convergence (task #136): the gate-read failure was a hand-tinted
+    // `.settingsConnectionRow[data-status=error]` card; Banner is the one
+    // error surface Settings uses now.
     return (
-      <div className="settingsConnectionRow" data-status="error">
-        <div className="settingsConnectionRowHead">
-          <div className="settingsConnectionRowText">
-            <div className="settingsConnectionRowName">
-              <strong>{copy.title}</strong>
-            </div>
-            <small>{copy.gateUnknown}</small>
-          </div>
-          <Badge variant="error" label={copy.readFailed} />
-        </div>
-        <small className="settingsErrorText" role="alert">
-          {copy.gateError}{experimentalGateError}
-        </small>
-        <div className="settingsConnectionActions">
+      <Banner
+        status="error"
+        role="alert"
+        title={copy.title}
+        description={`${copy.gateUnknown} ${copy.gateError}${experimentalGateError}`}
+        endContent={
           <Button
             variant="primary"
             onClick={() => void refreshExperimentalGate()}
             label={copy.retry}
           />
-        </div>
-      </div>
+        }
+      />
     );
   }
 
@@ -308,48 +308,56 @@ export function ClaudeSubscriptionCard() {
   const claudeLoginPending = authRequestId !== null || state?.runtimeState === 'authorizing';
   const actionBusy = pendingAction !== null;
 
+  // Deep-review fix: this panel renders under ProvidersPanel's RouteHeader,
+  // which already says 连接 Claude + subtitle — the SectionHeader + full-width
+  // Card + repeated title made it the one OAuth panel with its own chrome.
+  // It is a bare VStack now, the same shape as its sibling login panels, and
+  // runtime state reads as the shared StatusDot + text idiom.
   return (
-    <>
-    <h3 className="settingsSubheading">{copy.section}</h3>
-    <div className="settingsConnectionRow" data-status={state?.runtimeState ?? 'loading'}>
-      <div className="settingsConnectionRowHead">
-        <div className="settingsConnectionRowText">
-          <div className="settingsConnectionRowName">
-            <strong>{copy.title}</strong>
-          </div>
-          <small>
-            {copy.subtitle}
-            {state?.profile?.email ? ` · ${state.profile.email}` : ''}
-          </small>
-        </div>
-        <Badge variant={statusBadgeVariant(presentation.tone)} label={presentation.label} />
-      </div>
-      <p className="settingsConnectionDetail">{presentation.detail}</p>
+    <VStack gap={3}>
+      <HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
+        <span className="settingsStatus">
+          <StatusDot variant={statusDotVariant(presentation.tone)} label={presentation.label} />
+          <span>{presentation.label}</span>
+        </span>
+        {state?.profile?.email ? (
+          <Text type="supporting" color="secondary">{state.profile.email}</Text>
+        ) : null}
+      </HStack>
+      <Text as="p" type="supporting" color="secondary">{presentation.detail}</Text>
       {pasteError && !authRequestId && (
-        <small className="settingsErrorText" role="alert">{pasteError}</small>
+        <div role="alert">
+          <FieldStatus type="error" message={pasteError} variant="detached" />
+        </div>
       )}
 
       {state?.quota && (state.quota.fiveHour || state.quota.sevenDay) && (
-        <div className="settingsQuotaSection">
+        <VStack gap={2}>
           {state.quota.fiveHour && (
-            <div className="settingsQuotaRow">
-              <span>{copy.fiveHour}</span>
-              <span>{state.quota.fiveHour.utilization}%</span>
-            </div>
+            <ProgressBar
+              label={copy.fiveHour}
+              value={state.quota.fiveHour.utilization}
+              hasValueLabel
+              formatValueLabel={(value) => `${Math.round(value)}%`}
+              variant={quotaVariant(state.quota.fiveHour.utilization)}
+            />
           )}
           {state.quota.sevenDay && (
-            <div className="settingsQuotaRow">
-              <span>{copy.sevenDay}</span>
-              <span>{state.quota.sevenDay.utilization}%</span>
-            </div>
+            <ProgressBar
+              label={copy.sevenDay}
+              value={state.quota.sevenDay.utilization}
+              hasValueLabel
+              formatValueLabel={(value) => `${Math.round(value)}%`}
+              variant={quotaVariant(state.quota.sevenDay.utilization)}
+            />
           )}
-          <small className="settingsHelpText">
-            {copy.updated}<RelativeTime ts={state.quota.fetchedAt} className="settingsHelpInlineTime" />
-          </small>
-        </div>
+          <Text type="supporting" color="secondary">
+            {copy.updated}<RelativeTime ts={state.quota.fetchedAt} />
+          </Text>
+        </VStack>
       )}
 
-      <div className="settingsConnectionActions">
+      <HStack gap={2} hAlign="end" wrap="wrap">
         {canStartClaudeLogin || claudeLoginPending ? (
           <Button
             variant="primary"
@@ -379,15 +387,17 @@ export function ClaudeSubscriptionCard() {
             />
           </>
         )}
-      </div>
+      </HStack>
 
       {authRequestId && (
-        <div className="settingsOauthPastePanel" role="region" aria-label={copy.pasteAria}>
-          <p>
+        <>
+        <Divider />
+        <VStack gap={2} role="region" aria-label={copy.pasteAria}>
+          <Text as="p">
             {copy.pasteHelpBefore} <code>#</code> {copy.pasteHelpAfter}
-          </p>
+          </Text>
           {stateHint && (
-            <small>{copy.stateHint} <code>{stateHint}</code> {copy.startsWith}</small>
+            <Text type="supporting" color="secondary">{copy.stateHint} <code>{stateHint}</code> {copy.startsWith}</Text>
           )}
           <TextArea
             value={pasteValue}
@@ -398,7 +408,7 @@ export function ClaudeSubscriptionCard() {
             hasSpellCheck={false}
             status={pasteError ? { type: 'error', message: pasteError } : undefined}
           />
-          <div className="settingsConnectionActions">
+          <HStack gap={2} hAlign="end" wrap="wrap">
             <Button
               variant="primary"
               onClick={() => void submitPaste()}
@@ -411,12 +421,18 @@ export function ClaudeSubscriptionCard() {
               isDisabled={actionBusy}
               label={pendingAction === 'cancel' ? copy.cancelling : copy.cancel}
             />
-          </div>
-        </div>
+          </HStack>
+        </VStack>
+        </>
       )}
-    </div>
-    </>
+    </VStack>
   );
+}
+
+function quotaVariant(utilization: number): 'accent' | 'warning' | 'error' {
+  if (utilization >= 90) return 'error';
+  if (utilization >= 75) return 'warning';
+  return 'accent';
 }
 
 type ClaudeSubscriptionPendingAction = 'login' | 'submit' | 'cancel' | 'logout' | 'quota';

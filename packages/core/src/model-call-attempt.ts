@@ -6,7 +6,9 @@ import {
   isOptionalString,
   isRecord,
 } from './record-schema.js';
-import type { PricingConfig } from './usage-stats/types.js';
+import { MODEL_CALL_KINDS, type ModelCallKind, type PricingConfig } from './usage-stats/types.js';
+
+export { MODEL_CALL_KINDS, type ModelCallKind } from './usage-stats/types.js';
 
 /**
  * Canonical accounting record for one physical provider request attempt.
@@ -29,9 +31,6 @@ export const MODEL_CALL_ATTEMPT_SCHEMA_VERSION = 1 as const;
 
 /** AgentRun event type carrying a {@link ModelCallAttempt} in `data`. */
 export const MODEL_CALL_ATTEMPT_EVENT_TYPE = 'model_call_attempt_recorded' as const;
-
-export const MODEL_CALL_KINDS = ['main', 'semantic_compact', 'history_compact'] as const;
-export type ModelCallKind = (typeof MODEL_CALL_KINDS)[number];
 
 export const MODEL_CALL_ATTEMPT_STATUSES = [
   'completed',
@@ -326,6 +325,29 @@ export function settledAttempt(group: ModelCallGroup): ModelCallAttempt | undefi
     if (!settled || attempt.attempt > settled.attempt) settled = attempt;
   }
   return settled;
+}
+
+/**
+ * Extracts the canonical attempts a run committed, from that run's AgentRun
+ * events. This is the projection the Usage read model is rebuilt through, so it
+ * has to be total: an event that cannot be decoded is counted, not thrown, or
+ * one bad record would block every later one in the same run from ever being
+ * projected.
+ */
+export function modelCallAttemptsFromRunEvents(
+  events: readonly { readonly type: string; readonly data?: Record<string, unknown> }[],
+): { attempts: ModelCallAttempt[]; unreadableEvents: number } {
+  const attempts: ModelCallAttempt[] = [];
+  let unreadableEvents = 0;
+  for (const event of events) {
+    if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
+    try {
+      attempts.push(decodeModelCallAttempt(event.data));
+    } catch {
+      unreadableEvents += 1;
+    }
+  }
+  return { attempts, unreadableEvents };
 }
 
 /**

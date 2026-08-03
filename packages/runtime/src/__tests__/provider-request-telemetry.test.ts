@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import * as telemetry from '../provider-request-telemetry.js';
 
 describe('strict provider-request usage', () => {
@@ -711,3 +712,270 @@ async function drain(stream: ReadableStream<unknown>): Promise<void> {
     // Drain to trigger terminal telemetry.
   }
 }
+
+describe('canonical model-call accounting', () => {
+  function accountingTracker(overrides: {
+    record: (attempt: ModelCallAttempt) => void | Promise<void>;
+    resolveCost?: telemetry.ModelCallAccountingInput['resolveCost'];
+    assertReady?: () => void;
+    resolveRunId?: () => string | undefined;
+    /** Models a deployment with request capture switched off. */
+    withoutCapture?: boolean;
+    recordAttempt?: (attempt: telemetry.ProviderRequestAttemptRecord) => void;
+  }): telemetry.ProviderRequestTracker {
+    let n = 0;
+    return new telemetry.ProviderRequestTracker({
+      traceId: 'trace-1',
+      turnId: 'turn-1',
+      now: () => 1_000 + n,
+      newId: () => `id-${++n}`,
+      ...(overrides.withoutCapture
+        ? {}
+        : { persistCapture: async () => ({ artifactId: 'artifact-1' }) }),
+      recordAttempt: overrides.recordAttempt ?? (() => {}),
+      accounting: {
+        sessionId: 'session-1',
+        resolveRunId: overrides.resolveRunId ?? (() => 'run-1'),
+        callKind: 'main',
+        record: overrides.record,
+        ...(overrides.resolveCost ? { resolveCost: overrides.resolveCost } : {}),
+        ...(overrides.assertReady ? { assertReady: overrides.assertReady } : {}),
+      },
+    });
+  }
+
+  test('emits a decodable priced record for a completed call', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const tracker = accountingTracker({
+      record: (a) => {
+        recorded.push(a);
+      },
+      resolveCost: () => ({ costUsd: 0.002, pricingRevision: 4 }),
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    await drain(result.stream);
+
+    assert.equal(recorded.length, 1);
+    const attempt = decodeModelCallAttempt(recorded[0]);
+    assert.equal(attempt.sessionId, 'session-1');
+    assert.equal(attempt.runId, 'run-1');
+    assert.equal(attempt.callKind, 'main');
+    assert.equal(attempt.status, 'completed');
+    assert.equal(attempt.usageBasis, 'reported');
+    assert.equal(attempt.costBasis, 'priced');
+    assert.equal(attempt.costUsd, 0.002);
+    assert.equal(attempt.pricingRevision, 4);
+    // Retries count from zero on the canonical record.
+    assert.equal(attempt.attempt, 0);
+  });
+
+  test('a call the provider reported no usage for records usageBasis missing', async () => {
+    // The alternative is a record claiming zero tokens, which is a measurement
+    // nobody made. `missing` says the call happened and the meter did not read.
+    const recorded: ModelCallAttempt[] = [];
+    const tracker = accountingTracker({
+      record: (a) => {
+        recorded.push(a);
+      },
+      resolveCost: () => ({ costUsd: 0.002, pricingRevision: 4 }),
+    });
+
+    await tracker.trackGenerate({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doGenerate: async () => ({ finishReason: 'stop' }),
+    });
+
+    const attempt = decodeModelCallAttempt(recorded[0]);
+    assert.equal(attempt.status, 'completed');
+    assert.equal(attempt.usageBasis, 'missing');
+    assert.equal(attempt.inputTokens, undefined);
+    assert.equal(attempt.outputTokens, undefined);
+    // No usage means nothing to price, whatever the resolver would have said.
+    assert.equal(attempt.costBasis, 'unpriced');
+    assert.equal(attempt.costUsd, undefined);
+  });
+
+  test('metering survives a deployment with request capture switched off', async () => {
+    // Capture is a diagnostic. A record that cannot be joined to a stored
+    // request body is still a record of a call that really was billed, so the
+    // canonical seam must not be gated on the capture sink being configured.
+    const recorded: ModelCallAttempt[] = [];
+    const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
+    const tracker = accountingTracker({
+      withoutCapture: true,
+      record: (a) => {
+        recorded.push(a);
+      },
+      recordAttempt: (a) => {
+        attempts.push(a);
+      },
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    await drain(result.stream);
+
+    const attempt = decodeModelCallAttempt(recorded[0]);
+    assert.equal(attempt.usageBasis, 'reported');
+    assert.equal(attempt.captureArtifactId, undefined, 'there is no artifact to point at');
+    // The request shape is computed locally, so it does not need the sink.
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]?.captureId, undefined);
+    assert.equal(attempts[0]?.captureArtifactId, undefined);
+    assert.ok((attempts[0]?.requestHash?.length ?? 0) > 0);
+    assert.ok((attempts[0]?.requestBytes ?? 0) > 0);
+  });
+
+  test('an unresolvable price records unpriced rather than zero', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const tracker = accountingTracker({
+      record: (a) => {
+        recorded.push(a);
+      },
+      resolveCost: () => undefined,
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    await drain(result.stream);
+
+    const attempt = decodeModelCallAttempt(recorded[0]);
+    assert.equal(attempt.costBasis, 'unpriced');
+    assert.equal(attempt.costUsd, undefined);
+  });
+
+  test('retries of one step share a logicalCallId and increment the ordinal', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const tracker = accountingTracker({
+      record: (a) => {
+        recorded.push(a);
+      },
+    });
+
+    for (let i = 0; i < 2; i += 1) {
+      const result = await tracker.trackStream({
+        providerId: 'anthropic',
+        modelId: 'claude-test',
+        params: preparedParams(`attempt-${i}`),
+        doStream: async () => ({ stream: streamOf([finishPart()]) }),
+      });
+      await drain(result.stream);
+    }
+
+    assert.equal(recorded.length, 2);
+    assert.equal(recorded[0]?.logicalCallId, recorded[1]?.logicalCallId);
+    assert.notEqual(recorded[0]?.attemptId, recorded[1]?.attemptId);
+    assert.deepEqual([recorded[0]?.attempt, recorded[1]?.attempt], [0, 1]);
+  });
+
+  test('a sink failure never errors the model stream', async () => {
+    // Settlement runs inside the stream's pull handler; a throw there would
+    // reach controller.error and fail an otherwise-complete response.
+    const tracker = accountingTracker({
+      record: () => {
+        throw new Error('accounting store is down');
+      },
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+
+    await assert.doesNotReject(() => drain(result.stream));
+  });
+
+  test('the readiness gate refuses before dispatch, without calling the provider', async () => {
+    let dispatched = false;
+    const tracker = accountingTracker({
+      record: () => {},
+      assertReady: () => {
+        throw new Error('accounting writer unavailable');
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        tracker.trackStream({
+          providerId: 'anthropic',
+          modelId: 'claude-test',
+          params: preparedParams('hello'),
+          doStream: async () => {
+            dispatched = true;
+            return { stream: streamOf([finishPart()]) };
+          },
+        }),
+      /accounting writer unavailable/,
+    );
+    assert.equal(dispatched, false);
+  });
+
+  test('an abort settles late usage instead of freezing the bill at zero', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const controller = new AbortController();
+    const tracker = accountingTracker({
+      record: (a) => {
+        recorded.push(a);
+      },
+      resolveCost: () => ({ costUsd: 0.003 }),
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      abortSignal: controller.signal,
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    controller.abort();
+    await drain(result.stream);
+
+    // The cancellation is recorded, but the provider's settlement supersedes it
+    // under the same attemptId, so a cancelled call that consumed tokens is not
+    // stored as permanently token-less and cost-less.
+    assert.ok(recorded.length >= 1);
+    const ids = new Set(recorded.map((a) => a.attemptId));
+    assert.equal(ids.size, 1);
+    const settledRecord = recorded[recorded.length - 1];
+    assert.equal(settledRecord?.costBasis, 'priced');
+    assert.equal(settledRecord?.costUsd, 0.003);
+  });
+
+  test('no canonical record is emitted without a resolvable run', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const tracker = accountingTracker({
+      record: (a) => {
+        recorded.push(a);
+      },
+      resolveRunId: () => undefined,
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    await drain(result.stream);
+
+    assert.equal(recorded.length, 0);
+  });
+});

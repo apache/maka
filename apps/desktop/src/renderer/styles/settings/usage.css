@@ -1,0 +1,159 @@
+/* Settings → Usage page (使用量). Moved out of bot.css — nothing bot-related
+   consumes these rules; they had been hiding ~150 lines of usage styling in
+   the bot budget. Content is an unmodified move; the #1879 height pins and
+   the 900px media query travel intact. */
+
+.settingsUsagePage {
+  display: grid;
+  align-content: start;
+  /* #1364: pin the single column to `minmax(0, 1fr)`. With the implicit
+     `auto` track, every block's min-content propagated into the track size —
+     the five-tab bar (~453px intrinsic) and the requests table dragged the
+     whole page into horizontal scroll even though both scroll within
+     themselves. An explicit 0-floor track is the grid-level equivalent of
+     `min-width: 0` on every row. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2-5);
+}
+
+.settingsUsageToolbar,
+.settingsUsageFilters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+}
+
+/* Detail audit: the range segmented reads as a single left-aligned time
+   cluster; the low-frequency refresh is pushed to the row's trailing edge
+   (mixed-type controls align on the shared centerline via align-items). */
+.settingsUsageToolbar {
+  justify-content: space-between;
+}
+
+/* The wrapper only contains overflow at the minimum window width; Astryx owns
+   the tab geometry, divider, focus ring, and selected indicator. */
+.settingsUsageTabsBar {
+  display: flex;
+  align-items: center;
+  /* #1364: five nowrap tabs + count pills are ~453px min-content — wider than
+     the whole content column at the 480px window floor, and the bar dragged
+     the page into horizontal scroll. Tabs stay one line by design, so the bar
+     scrolls within itself (the hairline still spans the visible width). */
+  overflow-x: auto;
+}
+
+.settingsUsageTabPanel {
+  display: grid;
+  align-content: start;
+  /* #1364: same 0-floor track as `.settingsUsagePage` — the requests table's
+     intrinsic width must stop here and scroll inside its own container. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  min-height: 0;
+  margin-top: var(--space-2-5);
+}
+
+.settingsUsageNumericCell {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The requests table's 8 sized columns are wider than the content column at
+   narrow widths — it scrolls inside its own wrapper instead of clipping at
+   the card edge (page body never scrolls horizontally). */
+.settingsUsageTable {
+  overflow-x: auto;
+}
+
+/* Empty tab: the shared EmptyState card, nudged to the density of the
+   stats surface rather than the full page hero. */
+.settingsUsageEmpty {
+  padding: var(--space-6);
+}
+
+/* #1364: was a five-track grid (`minmax(260px, 1fr) 148px 108px 92px 92px`,
+   ~724px min-content) behind a 900px viewport breakpoint. The settings column
+   is narrower than the viewport by the sidebar's width, so between the
+   breakpoint and ~1100px the grid overflowed the page — same lesson as the
+   #1361 permission rows: the threshold depends on the controls' widths, not on
+   the window, so wrap structurally instead. The filter input grows from its
+   old 260px track; the select/toggle/count/clear keep their natural widths and
+   fall to the next line when they no longer fit. */
+.settingsUsageModelFilter {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+/* #1879: `min-height` is not a pin — measured, the leading pushed both of
+   these from 34px to 40px, so the filters row still moved. Now a real height
+   on the tier their neighbours already measure at: the TextInput and the
+   Selector field in this same row are both 32px, i.e. `--h-control-lg`.
+   Loses 2px and lands on the row's shared centreline. */
+.settingsUsageDetailToggle {
+  font: var(--maka-text-label);
+  height: var(--h-control-lg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1-5);
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+/* #1879: same `min-height` → `height` fix as the toggle above it, same
+   measured 34px → 40px leading push, same 32px neighbour tier. */
+.settingsUsageRecordCount {
+  font: var(--maka-text-supporting);
+  font-variant-numeric: tabular-nums;
+  height: var(--h-control-lg);
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.settingsUsageClearFilter {
+  justify-self: start;
+  min-width: 86px;
+}
+
+.settingsUsageClearFilter[aria-hidden="true"] {
+  visibility: hidden;
+}
+
+/* #1364: the filters row wraps structurally now (see `.settingsUsageFilters >
+   input` above), so its 900px single-column fallback is gone. The toggle keeps
+   its narrow-layout alignment tweak. */
+@media (max-width: 900px) {
+  .settingsUsageDetailToggle {
+    justify-content: flex-start;
+  }
+}
+
+.settingsUsageSummary {
+  display: grid;
+  /* #1364: was `repeat(4, minmax(0, 1fr))` — the same hard-track division
+     #1361 fixed on the Permissions/Health summaries. At the 480px window
+     floor each metric tile collapsed to ~32px and its value overflowed.
+     `auto-fit` keeps four even tracks at full width and folds to fewer,
+     readable columns when narrow. */
+  grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
+  gap: var(--space-1-5);
+}
+
+/* Convergence R4: recipe lives in the StatTile primitive; this class keeps
+   only the metric-strip density override. */
+.settingsMetricCard {
+  min-height: 52px;
+  justify-content: center;
+  gap: var(--space-0-5);
+  padding: var(--space-1-5) var(--space-2-5);
+}
+
+/* #520 PR9: .settingsStatsTable retired onto the local native
+   SimpleStatsTable in usage-settings-page.tsx; a single HTML <table>
+   consumer did not justify a public primitive. */
+
+/* .settingsRow / .settingsRows moved to rows.css — the single style home
+   for the settings-rows.tsx primitives (PR-SETTINGS-ROWS-CONVERGENCE-0). */
+

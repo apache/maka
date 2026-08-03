@@ -249,13 +249,6 @@ type ShellCopy = {
     installBundledFallback: string;
     installedBundledTitle: string;
     installedDescription(id: string): string;
-    createTemplateFailedTitle: string;
-    createTemplateFallback: string;
-    createdTemplateTitle: string;
-    createdTemplateDescription(id: string): string;
-    openedExistingTemplateTitle: string;
-    openedExistingTemplateDescription: string;
-    openTemplateFailedTitle: string;
     importSourceFailedTitle: string;
     importSourceFallback: string;
     importedSourceTitle: string;
@@ -282,7 +275,6 @@ type ShellCopy = {
     deletedDescription(id: string): string;
     openFailedTitle: string;
     openFallback: string;
-    createFailures: Record<'blocked_path' | 'already_exists' | 'write_failed', string>;
     openFailures: Record<
       'invalid_id' | 'missing' | 'blocked_path' | 'not_file' | 'not_directory' | 'open_failed',
       string
@@ -641,6 +633,7 @@ const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   general: '通用',
   appearance: '外观',
   models: '模型',
+  subagents: '子 Agent',
   usage: '使用统计',
   memory: '记忆',
   'daily-review': '每日回顾',
@@ -657,6 +650,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   general: 'General',
   appearance: 'Appearance',
   models: 'Models',
+  subagents: 'Subagents',
   usage: 'Usage',
   memory: 'Memory',
   'daily-review': 'Daily Review',
@@ -817,13 +811,6 @@ const SHELL_COPY_BY_LOCALE = {
       installBundledFallback: '无法安装内置 Skill，请稍后重试。',
       installedBundledTitle: '已安装内置 Skill',
       installedDescription: (id: string) => `${id}/SKILL.md 已放到当前工作区。`,
-      createTemplateFailedTitle: '无法创建示例技能',
-      createTemplateFallback: '无法创建示例技能，请稍后重试。',
-      createdTemplateTitle: '已创建示例技能',
-      createdTemplateDescription: (id: string) => `${id}/SKILL.md 已放到工作区 skills 目录。`,
-      openedExistingTemplateTitle: '已打开现有示例技能',
-      openedExistingTemplateDescription: '示例技能已存在，直接打开了 SKILL.md（不会重复创建）。',
-      openTemplateFailedTitle: '无法打开示例技能',
       importSourceFailedTitle: '无法导入 Skill 来源',
       importSourceFallback: '无法导入 Skill 来源，请稍后重试。',
       importedSourceTitle: '已导入 Skill 来源',
@@ -850,11 +837,6 @@ const SHELL_COPY_BY_LOCALE = {
       deletedDescription: (id: string) => `${id} 已移除。`,
       openFailedTitle: '无法打开 Skill',
       openFallback: '无法打开 Skill，请稍后重试。',
-      createFailures: {
-        blocked_path: 'skills 目录不是普通工作区目录，已阻止写入。',
-        already_exists: '示例技能编号已占满，请先整理 skills 目录。',
-        write_failed: '写入 skills 目录失败，请检查工作区权限。',
-      },
       openFailures: {
         invalid_id: 'Skill 名称不在允许范围内。',
         missing: '没有找到对应的 SKILL.md。',
@@ -1297,14 +1279,6 @@ const SHELL_COPY_BY_LOCALE = {
       installBundledFallback: 'The built-in Skill could not be installed. Try again later.',
       installedBundledTitle: 'Built-in Skill installed',
       installedDescription: (id: string) => `${id}/SKILL.md was added to the current workspace.`,
-      createTemplateFailedTitle: 'Could not create sample Skill',
-      createTemplateFallback: 'The sample Skill could not be created. Try again later.',
-      createdTemplateTitle: 'Sample Skill created',
-      createdTemplateDescription: (id: string) => `${id}/SKILL.md was added to the workspace skills folder.`,
-      openedExistingTemplateTitle: 'Existing sample Skill opened',
-      openedExistingTemplateDescription:
-        'The sample Skill already exists, so its SKILL.md was opened without creating a duplicate.',
-      openTemplateFailedTitle: 'Could not open sample Skill',
       importSourceFailedTitle: 'Could not import Skill source',
       importSourceFallback: 'The Skill source could not be imported. Try again later.',
       importedSourceTitle: 'Skill source imported',
@@ -1331,11 +1305,6 @@ const SHELL_COPY_BY_LOCALE = {
       deletedDescription: (id: string) => `${id} was removed.`,
       openFailedTitle: 'Could not open Skill',
       openFallback: 'The Skill could not be opened. Try again later.',
-      createFailures: {
-        blocked_path: 'The skills folder is not a regular workspace folder, so writing was blocked.',
-        already_exists: 'All sample Skill ids are in use. Clean up the skills folder first.',
-        write_failed: 'The skills folder could not be written. Check workspace permissions.',
-      },
       openFailures: {
         invalid_id: 'The Skill name is not allowed.',
         missing: 'The matching SKILL.md was not found.',

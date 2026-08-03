@@ -558,9 +558,13 @@ export class RuntimeHostKernel {
 
   async #closeResources(): Promise<void> {
     const errors: unknown[] = [];
+    // Stop new admissions before any asynchronous shutdown bookkeeping. The
+    // shutdown deadline may expire while publishing the draining registration;
+    // leaving the listener open in that case strands an unreachable, ref'ed
+    // server until the process is forcibly terminated.
+    const serverClosed = closeServer(this.#server).catch((error: unknown) => errors.push(error));
     await this.#publishRegistration().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
-    const serverClosed = closeServer(this.#server).catch((error: unknown) => errors.push(error));
     const accepted = [...this.#acceptedTransports];
     const handshaking = [...this.#handshakingTransports];
     const operationDrain = this.#waitForOperations();

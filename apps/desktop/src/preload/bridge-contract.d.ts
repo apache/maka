@@ -66,7 +66,7 @@ import type {
   VoiceRealtimeClientSession,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
   WebSearchProvider,
   WebSearchResponse,
@@ -87,6 +87,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
@@ -245,12 +246,16 @@ export interface MakaBridge {
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: import('@maka/core').QuoteRef[];
+            workspaceFileReferences?: Array<
+              Pick<import('@maka/core').InlineReference, 'value' | 'start'>
+            >;
           },
     ): Promise<
       | {
           ok: true;
           turnId: string;
           attachments: import('@maka/core').AttachmentRef[];
+          inlineReferences: import('@maka/core').InlineReference[];
           skillInvocation: import('@maka/runtime').SkillInvocationResult;
         }
       | {
@@ -597,6 +602,10 @@ export interface MakaBridge {
     ): () => void;
     subscribeDue(handler: (reminder: PlanReminder) => void): () => void;
   };
+  inspector: {
+    /** Read-only per-session causal trace (#1625). */
+    trace(sessionId: string): Promise<Result<SessionTrace>>;
+  };
   usage: {
     summary(query: UsageQuery): Promise<Result<UsageSummaryV2>>;
     buckets(query: UsageQuery & { groupBy: UsageGroupBy }): Promise<Result<UsageBucket[]>>;
@@ -618,7 +627,7 @@ export interface MakaBridge {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>>;
     getConfig?(): Promise<DailyReviewConfig>;
     setConfig?(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig>;
-    runOnce?(input: { mode: DailyReviewMode; day?: number; modelKey?: string }): Promise<{ archiveId: string }>;
+    runOnce?(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }>;
     list?(): Promise<DailyReviewArchiveSummary[]>;
     get?(archiveId: string): Promise<DailyReviewArchive | null>;
     delete?(archiveId: string): Promise<void>;

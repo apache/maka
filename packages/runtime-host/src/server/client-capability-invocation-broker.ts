@@ -6,6 +6,7 @@ import {
   decodeClientCapabilityResult,
   type ClientCapabilityCallResult,
   type ClientCapabilityClientFrame,
+  type ClientCapabilityHostFrame,
   type ClientCapabilityToolDescriptor,
 } from '../protocol/index.js';
 import type { ClientCapabilityConnectionSender } from './client-capability-service.js';
@@ -93,6 +94,47 @@ export class ClientCapabilityInvocationBroker<
     signal: AbortSignal | undefined,
     timeoutMs: number,
   ): Promise<ClientCapabilityCallResult> {
+    return this.#invoke(registration, signal, timeoutMs, (invocationId) => ({
+      kind: 'client.capability.call',
+      invocationId,
+      registrationId: registration.registrationId,
+      offerId: binding.offerId,
+      serverId: binding.descriptor.serverId,
+      toolName: binding.descriptor.name,
+      arguments: args,
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      toolCallId: context.toolCallId,
+      cwd: context.cwd,
+    }));
+  }
+
+  invokeService(
+    registration: Registration,
+    serviceId: string,
+    version: string,
+    method: string,
+    input: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): Promise<ClientCapabilityCallResult> {
+    return this.#invoke(registration, signal, timeoutMs, (invocationId) => ({
+      kind: 'client.capability.service_call',
+      invocationId,
+      registrationId: registration.registrationId,
+      serviceId,
+      version,
+      method,
+      input,
+    }));
+  }
+
+  #invoke(
+    registration: Registration,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+    frameFor: (invocationId: string) => ClientCapabilityHostFrame,
+  ): Promise<ClientCapabilityCallResult> {
     const sender = this.#senderFor(registration.connectionId);
     if (!sender) {
       return Promise.reject(
@@ -164,33 +206,19 @@ export class ClientCapabilityInvocationBroker<
       };
       this.#invocations.set(invocationId, invocation);
       if (onAbort) signal?.addEventListener('abort', onAbort, { once: true });
-      void sender
-        .send({
-          kind: 'client.capability.call',
-          invocationId,
-          registrationId: registration.registrationId,
-          offerId: binding.offerId,
-          serverId: binding.descriptor.serverId,
-          toolName: binding.descriptor.name,
-          arguments: args,
-          sessionId: context.sessionId,
-          turnId: context.turnId,
-          toolCallId: context.toolCallId,
-          cwd: context.cwd,
-        })
-        .catch(() => {
-          const current = this.#invocations.get(invocationId);
-          if (!current) return;
-          this.#settle(
-            current,
-            undefined,
-            new ClientCapabilityInvocationError(
-              'capability_lost',
-              'Client Capability call could not be delivered',
-            ),
-            false,
-          );
-        });
+      void sender.send(frameFor(invocationId)).catch(() => {
+        const current = this.#invocations.get(invocationId);
+        if (!current) return;
+        this.#settle(
+          current,
+          undefined,
+          new ClientCapabilityInvocationError(
+            'capability_lost',
+            'Client Capability call could not be delivered',
+          ),
+          false,
+        );
+      });
     });
   }
 

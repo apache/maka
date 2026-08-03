@@ -1,82 +1,25 @@
-import type { AbArmSpec, AbComparisonSummary, RunAbComparisonInput } from './ab-types.js';
+import type {
+  AbArmSpec,
+  AbComparisonSummary,
+  ArmCohortResult,
+  RunAbComparisonInput,
+  RunArmCohortInput,
+} from './ab-types.js';
 import type { FixedPromptTask } from './fixed-prompt-controller.js';
 import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 import { assertFinitePositive, assertPositiveInt } from './numeric-guards.js';
 import { summarizeAbComparison } from './ab-summary.js';
 
-interface ActivePairResult {
-  pairIndex: number;
+interface ActiveCohortResult {
+  cohortIndex: number;
   rep: number;
-  baseline: FixedPromptTaskWalEvent;
-  candidate: FixedPromptTaskWalEvent;
+  events: FixedPromptTaskWalEvent[];
 }
 
 export async function runAbComparison(input: RunAbComparisonInput): Promise<AbComparisonSummary> {
-  assertUniqueArmRoundIdSuffixes(input.arms);
-  const reps = input.reps ?? 3;
-  assertPositiveInt('reps', reps);
-  const maxConcurrency =
-    input.maxConcurrency !== undefined
-      ? assertPositiveInt('maxConcurrency', input.maxConcurrency)
-      : 1;
-  if (input.observedCostStopUsd !== undefined)
-    assertFinitePositive('observedCostStopUsd', input.observedCostStopUsd);
-  const baselineRuns: FixedPromptTaskWalEvent[][] = Array.from({ length: reps }, () => []);
-  const candidateRuns: FixedPromptTaskWalEvent[][] = Array.from({ length: reps }, () => []);
-  const pairs: { rep: number; taskIndex: number; task: FixedPromptTask }[] = [];
-  for (let rep = 0; rep < reps; rep += 1) {
-    input.evaluationTasks.forEach((task, taskIndex) => pairs.push({ rep, taskIndex, task }));
-  }
-
-  let nextPairIndex = 0;
-  let observedCostUsd = 0;
-  let stopReason: AbComparisonSummary['stopReason'];
-  const active = new Map<number, Promise<ActivePairResult>>();
-  const observeArmEvent = (event: FixedPromptTaskWalEvent) => {
-    observedCostUsd += eventCostUsd(event);
-    if (isSystemicProviderFailure(event)) {
-      stopReason = 'systemic_provider_failure';
-    } else if (
-      !stopReason &&
-      input.observedCostStopUsd !== undefined &&
-      observedCostUsd >= input.observedCostStopUsd
-    ) {
-      stopReason = 'observed_cost_stop_reached';
-    }
-  };
-  const launchReadyPairs = () => {
-    while (!stopReason && active.size < maxConcurrency && nextPairIndex < pairs.length) {
-      const pairIndex = nextPairIndex;
-      const pair = pairs[nextPairIndex++]!;
-      active.set(
-        pairIndex,
-        runComparisonPair(input, pair, observeArmEvent).then((result) => ({
-          pairIndex,
-          ...result,
-        })),
-      );
-    }
-  };
-
-  launchReadyPairs();
-  while (active.size > 0) {
-    let result: ActivePairResult;
-    try {
-      result = await Promise.race(active.values());
-    } catch (error) {
-      await Promise.allSettled(active.values());
-      throw error;
-    }
-    active.delete(result.pairIndex);
-    baselineRuns[result.rep]!.push(result.baseline);
-    candidateRuns[result.rep]!.push(result.candidate);
-    launchReadyPairs();
-  }
-  const taskOrder = new Map(input.evaluationTasks.map((task, index) => [task.id, index]));
-  for (const run of [...baselineRuns, ...candidateRuns]) {
-    run.sort((a, b) => (taskOrder.get(a.taskId) ?? 0) - (taskOrder.get(b.taskId) ?? 0));
-  }
-
+  const cohort = await runArmCohort(input);
+  const baselineRuns = cohort.runsByArmId[input.arms[0].id]!;
+  const candidateRuns = cohort.runsByArmId[input.arms[1].id]!;
   const summary = summarizeAbComparison({
     runId: input.runId,
     roundId: 'ab-summary',
@@ -90,7 +33,87 @@ export async function runAbComparison(input: RunAbComparisonInput): Promise<AbCo
       ? { nonInferiorityMargin: input.nonInferiorityMargin }
       : {}),
   });
-  return stopReason ? { ...summary, stopReason } : summary;
+  return cohort.stopReason ? { ...summary, stopReason: cohort.stopReason } : summary;
+}
+
+export async function runArmCohort(input: RunArmCohortInput): Promise<ArmCohortResult> {
+  if (input.arms.length < 2) throw new Error('arm cohort requires at least two arms');
+  assertUniqueArmRoundIdSuffixes(input.arms);
+  const reps = input.reps ?? 3;
+  assertPositiveInt('reps', reps);
+  const maxConcurrency =
+    input.maxConcurrency !== undefined
+      ? assertPositiveInt('maxConcurrency', input.maxConcurrency)
+      : 1;
+  if (input.observedCostStopUsd !== undefined)
+    assertFinitePositive('observedCostStopUsd', input.observedCostStopUsd);
+  const runsByArmId: Record<string, FixedPromptTaskWalEvent[][]> = Object.fromEntries(
+    input.arms.map((arm) => [arm.id, Array.from({ length: reps }, () => [])]),
+  );
+  const cohorts: { rep: number; taskIndex: number; task: FixedPromptTask }[] = [];
+  for (let rep = 0; rep < reps; rep += 1) {
+    input.evaluationTasks.forEach((task, taskIndex) => cohorts.push({ rep, taskIndex, task }));
+  }
+
+  let nextCohortIndex = 0;
+  let observedCostUsd = 0;
+  let stopReason: AbComparisonSummary['stopReason'];
+  const active = new Map<number, Promise<ActiveCohortResult>>();
+  const observeArmEvent = (event: FixedPromptTaskWalEvent) => {
+    observedCostUsd += eventCostUsd(event);
+    if (isSystemicProviderFailure(event)) {
+      stopReason = 'systemic_provider_failure';
+    } else if (
+      !stopReason &&
+      input.observedCostStopUsd !== undefined &&
+      observedCostUsd >= input.observedCostStopUsd
+    ) {
+      stopReason = 'observed_cost_stop_reached';
+    }
+  };
+  const launchReadyCohorts = () => {
+    while (!stopReason && active.size < maxConcurrency && nextCohortIndex < cohorts.length) {
+      const cohortIndex = nextCohortIndex;
+      const cohort = cohorts[nextCohortIndex++]!;
+      active.set(
+        cohortIndex,
+        runCohort(input, cohort, observeArmEvent).then((result) => ({
+          cohortIndex,
+          ...result,
+        })),
+      );
+    }
+  };
+
+  launchReadyCohorts();
+  while (active.size > 0) {
+    let result: ActiveCohortResult;
+    try {
+      result = await Promise.race(active.values());
+    } catch (error) {
+      await Promise.allSettled(active.values());
+      throw error;
+    }
+    active.delete(result.cohortIndex);
+    result.events.forEach((event, armIndex) => {
+      runsByArmId[input.arms[armIndex]!.id]![result.rep]!.push(event);
+    });
+    launchReadyCohorts();
+  }
+  const taskOrder = new Map(input.evaluationTasks.map((task, index) => [task.id, index]));
+  for (const armRuns of Object.values(runsByArmId)) {
+    for (const run of armRuns) {
+      run.sort((a, b) => (taskOrder.get(a.taskId) ?? 0) - (taskOrder.get(b.taskId) ?? 0));
+    }
+  }
+  return {
+    runId: input.runId,
+    armIds: input.arms.map((arm) => arm.id),
+    evaluationTaskIds: input.evaluationTasks.map((task) => task.id),
+    reps,
+    runsByArmId,
+    ...(stopReason ? { stopReason } : {}),
+  };
 }
 
 function eventCostUsd(event: FixedPromptTaskWalEvent): number {
@@ -107,38 +130,30 @@ function isSystemicProviderFailure(event: FixedPromptTaskWalEvent): boolean {
   return errorClass === 'provider_billing' || errorClass === 'auth';
 }
 
-async function runComparisonPair(
-  input: RunAbComparisonInput,
-  pair: { rep: number; taskIndex: number; task: FixedPromptTask },
+async function runCohort(
+  input: RunArmCohortInput,
+  cohort: { rep: number; taskIndex: number; task: FixedPromptTask },
   onArmEvent: (event: FixedPromptTaskWalEvent) => void,
-): Promise<{ rep: number; baseline: FixedPromptTaskWalEvent; candidate: FixedPromptTaskWalEvent }> {
+): Promise<{ rep: number; events: FixedPromptTaskWalEvent[] }> {
+  const offset = (cohort.rep + cohort.taskIndex) % input.arms.length;
+  const rotatedArms = [...input.arms.slice(offset), ...input.arms.slice(0, offset)];
   if (input.armExecution === 'sequential') {
-    if ((pair.rep + pair.taskIndex) % 2 === 0) {
-      const baseline = await runComparisonTaskArm(input, input.arms[0], pair, onArmEvent);
-      const candidate = await runComparisonTaskArm(input, input.arms[1], pair, onArmEvent);
-      return { rep: pair.rep, baseline, candidate };
+    const byArmId = new Map<string, FixedPromptTaskWalEvent>();
+    for (const arm of rotatedArms) {
+      byArmId.set(arm.id, await runCohortTaskArm(input, arm, cohort, onArmEvent));
     }
-    const candidate = await runComparisonTaskArm(input, input.arms[1], pair, onArmEvent);
-    const baseline = await runComparisonTaskArm(input, input.arms[0], pair, onArmEvent);
-    return { rep: pair.rep, baseline, candidate };
+    return { rep: cohort.rep, events: input.arms.map((arm) => byArmId.get(arm.id)!) };
   }
-  if ((pair.rep + pair.taskIndex) % 2 === 0) {
-    const [baseline, candidate] = await drainParallelArmRuns([
-      runComparisonTaskArm(input, input.arms[0], pair, onArmEvent),
-      runComparisonTaskArm(input, input.arms[1], pair, onArmEvent),
-    ]);
-    return { rep: pair.rep, baseline, candidate };
-  }
-  const [candidate, baseline] = await drainParallelArmRuns([
-    runComparisonTaskArm(input, input.arms[1], pair, onArmEvent),
-    runComparisonTaskArm(input, input.arms[0], pair, onArmEvent),
-  ]);
-  return { rep: pair.rep, baseline, candidate };
+  const rotatedEvents = await drainParallelArmRuns(
+    rotatedArms.map((arm) => runCohortTaskArm(input, arm, cohort, onArmEvent)),
+  );
+  const byArmId = new Map(rotatedArms.map((arm, index) => [arm.id, rotatedEvents[index]!]));
+  return { rep: cohort.rep, events: input.arms.map((arm) => byArmId.get(arm.id)!) };
 }
 
 async function drainParallelArmRuns(
-  runs: readonly [Promise<FixedPromptTaskWalEvent>, Promise<FixedPromptTaskWalEvent>],
-): Promise<[FixedPromptTaskWalEvent, FixedPromptTaskWalEvent]> {
+  runs: readonly Promise<FixedPromptTaskWalEvent>[],
+): Promise<FixedPromptTaskWalEvent[]> {
   let firstError: unknown;
   let rejected = false;
   const values = await Promise.all(
@@ -155,11 +170,11 @@ async function drainParallelArmRuns(
     }),
   );
   if (rejected) throw firstError;
-  return values as [FixedPromptTaskWalEvent, FixedPromptTaskWalEvent];
+  return values as FixedPromptTaskWalEvent[];
 }
 
-async function runComparisonTaskArm(
-  input: RunAbComparisonInput,
+async function runCohortTaskArm(
+  input: RunArmCohortInput,
   arm: AbArmSpec,
   pair: { rep: number; task: FixedPromptTask },
   onArmEvent: (event: FixedPromptTaskWalEvent) => void,

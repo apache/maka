@@ -219,6 +219,11 @@ export class HostRuntimeResourceCoordinator
     await this.#termination;
   }
 
+  async hasLiveSessionResources(sessionId: string): Promise<boolean> {
+    const updates = await this.#sessions.listShellRunUpdates(sessionId);
+    return updates.some((update) => isActiveShellRunStatus(update.result.status));
+  }
+
   #query(input: RuntimeResourceQueryInput): Promise<OperationOutcome<'runtime.resource.query'>> {
     if (input.kind === 'get' && !isShellRunResourceRef(input.ref)) {
       return Promise.resolve(
@@ -226,6 +231,15 @@ export class HostRuntimeResourceCoordinator
       );
     }
     return this.#sessionAdmission.run(input.sessionId, async () => {
+      try {
+        await this.#sessionHeaders.readHeader(input.sessionId);
+      } catch (error) {
+        if (isSessionNotFoundError(error)) {
+          return queryFailure('not_found', 'Session was not found');
+        }
+        this.#requestDrain();
+        return queryFailure('internal_failure', 'Session state is unavailable');
+      }
       let updates: ShellRunUpdate[];
       try {
         updates = await this.#sessions.listShellRunUpdates(input.sessionId);
@@ -610,7 +624,7 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 function queryFailure(
-  code: 'invalid_request' | 'internal_failure',
+  code: Extract<OperationOutcome<'runtime.resource.query'>, { ok: false }>['error']['code'],
   message: string,
 ): OperationOutcome<'runtime.resource.query'> {
   return { ok: false, error: { code, message } };

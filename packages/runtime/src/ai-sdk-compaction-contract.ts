@@ -1,7 +1,7 @@
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { LlmCallRecord } from '@maka/core/usage-stats/types';
 
+import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
 import type {
@@ -15,8 +15,6 @@ import type {
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { ModelFactory } from './model-adapter.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
-
-export type LlmTelemetryRecorder = (record: LlmCallRecord) => void;
 
 export type ToolResultArchiveRecorderInput = (
   | StaleToolResultArchiveCandidate
@@ -120,6 +118,15 @@ export interface HistoryCompactSummaryInput {
   newlyFoldedRuntimeEvents?: RuntimeEvent[];
   requestShapeHashBefore?: string;
   abortSignal?: AbortSignal;
+  /**
+   * Physical-call tracking for this summarization, built by the backend (#1679).
+   *
+   * A *ready* tracker, not the parts to assemble one: the products that wire a
+   * summarizer cannot know the run a call belongs to, and every root that had to
+   * assemble it independently eventually forgot a piece. Absent when the product
+   * supplied no canonical sink, which leaves the call untracked.
+   */
+  providerRequestTracker?: ProviderRequestTracker;
 }
 export type HistoryCompactSummarizer = (
   input: HistoryCompactSummaryInput,
@@ -145,8 +152,6 @@ export interface AiSdkCompactionCapabilities {
   modelFactory: ModelFactory;
   /** Optional prior-history budget. Keeps whole turns to preserve tool-call/result pairs. */
   contextBudget?: ContextBudgetPolicy;
-  /** Optional fire-and-forget LLM telemetry hook. */
-  recordLlmCall?: LlmTelemetryRecorder;
   /**
    * Optional archive writer for replay-only stale tool-result pruning. The
    * runtime rewrites only candidates whose original body has been durably

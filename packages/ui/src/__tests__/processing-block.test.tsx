@@ -13,6 +13,27 @@ function renderToStaticMarkup(node: ReactNode): string {
   }));
 }
 
+function renderInDeterministicFixture(node: ReactNode): string {
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      documentElement: {
+        dataset: { makaE2eFixture: 'true' },
+      },
+    },
+  });
+  try {
+    return renderToStaticMarkup(node);
+  } finally {
+    if (documentDescriptor) {
+      Object.defineProperty(globalThis, 'document', documentDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, 'document');
+    }
+  }
+}
+
 function turnWithTools(tools: ToolActivityItem[]): TurnViewModel {
   return {
     turnId: 'turn-1',
@@ -41,21 +62,43 @@ describe('ProcessingBlock disclosure wiring (#1307)', () => {
     assert.match(markup, /深度思考/);
   });
 
-  it('keeps waiting permission in the product-owned disclosure without a processing wrapper', () => {
+  it('keeps an unsettled group in the same Astryx rows, expanded, without a processing wrapper', () => {
     const markup = renderToStaticMarkup(createElement(TurnView, {
       turn: turnWithTools([
         { toolUseId: 'b1', toolName: 'Bash', activityKind: 'command', status: 'completed', args: {} },
-        { toolUseId: 'w1', toolName: 'Write', activityKind: 'edit', status: 'waiting_permission', args: {}, intent: '写入配置' },
+        { toolUseId: 'w1', toolName: 'Write', activityKind: 'edit', status: 'running', args: {}, intent: '写入配置' },
       ]),
     }));
     assert.doesNotMatch(markup, /data-processing="block"/);
-    assert.match(markup, /data-trow="group"/);
+    assert.match(markup, /class="[^"]*astryx-chat-tool-calls[^"]*"/);
     assert.match(markup, /aria-expanded="true"/);
     assert.match(markup, /写入配置/);
   });
 });
 
 describe('deep-thinking disclosure', () => {
+  it('shows complete live reasoning immediately in deterministic fixtures', () => {
+    const markup = renderInDeterministicFixture(createElement(TurnView, {
+      turn: {
+        turnId: 'fixture-thinking-turn',
+        status: 'running',
+        partialOutputRetained: false,
+        tools: [],
+        notes: [],
+        timeline: [{
+          kind: 'thinking',
+          text: 'deterministic fixture reasoning',
+          messageId: 'fixture-thinking-1',
+          live: true,
+        }],
+        startedAt: 1,
+      },
+      liveStreaming: {},
+    }));
+
+    assert.match(markup, /deterministic fixture reasoning/);
+  });
+
   it('renders through official Astryx ChatReasoning with its native collapsed preview', () => {
     const markup = renderToStaticMarkup(createElement(TurnView, {
       turn: {
@@ -69,9 +112,14 @@ describe('deep-thinking disclosure', () => {
       },
     }));
 
-    assert.match(markup, /class="[^"]*astryx-chat-reasoning[^"]*min-w-0[^"]*"/);
-    assert.match(markup, /class="flex min-w-0 w-full flex-col gap-2"/);
+    assert.match(markup, /class="[^"]*astryx-chat-reasoning[^"]*"/);
+    assert.match(markup, /class="maka-assistant-answer-content"/);
     assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
+    // The reasoning body carries the product wrap class so
+    // `.maka-chat-reasoning-content` in styles.css can restore pre-wrap —
+    // Astryx's own atoms declare no white-space, so without this seam the
+    // inherited `normal` collapses every newline in the thinking text.
+    assert.match(markup, /class="maka-chat-reasoning-content [^"]*"/);
     assert.match(markup, /private reasoning/);
     assert.doesNotMatch(markup, /data-slot="reasoning-trigger"/);
     assert.doesNotMatch(markup, /复制思考过程/);

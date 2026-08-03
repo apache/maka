@@ -37,21 +37,24 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('upgrades a populated mainline schema 5 database without rewriting RuntimeEvents', async () => {
+  it('upgrades a populated mainline schema 6 database without rewriting RuntimeEvents', async () => {
     await withStore(async (store, dbPath) => {
       const historical = functionCallEvent({
-        id: 'schema-5-historical-event',
-        content: { kind: 'text', text: 'preserve me across v5 to v6' },
+        id: 'schema-6-historical-event',
+        content: { kind: 'text', text: 'preserve me across v6 to v7' },
       });
       await store.appendRuntimeEvent(historical.sessionId, historical.runId, historical);
       store.close();
 
       const legacy = new DatabaseSync(dbPath);
       legacy.exec(`
-        DROP TABLE runtime_continuation_claims;
+        DROP TABLE runtime_workspace_heads;
+        DROP TABLE runtime_workspace_versions;
+        DROP TABLE runtime_workspace_epochs;
+        DROP TABLE headless_task_run_events;
         DELETE FROM runtime_capabilities
-          WHERE capability = 'runtime_continuation_authority';
-        PRAGMA user_version = 5;
+          WHERE capability = 'runtime_workspace_version_authority';
+        PRAGMA user_version = 6;
       `);
       legacy.close();
 

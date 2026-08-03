@@ -749,7 +749,7 @@ function wilsonScoreInterval(
   };
 }
 
-function isEvaluatedOutcome(
+export function isEvaluatedOutcome(
   event: FixedPromptTaskWalEvent,
 ): event is Extract<FixedPromptTaskWalEvent, { type: 'task_completed' | 'task_budget_exhausted' }> {
   const category = abOutcomeCategory(event);

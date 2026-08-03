@@ -11,7 +11,8 @@ import {
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
-import { Badge, Button, FormLayout, TextInput, useMountedRef, useUiLocale, Banner } from '@maka/ui';
+import { Banner, HStack, VStack } from '@astryxdesign/core';
+import { Button, FormLayout, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
@@ -165,14 +166,14 @@ export function AddProviderForm(props: {
     }
   }
 
-  function submitApiKey(event: FormEvent<HTMLFormElement>) {
+  function submitApiKey(event: FormEvent<HTMLElement>) {
     event.preventDefault();
     void submit();
   }
 
   if (usesApiKeyDialog) {
     return (
-      <form className="providerKeyDialogForm" onSubmit={submitApiKey}>
+      <VStack as="form" gap={3} onSubmit={submitApiKey}>
         <PasswordInput
           value={apiKey}
           onChange={(next) => {
@@ -193,19 +194,16 @@ export function AddProviderForm(props: {
         {error?.field === 'form' && (
           <Banner status="error" title={error.message} />
         )}
-        <div className="providerKeyDialogActions">
+        <HStack gap={2} justify="end">
           <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
           <Button variant="primary" type="submit" isDisabled={busy} label={busy ? copy.saving : copy.save} />
-        </div>
-      </form>
+        </HStack>
+      </VStack>
     );
   }
 
   return (
-    <div className="providerEditor">
-      <div className="providerHeaderBadges">
-        <Badge variant="neutral" label={categoryLabel(defaults.category, locale)} />
-      </div>
+    <VStack gap={3}>
       {isExperimental && (
         <Banner
           status="info"
@@ -313,11 +311,11 @@ export function AddProviderForm(props: {
       {error?.field === 'form' && (
         <Banner status="error" title={error.message} />
       )}
-      <div className="providerActions">
+      <HStack gap={2} justify="end">
         <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
         <Button variant="primary" isDisabled={busy || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />
-      </div>
-    </div>
+      </HStack>
+    </VStack>
   );
 }
 

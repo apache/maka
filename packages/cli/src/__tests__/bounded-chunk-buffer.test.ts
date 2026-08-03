@@ -18,6 +18,7 @@ describe('BoundedChunkBuffer', () => {
     buffer.append(discarded);
     buffer.append({ text: 'new' });
 
+    // values() cannot reliably expose retained backing-slot references, so this white-box check is justified.
     const storage = buffer as unknown as { chunks: Array<Chunk | undefined>; head: number };
     assert.equal(storage.head, 1);
     assert.equal(storage.chunks[0], undefined);

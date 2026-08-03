@@ -1,140 +1,14 @@
+/* Astryx convergence (task #136): the Claude subscription card was the last
+   user of the hand-rolled `.settingsConnectionRow[data-status]` recipe (9
+   tinted variants), the quota rows, and the paste panel — it now composes
+   Card / Banner / HStack / VStack / ProgressBar / FieldStatus, so those rules
+   are retired. What remains is the inline-meta helper the Web Search page
+   still uses. */
 
-  .settingsConnectionRow {
-    display: grid;
-    gap: var(--space-1-5);
-    padding: var(--space-3) var(--space-3);
-    border-radius: var(--radius-surface);
-    border: var(--border-width-hairline) solid var(--border);
-    background: var(--foreground-2);
-    box-shadow: 0 1px 3px oklch(from var(--foreground) l c h / 0.03);
-  }
-/* Status-color restraint: verified is the expected state — default
-   card chrome; color is reserved for exception states below. */
-.settingsConnectionRow[data-status="needs_reauth"] {
-    border-color: oklch(from var(--info) l c h / 0.30);
-    background: oklch(from var(--info) l c h / 0.06);
-  }
-.settingsConnectionRow[data-status="error"] {
-    border-color: oklch(from var(--destructive) l c h / 0.30);
-    background: oklch(from var(--destructive) l c h / 0.05);
-  }
-.settingsConnectionRow[data-status="not_configured"] {
-    border-color: oklch(from var(--info) l c h / 0.20);
-    background: oklch(from var(--info) l c h / 0.03);
-  }
-/* PR-OAUTH-SUBSCRIPTION-0: Claude subscription card states. */
-.settingsConnectionRow[data-status="not_logged_in"] {
-    border-color: var(--border);
-    background: var(--foreground-2);
-  }
-.settingsConnectionRow[data-status="authorizing"],
-  .settingsConnectionRow[data-status="refreshing"] {
-    border-color: oklch(from var(--info) l c h / 0.30);
-    background: oklch(from var(--info) l c h / 0.04);
-  }
-/* authenticated: expected state, default card chrome (see above). */
-.settingsConnectionRow[data-status="refresh_failed"],
-  .settingsConnectionRow[data-status="quota_unavailable"] {
-    border-color: oklch(from var(--warning, var(--info)) l c h / 0.30);
-    background: oklch(from var(--warning, var(--info)) l c h / 0.05);
-  }
-.settingsConnectionRow[data-status="provider_rejected"] {
-    border-color: oklch(from var(--destructive) l c h / 0.30);
-    background: oklch(from var(--destructive) l c h / 0.05);
-  }
-.settingsQuotaSection {
-    display: grid;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-2-5);
-    border-radius: var(--radius-surface);
-    background: oklch(from var(--foreground) l c h / 0.03);
-  }
-.settingsQuotaRow {
-    display: flex;
-    justify-content: space-between;
-    font-size: var(--font-size-ui);
-    font-variant-numeric: tabular-nums;
-  }
-.settingsOauthPastePanel {
-    display: grid;
-    gap: var(--space-2);
-    margin-top: var(--space-1);
-    padding: var(--space-3) var(--space-3);
-    border-radius: var(--radius-surface);
-    background: oklch(from var(--foreground) l c h / 0.04);
-  }
-.settingsErrorText {
-    color: var(--destructive-text, var(--destructive, red));
-  }
-.settingsConnectionRow[data-status="disabled"] {
-    opacity: var(--opacity-disabled);
-  }
-.settingsConnectionRow[data-default="true"] {
-    box-shadow: 0 0 0 2px oklch(from var(--control) l c h / 0.12);
-  }
-.settingsConnectionRowName {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-width: 0;
-  }
-.settingsConnectionRowHead {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
-  }
-.settingsConnectionRowText {
-    display: grid;
-    gap: var(--space-0-5);
-    min-width: 0;
-  }
-.settingsConnectionRowText strong {
-    color: var(--foreground);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-semibold);
-  }
-.settingsConnectionRowText small {
-    color: var(--muted-foreground);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-caption);
-  }
-.settingsConnectionDetail {
-    margin: 0;
-    color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
-  }
 .settingsConnectionMeta {
+    font: var(--maka-text-supporting);
     margin: 0;
     display: flex;
     gap: var(--space-3);
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-    font-family: var(--font-mono);
-  }
-.settingsInlineFileState {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1-5);
-  }
-.settingsConnectionActions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    align-items: center;
-    gap: var(--space-2);
-    margin-top: var(--space-1);
-  }
-/* .settingsRow states + hint moved to rows.css
-   (PR-SETTINGS-ROWS-CONVERGENCE-0). */
-.providersPanel {
-    min-height: 420px;
-    display: grid;
-    grid-template-columns: minmax(190px, 0.82fr) minmax(0, 1.5fr);
-    gap: var(--space-3);
-  }
-.settingsSurface[data-modal="true"] .providersPanel {
-    min-height: 480px;
-    grid-template-columns: minmax(190px, 0.7fr) minmax(250px, 1fr);
   }

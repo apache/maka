@@ -550,7 +550,7 @@ function McpCatalogCard(props: {
         >
           {props.phase ? (
             <>
-              <Loader2 className="maka-mcp-install-spinner animate-spin" aria-hidden="true" />
+              <Loader2 className="maka-mcp-install-spinner" aria-hidden="true" />
               <X className="maka-mcp-install-cancel" aria-hidden="true" />
             </>
           ) : <Plus aria-hidden="true" />}
@@ -667,7 +667,6 @@ function McpEditorDialog(props: {
       className="maka-mcp-editor-dialog"
       width="min(92vw, var(--maka-chat-measure))"
       maxHeight="85dvh"
-      padding={0}
       purpose="form"
     >
       <Layout

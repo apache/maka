@@ -5,7 +5,7 @@ import { computeCost } from './cost.js';
 import type { TelemetryRepoLite } from './types.js';
 
 export interface LlmRecorderDeps {
-  repo: TelemetryRepoLite;
+  repo: Pick<TelemetryRepoLite, 'insertLlmCall'>;
   lookupPricing: (modelKey: string) => PricingConfig | null;
 }
 

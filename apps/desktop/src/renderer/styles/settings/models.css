@@ -1,59 +1,9 @@
-/* ---- Enabled models: flat connection list. Each connection is one
- * top-level row (logo · name + provider · status chip · chevron), sorted
- * strictly in bridge.list() order. The Item primitive carries the row
- * chrome (media / content / actions, hover + selected fills); this file
- * only owns the scroll container, the hairline between rows, and the
- * disabled dimming. Status tone lives on the Chip primitive, the default
- * marker on the Chip `accent` variant — no bespoke status/tag CSS here. */
-.connectionList {
-  max-height: 360px;
-  overflow-y: auto;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.connectionRow {
-  border-radius: var(--radius-control);
-}
-
-.connectionList li + li .connectionRow {
-  border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
-}
-
 /* The default-connection selected wash rides the Item `selected` prop
    (data-selected → --state-selected-bg), one selected-row implementation
    across the app. */
 
 .connectionRow[data-disabled="true"] {
   opacity: var(--opacity-muted);
-}
-
-.catalogPillTabs,
-.settingsSurface[data-modal="true"] .catalogPillTabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.catalogPillTabs strong {
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-bold);
-}
-
-.providerMarketGrid,
-.settingsSurface[data-modal="true"] .providerMarketGrid {
-  grid-template-columns: 1fr;
-  overflow: auto;
-}
-
-.providerCatalogRow {
-  border-radius: var(--radius-control);
-}
-
-.providerMarketGrid .providerCatalogRow + .providerCatalogRow,
-.providerOAuthGrid .providerCatalogRow + .providerCatalogRow {
-  border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
 }
 
 /* Logo plates match the enabled list (compact 32px) so the page reads as

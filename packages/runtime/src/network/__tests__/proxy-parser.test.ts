@@ -5,8 +5,15 @@ import { buildProxyUrl, parseProxyConfig } from '../proxy-parser.js';
 
 describe('parseProxyConfig', () => {
   test('returns defaults for non-object input', () => {
-    expect(parseProxyConfig(null)).toEqual(PROXY_DEFAULTS);
-    expect(parseProxyConfig('http://127.0.0.1:7890')).toEqual(PROXY_DEFAULTS);
+    const expected = {
+      enabled: false,
+      type: 'http',
+      host: '',
+      port: 8080,
+      bypassList: ['localhost', '127.0.0.1', '::1', '*.local'],
+    };
+    expect(parseProxyConfig(null)).toEqual(expected);
+    expect(parseProxyConfig('http://127.0.0.1:7890')).toEqual(expected);
   });
 
   test('coerces type and port safely', () => {
@@ -16,11 +23,11 @@ describe('parseProxyConfig', () => {
     });
     expect(parseProxyConfig({ type: 'socks5', port: 0 })).toMatchObject({
       type: 'socks5',
-      port: PROXY_DEFAULTS.port,
+      port: 8080,
     });
     expect(parseProxyConfig({ type: 'https', port: 999_999 })).toMatchObject({
       type: 'https',
-      port: PROXY_DEFAULTS.port,
+      port: 8080,
     });
   });
 

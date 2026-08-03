@@ -31,48 +31,6 @@ const probeScroller = `(() => {
 // rewrote the placeholder geometry rather than finishing over nothing.
 const WARMED_HEIGHT_FLOOR = 24 * 800;
 
-type ColumnGeometry = {
-  hostLeft: number;
-  viewportLeft: number;
-  hostViewportLeftDelta: number;
-  turnCenter: number;
-  composerCenter: number;
-  turnComposerCenterDelta: number;
-  hostDisplay: string;
-  hostFlexDirection: string;
-  hostGap: string;
-};
-
-async function probeColumnGeometry(page: import('@playwright/test').Page): Promise<ColumnGeometry> {
-  return await page.evaluate(() => {
-    const host = document.querySelector<HTMLElement>('.maka-chat-layout');
-    const viewport = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
-    const turn = document.querySelector<HTMLElement>('.maka-turn');
-    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-astryx');
-    if (!host || !viewport || !turn || !composer) {
-      throw new Error('Expected the active chat host, viewport, turn, and composer to be mounted');
-    }
-
-    const hostRect = host.getBoundingClientRect();
-    const viewportRect = viewport.getBoundingClientRect();
-    const turnRect = turn.getBoundingClientRect();
-    const composerRect = composer.getBoundingClientRect();
-    const hostStyle = getComputedStyle(host);
-    return {
-      hostLeft: hostRect.left,
-      viewportLeft: viewportRect.left,
-      hostViewportLeftDelta: viewportRect.left - hostRect.left,
-      turnCenter: turnRect.left + turnRect.width / 2,
-      composerCenter: composerRect.left + composerRect.width / 2,
-      turnComposerCenterDelta:
-        (turnRect.left + turnRect.width / 2) - (composerRect.left + composerRect.width / 2),
-      hostDisplay: hostStyle.display,
-      hostFlexDirection: hostStyle.flexDirection,
-      hostGap: hostStyle.gap,
-    };
-  });
-}
-
 /**
  * Wait for the warm-up's own terminal state, which the scroller publishes as
  * `data-turn-warmup="settled"`.
@@ -104,47 +62,10 @@ async function settleGeometry(page: import('@playwright/test').Page, options: { 
   }
 }
 
-test('chat viewport and message column share the composer centerline', async ({ longTranscriptWindow: page }) => {
-  await expect(page.locator('.maka-turn')).toHaveCount(24);
-
-  for (const width of [900, 1180, 1440]) {
-    await page.setViewportSize({ width, height: 760 });
-    const geometry = await probeColumnGeometry(page);
-    const diagnostics = JSON.stringify({ width, ...geometry });
-    expect(Math.abs(geometry.hostViewportLeftDelta), diagnostics).toBeLessThanOrEqual(1);
-    expect(Math.abs(geometry.turnComposerCenterDelta), diagnostics).toBeLessThanOrEqual(1);
-  }
-});
-
-test('empty chat has no phantom vertical range and stays flush with the viewport', async ({ window: page }) => {
-  const content = page.locator('.mainColumn[data-home-surface="true"] .maka-chatContent');
-  await expect(content).toBeVisible();
-
-  for (const width of [900, 1180, 1440]) {
-    await page.setViewportSize({ width, height: 760 });
-    const geometry = await page.evaluate(() => {
-      const host = document.querySelector<HTMLElement>('.maka-chat-layout');
-      const viewport = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
-      const content = document.querySelector<HTMLElement>('.maka-chatContent');
-      if (!host || !viewport || !content) throw new Error('Expected the empty chat scroll surface');
-      const hostRect = host.getBoundingClientRect();
-      const viewportRect = viewport.getBoundingClientRect();
-      const contentStyle = getComputedStyle(content);
-      return {
-        hostViewportLeftDelta: viewportRect.left - hostRect.left,
-        contentDisplay: contentStyle.display,
-        contentGap: contentStyle.gap,
-        scrollRange: viewport.scrollHeight - viewport.clientHeight,
-        scrollTop: viewport.scrollTop,
-      };
-    });
-    const diagnostics = JSON.stringify({ width, ...geometry });
-    expect(Math.abs(geometry.hostViewportLeftDelta), diagnostics).toBeLessThanOrEqual(1);
-    expect(geometry.contentDisplay, diagnostics).toBe('flex');
-    expect(geometry.scrollRange, diagnostics).toBeLessThanOrEqual(1);
-    expect(geometry.scrollTop, diagnostics).toBeLessThanOrEqual(1);
-  }
-});
+// Column centerline / empty-chat flush used to live here as live box metrics.
+// Those outcomes are owned by `.maka-chat-layout` flex contracts
+// (chat-shell-layout-contract.test.ts). This file only keeps content-visibility
+// pin/warm-up behaviour that a static CSS read cannot prove.
 
 test('long session opens pinned to bottom and stays pinned while geometry settles', async ({ longTranscriptWindow: page }) => {
   await expect(page.locator('.maka-turn')).toHaveCount(24);
@@ -178,6 +99,46 @@ test('long session opens pinned to bottom and stays pinned while geometry settle
     bottomBoundary.dockTop - bottomBoundary.lastTurnBottom,
     JSON.stringify(bottomBoundary),
   ).toBeLessThanOrEqual(48);
+});
+
+test('the composer card rests above the window edge at every window height', async ({ longTranscriptWindow: page }) => {
+  // Which density tier the dock runs at is a unit contract
+  // (`chat-surface-layout.test.tsx`); the px it resolves to belongs to Astryx.
+  // What only a live window can answer is whether the card stays inside the
+  // frame: the dock is sticky-bottom, so a short window is exactly where a
+  // wrong flex or min-height contract lets it render past the edge — and the
+  // gutter alone cannot see that, because it is measured against the layout
+  // box that would be overflowing.
+  const probe = () =>
+    page.evaluate(() => {
+      const composer = document.querySelector<HTMLElement>('.maka-composer');
+      const layout = composer?.closest<HTMLElement>('.maka-chat-layout');
+      if (!composer || !layout) return null;
+      const card = composer.getBoundingClientRect().bottom;
+      return {
+        gutter: Math.round(layout.getBoundingClientRect().bottom - card),
+        belowWindowEdge: Math.round(card - window.innerHeight),
+      };
+    });
+
+  const gutters: number[] = [];
+  for (const height of [860, 617, 500]) {
+    await page.setViewportSize({ width: 915, height });
+    // Wait for the renderer to have laid out against the new viewport before
+    // reading geometry, or the first sample is the previous height's.
+    await expect.poll(() => page.evaluate(() => window.innerHeight)).toBe(height);
+    await expect
+      .poll(async () => (await probe())?.belowWindowEdge)
+      // Zero or less: the card is inside the window, not merely inside a layout
+      // box that has itself overflowed.
+      .toBeLessThanOrEqual(0);
+    const reading = await probe();
+    // Positive, so the card's rounded bottom edge never touches the frame.
+    expect(reading!.gutter, `gutter at ${height}px`).toBeGreaterThan(0);
+    gutters.push(reading!.gutter);
+  }
+  // Height-invariant: the gutter is the dock's own padding, so all three agree.
+  expect(new Set(gutters).size, JSON.stringify(gutters)).toBe(1);
 });
 
 test('graph status stays docked above the composer while transcript history scrolls', async ({ longTranscriptWindow: page }) => {

@@ -325,19 +325,28 @@ describe('PiAgentBackend skeleton', () => {
       events.push(event);
     }
     const start = events.find((event) => event.type === 'tool_start');
+    // This is the record the model reads back as its own call, so it is written
+    // in the tool's argument names: `window_id`, not the approval projection's
+    // `windowId`, and without the two fields the host adds for a permission
+    // decision. Every argument the call carried keeps its key — a call shown
+    // with no `text` is a shape the model will send again — and every value
+    // that came off the screen or out of a person is reduced to what it was.
+    // The coordinate is neither: the model chose it, so it comes back whole.
     const expected = {
       action: 'type',
-      approvalClass: 'keyboard_mutation',
-      rememberForTurnAllowed: true,
       app: 'Example',
-      windowId: 42,
-      observationId: 'frame-1',
+      window_id: 42,
+      observation_id: 'frame-1',
+      text: '<text>',
+      coordinate: [123, 456],
     };
     assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, expected);
     const toolCall = messages.find((message) => message.type === 'tool_call');
     assert.deepEqual(toolCall?.type === 'tool_call' ? toolCall.args : undefined, expected);
-    assert.doesNotMatch(JSON.stringify(events), /secret text|123|456/);
-    assert.doesNotMatch(JSON.stringify(messages), /secret text|123|456/);
+    // The typed text is what a person asked to be written; it stays out. The
+    // coordinate is the model's own argument and is not checked here.
+    assert.doesNotMatch(JSON.stringify(events), /secret text/);
+    assert.doesNotMatch(JSON.stringify(messages), /secret text/);
   });
 
   test('persists partial Pi text before aborting an active stream', async () => {

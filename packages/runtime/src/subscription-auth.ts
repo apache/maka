@@ -26,25 +26,99 @@ export function openAiCodexHeaders(accessToken: string): Record<string, string> 
   };
 }
 
+/**
+ * Extract the ChatGPT account id for request-header routing. Deliberately
+ * does NOT fall back to the JWT `sub` claim: the account id must come from
+ * the OpenAI-specific account/organization claims (a `sub` is not a
+ * ChatGPT account id and must not be sent as ChatGPT-Account-Id).
+ */
 export function extractCodexAccountId(accessToken: string): string | null {
   const payload = decodeJwtPayload(accessToken);
   if (!payload) return null;
-  const auth = payload['https://api.openai.com/auth'];
-  if (auth && typeof auth === 'object') {
-    const value = (auth as Record<string, unknown>).chatgpt_account_id;
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-  const value = payload.chatgpt_account_id;
-  if (typeof value === 'string' && value.trim()) return value.trim();
-  const organizations = payload.organizations;
-  if (Array.isArray(organizations)) {
-    for (const organization of organizations) {
-      if (!organization || typeof organization !== 'object') continue;
-      const id = (organization as Record<string, unknown>).id;
-      if (typeof id === 'string' && id.trim()) return id.trim();
+  return readChatGptAccountId(payload) ?? null;
+}
+
+export interface CodexAccountClaims {
+  accountId: string;
+  email?: string;
+  picture?: string;
+  plan?: string;
+}
+
+/**
+ * Extract the ChatGPT account identity + profile claims from the Codex
+ * access token (and optional id_token). Single authority for both the
+ * request-header account routing and the desktop account-state snapshot.
+ * Returns null when no account id can be determined.
+ */
+export function extractCodexAccountClaims(
+  accessToken: string,
+  idToken?: string,
+): CodexAccountClaims | null {
+  const primary = decodeJwtPayload(accessToken);
+  const secondary = idToken ? decodeJwtPayload(idToken) : null;
+  if (!primary && !secondary) return null;
+  const p = primary ?? {};
+  const s = secondary ?? {};
+
+  const accountId =
+    readChatGptAccountId(s) ||
+    readChatGptAccountId(p) ||
+    readNestedString(p, ['sub']) ||
+    readNestedString(s, ['sub']);
+  if (!accountId) return null;
+
+  const email =
+    readNestedString(p, ['email']) ||
+    readNestedString(s, ['email']) ||
+    readNestedString(p, ['https://api.openai.com/profile', 'email']) ||
+    readNestedString(s, ['https://api.openai.com/profile', 'email']);
+  const picture =
+    readNestedString(s, ['picture']) ||
+    readNestedString(p, ['picture']) ||
+    readNestedString(s, ['https://api.openai.com/profile', 'picture']) ||
+    readNestedString(p, ['https://api.openai.com/profile', 'picture']);
+  const plan =
+    readNestedString(p, ['https://api.openai.com/auth', 'chatgpt_plan_type']) ||
+    readNestedString(s, ['https://api.openai.com/auth', 'chatgpt_plan_type']);
+
+  return {
+    accountId,
+    ...(email !== undefined ? { email } : {}),
+    ...(picture !== undefined ? { picture } : {}),
+    ...(plan !== undefined ? { plan } : {}),
+  };
+}
+
+function readNestedString(obj: Record<string, unknown>, path: string[]): string | undefined {
+  let cur: unknown = obj;
+  for (const key of path) {
+    if (cur && typeof cur === 'object' && key in (cur as Record<string, unknown>)) {
+      cur = (cur as Record<string, unknown>)[key];
+    } else {
+      return undefined;
     }
   }
-  return null;
+  return typeof cur === 'string' && cur.length > 0 ? cur : undefined;
+}
+
+function readFirstOrganizationId(obj: Record<string, unknown>): string | undefined {
+  const organizations = obj.organizations;
+  if (!Array.isArray(organizations)) return undefined;
+  for (const organization of organizations) {
+    if (!organization || typeof organization !== 'object') continue;
+    const id = (organization as Record<string, unknown>).id;
+    if (typeof id === 'string' && id.trim()) return id.trim();
+  }
+  return undefined;
+}
+
+function readChatGptAccountId(obj: Record<string, unknown>): string | undefined {
+  return (
+    readNestedString(obj, ['chatgpt_account_id']) ||
+    readNestedString(obj, ['https://api.openai.com/auth', 'chatgpt_account_id']) ||
+    readFirstOrganizationId(obj)
+  );
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {

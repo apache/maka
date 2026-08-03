@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { runAbComparison } from '../ab-run.js';
+import { runAbComparison, runArmCohort } from '../ab-run.js';
 import { completed } from './helpers/ab-run-fixtures.js';
 import { sha256 } from './helpers/hash-fixture.js';
 import type {
@@ -408,6 +408,90 @@ describe('runAbComparison', () => {
 
     assert.deepEqual(calls, ['ab-off-r0-t1', 'ab-on-r0-t1']);
     assert.equal(result.stopReason, 'systemic_provider_failure');
+  });
+});
+
+describe('runArmCohort', () => {
+  test('rotates three sequential arms while keeping one task cohort adjacent', async () => {
+    const calls: string[] = [];
+    const result = await runArmCohort({
+      runId: 'cohort-run',
+      arms: [
+        { id: 'maka', kind: 'harness', fingerprint: sha256('maka') },
+        { id: 'codex', kind: 'harness', fingerprint: sha256('codex') },
+        { id: 'claude-code', kind: 'harness', fingerprint: sha256('claude') },
+      ],
+      evaluationTasks: [
+        { id: 't1', path: '/tasks/t1' },
+        { id: 't2', path: '/tasks/t2' },
+        { id: 't3', path: '/tasks/t3' },
+      ],
+      reps: 1,
+      armExecution: 'sequential',
+      runArm: async ({ arm, task }) => {
+        calls.push(`${task.id}:${arm.id}`);
+        return completed(task.id, true);
+      },
+    });
+
+    assert.deepEqual(calls, [
+      't1:maka',
+      't1:codex',
+      't1:claude-code',
+      't2:codex',
+      't2:claude-code',
+      't2:maka',
+      't3:claude-code',
+      't3:maka',
+      't3:codex',
+    ]);
+    assert.deepEqual(result.armIds, ['maka', 'codex', 'claude-code']);
+    assert.deepEqual(
+      Object.fromEntries(
+        result.armIds.map((armId) => [
+          armId,
+          result.runsByArmId[armId]![0]!.map((event) => event.taskId),
+        ]),
+      ),
+      {
+        maka: ['t1', 't2', 't3'],
+        codex: ['t1', 't2', 't3'],
+        'claude-code': ['t1', 't2', 't3'],
+      },
+    );
+  });
+
+  test('drains every parallel arm before propagating a cohort rejection', async () => {
+    const finished: string[] = [];
+    let release!: () => void;
+    const mayFinish = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const run = runArmCohort({
+      runId: 'cohort-run',
+      arms: ['maka', 'codex', 'claude-code'].map((id) => ({
+        id,
+        kind: 'harness' as const,
+        fingerprint: sha256(id),
+      })),
+      evaluationTasks: [{ id: 't1', path: '/tasks/t1' }],
+      reps: 1,
+      runArm: async ({ arm, task }) => {
+        if (arm.id === 'maka') throw new Error('arm failed');
+        await mayFinish;
+        finished.push(arm.id);
+        return completed(task.id, true);
+      },
+    });
+    let rejected = false;
+    const rejection = assert.rejects(run, /arm failed/).then(() => {
+      rejected = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(rejected, false);
+    release();
+    await rejection;
+    assert.deepEqual(new Set(finished), new Set(['codex', 'claude-code']));
   });
 });
 

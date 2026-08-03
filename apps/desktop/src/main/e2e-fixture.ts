@@ -1,5 +1,10 @@
 import { mkdir, rm } from 'node:fs/promises';
 import type { UiLocale, E2eFixtureScenario, E2eFixtureState } from '@maka/core';
+import {
+  backfillSessionProjects,
+  createProjectCatalog,
+  createSessionStore,
+} from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import type { CredentialStore } from './credential-store.js';
 import {
@@ -56,8 +61,6 @@ import {
   longTranscriptSession,
   staleFakeMessages,
   staleFakeSession,
-  staleLegacyMessages,
-  staleLegacySession,
   turnControlSessions,
   workstationStatusSessions,
 } from './e2e-fixture/scenarios-sessions.js';
@@ -125,7 +128,6 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-daily-review',
   'settings-permissions',
   'settings-voice',
-  'settings-search',
   'settings-usage',
   'settings-health',
   'module-skills',
@@ -547,8 +549,6 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'permissions' };
     case 'settings-voice':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'voice' };
-    case 'settings-search':
-      return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'search' };
     case 'settings-usage':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'usage' };
     case 'settings-health':
@@ -559,8 +559,7 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       return {
         ...state,
         activeSessionId: TURN_SESSION_ID,
-        composerText: '请整理这次会议的行动项',
-        composerSkills: [{ id: 'meeting-followup', name: '会议跟进' }],
+        composerText: '/skill:meeting-followup 请整理这次会议的行动项',
       };
     case 'module-mcp':
       // Open the 扩展 → MCP module directly so the alignment audit reaches the
@@ -695,17 +694,14 @@ export async function seedE2eFixture(input: {
   await writeSession(input.workspaceRoot, errorSession(now), errorMessages(now));
   await writeSession(input.workspaceRoot, artifactSession(now), artifactMessages(now));
   await writeArtifacts(input.workspaceRoot, now, input.fixture.scenario);
-  // Stale-session fixture seeds three sessions reproducing the @WAWQAQ
+  // Stale-session fixture seeds two sessions reproducing the @WAWQAQ
   // workspace state that triggered the P0:
   //   - one healthy ai-sdk session (zai-live, correct slug)
   //   - one fake backend session (FakeBackend)
-  //   - one legacy backend kind ('claude' with slug 'fake-claude')
-  // Together with the connection list (no `fake-claude` slug present),
-  // the renderer must mark the bottom two as stale + leave the first
-  // alone.
+  // The renderer must mark the unavailable fake Session as stale and leave
+  // the healthy Session alone.
   if (input.fixture.scenario === 'stale-sessions') {
     await writeSession(input.workspaceRoot, staleFakeSession(now), staleFakeMessages(now));
-    await writeSession(input.workspaceRoot, staleLegacySession(now), staleLegacyMessages(now));
     await writeSession(input.workspaceRoot, healthySession(now), healthyMessages(now));
   }
   if (input.fixture.scenario === 'workstation-statuses') {
@@ -769,5 +765,24 @@ export async function seedE2eFixture(input: {
     for (const seed of usageStatsSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
+  }
+  await seedSessionProjects(input.workspaceRoot);
+}
+
+/**
+ * Resolve every seeded session's project here rather than leaving it to the
+ * startup backfill. The fixture is meant to hand the renderer a settled state:
+ * the app resolves projects in background startup, concurrently with window
+ * creation, so a test that asserts on project grouping would otherwise be
+ * racing the resolver instead of exercising the sidebar.
+ */
+async function seedSessionProjects(workspaceRoot: string): Promise<void> {
+  const sessions = createSessionStore(workspaceRoot);
+  const catalog = createProjectCatalog(workspaceRoot);
+  try {
+    await backfillSessionProjects({ sessions, catalog });
+  } finally {
+    await sessions.close?.();
+    catalog.close();
   }
 }

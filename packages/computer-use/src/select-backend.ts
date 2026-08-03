@@ -4,19 +4,29 @@ import {
   type ComputerUseToolSet,
   type CuDispatchBackend,
 } from '@maka/runtime';
-import { createCuaDriverBackend } from './cua-driver-backend.js';
-import type { CuaDriverBackendOptions } from './cua-driver-backend.js';
-import type { CuaDriverRoleSnapshot } from './cua-driver-release.js';
+import { createMakaCuBackend } from './maka-cu-backend.js';
+import type { MakaCuBackendOptions } from './maka-cu-backend.js';
+import type { MakaCuServiceSnapshot } from './maka-cu-service.js';
 
-export type CuBackendId = 'cua-driver';
+/**
+ * One executor.
+ *
+ * This was a two-member set while cua-driver was being replaced, and the
+ * selector took an overload per member. Keeping the id now that the second
+ * executor is gone is not ceremony: `backendId` is what the capability snapshot
+ * reports and what `'none'` is distinguished from, so it stays a named value
+ * rather than becoming a boolean nobody can read.
+ */
+export const CU_BACKEND_IDS = ['maka-cu'] as const;
+export type CuBackendId = (typeof CU_BACKEND_IDS)[number];
+
+export const DEFAULT_CU_BACKEND_ID: CuBackendId = 'maka-cu';
 
 type DisposableBackend = CuDispatchBackend & {
   clearSession?: (sessionId: string) => void;
   dispose?: () => void;
-  serviceState?: () => {
-    action: CuaDriverRoleSnapshot;
-    capture: CuaDriverRoleSnapshot;
-  };
+  /** maka-cu supervises one child, not a role pair, so it reports its own shape. */
+  executorState?: () => MakaCuServiceSnapshot;
 };
 
 export interface SelectedComputerUseBackend {
@@ -49,44 +59,52 @@ const NONE: SelectedComputerUseBackend = {
   backendId: 'none',
 };
 
-function resolveHostBundleId(explicit?: string): string {
-  return explicit ?? process.env.MAKA_CU_HOST_BUNDLE_ID ?? 'com.maka.desktop';
-}
-
-export function selectComputerUseBackend(deps?: {
+export interface MakaCuSelection {
+  /** Omitted means the default; see `DEFAULT_CU_BACKEND_ID`. */
+  backendId?: 'maka-cu';
   binaryPath?: string;
-  hostBundleId?: string;
   expectedBinarySha256?: string;
-  expectedServerName?: string;
-  expectedServerVersion?: string;
-  expectedProtocolVersion?: string;
   compressFrame?: (
     base64: string,
     mimeType: string,
   ) => { base64: string; mimeType: 'image/png' | 'image/jpeg' };
   physicalInputRecentlyActive?: () => boolean | Promise<boolean>;
-  onTrace?: CuaDriverBackendOptions['onTrace'];
+  /**
+   * Whether the machine is locked. Handed to the tool layer rather than to the
+   * driver, because the refusal is a session-state decision (see
+   * `buildComputerUseTools`) and the driver has no session state to latch it in.
+   */
+  screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   overlay?: CuOverlayHook;
-  createBackend?: (options: CuaDriverBackendOptions) => DisposableBackend;
-}): SelectedComputerUseBackend {
+  onTrace?: MakaCuBackendOptions['onTrace'];
+  /**
+   * Coordinate and key dispatch post synthetic events. Off unless a host policy
+   * says otherwise; the model-facing contract already states they fail closed.
+   */
+  allowCompatibilityInputDispatch?: boolean;
+  createBackend?: (options: MakaCuBackendOptions) => DisposableBackend;
+}
+
+export type ComputerUseBackendSelection = MakaCuSelection;
+
+export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComputerUseBackend {
   if (process.platform !== 'darwin') return NONE;
   if (!deps?.binaryPath || !deps.expectedBinarySha256) return NONE;
+  const binaryPath = deps.binaryPath;
+  const expectedBinarySha256 = deps.expectedBinarySha256;
   try {
     let tools: ComputerUseToolSet | undefined;
-    const backend = (deps.createBackend ?? createCuaDriverBackend)({
-      binaryPath: deps.binaryPath,
-      hostBundleId: resolveHostBundleId(deps?.hostBundleId),
-      expectedBinarySha256: deps.expectedBinarySha256,
-      ...(deps.expectedServerName ? { expectedServerName: deps.expectedServerName } : {}),
-      ...(deps.expectedServerVersion ? { expectedServerVersion: deps.expectedServerVersion } : {}),
-      ...(deps.expectedProtocolVersion
-        ? { expectedProtocolVersion: deps.expectedProtocolVersion }
-        : {}),
-      ...(deps?.compressFrame ? { compressFrame: deps.compressFrame } : {}),
-      ...(deps?.physicalInputRecentlyActive
+    const backend = (deps.createBackend ?? createMakaCuBackend)({
+      binaryPath,
+      expectedBinarySha256,
+      ...(deps.compressFrame ? { compressFrame: deps.compressFrame } : {}),
+      ...(deps.physicalInputRecentlyActive
         ? { physicalInputRecentlyActive: deps.physicalInputRecentlyActive }
         : {}),
-      ...(deps?.onTrace ? { onTrace: deps.onTrace } : {}),
+      ...(deps.onTrace ? { onTrace: deps.onTrace } : {}),
+      ...(deps.allowCompatibilityInputDispatch === undefined
+        ? {}
+        : { allowCompatibilityInputDispatch: deps.allowCompatibilityInputDispatch }),
       onSessionInvalidated: ({ sessionId }) => {
         tools?.sessionEvents.reobserveRequired(sessionId);
       },
@@ -94,12 +112,9 @@ export function selectComputerUseBackend(deps?: {
     tools = buildComputerUseTools({
       backend,
       ...(deps.overlay ? { overlay: deps.overlay } : {}),
+      ...(deps.screenLocked ? { screenLocked: deps.screenLocked } : {}),
     });
-    return {
-      backend,
-      tools,
-      backendId: 'cua-driver',
-    };
+    return { backend, tools, backendId: DEFAULT_CU_BACKEND_ID };
   } catch {
     return NONE;
   }

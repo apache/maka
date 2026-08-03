@@ -17,6 +17,10 @@ import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { createSessionStore } from '@maka/storage';
 import {
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
+import {
   BackendRegistry,
   PiAgentBackend,
   type AgentBackend,
@@ -1212,9 +1216,19 @@ describe('runHarborCell', () => {
       const fallback = new Promise<IsolatedCommandResult>((resolve) => {
         releaseFallback = () => resolve({ exitCode: 0, stdout: '', stderr: '' });
       });
-      const fallbackTimer = setTimeout(releaseFallback, 5_000);
+      // The deadline is a wall-clock timer started when the cell is set up, so
+      // it races the cell's own storage/session/first-send cost before the turn
+      // ever reaches the tool. Lose that race and the run is still cancelled by
+      // `benchmark.deadline` while the backend is never stopped — the empty
+      // `stopModes` seen in CI. Budget the setup generously and name the race,
+      // so a future loss reports itself instead of a bare deepEqual mismatch.
+      const settleAfterMs = 3_000;
+      const startedAt = Date.now();
+      let toolActiveAfterMs: number | undefined;
+      const fallbackTimer = setTimeout(releaseFallback, settleAfterMs + 5_000);
       const executor: IsolatedToolExecutor = {
         exec: async (_input, control) => {
+          toolActiveAfterMs ??= Date.now() - startedAt;
           const signal = control?.abortSignal;
           if (!signal) return await fallback;
           return await new Promise<IsolatedCommandResult>((_resolve, reject) => {
@@ -1229,7 +1243,7 @@ describe('runHarborCell', () => {
           cwd: workspaceDir,
           outputDir,
           storageRoot,
-          settleAfterMs: 1_000,
+          settleAfterMs,
           realBackendIsolation: {
             kind: 'external',
             label: 'cancellable test executor',
@@ -1243,11 +1257,17 @@ describe('runHarborCell', () => {
             });
           },
         }),
-        3_000,
+        settleAfterMs + 10_000,
         'Harbor cell did not cancel its active isolated tool',
       );
       clearTimeout(fallbackTimer);
 
+      assert.ok(
+        toolActiveAfterMs !== undefined && toolActiveAfterMs < settleAfterMs,
+        toolActiveAfterMs === undefined
+          ? `the isolated tool must be active when the deadline fires, but it never started within the ${settleAfterMs}ms budget`
+          : `the isolated tool must be active when the deadline fires, but it started ${toolActiveAfterMs}ms in, past the ${settleAfterMs}ms budget`,
+      );
       assert.equal(result.settledByDeadline, true);
       assert.deepEqual(backend?.stopModes, ['immediate']);
       assert.equal(result.output.tokenSummary?.total, 18);
@@ -1982,6 +2002,54 @@ describe('runHarborCell', () => {
 
       assert.match(seenPrompts[0] ?? '', /Use the host prompt/);
       assert.doesNotMatch(seenPrompts[0] ?? '', /Economy-task benchmark policy/);
+    });
+  });
+
+  test('Harbor ai-sdk backend registration forwards the canonical metering sink', async () => {
+    // The controller has always exposed `recordModelCallAttempt`; this
+    // composition never passed it on, so Harbor produced diagnostic attempts
+    // with no canonical record behind them (#1679).
+    await withDirs(async ({ workspaceDir, artifactStore }) => {
+      const registry = new BackendRegistry();
+      const toolExecutor = fakeToolExecutor();
+      const register = buildAiSdkCellBackendRegistration({
+        provider: 'openai',
+        model: 'gpt-5.6-sol',
+        env: { OPENAI_API_KEY: 'test-key' },
+        now: () => 123,
+        newId: () => 'id',
+      });
+      await registerProjectedAiSdkBackend(register, registry, {
+        config: {
+          id: 'harbor-ai-sdk',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'openai',
+          model: 'gpt-5.6-sol',
+          systemPrompt: DEFAULT_HEADLESS_SYSTEM_PROMPT,
+        },
+        task: { id: 'harbor-cell', instruction: 'solve', workspaceDir },
+        storageRoot: workspaceDir,
+        workspaceDir,
+        artifactStore,
+        realBackendIsolation: { kind: 'external', label: 'Harbor task container', toolExecutor },
+        toolExecutor,
+        ...createHeadlessSessionCapabilityBridge().capabilities,
+      });
+
+      const recorded: ModelCallAttempt[] = [];
+      const backend = await registry.build('ai-sdk', {
+        ...backendContext(workspaceDir),
+        recordModelCallAttempt: (attempt: ModelCallAttempt) => {
+          recorded.push(attempt);
+          return Promise.resolve();
+        },
+      });
+      const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
+
+      assert.equal(typeof backendInput.recordModelCallAttempt, 'function');
+      await backendInput.recordModelCallAttempt?.(harborModelCallAttemptFixture());
+      assert.equal(recorded.length, 1, 'the sink must reach the controller');
+      assert.equal(recorded[0]?.callKind, 'semantic_compact');
     });
   });
 
@@ -4048,47 +4116,80 @@ console.log(JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant', 
     });
   });
 
-  test('env entrypoint passes only Pi provider env to the Pi CLI child', async () => {
-    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
-      const piCommand = join(outputDir, 'fake-pi-env.mjs');
-      await writeFile(
-        piCommand,
-        `#!/usr/bin/env node
+  for (const { provider, expectedEnv } of [
+    {
+      provider: 'volcengine-plan',
+      expectedEnv: { XIAOMI_TOKEN_PLAN_CN_API_KEY: 'xiaomi-key' },
+    },
+    {
+      provider: 'MiniMax',
+      expectedEnv: {
+        MINIMAX_API_KEY: 'minimax-key',
+        MINIMAX_API_KEY_FILE: '/tmp/minimax-key',
+        MINIMAX_BASE_URL: 'https://api.minimax.test',
+      },
+    },
+    {
+      provider: 'minimax-cn',
+      expectedEnv: {
+        MINIMAX_API_KEY: 'minimax-key',
+        MINIMAX_API_KEY_FILE: '/tmp/minimax-key',
+        MINIMAX_BASE_URL: 'https://api.minimax.test',
+      },
+    },
+  ]) {
+    test(`env entrypoint passes only ${provider} provider env to the Pi CLI child`, async () => {
+      await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+        const piCommand = join(outputDir, 'fake-pi-env.mjs');
+        await writeFile(
+          piCommand,
+          `#!/usr/bin/env node
 import { writeFileSync } from 'node:fs';
-writeFileSync('pi-env.json', JSON.stringify({
-  openai: process.env.OPENAI_API_KEY,
-  anthropic: process.env.ANTHROPIC_API_KEY,
-  google: process.env.GOOGLE_API_KEY,
-  xiaomi: process.env.XIAOMI_TOKEN_PLAN_CN_API_KEY,
-}));
+const providerEnvNames = [
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'GOOGLE_API_KEY',
+  'XIAOMI_TOKEN_PLAN_CN_API_KEY',
+  'MINIMAX_API_KEY',
+  'MINIMAX_API_KEY_FILE',
+  'MINIMAX_BASE_URL',
+];
+writeFileSync('pi-env.json', JSON.stringify(Object.fromEntries(
+  providerEnvNames.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]]]),
+)));
 console.log(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'pi ok' } }));
 console.log(JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant', usage: { input: 5, output: 2, totalTokens: 7 } }] }));
 `,
-        'utf8',
-      );
-      await chmod(piCommand, 0o755);
+          'utf8',
+        );
+        await chmod(piCommand, 0o755);
 
-      const result = await runHarborCellFromEnv({
-        MAKA_BACKEND: 'pi-agent',
-        MAKA_INSTRUCTION: 'solve through scoped pi env',
-        MAKA_MODEL: 'pi-test',
-        MAKA_PI_COMMAND: piCommand,
-        MAKA_PI_PROVIDER: 'volcengine-plan',
-        OPENAI_API_KEY: 'openai-key',
-        ANTHROPIC_API_KEY: 'anthropic-key',
-        GOOGLE_API_KEY: 'google-key',
-        XIAOMI_TOKEN_PLAN_CN_API_KEY: 'xiaomi-key',
-        MAKA_WORKDIR: workspaceDir,
-        MAKA_OUTPUT_DIR: outputDir,
-        MAKA_STORAGE_ROOT: storageRoot,
-      });
+        const result = await runHarborCellFromEnv({
+          MAKA_BACKEND: 'pi-agent',
+          MAKA_INSTRUCTION: 'solve through scoped pi env',
+          MAKA_MODEL: 'pi-test',
+          MAKA_PI_COMMAND: piCommand,
+          MAKA_PI_PROVIDER: provider,
+          OPENAI_API_KEY: 'openai-key',
+          ANTHROPIC_API_KEY: 'anthropic-key',
+          GOOGLE_API_KEY: 'google-key',
+          XIAOMI_TOKEN_PLAN_CN_API_KEY: 'xiaomi-key',
+          MINIMAX_API_KEY: 'minimax-key',
+          MINIMAX_API_KEY_FILE: '/tmp/minimax-key',
+          MINIMAX_BASE_URL: 'https://api.minimax.test',
+          MAKA_WORKDIR: workspaceDir,
+          MAKA_OUTPUT_DIR: outputDir,
+          MAKA_STORAGE_ROOT: storageRoot,
+        });
 
-      assert.equal(result.output.status, 'completed');
-      assert.deepEqual(JSON.parse(await readFile(join(workspaceDir, 'pi-env.json'), 'utf8')), {
-        xiaomi: 'xiaomi-key',
+        assert.equal(result.output.status, 'completed');
+        assert.deepEqual(
+          JSON.parse(await readFile(join(workspaceDir, 'pi-env.json'), 'utf8')),
+          expectedEnv,
+        );
       });
     });
-  });
+  }
 
   test('env entrypoint fails the Pi CLI cell on non-JSON stdout', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
@@ -4747,6 +4848,29 @@ function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
+function harborModelCallAttemptFixture(): ModelCallAttempt {
+  return {
+    schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+    logicalCallId: 'call-1',
+    attemptId: 'attempt-1',
+    traceId: 'trace-1',
+    sessionId: 'session-1',
+    runId: 'run-1',
+    turnId: 'turn-1',
+    step: 0,
+    attempt: 0,
+    callKind: 'semantic_compact',
+    providerId: 'openai',
+    modelId: 'gpt-5.6-sol',
+    startedAt: 1,
+    completedAt: 2,
+    latencyMs: 1,
+    status: 'completed',
+    usageBasis: 'missing',
+    costBasis: 'unpriced',
+  };
+}
+
 function backendContext(workspaceDir: string): BackendFactoryContext {
   return {
     sessionId: 'session-1',
@@ -4816,52 +4940,3 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
     if (timer) clearTimeout(timer);
   }
 }
-
-describe('Harbor pi CLI env passthrough for MiniMax', () => {
-  test('MINIMAX_* rule matches the lowercased provider name', async () => {
-    const src = await readFile(new URL('../../src/harbor-cell.ts', import.meta.url), 'utf8');
-
-    // buildPiCliEnv lowercases the provider before matching against the rule's
-    // `includes` values, so any rule value with uppercase letters can never
-    // match. Guard the MiniMax rule specifically against that regression.
-    const ruleMatch = src.match(/\{\s*includes:\s*\[([^\]]*)\][^}]*MINIMAX_API_KEY[^}]*\}/);
-    assert.notEqual(ruleMatch, null, 'MiniMax MINIMAX_* env rule must exist');
-    const includeValues = ruleMatch![1]
-      .split(',')
-      .map((raw) => raw.trim().replace(/^['"]|['"]$/g, ''))
-      .filter(Boolean);
-    assert.ok(includeValues.length > 0, 'MiniMax env rule must list at least one include token');
-    for (const value of includeValues) {
-      assert.equal(
-        value,
-        value.toLowerCase(),
-        `env rule include "${value}" must be lowercase to match normalized provider`,
-      );
-    }
-    // The normalized provider names ('minimax' / 'minimax-cn') must actually hit the rule.
-    const normalized = ['minimax', 'minimax-cn'];
-    for (const provider of normalized) {
-      assert.ok(
-        includeValues.some((value) => provider.includes(value)),
-        `normalized provider "${provider}" must match the MiniMax env rule`,
-      );
-    }
-  });
-
-  test('buildPiCliEnv lowercases the provider before matching', async () => {
-    const src = await readFile(new URL('../../src/harbor-cell.ts', import.meta.url), 'utf8');
-    const fnIdx = src.indexOf('function buildPiCliEnv');
-    assert.notEqual(fnIdx, -1, 'buildPiCliEnv must exist');
-    const fnRegion = src.slice(fnIdx, src.indexOf('\n}', fnIdx));
-    assert.match(
-      fnRegion,
-      /provider\?\.toLowerCase\(\)/,
-      'buildPiCliEnv must normalize provider to lowercase',
-    );
-    assert.match(
-      fnRegion,
-      /normalizedProvider\.includes\(value\)/,
-      'buildPiCliEnv must match rule values against the normalized provider',
-    );
-  });
-});

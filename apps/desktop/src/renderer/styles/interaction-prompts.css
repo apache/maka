@@ -16,22 +16,20 @@
 }
 
 .maka-sandbox-boundary-copy h2 {
+  font: var(--maka-text-heading-4);
   color: var(--text-primary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-sandbox-boundary-copy p {
+  font: var(--maka-text-supporting);
   margin-top: var(--space-1);
   color: var(--text-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .maka-sandbox-boundary-scopes {
   display: grid;
   gap: var(--space-1);
-  max-height: min(16rem, 40vh);
+  max-height: min(208px, 40vh);
   margin: 0;
   padding: 0;
   overflow-y: auto;
@@ -39,13 +37,13 @@
 }
 
 .maka-sandbox-boundary-scopes li {
+  font: var(--maka-text-supporting);
   display: flex;
   min-width: 0;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-3);
   color: var(--text-secondary);
-  font-size: var(--font-size-caption);
 }
 
 .maka-sandbox-boundary-scopes code {
@@ -86,10 +84,9 @@
 }
 
 .maka-question-progress {
+  font: var(--maka-text-supporting);
   flex: 0 0 auto;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -126,12 +123,10 @@
 }
 
 .maka-interaction-title {
+  font: var(--maka-text-heading-3);
   min-width: 0;
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-tight);
 }
 
 .maka-interaction-actions {

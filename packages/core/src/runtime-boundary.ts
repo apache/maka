@@ -1,4 +1,5 @@
-import { createHash, type Hash } from 'node:crypto';
+import * as nodeCrypto from 'node:crypto';
+import type { Hash } from 'node:crypto';
 import { decodeAgentRunHeader, type AgentRunHeader } from './agent-run.js';
 import { encodeCanonicalRuntimeEvent } from './canonical-runtime-event.js';
 import { isRecord } from './record-schema.js';
@@ -156,7 +157,7 @@ export function digestRuntimeBoundaryManifest(
     protocol: 'runtime_boundary_cursor_v1',
     segments: canonicalSegments,
   });
-  const hash = createHash('sha256');
+  const hash = nodeCrypto.createHash('sha256');
   updateLengthPrefixed(hash, Buffer.from('maka.runtime-boundary-manifest.v1', 'utf8'));
   updateLengthPrefixed(hash, Buffer.from(json, 'utf8'));
   return `sha256:${hash.digest('hex')}`;
@@ -333,7 +334,7 @@ function digestCanonicalRuntimePrefix(
   identity: RuntimePrefixIdentityV1,
   rows: readonly RuntimePrefixRowV1[],
 ): RuntimeBoundaryDigest {
-  const hash = createHash('sha256');
+  const hash = nodeCrypto.createHash('sha256');
   updateLengthPrefixed(hash, Buffer.from('maka.runtime-prefix.v1', 'utf8'));
   updateLengthPrefixed(hash, Buffer.from(stableJsonStringify(identity), 'utf8'));
   for (const row of rows) {

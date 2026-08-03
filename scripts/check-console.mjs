@@ -34,7 +34,14 @@ const ALLOW = new Map([
     'apps/desktop/src/renderer/error-boundary.tsx',
     'React error boundary; DevTools-only, surfaces uncaught render errors.',
   ],
-  ['apps/desktop/src/main/main.ts', 'dev-gated by VITE_DEV_SERVER_URL / NODE_ENV (PR100).'],
+  [
+    'apps/desktop/src/main/main.ts',
+    'thin ESM entry; pre-ready config, [startup] ready/fatal diagnostics (moved from boot, PR1880).',
+  ],
+  [
+    'apps/desktop/src/main/boot.ts',
+    'startup chain diagnostics (e2e-fixture fatal/scenario, window create failure, repair/cleanup paths); no secrets (moved from main.ts, PR1880).',
+  ],
   [
     'apps/desktop/src/main/app-lifecycle.ts',
     'startup/shutdown diagnostics (dock icon, credential migration, e2e-fixture marker, cleanup failures); no secrets (moved from main.ts, arch R6).',
@@ -100,6 +107,10 @@ const ALLOW = new Map([
     'login-shell PATH resolution diagnostics at startup (PATH-entry count and sanitized failure reason); non-fatal, no shell-controlled output.',
   ],
   ['scripts/check-console.mjs', 'this script — explicit allow.'],
+  [
+    'apps/desktop/src/main/computer-use/pip-electron.ts',
+    'picture-in-picture load failure: the one state that is otherwise silent and invisible; logs the overlay asset path and the Chromium error code only.',
+  ],
   [
     'apps/desktop/src/main/automation-wiring.ts',
     'best-effort sync warning when durable automation persistence fails.',

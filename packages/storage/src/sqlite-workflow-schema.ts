@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 1;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 2;
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -53,5 +53,25 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS workflow_plan_reminders_order
       ON workflow_plan_reminders(created_at, reminder_id);
+
+    CREATE TABLE IF NOT EXISTS workflow_quote_companion_cleanup (
+      session_id TEXT PRIMARY KEY,
+      tracked_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_daily_review_state (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      config_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_daily_review_archives (
+      archive_id TEXT PRIMARY KEY,
+      generated_at INTEGER NOT NULL,
+      day_from_ms INTEGER NOT NULL,
+      record_json TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS workflow_daily_review_archives_order
+      ON workflow_daily_review_archives(generated_at DESC, day_from_ms DESC, archive_id);
   `);
 }

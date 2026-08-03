@@ -1,16 +1,16 @@
-import { test, expect } from './fixtures';
+import { test, expect, COMPOSER_INPUT } from './fixtures';
 
 test('chat input preserves an IME composition when a file paste arrives', async ({ window: page }) => {
-  const firstSend = page.locator('.maka-composer-textarea');
+  const firstSend = page.locator(COMPOSER_INPUT);
   await firstSend.fill('ime-paste-test');
   await firstSend.press('Enter');
   await expect(page.getByText(/Fake backend received: ime-paste-test/)).toBeVisible();
 
   const composer = page.locator('.maka-composer');
   await expect(composer).toHaveAttribute('data-maka-file-drop-target', 'true');
-  const textarea = composer.locator('textarea');
+  const editable = composer.locator('[contenteditable="true"]');
 
-  const pasteResults = await textarea.evaluate((input) => {
+  const pasteResults = await editable.evaluate((input) => {
     const dispatchFilePaste = () => {
       const clipboardData = new DataTransfer();
       clipboardData.items.add(new File(['content'], 'note.txt', { type: 'text/plain' }));
@@ -33,14 +33,14 @@ test('chat input preserves an IME composition when a file paste arrives', async 
 
 /**
  * Attachment upload + ingest: enter the chat view, drop a file onto the main
- * composer, confirm it shows as a pending card, then send the message and
- * verify the fake backend received the attachment by name. Uses Playwright's
+ * composer, confirm it shows as a pending token, then send the message and
+ * verify the fake backend received the attachments by name. Uses Playwright's
  * DataTransfer + dispatchEvent because the composer has no <input type=file>.
  */
-test('dropping a file onto the composer delivers it to the backend on send', async ({ window: page }) => {
+test('a mixed attachment send has the Astryx message hierarchy', async ({ window: page }) => {
   // Enter chat view by sending a first message from the composer, which
   // creates the session on send.
-  const firstSend = page.locator('.maka-composer-textarea');
+  const firstSend = page.locator(COMPOSER_INPUT);
   await firstSend.fill('attach-test');
   await firstSend.press('Enter');
   await expect(page.getByText(/Fake backend received: attach-test/)).toBeVisible();
@@ -55,17 +55,55 @@ test('dropping a file onto the composer delivers it to the backend on send', asy
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   await dataTransfer.evaluate((dt: DataTransfer) => {
     dt.items.add(new File(['hello attachment content'], 'note.txt', { type: 'text/plain' }));
+    const png = Uint8Array.from(
+      atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='),
+      (character) => character.charCodeAt(0),
+    );
+    dt.items.add(new File([png], 'pixel.png', { type: 'image/png' }));
   });
   await composer.dispatchEvent('drop', { dataTransfer });
 
-  // The dropped file appears as a pending attachment card
+  // Both attachment kinds appear in the composer before send.
   await expect(page.getByText('note.txt')).toBeVisible();
+  await expect(page.getByText('pixel.png')).toBeVisible();
 
   // Send the message carrying the attachment — the fake backend echoes the
   // attachment name, proving the ingest-on-send path delivered it (not just
   // that the UI rendered a card).
-  const textarea = page.locator('.maka-composer textarea');
-  await textarea.fill('sending with a file');
-  await textarea.press('Enter');
-  await expect(page.getByText(/Attachments received: note\.txt/)).toBeVisible();
+  const composerInput = page.locator(COMPOSER_INPUT);
+  await composerInput.fill('sending mixed attachments');
+  await composerInput.press('Enter');
+  await expect(page.getByText(/Attachments received: note\.txt, pixel\.png/)).toBeVisible();
+
+  const sentMessage = page.getByLabel('你发送的消息').last();
+  const fileToken = sentMessage.locator('.maka-user-attachment-tokens .astryx-token');
+  const fileIcon = fileToken.locator('.astryx-icon');
+  const image = sentMessage.locator('.maka-user-attachments .astryx-thumbnail');
+  const bubble = sentMessage.locator('.maka-chat-message-bubble-user');
+  await expect(fileToken).toContainText('note.txt');
+  await expect(fileIcon).toHaveCSS('width', '16px');
+  await expect(fileIcon).toHaveCSS('height', '16px');
+  await expect(image).toBeVisible();
+  await expect(image).toHaveCSS('width', '64px');
+  await expect(bubble).toContainText('sending mixed attachments');
+
+  const [fileBox, iconBox, imageBox, bubbleBox] = await Promise.all([
+    fileToken.boundingBox(),
+    fileIcon.boundingBox(),
+    image.boundingBox(),
+    bubble.boundingBox(),
+  ]);
+  expect(fileBox).not.toBeNull();
+  expect(iconBox).not.toBeNull();
+  expect(imageBox).not.toBeNull();
+  expect(bubbleBox).not.toBeNull();
+  expect(iconBox!.y).toBeGreaterThanOrEqual(fileBox!.y);
+  expect(iconBox!.y + iconBox!.height).toBeLessThanOrEqual(fileBox!.y + fileBox!.height);
+  expect(fileBox!.y + fileBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
+  expect(imageBox!.y + imageBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
+
+  await image.getByRole('button').click();
+  await expect(page.locator('.astryx-lightbox')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.astryx-lightbox')).not.toBeVisible();
 });

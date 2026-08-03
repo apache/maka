@@ -15,7 +15,7 @@ export type DataSettingsCopy = {
     history: string; historyDetail: string; localStorage: string;
   };
   actionsAria: string; opening: string; openWorkspace: string; copying: string; copyPath: string; clearing: string; clearHistory: string;
-  backupNotice: string; pathLoadFailed(error: string): string; configAria: string; configTitle: string; configHelp: string; categoryAria: string;
+  backupTitle: string; backupNotice: string; pathLoadFailed(error: string): string; configAria: string; configTitle: string; configHelp: string; categoryAria: string;
   sensitiveWarning: string; conflictAria: string; skip: string; overwrite: string;
   exporting: string; exportConfig: string; importing: string; importConfig: string;
 };
@@ -43,7 +43,7 @@ const SETTINGS_DATA_COPY = {
       history: '输入历史', historyDetail: '上箭头 / 下箭头调出的已发送提示词记录，保存在浏览器本地存储里，跨重启保留。清空后无法恢复。', localStorage: '本机 localStorage',
     },
     actionsAria: '工作区数据操作', opening: '打开中…', openWorkspace: '打开工作区文件夹', copying: '复制中…', copyPath: '复制路径', clearing: '清空中…', clearHistory: '清空输入历史',
-    backupNotice: '本机数据保存在工作区。需要备份时先退出 Maka，再复制整个目录；恢复时替换同一路径后重启。模型连接凭据随工作区恢复后需要重新测试；订阅账号令牌通常需要重新登录。',
+    backupTitle: '备份与恢复', backupNotice: '本机数据保存在工作区。需要备份时先退出 Maka，再复制整个目录；恢复时替换同一路径后重启。模型连接凭据随工作区恢复后需要重新测试；订阅账号令牌通常需要重新登录。',
     pathLoadFailed: (error) => `无法载入工作区路径：${error}`, configAria: '配置导入导出', configTitle: '配置导入导出',
     configHelp: '勾选要导出的内容，生成一个 JSON 备份文件；换机或重装时可再导入。默认不含密钥。', categoryAria: '选择导出内容',
     sensitiveWarning: '⚠️ 密钥将以明文写入导出文件。任何拿到该文件的人都能使用这些密钥，请妥善保管、不要分享。',
@@ -71,7 +71,7 @@ const SETTINGS_DATA_COPY = {
       history: 'Input history', historyDetail: 'Previously sent prompts recalled with the Up and Down arrows are stored locally in the browser and persist across restarts. Clearing them cannot be undone.', localStorage: 'Local localStorage',
     },
     actionsAria: 'Workspace data actions', opening: 'Opening…', openWorkspace: 'Open workspace folder', copying: 'Copying…', copyPath: 'Copy path', clearing: 'Clearing…', clearHistory: 'Clear input history',
-    backupNotice: 'Local data is stored in the workspace. To back it up, quit Maka and copy the entire directory. To restore it, replace the same path and restart. Model credentials should be tested again after a restore, and subscription accounts usually need to sign in again.',
+    backupTitle: 'Backup and restore', backupNotice: 'Local data is stored in the workspace. To back it up, quit Maka and copy the entire directory. To restore it, replace the same path and restart. Model credentials should be tested again after a restore, and subscription accounts usually need to sign in again.',
     pathLoadFailed: (error) => `Could not load workspace path: ${error}`, configAria: 'Configuration import and export', configTitle: 'Configuration import and export',
     configHelp: 'Select the content to export into a JSON backup. You can import it after moving devices or reinstalling. Secrets are excluded by default.', categoryAria: 'Select export content',
     sensitiveWarning: '⚠️ Secrets will be written to the export file as plain text. Anyone with this file can use them. Store it securely and do not share it.',

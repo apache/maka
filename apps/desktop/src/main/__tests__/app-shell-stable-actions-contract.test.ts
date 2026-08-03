@@ -1,7 +1,7 @@
 /**
  * Contract for the app-shell action-factory stabilization (issue #1043).
  *
- * The 10 `createAppShell*Actions` factories run in the AppShell render body, so
+ * The `createAppShell*Actions` factories run in the AppShell render body, so
  * every render allocates fresh handler identities. That churn is observable:
  * the streaming-settle fallback effect lists `settleAssistantStreaming` in its
  * deps and therefore tears down/re-arms its 1s timer on every render while the

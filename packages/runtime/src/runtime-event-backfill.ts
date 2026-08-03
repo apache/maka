@@ -98,6 +98,9 @@ export function backfillRuntimeEventsFromStoredMessages(
             ...(message.quotes !== undefined && message.quotes.length > 0
               ? { quotes: message.quotes }
               : {}),
+            ...(message.inlineReferences !== undefined
+              ? { inlineReferences: message.inlineReferences }
+              : {}),
           },
           actions: { stateDelta: recoveryState(now, message) },
           refs: { storedMessageId: message.id },

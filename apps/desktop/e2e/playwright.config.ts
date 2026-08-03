@@ -11,15 +11,12 @@ import { defineConfig } from '@playwright/test';
  * count here — the previous note carried a stale one that outlived two rounds
  * of pruning. `playwright test --list` is the only figure that cannot rot.
  *
- * What parallel windows DO share is OS focus. A run at 2 workers showed it:
- * composer-mode-indicator compares hover backgrounds and plan-reminders
- * asserts `toBeFocused()`, and both fail when another window steals activation
- * mid-assertion — Chromium blurs the document when its window deactivates.
- *
- * So CI stays at 1 until those two specs are hardened (bring the window to
- * front before asserting hover/focus, or assert without needing activation).
- * Local runs take the parallel win now, where the dev loop feels it most; a
- * local hover/focus failure is reproducible by re-running that spec alone.
+ * What parallel windows DO share is OS focus. Specs that assert
+ * `toBeFocused()` (e.g. plan-reminders) fail when another window steals
+ * activation mid-assertion — Chromium blurs the document when its window
+ * deactivates. Each CI shard therefore keeps one worker on an isolated X
+ * display; local runs take the parallel win, and a local focus failure re-runs
+ * alone to confirm.
  *
  * Run from apps/desktop via `npm run e2e`, which builds the app first.
  */
@@ -27,6 +24,9 @@ export default defineConfig({
   testDir: '.',
   fullyParallel: true,
   workers: process.env.CI ? 1 : 4,
+  // CI publishes no Playwright report that consumes Git metadata. Disable its
+  // best-effort shallow-history fetch, which otherwise waits on a fixed timeout.
+  captureGitInfo: { commit: false, diff: false },
   // No retries: flakes should fail loudly. The fixture waits for the composer
   // to mount (the cold-start convergence point — connection seed, onboarding
   // clear, renderer hydrated), so cold-start variance never reaches the test.

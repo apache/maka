@@ -4,7 +4,7 @@
  * The unified Automation tool returns human-readable TEXT, and the UI's
  * AutomationResultPreview parses that text into a friendly card (created /
  * deleted / listed). This contract feeds the REAL tool's output strings into
- * the REAL ToolActivity renderer, so a runtime copy change that would silently
+ * the REAL tool-detail renderer, so a runtime copy change that would silently
  * break the UI parsing (falling back to a raw text dump) fails here first.
  */
 
@@ -13,7 +13,7 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AutomationManager, buildAutomationTool, AUTOMATION_TOOL_NAME } from '@maka/runtime';
-import { LocaleProvider, ToolActivity, type ToolActivityItem } from '@maka/ui';
+import { LocaleProvider, ToolCallDetail, type ToolActivityItem } from '@maka/ui';
 
 const SESSION = 'sess-preview-contract';
 
@@ -54,7 +54,7 @@ function renderAutomationResult(text: string): string {
     args: { mode: 'create' },
     result: { kind: 'text', text },
   };
-  return renderWithLocale(createElement(ToolActivity, { items: [item], open: true }));
+  return renderWithLocale(createElement(ToolCallDetail, { item: item }));
 }
 
 describe('Automation tool result preview contract', () => {

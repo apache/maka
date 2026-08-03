@@ -456,7 +456,9 @@ reconcile_history_not_persisted
 
 The timeline is therefore replayable and useful for diagnosis without pretending to be a new authority. Each event points back to the store that owns the underlying fact.
 
-## Desktop product wiring
+## Client access and Desktop product wiring
+
+Runtime Host exposes the durable Graph projection through bounded `agent.graph.query` and `agent.graph.operator.query` operations. Clients use `agent.graph.stop` for explicit operator control; closing a connection or Session subscription never stops the Graph. A client that needs a coherent live view opens the root Session subscription before its first query. `subscription.agent_graph_changed` then shares that subscription's ordered sequence with Session updates and tells the client to query the projection again. It is an invalidation hint, not a replay log or a second source of truth. Query results report omitted data and continuation cursors instead of growing without a bound.
 
 Desktop composes the current host-managed Graph profile:
 
@@ -469,7 +471,7 @@ Desktop composes the current host-managed Graph profile:
 - stopping the Graph aborts reconciliation and stops known child Sessions through Runtime;
 - startup first repairs interrupted Runtime state, then wakes and Graph schedules.
 
-Renderer invalidations are hints. A reconnecting client calls `getSnapshot()` and reads durable state; it does not replay process-local notifications as facts.
+Renderer invalidations follow the same contract. A reconnecting client queries the durable projection again; it does not replay process-local notifications as facts.
 
 The current panel is an operational view, not a node-and-edge authoring canvas. The main Agent remains the topology author through typed schedule updates.
 

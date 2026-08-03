@@ -74,6 +74,24 @@ describe('Permission mode surface', () => {
       assert.doesNotMatch(copy.sandboxBoundary.title, /沙箱|sandbox/i, locale);
     }
   });
+
+  it('icon appearance is a ghost menu of Auto + full access (no long descriptions)', () => {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="zh">
+        <PermissionModeSelect appearance="icon" activeMode="ask" onSelect={() => {}} />
+      </LocaleProvider>,
+    );
+    assert.match(markup, /permissionModeIcon/);
+    assert.match(markup, /data-variant="ghost"/);
+    assert.match(markup, /role="menuitemradio"/);
+    assert.equal(markup.match(/role="menuitemradio"/g)?.length, 2);
+    assert.match(markup, /自动/);
+    assert.match(markup, /完全权限/);
+    // Radio rows are label + icon only; the short hint lives on the trigger.
+    const menuMatch = markup.match(/role="menu"[\s\S]*?<\/div><\/div><\/div><\/span>/);
+    assert.ok(menuMatch);
+    assert.doesNotMatch(menuMatch[0], /越权先问你|仅限可信任务/);
+  });
 });
 
 function escapeMarkup(value: string): string {

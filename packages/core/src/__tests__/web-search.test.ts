@@ -1,12 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  MASKED_TOKEN_SENTINEL,
   WEB_SEARCH_CREDENTIAL_SOURCES,
-  WEB_SEARCH_DEFAULT_LIMIT,
-  WEB_SEARCH_MAX_LIMIT,
   WEB_SEARCH_PROVIDERS,
-  WEB_SEARCH_QUERY_MAX_CHARS,
   defaultWebSearchSettings,
   isWebSearchCredentialSource,
   isWebSearchCredentialStatus,
@@ -27,19 +23,16 @@ describe('web search settings', () => {
     for (const value of ['', '   ', undefined, 123, {}]) {
       assert.equal(normalizeWebSearchQuery(value), null);
     }
-    assert.equal(
-      normalizeWebSearchQuery('a'.repeat(WEB_SEARCH_QUERY_MAX_CHARS + 1))?.length,
-      WEB_SEARCH_QUERY_MAX_CHARS,
-    );
+    assert.equal(normalizeWebSearchQuery('a'.repeat(201))?.length, 200);
 
     const limits: Array<[unknown, number]> = [
-      [undefined, WEB_SEARCH_DEFAULT_LIMIT],
-      [NaN, WEB_SEARCH_DEFAULT_LIMIT],
-      ['5', WEB_SEARCH_DEFAULT_LIMIT],
+      [undefined, 5],
+      [NaN, 5],
+      ['5', 5],
       [-3, 1],
       [0, 1],
       [3.7, 3],
-      [WEB_SEARCH_MAX_LIMIT + 1, WEB_SEARCH_MAX_LIMIT],
+      [11, 10],
     ];
     for (const [value, expected] of limits) assert.equal(normalizeWebSearchLimit(value), expected);
   });
@@ -63,7 +56,7 @@ describe('web search settings', () => {
 
   it('masks persisted tokens while preserving explicit replace and clear operations', () => {
     const reconciled = [
-      ['secret-key', MASKED_TOKEN_SENTINEL, 'secret-key'],
+      ['secret-key', '••••••', 'secret-key'],
       ['old', 'new-token', 'new-token'],
       ['old', '', ''],
     ] as const;
@@ -71,7 +64,7 @@ describe('web search settings', () => {
       assert.equal(reconcileMaskedToken(persisted, candidate), expected);
     }
     assert.equal(maskedTokenForDisplay(''), '');
-    assert.equal(maskedTokenForDisplay('secret'), MASKED_TOKEN_SENTINEL);
+    assert.equal(maskedTokenForDisplay('secret'), '••••••');
   });
 
   it('preserves validation metadata for a masked round-trip and resets it for a new key', () => {
@@ -85,7 +78,7 @@ describe('web search settings', () => {
       },
     });
     const masked = mergeWebSearchSettings(current, {
-      providers: { tavily: { apiKey: MASKED_TOKEN_SENTINEL } },
+      providers: { tavily: { apiKey: '••••••' } },
     });
     assert.deepEqual(masked.providers.tavily, current.providers.tavily);
 
@@ -147,7 +140,18 @@ describe('web search settings', () => {
       },
     } as never);
 
-    assert.deepEqual(normalized, defaultWebSearchSettings());
+    assert.deepEqual(normalized, {
+      enabled: false,
+      defaultProvider: 'tavily',
+      providers: {
+        tavily: {
+          apiKey: '',
+          credentialSource: 'none',
+          credentialVersion: 0,
+          credentialStatus: 'untested',
+        },
+      },
+    });
   });
 
   it('derives renderer-safe credential metadata from storage and test responses', () => {

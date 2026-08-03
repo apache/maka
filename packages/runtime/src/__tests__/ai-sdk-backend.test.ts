@@ -13,6 +13,7 @@ import type {
   SessionHeader,
   StorageRef,
 } from '@maka/core';
+import { encodeCanonicalRuntimeEvent } from '@maka/core';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
@@ -20,7 +21,6 @@ import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-mode
 import { materializeSession } from '../materializer.js';
 import type { InvocationContext } from '../invocation-context.js';
 import type { AssistantMessage, StoredMessage, ToolResultMessage } from '@maka/core/session';
-import type { LlmCallRecord } from '@maka/core/usage-stats/types';
 import { z } from 'zod';
 import {
   AiSdkBackend,
@@ -74,6 +74,8 @@ import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureRecord,
 } from '../provider-request-telemetry.js';
+import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
+import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 describe('AiSdkBackend model history', () => {
@@ -179,7 +181,7 @@ describe('AiSdkBackend model history', () => {
       newId: idGenerator(),
       now: monotonicClock(),
     });
-    (backend as unknown as { currentRunTrace: RunTrace | null }).currentRunTrace = new RunTrace({
+    turnScope(backend, 'turn-1').runTrace = new RunTrace({
       sessionId: 'session-1',
       turnId: 'turn-1',
       connectionSlug: 'anthropic-main',
@@ -3979,6 +3981,7 @@ describe('AiSdkBackend model history', () => {
     const runtimeContext = [...oldEvents, recentEvent];
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext,
     });
 
@@ -3995,6 +3998,7 @@ describe('AiSdkBackend model history', () => {
 
     await backend.compactHistory({
       turnId: 'turn-overflow-recovery',
+      runId: 'run-1',
       runtimeContext,
       minRecentTurns: 0,
     });
@@ -4040,6 +4044,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'default-policy-manual-old-1',
@@ -4097,6 +4102,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'manual-v2-old-1',
@@ -4186,6 +4192,7 @@ describe('AiSdkBackend model history', () => {
 
     await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         ...oldEvents,
         runtimeTextEvent({
@@ -4263,6 +4270,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         ...oldEvents,
         runtimeTextEvent({
@@ -4345,6 +4353,7 @@ describe('AiSdkBackend model history', () => {
 
       const result = await backend.compactHistory({
         turnId: 'turn-compact',
+        runId: 'run-1',
         runtimeContext: [
           ...oldEvents,
           runtimeTextEvent({
@@ -4391,6 +4400,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'manual-v2-envelope-old-1',
@@ -4448,6 +4458,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'manual-v2-larger-old-1',
@@ -4509,6 +4520,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'output-length-old',
@@ -4600,6 +4612,7 @@ describe('AiSdkBackend model history', () => {
 
     await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         ...covered,
         runtimeTextEvent({
@@ -4646,6 +4659,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'old-1',
@@ -4690,6 +4704,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'old-1',
@@ -4759,6 +4774,7 @@ describe('AiSdkBackend model history', () => {
 
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: oldEvents,
     });
 
@@ -4819,6 +4835,7 @@ describe('AiSdkBackend model history', () => {
 
     const compactPromise = backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'old-1',
@@ -4904,6 +4921,7 @@ describe('AiSdkBackend model history', () => {
 
     const compactPromise = backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'old-1',
@@ -4982,6 +5000,7 @@ describe('AiSdkBackend model history', () => {
 
     await backend.compactHistory({
       turnId: 'turn-compact',
+      runId: 'run-1',
       runtimeContext: [
         runtimeTextEvent({
           id: 'old-1',
@@ -5386,6 +5405,22 @@ describe('AiSdkBackend model history', () => {
     });
     const recorded: HistoryCompactCheckpoint[] = [];
     const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
+    const modelCalls: ModelCallAttempt[] = [];
+    const meteredSummarize = buildLlmHistorySummarizer({
+      resolveModel: () =>
+        new MockLanguageModelV4({
+          doGenerate: {
+            content: [{ type: 'text', text: 'V2_ROLLED_SUMMARY' }],
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 11, noCache: 11, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 3, text: 3, reasoning: 0 },
+              raw: { input_tokens: 11, output_tokens: 3 },
+            },
+            warnings: [],
+          },
+        }) as never,
+    });
     const firstModel = completionModel();
     const firstBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -5410,26 +5445,42 @@ describe('AiSdkBackend model history', () => {
         },
       },
       loadHistoryCompactCheckpoint: () => previous,
+      // Metered through the canonical seam, not stubbed: the startup fold's run
+      // attribution only exists on a real provider request.
       summarizeHistoryCompact: async (input) => {
         summaryInputs.push({
           previous: input.previousCheckpoint?.summary,
           newlyFoldedIds: (input.newlyFoldedRuntimeEvents ?? []).map((event) => event.id),
         });
-        return 'V2_ROLLED_SUMMARY';
+        return await meteredSummarize(input);
       },
       recordHistoryCompactCheckpoint: (checkpoint) => {
         recorded.push(checkpoint);
+      },
+      recordModelCallAttempt: (attempt) => {
+        modelCalls.push(attempt);
       },
     });
 
     await drain(
       firstBackend.send({
         turnId: 'turn-current',
+        runId: 'run-current',
         text: 'continue',
         context: [],
         runtimeContext: [...oldEvents, recent],
       }),
     );
+
+    // The startup fold is billed to the run whose send triggered it. Nothing
+    // else catches a dropped run id here: usage accounting discards an
+    // unattributed record without an error (#1990).
+    const startupFold = modelCalls
+      .map((attempt) => decodeModelCallAttempt(attempt))
+      .find((attempt) => attempt.callKind === 'history_compact');
+    assert.ok(startupFold, 'the startup fold must settle a canonical record');
+    assert.equal(startupFold.runId, 'run-current');
+    assert.equal(startupFold.turnId, 'turn-current');
 
     assert.deepEqual(summaryInputs, [
       { previous: 'V2_PREVIOUS_SUMMARY', newlyFoldedIds: ['v2-old-2'] },
@@ -6769,7 +6820,7 @@ describe('AiSdkBackend error surfaces', () => {
       now: () => 1,
     });
 
-    await (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime.writeSyntheticToolResult(
+    await turnScope(backend, 'turn-1').toolRuntime.writeSyntheticToolResult(
       'tool-1',
       'turn-1',
       'failed with api_key=sk-live-secret-token-value',
@@ -7105,6 +7156,7 @@ describe('AiSdkBackend usage telemetry', () => {
 
     assert.equal(streamCalls, 2);
     assert.equal(model.doStreamCalls[1]?.tools?.length ?? 0, 0);
+    assert.deepEqual(model.doStreamCalls[1]?.toolChoice, { type: 'none' });
     assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /final budgeted step/i);
     assert.ok(
       events.some(
@@ -7118,6 +7170,286 @@ describe('AiSdkBackend usage telemetry', () => {
       (events.at(-1) as Extract<SessionEvent, { type: 'complete' }>).stopReason,
       'end_turn',
     );
+  });
+
+  test('ends the tool loop cooperatively when the graph supervisor yields', async () => {
+    const durable = durableTurnHarness('turn-graph-yield', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: 'yield-1',
+                toolName: 'yield_agent_graph',
+                input: JSON.stringify({ reason: 'Waiting for committed child results.' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          impl: async ({ reason }) => ({
+            kind: 'agent_graph_yielded' as const,
+            pendingWorkCount: 2,
+            liveOperatorCount: 2,
+            reason,
+          }),
+        },
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 1, 'yield must not request another provider step');
+    assert.equal(events.at(-1)?.type, 'complete');
+    assert.equal(
+      (events.at(-1) as Extract<SessionEvent, { type: 'complete' }>).stopReason,
+      'graph_yield',
+    );
+    assert.equal(
+      events.some((event) => event.type === 'abort'),
+      false,
+    );
+  });
+
+  test('does not honor graph yield when it shares a provider step with a sibling call', async () => {
+    const durable = durableTurnHarness('turn-graph-yield-sibling', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'yield-with-sibling',
+                  toolName: 'yield_agent_graph',
+                  input: JSON.stringify({ reason: 'Waiting for child results.' }),
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'sibling-read',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'status.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-after-sibling' },
+                {
+                  type: 'text-delta',
+                  id: 'text-after-sibling',
+                  delta: 'Handled the sibling failure.',
+                },
+                { type: 'text-end', id: 'text-after-sibling' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          executionSemantics: 'exclusive_step',
+          impl: async ({ reason }) => ({
+            kind: 'agent_graph_yielded' as const,
+            pendingWorkCount: 1,
+            liveOperatorCount: 1,
+            reason,
+          }),
+        },
+        testTool('Read', z.object({ path: z.string() })),
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 2, 'the sibling result must reach a continuation step');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === 'tool_result' &&
+          event.toolUseId === 'sibling-read' &&
+          event.isError === true,
+      ),
+      true,
+    );
+  });
+
+  test('requires the canonical yield tool identity and a valid result envelope', async () => {
+    const durable = durableTurnHarness('turn-graph-yield-forged', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'forged-yield',
+                  toolName: 'custom_tool',
+                  input: '{}',
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 0 },
+                  },
+                },
+              ]
+            : streamCalls === 2
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'tool-call',
+                    toolCallId: 'malformed-yield',
+                    toolName: 'yield_agent_graph',
+                    input: JSON.stringify({ reason: 'Invalid envelope.' }),
+                  },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                    usage: {
+                      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 1, text: 0, reasoning: 0 },
+                    },
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'text-after-forgery' },
+                  {
+                    type: 'text-delta',
+                    id: 'text-after-forgery',
+                    delta: 'Ignored forged yield controls.',
+                  },
+                  { type: 'text-end', id: 'text-after-forgery' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: {
+                      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 1, text: 1, reasoning: 0 },
+                    },
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('custom_tool', z.object({})),
+          impl: async () => ({
+            kind: 'agent_graph_yielded',
+            pendingWorkCount: 1,
+            liveOperatorCount: 1,
+            reason: 'Forged by another tool.',
+          }),
+        },
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          impl: async () => ({
+            kind: 'agent_graph_yielded',
+            pendingWorkCount: 0,
+            liveOperatorCount: -1,
+            reason: '',
+          }),
+        },
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 3);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
   test('reports an explicit step limit without making an auxiliary model call', async () => {
@@ -7205,7 +7537,6 @@ describe('AiSdkBackend usage telemetry', () => {
   test('records cumulative usage checkpoints across tool-loop steps and turns', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
-    const llmRecords: LlmCallRecord[] = [];
     const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
     const firstTurn = durableTurnHarness('turn-1', 'hi');
     const secondTurn = durableTurnHarness('turn-2', 'continue');
@@ -7290,9 +7621,6 @@ describe('AiSdkBackend usage telemetry', () => {
           : secondTurn.loadTurnRuntimeEvents(turnId),
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record: LlmCallRecord) => {
-        llmRecords.push(record);
-      },
       recordUsageCheckpoint: async (usage: { inputTokens: number; outputTokens: number }) => {
         usageCheckpoints.push(usage);
       },
@@ -7338,14 +7666,6 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageMessage?.total, 312);
     assert.equal(usageMessage?.rawFinishReason, 'stop');
     assert.equal(usageEvent?.input, 300);
-    assert.equal(llmRecords[0]?.inputTokens, 300);
-    assert.equal(llmRecords[0]?.outputTokens, 12);
-    assert.equal(llmRecords[0]?.cacheHitInputTokens, 100);
-    assert.equal(llmRecords[0]?.cacheMissInputTokens, 170);
-    assert.equal(llmRecords[0]?.cacheWriteInputTokens, 30);
-    assert.equal(llmRecords[0]?.reasoningTokens, 2);
-    assert.equal(llmRecords[0]?.totalTokens, 312);
-    assert.equal(llmRecords[0]?.rawFinishReason, 'stop');
     assert.deepEqual(
       usageCheckpoints.map(({ inputTokens, outputTokens }) => ({ inputTokens, outputTokens })),
       [
@@ -7357,7 +7677,7 @@ describe('AiSdkBackend usage telemetry', () => {
   });
 
   test('does not record fabricated zero telemetry when provider usage is unavailable', async () => {
-    const llmRecords: LlmCallRecord[] = [];
+    const events: SessionEvent[] = [];
     const model = new MockLanguageModelV4({
       doStream: {
         stream: simulateReadableStream({
@@ -7393,14 +7713,18 @@ describe('AiSdkBackend usage telemetry', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
 
-    assert.deepEqual(llmRecords, []);
+    // No usable sample means no usage record at all — a zero would be
+    // indistinguishable from a call that genuinely consumed nothing (#972).
+    assert.deepEqual(
+      events.filter((event) => event.type === 'token_usage'),
+      [],
+    );
   });
 
   test('keeps checkpoint cost unknown when model pricing is unavailable', async () => {
@@ -7451,7 +7775,6 @@ describe('AiSdkBackend usage telemetry', () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
-    const llmRecords: LlmCallRecord[] = [];
     const largeBody = 'SECRET_PAYLOAD_SHOULD_BE_ARCHIVED'.repeat(200);
     let streamCalls = 0;
     const prompts: unknown[] = [];
@@ -7543,9 +7866,6 @@ describe('AiSdkBackend usage telemetry', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
     });
 
     for await (const event of backend.send(durable.input())) {
@@ -7561,7 +7881,6 @@ describe('AiSdkBackend usage telemetry', () => {
           contextBudget?: Record<string, unknown>;
         })
       | undefined;
-    const recordContextBudget = llmRecords[0]?.contextBudget as Record<string, unknown> | undefined;
     assert.equal(streamCalls, 3);
     const secondPrompt = JSON.stringify(prompts[1]);
     assert.match(secondPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
@@ -7570,11 +7889,7 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.doesNotMatch(thirdPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
     assert.match(thirdPrompt, /artifact-tool-1/);
     assert.match(thirdPrompt, /NEWEST_RESULT_STAYS_VISIBLE/);
-    for (const contextBudget of [
-      usageMessage?.contextBudget,
-      usageEvent?.contextBudget,
-      recordContextBudget,
-    ]) {
+    for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
       assert.equal(contextBudget?.activePrunedToolResults, 1);
       assert.equal(contextBudget?.activeArchiveFailures, undefined);
       assert.ok(((contextBudget?.activeEstimatedTokensSaved as number | undefined) ?? 0) > 0);
@@ -7585,7 +7900,6 @@ describe('AiSdkBackend usage telemetry', () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
-    const llmRecords: LlmCallRecord[] = [];
     const recordedBlocks: ActiveFullCompactBlock[] = [];
     const largeBody = 'ACTIVE_FULL_COMPACT_RAW_TOOL_OUTPUT'.repeat(200);
     let streamCalls = 0;
@@ -7665,9 +7979,6 @@ describe('AiSdkBackend usage telemetry', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
       recordActiveFullCompactBlock: (block) => {
         recordedBlocks.push(block);
       },
@@ -7724,12 +8035,7 @@ describe('AiSdkBackend usage telemetry', () => {
           contextBudget?: Record<string, unknown>;
         })
       | undefined;
-    const recordContextBudget = llmRecords[0]?.contextBudget as Record<string, unknown> | undefined;
-    for (const contextBudget of [
-      usageMessage?.contextBudget,
-      usageEvent?.contextBudget,
-      recordContextBudget,
-    ]) {
+    for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
       assert.equal(contextBudget?.activePrunedToolResults, undefined);
       const decisions = contextBudget?.compactionDecisions as
         | Array<Record<string, unknown>>
@@ -7777,60 +8083,18 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(recordedBlocks[0]?.blockId, 'afcompact-sync-test');
   });
 
-  test('does not record semantic compact usage when provider usage is unavailable', () => {
-    const llmRecords: LlmCallRecord[] = [];
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
-    });
-
-    (
-      backend as unknown as {
-        compaction: {
-          recordSemanticCompactSummaryCall(input: {
-            callId: string;
-            turnId: string;
-            modelId: string;
-            startedAt: number;
-            latencyMs: number;
-            status: LlmCallRecord['status'];
-          }): void;
-        };
-      }
-    ).compaction.recordSemanticCompactSummaryCall({
-      callId: 'semantic-1',
-      turnId: 'turn-1',
-      modelId: 'mock-model-id',
-      startedAt: 1,
-      latencyMs: 2,
-      status: 'error',
-    });
-
-    assert.deepEqual(llmRecords, []);
-  });
-
-  test('semantic compact records a separate no-tools summarizer LLM call', async () => {
-    const durable = durableTurnHarness('turn-1', 'hi');
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const llmRecords: LlmCallRecord[] = [];
-    const recordedBlocks: SemanticCompactBlock[] = [];
-    const recordedActiveFullBlocks: ActiveFullCompactBlock[] = [];
-    const largeBody = 'SEMANTIC_COMPACT_RAW_TOOL_OUTPUT'.repeat(180);
+  /**
+   * One model whose stream drives a turn into semantic compaction: two tool
+   * steps, then a plain finish. Shared by the accept and dry-run cases so both
+   * exercise the same summarization, and only the policy differs.
+   */
+  function semanticCompactFixtureModel(modelId?: string): {
+    model: MockLanguageModelV4;
+    streamCalls: () => number;
+  } {
     let streamCalls = 0;
-    let archiveCalls = 0;
     const model = new MockLanguageModelV4({
+      ...(modelId ? { modelId } : {}),
       doGenerate: {
         content: [
           {
@@ -7848,6 +8112,14 @@ describe('AiSdkBackend usage telemetry', () => {
         usage: {
           inputTokens: { total: 21, noCache: 19, cacheRead: 2, cacheWrite: 0 },
           outputTokens: { total: 13, text: 13, reasoning: 0 },
+          // The provider's own payload, which is the only thing the canonical
+          // record will attribute cache tokens from.
+          raw: {
+            input_tokens: 19,
+            output_tokens: 13,
+            cache_read_input_tokens: 2,
+            cache_creation_input_tokens: 0,
+          },
         },
         warnings: [],
       },
@@ -7906,6 +8178,49 @@ describe('AiSdkBackend usage telemetry', () => {
         };
       },
     });
+    return { model, streamCalls: () => streamCalls };
+  }
+
+  function semanticCompactContextBudget(mode: 'replace' | 'validate_only') {
+    return {
+      charsPerToken: 1,
+      activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+      semanticCompact: {
+        enabled: true,
+        mode,
+        minStepNumber: 1,
+        minRecentMessages: 0,
+        maxActiveEstimatedTokens: 1,
+        highWaterRatio: 0.1,
+        minSafePrefixEstimatedTokens: 1,
+        minNewPrefixEstimatedTokens: 1,
+        maxSummaryEstimatedTokens: 1024,
+        minSavingsTokens: 1,
+        minSavingsRatio: 0,
+      },
+      activeFullCompact: {
+        enabled: true,
+        minStepNumber: 1,
+        maxActiveEstimatedTokens: 1_000_000,
+        highWaterRatio: 0.1,
+        minRecentMessages: 0,
+        maxSummaryEstimatedTokens: 1024,
+      },
+    } as const;
+  }
+
+  const SEMANTIC_COMPACT_LARGE_BODY = 'SEMANTIC_COMPACT_RAW_TOOL_OUTPUT'.repeat(180);
+
+  test('semantic compact records a separate no-tools summarizer model call', async () => {
+    const durable = durableTurnHarness('turn-1', 'hi');
+    const messages: unknown[] = [];
+    const events: SessionEvent[] = [];
+    const modelCalls: ModelCallAttempt[] = [];
+    const recordedBlocks: SemanticCompactBlock[] = [];
+    const recordedActiveFullBlocks: ActiveFullCompactBlock[] = [];
+    const largeBody = SEMANTIC_COMPACT_LARGE_BODY;
+    let archiveCalls = 0;
+    const { model, streamCalls } = semanticCompactFixtureModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -7926,31 +8241,7 @@ describe('AiSdkBackend usage telemetry', () => {
           }),
         },
       ],
-      contextBudget: {
-        charsPerToken: 1,
-        activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-        semanticCompact: {
-          enabled: true,
-          mode: 'replace',
-          minStepNumber: 1,
-          minRecentMessages: 0,
-          maxActiveEstimatedTokens: 1,
-          highWaterRatio: 0.1,
-          minSafePrefixEstimatedTokens: 1,
-          minNewPrefixEstimatedTokens: 1,
-          maxSummaryEstimatedTokens: 1024,
-          minSavingsTokens: 1,
-          minSavingsRatio: 0,
-        },
-        activeFullCompact: {
-          enabled: true,
-          minStepNumber: 1,
-          maxActiveEstimatedTokens: 1_000_000,
-          highWaterRatio: 0.1,
-          minRecentMessages: 0,
-          maxSummaryEstimatedTokens: 1024,
-        },
-      },
+      contextBudget: semanticCompactContextBudget('replace'),
       archiveToolResult: async () => {
         archiveCalls += 1;
         return { artifactId: 'archived-covered-semantic-result' };
@@ -7958,8 +8249,9 @@ describe('AiSdkBackend usage telemetry', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
+      recordProviderRequestCapture: async () => ({ artifactId: 'artifact-semantic-capture' }),
+      recordModelCallAttempt: (attempt) => {
+        modelCalls.push(attempt);
       },
       recordSemanticCompactBlock: (block) => {
         recordedBlocks.push(block);
@@ -7969,12 +8261,14 @@ describe('AiSdkBackend usage telemetry', () => {
       },
     });
 
-    for await (const event of backend.send(durable.input())) {
+    // A canonical record belongs to a run; the send carries the one the
+    // harness's runtime events already claim.
+    for await (const event of backend.send(durable.input({ runId: 'run-1' }))) {
       durable.record(event);
       events.push(event);
     }
 
-    assert.equal(streamCalls, 3);
+    assert.equal(streamCalls(), 3);
     assert.equal(model.doGenerateCalls.length, 1);
     assert.match(
       JSON.stringify(model.doGenerateCalls[0]?.prompt),
@@ -8038,13 +8332,33 @@ describe('AiSdkBackend usage telemetry', () => {
       'projection replay after active pruning must retain the exact single user anchor',
     );
 
-    const semanticRecord = llmRecords.find((record) => record.callKind === 'semantic_compact');
-    assert.ok(semanticRecord, 'expected semantic compact LLM record');
-    assert.match(semanticRecord.callId ?? '', /^semantic_compact_turn-1_2_/);
-    assert.equal(semanticRecord.inputTokens, 21);
-    assert.equal(semanticRecord.outputTokens, 13);
-    assert.equal(semanticRecord.cacheHitInputTokens, 2);
-    assert.equal(semanticRecord.totalTokens, 34);
+    // The summarization is one physical provider request, metered through the
+    // same canonical seam as the send it interrupts (#1679) — not a hand-built
+    // row in the frozen usage table.
+    const semanticAttempt = modelCalls
+      .map((attempt) => decodeModelCallAttempt(attempt))
+      .find((attempt) => attempt.callKind === 'semantic_compact');
+    assert.ok(semanticAttempt, 'expected a canonical semantic compact record');
+    assert.equal(semanticAttempt.sessionId, 'session-1');
+    assert.equal(semanticAttempt.runId, 'run-1');
+    assert.equal(semanticAttempt.turnId, 'turn-1');
+    assert.equal(
+      semanticAttempt.step,
+      2,
+      'the record carries the send step whose projection triggered the summarization',
+    );
+    assert.equal(semanticAttempt.status, 'completed');
+    assert.equal(semanticAttempt.inputTokens, 21);
+    assert.equal(semanticAttempt.outputTokens, 13);
+    assert.equal(semanticAttempt.usageBasis, 'reported');
+    // Cache tokens are attributed from the provider's own payload, never from
+    // the SDK's normalized view — which is what the old row copied through.
+    assert.equal(semanticAttempt.cacheReadInputTokens, 2);
+    assert.equal(
+      modelCalls.filter((attempt) => attempt.callKind === 'semantic_compact').length,
+      1,
+      'one summarization is one record',
+    );
 
     const usageEvent = events.find((event) => event.type === 'token_usage') as
       | (Extract<SessionEvent, { type: 'token_usage' }> & {
@@ -8063,6 +8377,157 @@ describe('AiSdkBackend usage telemetry', () => {
       ),
       true,
     );
+  });
+
+  test('a dry-run semantic compaction is still a real, billed model call', async () => {
+    // `validate_only` declines the *projection*, not the summarization: the
+    // summarizer runs to completion and only then is its block refused. That
+    // call reaches a provider and is charged for, so it settles a canonical
+    // record like any other. Pinned because a mode named "dry run" that bills
+    // is exactly the kind of thing a later reader would assume otherwise.
+    const durable = durableTurnHarness('turn-1', 'hi');
+    const modelCalls: ModelCallAttempt[] = [];
+    const recordedBlocks: SemanticCompactBlock[] = [];
+    const { model } = semanticCompactFixtureModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read description',
+          parameters: z.object({ path: z.string() }),
+          impl: async ({ path }) => ({
+            body: path === 'large.log' ? SEMANTIC_COMPACT_LARGE_BODY : 'FRESH_SEMANTIC_TAIL_RESULT',
+          }),
+        },
+      ],
+      contextBudget: semanticCompactContextBudget('validate_only'),
+      archiveToolResult: async () => ({ artifactId: 'archived-covered-semantic-result' }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      recordProviderRequestCapture: async () => ({ artifactId: 'artifact-semantic-capture' }),
+      recordModelCallAttempt: (attempt) => {
+        modelCalls.push(attempt);
+      },
+      recordSemanticCompactBlock: (block) => {
+        recordedBlocks.push(block);
+      },
+    });
+
+    for await (const event of backend.send(durable.input({ runId: 'run-1' }))) {
+      durable.record(event);
+    }
+
+    assert.equal(model.doGenerateCalls.length, 1, 'the dry run still calls the summarizer');
+    assert.equal(recordedBlocks.length, 0, 'and still refuses to accept the block it produced');
+    const dryRunAttempt = modelCalls
+      .map((attempt) => decodeModelCallAttempt(attempt))
+      .find((attempt) => attempt.callKind === 'semantic_compact');
+    assert.ok(dryRunAttempt, 'a declined projection does not make the call free');
+    assert.equal(dryRunAttempt.status, 'completed');
+    assert.equal(dryRunAttempt.inputTokens, 21);
+    assert.equal(dryRunAttempt.outputTokens, 13);
+  });
+
+  test('a separate summarizer model is priced as itself, not as the session model', async () => {
+    // The record already named the model that served the request. Pricing it
+    // against a different model's rates would store an id and a `pricingRates`
+    // that contradict each other — the exact thing recording the rates is for.
+    const summarizerPricing = {
+      modelKey: 'anthropic:summarizer-model-id',
+      inputUsdPer1M: 1,
+      outputUsdPer1M: 2,
+      cacheReadUsdPer1M: 0.1,
+      cacheWriteUsdPer1M: 1,
+    };
+    const mainPricing = {
+      modelKey: 'anthropic:mock-model-id',
+      inputUsdPer1M: 1_000,
+      outputUsdPer1M: 2_000,
+      cacheReadUsdPer1M: 100,
+      cacheWriteUsdPer1M: 1_000,
+    };
+    const pricingKeysAsked: string[] = [];
+    const durable = durableTurnHarness('turn-1', 'hi');
+    const modelCalls: ModelCallAttempt[] = [];
+    const { model } = semanticCompactFixtureModel();
+    // A real `modelFactory` builds the summarizer against the configured id, so
+    // the record names it; the fixture has to do the same or it would prove
+    // nothing about which model the rates belong to.
+    const { model: summarizerOnlyModel } = semanticCompactFixtureModel('summarizer-model-id');
+    const budget = semanticCompactContextBudget('replace');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: ({ modelId }) =>
+        modelId === 'summarizer-model-id' ? summarizerOnlyModel : model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read description',
+          parameters: z.object({ path: z.string() }),
+          impl: async ({ path }) => ({
+            body: path === 'large.log' ? SEMANTIC_COMPACT_LARGE_BODY : 'FRESH_SEMANTIC_TAIL_RESULT',
+          }),
+        },
+      ],
+      contextBudget: {
+        ...budget,
+        semanticCompact: { ...budget.semanticCompact, summarizerModel: 'summarizer-model-id' },
+      },
+      archiveToolResult: async () => ({ artifactId: 'archived-covered-semantic-result' }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      lookupPricing: (modelKey) => {
+        pricingKeysAsked.push(modelKey);
+        if (modelKey === summarizerPricing.modelKey) return summarizerPricing;
+        if (modelKey === mainPricing.modelKey) return mainPricing;
+        return null;
+      },
+      recordProviderRequestCapture: async () => ({ artifactId: 'artifact-semantic-capture' }),
+      recordModelCallAttempt: (attempt) => {
+        modelCalls.push(attempt);
+      },
+      recordSemanticCompactBlock: () => {},
+    });
+
+    for await (const event of backend.send(durable.input({ runId: 'run-1' }))) {
+      durable.record(event);
+    }
+
+    const summarization = modelCalls
+      .map((attempt) => decodeModelCallAttempt(attempt))
+      .find((attempt) => attempt.callKind === 'semantic_compact');
+    assert.ok(summarization, 'expected a canonical semantic compact record');
+    assert.equal(summarization.modelId, 'summarizer-model-id');
+    assert.equal(summarization.costBasis, 'priced');
+    assert.deepEqual(
+      summarization.pricingRates,
+      summarizerPricing,
+      'the rates stored are the ones the summarizer model actually bills at',
+    );
+    assert.equal(
+      pricingKeysAsked.includes(summarizerPricing.modelKey),
+      true,
+      'the cost lookup asks for the model that served the request',
+    );
+    // The session model is still priced as itself for its own steps.
+    const mainCall = modelCalls
+      .map((attempt) => decodeModelCallAttempt(attempt))
+      .find((attempt) => attempt.callKind === 'main');
+    assert.equal(mainCall?.pricingRates?.modelKey, mainPricing.modelKey);
   });
 
   test('active full compact keeps the accepted boundary projection across later AI SDK steps', async () => {
@@ -8190,7 +8655,6 @@ describe('AiSdkBackend usage telemetry', () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
-    const llmRecords: LlmCallRecord[] = [];
     const largeBody = 'VALIDATE_ONLY_RAW_TOOL_OUTPUT'.repeat(80);
     let streamCalls = 0;
     const model = new MockLanguageModelV4({
@@ -8264,9 +8728,6 @@ describe('AiSdkBackend usage telemetry', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
     });
 
     for await (const event of backend.send(durable.input())) {
@@ -8289,8 +8750,7 @@ describe('AiSdkBackend usage telemetry', () => {
           contextBudget?: Record<string, unknown>;
         })
       | undefined;
-    const recordContextBudget = llmRecords[0]?.contextBudget as Record<string, unknown> | undefined;
-    for (const contextBudget of [usageEvent?.contextBudget, recordContextBudget]) {
+    for (const contextBudget of [usageEvent?.contextBudget]) {
       const decisions = contextBudget?.compactionDecisions as
         | Array<Record<string, unknown>>
         | undefined;
@@ -8313,7 +8773,6 @@ describe('AiSdkBackend usage telemetry', () => {
   test('normalizes cache and reasoning tokens to messages, events, and telemetry', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
-    const llmRecords: LlmCallRecord[] = [];
     const runTraceEvents: Array<{ type: string; data?: Record<string, unknown> }> = [];
     let pricingLookupCalls = 0;
     const pricing = {
@@ -8373,9 +8832,6 @@ describe('AiSdkBackend usage telemetry', () => {
         pricingLookupCalls += 1;
         return modelKey === pricing.modelKey ? pricing : null;
       },
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
       recordRunTrace: (event) => {
         runTraceEvents.push(event);
       },
@@ -8412,7 +8868,6 @@ describe('AiSdkBackend usage telemetry', () => {
       | (Extract<SessionEvent, { type: 'token_usage' }> & { systemPromptHash?: string })
       | undefined;
     const expectedCostUsd = (5 * 3 + 3 * 0.3 + 2 * 3.75 + 7 * 15) / 1_000_000;
-    const usageTrace = runTraceEvents.find((event) => event.type === 'usage_recorded');
     const startTrace = runTraceEvents.find((event) => event.type === 'model_stream_started');
 
     assert.equal((usageMessage as { type?: string } | undefined)?.type, 'token_usage');
@@ -8452,25 +8907,11 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageEvent?.requestShapeChangeReason, 'first_turn');
     assert.ok(usageEvent?.prefixHash);
     assert.ok(usageEvent?.requestShapeHash);
-    assert.equal(llmRecords[0]?.inputTokens, 10);
-    assert.equal(llmRecords[0]?.outputTokens, 7);
-    assert.equal(llmRecords[0]?.cacheHitInputTokens, 3);
-    assert.equal(llmRecords[0]?.cacheMissInputTokens, 5);
-    assert.equal(llmRecords[0]?.cacheMissInputSource, 'explicit');
-    assert.equal(llmRecords[0]?.cachedInputTokens, 3);
-    assert.equal(llmRecords[0]?.cacheWriteInputTokens, 2);
-    assert.equal(llmRecords[0]?.reasoningTokens, 2);
-    assert.equal(llmRecords[0]?.totalTokens, 17);
-    assert.equal(llmRecords[0]?.rawFinishReason, 'stop');
-    assert.equal(llmRecords[0]?.systemPromptHash, usageMessage?.systemPromptHash);
-    assert.equal(llmRecords[0]?.costUsd, expectedCostUsd);
-    assert.equal(llmRecords[0]?.prefixChangeReason, 'first_turn');
-    assert.equal(llmRecords[0]?.requestShapeChangeReason, 'first_turn');
-    assert.ok(llmRecords[0]?.prefixHash);
-    assert.ok(llmRecords[0]?.requestShapeHash);
+    assert.equal(startTrace?.data?.prefixChangeReason, 'first_turn');
+    assert.equal(startTrace?.data?.requestShapeChangeReason, 'first_turn');
+    assert.ok(startTrace?.data?.prefixHash);
+    assert.ok(startTrace?.data?.requestShapeHash);
     assert.equal(startTrace?.data?.systemPromptHash, usageMessage?.systemPromptHash);
-    assert.equal(usageTrace?.data?.systemPromptHash, usageMessage?.systemPromptHash);
-    assert.equal(usageTrace?.data?.costUsd, expectedCostUsd);
     assert.equal(pricingLookupCalls, 1);
   });
 });
@@ -8762,7 +9203,7 @@ describe('AiSdkBackend request-shape diagnostics', () => {
 
   test('backend full mode keeps the complete tool surface and omits the connector', async () => {
     const model = completionModel();
-    const llmRecords: LlmCallRecord[] = [];
+    const events: SessionEvent[] = [];
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -8778,24 +9219,26 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       ],
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
 
     assert.deepEqual(modelToolNames(model), sortedModelToolNames(['Read', 'WebFetch']));
     assert.equal(modelToolNames(model).includes(LOAD_TOOLS_NAME), false);
     // toolCount tracks the model-visible (active) tools — the two real tools.
     // The invalid fallback lives in providerTools but is never advertised, so
     // it is not counted (toolCount is the wire-visible subset).
-    assert.equal(toolSchemaPromptSegment(llmRecords[0])?.toolCount, 2);
+    const usageEvent = events.find(
+      (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
+        event.type === 'token_usage',
+    );
+    assert.equal(toolSchemaPromptSegment(usageEvent)?.toolCount, 2);
   });
 
   test('volatile turn-tail facts do not churn the durable prefix hash', async () => {
     const events: SessionEvent[] = [];
-    const llmRecords: LlmCallRecord[] = [];
     const models: MockLanguageModelV4[] = [];
     let date = '2026-05-29';
     const backend = createTestAiSdkBackend({
@@ -8815,9 +9258,6 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       now: monotonicClock(),
       systemPrompt: 'durable system prompt',
       turnTailPrompt: () => `Maka session environment:\n<env>\n  Today's date: ${date}\n</env>`,
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
     });
 
     for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
@@ -8838,8 +9278,6 @@ describe('AiSdkBackend request-shape diagnostics', () => {
     assert.equal(usageEvents[0]?.requestShapeChangeReason, 'first_turn');
     assert.equal(usageEvents[1]?.requestShapeChangeReason, 'stable');
     assert.equal(usageEvents[1]?.requestShapeHash, usageEvents[0]?.requestShapeHash);
-    assert.equal(llmRecords[1]?.prefixChangeReason, 'stable');
-    assert.equal(llmRecords[1]?.requestShapeChangeReason, 'stable');
     assert.match(JSON.stringify(compactPrompt(models[0]!)), /2026-05-29/);
     assert.match(JSON.stringify(compactPrompt(models[1]!)), /2026-05-30/);
     assert.equal(JSON.stringify(modelCallSettings(models[0]!)).includes('2026-05-29'), false);
@@ -9556,18 +9994,16 @@ describe('AiSdkBackend RunTrace', () => {
         'turn_started',
         'model_resolved',
         'model_stream_started',
-        'usage_recorded',
         'model_stream_completed',
+        'send_diagnostics_recorded',
       ],
     );
     assert.deepEqual(
       trace.map((event) => event.phase),
-      ['turn', 'model', 'model', 'usage', 'model'],
+      ['turn', 'model', 'model', 'model', 'model'],
     );
     assert.equal(trace[0]?.sessionId, 'session-1');
     assert.equal(trace[0]?.turnId, 'turn-1');
-    assert.equal(trace.find((event) => event.type === 'usage_recorded')?.data?.inputTokens, 4);
-    assert.equal(trace.find((event) => event.type === 'usage_recorded')?.data?.reasoningTokens, 1);
     assert.deepEqual(
       events
         .map((event) => event.type)
@@ -9651,18 +10087,8 @@ describe('AiSdkBackend RunTrace', () => {
       newId: idGenerator(),
       now: monotonicClock(),
     });
-    (
-      backend as unknown as {
-        currentTurnId: string;
-        currentRunTrace: { abortRequested(reason: string): void };
-      }
-    ).currentTurnId = 'turn-1';
-    (
-      backend as unknown as {
-        currentRunTrace: { abortRequested(reason: string): void };
-      }
-    ).currentRunTrace = {
-      abortRequested: (reason) => {
+    turnScope(backend, 'turn-1').runTrace = {
+      abortRequested: (reason: string) => {
         trace.push({
           id: 'trace-1',
           sessionId: 'session-1',
@@ -9674,7 +10100,7 @@ describe('AiSdkBackend RunTrace', () => {
           data: { reason },
         });
       },
-    };
+    } as unknown as RunTrace;
 
     await backend.stop('redirect');
 
@@ -9763,6 +10189,45 @@ describe('AiSdkBackend tool execution', () => {
     assert.equal(JSON.stringify(telemetry).includes('opaque-session-value'), false);
     assert.equal(JSON.stringify(telemetry).includes('plain-provider-key'), false);
     assert.equal(JSON.stringify(telemetry).includes('correct-horse-battery-staple'), false);
+  });
+
+  test('WebSearch telemetry never copies the user-derived query', async () => {
+    const telemetry: Array<{ argsSummary?: string }> = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header('bypass'),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      recordToolInvocation: (record) => {
+        telemetry.push({ argsSummary: record.argsSummary });
+      },
+    });
+    const tool: MakaTool = {
+      name: 'WebSearch',
+      description: 'search web',
+      parameters: {},
+      impl: async () => ({
+        kind: 'web_search',
+        provider: 'tavily',
+        query: 'PRIVATE_QUERY_SENTINEL',
+        rows: [],
+      }),
+    };
+    const execute = runtimeExecute(backend, tool, 'turn-1', { push: () => {} });
+
+    await execute(
+      { query: 'PRIVATE_QUERY_SENTINEL', limit: 3 },
+      { toolCallId: 'tool-web-search', abortSignal: new AbortController().signal },
+    );
+
+    assert.deepEqual(telemetry, [{ argsSummary: '{"limit":3}' }]);
+    assert.doesNotMatch(JSON.stringify(telemetry), /PRIVATE_QUERY_SENTINEL/);
   });
 
   test('tool failure telemetry classifies and redacts generic implementation errors', async () => {
@@ -9903,11 +10368,7 @@ describe('AiSdkBackend tool execution', () => {
     });
     let pauseCount = 0;
     let resumeCount = 0;
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = {
+    turnScope(backend, 'turn-1').watchdog = {
       pause: () => {
         pauseCount += 1;
       },
@@ -9970,11 +10431,7 @@ describe('AiSdkBackend tool execution', () => {
     });
     let pauseCount = 0;
     let resumeCount = 0;
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = {
+    turnScope(backend, 'turn-1').watchdog = {
       pause: () => {
         pauseCount += 1;
       },
@@ -10328,9 +10785,84 @@ describe('AiSdkBackend tool-call repair', () => {
   });
 });
 
-describe('AiSdkBackend loop-gate turn wiring', () => {
-  test('send() resets ToolRuntime per turn (at turn start and at cleanup)', async () => {
-    const model = completionModel();
+describe('AiSdkBackend concurrent turns', () => {
+  // #1990: RuntimeKernel reuses one backend per Session and lets one generation
+  // hold several concurrent runs. A finishing turn used to clear the backend's
+  // shared "current run", so an overlapping turn's next tool call committed
+  // against no run at all and the whole turn died with "Operation failed".
+  test('a finishing turn does not strip the run identity of an overlapping turn', async () => {
+    const first = durableTurnHarness('turn-a', 'first', {
+      runId: 'run-a',
+      invocationId: 'invocation-a',
+    });
+    const second = durableTurnHarness('turn-b', 'second', {
+      runId: 'run-b',
+      invocationId: 'invocation-b',
+    });
+    const ledgers = new Map([
+      ['turn-a', first],
+      ['turn-b', second],
+    ]);
+    const preparedRunIds: Array<string | undefined> = [];
+    const executions: string[] = [];
+    // The overlapping turn must reach its tool AFTER the other turn is fully
+    // torn down: run identity was read at dispatch, so that is the window the
+    // crash lived in. Holding the provider stream (not the tool body) is what
+    // puts the tool call on the far side of the other turn's cleanup.
+    const firstTurnDone = makeGate();
+    const overlappingStreamStarted = makeGate();
+
+    let servedToolCall = false;
+    const model = new MockLanguageModelV4({
+      doStream: async ({ prompt }) => {
+        const servesOverlappingTurn = !servedToolCall && JSON.stringify(prompt).includes('second');
+        if (servesOverlappingTurn) {
+          servedToolCall = true;
+          overlappingStreamStarted.release();
+          await firstTurnDone.promise;
+        }
+        const chunks: LanguageModelV4StreamPart[] = servesOverlappingTurn
+          ? [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: 'tool-b',
+                toolName: 'Read',
+                input: JSON.stringify({ path: 'b.md' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 0, reasoning: 0 },
+                },
+              },
+            ]
+          : [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'done' },
+              { type: 'text-end', id: 'text-1' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -10339,31 +10871,204 @@ describe('AiSdkBackend loop-gate turn wiring', () => {
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
       modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async ({ path }: { path: string }) => {
+            executions.push(path);
+            return { body: path };
+          },
+        },
+      ],
+      runtimeCommitSink: {
+        commitToolPrepared: async ({ runtimeEvent }) => {
+          preparedRunIds.push(runtimeEvent.runId);
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+      },
+      loadTurnRuntimeEvents: async (turnId: string) =>
+        (ledgers.get(turnId) ?? first).loadTurnRuntimeEvents(turnId),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const overlapping = drainDurably(
+      backend.send(second.input({ runId: 'run-b', invocationId: 'invocation-b' })),
+      second,
+    );
+    // Let the overlapping turn park mid-stream, run the other turn to completion
+    // on the SAME backend, then release the tool call into that aftermath.
+    await overlappingStreamStarted.promise;
+    await drainDurably(
+      backend.send(first.input({ runId: 'run-a', invocationId: 'invocation-a' })),
+      first,
+    );
+    firstTurnDone.release();
+    const events = await overlapping;
+
+    assert.deepEqual(executions, ['b.md']);
+    assert.deepEqual(preparedRunIds, ['run-b']);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+      'the overlapping turn must not fail when a sibling turn finishes',
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    // Both turns are done, so neither left a scope behind for a later turn to
+    // inherit — the leak that would reintroduce shared per-turn state.
+    assert.equal(backendInternals(backend).activeTurns.size, 0);
+  });
+
+  // A scope that reaches activeTurns must always leave it. Setup runs before the
+  // provider pump exists, and a throw there used to strand the scope forever:
+  // nothing overwrites a Set entry, and stop()/dispose() only iterate.
+  test('a send that throws during setup leaves no scope registered', async () => {
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    // Spy on the real ToolRuntime the backend already constructed, counting how
-    // many times send() resets it during one completed turn.
-    const runtime = (backend as unknown as { toolRuntime: { resetTurnState: () => void } })
-      .toolRuntime;
-    const original = runtime.resetTurnState.bind(runtime);
-    let resets = 0;
-    runtime.resetTurnState = () => {
-      resets += 1;
-      original();
+    await assert.rejects(
+      drain(
+        backend.send({
+          turnId: 'turn-1',
+          text: 'hi',
+          context: [],
+          // A hosted Interaction Run for a different turn: beginTurn refuses it,
+          // and it throws before anything installs the turn's own cleanup.
+          hostedInteraction: {
+            sessionId: 'session-1',
+            turnId: 'a-different-turn',
+          } as never,
+        }),
+      ),
+      /mismatched hosted Interaction Run/,
+    );
+
+    assert.equal(backendInternals(backend).activeTurns.size, 0);
+    // And the backend is still usable: a leaked scope would pin dispose() to the
+    // stop path and broadcast endTurn to a dead runtime forever.
+    await backend.dispose();
+  });
+
+  // A broadcast stop must reach every turn even when one of them cannot close.
+  // `endTurn` rejects when a durable sandbox denial cannot be written, and it is
+  // also the ONLY thing that rejects a tool parked on askUserQuestion — an abort
+  // signal does not wake the registry. So a stop that bails on the first failure
+  // parks the sibling forever: that turn's own send() cleanup is itself waiting
+  // on the tool the skipped endTurn was supposed to reject.
+  test('stop() closes every turn even when one turn fails to close', async () => {
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const aborted: string[] = [];
+    const endedTurns: string[] = [];
+    for (const turnId of ['turn-a', 'turn-b']) {
+      const scope = turnScope(backend, turnId);
+      scope.runTrace = {
+        emit: () => {},
+        abortRequested: () => aborted.push(turnId),
+      } as unknown as RunTrace;
+    }
+    // The first turn cannot complete teardown; the second parks on a question
+    // that only its own endTurn can reject.
+    const failing = turnScope(backend, 'turn-a');
+    const endFailingTurn = failing.toolRuntime.endTurn.bind(failing.toolRuntime);
+    failing.toolRuntime.endTurn = async (reason) => {
+      endedTurns.push(failing.turnId);
+      await endFailingTurn(reason);
+      throw new Error('Could not durably deny every sandbox boundary request');
+    };
+    const parked = turnScope(backend, 'turn-b');
+    const endParkedTurn = parked.toolRuntime.endTurn.bind(parked.toolRuntime);
+    parked.toolRuntime.endTurn = async (reason) => {
+      endedTurns.push(parked.turnId);
+      await endParkedTurn(reason);
     };
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    const events: SessionEvent[] = [];
+    const sink = { push: (event: SessionEvent) => events.push(event) };
+    // Each tool gets its OWN turn's abort signal, exactly as send() hands it out,
+    // so the broadcast is observed where tools actually receive it.
+    const abortObserved: string[] = [];
+    const abortCall = runtimeExecute(
+      backend,
+      {
+        ...testTool('WaitForAbort', z.object({})),
+        impl: async (_input: unknown, ctx: { abortSignal: AbortSignal }) =>
+          new Promise((resolve) => {
+            ctx.abortSignal.addEventListener('abort', () => {
+              abortObserved.push('turn-a');
+              resolve({ stopped: true });
+            });
+          }),
+      } as MakaTool,
+      'turn-a',
+      sink,
+    )({}, { toolCallId: 'tool-a', abortSignal: failing.abortController.signal });
+    const questionCall = runtimeExecute(
+      backend,
+      {
+        ...testTool('Ask', z.object({})),
+        impl: async (
+          _input: unknown,
+          ctx: { askUserQuestion: (questions: unknown[]) => Promise<unknown> },
+        ) => ctx.askUserQuestion([{ question: 'Continue?', options: ['yes', 'no'] }]),
+      } as MakaTool,
+      'turn-b',
+      sink,
+    )({}, { toolCallId: 'tool-b', abortSignal: parked.abortController.signal });
+    await waitFor(() => events.some((event) => event.type === 'user_question_request'));
 
-    // A completed turn resets the per-turn ToolRuntime state twice: once at the
-    // START of the turn (so the loop-gate failure streak, subagent count, and
-    // gating never carry over from the previous turn's teardown) and once at the
-    // END via cleanupAfterTurn(). Removing the start-of-turn reset drops this to 1
-    // and fails — which is what proves the wiring the ToolRuntime unit test alone
-    // cannot.
-    assert.equal(resets, 2, 'resetTurnState runs at turn start and at cleanup');
+    await assert.rejects(backend.stop('user_stop'), /Could not durably deny/);
+
+    // Every turn is aborted under its own controller, not just the first one:
+    // turn-a's tool observes the signal it was actually handed, and turn-b's
+    // controller is aborted even though turn-a's teardown failed.
+    assert.equal(
+      await Promise.race([
+        abortCall.then(() => 'aborted'),
+        new Promise((resolve) => setTimeout(() => resolve('still running'), 50)),
+      ]),
+      'aborted',
+    );
+    assert.deepEqual(abortObserved, ['turn-a']);
+    assert.equal(parked.abortController.signal.aborted, true);
+    // The failing turn's error still surfaces, and the sibling is closed anyway:
+    // its parked question is rejected rather than left waiting forever.
+    assert.deepEqual(endedTurns, ['turn-a', 'turn-b']);
+    assert.deepEqual(aborted, ['turn-a', 'turn-b']);
+    // settleToolCall reports a failed tool rather than rejecting, so what
+    // matters is that it settles at all instead of parking forever.
+    assert.equal(
+      await Promise.race([
+        questionCall.then(
+          () => 'settled',
+          () => 'settled',
+        ),
+        new Promise((resolve) => setTimeout(() => resolve('parked'), 50)),
+      ]),
+      'settled',
+    );
   });
 });
 
@@ -12319,6 +13024,231 @@ describe('AiSdkBackend steering durability and identity', () => {
       { role: 'user', content: [{ type: 'text', text: 'continue' }] },
     ]);
   });
+
+  test('persists provider metadata a canonical event can read back', async () => {
+    // The failure this pins is not in the sanitiser, it is at this seam.
+    //
+    // A field the response did not carry arrives as an explicit `undefined` —
+    // Anthropic sends `{ type: 'direct', toolId: undefined }` when there is no
+    // tool id. JSON drops such a property, so the persisted event no longer
+    // reads back as it was written and `encodeCanonicalRuntimeEvent` refuses
+    // it. That refusal marked the runtime event store unavailable and the
+    // turn's terminal write then threw, so every turn that called any tool
+    // died about a tenth of a second after the tool returned.
+    //
+    // Asserting on the sanitiser alone cannot catch a regression here: the
+    // sanitiser is a pure function and could not have produced the bug. This
+    // streams the shape a real provider sends and encodes what was persisted.
+    const anchor = runtimeTextEvent({
+      id: 'runtime-user',
+      turnId: 'turn-1',
+      role: 'user',
+      author: 'user',
+      text: 'call the tool',
+    });
+    const ledger: RuntimeEvent[] = [anchor];
+    const mappingMemory = createSessionEventMapMemory();
+    const mappingContext: InvocationContext = {
+      sessionId: 'session-1',
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'desktop',
+      startedAt: 1,
+      request: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        text: 'call the tool',
+        source: 'desktop',
+        initialRuntimeEvent: anchor,
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    };
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'call-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'ok.md' }),
+                  providerMetadata: {
+                    anthropic: { caller: { type: 'direct', toolId: undefined } },
+                  },
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'end_turn' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'read',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => ({ body: 'ok' }),
+        },
+      ],
+      loadTurnRuntimeEvents: async () => ledger,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'call the tool',
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+    })) {
+      const mapped = mapSessionEventToRuntimeEvent(event, mappingContext, mappingMemory);
+      if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+    }
+
+    // Every persisted event has to survive the encoder, because one that does
+    // not takes the store — and the turn — with it.
+    for (const event of ledger) {
+      assert.doesNotThrow(
+        () => encodeCanonicalRuntimeEvent(event),
+        `a persisted ${event.content?.kind} event must read back as it was written`,
+      );
+    }
+  });
+
+  test('rebuilds reasoning metadata rather than persisting what the provider sent', async () => {
+    // The tool-call seam above carries `providerOptions` from the stream into
+    // the persisted event, so an omitted provider field arrives as an explicit
+    // `undefined` and the canonical encoder refuses the write. Reasoning looks
+    // like the same seam and is not: `translateChunk` rebuilds the reasoning
+    // metadata from two named string fields, so nothing the provider sends
+    // reaches the event verbatim and no `undefined` can ride along.
+    //
+    // This pins that, because it is the only reason the reasoning path needs
+    // no sanitiser. If reasoning metadata is ever passed through instead, this
+    // test fails and says so.
+    const anchor = runtimeTextEvent({
+      id: 'runtime-user',
+      turnId: 'turn-1',
+      role: 'user',
+      author: 'user',
+      text: 'think about it',
+    });
+    const ledger: RuntimeEvent[] = [anchor];
+    const mappingMemory = createSessionEventMapMemory();
+    const mappingContext: InvocationContext = {
+      sessionId: 'session-1',
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'desktop',
+      startedAt: 1,
+      request: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        text: 'think about it',
+        source: 'desktop',
+        initialRuntimeEvent: anchor,
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    };
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'reasoning-1' },
+            {
+              type: 'reasoning-delta',
+              id: 'reasoning-1',
+              delta: 'weighing it up',
+              providerMetadata: {
+                openai: { itemId: 'item-1', reasoningEncryptedContent: undefined },
+              },
+            },
+            { type: 'reasoning-end', id: 'reasoning-1' },
+            { type: 'text-start', id: 'text-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+            { type: 'text-end', id: 'text-1' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'end_turn' },
+              usage: emptyUsage(),
+            },
+          ] satisfies LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: async () => ledger,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'think about it',
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+    })) {
+      const mapped = mapSessionEventToRuntimeEvent(event, mappingContext, mappingMemory);
+      if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+    }
+
+    const thinking = ledger.find((event) => event.content?.kind === 'thinking');
+    assert.ok(thinking, 'the reasoning part has to reach the ledger for this to pin anything');
+    assert.deepEqual(
+      thinking.content?.kind === 'thinking' ? thinking.content.providerOptions : undefined,
+      { openai: { itemId: 'item-1' } },
+      'the omitted field was not carried, because the metadata was rebuilt',
+    );
+    for (const event of ledger) {
+      assert.doesNotThrow(
+        () => encodeCanonicalRuntimeEvent(event),
+        `a persisted ${event.content?.kind} event must read back as it was written`,
+      );
+    }
+  });
 });
 
 function textCompletionModel(text: string): MockLanguageModelV4 {
@@ -12709,9 +13639,9 @@ function sortedModelToolNames(toolNames: readonly string[]): string[] {
 }
 
 function toolSchemaPromptSegment(
-  record: LlmCallRecord | undefined,
+  carrier: { promptSegments?: readonly { kind: string; toolCount?: number }[] } | undefined,
 ): { toolCount?: number } | undefined {
-  return record?.promptSegments?.find((segment) => segment.kind === 'tool_schema');
+  return carrier?.promptSegments?.find((segment) => segment.kind === 'tool_schema');
 }
 
 function sha256(text: string): string {
@@ -12788,6 +13718,7 @@ async function hostedInteractionBinding(overrides: Partial<RuntimeInteractionRun
     {
       bindRun: (identity) => ({
         ...identity,
+        acceptSandboxBoundaryRequest: async () => {},
         acceptUserQuestionRequest: async () => {},
         close: async () => {},
         release: () => {},
@@ -12815,9 +13746,13 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
   }
 }
 
-function durableTurnHarness(turnId: string, text: string) {
-  const runId = 'run-1';
-  const invocationId = 'invocation-1';
+function durableTurnHarness(
+  turnId: string,
+  text: string,
+  identity: { runId?: string; invocationId?: string } = {},
+) {
+  const runId = identity.runId ?? 'run-1';
+  const invocationId = identity.invocationId ?? 'invocation-1';
   const anchor: RuntimeEvent = {
     id: `runtime-user-${turnId}`,
     invocationId,
@@ -12970,13 +13905,43 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   assert.fail('condition was not met before timeout');
 }
 
+/**
+ * The execution scope for one turn, opened the same way `send()` opens it.
+ * Tests that drive ToolRuntime directly (without a provider stream) use this so
+ * they exercise the real per-turn wiring instead of a backend-wide singleton.
+ */
+interface TestTurnScope {
+  turnId: string;
+  abortController: AbortController;
+  toolRuntime: ToolRuntime;
+  watchdog: { pause(): void; resume(): void } | null;
+  runTrace: RunTrace | null;
+}
+
+function backendInternals(backend: AiSdkBackend): {
+  activeTurns: Set<TestTurnScope>;
+  openTurnScope(input: { turnId: string; text: string; context: [] }): TestTurnScope;
+} {
+  return backend as unknown as {
+    activeTurns: Set<TestTurnScope>;
+    openTurnScope(input: { turnId: string; text: string; context: [] }): TestTurnScope;
+  };
+}
+
+/** The live scope for a turn, opening one when the test drives a turn directly. */
+function turnScope(backend: AiSdkBackend, turnId: string): TestTurnScope {
+  const internals = backendInternals(backend);
+  for (const scope of internals.activeTurns) if (scope.turnId === turnId) return scope;
+  return internals.openTurnScope({ turnId, text: '', context: [] });
+}
+
 function runtimeExecute(
   backend: AiSdkBackend,
   tool: MakaTool,
   turnId: string,
   eventSink: { push(event: SessionEvent): void },
 ) {
-  const runtime = (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime;
+  const runtime = turnScope(backend, turnId).toolRuntime;
   const durableEventSink: DurableSessionEventSink = {
     push: (event) => eventSink.push(event),
     pushAndWaitUntilConsumed: async (event) => eventSink.push(event),

@@ -29,6 +29,7 @@ import type {
 import { createDefaultSettings } from '@maka/core/settings';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './ProvidersPanel';
+import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
 import { AboutSettingsPage } from './about-settings-page';
 import { AppearanceSettingsPage } from './appearance-settings-page';
@@ -43,6 +44,7 @@ import { SettingsSkeleton } from './settings-skeleton';
 import { SETTINGS_NAV, groupedNav, navLabel, readLastSettingsSection } from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import { SettingRow } from './settings-rows';
+import { SettingsPage } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { UsageSettingsPage } from './usage-settings-page';
 import { VoiceModelsSettingsPage } from './voice-settings-page';
@@ -313,7 +315,7 @@ export function SettingsSurface(props: {
             <Layout
               height="fill"
               padding={0}
-              contentWidth={640}
+              contentWidth={section === 'usage' ? 920 : 640}
               header={(
                 <LayoutHeader padding={6}>
                   <div className="settingsPageHeader">
@@ -331,7 +333,7 @@ export function SettingsSurface(props: {
                   {loading ? (
                     <SettingsSkeleton />
                   ) : (
-                    <SettingsPage
+                    <SettingsPageBody
                       section={section}
                       settings={settings}
                       usageStats={usageStats}
@@ -363,7 +365,7 @@ export function SettingsSurface(props: {
   );
 }
 
-function SettingsPage(props: {
+function SettingsPageBody(props: {
   section: SettingsSection;
   settings: AppSettings;
   usageStats: UsageStats | null;
@@ -395,7 +397,7 @@ function SettingsPage(props: {
     switch (props.section) {
     case 'models':
       return (
-        <div className="settingsStructuredPage settingsModelsPage">
+        <SettingsPage className="settingsModelsPage">
           <ProvidersPanel
             bridge={window.maka.connections}
             initialPage={props.openProviderCatalog ? 'catalog' : 'connections'}
@@ -403,7 +405,15 @@ function SettingsPage(props: {
             initialCreateProviderType={props.initialCreateProviderType}
             onInitialCreateProviderConsumed={props.onInitialCreateProviderConsumed}
           />
-        </div>
+        </SettingsPage>
+      );
+    case 'subagents':
+      return (
+        <SubagentSettingsPage
+          settings={props.settings}
+          connections={props.connections}
+          onUpdate={props.onUpdateSettings}
+        />
       );
     case 'usage':
       return (
@@ -432,6 +442,7 @@ function SettingsPage(props: {
           connections={props.connections}
           defaultSlug={props.defaultSlug}
           onUpdate={props.onUpdateSettings}
+          onReloadSettings={props.onReloadSettings}
           onRefreshConnections={props.onRefreshConnections}
         />
       );
@@ -463,7 +474,7 @@ function SettingsPage(props: {
         />
       );
     case 'daily-review':
-      return <DailyReviewSettingsPage connections={props.connections} onOpenDailyReview={props.onOpenDailyReview} />;
+      return <DailyReviewSettingsPage connections={props.connections} />;
     case 'voice':
       return (
         <VoiceModelsSettingsPage
@@ -482,9 +493,9 @@ function SettingsPage(props: {
       );
     default:
       return (
-        <Card padding={0} className="settingsRows">
+        <div className="settingsRows">
           <SettingRow title={navLabel(props.section, locale)} detail={copy.unavailablePage} value={copy.ready} />
-        </Card>
+        </div>
       );
   }
 }

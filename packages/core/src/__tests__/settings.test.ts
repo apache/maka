@@ -8,6 +8,76 @@ import {
   normalizeSettings,
 } from '../settings.js';
 
+test('normalizes user-approved subagent presets without widening the catalog', () => {
+  const normalized = normalizeSettings({
+    subagents: {
+      presets: [
+        {
+          id: 'fast-reader',
+          name: ' Fast reader ',
+          description: ' Cheap repository scans ',
+          profile: 'local_read',
+          connectionSlug: 'openai-main',
+          model: 'gpt-5-mini',
+          thinkingLevel: 'low',
+          enabled: true,
+        },
+        {
+          id: 'fast-reader',
+          name: 'duplicate',
+          description: '',
+          profile: 'implementation',
+          connectionSlug: 'other',
+          model: 'other',
+          enabled: true,
+        },
+        {
+          id: 'unsafe id',
+          name: 'unsafe',
+          profile: 'root',
+          connectionSlug: 'other',
+          model: 'other',
+          enabled: true,
+        },
+      ],
+    },
+  });
+
+  expect(normalized.subagents.presets).toEqual([
+    {
+      id: 'fast-reader',
+      name: 'Fast reader',
+      description: 'Cheap repository scans',
+      profile: 'local_read',
+      connectionSlug: 'openai-main',
+      model: 'gpt-5-mini',
+      thinkingLevel: 'low',
+      enabled: true,
+    },
+  ]);
+});
+
+test('replaces subagent presets atomically through the settings patch', () => {
+  const current = normalizeSettings({
+    subagents: {
+      presets: [
+        {
+          id: 'reader',
+          name: 'Reader',
+          description: '',
+          profile: 'local_read',
+          connectionSlug: 'a',
+          model: 'model-a',
+          enabled: true,
+        },
+      ],
+    },
+  });
+  const next = mergeSettings(current, { subagents: { presets: [] } });
+
+  expect(next.subagents.presets).toEqual([]);
+});
+
 test('delegates bot patches and persisted normalization to the bot settings owner', () => {
   const current = createDefaultSettings();
   Object.assign(current.botChat.channels.telegram, {

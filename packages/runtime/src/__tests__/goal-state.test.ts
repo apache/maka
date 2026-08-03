@@ -1,12 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  GoalManager,
-  goalCheckpoint,
-  DEFAULT_MAX_ITERATIONS,
-  DEFAULT_BLOCK_CAP,
-  type GoalState,
-} from '../goal-state.js';
+import { GoalManager, goalCheckpoint, type GoalState } from '../goal-state.js';
 
 const SESSION = 'sess-1';
 
@@ -110,8 +104,8 @@ describe('GoalManager creation and lifecycle', () => {
 
     const { mgr: defaults } = createManager();
     const defaultGoal = createGoal(defaults);
-    assert.equal(defaultGoal.maxIterations, DEFAULT_MAX_ITERATIONS);
-    assert.equal(defaultGoal.blockCap, DEFAULT_BLOCK_CAP);
+    assert.equal(defaultGoal.maxIterations, 50);
+    assert.equal(defaultGoal.blockCap, 8);
   });
 
   test('rejects active and paused Goal replacement without mutating either snapshot', () => {

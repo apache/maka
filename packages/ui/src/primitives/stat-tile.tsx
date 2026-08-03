@@ -16,7 +16,7 @@
 //     neutral and sets data-empty (dim) — the permission rationale
 //     (0 已拒绝 in red read as a false alarm) now applies everywhere.
 //
-// Styled with Tailwind utilities so the primitive is portable; wrapper
+// Styled with package-owned semantic classes so the primitive is portable; wrapper
 // classes from call sites (grid placement, page pins) pass through.
 
 import type { ReactNode } from 'react';
@@ -26,18 +26,18 @@ export type StatTileTone = 'neutral' | 'info' | 'success' | 'warning' | 'destruc
 
 const TONE_VALUE_CLASS: Record<StatTileTone, string> = {
   neutral: '',
-  info: 'text-[color:var(--info-text)]',
-  success: 'text-[color:var(--success-text)]',
-  warning: 'text-[color:var(--warning-text)]',
-  destructive: 'text-[color:var(--destructive-text)]',
+  info: 'maka-stat-tile-value-info',
+  success: 'maka-stat-tile-value-success',
+  warning: 'maka-stat-tile-value-warning',
+  destructive: 'maka-stat-tile-value-destructive',
 };
 
 const TONE_BORDER_CLASS: Record<StatTileTone, string> = {
   neutral: '',
-  info: 'border-[oklch(from_var(--info)_l_c_h_/_0.24)]',
-  success: 'border-[oklch(from_var(--success)_l_c_h_/_0.24)]',
-  warning: 'border-[oklch(from_var(--warning)_l_c_h_/_0.28)]',
-  destructive: 'border-[oklch(from_var(--destructive)_l_c_h_/_0.30)]',
+  info: 'maka-stat-tile-border-info',
+  success: 'maka-stat-tile-border-success',
+  warning: 'maka-stat-tile-border-warning',
+  destructive: 'maka-stat-tile-border-destructive',
 };
 
 export interface StatTileProps {
@@ -69,12 +69,12 @@ export function StatTile({
   return (
     <Tag
       className={cn(
-        'flex min-w-0 flex-col items-start gap-1',
+        'maka-stat-tile',
         emphasis === 'outline'
-          ? 'rounded-[var(--radius-surface)] border border-[var(--card-border-color,var(--border))] bg-[var(--card-bg,var(--background))] p-3 shadow-[var(--card-shadow,none)]'
-          : 'rounded-[var(--radius-control)] bg-[var(--foreground-5)] p-3',
+          ? 'maka-stat-tile-outline'
+          : 'maka-stat-tile-filled',
         emphasis === 'outline' ? TONE_BORDER_CLASS[effectiveTone] : '',
-        isEmptyCount ? 'opacity-[var(--opacity-disabled)]' : '',
+        isEmptyCount ? 'maka-stat-tile-empty' : '',
         className,
       )}
       data-slot="stat-tile"
@@ -83,8 +83,8 @@ export function StatTile({
     >
       <span
         className={cn(
-          'block max-w-full min-w-0 whitespace-normal font-semibold leading-tight text-foreground [font-variant-numeric:tabular-nums] [overflow-wrap:anywhere]',
-          emphasis === 'outline' ? 'text-[length:var(--font-size-stat)]' : 'text-[length:var(--font-size-ui)]',
+          'maka-stat-tile-value',
+          emphasis === 'outline' ? 'maka-stat-tile-value-outline' : 'maka-stat-tile-value-filled',
           TONE_VALUE_CLASS[effectiveTone],
         )}
         data-slot="stat-tile-value"
@@ -92,14 +92,14 @@ export function StatTile({
         {value}
       </span>
       <span
-        className="text-[length:var(--font-size-caption)] tracking-wide text-[color:var(--foreground-secondary)]"
+        className="maka-stat-tile-label"
         data-slot="stat-tile-label"
       >
         {label}
       </span>
       {detail != null && (
         <span
-          className="text-[length:var(--font-size-caption)] text-[color:var(--muted-foreground)]"
+          className="maka-stat-tile-detail"
           data-slot="stat-tile-detail"
         >
           {detail}

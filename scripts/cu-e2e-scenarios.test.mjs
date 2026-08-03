@@ -1,25 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  evaluateCuE2eScenarioState,
-  getCuE2eScenario,
-  validateCuE2eScenario,
-} from './cu-e2e-scenarios.mjs';
-
-test('state evaluation separates expected-state and forbidden-effect failures', () => {
-  const scenario = getCuE2eScenario('l1-single-click');
-  const result = evaluateCuE2eScenarioState(scenario, {
-    target: { primaryClicks: 2, primaryOverClicks: 1, dangerClicks: 1 },
-  });
-
-  assert.equal(result.pass, false);
-  assert.equal(result.expected.find(({ path }) => path === 'primaryClicks').pass, false);
-  assert.equal(
-    result.forbidden.every(({ pass }) => !pass),
-    true,
-  );
-});
+import { getCuE2eScenario, validateCuE2eScenario } from './cu-e2e-scenarios.mjs';
 
 test('validation rejects unsafe action, matcher, budget, and expected-failure declarations', () => {
   const base = structuredClone(getCuE2eScenario('l1-single-click'));

@@ -8,8 +8,10 @@
 // threading (S18). The backend owns the actual AX/capture dispatch.
 import { z } from 'zod';
 import {
-  CU_ACTION_TYPES,
+  CU_TOOL_ACTION_TYPES,
   isComputerUseErrorCode,
+  isCuMutatingAction,
+  isCuObservingAction,
   type CuAction,
   type CuPoint,
   type ComputerUseErrorCode,
@@ -83,19 +85,12 @@ export type {
 // Function-tool JSON schemas require an object at the top level.
 // Keep the wire schema as one top-level object, then apply the strict
 // discriminated union above immediately at execution.
-const computerWireParams = z
+// Exported for the parity check in `computer-use-schema-parity.test.ts`, which
+// is the only thing that can tell this schema and `computerParams` apart.
+export const computerWireParams = z
   .object({
     action: z
-      .enum([
-        'list_apps',
-        'observe',
-        'click_element',
-        'set_value',
-        'select_text',
-        'secondary_action',
-        'press_key',
-        ...CU_ACTION_TYPES,
-      ] as [string, ...string[]])
+      .enum(CU_TOOL_ACTION_TYPES as unknown as [string, ...string[]])
       .describe(
         'Operation to perform. Required fields by action: observe/screenshot require app or window_id; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; press_key requires observation_id and text; coordinate actions require observation_id plus their coordinate fields.',
       ),
@@ -246,6 +241,26 @@ function persistedObservationText(observation: CuObservation): string {
 export function buildComputerUseTools(deps: {
   backend: CuDispatchBackend;
   overlay?: CuOverlayHook;
+  /**
+   * Whether the machine is locked right now.
+   *
+   * Consulted before every action and every observation, because a locked
+   * screen is the user saying they have left: past that point the agent would
+   * be driving and reading a machine its owner deliberately closed off, with
+   * nobody watching and no way to intervene. Refusing produces the
+   * `screen_locked` session state, which is what keeps the refusal from having
+   * to be re-derived on every subsequent call — and which only
+   * `sessionEvents.screenUnlocked` can leave.
+   *
+   * Takes the session so the host can record which sessions it will have to
+   * release when the machine comes back. Without that, a session whose very
+   * first call landed on a locked screen would latch `screen_locked` while
+   * being unknown to the host, and would stay latched for the rest of its life.
+   *
+   * Absent means the host cannot answer the question, not that the machine is
+   * unlocked; there is no lock guard at all in that case.
+   */
+  screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   presentationReadyTimeoutMs?: number;
   presentationFinishedTimeoutMs?: number;
 }): ComputerUseToolSet {
@@ -836,36 +851,22 @@ export function buildComputerUseTools(deps: {
             return sessionFailure('user_stopped');
           }
           const state = sessionState(sessionId, turnId);
-          const requiresObservationLease =
-            input.action === 'observe' ||
-            input.action === 'screenshot' ||
-            input.action === 'list_apps' ||
-            input.action === 'cursor_position' ||
-            input.action === 'wait';
+          // Ahead of the leases, because a locked screen outranks whatever the
+          // session was doing: the answer is the same for an action and for an
+          // observation, and it does not depend on holding a live frame.
+          if (deps.screenLocked && (await deps.screenLocked({ sessionId }))) {
+            state.screenLocked();
+            return sessionFailure('screen_locked');
+          }
+          // Both halves of the wire enum are partitioned in `@maka/core`, so a
+          // new action cannot be added without landing on one side or the
+          // other — and offline consumers read the same partition.
+          const requiresObservationLease = isCuObservingAction(input.action);
           const observationLease = requiresObservationLease ? state.beforeObservation() : undefined;
           if (observationLease && !observationLease.ok) {
             return sessionFailure(observationLease.reason);
           }
-          const requiresActionLease =
-            input.action === 'click_element' ||
-            input.action === 'set_value' ||
-            input.action === 'select_text' ||
-            input.action === 'secondary_action' ||
-            input.action === 'press_key' ||
-            input.action === 'mouse_move' ||
-            input.action === 'left_click' ||
-            input.action === 'right_click' ||
-            input.action === 'middle_click' ||
-            input.action === 'double_click' ||
-            input.action === 'triple_click' ||
-            input.action === 'left_mouse_down' ||
-            input.action === 'left_mouse_up' ||
-            input.action === 'left_click_drag' ||
-            input.action === 'scroll' ||
-            input.action === 'zoom' ||
-            input.action === 'type' ||
-            input.action === 'key' ||
-            input.action === 'hold_key';
+          const requiresActionLease = isCuMutatingAction(input.action);
           const leaseResult = requiresActionLease ? state.beforeAction() : undefined;
           if (leaseResult && !leaseResult.ok) {
             return sessionFailure(leaseResult.reason);

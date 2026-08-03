@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import {
+  AgentGraphClientTerminalCursorError,
   canReadPath,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
@@ -25,6 +26,7 @@ import {
   createSqliteRuntimeStore,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from '../sqlite-runtime-store.js';
+import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
   test('round-trips every SessionHeader field and reopens the same schema', async () => {
@@ -55,6 +57,18 @@ describe('SqliteSessionMetadataStore', () => {
       }
       const schema = new DatabaseSync(path);
       try {
+        const graphTables = schema
+          .prepare(`
+            SELECT name
+            FROM sqlite_schema
+            WHERE type = 'table' AND name GLOB 'agent_graph_*'
+            ORDER BY name
+          `)
+          .all() as unknown as Array<{ readonly name: string }>;
+        assert.deepEqual(
+          graphTables.map(({ name }) => name),
+          [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].sort(),
+        );
         assert.deepEqual(
           schema.prepare('PRAGMA foreign_key_list(agent_graph_client_operator_projections)').all(),
           [],
@@ -68,6 +82,110 @@ describe('SqliteSessionMetadataStore', () => {
       }
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('atomically retires a revision family with CAS and tombstone retries', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: () => 100 });
+    const root = fullHeader({
+      id: 'family-root',
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: undefined,
+      revisionParentSessionId: undefined,
+      revisionOfTurnId: undefined,
+      revisionIndex: undefined,
+      revisionState: undefined,
+      isArchived: false,
+      archivedAt: undefined,
+      status: 'active',
+      blockedReason: undefined,
+    });
+    const revision = fullHeader({
+      id: 'family-revision',
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: root.id,
+      revisionParentSessionId: root.id,
+      revisionOfTurnId: 'turn-1',
+      revisionIndex: 2,
+      revisionState: 'committed',
+      isArchived: false,
+      archivedAt: undefined,
+      status: 'active',
+      blockedReason: undefined,
+    });
+    try {
+      await store.create(root);
+      await store.create(revision);
+
+      await assert.rejects(
+        store.setLifecycleVersioned(
+          [
+            { sessionId: root.id, expectedVersion: 1 },
+            { sessionId: revision.id, expectedVersion: 2 },
+          ],
+          'archived',
+        ),
+        SessionMetadataVersionConflictError,
+      );
+      for (const sessionId of [root.id, revision.id]) {
+        const current = await store.read(sessionId);
+        assert.equal(current.metadataVersion, 1);
+        assert.equal(current.header.isArchived, false);
+      }
+
+      const archived = await store.setLifecycleVersioned(
+        [
+          { sessionId: root.id, expectedVersion: 1 },
+          { sessionId: revision.id, expectedVersion: 1 },
+        ],
+        'archived',
+      );
+      assert.deepEqual(
+        archived.map((record) => ({
+          id: record.header.id,
+          revision: record.metadataVersion,
+          status: record.header.status,
+        })),
+        [
+          { id: revision.id, revision: 2, status: 'archived' },
+          { id: root.id, revision: 2, status: 'archived' },
+        ],
+      );
+
+      await assert.rejects(
+        store.removeVersioned([
+          { sessionId: root.id, expectedVersion: 2 },
+          { sessionId: revision.id, expectedVersion: 3 },
+        ]),
+        SessionMetadataVersionConflictError,
+      );
+      assert.equal((await store.probeRemoval(root.id)).kind, 'present');
+      assert.equal((await store.probeRemoval(revision.id)).kind, 'present');
+
+      const identities = [
+        { sessionId: root.id, expectedVersion: 2 },
+        { sessionId: revision.id, expectedVersion: 2 },
+      ];
+      assert.deepEqual(await store.removeVersioned(identities), [revision.id, root.id]);
+      assert.deepEqual(await store.probeRemoval(root.id), { kind: 'removed' });
+      assert.deepEqual(await store.probeRemoval(revision.id), { kind: 'removed' });
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(root.id), [
+        revision.id,
+        root.id,
+      ]);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(revision.id), [
+        revision.id,
+        root.id,
+      ]);
+      await store.completeSessionRetirementCleanup(revision.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(root.id), [root.id]);
+      await store.completeSessionRetirementCleanup(root.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(), []);
+      assert.deepEqual(await store.removeVersioned(identities), [revision.id, root.id]);
+    } finally {
+      store.close();
     }
   });
 
@@ -113,8 +231,15 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v12 = new DatabaseSync(path);
       v12.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
+        DROP TABLE project_aliases;
+        DROP TABLE project_locations;
+        DROP TABLE projects;
+        DROP TABLE session_messages;
         UPDATE session_metadata_schema
         SET version = 12
         WHERE scope = 'session_metadata';
@@ -485,16 +610,11 @@ describe('SqliteSessionMetadataStore', () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(212) });
     const { name: _name, ...unnamedProfile } = createWorkspaceWritePermissionProfile();
     try {
-      await store.importEntries([
-        {
-          header: fullHeader(),
-          initialBoundary: { kind: 'managed', profile: unnamedProfile, revision: 0 },
-          source: {
-            path: '/workspace/sessions/session-1/session.jsonl',
-            fingerprint: 'unnamed-profile',
-          },
-        },
-      ]);
+      await store.create(fullHeader(), {
+        kind: 'managed',
+        profile: unnamedProfile,
+        revision: 0,
+      });
 
       await store.setExecutionBoundaryKind('session-1', 'bypass');
       const restored = await store.setExecutionBoundaryKind('session-1', 'managed');
@@ -531,20 +651,11 @@ describe('SqliteSessionMetadataStore', () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(220) });
     const { name: _name, ...unnamedReadOnlyProfile } = createReadOnlyPermissionProfile();
     try {
-      await store.importEntries([
-        {
-          header: fullHeader({ permissionMode: 'explore' }),
-          initialBoundary: {
-            kind: 'managed',
-            profile: unnamedReadOnlyProfile,
-            revision: 0,
-          },
-          source: {
-            path: '/workspace/sessions/session-1/session.jsonl',
-            fingerprint: 'unnamed-read-only-profile',
-          },
-        },
-      ]);
+      await store.create(fullHeader({ permissionMode: 'explore' }), {
+        kind: 'managed',
+        profile: unnamedReadOnlyProfile,
+        revision: 0,
+      });
 
       const restored = await store.setExecutionBoundaryKind('session-1', 'managed', {
         permissionMode: 'ask',
@@ -886,7 +997,14 @@ describe('SqliteSessionMetadataStore', () => {
       // Rewind to the pre-provenance shape a shipped database would have.
       const v13 = new DatabaseSync(path);
       v13.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
+        DROP TABLE project_aliases;
+        DROP TABLE project_locations;
+        DROP TABLE projects;
+        DROP TABLE session_messages;
         ALTER TABLE sandbox_boundary_log DROP COLUMN turn_id;
         ALTER TABLE sandbox_boundary_log DROP COLUMN run_id;
         DROP INDEX sandbox_boundary_log_settled_closures;
@@ -1020,6 +1138,10 @@ describe('SqliteSessionMetadataStore', () => {
       );
       CREATE INDEX session_metadata_labels_by_label
         ON session_metadata_labels(label, session_id);
+      CREATE TABLE session_metadata_tombstones (
+        session_id TEXT PRIMARY KEY,
+        deleted_at INTEGER NOT NULL
+      );
     `);
     db.prepare(`
       INSERT INTO session_metadata(
@@ -1386,8 +1508,15 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v4 = new DatabaseSync(path);
       v4.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
+        DROP TABLE project_aliases;
+        DROP TABLE project_locations;
+        DROP TABLE projects;
+        DROP TABLE session_messages;
         DROP TABLE agent_graph_supervisor_wake_attempts;
         DROP TABLE agent_graph_supervisor_wakes;
         DROP TABLE agent_graph_client_applied_records;
@@ -1699,70 +1828,6 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('imports source-marked metadata idempotently and rejects identity drift', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    const entry = {
-      header: fullHeader(),
-      source: { path: '/workspace/sessions/session-1/session.jsonl', fingerprint: '1:1' },
-    };
-    try {
-      assert.deepEqual(await store.importEntries([entry]), {
-        created: [true],
-        sourcesAlreadyImported: 0,
-        sourcesTombstoned: 0,
-      });
-      assert.deepEqual(await store.importEntries([entry]), {
-        created: [],
-        sourcesAlreadyImported: 1,
-        sourcesTombstoned: 0,
-      });
-      await assert.rejects(
-        () =>
-          store.importEntries([
-            {
-              ...entry,
-              header: fullHeader({ name: 'Changed outside SQLite' }),
-              source: { ...entry.source, fingerprint: '2:2' },
-            },
-          ]),
-        SessionMetadataConflictError,
-      );
-      assert.equal((await store.read('session-1')).header.name, 'Session');
-    } finally {
-      store.close();
-    }
-  });
-
-  test('rolls back the whole import batch when a later source marker fails', async () => {
-    let markers = 0;
-    const store = createSqliteSessionMetadataStore(':memory:', {
-      failpoint: (point) => {
-        if (point === 'after_session_import_marker_write' && ++markers === 2) {
-          throw new Error('second marker failed');
-        }
-      },
-    });
-    try {
-      await assert.rejects(
-        () =>
-          store.importEntries([
-            {
-              header: fullHeader({ id: 'session-1' }),
-              source: { path: '/session-1.jsonl', fingerprint: '1:1' },
-            },
-            {
-              header: fullHeader({ id: 'session-2' }),
-              source: { path: '/session-2.jsonl', fingerprint: '2:2' },
-            },
-          ]),
-        /second marker failed/,
-      );
-      assert.deepEqual(await store.list(), []);
-    } finally {
-      store.close();
-    }
-  });
-
   test('deletes metadata and its label projection atomically', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
@@ -1772,15 +1837,6 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(await store.has('session-1'), false);
       assert.equal(await store.isTombstoned('session-1'), true);
       assert.deepEqual(await store.list({ labelSlug: 'alpha' }), []);
-      assert.deepEqual(
-        await store.importEntries([
-          {
-            header: fullHeader(),
-            source: { path: '/session-1.jsonl', fingerprint: '1:1' },
-          },
-        ]),
-        { created: [], sourcesAlreadyImported: 0, sourcesTombstoned: 1 },
-      );
       await assert.rejects(() => store.create(fullHeader()), /tombstoned/);
     } finally {
       store.close();
@@ -1948,6 +2004,231 @@ describe('SQLite agent graph operator provisions', () => {
     }
   });
 
+  test('retires a graph root with its operator and purges only that graph control state', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(800) });
+    try {
+      const root = await store.create(
+        fullHeader({
+          id: 'supervisor-session',
+          parentSessionId: undefined,
+          branchOfTurnId: undefined,
+          revisionRootSessionId: undefined,
+          revisionParentSessionId: undefined,
+          revisionOfTurnId: undefined,
+          revisionIndex: undefined,
+          revisionState: undefined,
+          status: 'active',
+          blockedReason: undefined,
+        }),
+      );
+      await store.commitAgentGraphScheduleUpdate({
+        schemaVersion: 1,
+        updateId: `graph_update_${'1'.repeat(32)}`,
+        updateFingerprint: `sha256:${'2'.repeat(64)}`,
+        graphId: 'graph-1',
+        source: {
+          sessionId: root.header.id,
+          runId: 'supervisor-run',
+          turnId: 'supervisor-turn',
+          toolCallId: 'schedule-tool',
+        },
+        addWork: [
+          {
+            workId: `graph_work_${'3'.repeat(32)}`,
+            target: { kind: 'agent', agentId: 'local-read' },
+            instruction: 'Inspect the input.',
+            inputIds: [],
+          },
+        ],
+        stop: [],
+      });
+      const child = await store.createAgentGraphOperator(
+        graphChildHeader(),
+        graphProvisionRequest(),
+        1,
+      );
+      await store.claimAgentGraphIntent({
+        schemaVersion: 1,
+        claimId: `graph_claim_${'a'.repeat(32)}`,
+        graphId: 'graph-1',
+        intentId: `graph_intent_${'b'.repeat(32)}`,
+        intentFingerprint: `sha256:${'c'.repeat(64)}`,
+        readinessContextFingerprint: `sha256:${'d'.repeat(64)}`,
+        targetOperatorId: graphProvisionRequest().operatorId,
+        targetSessionId: child.record.header.id,
+        targetTurnId: 'graph-turn',
+        targetRunId: 'graph-run',
+      });
+      await store.claimAgentGraphSupervisorWake({
+        schemaVersion: 1,
+        graphId: 'graph-1',
+        wakeId: 'graph-wake',
+        snapshotVersion: 'snapshot-1',
+        rootSessionId: root.header.id,
+      });
+      await store.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'graph-wake',
+        attemptId: 'graph-attempt',
+        turnId: 'supervisor-wake-turn',
+      });
+      await store.commitAgentGraphClientProjection({
+        schemaVersion: 1,
+        graphId: 'graph-1',
+        rootSessionId: root.header.id,
+        expectedSnapshotVersion: null,
+        snapshotVersion: 'snapshot-1',
+        snapshot: { status: 'running' },
+        replaceOperators: true,
+        operators: [{ operatorId: graphProvisionRequest().operatorId, payload: {} }],
+        terminalActivities: [
+          { recordId: 'terminal-record', eventTime: 1, payload: { status: 'completed' } },
+        ],
+        activityRecords: [{ recordId: 'terminal-record', eventTime: 1 }],
+      });
+      await store.commitAgentGraphScheduleUpdate({
+        schemaVersion: 1,
+        updateId: `graph_update_${'7'.repeat(32)}`,
+        updateFingerprint: `sha256:${'8'.repeat(64)}`,
+        graphId: 'graph-2',
+        source: {
+          sessionId: 'other-supervisor',
+          runId: 'other-run',
+          turnId: 'other-turn',
+          toolCallId: 'other-tool',
+        },
+        addWork: [],
+        stop: [{ targetId: 'other-target', reason: 'done' }],
+      });
+
+      await assert.rejects(
+        store.removeVersioned([
+          { sessionId: child.record.header.id, expectedVersion: child.record.metadataVersion },
+        ]),
+        /Cannot remove graph operator Session graph-child/,
+      );
+      await assert.rejects(
+        store.removeVersioned([
+          { sessionId: root.header.id, expectedVersion: root.metadataVersion },
+        ]),
+        /graph operator graph-child is outside the retirement unit/,
+      );
+      assert.deepEqual(
+        await store.removeVersioned([
+          { sessionId: root.header.id, expectedVersion: root.metadataVersion },
+          { sessionId: child.record.header.id, expectedVersion: child.record.metadataVersion },
+        ]),
+        ['graph-child', 'supervisor-session'],
+      );
+      assert.equal(await store.has(root.header.id), false);
+      assert.equal(await store.has(child.record.header.id), false);
+      assert.equal((await store.listAgentGraphOperatorProvisions('graph-1')).length, 1);
+
+      assert.equal(await store.purgeAgentGraphControlState('graph-1'), 9);
+      assert.deepEqual(await store.listAgentGraphOperatorProvisions('graph-1'), []);
+      assert.deepEqual(await store.listAgentGraphScheduleUpdates('graph-1'), []);
+      assert.deepEqual(await store.listAgentGraphIntentClaims('graph-1'), []);
+      assert.equal(await store.readAgentGraphSupervisorWake('graph-1', 'graph-wake'), undefined);
+      assert.equal(await store.readAgentGraphClientProjection('graph-1'), undefined);
+      assert.deepEqual(
+        await store.listAgentGraphClientTerminalActivities('graph-1', { limit: 1 }),
+        { records: [], hasMore: false },
+      );
+      assert.equal(await store.purgeAgentGraphControlState('graph-1'), 0);
+      assert.equal((await store.listAgentGraphScheduleUpdates('graph-2')).length, 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('reconciles graph operators orphaned by legacy root-only retirement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-agent-graph-orphan-'));
+    const path = join(root, 'runtime.sqlite');
+    try {
+      const store = createSqliteSessionMetadataStore(path, { now: () => 900 });
+      const supervisor = await store.create(
+        fullHeader({
+          id: 'supervisor-session',
+          parentSessionId: undefined,
+          branchOfTurnId: undefined,
+          revisionRootSessionId: undefined,
+          revisionParentSessionId: undefined,
+          revisionOfTurnId: undefined,
+          revisionIndex: undefined,
+          revisionState: undefined,
+          status: 'active',
+          blockedReason: undefined,
+        }),
+      );
+      await store.commitAgentGraphScheduleUpdate({
+        schemaVersion: 1,
+        updateId: `graph_update_${'1'.repeat(32)}`,
+        updateFingerprint: `sha256:${'2'.repeat(64)}`,
+        graphId: 'graph-1',
+        source: {
+          sessionId: supervisor.header.id,
+          runId: 'supervisor-run',
+          turnId: 'supervisor-turn',
+          toolCallId: 'schedule-tool',
+        },
+        addWork: [
+          {
+            workId: graphProvisionRequest().workId,
+            target: { kind: 'agent', agentId: graphProvisionRequest().agentId },
+            instruction: 'Inspect the input.',
+            inputIds: [],
+          },
+        ],
+        stop: [],
+      });
+      await store.createAgentGraphOperator(graphChildHeader(), graphProvisionRequest(), 1);
+      store.close();
+
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec('BEGIN IMMEDIATE');
+        legacy
+          .prepare('DELETE FROM session_metadata WHERE session_id = ?')
+          .run(supervisor.header.id);
+        legacy
+          .prepare(`
+            INSERT INTO session_metadata_tombstones(
+              session_id,
+              deleted_at,
+              retirement_unit_id,
+              cleanup_pending
+            )
+            VALUES (?, ?, ?, 0)
+          `)
+          .run(supervisor.header.id, 901, supervisor.header.id);
+        legacy.exec('COMMIT');
+      } catch (error) {
+        legacy.exec('ROLLBACK');
+        throw error;
+      } finally {
+        legacy.close();
+      }
+
+      const reopened = createSqliteSessionMetadataStore(path, { now: () => 902 });
+      try {
+        assert.equal(await reopened.has('graph-child'), true);
+        assert.deepEqual(await reopened.listPendingSessionRetirementCleanupIds(), []);
+        assert.deepEqual(await reopened.reconcileOrphanedAgentGraphRetirements(), ['graph-child']);
+        assert.deepEqual(await reopened.probeRemoval('graph-child'), { kind: 'removed' });
+        assert.deepEqual(
+          await reopened.listPendingSessionRetirementCleanupIds(supervisor.header.id),
+          ['graph-child', supervisor.header.id],
+        );
+        assert.equal((await reopened.listAgentGraphOperatorProvisions('graph-1')).length, 1);
+        assert.deepEqual(await reopened.reconcileOrphanedAgentGraphRetirements(), []);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rolls back child and topology together on a provision failure', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', {
       failpoint(point) {
@@ -1994,6 +2275,7 @@ describe('SQLite agent graph client projections', () => {
       now: nextNow(400),
     });
     try {
+      await store.create(graphRootHeader('root-session'));
       await store.commitAgentGraphClientProjection({
         schemaVersion: 1,
         graphId: 'graph-atomic-read',
@@ -2049,6 +2331,7 @@ describe('SQLite agent graph client projections', () => {
       now: nextNow(500),
     });
     try {
+      await store.create(graphRootHeader('root-session'));
       await store.commitAgentGraphClientProjection({
         schemaVersion: 1,
         graphId: 'graph-cas',
@@ -2150,6 +2433,7 @@ describe('SQLite agent graph client projections', () => {
       now: nextNow(1_000),
     });
     try {
+      await store.create(graphRootHeader('root-session'));
       const first = await store.commitAgentGraphClientProjection({
         schemaVersion: 1,
         graphId: 'graph-1',
@@ -2201,7 +2485,7 @@ describe('SQLite agent graph client projections', () => {
           limit: 2,
           before: { eventTime: 99, recordId: 'record-2' },
         }),
-        /stale or invalid/,
+        (error: unknown) => error instanceof AgentGraphClientTerminalCursorError,
       );
 
       await store.commitAgentGraphClientProjection({
@@ -2248,6 +2532,37 @@ describe('SQLite agent graph client projections', () => {
       store.close();
     }
   });
+
+  test('rejects a projection commit after its root retirement cleanup completes', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      const root = await store.create(graphRootHeader('root-session'));
+      const request = {
+        schemaVersion: 1 as const,
+        graphId: 'graph-retired-root',
+        rootSessionId: root.header.id,
+        expectedSnapshotVersion: null,
+        snapshotVersion: 'snapshot-1',
+        snapshot: { status: 'idle' },
+        replaceOperators: true,
+        operators: [],
+        terminalActivities: [],
+        activityRecords: [],
+      };
+
+      await store.removeVersioned([
+        { sessionId: root.header.id, expectedVersion: root.metadataVersion },
+      ]);
+      await store.purgeAgentGraphControlState(request.graphId);
+      await store.completeSessionRetirementCleanup(root.header.id);
+
+      await assert.rejects(store.commitAgentGraphClientProjection(request), /not found/);
+      assert.equal(await store.readAgentGraphClientProjection(request.graphId), undefined);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(), []);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
@@ -2286,6 +2601,21 @@ function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
     schemaVersion: 1,
     ...overrides,
   };
+}
+
+function graphRootHeader(id: string): SessionHeader {
+  return fullHeader({
+    id,
+    parentSessionId: undefined,
+    branchOfTurnId: undefined,
+    revisionRootSessionId: undefined,
+    revisionParentSessionId: undefined,
+    revisionOfTurnId: undefined,
+    revisionIndex: undefined,
+    revisionState: undefined,
+    status: 'active',
+    blockedReason: undefined,
+  });
 }
 
 function graphProvisionRequest(): AgentGraphOperatorProvisionRequest {

@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self'"
+    />
+    <title>Computer Use</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        /* Maka's action token, matching the agent cursor. */
+        --accent: rgb(73 126 247);
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        font: 500 11px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+        -webkit-user-select: none;
+        cursor: default;
+      }
+      #shell {
+        position: absolute;
+        inset: 0;
+        /* Square, because Codex's is. Its container layer sets `masksToBounds`
+           and a clear background and never calls `setCornerRadius:` — none of
+           that selector's eight call sites falls inside the mirror renderer's
+           address range. The 8px here was Maka's own platform habit. */
+        border-radius: 0;
+        overflow: hidden;
+        /* The letterbox behind a `contain`-fitted frame, not the pre-stream
+           state; before the first frame the placeholder below covers this. */
+        background: rgb(22 22 24);
+        box-shadow:
+          0 0 0 0.5px rgb(255 255 255 / 0.14),
+          0 10px 30px rgb(0 0 0 / 0.45);
+      }
+      #frame {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        /* A newly-arrived frame should not flash; the mirror is peripheral. */
+        transition: opacity 120ms ease-out;
+      }
+      /* Before the first frame arrives. Codex fills the tile with a 48pt
+         checkerboard — `((x / 48) + (y / 48)) % colors.count` — under a
+         sweeping light bar, so a mirror that has not started streaming reads
+         as loading rather than as a dead rectangle. Maka showed the flat
+         letterbox fill here, which is indistinguishable from a stalled run. */
+      #placeholder {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        /* rgb(0.05, 0.34, 0.84) and rgb(0.09, 0.62, 0.95), both opaque. A
+           second colourway exists in the binary — (0.04, 0.58, 0.38) and
+           (0.13, 0.78, 0.52), picked by a boolean whose meaning was not
+           recovered — so only the one that is reachable unconditionally is
+           shipped here. */
+        background-color: rgb(13 87 214);
+        background-image:
+          linear-gradient(
+            45deg,
+            rgb(23 158 242) 25%,
+            transparent 25%,
+            transparent 75%,
+            rgb(23 158 242) 75%
+          ),
+          linear-gradient(
+            45deg,
+            rgb(23 158 242) 25%,
+            transparent 25%,
+            transparent 75%,
+            rgb(23 158 242) 75%
+          );
+        /* Two offset 45° gradients on a 96pt period draw 48pt squares. */
+        background-size: 96px 96px;
+        background-position:
+          0 0,
+          48px 48px;
+      }
+      #placeholder[data-visible='0'] {
+        display: none;
+      }
+      /* The sweep: a 64pt bar of white at 0.55, travelling once every 1.6s and
+         repeating forever. Codex animates the layer's `position.x` from -64 to
+         width + 64; with the layer's centre anchor that is a left edge from
+         -96 to width + 32, which is what these two offsets are. */
+      #sweep {
+        position: absolute;
+        top: 0;
+        width: 64px;
+        height: 100%;
+        background: rgb(255 255 255 / 0.55);
+        animation: pipSweep 1.6s linear infinite;
+      }
+      @keyframes pipSweep {
+        from {
+          left: -96px;
+        }
+        to {
+          left: calc(100% + 32px);
+        }
+      }
+      /* The agent cursor's position inside the mirrored window, drawn as the
+         arrow itself. It was a dot, on the reasoning that the glyph would be
+         noise at mirror scale — but the glyph is not scaled by the mirror:
+         Codex draws a 20 x 23pt cursor whatever the source window measures,
+         which is a tenth of the tile's edge at the 200pt default and larger
+         than the dot it replaces. A dot says where; an arrow says where and
+         which way, for the same pixels. */
+      #cursor {
+        position: absolute;
+        width: 20px;
+        height: 23px;
+        /* Hotspot (4, 4): the tip of the arrow, and the origin the mapped
+           point has to land on. */
+        margin: -4px 0 0 -4px;
+        filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.45));
+        opacity: 0;
+        transition:
+          left 180ms ease-out,
+          top 180ms ease-out,
+          opacity 140ms ease-out;
+        pointer-events: none;
+      }
+      #cursor[data-visible='1'] {
+        opacity: 1;
+      }
+      /* The same three-curve AgentCursor path the on-screen cursor draws, in a
+         20 x 23 box with the glyph on a 16pt frame offset by the hotspot. The
+         white outline is what keeps a small dark glyph readable over arbitrary
+         imagery; it is the one colour literal in the native drawing code. */
+      #cursor path {
+        fill: var(--accent);
+        stroke: rgb(255 255 255 / 0.8);
+        stroke-width: 2;
+        stroke-linejoin: miter;
+        stroke-miterlimit: 10;
+        stroke-linecap: butt;
+      }
+      /* A scrim under the controls. Two 20pt buttons sitting straight on the
+         mirrored window had no edge of their own against light content, so the
+         top of the picture and the chrome read as one crowded strip. Fades in
+         with the controls, and stays a plain gradient for the same reason the
+         buttons stay a flat scrim: a backdrop filter over moving arbitrary
+         imagery is the expensive half of the effect and the least reliable. */
+      #chrome {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 44px;
+        background: linear-gradient(rgb(0 0 0 / 0.45), rgb(0 0 0 / 0));
+        opacity: 0;
+        transition: opacity 120ms ease-out;
+        pointer-events: none;
+      }
+      #chrome[data-visible='1'] {
+        opacity: 1;
+      }
+      /* Hover controls, from Codex's `performControlWithIdentifier:`. Hidden
+         until the pointer is on the mirror — a window this small cannot afford
+         permanent chrome, and the mirror is meant to be glanceable. */
+      #controls {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        display: flex;
+        gap: 6px;
+        opacity: 0;
+        transition: opacity 120ms ease-out;
+        pointer-events: none;
+      }
+      #controls[data-visible='1'] {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      #controls button {
+        all: unset;
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 6px;
+        color: rgb(255 255 255 / 0.92);
+        /* Codex blurs behind its controls (`remoteHostedPIPAppearanceBlur`);
+           a mirror is arbitrary imagery, and a flat scrim is the part of that
+           which survives without a backdrop filter over a moving picture. */
+        background: rgb(0 0 0 / 0.55);
+        box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.16);
+        cursor: default;
+      }
+      #controls button:hover {
+        background: rgb(0 0 0 / 0.75);
+      }
+      #controls button:active {
+        background: rgb(0 0 0 / 0.9);
+      }
+      #controls svg {
+        width: 11px;
+        height: 11px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+      }
+      /* Resize grip, from Codex's `PIPStackResizeInteraction`. It sits in the
+         corner opposite the anchor, so dragging away from the anchor grows the
+         mirror — the same gesture reads the same way in every corner.
+
+         Which corner that is comes from main, over `pip:layout`, as
+         `body[data-grip]`. It used to be hard-coded `left: 8px; top: 8px`,
+         which is the corner opposite the *default* bottom-right anchor and
+         wrong in the other three: throw the mirror to the top-left and the
+         grip landed on the pinned corner, so dragging it grew the tile from
+         the far edge while the handle itself could not move and the pointer
+         came off it on the first pixel.
+
+         It is a chip, not a bare bracket. Two hairlines drawn straight onto
+         the mirrored window were read as a white L left over from something
+         else; giving it the buttons' scrim says it belongs to the same set of
+         controls, and it shares their 8pt inset for the same reason. */
+      #resize {
+        position: absolute;
+        /* Opposite the default bottom-right anchor, until main says otherwise. */
+        left: 8px;
+        top: 8px;
+        width: 20px;
+        height: 20px;
+        border-radius: 6px;
+        background: rgb(0 0 0 / 0.55);
+        box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.16);
+        opacity: 0;
+        transition: opacity 120ms ease-out;
+        pointer-events: none;
+        cursor: nwse-resize;
+      }
+      body[data-grip='top-right'] #resize {
+        left: auto;
+        right: 8px;
+        top: 8px;
+        bottom: auto;
+        cursor: nesw-resize;
+      }
+      body[data-grip='bottom-left'] #resize {
+        left: 8px;
+        right: auto;
+        top: auto;
+        bottom: 8px;
+        cursor: nesw-resize;
+      }
+      body[data-grip='bottom-right'] #resize {
+        left: auto;
+        right: 8px;
+        top: auto;
+        bottom: 8px;
+        cursor: nwse-resize;
+      }
+      #resize:hover {
+        background: rgb(0 0 0 / 0.75);
+      }
+      #resize::after {
+        content: '';
+        position: absolute;
+        inset: 6px;
+        border-left: 1.5px solid rgb(255 255 255 / 0.92);
+        border-top: 1.5px solid rgb(255 255 255 / 0.92);
+        border-radius: 2px 0 0 0;
+      }
+      /* The bracket points out of the tile, so it turns with the grip. */
+      body[data-grip='top-right'] #resize::after {
+        transform: rotate(90deg);
+      }
+      body[data-grip='bottom-right'] #resize::after {
+        transform: rotate(180deg);
+      }
+      body[data-grip='bottom-left'] #resize::after {
+        transform: rotate(270deg);
+      }
+      /* The grip and the controls cannot share a corner. The controls sit
+         top-right by default; when the grip is sent there, they move over. */
+      body[data-grip='top-right'] #controls {
+        right: auto;
+        left: 8px;
+      }
+      #resize[data-visible='1'] {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      /* While dragging, the whole tile is the handle. */
+      body[data-dragging='1'] {
+        cursor: grabbing;
+      }
+      /* The run finished. The tile stays up a while longer so its final state
+         can be read; this says the picture has stopped changing. */
+      body.pipCompleted #frame {
+        filter: saturate(0.55) brightness(0.85);
+        transition: filter 240ms ease-out;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="shell">
+      <img id="frame" alt="" />
+      <div id="placeholder" data-visible="1" aria-hidden="true"><div id="sweep"></div></div>
+      <div id="cursor" aria-hidden="true">
+        <svg viewBox="0 0 20 23" width="20" height="23" aria-hidden="true"><path d="M 4.0958 6.5382 C 3.6218 5.033 4.987 3.6042 6.4253 4.1003 L 18.0214 8.1043 C 19.615 8.6554 19.7344 10.9675 18.207 11.6952 L 13.4949 13.9373 L 11.3528 18.868 C 10.6578 20.468 8.4482 20.3434 7.9216 18.6747 Z" /></svg>
+      </div>
+      <div id="chrome" data-visible="0" aria-hidden="true"></div>
+      <div id="resize" data-visible="0" aria-hidden="true"></div>
+      <div id="controls" data-visible="0">
+        <button type="button" data-control="stop" aria-label="停止 Computer Use" title="停止 Computer Use">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="currentColor" stroke="none" /></svg>
+        </button>
+        <button type="button" data-control="hide" aria-label="隐藏画中画" title="隐藏画中画">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </div>
+    </div>
+    <script src="./pip.js" type="module"></script>
+  </body>
+</html>

@@ -1,10 +1,9 @@
 import { resolve } from 'node:path';
-import type { AgentRunHeader, SessionHeader } from '@maka/core';
+import type { SessionHeader } from '@maka/core';
 import {
   inspectTaskRun,
   openHeadlessStorageForRead,
   renderTaskRunInspectTree,
-  type TaskRunInspectDocument,
   type TaskRunReader,
 } from '@maka/headless';
 import {
@@ -14,8 +13,6 @@ import {
   renderSessionInspectTree,
   type RuntimeEventInspectReader,
   type SessionAgentRunInspectReader,
-  type AgentRunInspectDocument,
-  type SessionInspectDocument,
 } from '@maka/runtime';
 import {
   openInteractiveExecutionStoresForRead,
@@ -27,36 +24,36 @@ import {
   tryAcquireInteractiveRootReader,
 } from '@maka/storage/root-authority';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
+import {
+  inspectResolutionFailure,
+  type InspectCandidate,
+  type InspectCommandBackend,
+  type InspectDocument,
+  type InspectEntityKind,
+  type InspectResolution,
+  type InspectResolutionDocument,
+} from './inspect-backend.js';
+import {
+  connectLiveInspectBackend,
+  defaultInspectCommandDependencies,
+  LiveInspectError,
+  type InspectCommandDependencies,
+} from './live-inspect-backend.js';
 
-export const INSPECT_RESOLUTION_SCHEMA_VERSION = 'maka.inspect_resolution.v1' as const;
+export type { InspectCommandDependencies } from './live-inspect-backend.js';
+export { INSPECT_RESOLUTION_SCHEMA_VERSION } from './inspect-backend.js';
+export type {
+  InspectCandidate,
+  InspectCandidateDescriptor,
+  InspectCommandBackend,
+  InspectDocument,
+  InspectEntityKind,
+  InspectResolution,
+  InspectResolutionDocument,
+} from './inspect-backend.js';
 
 const isStorageRootAuthorityError = (error: unknown): error is StorageRootAuthorityError =>
   error instanceof StorageRootAuthorityError;
-
-export type InspectEntityKind = 'session' | 'agent-run' | 'task-run';
-
-export interface InspectCandidateDescriptor {
-  kind: InspectEntityKind;
-  id: string;
-  sessionId?: string;
-}
-
-export interface InspectResolutionDocument {
-  schemaVersion: typeof INSPECT_RESOLUTION_SCHEMA_VERSION;
-  kind: 'inspect_resolution';
-  query: {
-    id: string;
-    requestedKind?: InspectEntityKind;
-    sessionId?: string;
-  };
-  status: 'not_found' | 'ambiguous';
-  candidates: InspectCandidateDescriptor[];
-}
-
-export type InspectDocument =
-  | SessionInspectDocument
-  | AgentRunInspectDocument
-  | TaskRunInspectDocument;
 
 interface InspectSessionReader {
   list(): Promise<readonly { id: string }[]>;
@@ -69,27 +66,6 @@ export interface InspectCommandStores {
   runtimeEventStore: RuntimeEventInspectReader;
   taskRunStore?: TaskRunReader;
 }
-
-interface SessionCandidate extends InspectCandidateDescriptor {
-  kind: 'session';
-  header: SessionHeader;
-}
-
-interface AgentRunCandidate extends InspectCandidateDescriptor {
-  kind: 'agent-run';
-  sessionId: string;
-  header: AgentRunHeader;
-}
-
-interface TaskRunCandidate extends InspectCandidateDescriptor {
-  kind: 'task-run';
-}
-
-type InspectCandidate = SessionCandidate | AgentRunCandidate | TaskRunCandidate;
-
-export type InspectResolution =
-  | { status: 'resolved'; candidate: InspectCandidate }
-  | { status: 'not_found' | 'ambiguous'; document: InspectResolutionDocument };
 
 export async function resolveInspectTarget(
   stores: InspectCommandStores,
@@ -114,24 +90,7 @@ export async function resolveInspectTarget(
   candidates.sort(compareCandidates);
   if (candidates.length === 1) return { status: 'resolved', candidate: candidates[0]! };
   const status = candidates.length === 0 ? 'not_found' : 'ambiguous';
-  return {
-    status,
-    document: {
-      schemaVersion: INSPECT_RESOLUTION_SCHEMA_VERSION,
-      kind: 'inspect_resolution',
-      query: {
-        id: query.id,
-        ...(query.requestedKind ? { requestedKind: query.requestedKind } : {}),
-        ...(query.sessionId ? { sessionId: query.sessionId } : {}),
-      },
-      status,
-      candidates: candidates.map(({ kind, id, sessionId }) => ({
-        kind,
-        id,
-        ...(sessionId ? { sessionId } : {}),
-      })),
-    },
-  };
+  return inspectResolutionFailure(query, status, candidates);
 }
 
 export async function inspectResolvedTarget(
@@ -158,7 +117,6 @@ export async function inspectResolvedTarget(
     return inspectAgentRunDocument(stores.agentRunStore, stores.runtimeEventStore, {
       sessionId: candidate.sessionId,
       agentRunId: candidate.id,
-      header: candidate.header,
       isFatalReadError: isStorageRootAuthorityError,
     });
   }
@@ -168,7 +126,6 @@ export async function inspectResolvedTarget(
     stores.runtimeEventStore,
     candidate.id,
     {
-      header: candidate.header,
       isFatalReadError: isStorageRootAuthorityError,
     },
   );
@@ -182,6 +139,7 @@ export interface InspectCommandIo {
 export async function runMakaInspectCli(
   args: string[],
   io: InspectCommandIo = process,
+  dependencies: InspectCommandDependencies = defaultInspectCommandDependencies,
 ): Promise<number> {
   let parsed: ParsedInspectArgs;
   try {
@@ -198,23 +156,28 @@ export async function runMakaInspectCli(
     io.stderr.write(`${inspectUsage()}\n`);
     return 2;
   }
+  const targetId = parsed.id;
 
   const storageRoot = parsed.store ? resolve(parsed.store) : resolveMakaWorkspaceRoot();
-  const result = await withInspectCommandStores(storageRoot, async (stores) => {
-    const resolution = await resolveInspectTarget(stores, {
-      id: parsed.id!,
+  const result = await withInspectCommandBackend(storageRoot, dependencies, async (backend) => {
+    const resolution = await backend.resolve({
+      id: targetId,
       ...(parsed.kind ? { requestedKind: parsed.kind } : {}),
       ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
     });
     if (resolution.status !== 'resolved') return resolution;
     return {
       status: 'inspected' as const,
-      document: await inspectResolvedTarget(stores, resolution.candidate),
+      document: await backend.inspect(resolution.candidate),
     };
   }).catch((error: unknown) => {
-    if (!isStorageRootAuthorityError(error)) throw error;
+    if (!isStorageRootAuthorityError(error) && !(error instanceof LiveInspectError)) throw error;
     io.stderr.write(
-      `maka inspect: ${formatInspectAuthorityError(error, parsed.store === undefined)}\n`,
+      `maka inspect: ${
+        error instanceof LiveInspectError
+          ? error.message
+          : formatInspectAuthorityError(error, parsed.store === undefined)
+      }\n`,
     );
     return undefined;
   });
@@ -239,6 +202,30 @@ export async function runMakaInspectCli(
     io.stdout.write(renderSessionInspectTree(document));
   }
   return 0;
+}
+
+async function withInspectCommandBackend<T>(
+  storageRoot: string,
+  dependencies: InspectCommandDependencies,
+  operation: (backend: InspectCommandBackend) => Promise<T>,
+): Promise<T> {
+  try {
+    return await withInspectCommandStores(storageRoot, (stores) =>
+      operation({
+        resolve: (query) => resolveInspectTarget(stores, query),
+        inspect: (candidate) => inspectResolvedTarget(stores, candidate),
+      }),
+    );
+  } catch (error) {
+    if (!isStorageRootAuthorityError(error) || error.code !== 'lock_failed') throw error;
+  }
+
+  const live = await connectLiveInspectBackend(storageRoot, dependencies);
+  try {
+    return await operation(live.backend);
+  } finally {
+    await live.close();
+  }
 }
 
 export async function withInspectCommandStores<T>(
@@ -345,16 +332,16 @@ function isInspectEntityKind(value: string): value is InspectEntityKind {
 async function findSessionCandidates(
   store: InspectSessionReader,
   id: string,
-): Promise<SessionCandidate[]> {
+): Promise<Array<Extract<InspectCandidate, { kind: 'session' }>>> {
   const summaries = await store.list();
   if (!summaries.some((session) => session.id === id)) return [];
-  return [{ kind: 'session', id, header: await store.readHeader(id) }];
+  return [{ kind: 'session', id }];
 }
 
 async function findTaskRunCandidates(
   store: TaskRunReader | undefined,
   id: string,
-): Promise<TaskRunCandidate[]> {
+): Promise<Array<Extract<InspectCandidate, { kind: 'task-run' }>>> {
   if (!store) return [];
   const records = await store.readEventRecords(id);
   return records.length > 0 ? [{ kind: 'task-run', id }] : [];
@@ -364,11 +351,11 @@ async function findAgentRunCandidates(
   stores: Pick<InspectCommandStores, 'sessionStore' | 'agentRunStore'>,
   id: string,
   sessionId?: string,
-): Promise<AgentRunCandidate[]> {
+): Promise<Array<Extract<InspectCandidate, { kind: 'agent-run' }>>> {
   if (sessionId) {
     try {
-      const header = await stores.agentRunStore.readRun(sessionId, id);
-      return [{ kind: 'agent-run', id, sessionId, header }];
+      await stores.agentRunStore.readRun(sessionId, id);
+      return [{ kind: 'agent-run', id, sessionId }];
     } catch (error) {
       if (isNotFound(error)) return [];
       throw error;
@@ -378,11 +365,11 @@ async function findAgentRunCandidates(
   const runLists = await Promise.all(
     sessions.map((session) => stores.agentRunStore.listSessionRuns(session.id)),
   );
-  const candidates: AgentRunCandidate[] = [];
+  const candidates: Array<Extract<InspectCandidate, { kind: 'agent-run' }>> = [];
   runLists.forEach((runs) => {
     for (const header of runs) {
       if (header.runId === id) {
-        candidates.push({ kind: 'agent-run', id, sessionId: header.sessionId, header });
+        candidates.push({ kind: 'agent-run', id, sessionId: header.sessionId });
       }
     }
   });
@@ -390,7 +377,12 @@ async function findAgentRunCandidates(
 }
 
 function compareCandidates(a: InspectCandidate, b: InspectCandidate): number {
-  return a.kind.localeCompare(b.kind) || (a.sessionId ?? '').localeCompare(b.sessionId ?? '');
+  return (
+    a.kind.localeCompare(b.kind) ||
+    (a.kind === 'agent-run' ? a.sessionId : '').localeCompare(
+      b.kind === 'agent-run' ? b.sessionId : '',
+    )
+  );
 }
 
 function renderResolutionFailure(document: InspectResolutionDocument): string {
@@ -405,6 +397,7 @@ function renderResolutionFailure(document: InspectResolutionDocument): string {
   return [
     `Inspect target ${document.query.id} is ambiguous:`,
     ...candidates,
+    ...(document.candidatesTruncated ? ['  - additional candidates omitted'] : []),
     'Choose one with --kind session|agent-run|task-run; add --session <id> for a duplicate AgentRun id.',
   ].join('\n');
 }

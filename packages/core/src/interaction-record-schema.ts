@@ -5,7 +5,6 @@ import {
   type AdditionalPermissionRequest,
   type PermissionRequest,
   type PermissionRequestPayload,
-  type PermissionResponse,
   type SandboxEscalationRequest,
   type SandboxEscalationRiskSummary,
 } from './permission.js';
@@ -75,11 +74,6 @@ const SANDBOX_ESCALATION_SHAPE = defineObjectShape<SandboxEscalationRequest>()(
     'availableDecisions',
   ],
   ['hint'],
-);
-
-const PERMISSION_RESPONSE_SHAPE = defineObjectShape<PermissionResponse>()(
-  ['requestId', 'decision'],
-  ['rememberForTurn', 'reviewer', 'rationale', 'riskLevel'],
 );
 
 const ADDITIONAL_PERMISSION_RISK_SHAPE = defineObjectShape<AdditionalPermissionRiskSummary>()(
@@ -163,15 +157,6 @@ export function isPermissionRequestPayload(value: unknown): value is PermissionR
     typeof value.alsoApprovesToolExecution === 'boolean' &&
     isAllowOnceDenyTuple(value.availableDecisions) &&
     isOptionalString(value.hint)
-  );
-}
-
-export function isPermissionResponse(value: unknown): value is PermissionResponse {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, PERMISSION_RESPONSE_SHAPE) &&
-    typeof value.requestId === 'string' &&
-    isPermissionDecisionFields(value)
   );
 }
 

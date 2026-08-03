@@ -3,12 +3,13 @@ import { ChevronRight, MessageSquare } from '@maka/ui/icons';
 import type { BotChannelSettings, BotProvider } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import { BOT_PROVIDERS } from '@maka/core/settings';
-import { EmptyState, Item } from '@astryxdesign/core';
-import { Button, Badge, RelativeTime, useUiLocale, Banner } from '@maka/ui';
+import { EmptyState, Item, StatusDot } from '@astryxdesign/core';
+import { Button, RelativeTime, useUiLocale, Banner } from '@maka/ui';
 import { deriveBotChannelViewState } from './bot-settings-view-model';
 import { BOT_LABELS, BotBrandLogo, botReadinessCopyForSupport, botStatusDetail } from './bot-chat-shared';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
-import { statusBadgeVariant } from './settings-status-badge';
+import { SettingsPage, SettingsSection } from './settings-section';
+import { statusDotVariant } from './settings-status-badge';
 
 /**
  * Remote-access overview: the "正在使用" list of configured channels plus
@@ -56,8 +57,14 @@ export function BotChatOverview(props: {
     });
   const availableChannels = overviewChannels.filter((entry) => !entry.configured);
 
+  // Astryx convergence: the overview was the last page speaking the
+  // pre-#1972 dialect — bespoke page container, section-header dialect,
+  // hand-rolled list grids, a decorative readiness Badge. It is a kit page
+  // now: SettingsPage → SettingsSection (whose headings keep the ids the
+  // remote-access e2e names sections by) → hairline rows; readiness reads
+  // as the shared StatusDot + text idiom.
   return (
-    <div className="settingsRemoteAccessOverview">
+    <SettingsPage>
       {props.statusLoadError && (
         <Banner
           status="error"
@@ -65,18 +72,13 @@ export function BotChatOverview(props: {
           description={props.statusLoadError}
           endContent={<Button variant="secondary" onClick={() => void props.onRefreshStatuses()} label={copy.reload} />} />
       )}
-      <section className="settingsRemoteAccessSection" aria-labelledby="remote-access-active-heading">
-        <div className="settingsRemoteAccessSectionHeader">
-          <h3 id="remote-access-active-heading">{copy.active}</h3>
-          <span>{copy.sortHint}</span>
-        </div>
-        <div className="settingsRemoteAccessActiveList">
+      <SettingsSection titleId="remote-access-active-heading" title={copy.active} description={copy.sortHint}>
           {activeChannels.length === 0 ? (
             <EmptyState
+              isCompact
               icon={<MessageSquare />}
               title={copy.empty}
               description={copy.emptyHelp}
-              className="settingsRemoteAccessEmpty"
             />
           ) : activeChannels.map((entry) => (
             <Item
@@ -87,7 +89,10 @@ export function BotChatOverview(props: {
               label={(
                 <span className="settingsRemoteAccessItemTitle" aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}>
                   {botCopy.providers[entry.provider].label}
-                  <Badge variant={statusBadgeVariant(entry.copy.tone)} label={entry.copy.label} />
+                  <span className="settingsStatus">
+                    <StatusDot variant={statusDotVariant(entry.copy.tone)} label={entry.copy.label} />
+                    <span>{entry.copy.label}</span>
+                  </span>
                 </span>
               )}
               description={(
@@ -99,14 +104,8 @@ export function BotChatOverview(props: {
               onClick={() => props.onOpenChannel(entry.provider)}
             />
           ))}
-        </div>
-      </section>
-      <section className="settingsRemoteAccessSection" aria-labelledby="remote-access-available-heading">
-        <div className="settingsRemoteAccessSectionHeader">
-          <h3 id="remote-access-available-heading">{copy.more}</h3>
-          <span>{copy.choose}</span>
-        </div>
-        <div className="settingsRemoteAccessCatalog">
+      </SettingsSection>
+      <SettingsSection titleId="remote-access-available-heading" title={copy.more} description={copy.choose}>
           {availableChannels.map((entry) => (
             <Item
               key={entry.provider}
@@ -119,9 +118,8 @@ export function BotChatOverview(props: {
               onClick={() => props.onOpenChannel(entry.provider)}
             />
           ))}
-        </div>
-      </section>
-    </div>
+      </SettingsSection>
+    </SettingsPage>
   );
 }
 

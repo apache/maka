@@ -1,9 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { DailyReviewSummary, PlanReminder } from '@maka/core';
+import { expect } from 'storybook/test';
+import type { DailyReviewArchive, DailyReviewSummary, PlanReminder } from '@maka/core';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
   AutomationsPage,
   DailyReviewPage,
+  formatDailyReviewArchiveTitle,
+  getDailyReviewCopy,
   getSharedUiCopy,
   ModuleHubSelector,
   SkillsPage,
@@ -11,7 +14,7 @@ import {
   ToastProvider,
   useUiLocale,
 } from '@maka/ui';
-import type { ComponentProps, ReactNode } from 'react';
+import { type ComponentProps, type ReactNode, useState } from 'react';
 import { AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
@@ -131,9 +134,10 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
     runs: [CONFIGURED_COMPLETED_LAST_RUN],
     runCount: 1,
   },
-];
-
-const ATTENTION_REMINDERS: PlanReminder[] = [
+  // The blocked row rides along with the healthy ones rather than in a story of
+  // its own: a page whose whole job is scanning a list is only honest about the
+  // attention state when that state has neighbours to stand out from. Same
+  // reason ExtensionsMcpConfigured shows one healthy and one failed server.
   {
     id: 'plan-delivery-blocked',
     title: '发送每日客户反馈摘要',
@@ -243,26 +247,24 @@ const DAILY_REVIEW_SUMMARY: DailyReviewSummary = {
   ],
 };
 
-type DailyReviewBridge = NonNullable<ComponentProps<typeof DailyReviewPage>['bridge']>;
-
-const withMcpBridge = withScopedMakaBridge({
-  mcp: {
-    getConfig: async () => ({ version: 1, mcpServers: {} }),
-    listStatuses: async () => [],
-    setConfig: async (config: unknown) => config,
-    upsert: async () => ({ version: 1, mcpServers: {} }),
-    install: async () => ({ version: 1, mcpServers: {} }),
-    remove: async () => ({ version: 1, mcpServers: {} }),
-    cancelInstall: async () => ({ version: 1, mcpServers: {} }),
-    test: async () => {
-      throw new Error('The empty MCP baseline does not test a server');
-    },
-    reconnect: async () => {
-      throw new Error('The empty MCP baseline does not reconnect a server');
-    },
-    subscribeChanges: () => () => {},
+const DAILY_REVIEW_ARCHIVE: DailyReviewArchive = {
+  id: '2026-07-01-1d',
+  day: DAILY_REVIEW_SUMMARY.day,
+  range: 1,
+  status: 'ok',
+  generatedAt: NOW - 5 * 60_000,
+  trigger: 'manual',
+  modelKey: 'openai::gpt-5',
+  totals: DAILY_REVIEW_SUMMARY.totals,
+  sections: {
+    summary: '今天聚焦 Daily Review 的信息架构和页面重构，完成了时间范围、活动概览与报告详情的职责拆分。',
+    gaps: '报告导出仍需在真实桌面环境验证文件保存路径。',
+    usage: '共完成 42 次模型请求，主要活动集中在六个对话中。',
+    code: '继续让设置页只承载持久配置，把即时动作留在功能主页面。',
   },
-});
+};
+
+type DailyReviewBridge = NonNullable<ComponentProps<typeof DailyReviewPage>['bridge']>;
 
 const configuredMcpConfig: McpConfigFile = {
   version: 1,
@@ -364,7 +366,6 @@ function ExtensionsSkillsSurface(props: { skills?: SkillEntry[] }) {
         managedSkillSources={[]}
         bundledSkillCatalog={[]}
         onRefreshSkills={noop}
-        onCreateSkillTemplate={noop}
         onOpenSkill={noop}
         onOpenSkillsFolder={noop}
       />
@@ -387,10 +388,7 @@ function ExtensionsMcpSurface() {
   );
 }
 
-function ScheduledPlanRemindersSurface(props: {
-  reminders?: PlanReminder[];
-  keepSystemAwake?: boolean;
-}) {
+function ScheduledPlanRemindersSurface(props: { reminders?: PlanReminder[] }) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
   return (
     <ModuleSurface agentsView="cron">
@@ -401,7 +399,7 @@ function ScheduledPlanRemindersSurface(props: {
           badge: <ModuleHubSelector hub="automations" value="plan-reminders" onChange={() => {}} />,
         }}
         reminders={props.reminders ?? []}
-        keepSystemAwake={props.keepSystemAwake ?? false}
+        keepSystemAwake={false}
         onKeepSystemAwakeChange={async () => {}}
         onRefresh={noop}
         onCreate={noop}
@@ -416,7 +414,12 @@ function ScheduledPlanRemindersSurface(props: {
   );
 }
 
-function ScheduledDailyReviewSurface(props: { bridge: DailyReviewBridge }) {
+function ScheduledDailyReviewSurface(
+  props: { bridge: DailyReviewBridge } & Pick<
+    ComponentProps<typeof DailyReviewPage>,
+    'onCopyMarkdown' | 'onAppendMarkdown' | 'onSaveMarkdown'
+  >,
+) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
   return (
     <ModuleSurface agentsView="daily-review">
@@ -427,47 +430,49 @@ function ScheduledDailyReviewSurface(props: { bridge: DailyReviewBridge }) {
           badge: <ModuleHubSelector hub="automations" value="daily-review" onChange={() => {}} />,
         }}
         bridge={props.bridge}
+        onCopyMarkdown={props.onCopyMarkdown}
+        onAppendMarkdown={props.onAppendMarkdown}
+        onSaveMarkdown={props.onSaveMarkdown}
       />
     </ModuleSurface>
   );
 }
 
-async function assertKeepAwakeStoryState(canvasElement: HTMLElement) {
-  const document = canvasElement.ownerDocument;
-  const deadline = Date.now() + 2_000;
-  let trigger: HTMLButtonElement | undefined;
-  while (!trigger && Date.now() < deadline) {
-    trigger = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) => {
-      const label = button.getAttribute('aria-label');
-      return label === '定时任务页面设置' || label === 'Scheduled task page settings';
-    });
-    if (!trigger) await new Promise((resolve) => setTimeout(resolve, 16));
+async function waitForStoryButton(
+  canvasElement: HTMLElement,
+  predicate: (button: HTMLButtonElement) => boolean,
+): Promise<HTMLButtonElement> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button')).find(predicate);
+    if (button) return button;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
   }
-  if (!trigger) throw new Error('Keep-awake story did not render the page-settings trigger');
-  trigger.click();
-
-  while (Date.now() < deadline) {
-    const item = Array.from(
-      document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]'),
-    ).find((candidate) => /保持系统唤醒|Keep system awake/.test(candidate.textContent ?? ''));
-    if (item?.getAttribute('aria-checked') === 'true') return;
-    await new Promise((resolve) => setTimeout(resolve, 16));
-  }
-  throw new Error('Keep-awake story did not expose a checked contextual control');
+  throw new Error('Story action button did not render');
 }
 
-// Real path: sidebar → 扩展 → 技能, on a fresh install.
-export const ExtensionsSkills: Story = { render: () => <ExtensionsSkillsSurface /> };
+async function waitForStorySelector<T extends Element>(
+  canvasElement: HTMLElement,
+  selector: string,
+): Promise<T> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const element = canvasElement.querySelector<T>(selector);
+    if (element) return element;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error(`Story selector did not render: ${selector}`);
+}
+
+async function waitForStoryText(canvasElement: HTMLElement, text: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (canvasElement.textContent?.includes(text)) return;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error(`Story text did not render: ${text}`);
+}
 
 // Real path: sidebar → 扩展 → 技能, with several installed skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
-};
-
-// Real path: sidebar → 扩展 → MCP, before any server is installed.
-export const ExtensionsMcp: Story = {
-  decorators: [withMcpBridge],
-  render: () => <ExtensionsMcpSurface />,
 };
 
 // Real path: sidebar → 扩展 → MCP, with one healthy server and one actionable failure.
@@ -487,27 +492,15 @@ export const ScheduledPlanReminders: Story = {
   render: () => <ScheduledPlanRemindersSurface />,
 };
 
-// Real path: sidebar → 定时任务 → 计划提醒, with recurring and completed reminders.
+// Real path: sidebar → 定时任务 → 计划提醒, with recurring, paused, completed and
+// delivery-blocked reminders in one list.
+//
+// 保持系统唤醒 has no story: it is persisted page state the page itself never
+// renders, so a story for it would smoke pixels identical to this one at every
+// viewport. The state lives on the settings menu item, and
+// plan-reminder-panel.test.tsx asserts its aria-checked in both directions.
 export const ScheduledPlanRemindersConfigured: Story = {
   render: () => <ScheduledPlanRemindersSurface reminders={CONFIGURED_REMINDERS} />,
-};
-
-// Real path: sidebar → 定时任务 → 计划提醒, after the latest delivery needs attention.
-export const ScheduledPlanRemindersAttention: Story = {
-  render: () => <ScheduledPlanRemindersSurface reminders={ATTENTION_REMINDERS} />,
-};
-
-// Real path: sidebar → 定时任务 → 计划提醒, after Keep system awake is enabled in page settings.
-export const ScheduledPlanRemindersKeepAwake: Story = {
-  render: () => (
-    <ScheduledPlanRemindersSurface
-      reminders={CONFIGURED_REMINDERS}
-      keepSystemAwake
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await assertKeepAwakeStoryState(canvasElement);
-  },
 };
 
 // Real path: sidebar → 定时任务 → 计划提醒, with user-authored content at storage limits.
@@ -519,29 +512,247 @@ export const ScheduledPlanRemindersLongContent: Story = {
 export const ScheduledDailyReview: Story = {
   render: () => (
     <ScheduledDailyReviewSurface
-      bridge={{ fetchDay: async () => DAILY_REVIEW_SUMMARY }}
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const overview = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[aria-label="今天概览"]',
+    );
+    await expect(overview.textContent).not.toContain('错误');
+
+    const week = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
+    );
+    week.click();
+    const earlier = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.getAttribute('aria-label') === '查看更早一天',
+    );
+    earlier.click();
+    await waitForStoryText(canvasElement, '最近 7 天（往前 1 天）');
+  },
 };
 
-// Real path: same page while the review is still being generated or fetched.
-export const ScheduledDailyReviewLoading: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{ fetchDay: async () => new Promise<DailyReviewSummary>(() => {}) }}
-    />
-  ),
-};
-
-// Real path: same page when the main-process bridge fails to return the review.
-export const ScheduledDailyReviewLoadError: Story = {
+// Real path: sidebar → scheduled tasks → Daily Review after the initial activity request fails.
+export const ScheduledDailyReviewInitialLoadFailed: Story = {
   render: () => (
     <ScheduledDailyReviewSurface
       bridge={{
         fetchDay: async () => {
-          throw new Error('每日回顾暂时不可用，请稍后重试。');
+          throw new Error('activity fixture unavailable');
         },
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, '每日回顾刷新失败');
+    await expect(canvasElement.querySelector('[aria-busy="true"]')).toBeNull();
+    await expect(canvasElement.querySelector('.astryx-skeleton')).toBeNull();
+  },
+};
+
+// Real path: sidebar → scheduled tasks → Daily Review while saved reports load.
+export const ScheduledDailyReviewArchivesLoading: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => new Promise(() => undefined),
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitForStorySelector(canvasElement, '.maka-daily-review-content');
+    const generate = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('生成分析') === true,
+    );
+    await expect(generate.disabled).toBe(true);
+  },
+};
+
+// Real path: sidebar → scheduled tasks → Daily Review after saved reports fail to load.
+export const ScheduledDailyReviewArchivesFailed: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => {
+          throw new Error('archive fixture unavailable');
+        },
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitForStorySelector(canvasElement, '.maka-daily-review-content');
+    await waitForStoryText(canvasElement, '每日回顾刷新失败');
+    const generate = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('生成分析') === true,
+    );
+    await expect(generate.disabled).toBe(true);
+  },
+};
+
+// Real path: sidebar → scheduled tasks → Daily Review while a new range loads.
+export const ScheduledDailyReviewRefreshing: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async (_offsetDays, range) => {
+          if (range === 1) return DAILY_REVIEW_SUMMARY;
+          return new Promise<DailyReviewSummary>(() => undefined);
+        },
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const button = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
+    );
+    button.click();
+    const content = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '.maka-daily-review-content',
+    );
+    await expect(button.getAttribute('aria-checked')).toBe('true');
+    await expect(content.getAttribute('aria-busy')).toBe('true');
+    await expect(canvasElement.querySelector('.astryx-skeleton')).toBeNull();
+  },
+};
+
+// Real path at a narrow desktop window. The metrics collapse to two columns
+// while the Astryx controls keep their native wrapping behavior.
+// Real path: sidebar → scheduled tasks → Daily Review at a narrow window.
+export const ScheduledDailyReviewNarrow: Story = {
+  ...ScheduledDailyReview,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
+// Real path after an analysis exists and the user opens its dedicated detail route.
+// Real path: sidebar → scheduled tasks → Daily Review → view analysis.
+export const ScheduledDailyReviewReport: Story = {
+  render: function Render() {
+    const [savedInput, setSavedInput] = useState<unknown>(null);
+    const staleSummary = {
+      ...DAILY_REVIEW_SUMMARY,
+      day: {
+        fromMs: DAILY_REVIEW_SUMMARY.day.fromMs - 86_400_000,
+        toMs: DAILY_REVIEW_SUMMARY.day.toMs - 86_400_000,
+      },
+      totals: { ...DAILY_REVIEW_SUMMARY.totals, requestCount: 999 },
+    };
+    return (
+      <>
+        <ScheduledDailyReviewSurface
+          bridge={{
+            fetchDay: async (_offsetDays, range) => range === 1 ? DAILY_REVIEW_SUMMARY : staleSummary,
+            listArchives: async () => [{
+              id: DAILY_REVIEW_ARCHIVE.id,
+              day: DAILY_REVIEW_ARCHIVE.day,
+              range: DAILY_REVIEW_ARCHIVE.range,
+              status: DAILY_REVIEW_ARCHIVE.status,
+              generatedAt: DAILY_REVIEW_ARCHIVE.generatedAt,
+              trigger: DAILY_REVIEW_ARCHIVE.trigger,
+              modelKey: DAILY_REVIEW_ARCHIVE.modelKey,
+              totals: DAILY_REVIEW_ARCHIVE.totals,
+            }],
+            getArchive: async () => {
+              await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+              return DAILY_REVIEW_ARCHIVE;
+            },
+          }}
+          onSaveMarkdown={(input) => setSavedInput(input)}
+        />
+        <output data-testid="daily-review-saved-input" hidden>
+          {savedInput ? JSON.stringify(savedInput) : ''}
+        </output>
+      </>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const view = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('查看分析') === true,
+    );
+    view.click();
+    const recent7Days = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
+    );
+    recent7Days.click();
+    await waitForStoryText(canvasElement, '返回活动');
+    const save = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '保存',
+    );
+    save.click();
+    const output = await waitForStorySelector<HTMLOutputElement>(
+      canvasElement,
+      '[data-testid="daily-review-saved-input"]',
+    );
+    await waitForStoryText(output, 'markdown');
+    const input = JSON.parse(output.textContent ?? '') as Record<string, unknown>;
+    await expect(input.day).toEqual(DAILY_REVIEW_ARCHIVE.day);
+    await expect(input.range).toBe(DAILY_REVIEW_ARCHIVE.range);
+    await expect(input.totals).toEqual(DAILY_REVIEW_ARCHIVE.totals);
+    const archiveCopy = getDailyReviewCopy('zh');
+    const expectedMarkdown = [
+      `# ${formatDailyReviewArchiveTitle(DAILY_REVIEW_ARCHIVE, 'zh')}`,
+      ...(['summary', 'gaps', 'usage', 'code'] as const).flatMap((key) => [
+        '',
+        `## ${archiveCopy.archive.section[key]}`,
+        DAILY_REVIEW_ARCHIVE.sections[key],
+      ]),
+    ].join('\n');
+    await expect(input.markdown).toBe(expectedMarkdown);
+  },
+};
+
+// Real path: sidebar → scheduled tasks → Daily Review after a recoverable generation failure.
+export const ScheduledDailyReviewRetryableArchive: Story = {
+  render: () => {
+    const retryableArchive = {
+      ...DAILY_REVIEW_ARCHIVE,
+      status: 'failed' as const,
+      errorMessage: 'temporary fixture failure',
+    };
+    return (
+      <ScheduledDailyReviewSurface
+        bridge={{
+          fetchDay: async () => DAILY_REVIEW_SUMMARY,
+          listArchives: async () => [retryableArchive],
+          runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+          getArchive: async () => DAILY_REVIEW_ARCHIVE,
+        }}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const retry = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('重新生成') === true,
+    );
+    retry.click();
+    await waitForStoryText(canvasElement, '返回活动');
+  },
 };

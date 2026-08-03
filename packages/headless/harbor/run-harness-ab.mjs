@@ -42,8 +42,14 @@ import {
 import {
   CODEX_TOOLCHAIN_FINGERPRINT,
   CODEX_TOOLCHAIN_SPEC,
+  CODEX_DEEPSEEK_MODEL_CATALOG_FINGERPRINT,
   prepareCodexToolchain,
 } from '#codex-toolchain';
+import {
+  CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
+  CLAUDE_CODE_TOOLCHAIN_SPEC,
+  prepareClaudeCodeToolchain,
+} from '#claude-code-toolchain';
 import { MAKA_NODE_TOOLCHAIN_FINGERPRINT, prepareMakaNodeToolchain } from '#maka-node-toolchain';
 import { createCodexOAuthHarnessCredentialBinding } from '#codex-oauth-harness';
 import {
@@ -61,19 +67,27 @@ import {
   TERMINAL_BENCH_2_1_REVISION,
   TERMINAL_BENCH_2_1_TASK_IDS,
 } from '#harness-ab-manifest';
-import { runHarnessAbComparisonUnlocked, withHarnessAbRunLock } from '#harness-ab-run';
+import {
+  runHarnessAbComparisonUnlocked,
+  runHarnessArmCohortUnlocked,
+  withHarnessAbRunLock,
+} from '#harness-ab-run';
 import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '@maka/headless';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
 import {
   assertHarnessAbReportCompleted,
   buildHarnessAbReport,
+  buildHarnessCohortReport,
   renderHarnessAbReportCsv,
   renderHarnessAbReportMarkdown,
+  renderHarnessCohortReportCsv,
+  renderHarnessCohortReportMarkdown,
 } from '#harness-ab-report';
 import { envPath as parseEnvPath } from '#headless-run-env';
 import { buildSubjectFingerprint, buildToolchainFingerprint } from '#experiment-fingerprint';
 import { runExperiment } from '#experiment-engine';
 import { DEEPSEEK_V4_FLASH_PRICING } from '#deepseek-pricing';
+import { harnessAgentImportPath, providerProxyUsageProtocol } from '#harness-agent-registry';
 
 const execFileAsync = promisify(execFile);
 
@@ -211,15 +225,24 @@ export async function resolveFrozenBenchmarkTasks(benchmarkProfile, tasksRoot) {
 export function buildHarnessAbToolchainFingerprint({
   hostToolchainFingerprint,
   competitorProfile,
+  competitorProfiles = [competitorProfile],
   pierVersion = null,
   makaNodeToolchainFingerprint = null,
 }) {
+  const competitors = competitorProfiles.map((profile) => ({
+    id: profile.id,
+    toolchainFingerprint: profile.toolchainFingerprint,
+  }));
   return `sha256:${createHash('sha256')
     .update(
       JSON.stringify({
         hostToolchainFingerprint,
-        competitor: competitorProfile.id,
-        competitorToolchainFingerprint: competitorProfile.toolchainFingerprint,
+        ...(competitors.length === 1
+          ? {
+              competitor: competitors[0].id,
+              competitorToolchainFingerprint: competitors[0].toolchainFingerprint,
+            }
+          : { competitors }),
         ...(pierVersion === null ? {} : { pierVersion }),
         ...(makaNodeToolchainFingerprint === null ? {} : { makaNodeToolchainFingerprint }),
       }),
@@ -248,7 +271,6 @@ export const HARNESS_COMPETITOR_PROFILES = Object.freeze({
     version: KIMI_CODE_TOOLCHAIN_SPEC.kimiCode.version,
     toolchainFingerprint: KIMI_CODE_TOOLCHAIN_FINGERPRINT,
     config: Object.freeze({
-      adapter: 'kimi_code_agent:MakaKimiCodeAgent',
       outputFormat: 'stream-json',
       permissions: 'prompt-auto',
       attemptPolicy: 'single',
@@ -259,7 +281,6 @@ export const HARNESS_COMPETITOR_PROFILES = Object.freeze({
     version: OPENCODE_TOOLCHAIN_SPEC.opencode.version,
     toolchainFingerprint: OPENCODE_TOOLCHAIN_FINGERPRINT,
     config: Object.freeze({
-      adapter: 'opencode_agent:MakaOpenCodeAgent',
       pure: true,
       permissions: 'auto',
       attemptPolicy: 'single',
@@ -270,9 +291,18 @@ export const HARNESS_COMPETITOR_PROFILES = Object.freeze({
     version: CODEX_TOOLCHAIN_SPEC.codex.version,
     toolchainFingerprint: CODEX_TOOLCHAIN_FINGERPRINT,
     config: Object.freeze({
-      adapter: 'codex_agent:MakaCodexAgent',
       transport: 'responses-http',
       permissions: 'container-full-access',
+      attemptPolicy: 'single',
+    }),
+  }),
+  'claude-code': Object.freeze({
+    id: 'claude-code',
+    version: CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version,
+    toolchainFingerprint: CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
+    config: Object.freeze({
+      transport: 'anthropic-messages',
+      permissions: 'bypassPermissions',
       attemptPolicy: 'single',
     }),
   }),
@@ -346,6 +376,7 @@ const DEFAULT_RUNTIME_BY_COMPETITOR = Object.freeze({
   'kimi-code': 'kimi-coding-plan-k3-max',
   opencode: 'kimi-coding-plan-k3-max',
   codex: 'openai-codex-gpt-5.6-sol-xhigh',
+  'claude-code': 'deepseek-v4-flash-max',
 });
 
 const SUPPORTED_HARNESS_COMPOSITIONS = new Set([
@@ -354,6 +385,8 @@ const SUPPORTED_HARNESS_COMPOSITIONS = new Set([
   'terminal-bench-2.1|zai-coding-plan-glm-5.2-max|opencode',
   'terminal-bench-2.1|deepseek-v4-flash-max|opencode',
   'terminal-bench-2.1|openai-codex-gpt-5.6-sol-xhigh|codex',
+  'terminal-bench-2.1|deepseek-v4-flash-max|codex',
+  'terminal-bench-2.1|deepseek-v4-flash-max|claude-code',
   'deep-swe-1.1|kimi-coding-plan-k3-max|kimi-code',
   'deep-swe-1.1|openai-codex-gpt-5.6-sol-xhigh|codex',
   'deep-swe-1.1-full|kimi-coding-plan-k3-max|kimi-code',
@@ -398,21 +431,43 @@ export function resolveHarnessComposition(input = {}) {
   const benchmarkProfile = resolveHarnessBenchmarkProfile(
     input.benchmark || env.MAKA_HARNESS_AB_BENCHMARK || 'terminal-bench-2.1',
   );
-  const competitorProfile = resolveHarnessCompetitorProfile(
-    input.competitor || env.MAKA_HARNESS_AB_COMPETITOR || 'kimi-code',
-  );
+  const competitorIds = (
+    input.competitors ||
+    env.MAKA_HARNESS_AB_COMPETITORS ||
+    input.competitor ||
+    env.MAKA_HARNESS_AB_COMPETITOR ||
+    'kimi-code'
+  )
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (competitorIds.length === 0) throw new Error('harness competitors must not be empty');
+  if (new Set(competitorIds).size !== competitorIds.length) {
+    throw new Error('harness competitors must be unique');
+  }
+  const competitorProfiles = competitorIds.map(resolveHarnessCompetitorProfile);
+  const competitorProfile = competitorProfiles[0];
   const runtimeProfile = resolveHarnessRuntimeProfile(
     input.runtime ||
       env.MAKA_HARNESS_AB_RUNTIME ||
-      DEFAULT_RUNTIME_BY_COMPETITOR[competitorProfile.id],
+      (competitorProfiles.length > 1
+        ? 'deepseek-v4-flash-max'
+        : DEFAULT_RUNTIME_BY_COMPETITOR[competitorProfile.id]),
   );
-  const compositionKey = `${benchmarkProfile.id}|${runtimeProfile.id}|${competitorProfile.id}`;
-  if (!SUPPORTED_HARNESS_COMPOSITIONS.has(compositionKey)) {
-    throw new Error(
-      `unsupported harness composition: benchmark=${benchmarkProfile.id}, runtime=${runtimeProfile.id}, competitor=${competitorProfile.id}`,
-    );
+  for (const profile of competitorProfiles) {
+    const compositionKey = `${benchmarkProfile.id}|${runtimeProfile.id}|${profile.id}`;
+    if (!SUPPORTED_HARNESS_COMPOSITIONS.has(compositionKey)) {
+      throw new Error(
+        `unsupported harness composition: benchmark=${benchmarkProfile.id}, runtime=${runtimeProfile.id}, competitor=${profile.id}`,
+      );
+    }
   }
-  const composition = Object.freeze({ benchmarkProfile, runtimeProfile, competitorProfile });
+  const composition = Object.freeze({
+    benchmarkProfile,
+    runtimeProfile,
+    competitorProfile,
+    competitorProfiles: Object.freeze(competitorProfiles),
+  });
   RESOLVED_HARNESS_COMPOSITIONS.add(composition);
   return composition;
 }
@@ -491,8 +546,9 @@ export function resolveHarnessAbRunId(composition, explicitRunId, isolatedTaskId
   ) {
     return DEFAULT_HARNESS_AB_RUN_ID;
   }
-  const { benchmarkProfile, runtimeProfile, competitorProfile } = composition;
-  return `${runtimeProfile.model}-maka-vs-${competitorProfile.id}${runtimeProfile.auth.kind === 'codex-oauth' ? '-oauth' : ''}-${benchmarkProfile.runIdSlug}-v1`;
+  const { benchmarkProfile, runtimeProfile } = composition;
+  const competitorSlug = composition.competitorProfiles.map((profile) => profile.id).join('-vs-');
+  return `${runtimeProfile.model}-maka-vs-${competitorSlug}${runtimeProfile.auth.kind === 'codex-oauth' ? '-oauth' : ''}-${benchmarkProfile.runIdSlug}-v1`;
 }
 
 export function resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile) {
@@ -530,6 +586,14 @@ export function resolveHarnessCompetitorToolchain(runRoot, competitorProfile, en
         ? resolve(env.MAKA_HARNESS_AB_CODEX_TOOLCHAIN)
         : resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile),
       prepare: prepareCodexToolchain,
+    };
+  }
+  if (competitorProfile.id === 'claude-code') {
+    return {
+      path: env.MAKA_HARNESS_AB_CLAUDE_CODE_TOOLCHAIN
+        ? resolve(env.MAKA_HARNESS_AB_CLAUDE_CODE_TOOLCHAIN)
+        : resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile),
+      prepare: prepareClaudeCodeToolchain,
     };
   }
   throw new Error(`unsupported harness competitor: ${competitorProfile.id}`);
@@ -699,6 +763,14 @@ export function harnessMakaAgentEnv(benchmarkProfile) {
   };
 }
 
+function harnessMeasuredTransport(agentId, provider) {
+  const protocol = providerProxyUsageProtocol(agentId, provider);
+  if (protocol === 'openai-chat-sse') return 'openai-chat';
+  if (protocol === 'openai-responses-sse') return 'openai-responses';
+  if (protocol === 'anthropic-sse') return 'anthropic-messages';
+  throw new Error(`harness arm ${agentId} has no measured protocol for provider ${provider}`);
+}
+
 export function buildHarnessAbManifest({
   subjectFingerprint,
   taskSourceFingerprint,
@@ -712,7 +784,7 @@ export function buildHarnessAbManifest({
   pierVersion = null,
 }) {
   assertResolvedHarnessComposition(composition);
-  const { benchmarkProfile, runtimeProfile, competitorProfile } = composition;
+  const { benchmarkProfile, runtimeProfile, competitorProfiles } = composition;
   const resolvedTaskIds = taskIds ?? benchmarkProfile.taskIds;
   const resolvedPairConcurrency =
     pairConcurrency ?? Math.min(DEFAULT_PAIR_CONCURRENCY, resolvedTaskIds.length);
@@ -748,7 +820,10 @@ export function buildHarnessAbManifest({
         id: 'maka',
         version: subjectFingerprint,
         config: {
-          adapter: 'maka_agent:MakaAgent',
+          adapter: harnessAgentImportPath('maka'),
+          ...(competitorProfiles.length > 1
+            ? { transport: harnessMeasuredTransport('maka', execution.provider) }
+            : {}),
           externalSystemPrompt: 'empty',
           reasoningEffort: execution.reasoningEffort,
           continuation: false,
@@ -766,22 +841,27 @@ export function buildHarnessAbManifest({
             : {}),
         },
       },
-      {
-        id: competitorProfile.id,
-        version: competitorProfile.version,
+      ...competitorProfiles.map((profile) => ({
+        id: profile.id,
+        version: profile.version,
         config: {
-          ...competitorProfile.config,
-          ...(competitorProfile.id === 'opencode'
-            ? { variant: runtimeProfile.reasoningEffort }
+          adapter: harnessAgentImportPath(profile.id),
+          ...profile.config,
+          ...(competitorProfiles.length > 1
+            ? { transport: harnessMeasuredTransport(profile.id, execution.provider) }
             : {}),
+          ...(profile.id === 'codex' && runtimeProfile.provider === 'deepseek'
+            ? { modelCatalogFingerprint: CODEX_DEEPSEEK_MODEL_CATALOG_FINGERPRINT }
+            : {}),
+          ...(profile.id === 'opencode' ? { variant: runtimeProfile.reasoningEffort } : {}),
           billingMode: runtimeProfile.billingMode,
           externalSystemPrompt: 'empty',
-          profile: competitorProfile.id,
+          profile: profile.id,
           ...(benchmarkProfile.executor === 'pier'
             ? { execution: { placement: 'task-container' } }
             : {}),
         },
-      },
+      })),
     ],
     taskBudgetSec: null,
     harborTimeoutMs: null,
@@ -923,7 +1003,7 @@ async function runLocked({
   composition,
   retryAdjudicatedInfraRoundIdsOnce,
 }) {
-  const { benchmarkProfile, runtimeProfile, competitorProfile } = composition;
+  const { benchmarkProfile, runtimeProfile, competitorProfile, competitorProfiles } = composition;
   const { tasks: allTasks, taskSourceFingerprint } = await resolveFrozenBenchmarkTasks(
     benchmarkProfile,
     tasksRoot,
@@ -931,7 +1011,7 @@ async function runLocked({
 
   if (process.env.MAKA_HARNESS_AB_DRY_RUN === '1') {
     console.log(
-      `dry-run: benchmark=${benchmarkProfile.id} (${benchmarkProfile.taskIds.length} frozen tasks via ${benchmarkProfile.executor}); runtime=${runtimeProfile.id} (${runtimeProfile.provider}/${runtimeProfile.model}, ${runtimeProfile.reasoningEffort}, ${runtimeProfile.billingMode}); competitor=${competitorProfile.id}@${competitorProfile.version}; will run ${selection.limit} paired Pass@1 cells${benchmarkProfile.oracle ? '; Oracle evidence is advisory' : ''}`,
+      `dry-run: benchmark=${benchmarkProfile.id} (${benchmarkProfile.taskIds.length} frozen tasks via ${benchmarkProfile.executor}); runtime=${runtimeProfile.id} (${runtimeProfile.provider}/${runtimeProfile.model}, ${runtimeProfile.reasoningEffort}, ${runtimeProfile.billingMode}); competitors=${competitorProfiles.map((profile) => `${profile.id}@${profile.version}`).join(',')}; will run ${selection.limit} synchronized Pass@1 cohorts${benchmarkProfile.oracle ? '; Oracle evidence is advisory' : ''}`,
     );
     return;
   }
@@ -981,6 +1061,7 @@ async function runLocked({
   const toolchainFingerprint = buildHarnessAbToolchainFingerprint({
     hostToolchainFingerprint,
     competitorProfile,
+    competitorProfiles,
     pierVersion,
     makaNodeToolchainFingerprint:
       benchmarkProfile.executor === 'pier' ? MAKA_NODE_TOOLCHAIN_FINGERPRINT : null,
@@ -1009,11 +1090,16 @@ async function runLocked({
   if (evaluationTasks.some((task) => !task))
     throw new Error('manifest contains a task absent from the frozen task source');
 
-  const competitorToolchain = resolveHarnessCompetitorToolchain(runRoot, competitorProfile);
+  const competitorToolchains = new Map(
+    competitorProfiles.map((profile) => [
+      profile.id,
+      resolveHarnessCompetitorToolchain(runRoot, profile),
+    ]),
+  );
   const makaNodeToolchain =
     benchmarkProfile.executor === 'pier' ? resolveHarnessMakaNodeToolchain(runRoot) : null;
   await Promise.all([
-    competitorToolchain.prepare(competitorToolchain.path),
+    ...[...competitorToolchains.values()].map((toolchain) => toolchain.prepare(toolchain.path)),
     makaNodeToolchain?.prepare(makaNodeToolchain.path),
   ]);
 
@@ -1067,79 +1153,110 @@ async function runLocked({
         model: execution.model,
         thinkingLevel: execution.reasoningEffort,
       });
-      const summary = await runHarnessAbComparisonUnlocked({
+      const arms = [
+        {
+          id: 'maka',
+          config: config('maka'),
+          expectedPricingProfile: execution.pricing.source,
+          billingMode: execution.billingMode,
+          harborRunner: createBenchmarkRunner({
+            ...runnerOptions,
+            agent: 'maka',
+            agentEnv: { ...runnerOptions.agentEnv, ...harnessMakaAgentEnv(benchmarkProfile) },
+          }),
+        },
+        ...competitorProfiles.map((profile) => {
+          const toolchain = competitorToolchains.get(profile.id);
+          if (!toolchain) throw new Error(`missing toolchain for ${profile.id}`);
+          return {
+            id: profile.id,
+            config: config(profile.id),
+            expectedPricingProfile: execution.pricing.source,
+            billingMode: execution.billingMode,
+            harborRunner: createBenchmarkRunner({
+              ...runnerOptions,
+              agent: profile.id,
+              agentVersion: profile.version,
+              ...(profile.id === 'kimi-code'
+                ? { kimiCodeToolchainPath: toolchain.path }
+                : profile.id === 'opencode'
+                  ? { opencodeToolchainPath: toolchain.path }
+                  : profile.id === 'codex'
+                    ? { codexToolchainPath: toolchain.path }
+                    : { claudeCodeToolchainPath: toolchain.path }),
+            }),
+          };
+        }),
+      ];
+      const runInput = {
         runId,
         runRoot,
         resultsJsonlPath,
         systemPromptPath,
         resumeFingerprint: buildHarnessAbResumeFingerprint(manifest),
         evaluationTasks,
-        arms: [
-          {
-            id: 'maka',
-            config: config('maka'),
-            expectedPricingProfile: execution.pricing.source,
-            billingMode: execution.billingMode,
-            harborRunner: createBenchmarkRunner({
-              ...runnerOptions,
-              agent: 'maka',
-              agentEnv: { ...runnerOptions.agentEnv, ...harnessMakaAgentEnv(benchmarkProfile) },
-            }),
-          },
-          {
-            id: competitorProfile.id,
-            config: config(competitorProfile.id),
-            expectedPricingProfile: execution.pricing.source,
-            billingMode: execution.billingMode,
-            harborRunner: createBenchmarkRunner({
-              ...runnerOptions,
-              agent: competitorProfile.id,
-              agentVersion: competitorProfile.version,
-              ...(competitorProfile.id === 'kimi-code'
-                ? { kimiCodeToolchainPath: competitorToolchain.path }
-                : competitorProfile.id === 'opencode'
-                  ? { opencodeToolchainPath: competitorToolchain.path }
-                  : { codexToolchainPath: competitorToolchain.path }),
-            }),
-          },
-        ],
+        arms,
         pairConcurrency: manifest.maxConcurrency,
         armExecution: manifest.metadata.execution.armExecution,
         retryAdjudicatedInfraRoundIdsOnce,
-      });
-      return buildHarnessAbReport(
-        summary,
-        oracleEvidence
-          ? {
-              ...(oracleEvidence.resolvedSnapshotFingerprint
-                ? { snapshotFingerprint: oracleEvidence.resolvedSnapshotFingerprint }
-                : {}),
-              annotations: oracleEvidence.annotations.filter((annotation) =>
-                evaluatedTaskIds.has(annotation.taskId),
-              ),
-              warnings: oracleEvidence.warnings,
-            }
-          : { annotations: [], warnings: [] },
-        execution.billingMode,
-        manifest,
-      );
+      };
+      const reportOracleEvidence = oracleEvidence
+        ? {
+            ...(oracleEvidence.resolvedSnapshotFingerprint
+              ? { snapshotFingerprint: oracleEvidence.resolvedSnapshotFingerprint }
+              : {}),
+            annotations: oracleEvidence.annotations.filter((annotation) =>
+              evaluatedTaskIds.has(annotation.taskId),
+            ),
+            warnings: oracleEvidence.warnings,
+          }
+        : { annotations: [], warnings: [] };
+      if (competitorProfiles.length > 1) {
+        const summary = await runHarnessArmCohortUnlocked(runInput);
+        return buildHarnessCohortReport(
+          summary,
+          reportOracleEvidence,
+          execution.billingMode,
+          manifest,
+        );
+      }
+      const summary = await runHarnessAbComparisonUnlocked(runInput);
+      return buildHarnessAbReport(summary, reportOracleEvidence, execution.billingMode, manifest);
     },
-    artifacts: (report) => [
-      {
-        path: join(runRoot, 'harness-ab-report.json'),
-        content: `${JSON.stringify(report, null, 2)}\n`,
-      },
-      { path: join(runRoot, 'harness-ab-report.csv'), content: renderHarnessAbReportCsv(report) },
-      {
-        path: join(runRoot, 'harness-ab-report.md'),
-        content: renderHarnessAbReportMarkdown(report),
-      },
-    ],
+    artifacts: (report) => {
+      const cohort = report.schemaVersion === 'maka.harness_cohort.report.v1';
+      const basename = cohort ? 'harness-cohort-report' : 'harness-ab-report';
+      return [
+        {
+          path: join(runRoot, `${basename}.json`),
+          content: `${JSON.stringify(report, null, 2)}\n`,
+        },
+        {
+          path: join(runRoot, `${basename}.csv`),
+          content: cohort ? renderHarnessCohortReportCsv(report) : renderHarnessAbReportCsv(report),
+        },
+        {
+          path: join(runRoot, `${basename}.md`),
+          content: cohort
+            ? renderHarnessCohortReportMarkdown(report)
+            : renderHarnessAbReportMarkdown(report),
+        },
+      ];
+    },
   }).finally(() => providerProxyHub?.close());
-  assertHarnessAbReportCompleted(report);
-  console.log(
-    `${report.runStatus}: ${report.coverage.attemptedCells}/${report.coverage.scheduledCells} cells attempted; ${report.effectiveness.pairedEvaluated} paired Pass@1 outcomes -> ${runRoot}`,
-  );
+  if (report.schemaVersion === 'maka.harness_cohort.report.v1') {
+    if (report.runStatus !== 'completed') {
+      throw new Error(`harness cohort run ${report.runId} ended with status ${report.runStatus}`);
+    }
+    console.log(
+      `${report.runStatus}: ${report.commonCohort.comparableGroups}/${report.commonCohort.groups} common Pass@1 cohorts -> ${runRoot}`,
+    );
+  } else {
+    assertHarnessAbReportCompleted(report);
+    console.log(
+      `${report.runStatus}: ${report.coverage.attemptedCells}/${report.coverage.scheduledCells} cells attempted; ${report.effectiveness.pairedEvaluated} paired Pass@1 outcomes -> ${runRoot}`,
+    );
+  }
 }
 
 export async function resolveAdvisoryOracleEvidence({

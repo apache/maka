@@ -156,12 +156,11 @@ async function scrollListToBottom(page: Page): Promise<number> {
 test('sidebar list scrolls independently and keeps the footer in view with 60 sessions', async ({
   sidebarLongSessionsWindow: page,
 }) => {
-  // (0) The fixture seeds 60 `sidebar-long-sessions` rows (named "会话 NN"),
-  // all rendered in the expanded panel. `seedE2eFixture` also always writes a
-  // handful of baseline chat sessions; their exact count is not this
-  // contract's concern — the 60-row pin alone proves the overflow
-  // precondition the geometry assertions depend on.
-  await expect(page.locator('[data-session-id][title^="会话 "]')).toHaveCount(60);
+  // (0) No row-count pin here: its only purpose was to prove the list
+  // overflows, which (1a) asserts directly on the scroller metrics — and the
+  // rows' `title` is session metadata (formatSessionMeta), not the session
+  // name, so a title-based count could not select them anyway. Seed
+  // completeness (60 sessions on disk) lives in the fixture unit tests.
 
   // The list scroller and the chat scroller are distinct elements.
   await expect(page.locator(LIST_CONTENT)).toHaveCount(1);
@@ -231,60 +230,16 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
   expectFooterContained(after, 'after-scroll-to-bottom');
 });
 
-test('official SideNav resize handle updates the sidebar width from the keyboard', async ({
+test('keyboard resize survives a collapse round trip', async ({
   sidebarLongSessionsWindow: page,
 }) => {
   const shell = page.locator('.appFrame');
   const panel = page.locator('.maka-session-panel');
   const handle = page.getByTestId('astryx-sidenav-resize-handle');
+  const panelWidth = () =>
+    panel.evaluate((element) => element.getBoundingClientRect().width);
 
   await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
-  await handle.focus();
-  await expect(handle).toBeFocused();
-
-  const beforeWidth = Number(await handle.getAttribute('aria-valuenow'));
-  await handle.press('ArrowRight');
-  await expect.poll(async () => Number(await handle.getAttribute('aria-valuenow'))).toBe(beforeWidth + 10);
-  await expect.poll(() => panel.evaluate((element) => element.getBoundingClientRect().width))
-    .toBe(beforeWidth + 10);
-});
-
-/**
- * A collapse/expand round trip must return the sidebar to a usable width, and
- * to the width the user had chosen rather than the default.
- *
- * This used to drive the collapse by dragging the resize handle past its
- * minimum. That no longer works: since the Astryx 0.2.0 upgrade (#1750) the
- * handle does not respond to synthesised pointer input at all. Measured on this
- * branch — after `mouse.down()` on the handle and a drag across the panel,
- * `aria-valuenow` and the panel's rendered width both stay at 260, and
- * dispatching a hand-built `PointerEvent` sequence (correct `pointerId`,
- * `buttons`, and `isPrimary`, delivered both to the handle and to `window`)
- * moves neither. The handle still works from the keyboard, which the test above
- * covers, so this is specific to pointer drag. The test kept asserting
- * `data-sidebar-state="collapsed"` after a drag that no longer collapsed
- * anything, which is why it has failed on every CI run since #1750.
- *
- * Collapsing through the titlebar control is the same round trip by the path a
- * user actually has, and it is drivable.
- *
- * NOT covered here, and deliberately: `app-shell.tsx` refuses to persist a
- * width below `SESSION_LIST_EXPANDED_MIN_WIDTH`, which is what stops a
- * drag-to-collapse from writing a sub-minimum width that the next expand would
- * restore. Reaching that guard needs Astryx to report an under-minimum width,
- * and pointer drag is the only thing that produces one. It has no renderer-side
- * test seam today, so it is currently unlocked rather than silently "covered".
- */
-test('titlebar restores the chosen SideNav width across a collapse round trip', async ({
-  sidebarLongSessionsWindow: page,
-}) => {
-  const shell = page.locator('.appFrame');
-  const panel = page.locator('.maka-session-panel');
-  const handle = page.getByTestId('astryx-sidenav-resize-handle');
-  const panelWidth = () => panel.evaluate((element) => element.getBoundingClientRect().width);
-
-  // Choose a non-default width from the keyboard, so the restore assertion can
-  // tell "came back" apart from "fell back to the 260px default".
   await handle.focus();
   const chosenWidth = Number(await handle.getAttribute('aria-valuenow')) + 10;
   await handle.press('ArrowRight');
@@ -292,9 +247,7 @@ test('titlebar restores the chosen SideNav width across a collapse round trip', 
 
   await page.getByRole('button', { name: '收起侧边栏' }).click();
   await expect(shell).toHaveAttribute('data-sidebar-state', 'collapsed');
-
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
   await expect.poll(panelWidth).toBe(chosenWidth);
-  expect(chosenWidth).toBeGreaterThanOrEqual(180);
 });

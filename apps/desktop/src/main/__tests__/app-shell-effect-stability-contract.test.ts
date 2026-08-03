@@ -8,6 +8,9 @@ import type {
   PlanReminder,
   ProjectRecord,
   SessionEvent,
+  SessionEventStreamSnapshot,
+  SessionStatus,
+  SessionSummary,
   StoredMessage,
 } from '@maka/core';
 import { build } from 'esbuild';
@@ -23,7 +26,7 @@ type RefBox<T> = { current: T };
 type RendererWindow = Window & typeof globalThis & { maka: RendererMakaStub };
 type AppShellEffectsModule = Pick<
   typeof AppShellEffects,
-  'useActiveSessionEvents' | 'useAppShellBootstrapSubscriptions'
+  'useActiveSessionEvents' | 'useAppShellBootstrapSubscriptions' | 'useSessionEventHealthPolling'
 >;
 type KeepSystemAwakeModule = Pick<typeof KeepSystemAwake, 'useKeepSystemAwake'>;
 type ProjectContextModule = Pick<typeof ProjectContext, 'useAppShellProjectContext'>;
@@ -34,7 +37,7 @@ type CapturedSubscriptions = {
   connectionSubscribeCount: number;
   planDue?: (reminder: PlanReminder) => void;
   planDueSubscribeCount: number;
-  sessionChange?: (event: { reason: string; sessionId?: string; ts: number }) => void;
+  sessionChange?: (event: { reason: string; sessionId?: string; ts: number; turnId?: string }) => void;
   settingsExternalChanged?: () => void;
   settingsGet?(): Promise<{ system: { keepSystemAwake: boolean } }>;
 };
@@ -65,7 +68,7 @@ type RendererMakaStub = {
   };
   sessions: {
     readMessages(sessionId: string): Promise<StoredMessage[]>;
-    subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number }) => void): () => void;
+    subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number; turnId?: string }) => void): () => void;
     subscribeEvents(sessionId: string, callback: (event: SessionEvent) => void): () => void;
   };
   settings: {
@@ -76,6 +79,39 @@ type RendererMakaStub = {
     }): Promise<{ settings: { system: { keepSystemAwake: boolean } } }>;
   };
 };
+
+// The fake DOM drives the polling contract below: `useSessionEventHealthPolling`
+// arms `window.setInterval` and a `visibilitychange` listener, so both have to be
+// observable rather than silently swallowed by a no-op stub.
+type FakeClock = {
+  documentListeners: Map<string, Set<() => void>>;
+  intervals: Map<number, { callback: () => void; delayMs: number }>;
+  now: number;
+};
+
+const FAKE_CLOCK_START = 1_000;
+
+let fakeClock: FakeClock = createFakeClock();
+
+function createFakeClock(): FakeClock {
+  return {
+    documentListeners: new Map(),
+    intervals: new Map(),
+    now: FAKE_CLOCK_START,
+  };
+}
+
+function advanceFakeClock(byMs: number): void {
+  fakeClock.now += byMs;
+}
+
+function runFakeIntervals(): void {
+  for (const { callback } of [...fakeClock.intervals.values()]) callback();
+}
+
+function dispatchFakeDocumentEvent(type: string): void {
+  for (const listener of [...(fakeClock.documentListeners.get(type) ?? [])]) listener();
+}
 
 const cleanupTasks: Array<() => void> = [];
 
@@ -142,6 +178,62 @@ describe('AppShell effect stability contract', () => {
     });
 
     assert.equal(projectRefreshes, 1);
+  });
+
+  // The wiring that answers a send: `onRunStarted` broadcasts a `sessions:changed`
+  // naming the turn, and it must reach the arm through the real subscription
+  // handler. Without it the arm stays unconfirmed and a stale session list
+  // retires it, taking the Stop affordance and the first-token wait with it.
+  it('confirms the armed turn a session change names', async () => {
+    const effects = await appShellEffects;
+    const refs = createBootstrapRefs();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    const confirmed: Array<[string, string]> = [];
+
+    await render(
+      root,
+      createElement(BootstrapSubscriptionProbe, {
+        effects,
+        onConnectionEvent: () => {},
+        onConfirmLiveTurn: (sessionId: string, turnId: string) => confirmed.push([sessionId, turnId]),
+        refs,
+      }),
+    );
+
+    await act(async () => {
+      captured.sessionChange?.({ reason: 'status-change', sessionId: 'session-1', ts: 1, turnId: 'turn-1' });
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(confirmed, [['session-1', 'turn-1']]);
+  });
+
+  // A change with no turn to name is a plain catalog invalidation. Treating it
+  // as an answer would confirm whatever arm happened to be in flight.
+  it('does not confirm anything for a change that names no turn', async () => {
+    const effects = await appShellEffects;
+    const refs = createBootstrapRefs();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    const confirmed: Array<[string, string]> = [];
+
+    await render(
+      root,
+      createElement(BootstrapSubscriptionProbe, {
+        effects,
+        onConnectionEvent: () => {},
+        onConfirmLiveTurn: (sessionId: string, turnId: string) => confirmed.push([sessionId, turnId]),
+        refs,
+      }),
+    );
+
+    await act(async () => {
+      captured.sessionChange?.({ reason: 'message-appended', sessionId: 'session-1', ts: 1 });
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(confirmed, []);
   });
 
   it('keeps bootstrap subscriptions stable while invoking the latest connection handler', async () => {
@@ -272,6 +364,122 @@ describe('AppShell effect stability contract', () => {
     });
 
     assert.deepEqual(navSections, ['automations']);
+  });
+
+  it('does not arm event-health polling for an idle active session', async () => {
+    const effects = await appShellEffects;
+    const root = installReactRenderer(createCapturedSubscriptions());
+    const healthRef = createSessionHealthRef();
+    let writes = 0;
+
+    await render(
+      root,
+      createElement(SessionEventHealthPollingProbe, {
+        activeId: 'session-1',
+        effects,
+        healthRef,
+        onHealthWrite: () => {
+          writes += 1;
+        },
+        sessionStatus: 'active',
+      }),
+    );
+
+    assert.equal(fakeClock.intervals.size, 0, 'an idle session must not arm a polling interval');
+    assert.equal(
+      fakeClock.documentListeners.get('visibilitychange')?.size ?? 0,
+      0,
+      'an idle session must not listen for visibility changes',
+    );
+    assert.equal(writes, 0, 'an idle session has nothing to observe, so it must not probe at all');
+
+    advanceFakeClock(60_000);
+    await act(async () => {
+      runFakeIntervals();
+    });
+
+    assert.equal(writes, 0, 'an idle session must stay silent as time passes');
+  });
+
+  it('re-arms when an idle session starts running and disarms once it settles', async () => {
+    const effects = await appShellEffects;
+    const root = installReactRenderer(createCapturedSubscriptions());
+    const healthRef = createSessionHealthRef();
+    const renderWithStatus = (sessionStatus: SessionStatus) =>
+      render(
+        root,
+        createElement(SessionEventHealthPollingProbe, {
+          activeId: 'session-1',
+          effects,
+          healthRef,
+          sessionStatus,
+        }),
+      );
+
+    await renderWithStatus('active');
+    assert.equal(fakeClock.intervals.size, 0);
+
+    await renderWithStatus('running');
+    assert.equal(fakeClock.intervals.size, 1, 'a session that starts running must re-arm on its own');
+    assert.equal(fakeClock.documentListeners.get('visibilitychange')?.size, 1);
+
+    await renderWithStatus('active');
+    assert.equal(fakeClock.intervals.size, 0, 'settling back to idle must disarm the interval');
+    assert.equal(
+      fakeClock.documentListeners.get('visibilitychange')?.size ?? 0,
+      0,
+      'settling back to idle must drop the visibility listener',
+    );
+  });
+
+  it('keeps polling a running session and refreshes once its stream goes stale', async () => {
+    const effects = await appShellEffects;
+    const root = installReactRenderer(createCapturedSubscriptions());
+    const healthRef = createSessionHealthRef();
+    let refreshedMessages = 0;
+    let refreshedSessions = 0;
+
+    await render(
+      root,
+      createElement(SessionEventHealthPollingProbe, {
+        activeId: 'session-1',
+        effects,
+        healthRef,
+        onRefreshMessages: () => {
+          refreshedMessages += 1;
+        },
+        onRefreshSessions: () => {
+          refreshedSessions += 1;
+        },
+        sessionStatus: 'running',
+      }),
+    );
+
+    assert.equal(fakeClock.intervals.size, 1, 'a running session must poll its event stream');
+    assert.equal(healthRef.current['session-1']?.status, 'connected');
+
+    advanceFakeClock(16_000);
+    await act(async () => {
+      runFakeIntervals();
+    });
+
+    assert.equal(healthRef.current['session-1']?.status, 'stale');
+    assert.equal(refreshedSessions, 1);
+    assert.equal(refreshedMessages, 1);
+
+    // Returning to a backgrounded window must probe too, not merely register a
+    // listener — assert the probe ran rather than that the handler exists.
+    const checkedAtBeforeReturn = healthRef.current['session-1']?.checkedAt;
+    advanceFakeClock(1_000);
+    await act(async () => {
+      dispatchFakeDocumentEvent('visibilitychange');
+    });
+
+    assert.notEqual(
+      healthRef.current['session-1']?.checkedAt,
+      checkedAtBeforeReturn,
+      'becoming visible again must re-check the stream',
+    );
   });
 
   it('preserves a known keep-awake snapshot when a later refresh fails', async () => {
@@ -420,6 +628,7 @@ function BootstrapSubscriptionProbe(props: {
   onProjectRefresh?(): void;
   onNavSelection?(selection: { section: string }): void;
   onToastAction?(onClick: (() => void) | undefined): void;
+  onConfirmLiveTurn?(sessionId: string, turnId: string): void;
   refs: ReturnType<typeof createBootstrapRefs>;
 }) {
   props.effects.useAppShellBootstrapSubscriptions({
@@ -428,6 +637,7 @@ function BootstrapSubscriptionProbe(props: {
     applyE2eFixture: async () => {},
     bootstrapSessions: async () => {},
     clearPendingTurnActionsForSession: () => {},
+    confirmLiveTurn: (sessionId: string, turnId: string) => props.onConfirmLiveTurn?.(sessionId, turnId),
     clearSessionRendererState: () => {},
     createSession: () => {},
     handleConnectionEvent: props.onConnectionEvent,
@@ -487,6 +697,41 @@ function ActiveSessionEventProbe(props: {
     setSessionEventHealthBySession: () => {},
     toastApi: {
       error: () => {},
+    },
+  });
+  return null;
+}
+
+function SessionEventHealthPollingProbe(props: {
+  activeId?: string;
+  effects: AppShellEffectsModule;
+  healthRef: RefBox<Record<string, SessionEventStreamSnapshot>>;
+  onHealthWrite?(): void;
+  onRefreshMessages?(): void;
+  onRefreshSessions?(): void;
+  sessionStatus?: SessionStatus;
+}) {
+  props.effects.useSessionEventHealthPolling({
+    activeId: props.activeId,
+    activeInteraction: undefined,
+    activeSession: props.sessionStatus
+      ? ({ id: props.activeId, status: props.sessionStatus } as SessionSummary)
+      : undefined,
+    activeStreamingLive: false,
+    hasInFlightLiveTools: false,
+    refreshMessages: async () => {
+      props.onRefreshMessages?.();
+      return true;
+    },
+    refreshSessions: async () => {
+      props.onRefreshSessions?.();
+      return [];
+    },
+    sessionEventHealthBySessionRef: props.healthRef,
+    // Mirrors the real controller, which syncs the ref inside `replaceState`.
+    setSessionEventHealthBySession: (updater) => {
+      props.onHealthWrite?.();
+      props.healthRef.current = updater(props.healthRef.current);
     },
   });
   return null;
@@ -612,6 +857,21 @@ function createBootstrapRefs() {
   };
 }
 
+function createSessionHealthRef(
+  subscribedAt = FAKE_CLOCK_START,
+): RefBox<Record<string, SessionEventStreamSnapshot>> {
+  return {
+    current: {
+      'session-1': {
+        sessionId: 'session-1',
+        status: 'connected',
+        subscribedAt,
+        checkedAt: subscribedAt,
+      },
+    },
+  };
+}
+
 function createPlanReminder(): PlanReminder {
   return {
     id: 'reminder-1',
@@ -683,7 +943,7 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
     },
     sessions: {
       readMessages: async () => [],
-      subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number }) => void) {
+      subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number; turnId?: string }) => void) {
         captured.sessionChange = callback;
         return noop;
       },
@@ -726,14 +986,29 @@ function installFakeDom(): void {
     IS_REACT_ACT_ENVIRONMENT?: boolean;
     }
   ).IS_REACT_ACT_ENVIRONMENT;
+  const previousDateNow = Date.now;
+  fakeClock = createFakeClock();
+  let nextIntervalId = 1;
   const fakeDocument = createFakeDocument();
   const fakeWindow = {
     document: fakeDocument,
     addEventListener: () => {},
     removeEventListener: () => {},
+    setInterval: (callback: () => void, delayMs: number) => {
+      const id = nextIntervalId++;
+      fakeClock.intervals.set(id, { callback, delayMs });
+      return id;
+    },
+    clearInterval: (id: number) => {
+      fakeClock.intervals.delete(id);
+    },
     HTMLElement: class HTMLElement {},
     HTMLIFrameElement: class HTMLIFrameElement {},
   } as unknown as RendererWindow;
+  Date.now = () => fakeClock.now;
+  cleanupTasks.push(() => {
+    Date.now = previousDateNow;
+  });
   Object.defineProperty(fakeDocument, 'defaultView', { value: fakeWindow });
   globalThis.document = fakeDocument;
   globalThis.window = fakeWindow;
@@ -754,8 +1029,15 @@ function installFakeDom(): void {
 function createFakeDocument(): Document {
   const fakeDocument = {
     nodeType: 9,
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    visibilityState: 'visible',
+    addEventListener(type: string, listener: () => void) {
+      const listeners = fakeClock.documentListeners.get(type) ?? new Set<() => void>();
+      listeners.add(listener);
+      fakeClock.documentListeners.set(type, listeners);
+    },
+    removeEventListener(type: string, listener: () => void) {
+      fakeClock.documentListeners.get(type)?.delete(listener);
+    },
     createElement(tagName: string) {
       return new FakeElement(tagName, fakeDocument as unknown as Document);
     },

@@ -28,6 +28,52 @@ test('opens a valid desktop storage root without asking for repair', async () =>
   }
 });
 
+test('asks before adopting a root whose device number moved on its own', async () => {
+  // A device number changes on its own whenever a volume is mounted again, so
+  // repairing that case without asking is tempting: the person is being shown
+  // a number they cannot answer for.
+  //
+  // It cannot be done from the marker. Inode numbers are unique only within
+  // one mounted filesystem, so a workspace restored onto another volume can
+  // report the same root-directory inode as the original — a different `dev`
+  // and a matching `ino` is exactly that case too, and the two are
+  // indistinguishable here. Adopting it would hand a second, unrelated
+  // directory the original's rootId with nobody asked.
+  //
+  // So this drift stays a question, and this test is the reason why.
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-root-'));
+  let repairAsked = false;
+  try {
+    await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+      rootIdentity: { dev: string; ino: string };
+    };
+    const inodeBefore = marker.rootIdentity.ino;
+    marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+    const conflictingMarker = `${JSON.stringify(marker)}\n`;
+    await writeFile(markerPath, conflictingMarker);
+
+    const resolved = await resolveDesktopStorageRoot(root, {
+      confirmRepair: async () => {
+        repairAsked = true;
+        return false;
+      },
+    });
+
+    assert.equal(repairAsked, true, 'only the person can tell a remount from a restored copy');
+    assert.equal(resolved, undefined);
+    // And nothing was written while the answer was outstanding.
+    assert.equal(await readFile(markerPath, 'utf8'), conflictingMarker);
+    const after = JSON.parse(await readFile(markerPath, 'utf8')) as {
+      rootIdentity: { ino: string };
+    };
+    assert.equal(after.rootIdentity.ino, inodeBefore);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('repairs a stale desktop storage root after explicit confirmation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-desktop-root-'));
   try {

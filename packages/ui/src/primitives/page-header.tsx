@@ -10,13 +10,13 @@
 //      `.maka-plan-hero` (.maka-plan-heading > h2+p + .maka-plan-top-actions).
 //
 //   2. SETTINGS intros (as='h3'): the smaller Permission / Health / Voice /
-//      About page intro cards — an --font-size-ui semibold title, a lede,
+//      About page intro cards — a body-tier semibold title, a lede,
 //      and a trailing quieter META cluster (RelativeTime + refresh Button)
 //      or a leading feature ICON + trailing BADGE chip. Previously
 //      `.settingsPermissionIntro`, `.settingsHealthIntro`,
-//      `.settingsFeatureStatusHero`, `.settingsAboutHero`.
+//      `.settingsAboutHero`.
 //
-// Layout & typography strategy: the shell is styled with portable Tailwind
+// Layout & typography strategy: the shell is styled with portable semantic
 // utilities, but every call site KEEPS its existing wrapper class (passed via
 // `className`) so the wrapper CSS — which already owns the surface chrome
 // (card border/background/radius, flex vs grid layout, gap, mobile
@@ -76,9 +76,9 @@ export interface PageHeaderProps {
    * Lets a call site keep a wrapper that its CSS targets as the heading group.
    */
   contentClassName?: string;
-  /** Class for the leading icon box (e.g. `settingsFeatureStatusIcon`, `settingsAboutLogo`). */
+  /** Class for the leading icon box (e.g. `settingsAboutLogo`). */
   iconClassName?: string;
-  /** Class for the inline title+badge row (e.g. `settingsFeatureStatusHeroHeading`, `settingsAboutHeading`). */
+  /** Class for the inline title+badge row (e.g. `settingsAboutHeading`). */
   headingRowClassName?: string;
   /** Class for the subtitle line (e.g. `settingsAboutTagline`), when a call site's CSS targets it. */
   subtitleClassName?: string;
@@ -115,7 +115,7 @@ export function PageHeader({
       id={titleId}
       data-slot="page-header-title"
       // No typography utilities here — the wrapper CSS owns h2/h3 sizing.
-      className="m-0"
+      className="maka-page-header-title"
     >
       {title}
     </Title>
@@ -124,7 +124,7 @@ export function PageHeader({
     badge != null || headingRowClassName ? (
       <div
         data-slot="page-header-heading-row"
-        className={cn('flex flex-wrap items-center gap-2', headingRowClassName)}
+        className={cn('maka-page-header-heading-row', headingRowClassName)}
       >
         {heading}
         {badge != null ? badge : null}
@@ -136,10 +136,10 @@ export function PageHeader({
   const content = (
     <div
       data-slot="page-header-content"
-      className={cn('min-w-0', contentClassName)}
+      className={cn('maka-page-header-content', contentClassName)}
     >
       {eyebrow != null ? (
-        <p data-slot="page-header-eyebrow" className="m-0">
+        <p data-slot="page-header-eyebrow" className="maka-page-header-eyebrow">
           {eyebrow}
         </p>
       ) : null}
@@ -147,7 +147,7 @@ export function PageHeader({
       {subtitle != null ? (
         <p
           data-slot="page-header-subtitle"
-          className={cn('m-0', subtitleClassName)}
+          className={cn('maka-page-header-subtitle', subtitleClassName)}
         >
           {subtitle}
         </p>
