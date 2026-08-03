@@ -1250,6 +1250,7 @@ const streamEvents = createSessionStreamer({
   computerUseOverlay,
   computerUsePip,
   computerUseStatusItem,
+  computerUseScreenLock,
   computerUseTools,
   safeSendToRenderer,
   emitSessionsChanged,

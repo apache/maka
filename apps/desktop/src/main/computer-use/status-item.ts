@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { Menu as MenuType, Tray } from 'electron';
+import { resolveSystemUiLocale, type UiCatalog, type UiLocale } from '@maka/core';
 import type { CuOverlayHook } from '@maka/runtime';
 
 // Electron is CommonJS, and named imports from it fail outside a main process.
@@ -77,22 +78,61 @@ export interface ComputerUseStatusItemDeps {
    * that question reports it.
    */
   onLiveChanged?: (live: boolean) => void;
+  /**
+   * The UI locale for the menu, read fresh on each rebuild.
+   *
+   * These rows were English literals in an app that resolves a locale at boot
+   * and whose picture-in-picture sibling labels the same two actions in
+   * Chinese, so the menu bar and the mirror disagreed about what language the
+   * product speaks. Sync, because a menu template is built synchronously;
+   * defaults to the system language, which is the same source boot.ts already
+   * uses for the one other main-process string it has to draw.
+   */
+  resolveLocale?: () => UiLocale;
   /** Test seams: the contract is drivable without an Electron main process. */
   loadImage?: () => Electron.NativeImage;
   buildMenu?: (template: Electron.MenuItemConstructorOptions[]) => MenuType;
 }
 
-/**
- * What a row says when the app is not known yet.
- *
- * The first action of a session shows the item before any result has come back,
- * so for one beat we know that something is being driven but not what. Naming an
- * app we have not observed would be a guess; this says exactly what is true.
- */
-const UNNAMED_SESSION_TITLE = 'Stop Computer Use';
+interface StatusItemCopy {
+  /** The row for a session whose target application is known. */
+  stopUsing(appName: string): string;
+  /**
+   * What a row says when the app is not known yet.
+   *
+   * The first action of a session shows the item before any result has come
+   * back, so for one beat we know that something is being driven but not what.
+   * Naming an app we have not observed would be a guess; this says exactly
+   * what is true.
+   */
+  stopUnnamed: string;
+  /** Codex's empty state. Reachable only if a menu outlives its rows. */
+  empty: string;
+}
 
-/** Codex's empty state, verbatim. Reachable only if a menu outlives its rows. */
-const EMPTY_STATE_TITLE = 'No Active Sessions';
+const COPY: UiCatalog<StatusItemCopy> = {
+  zh: {
+    stopUsing: (appName) => `停止操作 ${appName}`,
+    stopUnnamed: '停止 Computer Use',
+    empty: '没有正在进行的会话',
+  },
+  en: {
+    stopUsing: (appName) => `Stop Using ${appName}`,
+    stopUnnamed: 'Stop Computer Use',
+    empty: 'No Active Sessions',
+  },
+};
+
+function defaultResolveLocale(): UiLocale {
+  // Lazy on purpose: tool assembly runs at module load, before
+  // `app.whenReady()`, and this is only ever called while building a menu for
+  // a tray that by definition already exists.
+  try {
+    return resolveSystemUiLocale(electron().app.getPreferredSystemLanguages());
+  } catch {
+    return 'en';
+  }
+}
 
 function defaultResourcesDir(): string {
   // Packaged: resources live beside the app. Dev: repo layout.
@@ -106,10 +146,10 @@ function defaultResourcesDir(): string {
  * That is a correct identifier and a terrible menu row, so it counts as unknown
  * and takes the generic title rather than "Stop Using pid:1234".
  */
-function appTitle(appName: string | undefined): string {
+function appTitle(copy: StatusItemCopy, appName: string | undefined): string {
   const trimmed = appName?.trim() ?? '';
-  if (trimmed.length === 0 || /^pid:\d+$/.test(trimmed)) return UNNAMED_SESSION_TITLE;
-  return `Stop Using ${trimmed}`;
+  if (trimmed.length === 0 || /^pid:\d+$/.test(trimmed)) return copy.stopUnnamed;
+  return copy.stopUsing(trimmed);
 }
 
 export function createComputerUseStatusItem(
@@ -144,19 +184,20 @@ export function createComputerUseStatusItem(
   }
 
   function menuTemplate(): Electron.MenuItemConstructorOptions[] {
+    const copy = COPY[(deps.resolveLocale ?? defaultResolveLocale)()] ?? COPY.en;
     const entries = [...sessions.entries()];
-    if (entries.length === 0) return [{ label: EMPTY_STATE_TITLE, enabled: false }];
+    if (entries.length === 0) return [{ label: copy.empty, enabled: false }];
     // Two sessions driving the same app produce two identical rows, and a menu
     // with two identical rows cannot be used. Codex numbers them; so do we, and
     // for the same reason we number identical generic rows too.
     const totals = new Map<string, number>();
     for (const [, app] of entries) {
-      const title = appTitle(app);
+      const title = appTitle(copy, app);
       totals.set(title, (totals.get(title) ?? 0) + 1);
     }
     const seen = new Map<string, number>();
     return entries.map(([id, app]) => {
-      const title = appTitle(app);
+      const title = appTitle(copy, app);
       const ordinal = (seen.get(title) ?? 0) + 1;
       seen.set(title, ordinal);
       return {

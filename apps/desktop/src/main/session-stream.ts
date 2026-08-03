@@ -478,6 +478,18 @@ export interface SessionStreamerDeps {
    * outlived every run that ended by finishing.
    */
   computerUseStatusItem?: { clearForSession(sessionId: string): void };
+  /**
+   * The screen-lock guard, retired on the same signal, for the same reason.
+   *
+   * It holds the ids of sessions it will release on unlock, and it had no
+   * turn-end caller at all: the session IPC cleared it on delete, stop and
+   * archive, but a turn that simply finished left its id in the set for the
+   * lifetime of the process. Two hundred turns in distinct sessions across a
+   * day left two hundred ids held, and every unlock walked all of them. The
+   * status item was cleared here and the guard was not, which is the kind of
+   * asymmetry nobody notices until the set is the thing being measured.
+   */
+  computerUseScreenLock?: { clearForSession(sessionId: string): void };
   computerUseTools: AssembledTools['computerUseTools'];
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
   emitSessionsChanged: (
@@ -513,6 +525,7 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
     computerUseOverlay,
     computerUsePip,
     computerUseStatusItem,
+    computerUseScreenLock,
     computerUseTools,
     safeSendToRenderer,
     emitSessionsChanged,
@@ -554,6 +567,7 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
           // here too, alongside the two clears either side of this line.
           computerUsePip?.complete(sessionId);
           computerUseStatusItem?.clearForSession(sessionId);
+          computerUseScreenLock?.clearForSession(sessionId);
           computerUseTools.clearSession(sessionId);
         }
         options.observeEvent?.(event);
@@ -579,6 +593,7 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
         // A turn that dies is still a turn that ended. Leaving the item up here
         // would leave the power assertion held by a run that no longer exists.
         computerUseStatusItem?.clearForSession(sessionId);
+        computerUseScreenLock?.clearForSession(sessionId);
         computerUseTools.clearSession(sessionId);
       },
       onDrained: async (outcome) => {

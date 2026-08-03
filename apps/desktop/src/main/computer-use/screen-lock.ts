@@ -204,9 +204,30 @@ export function createComputerUseScreenLockGuard(
 /**
  * Register sessions from the same hook that drives the cursor and status item.
  *
- * A session earns a release on unlock by having tried to drive the machine —
- * including the attempt that was refused, since `onActionBegin` runs before the
- * backend sees the action. That is exactly the session that needs releasing.
+ * This comment used to say a session earned a release by having tried to drive
+ * the machine, "including the attempt that was refused, since `onActionBegin`
+ * runs before the backend sees the action". That is not what happens, and a
+ * probe against the built runtime says so plainly: with `screenLocked` forced
+ * true, three calls came back `maka_computer failed: screen_locked`, the probe
+ * saw the session three times, and `onActionBegin` saw nothing at all.
+ * `onActionBegin` has one call site, inside `runWithPresentation`, and the
+ * refusal returns several hundred lines above it.
+ *
+ * The refused attempt is covered — by the `screenLocked` callback in tool
+ * assembly, which records the session as it answers. What this wrapper covers
+ * is the other producer, and it is the only thing that does: the host's own
+ * lock probe has documented blind spots, so a dispatch can go through and come
+ * back with a `screen_locked` outcome from the executor. That path latches the
+ * session state from `applyTypedOutcomeState`, long after the probe said the
+ * machine was fine and long after `onActionBegin` ran. Nothing else would ever
+ * have recorded that session, and `screenUnlocked` is the only way out of the
+ * state it just entered.
+ *
+ * So the two producers divide cleanly: the probe covers what it refuses, this
+ * covers what the executor refuses. Registration is per dispatch attempt and
+ * cheap; the set is emptied by `clearForSession`, which every path that ends a
+ * session calls — including a turn merely finishing, which for a while it did
+ * not.
  */
 export function withComputerUseScreenLock(
   hook: CuOverlayHook,

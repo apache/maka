@@ -44,6 +44,7 @@ function makeItem(
   overrides: {
     onStopRequested?: (sessionId: string) => void;
     onLiveChanged?: (live: boolean) => void;
+    resolveLocale?: () => 'zh' | 'en';
   } = {},
 ) {
   const trays: FakeTray[] = [];
@@ -61,6 +62,9 @@ function makeItem(
       trays.push(tray);
       return tray as never;
     },
+    // Stated rather than inherited: these rows are locale-dependent now, so a
+    // test that asserts English text has to say it is asking for English.
+    resolveLocale: () => 'en',
     ...overrides,
   });
   return { item, trays, images };
@@ -165,6 +169,36 @@ test('Computer Use status item', async (t) => {
     item.noteSessionActive('s1');
     item.noteSessionApp('s1', 'pid:4821');
     assert.deepEqual(labels(trays[0]), ['Stop Computer Use']);
+  });
+
+  await t.test('speaks the language the rest of the app speaks', () => {
+    // These three rows were English literals in an app that resolves a UI
+    // locale at boot, and whose picture-in-picture sibling labels the same two
+    // actions in Chinese — so the menu bar and the mirror disagreed about what
+    // language the product speaks, on the same machine, at the same moment.
+    const locale = { value: 'zh' as 'zh' | 'en' };
+    const { item, trays } = makeItem({
+      onStopRequested: () => {},
+      resolveLocale: () => locale.value,
+    });
+    item.noteSessionActive('s1');
+    assert.deepEqual(labels(trays[0]), ['停止 Computer Use']);
+    item.noteSessionApp('s1', 'Safari');
+    assert.deepEqual(labels(trays[0]), ['停止操作 Safari']);
+    // A pid fallback is still no name, in either language.
+    item.noteSessionActive('s2');
+    item.noteSessionApp('s2', 'pid:4821');
+    assert.deepEqual(labels(trays[0]), ['停止操作 Safari', '停止 Computer Use']);
+
+    // Read on every rebuild, not captured once: changing the language in
+    // Settings has to show up without relaunching the app.
+    locale.value = 'en';
+    item.noteSessionActive('s3');
+    assert.deepEqual(labels(trays[0]), [
+      'Stop Using Safari',
+      'Stop Computer Use (1)',
+      'Stop Computer Use (2)',
+    ]);
   });
 
   await t.test('every row stops the session it names', () => {

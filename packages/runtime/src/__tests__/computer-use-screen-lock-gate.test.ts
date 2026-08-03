@@ -155,6 +155,53 @@ describe('screen-lock gate', () => {
     assert.deepEqual(asked, ['session-A']);
   });
 
+  test('a refusal never reaches the overlay hook, so the probe is the only witness', async () => {
+    // The desktop's screen-lock wrapper is documented as covering the refused
+    // attempt too, "since onActionBegin runs before the backend sees the
+    // action". It does not. `onActionBegin` has one call site, inside
+    // `runWithPresentation`, and the refusal returns hundreds of lines above
+    // it — so the probe callback is the only thing that sees a refused
+    // session, and the wrapper's job is the other producer entirely: a
+    // dispatch the probe let through that the executor then refuses.
+    //
+    // Pinned here rather than left to the comment, because the two are
+    // indistinguishable from the desktop side: both end with the session in
+    // the guard's set, and only the order says which one put it there.
+    const backend = recordingBackend();
+    const began: string[] = [];
+    const ended: string[] = [];
+    const asked: string[] = [];
+    const [tool] = buildComputerUseTools({
+      backend,
+      overlay: {
+        onActionBegin: (_action, context) => {
+          began.push(context.sessionId);
+        },
+        onActionEnd: (_action, _result, context) => {
+          ended.push(context.sessionId);
+        },
+      },
+      screenLocked: ({ sessionId }) => {
+        asked.push(sessionId);
+        return true;
+      },
+    });
+
+    for (const args of [
+      { action: 'observe', app: 'Fixture' },
+      { action: 'left_click', coordinate: [10, 10], observation_id: 'obs-1' },
+      { action: 'click_element', element_id: '5', observation_id: 'obs-1' },
+    ]) {
+      const result = (await tool.impl(args as never, ctx('session-A'))) as { text: string };
+      assert.match(result.text, /screen_locked/, `${args.action} must be refused`);
+    }
+
+    assert.deepEqual(asked, ['session-A', 'session-A', 'session-A'], 'the probe saw every call');
+    assert.deepEqual(began, [], 'and the overlay hook saw none of them');
+    assert.deepEqual(ended, []);
+    assert.deepEqual(backend.calls, [], 'nor did the backend');
+  });
+
   test('without a probe there is no guard, rather than a silent refusal', async () => {
     const backend = recordingBackend();
     const [tool] = buildComputerUseTools({ backend });

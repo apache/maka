@@ -194,9 +194,21 @@ test('a stopped session is not released', () => {
   assert.deepEqual(released, ['s2']);
 });
 
-test('the overlay hook is what registers a session, including a refused action', () => {
-  // `onActionBegin` runs before the backend sees the action, so the attempt
-  // that gets refused for being locked is itself what earns the release.
+test('the overlay hook registers a session that dispatched, which is the executor-refusal path', () => {
+  // This test used to be named "including a refused action" and its comment
+  // said `onActionBegin` runs before the backend sees the action, so the
+  // refused attempt was itself what earned the release. It proved nothing of
+  // the kind — it calls `onActionBegin` directly — and the claim is false: the
+  // host-probe refusal returns from the tool long before `runWithPresentation`,
+  // which is `onActionBegin`'s only call site. See the gate test in
+  // packages/runtime, which asks the real tool and finds `onActionBegin`
+  // never ran.
+  //
+  // What this hook actually covers is the other producer, and it is the only
+  // thing that does: the host's probe says unlocked, the dispatch goes
+  // through, and the executor comes back with a `screen_locked` outcome. That
+  // session latched the state from `applyTypedOutcomeState`, and nothing but
+  // this registration would ever release it.
   const { guard, released, lock, unlock } = makeGuard();
   const seen: string[] = [];
   const hook = withComputerUseScreenLock(

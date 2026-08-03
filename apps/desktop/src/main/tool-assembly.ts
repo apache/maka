@@ -15,7 +15,8 @@ import {
   ShellRunProcessManager,
 } from '@maka/runtime';
 import type { HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
-import type { AppSettings, UpdateAppSettingsInput } from '@maka/core';
+import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core';
+import type { AppSettings, UiLocale, UpdateAppSettingsInput } from '@maka/core';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import { createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
@@ -189,11 +190,41 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
         }
       : {},
   );
+  /**
+   * The locale the menu bar draws in.
+   *
+   * A menu template is built synchronously and the persisted preference can
+   * only be read asynchronously, so this is a cache with a refresh behind it:
+   * every rebuild answers from what it has and kicks off a read for the next
+   * one. Rebuilds happen when a session starts or stops driving, so that is a
+   * handful of settings reads per run and no new plumbing through boot — and
+   * changing the language in Settings shows up on the next rebuild rather than
+   * at relaunch.
+   *
+   * Nothing here runs at module load: `assembleDesktopTools` is called before
+   * `app.whenReady()`, and `getPreferredSystemLanguages` is only reached from
+   * inside a menu build, which by definition already has a tray.
+   */
+  let uiLocale: UiLocale | undefined;
+  const resolveComputerUseLocale = (): UiLocale => {
+    const system = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+    void settingsStore
+      .get()
+      .then((settings) => {
+        uiLocale = resolveUiLocale(settings.personalization.uiLocale, system);
+      })
+      .catch(() => {
+        // Keep whatever we had. A menu in the wrong language is a smaller
+        // failure than a menu that fails to build.
+      });
+    return uiLocale ?? system;
+  };
   // A menu bar item is the only place a person can see that the machine is
   // being driven when the app is not in front, and the only place they can
   // stop it. It is not the cursor, which stays hidden whenever the window
   // being driven is covered by something else.
   const computerUseStatusItem = createComputerUseStatusItem({
+    resolveLocale: resolveComputerUseLocale,
     // A run drives another app for as long as the model needs, and the
     // physical-input guard means it works precisely while the user is not
     // touching anything — which is when idle sleep lands and kills the run.

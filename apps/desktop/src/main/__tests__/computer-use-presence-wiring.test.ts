@@ -57,7 +57,7 @@ function errorEvent(): SessionEvent {
   } as SessionEvent;
 }
 
-function streamerDeps(cleared: string[]) {
+function streamerDeps(cleared: string[], lockCleared: string[] = []) {
   return {
     sessionActivities: {
       reserve: () => ({ release: () => {} }),
@@ -73,6 +73,11 @@ function streamerDeps(cleared: string[]) {
         cleared.push(sessionId);
       },
     },
+    computerUseScreenLock: {
+      clearForSession: (sessionId: string) => {
+        lockCleared.push(sessionId);
+      },
+    },
     computerUseTools: { clearSession: () => {} } as never,
     safeSendToRenderer: () => {},
     emitSessionsChanged: () => {},
@@ -81,7 +86,8 @@ function streamerDeps(cleared: string[]) {
 
 test('a turn ending releases the menu bar item, and with it the keep-awake hold', async () => {
   const cleared: string[] = [];
-  const streamEvents = createSessionStreamer(streamerDeps(cleared) as never);
+  const lockCleared: string[] = [];
+  const streamEvents = createSessionStreamer(streamerDeps(cleared, lockCleared) as never);
 
   await streamEvents('session-A', await events([completeEvent()]), {
     turnId: 't1',
@@ -94,12 +100,22 @@ test('a turn ending releases the menu bar item, and with it the keep-awake hold'
   // the rest of the process's life and the keep-awake setting can no longer
   // stop it.
   assert.deepEqual(cleared, ['session-A']);
+
+  // And the lock guard on exactly the same signal. It holds session ids to
+  // release on unlock, and this path did not clear it: the session IPC cleared
+  // it on delete, stop and archive, while a turn that simply finished left its
+  // id in the set until the process exited. Two hundred turns in distinct
+  // sessions across a day left two hundred ids held and every unlock walking
+  // all of them. The status item was cleared here and its sibling was not,
+  // which is the asymmetry this pins shut.
+  assert.deepEqual(lockCleared, ['session-A']);
 });
 
 test('a turn that dies releases it too', async () => {
   const cleared: string[] = [];
+  const lockCleared: string[] = [];
   const streamerDepsWithThrow = {
-    ...streamerDeps(cleared),
+    ...streamerDeps(cleared, lockCleared),
     safeSendToRenderer: (channel: string) => {
       if (channel.startsWith('sessions:event:')) return;
     },
@@ -112,6 +128,7 @@ test('a turn that dies releases it too', async () => {
   } as never);
 
   assert.deepEqual(cleared, ['session-B']);
+  assert.deepEqual(lockCleared, ['session-B']);
 });
 
 /**
@@ -151,6 +168,68 @@ describe('Computer Use presence is reachable from production', () => {
     );
   });
 
+  it('the overlay hook Computer Use is given is wrapped by both presence hooks', async () => {
+    // The one assertion that makes this branch safe to merge alongside the
+    // others that touch the same expression.
+    //
+    // `createComputerUseHost({ overlay })` takes a single hook, and every
+    // feature that wants to see actions go past wraps the one before it. That
+    // makes the expression a merge conflict by construction: resolving it by
+    // taking one side compiles, type-checks, and leaves every test in both
+    // branches green while one branch's presence is silently disconnected.
+    // Measured by replacing the value with the bare
+    // `createComputerUseOverlayHook(computerUseOverlay)`: `tsc` exits 0 and all
+    // 61 presence tests pass with a tray that never appears — so
+    // `onLiveChanged` never fires, the keep-awake hold is never taken, and a
+    // background run dies to idle sleep. Every one of those tests builds the
+    // wrapper itself, which is exactly why none of them notices.
+    //
+    // So this asserts the production expression. The correct resolution nests
+    // the wrappers rather than choosing between them; whichever order they end
+    // up in, both of these have to be present.
+    const text = await source('tool-assembly.ts');
+    const overlay = /\n    overlay: ([\s\S]*?),\n  \}\);/.exec(text)?.[1];
+    assert.ok(overlay, 'createComputerUseHost must be given an overlay hook');
+    assert.match(
+      overlay,
+      /withComputerUseStatusItem\(/,
+      'no status item in the chain means no live-session count, so no menu bar ' +
+        'indicator and no keep-awake hold',
+    );
+    assert.match(
+      overlay,
+      /withComputerUseScreenLock\(/,
+      'no lock guard in the chain means a session the executor refused for a ' +
+        'lock is never registered, and screenUnlocked is its only way out',
+    );
+    assert.match(
+      overlay,
+      /createComputerUseOverlayHook\(computerUseOverlay\)/,
+      'and they wrap the cursor hook rather than replacing it',
+    );
+  });
+
+  it('gives tool assembly the keep-awake controller its only caller needs', async () => {
+    // `keepSystemAwake` is optional on the deps, so deleting it from the call
+    // costs nothing at compile time: `tsc --noEmit` stays at exit 0 and all 61
+    // presence tests pass. What it costs at runtime is the whole feature —
+    // `onLiveChanged` fires into `undefined`, no `prevent-app-suspension`
+    // blocker is ever taken, and a background Computer Use run dies to idle
+    // sleep, which is the exact failure the refcount rewrite exists to
+    // prevent. Optional is right for the dependency (the tool surface is
+    // assembled in contexts with no Electron power management) and wrong for
+    // the one production call site, so the call site is what is pinned.
+    const text = await source('boot.ts');
+    const start = text.indexOf('assembleDesktopTools({');
+    assert.notEqual(start, -1, 'boot.ts must assemble the tools');
+    const call = text.slice(start, text.indexOf('});', start));
+    assert.match(
+      call,
+      /\bkeepSystemAwake,/,
+      'without it the status item holds nothing awake and the run sleeps',
+    );
+  });
+
   it('routes the status item to session teardown and to the stop path', async () => {
     const text = await source('sessions-ipc-main.ts');
     assert.match(
@@ -163,15 +242,26 @@ describe('Computer Use presence is reachable from production', () => {
       /void stopSession\(sessionId, \{ source: 'stop_button' \}\)/,
       'the menu bar must stop a run through the same path as the in-app button',
     );
-    for (const caller of ['removeSession', 'stopSession']) {
-      const body = text.slice(text.indexOf(caller));
+    // Anchored on the declaration, not on the first place the name is spelled.
+    // `text.indexOf(caller)` finds whichever mention comes first in the file,
+    // which is a doc comment as soon as anyone writes one — and this branch
+    // merges with another that adds exactly such a comment above the deps.
+    // The window then starts hundreds of characters early and the assertion
+    // fails on a merge that is entirely correct, which is the same kind of
+    // wrong answer as passing when it should not.
+    for (const [caller, declaration] of [
+      ['removeSession', /const removeSession = async \([\s\S]*?\n  \};/],
+      ['stopSession', /async function stopSession\([\s\S]*?\n  \}/],
+    ] as const) {
+      const body = declaration.exec(text)?.[0];
+      assert.ok(body, `sessions-ipc-main.ts must declare ${caller}`);
       assert.match(
-        body.slice(0, 600),
+        body,
         /computerUseStatusItem\?\.clearForSession\(/,
         `${caller} must retire the item`,
       );
       assert.match(
-        body.slice(0, 600),
+        body,
         /computerUseScreenLock\?\.clearForSession\(/,
         `${caller} must stop the guard tracking a session that is gone`,
       );
@@ -188,7 +278,7 @@ describe('Computer Use presence is reachable from production', () => {
     const text = await source('boot.ts');
     for (const [anchor, needed] of [
       ['registerSessionsIpc({', ['computerUseStatusItem', 'computerUseScreenLock']],
-      ['createSessionStreamer({', ['computerUseStatusItem']],
+      ['createSessionStreamer({', ['computerUseStatusItem', 'computerUseScreenLock']],
       ['wireAppLifecycle({', ['computerUseStatusItem', 'computerUseScreenLock']],
     ] as const) {
       const start = text.indexOf(anchor);
