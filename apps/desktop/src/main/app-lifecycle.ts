@@ -73,6 +73,19 @@ export interface AppLifecycleDeps {
   computerUseOverlay: AssembledTools['computerUseOverlay'];
   /** The Computer Use mirror, torn down on the same two paths as the cursor. */
   computerUsePip: AssembledTools['computerUsePip'];
+  /**
+   * Retired at quit, not at window close: the item reports on runs, and a run
+   * can outlive the window it was started from. Destroying it is also what
+   * gives back the keep-awake assertion, so it is the last backstop against
+   * leaving one held.
+   */
+  computerUseStatusItem: AssembledTools['computerUseStatusItem'];
+  /**
+   * Same reason, and one more: `dispose()` makes the guard answer "unlocked"
+   * forever, so doing it any earlier would silently switch the lock guard off
+   * for the rest of the process.
+   */
+  computerUseScreenLock: AssembledTools['computerUseScreenLock'];
   shellRuns: ShellRunProcessManager;
   mcpManager: McpClientManager;
   runtimePersistence: Awaited<ReturnType<typeof openRuntimeEventPersistence>>;
@@ -131,6 +144,8 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     computerUse,
     computerUseOverlay,
     computerUsePip,
+    computerUseStatusItem,
+    computerUseScreenLock,
     shellRuns,
     mcpManager,
     runtimePersistence,
@@ -392,6 +407,8 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     const results = await Promise.allSettled([
       Promise.resolve().then(() => computerUseOverlay.destroyAll()),
       Promise.resolve().then(() => computerUsePip.destroyAll()),
+      Promise.resolve().then(() => computerUseStatusItem.destroy()),
+      Promise.resolve().then(() => computerUseScreenLock.dispose()),
       Promise.resolve().then(() => computerUse.backend?.dispose?.()),
       botRegistry.stopAll(),
       Promise.resolve(mainWindowController.disposeBrowserViews()),

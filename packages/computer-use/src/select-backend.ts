@@ -77,6 +77,15 @@ interface CommonSelection {
     mimeType: string,
   ) => { base64: string; mimeType: 'image/png' | 'image/jpeg' };
   physicalInputRecentlyActive?: () => boolean | Promise<boolean>;
+  /**
+   * Whether the machine is locked. Handed to the tool layer rather than to the
+   * driver, because the refusal is a session-state decision (see
+   * `buildComputerUseTools`) and the driver has no session state to latch it in.
+   *
+   * Common to both executors: the refusal is decided above the backend, so it
+   * does not become true or false depending on which one is selected.
+   */
+  screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   overlay?: CuOverlayHook;
 }
 
@@ -165,6 +174,7 @@ export function selectComputerUseBackend(
     tools = buildComputerUseTools({
       backend,
       ...(deps.overlay ? { overlay: deps.overlay } : {}),
+      ...(deps.screenLocked ? { screenLocked: deps.screenLocked } : {}),
     });
     return { backend, tools, backendId };
   } catch {

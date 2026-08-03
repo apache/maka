@@ -248,6 +248,26 @@ function persistedObservationText(observation: CuObservation): string {
 export function buildComputerUseTools(deps: {
   backend: CuDispatchBackend;
   overlay?: CuOverlayHook;
+  /**
+   * Whether the machine is locked right now.
+   *
+   * Consulted before every action and every observation, because a locked
+   * screen is the user saying they have left: past that point the agent would
+   * be driving and reading a machine its owner deliberately closed off, with
+   * nobody watching and no way to intervene. Refusing produces the
+   * `screen_locked` session state, which is what keeps the refusal from having
+   * to be re-derived on every subsequent call — and which only
+   * `sessionEvents.screenUnlocked` can leave.
+   *
+   * Takes the session so the host can record which sessions it will have to
+   * release when the machine comes back. Without that, a session whose very
+   * first call landed on a locked screen would latch `screen_locked` while
+   * being unknown to the host, and would stay latched for the rest of its life.
+   *
+   * Absent means the host cannot answer the question, not that the machine is
+   * unlocked; there is no lock guard at all in that case.
+   */
+  screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   presentationReadyTimeoutMs?: number;
   presentationFinishedTimeoutMs?: number;
 }): ComputerUseToolSet {
@@ -838,6 +858,13 @@ export function buildComputerUseTools(deps: {
             return sessionFailure('user_stopped');
           }
           const state = sessionState(sessionId, turnId);
+          // Ahead of the leases, because a locked screen outranks whatever the
+          // session was doing: the answer is the same for an action and for an
+          // observation, and it does not depend on holding a live frame.
+          if (deps.screenLocked && (await deps.screenLocked({ sessionId }))) {
+            state.screenLocked();
+            return sessionFailure('screen_locked');
+          }
           const requiresObservationLease =
             input.action === 'observe' ||
             input.action === 'screenshot' ||

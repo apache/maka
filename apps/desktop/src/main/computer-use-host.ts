@@ -46,6 +46,8 @@ export function createComputerUseHost(input: {
     mimeType: string,
   ) => { base64: string; mimeType: 'image/png' | 'image/jpeg' };
   physicalInputRecentlyActive: () => boolean | Promise<boolean>;
+  /** Whether the machine is locked; refuses every call while it is. */
+  screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   onTrace?: CuaDriverBackendOptions['onTrace'];
   overlay?: CuOverlayHook;
 }): ComputerUseHostState {
@@ -102,6 +104,7 @@ export function createComputerUseHost(input: {
         ...(expectedProtocolVersion ? { expectedProtocolVersion } : {}),
         ...(input.compressFrame ? { compressFrame: input.compressFrame } : {}),
         physicalInputRecentlyActive: input.physicalInputRecentlyActive,
+        ...(input.screenLocked ? { screenLocked: input.screenLocked } : {}),
         ...(input.onTrace ? { onTrace: input.onTrace } : {}),
         ...(input.overlay ? { overlay: input.overlay } : {}),
       }),

@@ -228,6 +228,15 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     physicalInputRecentlyActive: createDesktopPhysicalInputGuard(
       () => powerMonitor.getSystemIdleTime(),
     ),
+    // The guard is only a guard once something asks it. A session refused here
+    // is also recorded as one to release when the machine comes back: the
+    // refusal latches `screen_locked`, and `screenUnlocked` is the only way out
+    // of that state — so a session nobody recorded would stay locked forever.
+    screenLocked: ({ sessionId }) => {
+      if (!computerUseScreenLock.locked()) return false;
+      computerUseScreenLock.noteSessionActive(sessionId);
+      return true;
+    },
     ...(isComputerUseRealModelE2e
       ? {
           onTrace: (event) => {
@@ -371,6 +380,8 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     computerUse,
     computerUseOverlay,
     computerUsePip,
+    computerUseStatusItem,
+    computerUseScreenLock,
     computerUseTools,
     desktopProductToolSurface,
     builtinTools: [...desktopProductToolSurface.tools],
