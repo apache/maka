@@ -88,7 +88,6 @@ resize();
 window.addEventListener('resize', resize);
 
 let running = false;
-let last = 0;
 let activeActionId: string | null = null;
 let readySent = false;
 let waitForNativeCompletion = false;
@@ -106,9 +105,13 @@ function reportPhase(phase: 'readyForInteraction' | 'finished'): void {
 }
 
 function loop(now: number): void {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  engine.tick(dt);
+  // The engine owns the frame clock. This line used to be
+  // `engine.tick(Math.min(0.05, (now - last) / 1000))`, which truncated a long
+  // frame to the integrator's stability bound one call before the engine
+  // sub-stepped it — so the release gate opened later in wall clock the slower
+  // the overlay painted, and the deadline the runtime's fence is sized from
+  // held only at frame rates nobody had measured.
+  engine.tickTo(now);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -137,7 +140,6 @@ function loop(now: number): void {
 function kick(): void {
   if (!running) {
     running = true;
-    last = performance.now();
     requestAnimationFrame(loop);
   }
 }

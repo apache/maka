@@ -276,14 +276,20 @@ test('the presentation deadline covers the slowest release the gate can ask for'
 
 test('the deadline holds at every frame rate the overlay can paint at', () => {
   // The test above integrates its own spring at a fixed 1/240 and measures
-  // simulated time, so it says nothing about `CursorEngine.tick` — which is
-  // where the wall clock actually enters. `tick` clamped its step to the
-  // integrator's stability bound and dropped the rest, so a frame longer than
-  // that advanced the simulation by less time than had passed: measured, the
-  // gate opened at 1950ms at 20fps and 3900ms at 10fps, against a 2402ms
-  // deadline. The docstring claimed the bound did not depend on the frame rate;
-  // below 20fps it did, and 17ms of headroom covers one dropped frame rather
-  // than sustained throttling.
+  // simulated time, so it says nothing about where the wall clock actually
+  // enters. `tick` clamped its step to the integrator's stability bound and
+  // dropped the rest, so a frame longer than that advanced the simulation by
+  // less time than had passed: measured, the gate opened at 1950ms at 20fps and
+  // 3900ms at 10fps, against a 2402ms deadline. The docstring claimed the bound
+  // did not depend on the frame rate; below 20fps it did, and 17ms of headroom
+  // covers one dropped frame rather than sustained throttling.
+  //
+  // This drives `tickTo` with a frame clock, because that is the entry point
+  // the overlay's rAF loop calls and the delta is derived behind it. An earlier
+  // version of this test called `tick` with a step it computed itself, which is
+  // the one thing the overlay does not do — it clamped its own delta to 50ms
+  // before calling in, so the sub-stepping under test never saw a long frame
+  // and this test could not go red for the defect it was written for.
   const deadlineMs = cursorPresentationReadyDeadlineMs();
   // The overlay's own release gate, from apps/desktop/src/overlay/cursor-overlay.ts.
   const gateOpen = (engine: CursorEngine): boolean =>
@@ -296,18 +302,34 @@ test('the deadline holds at every frame rate the overlay can paint at', () => {
     engine.setViewport(3840, 1600);
     // The first move only fades the glyph in at its hotspot; settle that before
     // asking for the move whose deadline is under test.
+    let frameMs = 0;
     engine.moveTo(20, 20);
-    for (let i = 0; i < 200; i++) engine.tick(1 / 240);
+    for (let i = 0; i < 200; i++) {
+      frameMs += 1000 / 240;
+      engine.tickTo(frameMs);
+    }
     // A cross-display move, long enough to clamp at springResponseMax, which is
     // the worst case the deadline is derived from.
     engine.moveTo(3800, 1500);
     assert.equal(gateOpen(engine), false, `${fps}fps: the move has a path to begin with`);
 
-    const step = 1 / fps;
+    // The frame that starts the clock. The previous motion settled, so the
+    // overlay stopped asking for frames and the engine dropped its clock; the
+    // first frame after a resume has no previous frame to measure against and
+    // advances nothing. That is deliberate — the alternative is replaying the
+    // idle gap as motion, which the test below pins — and it is not part of
+    // what this deadline bounds. `cursorPresentationReadyDeadlineMs` bounds how
+    // long the motion takes once the overlay is painting it; how long the
+    // overlay takes to start painting is the presentation fence's own backstop.
+    const stepMs = 1000 / fps;
+    frameMs += stepMs;
+    engine.tickTo(frameMs);
+
     let wallClockMs = 0;
     while (!gateOpen(engine) && wallClockMs < 30_000) {
-      engine.tick(step);
-      wallClockMs += step * 1000;
+      frameMs += stepMs;
+      wallClockMs += stepMs;
+      engine.tickTo(frameMs);
     }
     assert.ok(
       gateOpen(engine),
@@ -320,6 +342,42 @@ test('the deadline holds at every frame rate the overlay can paint at', () => {
     );
   }
 });
+
+test('a presentation resumed after an idle gap does not replay the gap', () => {
+  // The frame clock is the engine's now, so it has to survive the overlay's rAF
+  // loop stopping. `cursor-overlay.ts` blocks on idle — no frames at all while
+  // the cursor rests — and the next `tickTo` after a move arrives carries the
+  // whole gap as its delta. Kept, that is up to `MAX_CATCH_UP` of a motion the
+  // engine was handed a millisecond ago, integrated before the first frame is
+  // painted: the glyph teleports most of the way and the release gate opens
+  // instantly, which is the mid-flight dispatch the gate exists to prevent.
+  const engine = new CursorEngine();
+  engine.setViewport(3840, 1600);
+  engine.moveTo(20, 20);
+  let frameMs = 0;
+  while (engine.isMoving() && frameMs < 30_000) {
+    frameMs += 1000 / 60;
+    engine.tickTo(frameMs);
+  }
+  assert.equal(engine.isMoving(), false, 'the first move settles, so the loop would stop here');
+
+  // Sixty seconds of no frames, then a fresh move — exactly the shape of a
+  // cursor that rested through a turn and was asked to move again.
+  const idleMs = 60_000;
+  engine.moveTo(3800, 1500);
+  const startedAt: [number, number] = [engine.pos[0], engine.pos[1]];
+  engine.tickTo(frameMs + idleMs);
+
+  const travelled = Math.hypot(engine.pos[0] - startedAt[0], engine.pos[1] - startedAt[1]);
+  const total = Math.hypot(3800 - startedAt[0], 1500 - startedAt[1]);
+  assert.ok(
+    travelled < total * 0.05,
+    `the first frame after a ${idleMs}ms idle advanced the glyph ${Math.round(travelled)}px `
+      + `of ${Math.round(total)}px; the gap was replayed as motion`,
+  );
+  assert.equal(engine.motionProgress() < CURSOR_CLOSE_ENOUGH.progress, true);
+});
+
 
 test('the landing the runtime waits for fits in the backstop it waits with', () => {
   // `presentationFinishedTimeoutMs` looks like `readyTimeoutMs` chosen a second

@@ -557,6 +557,11 @@ export class CursorEngine {
   private clickOnArrive = false;
   private palette: Palette = makaBrandPalette();
   private viewport: Viewport | null = null;
+  /**
+   * The frame timestamp {@link tickTo} last accounted for, or `undefined` when
+   * the presentation is at rest and the next frame starts a new clock.
+   */
+  private lastFrameMs: number | undefined;
 
   private readonly axis = makeSpring(
     CODEX_CURSOR_MOTION.clickAngle,
@@ -749,6 +754,38 @@ export class CursorEngine {
     const steps = Math.ceil(total / MAX_INTEGRATION_STEP);
     const step = total / steps;
     for (let i = 0; i < steps; i++) this.step(step);
+  }
+
+  /**
+   * Advance the presentation to the frame timestamp `nowMs`, in milliseconds on
+   * whatever monotonic clock the caller's frames are stamped with
+   * (`requestAnimationFrame`'s argument, in the overlay).
+   *
+   * This exists because {@link tick} sub-stepping a long frame bought nothing
+   * while the only production caller never handed it one. `cursor-overlay.ts`
+   * computed its own delta as `Math.min(0.05, (now - last) / 1000)` — the same
+   * truncation `tick` had just been fixed not to do, one call frame earlier —
+   * so a throttled compositor still advanced the simulation by less time than
+   * had passed, and `cursorPresentationReadyDeadlineMs` was still a claim about
+   * frame rate rather than about the spring. The engine test drove `tick`
+   * directly and stayed green through all of it.
+   *
+   * The delta is derived here, from a clock the engine owns, so there is no
+   * delta for a caller to clamp: the caller's only input is when the frame
+   * happened. {@link tick} stays public for tests that want to state a step
+   * outright, and it is still the bound on how much wall clock one frame may
+   * account for.
+   *
+   * The clock is dropped whenever the presentation comes to rest, which is
+   * exactly when the overlay stops asking for frames. Without that, a cursor
+   * idle for a minute would resume with a minute of arrears and replay
+   * {@link MAX_CATCH_UP} of a motion that had only just been given to it.
+   */
+  tickTo(nowMs: number): void {
+    const previous = this.lastFrameMs;
+    this.lastFrameMs = nowMs;
+    this.tick(previous === undefined ? 0 : (nowMs - previous) / 1000);
+    if (!this.isMoving()) this.lastFrameMs = undefined;
   }
 
   private step(dt: number): void {
