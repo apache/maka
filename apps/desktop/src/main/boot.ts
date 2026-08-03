@@ -39,6 +39,7 @@ import {
   FakeBackend,
   SessionManager,
   createLocalContinuationSafetyInspector,
+  createConfiguredSubagentCatalog,
   buildDeepResearchTools,
   getAIModel,
   generateSessionTitle as generateRuntimeSessionTitle,
@@ -253,6 +254,10 @@ const runtimePersistence = await openRuntimeEventPersistence({
 const runtimeEventStore = runtimePersistence.runtimeEventStore;
 const connectionStore = createConnectionStore(workspaceRoot);
 const settingsStore = createSettingsStore(workspaceRoot);
+const subagentCatalog = createConfiguredSubagentCatalog({
+  getSettings: () => settingsStore.get(),
+  getConnection: (slug) => connectionStore.get(slug),
+});
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({ clientName: 'maka-desktop', clientVersion: app.getVersion() });
 let mcpStartup: Promise<void> | undefined;
@@ -844,6 +849,7 @@ const runtime = new SessionManager({
   shellRuns,
   backends,
   childTools: childAgentTools,
+  subagentCatalog,
   worktreeChildExecutor,
   safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
   onContinuationLifecycleEvent: (event) => {

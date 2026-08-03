@@ -25,6 +25,7 @@ import {
   createProviderRequestCaptureRecorder,
   createFilesystemWorkerLaunchSpecProvider,
   createLocalContinuationSafetyInspector,
+  createConfiguredSubagentCatalog,
   drainGoalTurn,
   FilesystemWorkerClient,
   buildDefaultContextBudgetPolicy,
@@ -255,6 +256,10 @@ export async function createMakaCliRuntimeContext(
   const connectionStore = createConnectionStore(configRoot);
   const credentialStore = createFileCredentialStore(configRoot);
   const settingsStore = createSettingsStore(configRoot);
+  const subagentCatalog = createConfiguredSubagentCatalog({
+    getSettings: () => settingsStore.get(),
+    getConnection: (slug) => connectionStore.get(slug),
+  });
   // Read-only scanner over other agents' local session stores (~/.claude,
   // ~/.codex). Independent of the Maka workspace — takes no workspaceRoot.
   const foreignSessions = createForeignSessionStore();
@@ -703,6 +708,7 @@ export async function createMakaCliRuntimeContext(
                   toolCallId: childInput.toolCallId,
                 },
                 agentProfile: childInput.agentProfile,
+                ...(childInput.subagentId ? { subagentId: childInput.subagentId } : {}),
                 prompt: childInput.prompt,
                 ...(childInput.swarm ? { swarm: childInput.swarm } : {}),
                 abortSignal: childInput.abortSignal,
@@ -814,6 +820,7 @@ export async function createMakaCliRuntimeContext(
       : {}),
     shellRuns,
     backends,
+    subagentCatalog,
     runtimeSource: input.runtimeSource ?? (input.surface === 'activation' ? 'gateway' : undefined),
     safeBoundaryResumeEnabled:
       input.safeBoundaryResumeEnabled ??

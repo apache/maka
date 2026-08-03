@@ -3,6 +3,7 @@ import {
   TASK_ID_MAX_CHARS,
   decodeCanonicalToolResultContent,
   isSafeTaskId,
+  isSafeSubagentPresetId,
   type TaskLedgerStore,
   type ToolResultContent,
 } from '@maka/core';
@@ -70,7 +71,8 @@ export function buildSubagentSpawnTool(
   deps: { taskLedger?: TaskLedgerStore; definitions?: readonly AgentDefinition[] } = {},
 ): MakaTool<
   {
-    profile: string;
+    profile?: string;
+    subagent_id?: string;
     task: string;
     write_back?: string;
     isolation?: string;
@@ -84,10 +86,17 @@ export function buildSubagentSpawnTool(
     name: AGENT_SPAWN_TOOL_NAME,
     displayName: 'Agent',
     description:
-      'Run a foreground catalog child agent for a bounded task and return its explicit result.',
+      'Run one bounded foreground child task. Prefer agent_list, then select the user-approved subagent_id whose description fits the task; profile is retained for legacy callers.',
     parameters: z
       .object({
-        profile: z.enum(profiles).describe('Child agent profile.'),
+        profile: z.enum(profiles).optional().describe('Legacy child capability profile.'),
+        subagent_id: z
+          .string()
+          .min(1)
+          .max(128)
+          .refine(isSafeSubagentPresetId)
+          .optional()
+          .describe('User-approved subagent preset id from agent_list.'),
         task: z.string().min(1).max(60_000).describe('Bounded task for the selected child agent.'),
         write_back: z
           .enum(AGENT_SPAWN_WRITE_BACK_MODES)
@@ -115,6 +124,14 @@ export function buildSubagentSpawnTool(
       })
       .strict()
       .superRefine((input, ctx) => {
+        if (Boolean(input.profile) === Boolean(input.subagent_id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Provide exactly one of subagent_id or legacy profile.',
+          });
+          return;
+        }
+        if (!input.profile) return;
         const definition = requireAgentDefinitionByProfile(definitions, input.profile);
         const requestedWriteBack = input.write_back ?? definition.contract.defaultWriteBack;
         if (!definition.contract.supportedWriteBack.some((mode) => mode === requestedWriteBack)) {
@@ -135,7 +152,9 @@ export function buildSubagentSpawnTool(
       }),
     categoryHint: 'subagent',
     impl: async (input, ctx) => {
-      const definition = requireAgentDefinitionByProfile(definitions, input.profile);
+      const definition = input.profile
+        ? requireAgentDefinitionByProfile(definitions, input.profile)
+        : await resolvePresetDefinition(input.subagent_id!, ctx, definitions);
       const requestedWriteBack = input.write_back ?? definition.contract.defaultWriteBack;
       if (!definition.contract.supportedWriteBack.some((mode) => mode === requestedWriteBack)) {
         throw new Error(
@@ -173,6 +192,7 @@ export function buildSubagentSpawnTool(
         result = projectSubagentToolResult(
           await ctx.spawnChildSession({
             agentProfile: definition.profile,
+            ...(input.subagent_id ? { subagentId: input.subagent_id } : {}),
             prompt: input.task,
             ...(boundTask
               ? {
@@ -257,6 +277,35 @@ export function buildSubagentSpawnTool(
   };
 }
 
+async function resolvePresetDefinition(
+  subagentId: string,
+  ctx: MakaToolContext,
+  definitions: readonly AgentDefinition[],
+): Promise<AgentDefinition> {
+  if (!ctx.listChildAgents) {
+    throw new Error('listChildAgents capability is unavailable in this runtime context');
+  }
+  const catalog = await ctx.listChildAgents();
+  if (!catalog || typeof catalog !== 'object' || Array.isArray(catalog)) {
+    throw new Error('agent_list returned an invalid catalog');
+  }
+  const presets = (catalog as { presets?: unknown }).presets;
+  if (!Array.isArray(presets)) throw new Error('Configured subagent catalog is unavailable');
+  const preset = presets.find(
+    (candidate): candidate is { id: string; profile: string; availability?: { status?: string } } =>
+      Boolean(candidate) &&
+      typeof candidate === 'object' &&
+      !Array.isArray(candidate) &&
+      (candidate as { id?: unknown }).id === subagentId &&
+      typeof (candidate as { profile?: unknown }).profile === 'string',
+  );
+  if (!preset) throw new Error(`Unknown subagent_id "${subagentId}". Call agent_list first.`);
+  if (preset.availability?.status !== 'available') {
+    throw new Error(`Subagent preset "${subagentId}" is unavailable.`);
+  }
+  return requireAgentDefinitionByProfile(definitions, preset.profile);
+}
+
 function projectSubagentToolResult(value: unknown): Omit<SubagentToolResult, 'kind'> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Child agent returned an invalid result');
@@ -296,7 +345,7 @@ export function buildSubagentListTool(): MakaTool<Record<string, never>, unknown
     name: AGENT_LIST_TOOL_NAME,
     displayName: 'Agent List',
     description:
-      'List available agent catalog definitions and child agent runs for the current session.',
+      'List user-approved subagent presets (including task descriptions, model routes, and availability), capability definitions, and child runs for this session.',
     parameters: z.object({}),
     categoryHint: 'read',
     impl: async (_input, ctx) => {

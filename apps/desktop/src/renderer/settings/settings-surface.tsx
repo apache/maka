@@ -29,6 +29,7 @@ import type {
 import { createDefaultSettings } from '@maka/core/settings';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './ProvidersPanel';
+import { SubagentPresetsPanel } from './subagent-presets-panel';
 import { safeLocalStorageSet } from '../browser-storage';
 import { AboutSettingsPage } from './about-settings-page';
 import { AppearanceSettingsPage } from './appearance-settings-page';
@@ -402,6 +403,11 @@ function SettingsPage(props: {
             initialConnectionSlug={props.initialConnectionSlug}
             initialCreateProviderType={props.initialCreateProviderType}
             onInitialCreateProviderConsumed={props.onInitialCreateProviderConsumed}
+          />
+          <SubagentPresetsPanel
+            settings={props.settings}
+            connections={props.connections}
+            onUpdate={props.onUpdateSettings}
           />
         </div>
       );

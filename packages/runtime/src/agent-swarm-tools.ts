@@ -2,6 +2,7 @@ import { redactSecrets } from '@maka/core/redaction';
 import {
   TASK_ID_MAX_CHARS,
   isSafeTaskId,
+  isSafeSubagentPresetId,
   projectAgentSwarmResult,
   type ToolResultContent,
 } from '@maka/core';
@@ -48,7 +49,8 @@ const AGENT_SWARM_ERROR_MAX_CHARS = 1_000;
 
 export interface AgentSwarmExplicitItemInput {
   item_id: string;
-  profile: string;
+  profile?: string;
+  subagent_id?: string;
   task: string;
   write_back?: string;
   isolation?: string;
@@ -62,7 +64,8 @@ export interface AgentSwarmExplicitToolInput {
 
 export interface AgentSwarmTemplateToolInput {
   prompt_template: string;
-  profile: string;
+  profile?: string;
+  subagent_id?: string;
   items: string[];
   resume_run_ids?: Record<string, string>;
   max_concurrency?: number;
@@ -84,6 +87,7 @@ interface PreparedAgentSwarmItem {
   readonly index: number;
   readonly itemId: string;
   readonly profile: string;
+  readonly subagentId?: string;
   readonly task: string;
   readonly definition: AgentDefinition;
   readonly mode: 'spawn' | 'resume';
@@ -129,7 +133,7 @@ export function buildAgentSwarmTool(
     displayName: 'Agent Swarm',
     description: [
       'Run the same kind of bounded foreground child work over several independent items.',
-      `Provide either explicit structured items, or prompt_template with one shared profile and string items; every ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER} occurrence is replaced with the item value.`,
+      `Prefer a user-approved subagent_id from agent_list; legacy profile remains supported. Provide either explicit structured items, or prompt_template with one shared selector and string items; every ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER} occurrence is replaced with the item value.`,
       'Use resume_run_ids to continue terminal child AgentRuns by runId; resumed children are ordered before new items.',
       'Use this only when every item can run independently. Results return in input order; you remain responsible for semantic synthesis.',
     ].join(' '),
@@ -248,6 +252,7 @@ export function buildAgentSwarmTool(
                   })) as SpawnChildAgentResult)
                 : ((await ctx.spawnChildSession!({
                     agentProfile: item.definition.profile,
+                    ...(item.subagentId ? { subagentId: item.subagentId } : {}),
                     prompt: item.task,
                     swarm: {
                       swarmId: ctx.toolCallId,
@@ -423,7 +428,14 @@ function agentSwarmInputSchema(
         .max(TASK_ID_MAX_CHARS)
         .refine(isSafeTaskId)
         .describe('Stable item id (letters, digits, dot, underscore, colon, or dash).'),
-      profile: z.enum(profiles).describe('Child agent profile.'),
+      profile: z.enum(profiles).optional().describe('Legacy child capability profile.'),
+      subagent_id: z
+        .string()
+        .min(1)
+        .max(128)
+        .refine(isSafeSubagentPresetId)
+        .optional()
+        .describe('User-approved subagent preset id from agent_list.'),
       task: z
         .string()
         .min(1)
@@ -439,6 +451,14 @@ function agentSwarmInputSchema(
         .describe('Requested child workspace isolation.'),
     })
     .superRefine((input, ctx) => {
+      if (Boolean(input.profile) === Boolean(input.subagent_id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Provide exactly one of subagent_id or legacy profile.',
+        });
+        return;
+      }
+      if (!input.profile) return;
       addAgentContractIssues(input, ctx, definitions);
     });
 
@@ -478,6 +498,13 @@ function agentSwarmInputSchema(
         .enum(profiles)
         .optional()
         .describe('Shared child profile for prompt_template string items.'),
+      subagent_id: z
+        .string()
+        .min(1)
+        .max(128)
+        .refine(isSafeSubagentPresetId)
+        .optional()
+        .describe('Shared user-approved subagent preset id for string items.'),
       resume_run_ids: z
         .record(z.string().trim().min(1), z.string().trim().min(1).max(AGENT_SWARM_TASK_MAX_CHARS))
         .optional()
@@ -521,6 +548,13 @@ function agentSwarmInputSchema(
             message: 'profile requires string items.',
           });
         }
+        if (input.subagent_id !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['subagent_id'],
+            message: 'subagent_id requires string items.',
+          });
+        }
         return;
       }
 
@@ -540,6 +574,13 @@ function agentSwarmInputSchema(
             message: 'profile is specified per item when items are structured.',
           });
         }
+        if (input.subagent_id !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['subagent_id'],
+            message: 'subagent_id is specified per item when items are structured.',
+          });
+        }
         return;
       }
 
@@ -551,11 +592,10 @@ function agentSwarmInputSchema(
         });
         return;
       }
-      if (input.profile === undefined) {
+      if (Boolean(input.profile) === Boolean(input.subagent_id)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['profile'],
-          message: 'profile is required when items are strings.',
+          message: 'String items require exactly one of subagent_id or legacy profile.',
         });
       }
       if (!input.prompt_template.includes(AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER)) {
@@ -596,6 +636,7 @@ function addAgentContractIssues(
   ctx: z.RefinementCtx,
   definitions: readonly AgentDefinition[],
 ): void {
+  if (!input.profile) return;
   const definition = requireAgentDefinitionByProfile(definitions, input.profile);
   const writeBack = input.write_back ?? definition.contract.defaultWriteBack;
   if (!definition.contract.supportedWriteBack.some((mode) => mode === writeBack)) {
@@ -623,7 +664,8 @@ async function prepareAgentSwarmInput(
   readonly items: readonly PreparedAgentSwarmItem[];
   readonly maxConcurrency: number;
 }> {
-  const preflight = preflightAgentSwarmInput(input, definitions);
+  const presetProfiles = await readAvailablePresetProfiles(input, ctx);
+  const preflight = preflightAgentSwarmInput(input, definitions, presetProfiles);
   if (preflight.items.length > 0 && !ctx.spawnChildSession) {
     throw new Error('spawnChildSession capability is unavailable in this runtime context');
   }
@@ -671,6 +713,7 @@ async function prepareAgentSwarmInput(
 function preflightAgentSwarmInput(
   input: AgentSwarmToolInput,
   definitions: readonly AgentDefinition[],
+  presetProfiles: ReadonlyMap<string, string>,
 ): {
   readonly items: readonly PreparedAgentSwarmItem[];
   readonly resumes: readonly PendingAgentSwarmResume[];
@@ -731,7 +774,13 @@ function preflightAgentSwarmInput(
       throw new Error(`Agent swarm item "${item.item_id}" has an invalid task.`);
     }
 
-    const definition = requireAgentDefinitionByProfile(definitions, item.profile);
+    const profile = item.profile ?? presetProfiles.get(item.subagent_id!);
+    if (!profile) {
+      throw new Error(
+        `Unknown or unavailable subagent_id "${item.subagent_id}". Call agent_list first.`,
+      );
+    }
+    const definition = requireAgentDefinitionByProfile(definitions, profile);
     const writeBack = item.write_back ?? definition.contract.defaultWriteBack;
     if (!definition.contract.supportedWriteBack.some((mode) => mode === writeBack)) {
       throw new Error(
@@ -748,6 +797,7 @@ function preflightAgentSwarmInput(
       index: resumes.length + index,
       itemId: item.item_id,
       profile: definition.profile,
+      ...(item.subagent_id ? { subagentId: item.subagent_id } : {}),
       task: item.task,
       definition,
       mode: 'spawn',
@@ -758,15 +808,15 @@ function preflightAgentSwarmInput(
 
 function normalizeAgentSwarmItems(input: AgentSwarmToolInput): AgentSwarmExplicitItemInput[] {
   if (!('items' in input) || !input.items) {
-    if ('prompt_template' in input || 'profile' in input) {
-      throw new Error('prompt_template and shared profile require string items.');
+    if ('prompt_template' in input || 'profile' in input || 'subagent_id' in input) {
+      throw new Error('prompt_template and shared selector require string items.');
     }
     return [];
   }
   const stringItemCount = input.items.filter((item) => typeof item === 'string').length;
   if (stringItemCount === 0) {
-    if ('prompt_template' in input || 'profile' in input) {
-      throw new Error('prompt_template and shared profile are only valid when items are strings.');
+    if ('prompt_template' in input || 'profile' in input || 'subagent_id' in input) {
+      throw new Error('prompt_template and shared selector are only valid when items are strings.');
     }
     return input.items;
   }
@@ -776,8 +826,8 @@ function normalizeAgentSwarmItems(input: AgentSwarmToolInput): AgentSwarmExplici
   if (!('prompt_template' in input) || typeof input.prompt_template !== 'string') {
     throw new Error('prompt_template is required when agent swarm items are strings.');
   }
-  if (!('profile' in input) || typeof input.profile !== 'string') {
-    throw new Error('profile is required when agent swarm items are strings.');
+  if (Boolean(input.profile) === Boolean(input.subagent_id)) {
+    throw new Error('String items require exactly one of subagent_id or legacy profile.');
   }
 
   const promptTemplate = input.prompt_template.trim();
@@ -802,10 +852,50 @@ function normalizeAgentSwarmItems(input: AgentSwarmToolInput): AgentSwarmExplici
     seenTasks.add(task);
     return {
       item_id: `item-${index + 1}`,
-      profile: input.profile,
+      ...(input.subagent_id ? { subagent_id: input.subagent_id } : { profile: input.profile! }),
       task,
     };
   });
+}
+
+async function readAvailablePresetProfiles(
+  input: AgentSwarmToolInput,
+  ctx: MakaToolContext,
+): Promise<ReadonlyMap<string, string>> {
+  const ids = new Set<string>();
+  if ('subagent_id' in input && input.subagent_id) ids.add(input.subagent_id);
+  if ('items' in input && Array.isArray(input.items)) {
+    for (const item of input.items) {
+      if (typeof item !== 'string' && item.subagent_id) ids.add(item.subagent_id);
+    }
+  }
+  if (ids.size === 0) return new Map();
+  if (!ctx.listChildAgents) {
+    throw new Error('listChildAgents capability is unavailable in this runtime context');
+  }
+  const catalog = await ctx.listChildAgents();
+  const presets =
+    catalog && typeof catalog === 'object' && !Array.isArray(catalog)
+      ? (catalog as { presets?: unknown }).presets
+      : undefined;
+  if (!Array.isArray(presets)) throw new Error('Configured subagent catalog is unavailable');
+  const profiles = new Map<string, string>();
+  for (const candidate of presets) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const preset = candidate as {
+      id?: unknown;
+      profile?: unknown;
+      availability?: { status?: unknown };
+    };
+    if (
+      typeof preset.id === 'string' &&
+      typeof preset.profile === 'string' &&
+      preset.availability?.status === 'available'
+    ) {
+      profiles.set(preset.id, preset.profile);
+    }
+  }
+  return profiles;
 }
 
 function expandAgentSwarmPromptTemplate(promptTemplate: string, item: string): string {

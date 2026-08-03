@@ -120,6 +120,8 @@ export interface SubagentSessionRuntime {
   agentId: string;
   agentName: string;
   profile: string;
+  /** User-approved model route selected at spawn time. Absent for legacy profile spawns. */
+  presetId?: string;
   systemPrompt: string;
   toolNames: string[];
   categoryPolicy: Partial<Record<ToolCategory, PolicyDecision>>;
@@ -349,7 +351,7 @@ const SUBAGENT_SESSION_RUNTIME_SHAPE = defineObjectShape<SubagentSessionRuntime>
     'toolNames',
     'categoryPolicy',
   ],
-  ['permissionCeiling'],
+  ['permissionCeiling', 'presetId'],
 );
 const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionSpawn>()(
   ['schemaVersion', 'requestFingerprint', 'initialTurnId', 'initialRunId'],
@@ -408,6 +410,7 @@ export function isSubagentSessionRuntime(value: unknown): value is SubagentSessi
     (value.definitionVersion as number) < 1 ||
     !isSessionLineageId(value.agentId) ||
     !isSessionLineageId(value.profile) ||
+    (value.presetId !== undefined && !isSessionLineageId(value.presetId)) ||
     typeof value.agentName !== 'string' ||
     value.agentName.length === 0 ||
     value.agentName.length > SUBAGENT_RUNTIME_NAME_MAX_CHARS ||

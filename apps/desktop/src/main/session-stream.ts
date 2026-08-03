@@ -199,6 +199,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
                   toolCallId: input.toolCallId,
                 },
                 agentProfile: input.agentProfile,
+                ...(input.subagentId ? { subagentId: input.subagentId } : {}),
                 prompt: input.prompt,
                 ...(input.swarm ? { swarm: input.swarm } : {}),
                 abortSignal: input.abortSignal,

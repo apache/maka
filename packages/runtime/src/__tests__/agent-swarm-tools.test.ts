@@ -270,6 +270,41 @@ describe('AgentSwarm adapter', () => {
     );
   });
 
+  test('routes every configured template item through the selected subagent_id', async () => {
+    const selectors: Array<{ profile: string; subagentId?: string }> = [];
+    const tool = buildAgentSwarmTool();
+    const result = await tool.impl(
+      {
+        prompt_template: `Review ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER}.`,
+        subagent_id: 'fast-reader',
+        items: ['runtime', 'desktop'],
+        max_concurrency: 2,
+      },
+      context({
+        listChildAgents: async () => ({
+          presets: [
+            {
+              id: 'fast-reader',
+              profile: LOCAL_READ_AGENT_PROFILE,
+              availability: { status: 'available' },
+            },
+          ],
+        }),
+        spawnChildSession: async (input) => {
+          selectors.push({ profile: input.agentProfile, subagentId: input.subagentId });
+          const index = selectors.length - 1;
+          return { ...childResult(index), childSessionId: `child-session-${index}` };
+        },
+      }),
+    );
+
+    assert.deepEqual(selectors, [
+      { profile: LOCAL_READ_AGENT_PROFILE, subagentId: 'fast-reader' },
+      { profile: LOCAL_READ_AGENT_PROFILE, subagentId: 'fast-reader' },
+    ]);
+    assert.equal(result.status, 'completed');
+  });
+
   test('projects item-scoped child tool and provider retry progress for spawned and resumed items', async () => {
     const output: Array<{ stream: string; chunk: string }> = [];
     const result = await buildAgentSwarmTool().impl(

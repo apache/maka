@@ -2122,6 +2122,91 @@ describe('SessionManager child-session runtime primitive', () => {
     while (!(await parentTurn.next()).done) {}
   });
 
+  test('freezes a configured subagent model target independently from the parent', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register(
+      'fake',
+      (ctx) => new TestBackend(ctx, ctx.header.subagentRuntime ? undefined : parentGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      subagentCatalog: {
+        list: async () => [
+          {
+            id: 'fast-reader',
+            name: 'Fast reader',
+            description: 'Cheap scans',
+            profile: 'local_read',
+            connectionSlug: 'worker-connection',
+            model: 'worker-model',
+            thinkingLevel: 'low',
+            enabled: true,
+            availability: { status: 'available' },
+          },
+        ],
+        resolve: async (id) => {
+          if (id !== 'fast-reader') throw new Error('unknown preset');
+          return {
+            id,
+            name: 'Fast reader',
+            description: 'Cheap scans',
+            profile: 'local_read',
+            connectionSlug: 'worker-connection',
+            model: 'worker-model',
+            thinkingLevel: 'low',
+            enabled: true,
+          };
+        },
+      },
+      newId: nextId(),
+      now: nextNow(150),
+      runtimeSource: 'test',
+    });
+    const parent = await manager.createSession(
+      makeInput({
+        llmConnectionSlug: 'parent-connection',
+        model: 'parent-model',
+        thinkingLevel: 'high',
+      }),
+    );
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn-preset', text: 'delegate' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const result = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-preset',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      subagentId: 'fast-reader',
+      prompt: 'inspect cheaply',
+    });
+    const child = await store.readHeader(result.childSessionId);
+
+    expect(child.llmConnectionSlug).toBe('worker-connection');
+    expect(child.model).toBe('worker-model');
+    expect(child.thinkingLevel).toBe('low');
+    expect(child.subagentRuntime?.presetId).toBe('fast-reader');
+    expect(child.subagentRuntime?.agentName).toBe('Fast reader');
+    expect(child.connectionLocked).toBe(true);
+    expect((await manager.listChildAgents(parent.id)).presets[0]?.id).toBe('fast-reader');
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
   test('child sessions preserve an explicit no-project association', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();

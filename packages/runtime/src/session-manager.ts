@@ -102,6 +102,7 @@ import type {
   ToolBoundaryProtocol,
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
+  SubagentPreset,
 } from '@maka/core';
 import { AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION } from '@maka/core';
 import {
@@ -191,6 +192,7 @@ import {
   type AgentProfile,
   type AgentDefinition,
   type AgentDefinitionListItem,
+  type SubagentPresetListItem,
 } from './agent-catalog.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import { stableHash } from './request-shape.js';
@@ -257,6 +259,8 @@ export interface SpawnChildAgentInput {
 export interface SpawnChildSessionInput {
   spawnedBy: SubagentSessionParent['spawnedBy'];
   agentProfile: AgentProfile;
+  /** User-approved catalog selector. The runtime resolves its frozen model target. */
+  subagentId?: string;
   prompt: string;
   name?: string;
   turnId?: string;
@@ -273,6 +277,10 @@ export interface SpawnChildSessionInput {
   /** Presentation-only observer for projecting child activity into a parent surface. */
   onEvent?: (event: SessionEvent) => void;
 }
+
+type ResolvedSpawnChildSessionInput = SpawnChildSessionInput & {
+  resolvedPreset?: SubagentPreset;
+};
 
 export interface SpawnChildSessionResult extends SpawnChildAgentResult {
   childSessionId: string;
@@ -438,6 +446,8 @@ export interface SubagentExecutionListItem {
 
 export interface AgentListResult {
   definitions: AgentDefinitionListItem[];
+  /** User-configured, host-validated routes the main agent may select by id. */
+  presets: SubagentPresetListItem[];
   /** Canonical mixed projection for new child Sessions and legacy same-session child AgentRuns. */
   executions: SubagentExecutionListItem[];
   /** Legacy projection retained while callers migrate to executions. */
@@ -733,6 +743,11 @@ interface SessionManagerBaseDeps {
   newId: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
+  /** Host-owned user catalog. Runtime receives ids from models, never raw model targets. */
+  subagentCatalog?: {
+    list(): Promise<SubagentPresetListItem[]>;
+    resolve(id: string): Promise<SubagentPreset>;
+  };
   /** Host-owned filesystem isolation for worktree-backed child Sessions. */
   worktreeChildExecutor?: SubagentWorktreeExecutor;
   listArtifactsForTurn?: (sessionId: string, turnId: string) => Promise<ArtifactRecord[]>;
@@ -2114,8 +2129,9 @@ export class SessionManager {
     parentSessionId: string,
     input: SpawnChildSessionInput,
   ): Promise<SpawnChildSessionResult> {
-    const spawnKey = childSessionSpawnKey(parentSessionId, input);
-    const requestFingerprint = childSessionRequestFingerprint(parentSessionId, input);
+    const resolvedInput = await this.resolveChildSessionSelector(input);
+    const spawnKey = childSessionSpawnKey(parentSessionId, resolvedInput);
+    const requestFingerprint = childSessionRequestFingerprint(parentSessionId, resolvedInput);
     const inFlight = this.childSessionSpawns.get(spawnKey);
     if (inFlight) {
       if (inFlight.requestFingerprint !== requestFingerprint) {
@@ -2128,7 +2144,7 @@ export class SessionManager {
     };
     const promise = this.spawnChildSessionOnce(
       parentSessionId,
-      input,
+      resolvedInput,
       requestFingerprint,
       runtimeOwner,
     ).finally(() => runtimeOwner.execution.release());
@@ -2140,6 +2156,20 @@ export class SessionManager {
         this.childSessionSpawns.delete(spawnKey);
       }
     }
+  }
+
+  private async resolveChildSessionSelector(
+    input: SpawnChildSessionInput,
+  ): Promise<ResolvedSpawnChildSessionInput> {
+    if (!input.subagentId) return { ...input };
+    if (!this.deps.subagentCatalog) {
+      throw new Error('Configured subagent catalog is unavailable in this runtime');
+    }
+    const resolvedPreset = await this.deps.subagentCatalog.resolve(input.subagentId);
+    if (resolvedPreset.profile !== input.agentProfile) {
+      throw new Error(`Subagent preset "${input.subagentId}" profile changed during spawn`);
+    }
+    return { ...input, resolvedPreset };
   }
 
   /**
@@ -2737,7 +2767,7 @@ export class SessionManager {
 
   private async spawnChildSessionOnce(
     parentSessionId: string,
-    input: SpawnChildSessionInput,
+    input: ResolvedSpawnChildSessionInput,
     requestFingerprint: string,
     runtimeOwner: { execution: RuntimeExecutionClaim },
   ): Promise<SpawnChildSessionResult> {
@@ -2773,13 +2803,17 @@ export class SessionManager {
       {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
-        name: input.name ?? definition.name,
+        name: input.name ?? input.resolvedPreset?.name ?? definition.name,
         backend: parentHeader.backend,
-        llmConnectionSlug: parentHeader.llmConnectionSlug,
-        model: parentHeader.model,
-        ...(parentHeader.thinkingLevel !== undefined
-          ? { thinkingLevel: parentHeader.thinkingLevel }
-          : {}),
+        llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
+        model: input.resolvedPreset?.model ?? parentHeader.model,
+        ...(input.resolvedPreset
+          ? input.resolvedPreset.thinkingLevel !== undefined
+            ? { thinkingLevel: input.resolvedPreset.thinkingLevel }
+            : {}
+          : parentHeader.thinkingLevel !== undefined
+            ? { thinkingLevel: parentHeader.thinkingLevel }
+            : {}),
         permissionMode: definition.permissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
@@ -2794,8 +2828,9 @@ export class SessionManager {
           schemaVersion: SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
           definitionVersion: definition.definitionVersion,
           agentId: definition.id,
-          agentName: definition.name,
+          agentName: input.resolvedPreset?.name ?? definition.name,
           profile: definition.profile,
+          ...(input.resolvedPreset ? { presetId: input.resolvedPreset.id } : {}),
           systemPrompt: definition.systemPrompt,
           toolNames: [...definition.tools],
           categoryPolicy: {},
@@ -4068,7 +4103,8 @@ export class SessionManager {
       tools: this.deps.childTools ?? [],
       worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
     });
-    if (!this.deps.runStore) return { definitions, executions: [], runs: [] };
+    const presets = this.deps.subagentCatalog ? await this.deps.subagentCatalog.list() : [];
+    if (!this.deps.runStore) return { definitions, presets, executions: [], runs: [] };
     const runs = await this.deps.runStore.listSessionRuns(sessionId);
     const childRuns = await Promise.all(
       runs
@@ -4143,6 +4179,7 @@ export class SessionManager {
     );
     return {
       definitions,
+      presets,
       executions: [
         ...childSessionExecutions,
         ...childRuns.map(
@@ -5851,11 +5888,25 @@ function childSessionSpawnKey(
 
 function childSessionRequestFingerprint(
   parentSessionId: string,
-  input: Pick<SpawnChildSessionInput, 'spawnedBy' | 'agentProfile' | 'prompt' | 'swarm'>,
+  input: Pick<
+    ResolvedSpawnChildSessionInput,
+    'spawnedBy' | 'agentProfile' | 'prompt' | 'swarm' | 'resolvedPreset'
+  >,
 ): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
+  const payload = input.resolvedPreset
+    ? [
+        2,
+        parentSessionId,
+        input.spawnedBy.parentRunId,
+        input.spawnedBy.parentTurnId,
+        input.spawnedBy.toolCallId,
+        input.agentProfile,
+        input.resolvedPreset,
+        input.prompt,
+        input.swarm?.swarmId ?? null,
+        input.swarm?.itemId ?? null,
+      ]
+    : [
         1,
         parentSessionId,
         input.spawnedBy.parentRunId,
@@ -5865,9 +5916,8 @@ function childSessionRequestFingerprint(
         input.prompt,
         input.swarm?.swarmId ?? null,
         input.swarm?.itemId ?? null,
-      ]),
-    )
-    .digest('hex');
+      ];
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
 function claimedAgentGraphIntentRequestFingerprint(

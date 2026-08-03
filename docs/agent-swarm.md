@@ -37,11 +37,37 @@ input order even when children finish out of order.
 
 New work has two mutually exclusive forms. Callers may provide the explicit
 structured items shown below, or use a homogeneous template batch with one
-shared `profile`, a `prompt_template` containing `{{item}}`, and string
+shared selector, a `prompt_template` containing `{{item}}`, and string
 `items`. Template batches replace every placeholder occurrence, reject
 duplicate expanded tasks, generate stable ordered IDs (`item-1`, `item-2`,
 ...), and then enter the same preflight and execution path as explicit items.
 They are input shorthand, not a separate scheduler.
+
+### Configurable subagent model routes
+
+Settings → Models can define multiple user-approved subagent presets. Each
+preset has a stable `subagent_id`, a capability `profile`, and its own model
+connection/model pair. The main Agent discovers these routes with `agent_list`
+and selects one by `subagent_id`; it cannot supply an arbitrary provider or
+model in a tool call.
+
+The runtime resolves the id against the host-owned catalog and freezes the
+resolved connection, model, thinking level, and profile into the new child
+Session. Editing or deleting a preset therefore affects future spawns only;
+resume and retry continue to use the child Session's durable target. The
+legacy `profile` selector remains supported and inherits the parent target.
+
+For a configured route, replace `profile` with `subagent_id` in either an
+explicit item or a template batch:
+
+```ts
+agent_swarm({
+  prompt_template: "Review {{item}} and return concrete evidence.",
+  subagent_id: "fast-reader",
+  items: ["runtime", "desktop", "tests"],
+  max_concurrency: 3
+})
+```
 
 Either form may also include `resume_run_ids`, a map from an existing child
 `runId` to the new prompt that should continue it. A call may contain only

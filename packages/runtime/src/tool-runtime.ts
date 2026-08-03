@@ -168,6 +168,7 @@ export interface MakaToolContext {
   }) => Promise<unknown>;
   spawnChildSession?: (input: {
     agentProfile: AgentProfile;
+    subagentId?: string;
     prompt: string;
     /** Optional swarm identity, scoped to the owning tool call. */
     swarm?: {
@@ -322,6 +323,7 @@ export interface ToolRuntimeInput {
     parentTurnId: string;
     toolCallId: string;
     agentProfile: AgentProfile;
+    subagentId?: string;
     prompt: string;
     swarm?: {
       swarmId: string;
@@ -1703,6 +1705,7 @@ export class ToolRuntime {
                     parentTurnId: input.turnId,
                     toolCallId: input.toolUseId,
                     agentProfile: spawnInput.agentProfile,
+                    ...(spawnInput.subagentId ? { subagentId: spawnInput.subagentId } : {}),
                     prompt: spawnInput.prompt,
                     ...(spawnInput.swarm ? { swarm: spawnInput.swarm } : {}),
                     abortSignal,

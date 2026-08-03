@@ -722,9 +722,13 @@ export type {
   AgentInvocationMode,
   AgentProfile,
   AgentProfileContract,
+  SubagentPresetAvailability,
+  SubagentPresetListItem,
   AgentWorkspaceMode,
   AgentWriteBackMode,
 } from './agent-catalog.js';
+export { createConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
+export type { ConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
 export {
   AGENT_SWARM_DEFAULT_CONCURRENCY,
   AGENT_SWARM_MAX_CONCURRENCY,
