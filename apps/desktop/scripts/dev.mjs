@@ -24,6 +24,15 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
+import {
+  clearDevelopmentSession,
+  createDevelopmentSession,
+  quitMacosDevelopmentApp,
+  recoverStaleDevelopmentSession,
+  resolveMacosDevelopmentLaunch,
+  waitForMacosDevelopmentApp,
+  writeDevelopmentSession,
+} from './dev-app-runtime.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
@@ -142,7 +151,20 @@ if (!devUrl) {
 }
 
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
-const electron = spawn(resolveElectronBin(), ['.', ...process.argv.slice(2)], {
+const appArgs = [DESKTOP_DIR, ...process.argv.slice(2)];
+const macosLaunch = await resolveMacosDevelopmentLaunch();
+if (macosLaunch) {
+  await recoverStaleDevelopmentSession();
+  const userDataArg = process.argv.slice(2).find((arg) => arg.startsWith('--user-data-dir='));
+  writeDevelopmentSession(createDevelopmentSession({
+    supervisorPid: process.pid,
+    viteUrl: devUrl,
+    env: process.env,
+    userDataDir: userDataArg?.slice('--user-data-dir='.length),
+    electronArgs: process.argv.slice(2).filter((arg) => !arg.startsWith('--user-data-dir=')),
+  }));
+}
+const electron = spawn(macosLaunch?.command ?? resolveElectronBin(), macosLaunch?.args ?? appArgs, {
   cwd: DESKTOP_DIR,
   stdio: 'inherit',
   env: { ...process.env, VITE_DEV_SERVER_URL: devUrl },
@@ -152,6 +174,10 @@ let shuttingDown = false;
 async function shutdown(code, options = {}) {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (macosLaunch) {
+    await quitMacosDevelopmentApp();
+    clearDevelopmentSession();
+  }
   if (options.killElectron !== false) {
     await terminateProcessTree(electron);
   }
@@ -174,10 +200,25 @@ function terminateProcessTree(child) {
   return Promise.resolve();
 }
 
-electron.on('exit', (code) => shutdown(code ?? 0, { killElectron: false }));
+if (!macosLaunch) {
+  electron.on('exit', (code) => shutdown(code ?? 0, { killElectron: false }));
+} else {
+  electron.on('exit', (code) => {
+    if (code && code !== 0) shutdown(code, { killElectron: false });
+  });
+}
 electron.on('error', (err) => {
   console.error(`[dev] failed to start Electron: ${err.message}`);
   shutdown(1);
 });
+if (macosLaunch) {
+  void waitForMacosDevelopmentApp().then(
+    () => log('electron', 'Maka Dev startup handshake complete'),
+    (error) => {
+      console.error(`[dev] ${error.message}`);
+      shutdown(1);
+    },
+  );
+}
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));

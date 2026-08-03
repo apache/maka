@@ -22,12 +22,8 @@
         "src/renderer/astryx-theme/makaTheme.ts"
       ],
       "project": ["src/**/*.{ts,tsx}", "e2e/**/*.ts", "stories/**/*.{ts,tsx}", "scripts/**/*.mjs"],
-      "ignoreDependencies": [
-        "@fontsource-variable/geist",
-        "@fontsource-variable/geist-mono",
-        "electron-builder"
-      ],
-      "ignoreBinaries": ["taskkill", "electron-builder"]
+      "ignoreDependencies": ["@fontsource-variable/geist", "@fontsource-variable/geist-mono"],
+      "ignoreBinaries": ["taskkill", "plutil"]
     },
     "packages/ui": {
       "entry": ["src/**/*.test.ts", "src/**/*.test.tsx", "stories/**/*.@(ts|tsx)"],

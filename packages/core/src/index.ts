@@ -1562,7 +1562,9 @@ export type {
 export type { SubagentPreset, SubagentProfile, SubagentSettings } from './subagent-settings.js';
 export {
   MAX_SUBAGENT_PRESETS,
+  SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS,
   SUBAGENT_PRESET_ID_MAX_CHARS,
+  SUBAGENT_PRESET_NAME_MAX_CHARS,
   SUBAGENT_PROFILES,
   isSafeSubagentPresetId,
   isSubagentProfile,

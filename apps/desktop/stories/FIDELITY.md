@@ -19,6 +19,17 @@ The annotation is prose on purpose. Its value is that someone traced the path an
 
 Two of the first batch of annotations were wrong, and both were caught by reading rather than by running anything: one named a path through a builder that cannot produce the state (`CommandPaletteDisabledCommand`), and one named two hosts for a frame that is only one of them. Write the sentence narrow enough to be falsifiable — the host, the builder, the gate — because a sentence vague enough to always be true buys nothing.
 
+## One story per state, not per variant
+
+A story earns its place by rendering pixels no other story renders. A second level of a page — a route level that replaces the list, a form that shares no content with the screen behind it — is its own state, and gets its own story even though a click reaches it. A narrower version of a state already on screen is not.
+
+Two facts decide it, and both were guessed wrong once:
+
+- **Where a story renders.** `scripts/storybook-visual-smoke.mjs` renders each `product-smoke-manifest.json` surface at the viewports and colour schemes that surface declares — several are wide-only or light-only, and every skipped viewport carries a written opt-out reason — and every *other* story exactly once, at 1280 wide in light (`catalogJobs`). A story is not a width matrix; a surface that needs one belongs in the manifest, with its reasons. And `parameters.viewport.defaultViewport` does nothing in Storybook 10, so a story claiming a viewport that way has been rendering at the default width all along.
+- **Whether `play` reaches the state.** `play` runs in the browser, so a story that clicks into a level renders that level — for a reviewer and for the smoke pass, which also fails if the click never lands (see below).
+
+Extra stories still cost: a reviewer scanning the sidebar cannot tell which entry is the page, and duplicates re-render the same pixels every run while claiming coverage they do not add. Where a state matters but renders nothing new, pin it somewhere that runs — a `packages/ui` test or an e2e journey.
+
 ## The frame matters, not just the component
 
 A story that mounts the right component inside the wrong wrapper is still unreachable. If the app wraps a surface in a class that owns its height, padding or alignment, the story has to use that wrapper too — otherwise every geometry comparison against the story is measuring the story's own scaffolding.
@@ -31,9 +42,11 @@ When a component has two hosts, one frame is not both. `capability-audit-strip.s
 
 If the runtime computes a field, ask the runtime for it. A story that hardcodes what a classifier would have returned is asserting a fact rather than showing one, and nothing fails when the classifier moves.
 
-## Assertions belong where they run
+## A `play` function is a step, not a test report
 
-`play` functions do not execute here. No test addon is configured, and `scripts/storybook-visual-smoke.mjs` only listens for the failure events a play function would emit — a story whose `play` throws unconditionally still ships green. #1853 landed a computed line-height assertion in a `play`; it never ran once. Put behavioural and computed-style contracts in a `packages/ui` test or in the smoke script's `checks`, and keep stories to what they can actually prove: that the surface renders.
+A `play` that throws — including from an assertion — fails the smoke run and CI: `scripts/storybook-visual-smoke.mjs` subscribes to `playFunctionThrewException` and `unhandledErrorsWhilePlaying`, and the throw also surfaces as a console error it collects. What `play` cannot do is *report*: there is no test addon, so a run tells you the story broke, not which assertion, in what state, or against what expectation. It is also the slowest place to put a check, because reaching it means building and serving Storybook.
+
+So put behavioural and computed-style contracts where they can name what they check — a `packages/ui` test, an e2e journey, or the smoke script's `checks` — and use `play` for what it is good at: driving a story into the state it claims to render.
 
 ## A story that renders nothing is not a story
 

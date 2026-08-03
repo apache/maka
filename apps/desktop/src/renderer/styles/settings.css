@@ -1,6 +1,7 @@
 /* settings.css — entry; rules split into styles/settings/ (issue #253 Round F). */
 @import "./settings/form.css";
 @import "./settings/rows.css";
+@import "./settings/route.css";
 @import "./settings/nav-sidebar.css";
 @import "./settings/about.css";
 @import "./settings/theme-preview.css";

@@ -1,11 +1,25 @@
-import { useMemo, useState } from 'react';
-import { Badge, HStack, Text, VStack } from '@astryxdesign/core';
-import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
-import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
+// 设置 · 子 Agent — the approved model routes the main agent may delegate to.
+//
+// Two levels, one container, one back affordance, and nothing modal:
+//
+//   list ── editor(new | existing)
+//
+// The providers panel next door answers the same list→detail shape, so this
+// page follows it rather than inventing a second answer — down to the shared
+// focus controller and route header.
+//
+// The page owns no CSS of its own: layout comes from the settings kit and the
+// controls from `@maka/ui`, and `.settingsRouteLevel` is the route-level focus
+// reset it shares with the providers panel.
+import { useId, useMemo, useRef, useState } from 'react';
+import { Banner, HStack, VStack } from '@astryxdesign/core';
 import {
   connectionEnabledModelIds,
   isSafeSubagentPresetId,
   MAX_SUBAGENT_PRESETS,
+  SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS,
+  SUBAGENT_PRESET_ID_MAX_CHARS,
+  SUBAGENT_PRESET_NAME_MAX_CHARS,
   thinkingVariantsForModel,
   type AppSettings,
   type LlmConnection,
@@ -15,9 +29,10 @@ import {
   type UpdateAppSettingsResult,
 } from '@maka/core';
 import {
+  Badge,
   Button,
   EmptyState,
-  FormLayout,
+  IconButton,
   Selector,
   Switch,
   TextArea,
@@ -26,25 +41,35 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { AlertTriangle } from '@maka/ui/icons';
+import { ChevronRight } from '@maka/ui/icons';
 import { getSubagentSettingsCopy } from '../locales/settings-subagents-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
-import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.js';
+import { useSettingsRouteFocus } from './settings-route-focus.js';
+import { SettingsRouteHeader } from './settings-route-header.js';
 import {
+  SettingsActions,
+  SettingsField,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+} from './settings-section.js';
+import { SettingRow } from './settings-rows.js';
+import {
+  nextSubagentDraftForName,
+  resolveSubagentRoute,
   subagentPresetAvailability,
-  suggestSubagentPresetId,
+  type SubagentPageRoute,
 } from './subagent-preset-presentation.js';
 import { statusBadgeVariant } from './settings-status-badge.js';
 
-type EditorDraft = {
-  id: string;
-  name: string;
-  description: string;
-  profile: SubagentProfile;
-  connectionSlug: string;
-  model: string;
+/** How many characters a value spends on leading whitespace the store trims. */
+function leadingSpace(value: string): number {
+  return value.length - value.trimStart().length;
+}
+
+/** The preset as the form holds it: `thinkingLevel` gains the Selector's ''. */
+type SubagentEditorDraft = Omit<SubagentPreset, 'thinkingLevel'> & {
   thinkingLevel: ThinkingLevel | '';
-  enabled: boolean;
 };
 
 export function SubagentSettingsPage(props: {
@@ -57,19 +82,67 @@ export function SubagentSettingsPage(props: {
   const locale = useUiLocale();
   const copy = getSubagentSettingsCopy(locale);
   const toast = useToast();
-  const [editorPresetId, setEditorPresetId] = useState<string | null | undefined>(undefined);
+  const [route, setRoute] = useState<SubagentPageRoute>({ kind: 'list' });
   const [saving, setSaving] = useState(false);
   const presets = props.settings.subagents.presets;
-  const editorPreset = editorPresetId == null
-    ? null
-    : presets.find((preset) => preset.id === editorPresetId) ?? null;
-  const enabledCount = presets.filter((preset) => preset.enabled).length;
+  const { level, preset: editorPreset } = resolveSubagentRoute(route, presets);
   const atLimit = presets.length >= MAX_SUBAGENT_PRESETS;
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const listReturnFocusRef = useRef<string | null>(null);
+  const detailTitleId = useId();
 
-  async function persist(nextPresets: SubagentPreset[]): Promise<boolean> {
+  useSettingsRouteFocus({
+    level,
+    resolveTarget: (current) => {
+      // The region rather than its back button, so a screen reader announces
+      // the preset the user landed in instead of the way out of it.
+      if (current !== 'list') {
+        return document.querySelector<HTMLElement>('[data-maka-contract="subagent-detail"]');
+      }
+      // Consumed here and only here: the ref is set on the way down. The row
+      // may be gone — that is exactly what a deletion does — so the add button
+      // is the fallback, not the default.
+      const returnToId = listReturnFocusRef.current;
+      listReturnFocusRef.current = null;
+      return (returnToId
+        ? document.querySelector<HTMLElement>(`[data-subagent-preset="${returnToId}"]`)
+        : null) ?? addButtonRef.current;
+    },
+  });
+
+  function openEditor(presetId: string): void {
+    listReturnFocusRef.current = presetId;
+    setRoute({ kind: 'edit', presetId });
+  }
+
+  function openCreate(): void {
+    // Nothing to return to: the create level was not opened from a row.
+    listReturnFocusRef.current = null;
+    setRoute({ kind: 'create' });
+  }
+
+  /**
+   * Settings normalization DROPS a preset it dislikes instead of rejecting the
+   * write, so a resolved promise is not a saved preset. The fields the user
+   * can get wrong are held inside their limits before they are submitted;
+   * `expectPresent` is the backstop for the rest — a count that filled up
+   * elsewhere, a rule this page has not heard about — because the alternative
+   * failure is silent, and returns the user to a list missing what they saved.
+   */
+  async function persist(
+    nextPresets: SubagentPreset[],
+    expectPresent?: string,
+  ): Promise<boolean> {
     setSaving(true);
     try {
-      await props.onUpdate({ subagents: { presets: nextPresets } });
+      const result = await props.onUpdate({ subagents: { presets: nextPresets } });
+      if (
+        expectPresent !== undefined &&
+        !result.settings.subagents.presets.some((candidate) => candidate.id === expectPresent)
+      ) {
+        toast.error(copy.toast.saveFailed, copy.toast.rejected);
+        return false;
+      }
       return true;
     } catch (error) {
       toast.error(copy.toast.saveFailed, settingsActionErrorMessage(error, locale));
@@ -77,13 +150,6 @@ export function SubagentSettingsPage(props: {
     } finally {
       setSaving(false);
     }
-  }
-
-  async function savePreset(next: SubagentPreset): Promise<boolean> {
-    const nextPresets = editorPresetId == null
-      ? [...presets, next]
-      : presets.map((candidate) => candidate.id === editorPresetId ? next : candidate);
-    return persist(nextPresets);
   }
 
   async function removePreset(preset: SubagentPreset): Promise<void> {
@@ -95,53 +161,96 @@ export function SubagentSettingsPage(props: {
       destructive: true,
     });
     if (!confirmed) return;
+    // No `setRoute`: with the preset gone the edit route is unsatisfiable, so
+    // `resolveSubagentRoute` renders the list for this path and for a deletion
+    // that happened somewhere else alike.
     await persist(presets.filter((candidate) => candidate.id !== preset.id));
   }
 
+  if (level !== 'list') {
+    return (
+      // A named region, so a screen reader announces which preset the user
+      // landed in. tabIndex -1 so the level itself can take the focus the
+      // route-focus hook hands it; it draws no ring.
+      <VStack
+        gap={5}
+        tabIndex={-1}
+        role="region"
+        aria-labelledby={detailTitleId}
+        className="settingsRouteLevel"
+        data-maka-contract="subagent-detail"
+      >
+        <SettingsRouteHeader
+          onBack={() => setRoute({ kind: 'list' })}
+          backLabel={copy.editor.backToList}
+          // Leaving mid-save discards a draft the failed write cannot give back.
+          isBackDisabled={saving}
+          titleId={detailTitleId}
+          title={editorPreset ? editorPreset.name : copy.section.add}
+          subtitle={editorPreset ? copy.editor.editSubtitle : copy.editor.createSubtitle}
+        />
+        <SubagentPresetEditor
+          key={editorPreset?.id ?? 'new'}
+          preset={editorPreset}
+          presets={presets}
+          connections={props.connections}
+          isSaving={saving}
+          onCancel={() => setRoute({ kind: 'list' })}
+          onDelete={editorPreset ? () => void removePreset(editorPreset) : undefined}
+          onSave={async (next) => {
+            const nextPresets = editorPreset
+              ? presets.map((candidate) => candidate.id === editorPreset.id ? next : candidate)
+              : [...presets, next];
+            if (await persist(nextPresets, next.id)) setRoute({ kind: 'list' });
+          }}
+        />
+      </VStack>
+    );
+  }
+
   return (
-    <SettingsPage className="settingsSubagentsPage">
+    <SettingsPage>
       <SettingsSection
         title={copy.section.title}
-        description={`${copy.section.description} ${copy.section.count(enabledCount, presets.length)}`}
-        action={(
+        description={copy.section.count(presets.length, MAX_SUBAGENT_PRESETS)}
+        action={presets.length > 0 ? (
           <Button
+            ref={addButtonRef}
             variant="primary"
             size="sm"
-            label={atLimit ? copy.section.limitReached : copy.section.add}
+            label={copy.section.add}
             isDisabled={saving || atLimit}
-            onClick={() => setEditorPresetId(null)}
+            onClick={openCreate}
           />
-        )}
+        ) : undefined}
       >
         {presets.length === 0 ? (
+          // The empty state owns the only call to action on an empty page.
           <EmptyState
             title={copy.section.emptyTitle}
             description={copy.section.emptyDescription}
             actions={(
               <Button
+                ref={addButtonRef}
                 variant="primary"
                 label={copy.section.add}
                 isDisabled={saving}
-                onClick={() => setEditorPresetId(null)}
+                onClick={openCreate}
               />
             )}
           />
         ) : presets.map((preset) => {
           const availability = subagentPresetAvailability(preset, props.connections);
-          const connection = props.connections.find(
-            (candidate) => candidate.slug === preset.connectionSlug,
-          );
-          const profile = copy.profiles[preset.profile];
-          const statusLabel = {
-            available: copy.status.available,
-            disabled: copy.status.disabled,
+          // Only a route the main agent cannot take earns a badge: 已停用 is
+          // the switch beside it said twice, and a row that says 可用 says
+          // nothing a list of approved presets does not already say.
+          const problem = {
+            available: null,
+            disabled: null,
             missing_connection: copy.status.missingConnection,
             connection_disabled: copy.status.connectionDisabled,
             model_disabled: copy.status.modelDisabled,
           }[availability.kind];
-          const thinking = preset.thinkingLevel
-            ? copy.thinking[preset.thinkingLevel]
-            : undefined;
           return (
             <SettingsRow
               key={preset.id}
@@ -149,29 +258,14 @@ export function SubagentSettingsPage(props: {
               label={(
                 <HStack gap={2} vAlign="center" wrap="wrap">
                   <span>{preset.name}</span>
-                  <Badge
-                    variant={statusBadgeVariant(availability.tone)}
-                    label={statusLabel}
-                  />
+                  {problem ? (
+                    <Badge variant={statusBadgeVariant(availability.tone)} label={problem} />
+                  ) : null}
                 </HStack>
               )}
-              description={(
-                <VStack gap={0.5}>
-                  <span>{preset.description || copy.row.fallbackDescription}</span>
-                  <Text type="supporting" size="sm" color="secondary">
-                    {copy.row.route(
-                      profile.label,
-                      connection?.name ?? preset.connectionSlug,
-                      preset.model,
-                      thinking,
-                    )}
-                    {' · '}
-                    <code>{preset.id}</code>
-                  </Text>
-                </VStack>
-              )}
+              description={preset.description || copy.row.fallbackDescription}
               end={(
-                <div className="subagentPresetActions">
+                <>
                   <Switch
                     label={`${copy.row.enabled}: ${preset.name}`}
                     isLabelHidden
@@ -185,41 +279,23 @@ export function SubagentSettingsPage(props: {
                       );
                     }}
                   />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    label={copy.row.edit}
-                    isDisabled={saving}
-                    onClick={() => setEditorPresetId(preset.id)}
-                  />
-                  <Button
+                  <IconButton
                     variant="ghost"
                     size="sm"
-                    label={copy.row.remove}
+                    label={copy.row.configure(preset.name)}
+                    tooltip={copy.row.configure(preset.name)}
+                    icon={<ChevronRight size={16} aria-hidden="true" />}
                     isDisabled={saving}
-                    onClick={() => void removePreset(preset)}
+                    // The focus anchor for the way back.
+                    data-subagent-preset={preset.id}
+                    onClick={() => openEditor(preset.id)}
                   />
-                </div>
+                </>
               )}
             />
           );
         })}
       </SettingsSection>
-
-      {editorPresetId !== undefined ? (
-        <SubagentPresetEditor
-          key={editorPreset?.id ?? 'new'}
-          preset={editorPreset}
-          presets={presets}
-          connections={props.connections}
-          isSaving={saving}
-          onClose={() => setEditorPresetId(undefined)}
-          onSave={async (next) => {
-            const saved = await savePreset(next);
-            if (saved) setEditorPresetId(undefined);
-          }}
-        />
-      ) : null}
     </SettingsPage>
   );
 }
@@ -229,7 +305,8 @@ function SubagentPresetEditor(props: {
   presets: readonly SubagentPreset[];
   connections: readonly LlmConnection[];
   isSaving: boolean;
-  onClose(): void;
+  onCancel(): void;
+  onDelete?(): void;
   onSave(preset: SubagentPreset): Promise<void>;
 }) {
   const locale = useUiLocale();
@@ -248,8 +325,10 @@ function SubagentPresetEditor(props: {
   const initialModels = initialConnection && initialConnection.enabled
     ? connectionEnabledModelIds(initialConnection)
     : [];
-  const [draft, setDraft] = useState<EditorDraft>(() => ({
-    id: props.preset?.id ?? suggestSubagentPresetId('', existingIds),
+  const [draft, setDraft] = useState<SubagentEditorDraft>(() => ({
+    // Empty, not a pre-derived `subagent`: an id the user has not been asked
+    // for yet reads as a value the page already decided.
+    id: props.preset?.id ?? '',
     name: props.preset?.name ?? '',
     description: props.preset?.description ?? '',
     profile: props.preset?.profile ?? 'local_read',
@@ -258,7 +337,7 @@ function SubagentPresetEditor(props: {
     thinkingLevel: props.preset?.thinkingLevel ?? '',
     enabled: props.preset?.enabled ?? true,
   }));
-  const [idWasEdited, setIdWasEdited] = useState(props.preset !== null);
+  const [idWasEdited, setIdWasEdited] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const selectedConnection = props.connections.find(
     (connection) => connection.slug === draft.connectionSlug,
@@ -272,15 +351,13 @@ function SubagentPresetEditor(props: {
   const profileCopy = copy.profiles[draft.profile];
   const validId = isSafeSubagentPresetId(draft.id.trim());
   const duplicateId = existingIds.has(draft.id.trim());
-  const validRoute = Boolean(
-    selectedConnection?.enabled && enabledModels.includes(draft.model),
-  );
+  const validConnection = Boolean(selectedConnection?.enabled);
+  const validModel = enabledModels.includes(draft.model);
   const canSave = Boolean(
     draft.name.trim() &&
-    draft.description.trim() &&
-    validId &&
-    !duplicateId &&
-    validRoute,
+    (props.preset !== null || (validId && !duplicateId)) &&
+    validConnection &&
+    validModel,
   );
   const connectionOptions = props.connections.map((connection) => ({
     value: connection.slug,
@@ -309,12 +386,20 @@ function SubagentPresetEditor(props: {
     });
   }
 
-  function updateName(name: string): void {
-    setDraft((current) => ({
-      ...current,
-      name,
-      ...(!idWasEdited ? { id: suggestSubagentPresetId(name, existingIds) } : {}),
-    }));
+  function updateName(value: string): void {
+    // Capped at the one place the name changes, because the store DROPS a
+    // preset whose name is over the limit rather than trimming it — an error
+    // message would arrive after the row had already disappeared, and Astryx's
+    // TextInput has no maxLength to lean on. Measured the way the store
+    // measures it, after trimming, so leading spaces cost no real characters.
+    const name = value.slice(0, SUBAGENT_PRESET_NAME_MAX_CHARS + leadingSpace(value));
+    // An existing preset's id is settled: it is not rendered in this branch and
+    // it is not derived here either, so the two cannot disagree.
+    if (props.preset) {
+      setDraft((current) => ({ ...current, name }));
+      return;
+    }
+    setDraft((current) => nextSubagentDraftForName(current, name, idWasEdited, existingIds));
   }
 
   function selectConnection(connectionSlug: string): void {
@@ -328,178 +413,242 @@ function SubagentPresetEditor(props: {
     }));
   }
 
-  function selectModel(model: string): void {
-    setDraft((current) => ({ ...current, model, thinkingLevel: '' }));
-  }
-
   async function submit(): Promise<void> {
     setSubmitted(true);
     if (!canSave) return;
     await props.onSave({
-      id: draft.id.trim(),
+      // An existing preset's id comes from the preset, never from the draft:
+      // session history and the main agent's routing key on it, and the field
+      // is not even rendered in this branch.
+      id: props.preset ? props.preset.id : draft.id.trim(),
       name: draft.name.trim(),
       description: draft.description.trim(),
       profile: draft.profile,
       connectionSlug: draft.connectionSlug,
       model: draft.model,
-      ...(draft.thinkingLevel ? { thinkingLevel: draft.thinkingLevel } : {}),
+      // Only if the row is on screen: a level left over from a previous model
+      // is not a choice the user can still see, let alone change.
+      ...(draft.thinkingLevel && thinkingLevels.includes(draft.thinkingLevel)
+        ? { thinkingLevel: draft.thinkingLevel }
+        : {}),
       enabled: draft.enabled,
     });
   }
 
   const idStatus = submitted && !validId
-    ? { type: 'error' as const, message: copy.editor.invalidId }
+    ? { type: 'error' as const, message: copy.editor.invalidId(SUBAGENT_PRESET_ID_MAX_CHARS) }
     : submitted && duplicateId
       ? { type: 'error' as const, message: copy.editor.duplicateId }
       : undefined;
 
   return (
-    <Dialog
-      isOpen
-      onOpenChange={(isOpen) => { if (!isOpen) props.onClose(); }}
-      className="subagentPresetEditorDialog"
-      width={560}
-      maxHeight="calc(100dvh - 80px)"
-      purpose="form"
-    >
-      <Layout
-        header={(
-          <DialogHeader
-            title={props.preset ? copy.editor.editTitle : copy.editor.createTitle}
-            subtitle={props.preset ? copy.editor.editSubtitle : copy.editor.createSubtitle}
-            onOpenChange={(isOpen) => { if (!isOpen) props.onClose(); }}
+    <SettingsPage>
+      {/* Name and guidance are prose the user writes, so they are full-width
+          fields, not values crammed into a row's end slot. */}
+      <SettingsSection title={copy.editor.groupPurpose} description={copy.editor.groupPurposeHelp}>
+        <SettingsField>
+          <TextInput
+            label={copy.editor.name}
+            value={draft.name}
+            placeholder={copy.editor.namePlaceholder}
+            isDisabled={props.isSaving}
+            status={submitted && !draft.name.trim()
+              ? { type: 'error', message: copy.editor.requiredName }
+              : undefined}
+            onChange={updateName}
           />
+        </SettingsField>
+        <SettingsField>
+          {/* Optional, because the stored contract is: the list carries a
+              fallback line for a preset that has no guidance yet. */}
+          <TextArea
+            label={copy.editor.description}
+            value={draft.description}
+            placeholder={copy.editor.descriptionPlaceholder}
+            rows={3}
+            // The counter is Astryx's; the cap is ours, because `maxLength`
+            // only styles the counter and the store truncates silently.
+            maxLength={SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS}
+            isDisabled={props.isSaving}
+            onChange={(description) => setDraft((current) => ({
+              ...current,
+              description: description.slice(
+                0,
+                SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS + leadingSpace(description),
+              ),
+            }))}
+          />
+        </SettingsField>
+        {/* An existing id is a settled fact — session history and the main
+            agent's routing both reference it — so it reads as a row's value.
+            Only a new preset's id is still the user's to type. */}
+        {props.preset ? (
+          <SettingRow
+            title={copy.editor.id}
+            detail={copy.editor.idDescription}
+            value={props.preset.id}
+            mono
+          />
+        ) : (
+          <SettingsField>
+            <TextInput
+              label={copy.editor.id}
+              description={copy.editor.idDescription}
+              value={draft.id}
+              placeholder={copy.editor.idPlaceholder}
+              isDisabled={props.isSaving}
+              status={idStatus}
+              onChange={(id) => {
+                setIdWasEdited(true);
+                setDraft((current) => ({ ...current, id }));
+              }}
+            />
+          </SettingsField>
         )}
-        content={(
-          <LayoutContent padding={6} isScrollable>
-            <FormLayout>
-              <TextInput
-                label={copy.editor.name}
-                value={draft.name}
-                placeholder={copy.editor.namePlaceholder}
-                isDisabled={props.isSaving}
-                status={submitted && !draft.name.trim()
-                  ? { type: 'error', message: copy.editor.requiredName }
+      </SettingsSection>
+
+      <SettingsSection title={copy.editor.groupRoute} description={copy.editor.groupRouteHelp}>
+        <SettingsRow
+          label={copy.editor.profile}
+          description={profileCopy.description}
+          align="start"
+          end={(
+            <Selector
+              label={copy.editor.profile}
+              isLabelHidden
+              value={draft.profile}
+              options={(Object.keys(copy.profiles) as SubagentProfile[]).map((profile) => ({
+                value: profile,
+                label: copy.profiles[profile].label,
+              }))}
+              width="100%"
+              isDisabled={props.isSaving}
+              onChange={(profile) => setDraft((current) => ({
+                ...current,
+                profile: profile as SubagentProfile,
+              }))}
+            />
+          )}
+        />
+        {draft.profile === 'implementation' ? (
+          <SettingsField>
+            <Banner status="warning" title={copy.editor.implementationWarning} />
+          </SettingsField>
+        ) : null}
+        <SettingsRow
+          label={copy.editor.connection}
+          end={(
+            <Selector
+              label={copy.editor.connection}
+              isLabelHidden
+              value={draft.connectionSlug}
+              options={connectionOptions}
+              width="100%"
+              isDisabled={props.isSaving || usableConnections.length === 0}
+              disabledMessage={usableConnections.length === 0 ? copy.editor.noConnection : undefined}
+              status={submitted && !validConnection
+                ? { type: 'error', message: copy.editor.invalidConnection }
+                : usableConnections.length === 0
+                  ? { type: 'warning', message: copy.editor.noConnection }
                   : undefined}
-                onChange={updateName}
-              />
-              <TextInput
-                label={copy.editor.id}
-                description={copy.editor.idDescription}
-                value={draft.id}
-                placeholder={copy.editor.idPlaceholder}
-                isDisabled={props.preset !== null || props.isSaving}
-                status={idStatus}
-                onChange={(id) => {
-                  setIdWasEdited(true);
-                  setDraft((current) => ({ ...current, id }));
-                }}
-              />
-              <TextArea
-                label={copy.editor.description}
-                description={copy.editor.descriptionHelp}
-                value={draft.description}
-                placeholder={copy.editor.descriptionPlaceholder}
-                rows={3}
-                isDisabled={props.isSaving}
-                status={submitted && !draft.description.trim()
-                  ? { type: 'error', message: copy.editor.requiredDescription }
-                  : undefined}
-                onChange={(description) => setDraft((current) => ({ ...current, description }))}
-              />
+              onChange={selectConnection}
+            />
+          )}
+        />
+        <SettingsRow
+          label={copy.editor.model}
+          end={(
+            <Selector
+              label={copy.editor.model}
+              isLabelHidden
+              value={draft.model}
+              options={modelOptions}
+              width="100%"
+              isDisabled={props.isSaving || enabledModels.length === 0}
+              disabledMessage={enabledModels.length === 0 ? copy.editor.noModel : undefined}
+              // The route is two choices, so it gets two errors: an enabled
+              // connection with no model selected is the model's problem.
+              status={submitted && validConnection && !validModel
+                ? { type: 'error', message: copy.editor.invalidModel }
+                : undefined}
+              onChange={(model) => setDraft((current) => ({ ...current, model, thinkingLevel: '' }))}
+            />
+          )}
+        />
+        {thinkingLevels.length > 0 ? (
+          <SettingsRow
+            label={copy.editor.thinking}
+            end={(
               <Selector
-                label={copy.editor.profile}
-                description={profileCopy.description}
-                value={draft.profile}
-                options={(Object.keys(copy.profiles) as SubagentProfile[]).map((profile) => ({
-                  value: profile,
-                  label: copy.profiles[profile].label,
-                }))}
+                label={copy.editor.thinking}
+                isLabelHidden
+                value={thinkingLevels.includes(draft.thinkingLevel as ThinkingLevel)
+                  ? draft.thinkingLevel
+                  : ''}
+                options={[
+                  { value: '', label: copy.editor.defaultThinking },
+                  ...thinkingLevels.map((level) => ({ value: level, label: copy.thinking[level] })),
+                ]}
                 width="100%"
                 isDisabled={props.isSaving}
-                onChange={(profile) => setDraft((current) => ({
+                onChange={(thinkingLevel) => setDraft((current) => ({
                   ...current,
-                  profile: profile as SubagentProfile,
+                  thinkingLevel: thinkingLevel as ThinkingLevel | '',
                 }))}
               />
-              {draft.profile === 'implementation' ? (
-                <div className="subagentPresetWarning" role="note">
-                  <AlertTriangle size={16} aria-hidden="true" />
-                  <Text type="supporting" size="sm">{copy.editor.implementationWarning}</Text>
-                </div>
-              ) : null}
-              <FormLayout direction="horizontal">
-                <Selector
-                  label={copy.editor.connection}
-                  value={draft.connectionSlug}
-                  options={connectionOptions}
-                  width="100%"
-                  isDisabled={props.isSaving || usableConnections.length === 0}
-                  disabledMessage={usableConnections.length === 0 ? copy.editor.noConnection : undefined}
-                  status={submitted && !validRoute
-                    ? { type: 'error', message: copy.editor.invalidRoute }
-                    : usableConnections.length === 0
-                      ? { type: 'warning', message: copy.editor.noConnection }
-                      : undefined}
-                  onChange={selectConnection}
-                />
-                <Selector
-                  label={copy.editor.model}
-                  value={draft.model}
-                  options={modelOptions}
-                  width="100%"
-                  isDisabled={props.isSaving || enabledModels.length === 0}
-                  disabledMessage={enabledModels.length === 0 ? copy.editor.noModel : undefined}
-                  onChange={selectModel}
-                />
-              </FormLayout>
-              {thinkingLevels.length > 0 ? (
-                <Selector
-                  label={copy.editor.thinking}
-                  value={thinkingLevels.includes(draft.thinkingLevel as ThinkingLevel)
-                    ? draft.thinkingLevel
-                    : ''}
-                  options={[
-                    { value: '', label: copy.editor.defaultThinking },
-                    ...thinkingLevels.map((level) => ({ value: level, label: copy.thinking[level] })),
-                  ]}
-                  width="100%"
-                  isDisabled={props.isSaving}
-                  onChange={(thinkingLevel) => setDraft((current) => ({
-                    ...current,
-                    thinkingLevel: thinkingLevel as ThinkingLevel | '',
-                  }))}
-                />
-              ) : null}
-              <Switch
-                label={copy.editor.enabled}
-                description={copy.editor.enabledDescription}
-                value={draft.enabled}
-                isDisabled={props.isSaving}
-                onChange={(enabled) => setDraft((current) => ({ ...current, enabled }))}
-              />
-              <div className="subagentPresetEditorActions">
-                <Button
-                  variant="ghost"
-                  label={copy.editor.cancel}
-                  isDisabled={props.isSaving}
-                  onClick={props.onClose}
-                />
-                <Button
-                  variant="primary"
-                  label={props.isSaving
-                    ? copy.editor.saving
-                    : props.preset
-                      ? copy.editor.save
-                      : copy.editor.create}
-                  isDisabled={props.isSaving}
-                  onClick={() => void submit()}
-                />
-              </div>
-            </FormLayout>
-          </LayoutContent>
-        )}
-      />
-    </Dialog>
+            )}
+          />
+        ) : null}
+        <SettingsRow
+          label={copy.editor.enabled}
+          description={copy.editor.enabledDescription}
+          align="start"
+          end={(
+            <Switch
+              label={copy.editor.enabled}
+              isLabelHidden
+              value={draft.enabled}
+              isDisabled={props.isSaving}
+              onChange={(enabled) => setDraft((current) => ({ ...current, enabled }))}
+            />
+          )}
+        />
+      </SettingsSection>
+
+      {/* Save commits the whole preset, not the group above it. */}
+      <HStack gap={2} wrap="wrap">
+        <Button
+          variant="primary"
+          label={props.isSaving
+            ? copy.editor.saving
+            : props.preset
+              ? copy.editor.save
+              : copy.editor.create}
+          isDisabled={props.isSaving}
+          onClick={() => void submit()}
+        />
+        <Button
+          variant="ghost"
+          label={copy.editor.cancel}
+          isDisabled={props.isSaving}
+          onClick={props.onCancel}
+        />
+      </HStack>
+
+      {/* Deletion is last and stands alone, so a mis-aimed cursor has nothing
+          quiet to hit beside it. */}
+      {props.onDelete ? (
+        <SettingsSection title={copy.editor.dangerZone} description={copy.editor.dangerZoneHelp}>
+          <SettingsActions>
+            <Button
+              variant="destructive"
+              label={copy.editor.delete}
+              isDisabled={props.isSaving}
+              onClick={props.onDelete}
+            />
+          </SettingsActions>
+        </SettingsSection>
+      ) : null}
+    </SettingsPage>
   );
 }

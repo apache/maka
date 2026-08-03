@@ -34,7 +34,7 @@
     "test:dist": "npm run test:scripts:full && node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
     "test:dist:serial": "npm run test:scripts:full && node scripts/run-workspace-tests-parallel.mjs --serial",
     "test:fast": "npm run build:test && npm run test:scripts && node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
-    "test:scripts": "node --test scripts/fixture-env.test.mjs scripts/electron-lifecycle.test.mjs scripts/check-story-annotations.test.mjs scripts/ci-test-plan.test.mjs scripts/run-headless-tests.test.mjs scripts/run-workspace-tests-parallel.test.mjs scripts/cu-e2e-scenarios.test.mjs scripts/cu-report-sanitize.test.mjs scripts/computer-use-provenance.test.mjs",
+    "test:scripts": "node --test scripts/fixture-env.test.mjs scripts/electron-lifecycle.test.mjs scripts/check-story-annotations.test.mjs scripts/ci-test-plan.test.mjs scripts/run-headless-tests.test.mjs scripts/run-workspace-tests-parallel.test.mjs scripts/cu-e2e-scenarios.test.mjs scripts/cu-report-sanitize.test.mjs scripts/computer-use-provenance.test.mjs apps/desktop/scripts/dev-app-runtime.test.mjs",
     "test:scripts:extended": "node --test scripts/cu-provider-matrix.test.mjs scripts/cu-process-restart-harness.test.mjs scripts/cu-real-model-launcher.test.mjs scripts/macos-arm64-release.test.mjs scripts/measure-session-bundle.test.mjs",
     "test:scripts:full": "npm run test:scripts && npm run test:scripts:extended",
     "dev": "npm --workspace @maka/desktop run dev:hmr --",

@@ -9,7 +9,8 @@
   "type": "module",
   "main": "dist/main/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/start-dev-app.mjs",
+    "prepare:dev-app": "node scripts/prepare-dev-app.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:hmr": "node scripts/dev.mjs",
     "storybook": "storybook dev -p 6006 -c .storybook",
@@ -58,6 +59,7 @@
   },
   "devDependencies": {
     "@ant-design/icons-svg": "4.5.0",
+    "@electron/asar": "3.4.1",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
     "@playwright/test": "^1.61.1",
