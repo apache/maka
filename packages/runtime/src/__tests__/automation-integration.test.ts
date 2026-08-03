@@ -1,8 +1,10 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AutomationManager } from '../automation-state.js';
+import type { AutomationDefinition } from '../automation-state.js';
 import { AutomationScheduler } from '../automation-scheduler.js';
-import { buildAutomationTool } from '../automation-tools.js';
+import { buildAutomationTool, buildAutomationAuthorityTool } from '../automation-tools.js';
+import type { AutomationToolAuthority } from '../automation-tools.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
 const SESSION_ID = 'integration-sess-1';
@@ -566,5 +568,58 @@ describe('Automation integration: a refused pause/resume says which cause stoppe
     const paused = (await t.tool.impl({ mode: 'pause', id }, t.ctx())) as string;
     assert.match(paused, /it is paused/);
     assert.match(paused, /only an active automation can be paused/);
+  });
+
+  test('an authority that refuses a status it accepts is not blamed on the status', async () => {
+    // The host coordinator collapses a retiring or archived Session into the
+    // same empty result a wrong status produces, while its get() still reports
+    // an automation whose status admits the verb. Blaming the status there
+    // states a verdict nothing checked, and sending the model to create runs it
+    // into the same Session gate a second time.
+    const definition: AutomationDefinition = {
+      id: 'auto-7',
+      kind: 'cron',
+      name: 'nightly digest',
+      prompt: 'digest',
+      sessionId: SESSION_ID,
+      schedule: { type: 'interval', seconds: 60 },
+      status: 'active',
+      createdAt: 0,
+      updatedAt: 0,
+      nextFireAt: 60_000,
+      lastFireAt: null,
+      lastRunId: null,
+      fireCount: 0,
+      maxFires: null,
+      expiresAt: null,
+      durable: true,
+      consecutiveFailures: 0,
+      lastError: null,
+    };
+    const authority: AutomationToolAuthority = {
+      create: async () => ({ error: 'Session lifecycle is changing' }),
+      delete: async () => false,
+      // Every mutation is refused the way the host refuses one for a Session
+      // that can no longer mutate: an empty result carrying no cause.
+      pause: async () => undefined,
+      resume: async () => undefined,
+      get: async () => definition,
+      listVisibleForSession: async () => [definition],
+    };
+    const tool = buildAutomationAuthorityTool({ authority, cronEnabled: true });
+
+    const paused = (await tool.impl({ mode: 'pause', id: 'auto-7' }, createContext())) as string;
+    assert.match(paused, /it is active/);
+    assert.doesNotMatch(paused, /only an active automation can be paused/);
+    assert.match(paused, /mode "list"/);
+
+    definition.status = 'paused';
+    const resumed = (await tool.impl({ mode: 'resume', id: 'auto-7' }, createContext())) as string;
+    assert.match(resumed, /it is paused/);
+    // Both halves of the old sentence were false here, and the next step it
+    // named goes through the same Session gate that just refused.
+    assert.doesNotMatch(resumed, /can no longer fire/);
+    assert.doesNotMatch(resumed, /Create a new automation instead/);
+    assert.match(resumed, /mode "list"/);
   });
 });

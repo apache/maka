@@ -17,6 +17,7 @@ import {
   AUTOMATION_PROMPT_MAX_CODE_UNITS,
   isAutomationTextWithinLimit,
 } from '@maka/core/automation';
+import type { AutomationStatus } from '@maka/core/automation';
 import type { MakaTool } from './tool-runtime.js';
 import type { AutomationManager, AutomationDefinition } from './automation-state.js';
 
@@ -262,6 +263,25 @@ async function handleById(
 }
 
 /**
+ * What each status means for pause/resume, in one place.
+ *
+ * The two facts the refusal text needs — which verb the status admits, and
+ * whether the automation is past reviving — used to be hand-rolled literal
+ * comparisons, so a fifth AutomationStatus would have compiled clean and
+ * quietly told the model that a live automation was beyond repair. A total
+ * Record makes the compiler ask for the answer instead.
+ */
+const AUTOMATION_STATUS_FACTS: Record<
+  AutomationStatus,
+  { readonly admits: 'pause' | 'resume' | null; readonly terminal: boolean }
+> = {
+  active: { admits: 'pause', terminal: false },
+  paused: { admits: 'resume', terminal: false },
+  completed: { admits: null, terminal: true },
+  expired: { admits: null, terminal: true },
+};
+
+/**
  * Say what actually blocked pause/resume, and what to do about it.
  *
  * "not found, not owned, or not active" folds three independent causes into one
@@ -272,6 +292,15 @@ async function handleById(
  * The authority only exposes automations this session may manage, so a missing
  * id and another session's id are genuinely indistinguishable here and share
  * one message — but that message points at mode "list", which settles both.
+ *
+ * Status is the only cause this function can actually read. An authority may
+ * refuse for reasons that live outside the automation — the host coordinator
+ * turns a retiring or archived session into the same empty result as a
+ * wrong-status automation — and in that case the status on record still admits
+ * the verb. Saying "it is active, so it cannot be paused" there would be a
+ * verdict on something never checked, so that case says the cause was not
+ * reported rather than inventing one. Every branch lands on mode "list", which
+ * reads state and so survives the session conditions that refuse mutations.
  */
 async function explainManageFailure(
   authority: AutomationToolAuthority,
@@ -284,17 +313,15 @@ async function explainManageFailure(
   if (!existing) {
     return `Cannot ${verb} "${id}": this session has no automation with that id. ${listHint}`;
   }
+  const facts = AUTOMATION_STATUS_FACTS[existing.status];
+  if (facts.admits === verb) {
+    return `Cannot ${verb} "${id}": it is ${existing.status}, which is the status ${verb} needs, so its status is not what refused. The reason was not reported here. Use mode "list" to re-read its current state.`;
+  }
   if (verb === 'pause') {
     return `Cannot pause "${id}": it is ${existing.status}, and only an active automation can be paused.`;
   }
-  if (existing.status === 'paused') {
-    // resume() declined a paused automation whose fire budget the caller above
-    // found intact, so nothing the model can send will revive it.
-    return `Cannot resume "${id}": it is paused but can no longer fire. Create a new automation instead.`;
-  }
-  const terminal = existing.status === 'completed' || existing.status === 'expired';
   return `Cannot resume "${id}": it is ${existing.status}, and only a paused automation can be resumed.${
-    terminal ? ' Create a new automation instead.' : ''
+    facts.terminal ? ' Create a new automation instead.' : ''
   }`;
 }
 
