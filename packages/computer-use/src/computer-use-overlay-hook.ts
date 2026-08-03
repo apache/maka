@@ -109,25 +109,22 @@ function kindOf(action: CuAction): CursorActionKind {
  * holds — the target app is frontmost (or has a menu open), and the cursor has
  * just been launched to a new position — and only lets it sink into the
  * target's own layer once the target is genuinely the window under the cursor.
- * A covered target is therefore a reason to stay HIGH, not to disappear: while
- * the cursor is travelling it is deliberately drawn on top of whatever covers
- * the target.
  *
- * The launch half is the sink's own business (the presentation layer is what
- * knows when a motion settles). This is the observation half: stay elevated
- * unless the target is both stacked under something and exposed at the point
- * the cursor is heading for. With no stacking evidence at all, stay elevated —
+ * Maka has one of those two reasons available and not the other. The launch
+ * half is the sink's own business (the presentation layer is what knows when a
+ * motion settles). The frontmost/covered half needs a per-observation record of
+ * what is stacked over the target, which the runtime does not collect, so it is
+ * deliberately not modelled here rather than declared as a field nothing sets.
+ *
+ * What is left is the ordering: with a window id to order against, the cursor
+ * does not need a level to stay visible — its position in the target's own
+ * z-order is what keeps it readable, exactly as it is for Codex. Staying
+ * elevated on top of that is what put the cursor over the user's own windows.
+ * With no window to order against there is nothing to sink to, so it stays up:
  * an unseen cursor is the failure this whole path exists to avoid.
  */
 function keepElevated(context: CuOverlayHookContext): boolean {
-  // With a window to order against, the level is not what decides visibility
-  // any more — position in the z-order is, exactly as it is for Codex. Staying
-  // elevated on top of that would put the cursor back over the user's own
-  // windows, which is the thing being fixed.
-  if (context.targetWindowId !== undefined) return false;
-  const stacking = context.targetStacking;
-  if (!stacking) return true;
-  return stacking.frontmost || stacking.destinationCovered;
+  return context.targetWindowId === undefined;
 }
 
 export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuOverlayHook {

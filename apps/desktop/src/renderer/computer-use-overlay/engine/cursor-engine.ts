@@ -53,6 +53,53 @@ export const CODEX_CURSOR_MOTION = {
   terminalTangentBlendStart: 0.99,
 } as const;
 
+/**
+ * Codex `CloseEnoughConfiguration.default`, recovered from the inspected build
+ * (doubles at 0x100d68cd0 / 0x100d68cd8). The action is released only once the
+ * cursor has effectively landed; releasing earlier makes the click visibly fire
+ * while the glyph is still travelling.
+ *
+ * These live here, next to the spring they are read against, because they are
+ * not independently choosable: `cursorPresentationReadyDeadlineMs` below is
+ * derived from both, and a fence shorter than that deadline reintroduces
+ * exactly the mid-flight dispatch the thresholds exist to prevent.
+ */
+export const CURSOR_CLOSE_ENOUGH = {
+  progress: 0.995,
+  distance: 3.157,
+} as const;
+
+/**
+ * The longest a motion can take to open the `closeEnough` gate, in milliseconds.
+ *
+ * The progress spring is a unit step response with damping ratio
+ * `springDampingFraction` and angular frequency `2π / response`. Its error
+ * envelope is `A·e^(−ζωt)` with `A = 1/√(1−ζ²)`, so the gate is guaranteed open
+ * once `A·e^(−ζωt) ≤ 1 − progress`, i.e. at
+ *
+ *     t = response · ln(A / (1 − progress)) / (2π·ζ)
+ *
+ * `response` is `clamp(distance/1000 · scaler, min, max)`, so the worst case is
+ * `springResponseMax`. The bound is the envelope rather than the measured first
+ * crossing (which is earlier, ≈0.88·response) so it holds without depending on
+ * the integrator or the frame rate; one frame at 60Hz is added on top because
+ * the gate is only evaluated once per painted frame.
+ *
+ * This is the number the runtime's presentation fence has to be at least as
+ * long as. Two independently chosen constants is how the fence came to cut a
+ * cross-display move off at 1000ms while the gate needed ~1940ms, dispatching
+ * the click with the glyph ~180px short of the target.
+ */
+export function cursorPresentationReadyDeadlineMs(): number {
+  const zeta = CODEX_CURSOR_MOTION.springDampingFraction;
+  const amplitude = 1 / Math.sqrt(1 - zeta * zeta);
+  const seconds =
+    CODEX_CURSOR_MOTION.springResponseMax
+    * Math.log(amplitude / (1 - CURSOR_CLOSE_ENOUGH.progress))
+    / (TAU * zeta);
+  return Math.ceil(seconds * 1000) + Math.ceil(1000 / 60);
+}
+
 // Candidate scoring, inlined at 0x1000972ec. These weights are deliberately not
 // MotionConfiguration fields: the recovered struct holds exactly the 30 values
 // above and none of the numbers below.
@@ -184,6 +231,15 @@ export class CubicCursorPath {
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
+
+/**
+ * The smallest odd count of at least three, so a symmetric grid spanning
+ * `[-maxArc, +maxArc]` always contains its own midpoint.
+ */
+export function oddAtLeastThree(count: number): number {
+  const floor = Math.max(3, Math.trunc(count));
+  return floor % 2 === 0 ? floor + 1 : floor;
+}
 
 function wrapAngle(value: number): number {
   let result = value;
@@ -390,7 +446,14 @@ export function planCursorPath(
     ? wrapAngle(incomingHeading - directAngle)
     : 0;
   const departureCount = headingDelta === 0 ? 1 : DEPARTURE_FAN;
-  const arcCount = Math.max(2, Math.round(config.candidateCount / departureCount));
+  // Odd, so that `a = (arcCount - 1) / 2` lands exactly on `arc = 0` and the
+  // straight candidate is actually in the grid. An even count skips it: at rest
+  // the nearest candidate still bulged ~5.8pt, and on an interrupt (4
+  // candidates) the smallest bulge available was a third of `maxArc` — 36.9pt
+  // on a 400pt move — so an interrupted move could not be planned straight no
+  // matter what the scorer preferred, which is the opposite of what the scorer
+  // is for.
+  const arcCount = oddAtLeastThree(Math.round(config.candidateCount / departureCount));
 
   let bestPath: CubicCursorPath | null = null;
   let bestScore = Number.POSITIVE_INFINITY;

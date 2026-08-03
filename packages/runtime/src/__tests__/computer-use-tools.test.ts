@@ -435,6 +435,88 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.deepEqual(point, { x: 300, y: 200 });
   });
 
+  test('presentation receives the window the action is bound to', async () => {
+    // The overlay decides its window level from this field: with a window to
+    // order against, the resting cursor is placed directly above it instead of
+    // floating over every application window. Nothing outside this function
+    // sets it, so if the runtime stops producing it the cursor silently goes
+    // back to hanging over whatever the user is reading — with every unit test
+    // in the overlay still green, because they supply the field by hand.
+    let seen: number | undefined | 'never called' = 'never called';
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+    };
+    backend.observeApp = async () =>
+      observation({
+        windowId: 4321,
+        windowBounds: { x: 100, y: 50, width: 400, height: 300 },
+        sourceBoundsPx: { x: 0, y: 0, width: 800, height: 600 },
+      });
+    const [tool] = buildComputerUseTools({
+      backend,
+      overlay: {
+        onActionBegin(_action, context) {
+          seen = context.targetWindowId;
+        },
+      },
+    });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      modelText?: string;
+    };
+    const observationId = JSON.parse(observed.modelText ?? '{}').observation_id;
+    await tool.impl(
+      {
+        action: 'left_click',
+        observation_id: observationId,
+        coordinate: [400, 300],
+      } as never,
+      ctx(),
+    );
+    assert.equal(seen, 4321);
+  });
+
+  test('a fence that declares its own worst case is not cut short by the default', async () => {
+    // The backstop is a safety net for a presentation layer that died, not a
+    // second opinion on how long a motion takes. The cursor overlay derives its
+    // deadline from the same spring its release gate is read against; a shorter
+    // default here resolves the action mid-flight, which is the click firing
+    // while the glyph is still travelling.
+    const events: string[] = [];
+    let ready!: () => void;
+    const readyForInteraction = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const [tool] = buildComputerUseTools({
+      backend: {
+        async preflight() {
+          return { accessibility: true, screenRecording: true };
+        },
+        async run() {
+          events.push('dispatch');
+          return { outcome: { ok: true, tier: 'ax', verified: true } };
+        },
+      },
+      overlay: {
+        onActionBegin() {
+          return {
+            readyForInteraction,
+            finished: new Promise<void>(() => {}),
+            readyTimeoutMs: 10_000,
+          };
+        },
+      },
+      presentationReadyTimeoutMs: 5,
+    });
+    const pending = tool.impl({ action: 'wait' } as never, ctx());
+    // Ten times the default the caller configured. Without the fence's own
+    // deadline winning, dispatch has already happened by now.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(events, [], 'the short default did not release the action');
+    ready();
+    await pending;
+    assert.deepEqual(events, ['dispatch']);
+  });
+
   test('discarded dispatch result cancels presentation instead of showing success', async () => {
     const ended: Array<boolean | undefined> = [];
     let tools: ReturnType<typeof buildComputerUseTools>;

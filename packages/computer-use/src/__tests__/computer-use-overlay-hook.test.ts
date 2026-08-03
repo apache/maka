@@ -68,31 +68,14 @@ test('a window to order against replaces the level as what keeps the cursor visi
       toolCallId: 'a1',
       presentationScreenPoint: { x: 201, y: 151 },
       targetWindowId: 4321,
-      targetStacking: { frontmost: true, destinationCovered: true },
     },
   );
   assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
   assert.equal((moves[0] as { targetWindowId?: number }).targetWindowId, 4321);
 });
 
-test('a covered destination keeps the cursor elevated instead of hiding it', () => {
-  const { controller, moves, ensured } = fakeController();
-  const hook = createComputerUseOverlayHook(controller as never);
-  hook.onActionBegin(
-    { type: 'left_click', coordinate: { x: 400, y: 300 } },
-    {
-      sessionId: 's1',
-      toolCallId: 'a1',
-      presentationScreenPoint: { x: 201, y: 151 },
-      targetStacking: { frontmost: false, destinationCovered: true },
-    },
-  );
-  assert.equal(moves.length, 1, 'the cursor is still drawn over the covering window');
-  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
-  assert.deepEqual(ensured, []);
-});
-
-test('the cursor may sink only when the target is exposed under it and behind something else', () => {
+test('with no window to order against the cursor stays elevated', () => {
+  // There is nothing to sink to, and an unseen cursor is the worse failure.
   const { controller, moves } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionBegin(
@@ -101,25 +84,31 @@ test('the cursor may sink only when the target is exposed under it and behind so
       sessionId: 's1',
       toolCallId: 'a1',
       presentationScreenPoint: { x: 201, y: 151 },
-      targetStacking: { frontmost: false, destinationCovered: false },
     },
   );
-  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
+  assert.equal((moves[0] as { targetWindowId?: number }).targetWindowId, undefined);
 });
 
-test('a frontmost target stays elevated so the cursor clears its open menus', () => {
-  const { controller, moves } = fakeController();
+test('the landing carries the window the cursor has to come back down to', () => {
+  // `complete` raises the cursor for the trip to the executor's coordinate, so
+  // it is the last thing that can tell the sink which window to sink onto. An
+  // action whose begin never ran reaches `complete` with the only window id it
+  // ever carried, and dropping it left the sink ordering against the previous
+  // action's window.
+  const { controller, completions } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
-  hook.onActionBegin(
+  hook.onActionEnd?.(
     { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { outcome: { ok: true, tier: 'semantic-background', verified: true } },
     {
       sessionId: 's1',
       toolCallId: 'a1',
       presentationScreenPoint: { x: 201, y: 151 },
-      targetStacking: { frontmost: true, destinationCovered: false },
+      targetWindowId: 20,
     },
   );
-  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
+  assert.equal((completions[0] as { targetWindowId?: number }).targetWindowId, 20);
 });
 
 test('the executor-resolved point wins when there is one', () => {

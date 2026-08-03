@@ -6,9 +6,12 @@ import {
   CODEX_CURSOR_GLYPH,
   CODEX_CURSOR_MOTION,
   CubicCursorPath,
+  CURSOR_CLOSE_ENOUGH,
   CursorEngine,
   cursorHeadingAt,
+  cursorPresentationReadyDeadlineMs,
   measureCursorPath,
+  oddAtLeastThree,
   planCursorPath,
   scoreCursorPath,
 } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
@@ -184,8 +187,92 @@ test('a fresh move departs toward its target, never along the parked rest angle'
   assert.ok(restAlignment < 0, `move launched along the rest angle (${restAlignment})`);
 });
 
-test('an interrupted move may still honour the heading it is already carrying', () => {
+test('an interrupted move can be planned dead straight', () => {
+  // The candidate grid spans [-maxArc, +maxArc] in `arcCount` steps, so it only
+  // contains arc = 0 when `arcCount` is odd. It used to be even in both cases:
+  // 20 from rest (nearest candidate ~5.8pt off the chord, cosmetic) and 4 on an
+  // interrupt, where the smallest bulge available was a third of maxArc. On a
+  // 400pt move that is 36.9pt of perpendicular bow the scorer had no way to
+  // decline, in a planner whose whole stated job is to pick the straightest
+  // candidate that clears the viewport.
   const start: Vec = [400, 400];
+  const end: Vec = [800, 400];
+  const carried = Math.PI / 2; // travelling straight down when retargeted
+  const distance = 400;
+  const maxArc = Math.min(distance * CODEX_CURSOR_MOTION.arcSize, 120);
+  assert.ok(maxArc > 100, `the bulge ceiling should bite on this move, got ${maxArc}`);
+
+  const straight = candidateWithArc(start, end, 0);
+  assert.ok(
+    maxChordDeviation(straight, start, end) < 1e-6,
+    'the zero-arc candidate is the straight one',
+  );
+
+  const interrupted = planCursorPath(start, end, carried, null);
+  const deviation = maxChordDeviation(interrupted, start, end);
+  // A third of maxArc is what the old even grid forced. Well under a point is
+  // what a reachable straight candidate buys.
+  assert.ok(
+    deviation < 1,
+    `interrupted move bowed ${deviation.toFixed(2)}pt when a straight path scored better`,
+  );
+  assert.ok(
+    scoreOf(interrupted, start, end)
+      <= scoreOf(candidateWithArc(start, end, maxArc / 3), start, end),
+    'the chosen path is no worse than the straightest the old grid could offer',
+  );
+});
+
+test('the candidate grid always contains its own midpoint', () => {
+  for (const count of [1, 2, 3, 4, 5, 19, 20]) {
+    const arcCount = oddAtLeastThree(count);
+    assert.equal(arcCount % 2, 1, `${count} → ${arcCount} is odd`);
+    assert.ok(arcCount >= 3, `${count} → ${arcCount} leaves room for a midpoint`);
+    const arcs = Array.from({ length: arcCount }, (_, a) => (a / (arcCount - 1)) * 2 - 1);
+    assert.ok(arcs.some((arc) => arc === 0), `${arcCount} candidates include arc = 0`);
+  }
+});
+
+test('the presentation deadline covers the slowest release the gate can ask for', () => {
+  // The renderer releases an action at CURSOR_CLOSE_ENOUGH.progress; the runtime
+  // gives up waiting at this deadline. Two constants picked apart from each
+  // other is how a cross-display move came to be dispatched at 1000ms while its
+  // own gate needed ~1940ms, putting the click ~180pt short of the target.
+  const deadlineMs = cursorPresentationReadyDeadlineMs();
+  // Simulate the worst case the spring can produce: the response is clamped at
+  // springResponseMax, so no move can be slower than this one.
+  const spring = {
+    value: 0,
+    velocity: 0,
+    target: 1,
+    response: CODEX_CURSOR_MOTION.springResponseMax,
+    damping: CODEX_CURSOR_MOTION.springDampingFraction,
+  };
+  const dt = 1 / 240;
+  let seconds = 0;
+  while (spring.value < CURSOR_CLOSE_ENOUGH.progress && seconds < 30) {
+    const omega = (Math.PI * 2) / spring.response;
+    const steps = Math.max(1, Math.ceil(dt / (1 / 240)));
+    const h = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      spring.velocity
+        += (omega * omega * (spring.target - spring.value)
+          - 2 * spring.damping * omega * spring.velocity) * h;
+      spring.value += spring.velocity * h;
+    }
+    seconds += dt;
+  }
+  assert.ok(spring.value >= CURSOR_CLOSE_ENOUGH.progress, 'the gate does open');
+  assert.ok(
+    deadlineMs >= seconds * 1000,
+    `deadline ${deadlineMs}ms is shorter than the ${(seconds * 1000).toFixed(0)}ms `
+      + 'the slowest move needs to reach the release gate',
+  );
+  // And not so generous that a dead renderer hangs the turn.
+  assert.ok(deadlineMs < 5_000, `deadline ${deadlineMs}ms is an unreasonable backstop`);
+});
+
+test('an interrupted move may still honour the heading it is already carrying', () => {  const start: Vec = [400, 400];
   const end: Vec = [800, 420];
   const carried = Math.PI / 2; // travelling straight down when retargeted
   const continued = planCursorPath(start, end, carried, null);

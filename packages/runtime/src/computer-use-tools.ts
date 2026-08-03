@@ -647,7 +647,14 @@ export function buildComputerUseTools(deps: {
         if (error) reject(error);
         else resolve();
       };
-      const timer = setTimeout(finish, presentationReadyTimeoutMs);
+      // The producer's own worst case wins when it has one. A backstop shorter
+      // than the time the presentation needs is not a safety net, it is a
+      // second, disagreeing opinion — and it resolves the action mid-motion,
+      // which is the thing the ready gate exists to prevent.
+      const timer = setTimeout(
+        finish,
+        Math.max(fence.readyTimeoutMs ?? 0, presentationReadyTimeoutMs),
+      );
       const onAbort = () => finish(signal.reason ?? new Error('aborted'));
       const wake = () => finish();
       const waiters = presentationWaiters.get(sessionId) ?? new Set();
@@ -737,6 +744,10 @@ export function buildComputerUseTools(deps: {
         };
       }
     }
+    // `requireTarget` uses { pid: -1, windowId: -1 } as its miss sentinel, and
+    // -1 is not undefined — an unguarded field would hand `window:-1:0` to the
+    // reorder and rely on it throwing.
+    const targetWindowId = context.boundAction?.target.windowId;
     const overlayContext: CuOverlayHookContext = {
       sessionId: context.sessionId,
       toolCallId: context.toolCallId,
@@ -744,6 +755,9 @@ export function buildComputerUseTools(deps: {
         ? {
             presentationScreenPoint: presentationScreenPoint(context.boundAction),
           }
+        : {}),
+      ...(Number.isInteger(targetWindowId) && (targetWindowId as number) > 0
+        ? { targetWindowId: targetWindowId as number }
         : {}),
     };
     let fence: CuPresentationFence | undefined;

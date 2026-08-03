@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createCursorOverlayController, cursorOverlayWindowOptions } from '../computer-use/cursor-overlay-window.js';
+import { cursorPresentationReadyDeadlineMs } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
 
 type Call = { m: string; args: unknown[] };
 
@@ -219,6 +220,101 @@ test('a target that went away leaves the cursor visible rather than stranded', a
   // Without putting the level back, a window destroyed between the action and
   // the settle leaves the cursor at normal level, buried, until the next action.
   assert.deepEqual(levels.at(-1), [true, 'floating', 0]);
+});
+
+test('a landing on a different window re-orders the cursor onto that window', async () => {
+  // The overlay hook attaches `targetWindowId` to `complete` as well as `move`,
+  // and the sink used to read it only in `move`. An action whose `onActionBegin`
+  // early-returned (no presentation point to fly to) never calls `move`, so the
+  // sink kept the previous action's window and ordered the cursor above THAT —
+  // behind the window it is now pointing at.
+  const { controller, created } = harness();
+  const first = controller.move({
+    actionId: 'a1',
+    sessionId: 's',
+    screenX: 400,
+    screenY: 300,
+    kind: 'click',
+    keepElevated: false,
+    targetWindowId: 10,
+  });
+  const w = created[0];
+  w.fireReady();
+  w.firePresentation('a1', 'finished');
+  await first.finished;
+  assert.deepEqual(
+    w.calls.filter((c) => c.m === 'moveAbove').map((c) => c.args),
+    [['window:10:0']],
+    'the first action rests above its own window',
+  );
+
+  // Second action: no move(), because it had no point to fly to. It lands on a
+  // different window and completes.
+  controller.complete({
+    actionId: 'a2',
+    sessionId: 's',
+    screenX: 900,
+    screenY: 600,
+    kind: 'click',
+    pulse: true,
+    targetWindowId: 20,
+  });
+
+  assert.deepEqual(
+    w.calls.filter((c) => c.m === 'moveAbove').map((c) => c.args),
+    [['window:10:0'], ['window:20:0']],
+    'the landing re-orders onto the window it actually landed on',
+  );
+});
+
+test('a landing on the same window does not re-order for nothing', async () => {
+  const { controller, created } = harness();
+  const fence = controller.move({
+    actionId: 'a1',
+    sessionId: 's',
+    screenX: 400,
+    screenY: 300,
+    kind: 'click',
+    keepElevated: false,
+    targetWindowId: 10,
+  });
+  const w = created[0];
+  w.fireReady();
+  w.firePresentation('a1', 'finished');
+  await fence.finished;
+  controller.complete({
+    actionId: 'a2',
+    sessionId: 's',
+    screenX: 900,
+    screenY: 600,
+    kind: 'click',
+    pulse: true,
+    targetWindowId: 10,
+  });
+  assert.deepEqual(
+    w.calls.filter((c) => c.m === 'moveAbove').map((c) => c.args),
+    [['window:10:0']],
+    'the same window at the same level is still a no-op',
+  );
+});
+
+test('the fence declares the deadline the release gate actually needs', () => {
+  // The runtime sizes its backstop from this. Left off, the runtime falls back
+  // to its own constant, which is shorter than a long move takes and dispatches
+  // the click with the glyph still travelling.
+  const { controller } = harness();
+  const fence = controller.move({
+    actionId: 'a1',
+    sessionId: 's',
+    screenX: 400,
+    screenY: 300,
+    kind: 'click',
+  });
+  assert.equal(
+    fence.readyTimeoutMs,
+    cursorPresentationReadyDeadlineMs(),
+    'the fence carries the deadline derived from the motion model',
+  );
 });
 
 test('a covered target keeps the cursor elevated after it settles', async () => {

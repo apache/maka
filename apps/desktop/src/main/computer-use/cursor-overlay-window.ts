@@ -22,6 +22,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
 import type { CuPresentationFence } from '@maka/runtime';
+import { cursorPresentationReadyDeadlineMs } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
 
 const requireElectron = createRequire(import.meta.url);
 
@@ -219,6 +220,12 @@ export function createCursorOverlayController(
    * cursor sink.
    */
   let restTargetWindowId: number | null = null;
+  /**
+   * The window the overlay was last actually ordered above, so a rest that
+   * names a different window is recognised as a new state rather than a repeat
+   * of the level it is already at.
+   */
+  let orderedWindowId: number | null = null;
   let queue: Array<{ channel: string; payload: unknown }> = [];
   let unsubscribeDisplayChanges: (() => void) | undefined;
   let presentation:
@@ -237,6 +244,11 @@ export function createCursorOverlayController(
     const fence: CuPresentationFence = {
       readyForInteraction: new Promise<void>((resolve) => { readyForInteraction = resolve; }),
       finished: new Promise<void>((resolve) => { finished = resolve; }),
+      // What the renderer's release gate needs at worst, derived from the very
+      // spring that gate is read against. The runtime's own backstop was picked
+      // independently and is shorter than a long move takes, so it used to
+      // resolve the action with the glyph still hundreds of points out.
+      readyTimeoutMs: cursorPresentationReadyDeadlineMs(),
     };
     return {
       actionId: action,
@@ -253,26 +265,33 @@ export function createCursorOverlayController(
   }
 
   function applyLevel(next: CursorLevel): void {
-    if (!win || level === next) return;
-    // Resting on top of the window it is pointing at, when there is one to
-    // point at. Both calls are needed and the order matters: the level has to
-    // come off before AppKit will order across it, and dropping the level
-    // without ordering leaves the overlay at the front of the layer, covering
-    // exactly what it was supposed to stop covering.
+    if (!win) return;
+    // Resting is not a level alone, it is a level plus a position in another
+    // window's z-order, so "already resting" is not the same state when the
+    // window to rest above has changed. Re-order in that case; a plain repeat
+    // of the same level against the same window is still a no-op.
+    if (level === next && !(next === 'rest' && restTargetWindowId !== orderedWindowId)) return;
+    // Both calls are needed and the order matters: the level has to come off
+    // before AppKit will order across it, and dropping the level without
+    // ordering leaves the overlay at the front of the layer, covering exactly
+    // what it was supposed to stop covering.
     if (next === 'rest' && restTargetWindowId !== null) {
       win.setAlwaysOnTop(false);
       try {
         win.moveAbove(`window:${restTargetWindowId}:0`);
+        orderedWindowId = restTargetWindowId;
       } catch {
         // The target went away between the action and the settle. Without
         // putting the level back the cursor is stranded at normal level,
         // buried, and stays there until the next action.
         win.setAlwaysOnTop(true, CURSOR_LEVEL.rest.name, CURSOR_LEVEL.rest.relative);
+        orderedWindowId = null;
       }
       level = next;
       return;
     }
     level = next;
+    orderedWindowId = null;
     const { name, relative } = CURSOR_LEVEL[next];
     // The flag decides whether a level applies at all. `false` here would drop
     // the overlay to normal level with no ordering guarantee against the app
@@ -290,6 +309,7 @@ export function createCursorOverlayController(
     level = null;
     mayRest = false;
     restTargetWindowId = null;
+    orderedWindowId = null;
     queue = [];
     unsubscribeDisplayChanges?.();
     unsubscribeDisplayChanges = undefined;
@@ -317,6 +337,7 @@ export function createCursorOverlayController(
     win = w;
     level = null;
     mayRest = false;
+    orderedWindowId = null;
     applyLevel('flight');
     try {
       w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -392,6 +413,12 @@ export function createCursorOverlayController(
     });
   }
 
+  function resolveRestTarget(targetWindowId: number | undefined): number | null {
+    return Number.isInteger(targetWindowId) && (targetWindowId as number) > 0
+      ? (targetWindowId as number)
+      : null;
+  }
+
   function move(input: CursorMoveInput): CuPresentationFence {
     if (
       typeof input.sessionId !== 'string'
@@ -404,9 +431,7 @@ export function createCursorOverlayController(
     ensure(input.sessionId);
     settlePresentation();
     actionId = input.actionId;
-    restTargetWindowId = Number.isInteger(input.targetWindowId) && input.targetWindowId! > 0
-      ? input.targetWindowId!
-      : null;
+    restTargetWindowId = resolveRestTarget(input.targetWindowId);
     // A launch: up while it flies, and it stays up unless this action's
     // observation positively said the target is exposed right where the cursor
     // lands. Silence is not that evidence.
@@ -432,6 +457,14 @@ export function createCursorOverlayController(
     if (input.sessionId !== sessionId) return;
     if (presentation && input.actionId !== presentation.actionId) return;
     actionId = input.actionId;
+    // The landing is the last thing that happens before the cursor sinks, and
+    // it is allowed to name a different window than the move did: an action
+    // whose `onActionBegin` never ran (no presentation point to fly to) reaches
+    // here with the only window id this action ever carried. Reading it only in
+    // `move()` left the sink ordering the cursor above the *previous* action's
+    // window — behind the one it is now pointing at.
+    const landingTarget = resolveRestTarget(input.targetWindowId);
+    if (landingTarget !== null) restTargetWindowId = landingTarget;
     if (presentation?.actionId === input.actionId) {
       // Reconciling to the executor's coordinate is another launch, so the
       // cursor goes back up for the trip. Only while a presentation is live:
@@ -439,6 +472,12 @@ export function createCursorOverlayController(
       // raised with no way down is the static `'screen-saver'` again.
       applyLevel('flight');
       presentation.completedAt = Date.now();
+    } else if (level === 'rest') {
+      // No presentation means no `finished` will arrive to sink the cursor, so
+      // this is the only chance to put it above the window it just landed on.
+      // Without it the cursor stays ordered above the previous action's window
+      // — behind the one it is now pointing at.
+      applyLevel('rest');
     }
     push('overlay:complete', {
       actionId: input.actionId,

@@ -3,7 +3,10 @@
 // animates the agent cursor. Display-only: it never sends anything back (S15).
 // The rAF loop blocks on idle (stops when the engine is at rest; the last frame
 // persists), so a resting cursor costs no CPU.
-import { CursorEngine } from '../renderer/computer-use-overlay/engine/cursor-engine.js';
+import {
+  CURSOR_CLOSE_ENOUGH,
+  CursorEngine,
+} from '../renderer/computer-use-overlay/engine/cursor-engine.js';
 
 interface MovePayload {
   actionId: string;
@@ -33,12 +36,12 @@ declare global {
   }
 }
 
-// Codex `CloseEnoughConfiguration.default`, recovered from the inspected build
-// (doubles at 0x100d68cd0 / 0x100d68cd8). The action is released only once the
-// cursor has effectively landed; releasing earlier makes the click visibly fire
-// while the glyph is still travelling.
-const CLOSE_ENOUGH_PROGRESS_THRESHOLD = 0.995;
-const CLOSE_ENOUGH_DISTANCE_THRESHOLD = 3.157;
+// Codex `CloseEnoughConfiguration.default`. The thresholds themselves live in
+// the engine module, next to the spring they are read against and next to
+// `cursorPresentationReadyDeadlineMs`, which the runtime's fence is sized from:
+// a gate the fence is shorter than releases the action mid-flight anyway.
+const CLOSE_ENOUGH_PROGRESS_THRESHOLD = CURSOR_CLOSE_ENOUGH.progress;
+const CLOSE_ENOUGH_DISTANCE_THRESHOLD = CURSOR_CLOSE_ENOUGH.distance;
 // Follow-up: Codex additionally models `CursorNextInteractionTiming { closeEnough,
 // finished }`, letting each caller pick between firing at "close enough" and
 // firing only at full stop. Maka always uses the closeEnough gate below; adding
@@ -56,6 +59,27 @@ function resize(): void {
   canvas.height = Math.floor(window.innerHeight * dpr);
   canvas.style.width = `${window.innerWidth}px`;
   canvas.style.height = `${window.innerHeight}px`;
+  watchDevicePixelRatio();
+}
+
+// `resize` is not enough on its own. The overlay spans the union of every
+// display, so dragging it onto a screen with a different scale factor changes
+// `devicePixelRatio` without changing `innerWidth`/`innerHeight` — no resize
+// event, and the backing store stays at the old ratio, which is a blurry glyph
+// (the drawn point stays correct; only the resolution is wrong). Tearing the
+// window down used to hide this, because any `display-metrics-changed` rebuilt
+// it; the union rect is now compared before rebuilding, and a scale-factor-only
+// change leaves that rect identical. A resolution media query is the one signal
+// that fires for it, and it fires while the render loop is idle.
+let dprQuery: MediaQueryList | undefined;
+function onDevicePixelRatioChange(): void {
+  resize();
+}
+function watchDevicePixelRatio(): void {
+  if (typeof window.matchMedia !== 'function') return;
+  dprQuery?.removeEventListener('change', onDevicePixelRatioChange);
+  dprQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
+  dprQuery.addEventListener('change', onDevicePixelRatioChange);
 }
 resize();
 window.addEventListener('resize', resize);

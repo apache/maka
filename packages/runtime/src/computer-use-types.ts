@@ -138,6 +138,18 @@ export interface CuRunContext {
 export interface CuPresentationFence {
   readyForInteraction: Promise<void>;
   finished: Promise<void>;
+  /**
+   * How long the producer needs, at worst, before `readyForInteraction`
+   * resolves on its own.
+   *
+   * The fence's backstop timeout is a safety net for a presentation layer that
+   * dies, not a second opinion on how long a motion takes. When the producer
+   * knows its own worst case — the cursor overlay derives it from the spring
+   * the release gate is read against — it says so here, and the backstop is
+   * sized from it rather than from a constant chosen elsewhere. Absent, the
+   * caller's own default applies.
+   */
+  readyTimeoutMs?: number;
 }
 
 export interface CuOverlayHookContext {
@@ -150,15 +162,6 @@ export interface CuOverlayHookContext {
    * the cursor rests at a fixed level instead.
    */
   targetWindowId?: number;
-  /**
-   * What the last observation saw stacked over the target.
-   *
-   * Codex keeps its cursor above every other window while the target app is
-   * frontmost or the cursor is in flight, and only lets it sink into the
-   * target's own layer once the target is genuinely the window underneath.
-   * A covered target is therefore a reason to stay elevated, not to disappear.
-   */
-  targetStacking?: { frontmost: boolean; destinationCovered: boolean };
 }
 
 export interface CuOverlayHook {
