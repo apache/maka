@@ -415,7 +415,7 @@ Continuation Authority 合并后，workspace plane 不再从 #1346 移植通用 
 > baseline-accepted fact、epoch/version/head projection 对外只能全可见或全不可见；并发只能接受一个
 > baseline identity。若 projection 被外部删除，reader 必须 fail closed，不能把损坏态当作未创建。
 
-Schema 8 进一步要求该 authority stream 在首次写入前绑定 authenticated storage root 的 durable
+Schema 9 进一步要求该 authority stream 在首次写入前绑定 authenticated storage root 的 durable
 `rootId`；只有 metadata-only 新库可自动绑定，已有逻辑数据必须显式 adoption，单独复制数据库不能改变归属。
 
 ### 10.1 文件归属
@@ -426,7 +426,7 @@ Schema 8 进一步要求该 authority stream 在首次写入前绑定 authentica
 | `core/runtime-event.ts` | typed `actions.workspaceFact` 与 control-plane stream 说明 |
 | `core/runtime-event-store.ts` | baseline authority capability 与专用 writer contract |
 | `storage/runtime-event-authority.ts` | workspace fact/authority stream generic-writer reservation |
-| `storage/sqlite-runtime-schema.ts` | schema 7 facts/projections/capability；schema 8 singleton durable storage-root binding |
+| `storage/sqlite-runtime-schema.ts` | schema 7 facts/projections/capability；schema 8 headless task events；schema 9 singleton durable storage-root binding |
 | `storage/sqlite-runtime-store.ts` | atomic baseline bundle、read cross-check、rebuild、failpoints |
 | `storage/agent-run-store.ts` | JSONL 与 conversation copy fail closed |
 | `storage/conversation-operational-state.ts` | ordinary Session purge 不得删除 authority stream |

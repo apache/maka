@@ -50,9 +50,9 @@ artifact。裸 OID、TypeScript brand、caller 自报的 `verified: true` 或 ca
 | 正常失败 | exact retry 返回 existing；payload/identity drift 返回 conflict |
 | 损坏失败 | malformed fact、orphan、projection mismatch、partial snapshot 污染全部 fail closed |
 | 运行时回滚 | 事务未提交时五部分全部回滚；已提交时五部分全部可读 |
-| 版本回滚 | schema 8 数据库不能由只支持 schema 7 的旧 binary 打开；降级必须使用升级前备份 |
+| 版本回滚 | schema 9 数据库不能由只支持 schema 8 的旧 binary 打开；降级必须使用升级前备份 |
 
-逻辑回滚可以停止调用本 writer，但必须保留 schema 8 reader/migration；不能通过删除 capability marker
+逻辑回滚可以停止调用本 writer，但必须保留 schema 9 reader/migration；不能通过删除 capability marker
 伪装成旧格式。
 
 ## 3. Authority stream
@@ -230,7 +230,8 @@ runtime_workspace_version_authority @ 1
 | `runtime_workspace_heads` | 当前 epoch head；M0 必须等于 baseline |
 | `runtime_storage_root_binding` | singleton durable rootId；阻止单独复制/移动 `runtime.sqlite` 后被另一 storage root 静默认领 |
 
-Schema 8 增加 `runtime_storage_root_binding(singleton=1, root_id, protocol_version=1)`。M0 在任何
+Schema 9 增加 `runtime_storage_root_binding(singleton=1, root_id, protocol_version=1)`；schema 8 保留
+main 已发布的 `headless_task_run_events`。M0 在任何
 workspace fact 写入前，通过 storage-internal binder 将它绑定到 authenticated root owner 的 durable
 `rootId`；已绑定数据库只接受 exact rootId。没有 binding 但已经含任何 Session、RuntimeEvent、claim 或
 workspace fact 等逻辑数据的实验数据库必须显式 adopt/清理，不能自动认领；只有除 schema/capability metadata
