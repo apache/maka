@@ -130,9 +130,25 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       ref: refField,
     })
     .strict();
-  const strictReadParameters = z
-    .union([fileReadParameters, runtimeResourceReadParameters])
-    .describe('Read a file with path, or a whole runtime resource with ref; provide exactly one');
+  // Models that fill every optional field legitimately send `ref: ""` on a
+  // normal file read. An empty ref means "no ref provided", so drop the key
+  // before the strict union judges it: `{path, ref: ""}` must read the file,
+  // not be rejected as a conflicting key (and a lone `{ref: ""}` must still
+  // fail — the model gave us no readable target). See #1943.
+  const dropEmptyRef = (value: unknown): unknown => {
+    if (typeof value !== 'object' || value === null || !('ref' in value)) return value;
+    const ref = (value as { ref?: unknown }).ref;
+    if (typeof ref !== 'string' || ref.trim() !== '') return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).filter(([key]) => key !== 'ref'),
+    );
+  };
+  const strictReadParameters = z.preprocess(
+    dropEmptyRef,
+    z
+      .union([fileReadParameters, runtimeResourceReadParameters])
+      .describe('Read a file with path, or a whole runtime resource with ref; provide exactly one'),
+  );
   // Provider-facing schema: a single top-level object with every field optional.
   // Anthropic rejects a tool definition whose input schema carries a top-level
   // `anyOf`, so the file-vs-ref exclusivity is stated in the field descriptions
@@ -149,7 +165,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       limit: limitField,
       ref: refField
         .describe(
-          'A runtime resource ref returned by another tool. Provide ref on its own, without path/offset/limit.',
+          'A runtime resource ref returned by another tool. Provide ref on its own, without path/offset/limit; omit it (or leave it empty) when reading a file.',
         )
         .optional(),
     })
@@ -214,7 +230,10 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       executionFacts,
       impl: async (input, ctx) => {
         const { cwd, sessionId, abortSignal } = ctx;
-        if ('ref' in input) {
+        // An empty ref is "no ref" — fall through to the file read below (#1943).
+        // The provider-facing validate hook already drops empty refs, so this
+        // guard is a defense-in-depth seam for direct callers and other surfaces.
+        if ('ref' in input && typeof input.ref === 'string' && input.ref.trim() !== '') {
           const { ref } = input;
           if (classifyRuntimeResourceRef(ref) !== 'runtime') {
             throw new Error(`Unsupported runtime resource ref: ${ref}`);
@@ -225,6 +244,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         }
 
         const { path, offset, limit } = input;
+        if (typeof path !== 'string' || path.trim() === '') {
+          throw new Error('Read requires a file path or a non-empty runtime resource ref');
+        }
         const runtimeRef = classifyRuntimeResourceRef(path);
         if (runtimeRef === 'unsupported')
           throw new Error(`Unsupported runtime resource ref: ${path}`);

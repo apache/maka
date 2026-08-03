@@ -1295,6 +1295,82 @@ describe('builtin Bash streaming output', () => {
     ]);
   });
 
+  test('Read treats an empty ref as "no ref" and still reads the file (#1943)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-read-empty-ref-'));
+    try {
+      await writeFile(join(root, 'config.yaml'), 'version: 1\n');
+      const read = buildBuiltinTools({
+        runtimeResources: {
+          readRuntimeResource: async () => ({ kind: 'text', text: 'unused' }),
+        },
+      }).find((tool) => tool.name === 'Read');
+      if (!read) throw new Error('Read tool missing');
+      const parameters = read.parameters as {
+        validate(value: unknown): PromiseLike<{
+          success: boolean;
+          value?: unknown;
+          error?: unknown;
+        }>;
+      };
+
+      // Empty/whitespace ref alongside a path passes the strict union, and the
+      // ref key is dropped so the file variant governs the read.
+      const normalized = await parameters.validate({
+        path: 'config.yaml',
+        ref: '',
+        offset: 2,
+      });
+      assert.equal(normalized.success, true);
+      if (normalized.success) {
+        assert.deepEqual(normalized.value, { path: 'config.yaml', offset: 2 });
+        assert.ok(!('ref' in (normalized.value as Record<string, unknown>)));
+      }
+      assert.equal((await parameters.validate({ path: 'config.yaml', ref: '   ' })).success, true);
+      // A lone empty ref still fails: there is no readable target.
+      assert.equal((await parameters.validate({ ref: '' })).success, false);
+      // A conflicting non-empty ref alongside a path still fails (unchanged).
+      assert.equal(
+        (
+          await parameters.validate({
+            path: 'config.yaml',
+            ref: 'maka://runtime/background-tasks/shell-run-1',
+          })
+        ).success,
+        false,
+      );
+
+      const context = {
+        sessionId: 'session-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        cwd: root,
+        toolCallId: 'tool-1',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      };
+
+      // End-to-end: the issue's exact shape now reads the file instead of
+      // throwing "Unsupported runtime resource ref: ".
+      const fileResult = (await read.impl({ path: 'config.yaml', ref: '' }, context)) as {
+        content: string;
+      };
+      assert.ok(fileResult.content.includes('version: 1'));
+
+      // Defense-in-depth for direct callers: no ref (or only an empty one)
+      // yields a clear error instead of the misleading ref error or a TypeError.
+      await assert.rejects(
+        async () => read.impl({ ref: '' }, context),
+        /Read requires a file path or a non-empty runtime resource ref/,
+      );
+      await assert.rejects(
+        async () => read.impl({}, context),
+        /Read requires a file path or a non-empty runtime resource ref/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('StopBackgroundTask stops a runtime ref in the current session', async () => {
     const calls: unknown[] = [];
     const backgroundTasks = {
