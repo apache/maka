@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
-import { computerUseModelCallArgs } from '@maka/core';
+import { COMPUTER_USE_WITHHELD_VALUE, computerUseModelCallArgs } from '@maka/core';
 import { ToolTrow } from '../tool-activity.js';
 import { computerActionLabel, isComputerTool } from '../tool-activity/computer-action-label.js';
 import type { ToolActivityItem } from '../materialize.js';
@@ -145,8 +145,15 @@ describe('computer action label', () => {
       'element_id',
       'value',
     ]);
-    // The written value never crosses; only its shape does.
-    assert.equal(args.value, '<text>');
+    // The written value never crosses; only its shape does. Matched against the
+    // pattern the tool refuses on rather than a literal, so the claim is "this
+    // is a withheld placeholder" and not "the placeholder is spelled this way" —
+    // the spelling gained a length after this test was written, and pinning it
+    // reddened here for a change that was correct.
+    const written = args.value;
+    assert.equal(typeof written, 'string');
+    assert.match(written as string, COMPUTER_USE_WITHHELD_VALUE);
+    assert.equal((written as string).includes('abcdefghijklmnop'), false);
     const row = computerActionLabel(computerCall({
       action: 'set_value',
       element_id: 'e1',
