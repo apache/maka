@@ -251,6 +251,11 @@ export class ShellRunProcessManager
   async runForegroundBash(input: ShellRunBashInput): Promise<TerminalToolResult> {
     const onCompletion = onceShellRunCompletion(input.onCompletion);
     const ownedInput = onCompletion ? { ...input, onCompletion } : input;
+    let live: LiveShellRun | undefined;
+    const cancel = () => {
+      if (live) this.requestForcedTermination(live, 'cancel');
+    };
+    input.abortSignal?.addEventListener('abort', cancel, { once: true });
     try {
       validateSourceToolCallId(input.sourceToolCallId);
       return await this.withPendingStartup(input.sessionId, async () => {
@@ -259,15 +264,17 @@ export class ShellRunProcessManager
         if (input.abortSignal?.aborted)
           throw abortError('Command aborted before shell process started');
         const timeoutMs = normalizeForegroundTimeoutMs(input.timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS);
-        const live = await this.start(ownedInput, 'pipes', timeoutMs, true);
-        if ((await live.finished.waitFor(input.abortSignal)) === 'abort') {
-          this.requestForcedTermination(live, 'cancel');
-        }
+        live = await this.start(ownedInput, 'pipes', timeoutMs, true, (admitted) => {
+          live = admitted;
+          if (input.abortSignal?.aborted) cancel();
+        });
         return this.markObservedAndReturnTerminal(await live.finished.join());
       });
     } catch (error) {
       notifyFailedStartup(onCompletion);
       throw error;
+    } finally {
+      input.abortSignal?.removeEventListener('abort', cancel);
     }
   }
 
@@ -570,6 +577,7 @@ export class ShellRunProcessManager
     mode: ShellMode,
     timeoutMs: number | undefined,
     forwardLive: boolean,
+    onLiveAdmission?: (live: LiveShellRun) => void,
   ): Promise<LiveShellRun> {
     const sessionEpoch = this.sessionTerminationEpoch(input.sessionId);
     this.assertStartAllowed(input.sessionId, sessionEpoch);
@@ -589,6 +597,7 @@ export class ShellRunProcessManager
             forwardLive,
             slotReservation,
             sessionEpoch,
+            onLiveAdmission,
           );
         }
 
@@ -620,6 +629,7 @@ export class ShellRunProcessManager
     forwardLive: boolean,
     slotReservation: ShellRunSlotReservation,
     sessionEpoch: number,
+    onLiveAdmission: ((live: LiveShellRun) => void) | undefined,
   ): Promise<LivePipeShellRun> {
     const collector = new PipeTailCollector(this.maxRetainedChars);
     const pending: Array<(live: LivePipeShellRun) => void> = [];
@@ -673,6 +683,7 @@ export class ShellRunProcessManager
       for (const callback of pending) callback(live);
       driver.writeInputs();
       await racePromiseWithAbort(driver.ready, input.abortSignal);
+      onLiveAdmission?.(live);
       this.armTimeout(live);
       this.assertLiveStartupAllowed(live, sessionEpoch, input.abortSignal);
       await this.markRunning(live);

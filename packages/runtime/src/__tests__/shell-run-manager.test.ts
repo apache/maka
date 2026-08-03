@@ -527,27 +527,45 @@ describe('ShellRunProcessManager', () => {
   }, async (context) => {
     const processDiscovery = delayPosixProcessDiscovery(context);
     const abort = new AbortController();
-    const manager = await createTestManager();
+    const backingStore = createLegacyShellRunStoreForTest(await workspace());
+    const runningCommitted = deferred<void>();
+    const releaseRunning = deferred<void>();
+    const store: ShellRunStore = {
+      createShellRun: (...args) => backingStore.createShellRun(...args),
+      async updateShellRun(sessionId, shellRunId, patch) {
+        const updated = await backingStore.updateShellRun(sessionId, shellRunId, patch);
+        if (patch.status === 'running') {
+          runningCommitted.resolve(undefined);
+          await releaseRunning.promise;
+        }
+        return updated;
+      },
+      readShellRun: (...args) => backingStore.readShellRun(...args),
+      listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
+    };
+    const manager = createManager(store);
     const run = manager.runForegroundBash(
       shellInput({
         cwd: await workspace(),
         command: waitForeverCommand('ready'),
         timeoutMs: 50,
         abortSignal: abort.signal,
-        emitOutput: () => abort.abort(),
       }),
     );
 
     try {
+      await runningCommitted.promise;
       await processDiscovery.started;
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      abort.abort();
       processDiscovery.release();
+      releaseRunning.resolve(undefined);
 
       const result = await run;
       assert.equal(result.status, 'cancelled');
       assert.equal(result.exitCode, 130);
     } finally {
       processDiscovery.release();
+      releaseRunning.resolve(undefined);
       await run.catch(() => undefined);
       await manager.terminateAll().catch(() => undefined);
     }

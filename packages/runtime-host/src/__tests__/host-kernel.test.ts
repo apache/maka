@@ -227,7 +227,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('composition process-exit retention requires termination without releasing ownership', async () => {
+  test('process-exit retention closes admission before requiring termination without releasing ownership', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -250,6 +250,14 @@ describe('non-serving Runtime Host kernel', () => {
           (error: unknown) =>
             error instanceof RuntimeHostProcessTerminationRequiredError &&
             error.code === 'process_termination_required',
+        );
+        await assert.rejects(
+          () => openSocket(host.endpoint),
+          (error: unknown) =>
+            error instanceof Error &&
+            'code' in error &&
+            ((error as NodeJS.ErrnoException).code === 'ENOENT' ||
+              (error as NodeJS.ErrnoException).code === 'ECONNREFUSED'),
         );
         assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
       } finally {

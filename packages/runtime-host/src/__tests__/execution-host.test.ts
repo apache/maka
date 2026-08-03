@@ -480,19 +480,25 @@ test('two Clients share one execution after the starting Client disconnects', as
     const secondProbe = new SubscriptionProbe(secondSubscription);
     const turnId = randomUUID();
 
-    const started = await first.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-    });
+    const started = await first.startTurn(
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      },
+      PROCESS_TIMEOUT_MS,
+    );
     assert.equal(started.turnId, turnId);
     await assert.rejects(
       () =>
-        second.startTurn({
-          sessionId: fixture.sessionId,
-          turnId: randomUUID(),
-          content: { text: 'must stay busy' },
-        }),
+        second.startTurn(
+          {
+            sessionId: fixture.sessionId,
+            turnId: randomUUID(),
+            content: { text: 'must stay busy' },
+          },
+          PROCESS_TIMEOUT_MS,
+        ),
       operationError('session_busy'),
     );
 
@@ -548,17 +554,23 @@ test('two Clients share one execution after the starting Client disconnects', as
     );
 
     const nextTurnId = randomUUID();
-    const next = await second.startTurn({
-      sessionId: fixture.sessionId,
-      turnId: nextTurnId,
-      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-    });
-    assert.deepEqual(
-      await second.startTurn({
+    const next = await second.startTurn(
+      {
         sessionId: fixture.sessionId,
-        turnId,
+        turnId: nextTurnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-      }),
+      },
+      PROCESS_TIMEOUT_MS,
+    );
+    assert.deepEqual(
+      await second.startTurn(
+        {
+          sessionId: fixture.sessionId,
+          turnId,
+          content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+        },
+        PROCESS_TIMEOUT_MS,
+      ),
       stopped,
     );
     assert.deepEqual(
