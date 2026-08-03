@@ -220,7 +220,7 @@ describe('SQLite recovery authority multi-process races', () => {
       const db = new DatabaseSync(dbPath);
       try {
         db.exec(
-          "DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
+          "DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE headless_task_run_events; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
         );
       } finally {
         db.close();

@@ -51,6 +51,7 @@ describe('SqliteRuntimeStore', () => {
         DROP TABLE runtime_workspace_heads;
         DROP TABLE runtime_workspace_versions;
         DROP TABLE runtime_workspace_epochs;
+        DROP TABLE headless_task_run_events;
         DELETE FROM runtime_capabilities
           WHERE capability = 'runtime_workspace_version_authority';
         PRAGMA user_version = 6;

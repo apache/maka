@@ -236,6 +236,7 @@ describe('SqliteSessionMetadataStore', () => {
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
+        DROP TABLE session_messages;
         UPDATE session_metadata_schema
         SET version = 12
         WHERE scope = 'session_metadata';
@@ -997,6 +998,7 @@ describe('SqliteSessionMetadataStore', () => {
         ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
+        DROP TABLE session_messages;
         ALTER TABLE sandbox_boundary_log DROP COLUMN turn_id;
         ALTER TABLE sandbox_boundary_log DROP COLUMN run_id;
         DROP INDEX sandbox_boundary_log_settled_closures;
@@ -1505,6 +1507,7 @@ describe('SqliteSessionMetadataStore', () => {
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
+        DROP TABLE session_messages;
         DROP TABLE agent_graph_supervisor_wake_attempts;
         DROP TABLE agent_graph_supervisor_wakes;
         DROP TABLE agent_graph_client_applied_records;
