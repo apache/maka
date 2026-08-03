@@ -814,8 +814,11 @@ function assertDailyReviewSettingsBounds(
 ): void {
   const time = canvasElement.querySelector<HTMLInputElement>('input[type="text"]');
   const page = canvasElement.querySelector<HTMLElement>('.settingsFormPage');
-  const timeForm = time?.closest<HTMLElement>('.settingsFormLayout');
-  const selectorForm = selector.closest<HTMLElement>('.settingsFormLayout');
+  // The rows kit (#1972) retired `.settingsFormLayout`. A control now lives in
+  // its row's capped end slot, so `.settingsRowEnd` is the container this
+  // contract has always meant: the bound the control must not overflow.
+  const timeForm = time?.closest<HTMLElement>('.settingsRowEnd');
+  const selectorForm = selector.closest<HTMLElement>('.settingsRowEnd');
   const listbox = document.querySelector<HTMLElement>('[role="listbox"]');
   const popover = listbox?.closest<HTMLElement>('[popover]');
   if (!time || !page || !timeForm || !selectorForm || !popover) {

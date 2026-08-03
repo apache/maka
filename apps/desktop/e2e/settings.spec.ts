@@ -17,12 +17,11 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   await expect(page.getByLabel('设置内容')).toBeVisible();
 
   await settingsNavigation(page).getByRole('button', { name: '外观', exact: true }).click();
-  const themeGroup = page.getByRole('radiogroup', { name: '主题' });
-  const lightTheme = themeGroup.getByRole('radio', { name: '浅色' });
-  const darkTheme = themeGroup.getByRole('radio', { name: '深色' });
-  await lightTheme.focus();
-  await lightTheme.press('ArrowDown');
+  const lightTheme = page.getByRole('checkbox', { name: '浅色' });
+  const darkTheme = page.getByRole('checkbox', { name: '深色' });
+  await darkTheme.locator('..').click();
   await expect(darkTheme).toBeChecked();
+  await expect(lightTheme).not.toBeChecked();
 
   await expect.poll(
     async () => page.evaluate(() => document.documentElement.classList.contains('dark')),
