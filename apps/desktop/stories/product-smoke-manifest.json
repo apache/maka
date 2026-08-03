@@ -80,6 +80,17 @@
       "viewports": ["wide", "compact", "floor"],
       "colorSchemes": ["light", "dark"]
     },
+    "dailyReviewSettingsBounds": {
+      "storyId": "product-settings-pages--daily-review-model-selector-open-narrow",
+      "productionHost": "SettingsSurface > DailyReviewSettingsPage",
+      "state": "Time input and open analysis-model selector at the minimum window width",
+      "viewports": ["floor"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "wide": "The floor contract is the stricter horizontal-containment case.",
+        "compact": "The floor contract is the stricter horizontal-containment case."
+      }
+    },
     "sessionContext": {
       "storyId": "product-shell-official-appshell--session-context-layer",
       "productionHost": "AppShell > ChatView",
