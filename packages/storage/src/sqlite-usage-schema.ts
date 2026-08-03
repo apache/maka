@@ -52,6 +52,9 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
       revision INTEGER NOT NULL CHECK (revision >= 0)
     );
 
+    INSERT OR IGNORE INTO usage_pricing_authority(singleton, revision)
+    VALUES (1, 0);
+
     CREATE TABLE IF NOT EXISTS usage_pricing_overrides (
       model_key TEXT PRIMARY KEY,
       record_json TEXT NOT NULL
