@@ -181,9 +181,6 @@ const REASONING_FUNCTION_CALLING = {
 } satisfies ModelInfo['capabilities'];
 
 const ANTHROPIC_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
-  'claude-sonnet-4-6': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] } },
-  'claude-opus-4-8': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
-  'claude-fable-5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
   // Anthropic retired Sonnet 4.5's 1M beta on 2026-04-30; the standard API limit is 200K.
   'claude-sonnet-4-5': {
     contextWindow: 200_000,
@@ -210,18 +207,14 @@ const CLAUDE_SUBSCRIPTION_MODEL_METADATA = displayMetadataOnly(
 );
 
 const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
-  'gemini-3.5-flash': { thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] } },
-  'gemini-3.1-pro-preview': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
-  'gemini-3-pro-preview': { thinkingOptions: { efforts: ['low', 'high'] } },
-  'gemini-3-flash-preview': { thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] } },
+  // Gemini 2.5 Flash disables thinking via the budget-zero wire; newer Gemini
+  // effort sets come from the models.dev snapshot directly.
   'gemini-2.5-flash': {
     thinkingOptions: { toggle: true, offBehavior: 'google-thinking-budget-zero' },
   },
 };
 
 const OPENAI_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
-  'gpt-5.5': { thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] } },
-  'gpt-5': { thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] } },
   'gpt-audio': openAiAudioChatModel(),
   'gpt-audio-mini': openAiAudioChatModel(),
   'gpt-4o-audio-preview': openAiAudioChatModel(),
@@ -408,11 +401,7 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
       capabilities: { vision: false, reasoning: true, functionCalling: true },
     },
   },
-  'stepfun-ai-step-plan': {
-    'step-3.7-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
-    'step-3.5-flash-2603': { thinkingOptions: { efforts: ['low', 'high'] } },
-    'step-3.5-flash': { thinkingOptions: { efforts: ['low', 'high'] } },
-  },
+  'stepfun-ai-step-plan': {},
   'claude-subscription': CLAUDE_SUBSCRIPTION_MODEL_METADATA,
   openai: OPENAI_MODEL_OVERRIDES,
   google: GOOGLE_MODEL_OVERRIDES,
@@ -423,22 +412,13 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     'command-a-reasoning-08-2025': {
       thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
     },
-    // Cohere's wire has no effort field (thinking enabled/disabled only), so
-    // the upstream-declared effort list for north-mini-code collapses to the
-    // one choice Maka can actually send: off.
-    'north-mini-code-1-0': {
-      thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
-    },
   },
   'gemini-cli': GOOGLE_MODEL_OVERRIDES,
   'openai-codex': OPENAI_OAUTH_MODEL_METADATA,
   siliconflow: SILICONFLOW_MODEL_OVERRIDES,
-  vercel: {
-    'xai/grok-4.3': { thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] } },
-  },
   xai: {
-    // models.dev + xAI declare configurable reasoning_effort for Grok 4.5.
-    'grok-4.5': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+    // grok-4.5's Responses reasoning extras are wired in model-factory.ts;
+    // its effort set now comes from the models.dev snapshot.
   },
   'tencent-coding-plan': {
     'kimi-k2.5': { capabilities: { vision: false } },
@@ -468,23 +448,21 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     },
   },
   groq: {
-    // Groq accepts `reasoning_effort` only for gpt-oss-120b / gpt-oss-20b, with
-    // values low/medium/high (no `none`). See console.groq.com/docs/reasoning:
-    // qwen/qwen3-32b does NOT accept reasoning_effort (it reasons with no knob),
-    // and qwen/qwen3.6-27b accepts none/default but is not yet in the snapshot.
-    // gpt-oss-safeguard-20b is a guardrail model Groq does not list as accepting
-    // reasoning_effort, so it is deliberately omitted here.
-    'openai/gpt-oss-120b': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
-    'openai/gpt-oss-20b': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+    // Groq documents reasoning_effort only for the gpt-oss family
+    // (low/medium/high) and qwen3.6-27b (none/default); see
+    // console.groq.com/docs/reasoning. models.dev currently declares
+    // ['none','default'] for qwen/qwen3-32b, which is qwen3.6's value set
+    // misapplied — qwen3-32b reasons with no knob, so it is pinned to no
+    // options until a live check proves otherwise. The gpt-oss family's
+    // effort sets now come from the models.dev snapshot.
+    'qwen/qwen3-32b': { thinkingOptions: { efforts: [] } },
   },
   openrouter: {
-    'anthropic/claude-sonnet-5': {
-      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-    },
+    // gpt-5.6-sol and deepseek-v4-pro pin Maka-verified effort sets; the rest
+    // of openrouter's effort declarations come from the models.dev snapshot.
     'openai/gpt-5.6-sol': {
       thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], toggle: true },
     },
-    'x-ai/grok-4.5': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
     'deepseek/deepseek-v4-pro': { thinkingOptions: { efforts: ['high', 'xhigh'], toggle: true } },
   },
   'cloudflare-workers-ai': {
@@ -497,13 +475,11 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     },
   },
   'ollama-cloud': ollamaCloudThinkingModels,
-  deepseek: {
-    'deepseek-v4-flash': { thinkingOptions: { efforts: ['high', 'max'], toggle: true } },
-  },
+  deepseek: {},
   'zai-coding-plan': {
-    'glm-5.2': { thinkingOptions: { efforts: ['high', 'max'] } },
+    // glm-5.1 / glm-5v-turbo / glm-4.5-air are absent from the current
+    // snapshot; their toggle facts are preserved here until they return.
     'glm-5.1': { thinkingOptions: { toggle: true } },
-    'glm-5-turbo': { thinkingOptions: { toggle: true } },
     'glm-5v-turbo': { thinkingOptions: { toggle: true } },
     'glm-4.5-air': { thinkingOptions: { toggle: true } },
   },
@@ -586,7 +562,7 @@ function displayMetadataOnly(
         lifecycle: metadata.lifecycle,
         docsUrl: metadata.docsUrl,
         capabilities: metadata.capabilities,
-        thinkingOptions: overrides[id]?.thinkingOptions,
+        thinkingOptions: overrides[id]?.thinkingOptions ?? metadata.thinkingOptions,
       },
     ]),
   ) as Record<string, ModelMetadata>;

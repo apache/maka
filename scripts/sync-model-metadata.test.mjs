@@ -32,6 +32,33 @@ test('models without reasoning_options declare no thinkingOptions', () => {
   assert.equal('thinkingOptions' in metadata, false);
 });
 
+test('a toggle-only model declares thinkingOptions without efforts', () => {
+  const metadata = toMetadata('test', 'm', PROVIDER, {
+    ...BASE_MODEL,
+    reasoning_options: [{ type: 'toggle' }],
+  });
+  assert.deepEqual(metadata.thinkingOptions, { toggle: true });
+});
+
+test('budget_tokens is recognized and skipped until a wire consumes it', () => {
+  const metadata = toMetadata('test', 'm', PROVIDER, {
+    ...BASE_MODEL,
+    reasoning_options: [{ type: 'budget_tokens' }, { type: 'effort', values: ['high'] }],
+  });
+  assert.deepEqual(metadata.thinkingOptions, { efforts: ['high'] });
+});
+
+test('an unknown reasoning_options type fails loudly instead of drifting', () => {
+  assert.throws(
+    () =>
+      toMetadata('test', 'm', PROVIDER, {
+        ...BASE_MODEL,
+        reasoning_options: [{ type: 'mystery' }],
+      }),
+    /unsupported shape/,
+  );
+});
+
 test('an empty reasoning_options list declares no thinkingOptions', () => {
   const metadata = toMetadata('test', 'm', PROVIDER, { ...BASE_MODEL, reasoning_options: [] });
   assert.equal('thinkingOptions' in metadata, false);

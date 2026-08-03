@@ -165,11 +165,10 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('deepinfra'), 'moonshotai/Kimi-K2.7-Code', 'off'), {
       deepinfra: { reasoningEffort: 'none' },
     });
-    // Groq reasoning_effort: gpt-oss-120b / gpt-oss-20b declare low/medium/high
-    // (no `none`), so an off choice never reaches the wire. qwen3-32b now
-    // declares `["none","default"]` upstream: only the `none` effort survives
-    // deriveThinkingChoices ("default" is not a ThinkingLevel), so the sole
-    // knob is off, wired as reasoning_effort "none".
+    // Groq reasoning_effort: the gpt-oss family declares low/medium/high (no
+    // `none`), so an off choice never reaches the wire. qwen3-32b is pinned to
+    // no knob (Groq docs list reasoning_effort only for the gpt-oss family and
+    // qwen3.6-27b; models.dev's ['none','default'] is qwen3.6's set misapplied).
     assert.deepEqual(
       [...thinkingVariantsForModel('groq', 'openai/gpt-oss-120b')],
       ['low', 'medium', 'high'],
@@ -178,10 +177,8 @@ describe('buildProviderOptions: thinking level', () => {
       groq: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('groq'), 'openai/gpt-oss-120b', 'off'), {});
-    assert.deepEqual([...thinkingVariantsForModel('groq', 'qwen/qwen3-32b')], ['off']);
-    assert.deepEqual(buildProviderOptions(conn('groq'), 'qwen/qwen3-32b', 'off'), {
-      groq: { reasoningEffort: 'none' },
-    });
+    assert.deepEqual([...thinkingVariantsForModel('groq', 'qwen/qwen3-32b')], []);
+    assert.deepEqual(buildProviderOptions(conn('groq'), 'qwen/qwen3-32b', 'off'), {});
     // gpt-oss-safeguard-20b declares the same low/medium/high effort set as
     // the rest of the Groq gpt-oss family in the current snapshot.
     assert.deepEqual(
@@ -220,6 +217,28 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air')], []);
     // miss model (deepseek-chat non-reasoning) drops level
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-chat', 'high'), {});
+  });
+
+  test('family fallback wires per-model override adapters under their SDK namespaces', () => {
+    // opencode serves models across several protocols via models.dev package
+    // overrides; the family fallback must emit the namespace each SDK consumes.
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'gpt-5.5', 'high'), {
+      openai: { reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'claude-fable-5', 'high'), {
+      anthropic: { effort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'gemini-3.5-flash', 'high'), {
+      google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } },
+    });
+    // Plain OpenAI-compatible access paths use the provider-type namespace.
+    assert.deepEqual(buildProviderOptions(conn('zenmux'), 'deepseek/deepseek-v4-flash', 'high'), {
+      zenmux: { reasoningEffort: 'high' },
+    });
+    // Copilot defaults to its OpenAI-compatible chat wire without a protocol hint.
+    assert.deepEqual(buildProviderOptions(conn('github-copilot'), 'gpt-5.4', 'high'), {
+      'github-copilot': { reasoningEffort: 'high' },
+    });
   });
 
   test('xAI Grok 4.5 requests encrypted Responses reasoning under the native OpenAI namespace', () => {
@@ -321,11 +340,25 @@ describe('buildProviderOptions: thinking level', () => {
   test('Cohere sends its native disabled thinking object without inventing effort levels', () => {
     const modelId = 'command-a-plus-05-2026';
     assert.deepEqual([...thinkingVariantsForModel('cohere', modelId)], ['off']);
-    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId), { cohere: {} });
+    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId), {});
     assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'off'), {
       cohere: { thinking: { type: 'disabled' } },
     });
-    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'high'), { cohere: {} });
+    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'high'), {});
+  });
+
+  test('Cohere north-mini serves the OpenAI-compatible compat wire declared by models.dev', () => {
+    // north-mini-code-1-0 carries a models.dev package override to the
+    // OpenAI-compatible endpoint, so its wire is the compat reasoning_effort
+    // shape, not the native Cohere thinking object.
+    const modelId = 'north-mini-code-1-0';
+    assert.deepEqual([...thinkingVariantsForModel('cohere', modelId)], ['off', 'high']);
+    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'high'), {
+      cohere: { reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'off'), {
+      cohere: { reasoningEffort: 'none' },
+    });
   });
 
   test('Tencent Token Plan sends its documented reasoning effort under the stable provider namespace', () => {

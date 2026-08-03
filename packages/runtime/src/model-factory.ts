@@ -15,7 +15,11 @@ import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import { thinkingOptionsForModel, thinkingVariantsForModel } from '@maka/core/model-thinking';
+import {
+  thinkingOptionsForModel,
+  thinkingVariantsForModel,
+  type ThinkingOptions,
+} from '@maka/core/model-thinking';
 import {
   createKimiOpenAiTransport,
   type KimiOpenAiTransportState,
@@ -382,6 +386,8 @@ export function buildProviderOptions(
       };
     case 'xai':
     case 'xai-oauth':
+      // Only grok-4.5 needs the Responses reasoning extras; every other xAI
+      // model serves the plain OpenAI-compatible chat wire handled below.
       if (modelId === 'grok-4.5') {
         return {
           openai: {
@@ -393,22 +399,7 @@ export function buildProviderOptions(
           },
         };
       }
-      // Other xAI models serve the OpenAI-compatible chat wire, so their
-      // declared efforts ride the shared compatible fallback shape.
-      return level
-        ? {
-            [connection.providerType]: {
-              reasoningEffort: level === 'off' ? 'none' : level,
-            },
-          }
-        : {};
-    case 'cohere':
-      return {
-        cohere:
-          level === 'off' && thinkingOptions?.offBehavior === 'cohere-thinking-disabled'
-            ? { thinking: { type: 'disabled' as const } }
-            : {},
-      };
+      return buildFamilyWire(connection, modelId, level, thinkingOptions);
     case 'volcengine-ark':
       return {
         [connection.providerType]: {
@@ -452,43 +443,56 @@ export function buildProviderOptions(
     // overrides — keeps declaration and wire in one seam. The variant gate
     // above (level is defined only when metadata declares it) is what makes
     // this safe to generalize: undeclared models never reach the wire.
-    default: {
-      if (!level) return {};
-      const { adapter } = resolveModelRuntime(connection, modelId);
-      const reasoningEffort = level === 'off' ? 'none' : level;
-      switch (adapter.kind) {
-        case 'openai-compatible':
-          return {
-            [openAiCompatibleProviderOptionsName(adapter, connection)]: { reasoningEffort },
-          };
-        case 'openai':
-          return { openai: { reasoningEffort } };
-        case 'anthropic':
-          // Anthropic-protocol models declare no `none` effort, so an off
-          // choice only exists where an explicit case wires it.
-          return level !== 'off' ? { anthropic: { effort: level } } : {};
-        case 'google':
-          return level !== 'off'
-            ? { google: { thinkingConfig: { includeThoughts: true, thinkingLevel: level } } }
-            : {};
-        case 'github-copilot': {
-          // Copilot routes per account-declared model protocol (mirrors the
-          // getAIModel case), defaulting to its OpenAI-compatible chat wire.
-          const copilotProtocol = connection.models?.find(
-            (model) => model.id === modelId,
-          )?.apiProtocol;
-          if (copilotProtocol === 'anthropic-messages') {
-            return level !== 'off' ? { anthropic: { effort: level } } : {};
-          }
-          if (copilotProtocol === 'openai-responses') {
-            return { openai: { reasoningEffort } };
-          }
-          return { 'github-copilot': { reasoningEffort } };
-        }
-        default:
-          return {};
+    default:
+      return buildFamilyWire(connection, modelId, level, thinkingOptions);
+  }
+}
+
+function buildFamilyWire(
+  connection: RuntimeExecutionConnection,
+  modelId: string,
+  level: ThinkingLevel | undefined,
+  thinkingOptions: ThinkingOptions | undefined,
+): SharedV4ProviderOptions {
+  if (!level) return {};
+  const { adapter } = resolveModelRuntime(connection, modelId);
+  const reasoningEffort = level === 'off' ? 'none' : level;
+  switch (adapter.kind) {
+    case 'openai-compatible':
+      return {
+        [openAiCompatibleProviderOptionsName(adapter, connection)]: { reasoningEffort },
+      };
+    case 'openai':
+      return { openai: { reasoningEffort } };
+    case 'anthropic':
+      // Anthropic-protocol models declare no `none` effort, so an off
+      // choice only exists where an explicit case wires it.
+      return level !== 'off' ? { anthropic: { effort: level } } : {};
+    case 'google':
+      return level !== 'off'
+        ? { google: { thinkingConfig: { includeThoughts: true, thinkingLevel: level } } }
+        : {};
+    case 'cohere':
+      return {
+        cohere:
+          level === 'off' && thinkingOptions?.offBehavior === 'cohere-thinking-disabled'
+            ? { thinking: { type: 'disabled' as const } }
+            : {},
+      };
+    case 'github-copilot': {
+      // Copilot routes per account-declared model protocol (mirrors the
+      // getAIModel case), defaulting to its OpenAI-compatible chat wire.
+      const copilotProtocol = connection.models?.find((model) => model.id === modelId)?.apiProtocol;
+      if (copilotProtocol === 'anthropic-messages') {
+        return level !== 'off' ? { anthropic: { effort: level } } : {};
       }
+      if (copilotProtocol === 'openai-responses') {
+        return { openai: { reasoningEffort } };
+      }
+      return { 'github-copilot': { reasoningEffort } };
     }
+    default:
+      return {};
   }
 }
 

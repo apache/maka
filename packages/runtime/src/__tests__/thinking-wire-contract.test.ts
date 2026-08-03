@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core';
 import { PROVIDER_REGISTRY, thinkingVariantsForModel } from '@maka/core';
+import { GENERATED_MODELS_DEV_METADATA } from '@maka/core/model-metadata.generated';
 import { buildProviderOptions } from '@maka/runtime';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -16,6 +17,60 @@ function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmCo
   };
 }
 
+// The metadata alias rules of lookupModelMetadata, mirrored so the contract
+// enumerates the same model universe the lookup resolves against.
+function generatedModelIds(providerType: string): string[] {
+  const key =
+    providerType === 'xai-oauth'
+      ? 'xai'
+      : providerType === 'opencode-free'
+        ? 'opencode'
+        : providerType;
+  return Object.keys(
+    GENERATED_MODELS_DEV_METADATA[key as keyof typeof GENERATED_MODELS_DEV_METADATA] ?? {},
+  );
+}
+
+function wiresAnything(options: Record<string, unknown>): boolean {
+  // The inner object must carry at least one field the SDK will translate;
+  // `{ openai: {} }` would send nothing while still being non-empty at the top.
+  return Object.values(options).some(
+    (value) => typeof value === 'object' && value !== null && Object.keys(value).length > 0,
+  );
+}
+
+function hasRealOffWire(options: Record<string, unknown>): boolean {
+  // A declared off choice must map to a wire the target SDK understands:
+  // reasoning_effort none, thinking disabled, budget zero, or template false.
+  for (const value of Object.values(options)) {
+    if (typeof value !== 'object' || value === null) continue;
+    const inner = value as Record<string, unknown>;
+    if (inner.reasoningEffort === 'none') return true;
+    if (
+      typeof inner.thinking === 'object' &&
+      inner.thinking !== null &&
+      (inner.thinking as Record<string, unknown>).type === 'disabled'
+    ) {
+      return true;
+    }
+    if (
+      typeof inner.thinkingConfig === 'object' &&
+      inner.thinkingConfig !== null &&
+      (inner.thinkingConfig as Record<string, unknown>).thinkingBudget === 0
+    ) {
+      return true;
+    }
+    if (
+      typeof inner.chat_template_kwargs === 'object' &&
+      inner.chat_template_kwargs !== null &&
+      (inner.chat_template_kwargs as Record<string, unknown>).thinking === false
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 describe('thinking wire contract', () => {
   test('issue #1858: opencode-go wires the declared effort for deepseek-v4-flash', () => {
     assert.deepEqual(buildProviderOptions(conn('opencode-go'), 'deepseek-v4-flash', 'high'), {
@@ -26,17 +81,25 @@ describe('thinking wire contract', () => {
     });
   });
 
-  test('every declared thinking variant on every provider path is wireable', () => {
+  test('every declared thinking variant on every provider path wires something real', () => {
     const gaps: string[] = [];
     for (const providerType of Object.keys(PROVIDER_REGISTRY) as LlmConnection['providerType'][]) {
       // Providers without a runtime adapter (e.g. phase3-experimental
       // gemini-cli) cannot start a request, so there is no wire to honor.
       if (PROVIDER_REGISTRY[providerType].runtimeAdapter?.kind === 'unavailable') continue;
-      for (const modelId of PROVIDER_REGISTRY[providerType].fallbackModels) {
+      const modelIds = new Set([
+        ...PROVIDER_REGISTRY[providerType].fallbackModels,
+        ...generatedModelIds(providerType),
+      ]);
+      for (const modelId of modelIds) {
         for (const level of thinkingVariantsForModel(providerType, modelId)) {
           const options = buildProviderOptions(conn(providerType), modelId, level);
-          if (Object.keys(options).length === 0) {
+          if (!wiresAnything(options)) {
             gaps.push(`${providerType}/${modelId} declares "${level}" but wires nothing`);
+          } else if (level === 'off' && !hasRealOffWire(options)) {
+            gaps.push(
+              `${providerType}/${modelId} declares "off" without a real off wire: ${JSON.stringify(options)}`,
+            );
           }
         }
       }
