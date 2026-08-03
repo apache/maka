@@ -20,9 +20,14 @@ const REQUIRED_PRODUCT_SURFACES = Object.freeze([
   'planReminders',
   'dailyReview',
   'sessionContext',
+  'composer',
 ]);
 
-const PRODUCT_CHECKS = new Set(['plan-reminder-row', 'session-context-layer']);
+const PRODUCT_CHECKS = new Set([
+  'composer-focus-ownership',
+  'plan-reminder-row',
+  'session-context-layer',
+]);
 
 function fail(message) {
   throw new Error(`Product Storybook manifest: ${message}`);
@@ -290,6 +295,43 @@ async function smokeStory(page, baseUrl, job, options = {}) {
               failures.push(
                 `session context layer overflows horizontally (${layer.scrollWidth} > ${layer.clientWidth})`,
               );
+            }
+          }
+        }
+        if (checks.includes('composer-focus-ownership')) {
+          const editor = document.querySelector('.maka-composer-editor > [contenteditable="true"]');
+          const composer = editor?.closest('[data-maka-contract="composer-inner"]');
+          if (!(editor instanceof HTMLElement) || !(composer instanceof HTMLElement)) {
+            failures.push('composer editor or Astryx focus surface is missing');
+          } else {
+            editor.focus();
+            const style = getComputedStyle(editor);
+            const actual = {
+              backgroundColor: style.backgroundColor,
+              borderWidth: style.borderWidth,
+              boxShadow: style.boxShadow,
+              minHeight: style.minHeight,
+              outlineStyle: style.outlineStyle,
+            };
+            const expected = {
+              backgroundColor: 'rgba(0, 0, 0, 0)',
+              borderWidth: '0px',
+              boxShadow: 'none',
+              minHeight: 'auto',
+              outlineStyle: 'none',
+            };
+            for (const [property, expectedValue] of Object.entries(expected)) {
+              if (actual[property] !== expectedValue) {
+                failures.push(
+                  `composer editor ${property} must be ${expectedValue}, got ${actual[property]}`,
+                );
+              }
+            }
+            if (document.activeElement !== editor) {
+              failures.push('composer editor did not retain focus');
+            }
+            if (!composer.matches(':focus-within')) {
+              failures.push('Astryx composer surface did not receive the focus-within state');
             }
           }
         }

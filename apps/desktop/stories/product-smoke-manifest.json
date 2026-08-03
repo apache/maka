@@ -106,6 +106,18 @@
       "colorSchemes": ["light", "dark"],
       "checks": ["session-context-layer"]
     },
+    "composer": {
+      "storyId": "product-shell-official-appshell--new-chat-composer",
+      "productionHost": "ChatView > Composer > Astryx ChatComposer",
+      "state": "Focused empty editor before the first message is sent",
+      "viewports": ["wide"],
+      "colorSchemes": ["light", "dark"],
+      "checks": ["composer-focus-ownership"],
+      "viewportOptOuts": {
+        "compact": "Focus ownership is independent of viewport geometry.",
+        "floor": "Focus ownership is independent of viewport geometry."
+      }
+    },
     "askUserQuestion": {
       "storyId": "product-ask-user-question--pending-decisions",
       "productionHost": "UserQuestionPrompt (the ChatComposerRegion takeover is out of scope)",

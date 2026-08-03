@@ -202,7 +202,6 @@
   --muted:         oklch(from var(--foreground) l c h / 0.05);
   --muted-foreground: color-mix(in oklch, var(--foreground) 50%, var(--background));
   --foreground-secondary: color-mix(in oklch, var(--foreground) 80%, var(--background));
-  --ring:          oklch(from var(--foreground) l c h / 0.25);
   --state-hover-bg:    oklch(from var(--foreground) l c h / 0.04);
   --state-selected-bg: oklch(from var(--foreground) l c h / 0.065);
   /* PR5 FOREGROUND-ALPHA-TOKEN-0: raw foreground-alpha tiers for component
@@ -615,10 +614,9 @@
    --opacity-overlay: 0.04;   /* body::after subtle overlay (light) */
 
    /* === focus-ring recipe ===
-      --focus-ring is the strong accent color (existing); --ring is the
-      subtle foreground-derived color (existing, for compact/secondary
-      focus). These two geometry tokens converge outline width and offset so
-      every focus ring shares one recipe instead of hand-written 2px. The
+      --focus-ring is the strong accent color. These two geometry tokens
+      converge outline width and offset so every focus ring shares one recipe
+      instead of hand-written 2px. The
       recipe once carried a third, the outer glow halo width, but nothing
       drew that halo.
       PR-FOCUS-RING-RECIPE-0 (issue #520 PR2). */
@@ -651,7 +649,6 @@
   --w-sidebar: 240px;
   --w-rail: 240px;
   --h-titlebar: 36px;
-  --h-composer-min: 44px;
 
   /* OS window-resize corridor. A draggable app-region rect flush against a
      window edge takes the native resize hit area with it — that is the P0 WAWQAQ
@@ -693,8 +690,8 @@
      The historic sidebar/会话/设置 height drift came from off-ruler bare px
      (22/26/30/34/38); this scale converges them. Square icon controls use
      the same token for width and height (their footprint = control size).
-     App-chrome bars (--h-titlebar/--h-composer-min) stay as their own
-     semantic tokens — they are structure, not controls.
+     The app-chrome bar (--h-titlebar) stays as its own semantic token — it is
+     structure, not a control.
      xs/sm/2xl (20/24/40) stay on the --space-* ruler: Astryx has no element
      token at those sizes, and 20px is what its own Badge and Kbd take from
      --spacing-5, so that tier already agrees by construction. */
@@ -1175,11 +1172,6 @@ html[data-os="darwin"].dark {
   ::-webkit-scrollbar-corner { background: transparent; }
 
   ::selection { background: var(--selection); }
-
-  *:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 var(--focus-ring-width) var(--ring);
-  }
 
   /* Subtle film-grain overlay. Per the taste-skill and frontend-design
      skill, fixed pointer-events-none noise breaks the digital flatness
