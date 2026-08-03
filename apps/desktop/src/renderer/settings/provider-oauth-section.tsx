@@ -218,7 +218,7 @@ function SubscriptionLoginPanel(props: {
       <Text type="body">{presentSnapshotDetail(flow.state, display, locale)}</Text>
       {flow.stateHint && (
         <Text type="supporting" color="secondary">
-          {isXai ? copy.deviceCode : copy.stateHint} {flow.stateHint} {isXai ? null : copy.startsWith}
+          {copy.deviceCode} {flow.stateHint}
         </Text>
       )}
       {flow.errorMessage && (

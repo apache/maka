@@ -6,63 +6,24 @@
  *
  * Endpoint constants live here too; the service module re-exports
  * them so there is exactly one source of truth.
+ *
+ * Authorization is the ChatGPT device-code flow (`deviceauth/*` on
+ * auth.openai.com/api/accounts), the same flow the official Codex
+ * CLI uses — no local loopback listener, no fixed callback port.
  */
 
-import { createHash } from 'node:crypto';
-import { base64urlEncode } from '@maka/core';
-
 // =============================================================
-// Endpoints — pinned to the openai-codex-auth plugin pattern.
+// Endpoints — pinned to the official codex CLI device-auth flow
+// (codex-rs login/src/device_code_auth.rs).
 // =============================================================
 export const CODEX_OAUTH_CONFIG = {
   clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
-  authUrl: 'https://auth.openai.com/oauth/authorize',
-  tokenUrl: 'https://auth.openai.com/oauth/token',
-  callbackHost: '127.0.0.1',
-  callbackPort: 1455,
-  fallbackCallbackPort: 1457,
-  redirectUri: 'http://localhost:1455/auth/callback',
-  scopes: 'openid profile email offline_access api.connectors.read api.connectors.invoke',
-  extras: [
-    ['id_token_add_organizations', 'true'],
-    ['codex_cli_simplified_flow', 'true'],
-    ['originator', 'codex_cli_rs'],
-  ] as ReadonlyArray<[string, string]>,
+  tokenEndpoint: 'https://auth.openai.com/oauth/token',
+  deviceAuthBaseUrl: 'https://auth.openai.com/api/accounts',
+  deviceVerifyUrl: 'https://auth.openai.com/codex/device',
+  deviceRedirectUri: 'https://auth.openai.com/deviceauth/callback',
+  scopes: 'openid profile email offline_access',
 } as const;
-
-// =============================================================
-// Pure helpers.
-// =============================================================
-
-export interface CodexAuthorizationConfig {
-  clientId: string;
-  authorizeEndpoint: string;
-  redirectUri: string;
-  scope: string;
-  state: string;
-  challenge: string;
-  extras: ReadonlyArray<[string, string]>;
-}
-
-export function buildCodexAuthorizationUrl(config: CodexAuthorizationConfig): string {
-  const url = new URL(config.authorizeEndpoint);
-  url.searchParams.set('response_type', 'code');
-  url.searchParams.set('client_id', config.clientId);
-  url.searchParams.set('redirect_uri', config.redirectUri);
-  url.searchParams.set('scope', config.scope);
-  url.searchParams.set('code_challenge', config.challenge);
-  url.searchParams.set('code_challenge_method', 'S256');
-  url.searchParams.set('state', config.state);
-  for (const [key, value] of config.extras) {
-    url.searchParams.set(key, value);
-  }
-  return url.toString();
-}
-
-export function pkceChallengeFromVerifier(verifier: string): string {
-  const digest = createHash('sha256').update(verifier, 'utf8').digest();
-  return base64urlEncode(new Uint8Array(digest));
-}
 
 // =============================================================
 // JWT claim extraction. The Codex access token is a JWT carrying
