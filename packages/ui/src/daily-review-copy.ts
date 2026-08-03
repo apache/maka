@@ -61,7 +61,6 @@ export interface DailyReviewCopy {
     requests: string;
     tokens: string;
     cost: string;
-    errors: string;
     activeConversations: string;
   };
   errorFallback: string;
@@ -108,7 +107,7 @@ const DAILY_REVIEW_COPY = {
       title: '每日回顾', generateAnalysis: '生成分析', viewAnalysis: '查看分析', backToActivity: '返回活动', timeRange: '时间范围', rangeOptions: [['1', '今日'], ['7', '最近 7 天'], ['30', '最近 30 天']], rangeSwitch: '时间范围切换',
     },
     overview: {
-      ariaLabel: (label) => `${label}概览`, refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃对话',
+      ariaLabel: (label) => `${label}概览`, refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', activeConversations: '活跃对话',
     },
     errorFallback: '每日回顾暂时不可用，请稍后重试。',
     markdown: {
@@ -142,7 +141,7 @@ const DAILY_REVIEW_COPY = {
       title: 'Daily review', generateAnalysis: 'Generate analysis', viewAnalysis: 'View analysis', backToActivity: 'Back to activity', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], rangeSwitch: 'Change time range',
     },
     overview: {
-      ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active conversations',
+      ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', activeConversations: 'Active conversations',
     },
     errorFallback: 'Daily review is temporarily unavailable. Try again later.',
     markdown: {

@@ -511,6 +511,13 @@ export const ScheduledDailyReview: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const overview = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[aria-label="今天概览"]',
+    );
+    await expect(overview.textContent).not.toContain('错误');
+  },
 };
 
 // Real path: sidebar → scheduled tasks → Daily Review while saved reports load.

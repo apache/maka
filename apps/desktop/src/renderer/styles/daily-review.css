@@ -67,10 +67,6 @@
   border-inline-start: var(--border-width-hairline) solid var(--foreground-10);
 }
 
-.maka-daily-review-metric[data-tone='error'] {
-  color: var(--destructive, var(--foreground));
-}
-
 .maka-daily-review-report-prose {
   color: var(--foreground-secondary);
   overflow-wrap: anywhere;

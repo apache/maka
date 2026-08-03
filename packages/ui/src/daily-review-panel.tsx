@@ -335,9 +335,6 @@ export function DailyReviewPanel(props: {
             <DailyReviewMetric label={copy.overview.requests} value={totals?.requestCount.toString() ?? '0'} />
             <DailyReviewMetric label={copy.overview.tokens} value={(totals?.totalTokens ?? 0).toLocaleString(intlLocale)} />
             <DailyReviewMetric label={copy.overview.cost} value={`$${(totals?.costUsd ?? 0).toFixed(2)}`} />
-            {(totals?.errorCount ?? 0) > 0 ? (
-              <DailyReviewMetric label={copy.overview.errors} value={totals!.errorCount.toString()} tone="error" />
-            ) : null}
           </div>
 
           <VStack gap={2}>
@@ -370,9 +367,9 @@ export function DailyReviewPanel(props: {
   );
 }
 
-function DailyReviewMetric(props: { label: string; value: string; tone?: 'error' }) {
+function DailyReviewMetric(props: { label: string; value: string }) {
   return (
-    <VStack className="maka-daily-review-metric" gap={0} data-tone={props.tone}>
+    <VStack className="maka-daily-review-metric" gap={0}>
       <Text type="supporting" color="secondary">{props.label}</Text>
       <Text type="large" weight="semibold">{props.value}</Text>
     </VStack>
