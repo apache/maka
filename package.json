@@ -21,7 +21,7 @@
     "apps/desktop"
   ],
   "scripts": {
-    "postinstall": "install-electron",
+    "postinstall": "patch-package --error-on-fail && install-electron",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
@@ -77,6 +77,7 @@
     "@biomejs/biome": "2.5.4",
     "@types/node": "^25.0.0",
     "knip": "^6.26.0",
+    "patch-package": "8.0.1",
     "typescript": "^7.0.2"
   },
   "allowScripts": {
