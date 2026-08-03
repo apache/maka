@@ -1,7 +1,4 @@
-/* Round 10: the search field and the 添加 CTA share one header row —
-   they align on the SAME control height (36px, the default button) and
-   the SAME radius family (radius-control). Previously 32px/8px vs
-   36px/6px read as two misaligned controls. */
+/* Keep search compact so it does not compete with the page title. */
 .maka-skill-search {
   width: min(280px, 30vw);
   min-width: 0;

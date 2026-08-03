@@ -45,7 +45,6 @@ export function SkillsPage(props: {
   hubHeader?: ModuleHubHeader;
   planReminders?: PlanReminder[];
   onRefreshSkills?(): void | Promise<void>;
-  onCreateSkillTemplate?(): void | Promise<void>;
   onOpenSkill?(skillId: string): void | Promise<void>;
   onUseSkill?(skillId: string, skillName: string): void;
   onOpenSkillsFolder?(): void | Promise<void>;

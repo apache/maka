@@ -366,7 +366,6 @@ function ExtensionsSkillsSurface(props: { skills?: SkillEntry[] }) {
         managedSkillSources={[]}
         bundledSkillCatalog={[]}
         onRefreshSkills={noop}
-        onCreateSkillTemplate={noop}
         onOpenSkill={noop}
         onOpenSkillsFolder={noop}
       />

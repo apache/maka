@@ -1240,7 +1240,6 @@ function AppShellContent({
     refreshSkills,
     refreshManagedSkillSources,
     refreshBundledSkillCatalog,
-    createSkillTemplate,
     importManagedSkillSource,
     installManagedSkill,
     installBundledSkill,
@@ -2195,7 +2194,6 @@ function AppShellContent({
                   planReminders={planReminders}
                   onRefreshSkills={() => refreshSkills()}
                   onRefreshManagedSkillSources={() => refreshManagedSkillSources()}
-                  onCreateSkillTemplate={() => createSkillTemplate()}
                   onOpenSkill={(skillId) => openSkill(skillId)}
                   onUseSkill={useSkillInChat}
                   onOpenSkillsFolder={() => openSkillsFolder()}
