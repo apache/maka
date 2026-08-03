@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import {
   assertMacosArm64CliHost,
   assertNoDanglingSymlinks,
+  listDependencyPatchNames,
   releaseToolchainFromManifest,
   resolveCliWorkspacePackages,
   resolveMacosArm64CliArtifactPaths,
@@ -201,6 +202,98 @@ async function assertWorkspaceClosure(archiveRoot, metadata) {
   await assertNoDanglingSymlinks(join(archiveRoot, 'libexec'));
 }
 
+function streamingChunk(delta, finishReason = null) {
+  return {
+    id: 'chatcmpl-release-smoke',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model: 'release-smoke-model',
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  };
+}
+
+export function assertPatchedStreamingToolCalls(parts) {
+  const errors = parts.filter((part) => part.type === 'error');
+  if (errors.length > 0 || parts.at(-1)?.type !== 'finish') {
+    throw new Error('Packaged provider-utils failed to finish streamed tool calls.');
+  }
+  const actualCalls = parts
+    .filter((part) => part.type === 'tool-call')
+    .map(({ toolCallId, toolName, input }) => ({ toolCallId, toolName, input }));
+  const expectedCalls = [
+    { toolCallId: 'call_1', toolName: 'read_file', input: '{"path":"a.txt"}' },
+    { toolCallId: 'call_2', toolName: 'read_file', input: '{"path":"b.txt"}' },
+  ];
+  if (JSON.stringify(actualCalls) !== JSON.stringify(expectedCalls)) {
+    throw new Error('Packaged provider-utils reordered or dropped streamed tool calls.');
+  }
+}
+
+async function smokePatchedStreamingToolCalls(archiveRoot) {
+  const cliManifestPath = join(
+    archiveRoot,
+    'libexec',
+    'node_modules',
+    'maka-agent',
+    'package.json',
+  );
+  const requireFromCli = createRequire(cliManifestPath);
+  const runtimeEntry = requireFromCli.resolve('@maka/runtime');
+  const { getAIModel } = await import(pathToFileURL(runtimeEntry).href);
+  const payloads = [
+    streamingChunk({ role: 'assistant', content: 'Reading both files.' }),
+    streamingChunk({
+      tool_calls: [
+        {
+          index: 1,
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '' },
+        },
+      ],
+    }),
+    streamingChunk({ tool_calls: [{ index: 1, function: { arguments: '{"path":"a.txt"}' } }] }),
+    streamingChunk({
+      tool_calls: [
+        {
+          index: 2,
+          id: 'call_2',
+          type: 'function',
+          function: { name: 'read_file', arguments: '' },
+        },
+      ],
+    }),
+    streamingChunk({ tool_calls: [{ index: 2, function: { arguments: '{"path":"b.txt"}' } }] }),
+    streamingChunk({}, 'tool_calls'),
+  ];
+  const body = `${payloads.map((payload) => `data: ${JSON.stringify(payload)}\n\n`).join('')}data: [DONE]\n\n`;
+  const model = getAIModel({
+    connection: {
+      slug: 'release-smoke',
+      providerType: 'openai-compatible',
+      baseUrl: 'https://release-smoke.invalid/v1',
+      defaultModel: 'release-smoke-model',
+    },
+    apiKey: 'release-smoke-key',
+    modelId: 'release-smoke-model',
+    fetch: async () =>
+      new Response(body, { headers: { 'content-type': 'text/event-stream' }, status: 200 }),
+  });
+  const { stream } = await model.doStream({
+    prompt: [{ role: 'user', content: [{ type: 'text', text: 'read a.txt and b.txt' }] }],
+    tools: [
+      {
+        type: 'function',
+        name: 'read_file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      },
+    ],
+  });
+  const parts = [];
+  for await (const part of stream) parts.push(part);
+  assertPatchedStreamingToolCalls(parts);
+}
+
 async function verifyBinarySignatures(binaryPaths, { requireReleaseSigning, run }) {
   let expectedTeamIdentifier;
   for (const binaryPath of binaryPaths) {
@@ -272,13 +365,19 @@ export async function verifyMacosArm64Cli(
     ];
     await Promise.all(requiredPaths.map((path) => access(path)));
 
-    const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
+    const [metadata, expectedDependencyPatches] = await Promise.all([
+      readFile(metadataPath, 'utf8').then(JSON.parse),
+      listDependencyPatchNames(),
+    ]);
     if (
       metadata.version !== version ||
       metadata.nodeVersion !== toolchain.nodeVersion ||
       metadata.npmVersion !== toolchain.npmVersion
     ) {
       throw new Error('CLI release metadata does not match the pinned release toolchain.');
+    }
+    if (JSON.stringify(metadata.dependencyPatches) !== JSON.stringify(expectedDependencyPatches)) {
+      throw new Error('CLI release metadata does not match the repository dependency patches.');
     }
     if (requireReleaseSigning && metadata.signing !== 'developer-id-notarized') {
       throw new Error('Release CLI artifact is not marked as Developer ID signed and notarized.');
@@ -358,6 +457,7 @@ export async function verifyMacosArm64Cli(
         throw new Error(`CLI help does not list ${command}.`);
       }
     }
+    await smokePatchedStreamingToolCalls(archiveRoot);
 
     const fixtureDirectory = join(extractionRoot, 'eval-fixture');
     const outputDirectory = join(extractionRoot, 'eval-output');
@@ -397,6 +497,7 @@ export async function verifyMacosArm64Cli(
       checksumPath,
       nativeBinaryCount: nativeBinaries.length,
       sha256,
+      streamingPatchVerified: true,
       version,
     };
   } finally {

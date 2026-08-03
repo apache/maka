@@ -29,6 +29,23 @@ export interface RuntimePolicyOperationSecretMaterial {
   readonly networkProxy?: RuntimePolicyCredentialMaterial;
 }
 
+export type ResolveWebSearchExecutionResult =
+  | { readonly kind: 'privacy_mode' }
+  | {
+      readonly kind: 'disabled';
+      readonly provider: RuntimePolicy['webSearch']['defaultProvider'];
+    }
+  | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
+  | {
+      readonly kind: 'ready';
+      readonly provider: RuntimePolicy['webSearch']['defaultProvider'];
+      readonly secretMaterial: {
+        readonly webSearch: RuntimePolicyCredentialMaterial;
+        readonly networkProxy?: RuntimePolicyCredentialMaterial;
+      };
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+    };
+
 export type OAuthCredentialLocator = Omit<
   Extract<CredentialLocator, { scope: 'connection' }>,
   'kind'
@@ -153,6 +170,7 @@ export type ResolveExecutionConnectionResult =
 
 export interface RuntimePolicyOperationCoordinator {
   resolveExecutionConnection(connectionSlug: string): Promise<ResolveExecutionConnectionResult>;
+  resolveWebSearchExecution(): Promise<ResolveWebSearchExecutionResult>;
   compareAndSetOAuthCredential(
     input: CompareAndSetOAuthCredentialInput,
   ): Promise<CompareAndSetOAuthCredentialResult>;

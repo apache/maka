@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
 import { ToastProvider } from '@maka/ui';
 import type {
   ConnectionTestResult,
@@ -8,6 +9,7 @@ import type {
   ProviderType,
 } from '@maka/core';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/ProvidersPanel';
+import { SettingsPage } from '../../src/renderer/settings/settings-section';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
 
@@ -24,7 +26,7 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type AutoOpenTarget = 'detail' | 'add' | 'oauth' | 'xai-device';
+type AutoOpenTarget = 'detail' | 'add' | 'catalog' | 'oauth' | 'xai-device';
 
 function makeConnection(input: {
   slug: string;
@@ -305,55 +307,86 @@ function ProviderStoryFrame(props: {
         }}
       >
         <section className="settingsMainPane" data-agents-view="settings">
-          <div className="settingsPageContent" style={{ overflow: 'auto' }}>
-            <div className="settingsPageContentInner">
-              <div className="settingsStructuredPage settingsModelsPage">
-                <ProvidersPanel bridge={props.bridge} />
-              </div>
-            </div>
-          </div>
+          {/* The same Layout settings-surface.tsx wraps every settings page in,
+              contentWidth included — without it the story renders forms at the
+              window's width and hides exactly the layout question a page-level
+              form raises. */}
+          <Layout
+            height="fill"
+            padding={0}
+            contentWidth={640}
+            header={(
+              <LayoutHeader padding={6}>
+                <div className="settingsPageHeader">
+                  <div className="settingsPageHeaderTitleStack">
+                    <h2>模型</h2>
+                  </div>
+                </div>
+              </LayoutHeader>
+            )}
+            content={(
+              <LayoutContent padding={6}>
+                <SettingsPage className="settingsModelsPage">
+                  <ProvidersPanel bridge={props.bridge} />
+                </SettingsPage>
+              </LayoutContent>
+            )}
+          />
         </section>
       </div>
     </ToastProvider>
   );
 }
 
+/** Every level is a page inside the story root now, so nothing is looked up on
+ *  `document` — the story renders what the story frame contains. */
+function catalogRoot(root: HTMLElement): HTMLElement | null {
+  return root.querySelector<HTMLElement>('[data-maka-contract="provider-catalog"]');
+}
+
+/** Walk to the catalog level, returning it once it is on screen. */
+function reachCatalog(root: HTMLElement): HTMLElement | null {
+  const catalog = catalogRoot(root);
+  if (catalog) return catalog;
+  root.querySelector<HTMLButtonElement>('button[data-maka-contract="add-connection"]')?.click();
+  return null;
+}
+
 function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean {
   if (target === 'detail') {
-    const detailButton = root.querySelector<HTMLButtonElement>('button[aria-label*="模型连接：Z.AI Live"]');
+    // ListItem's clickable surface is an invisible button inside the row, so
+    // the row is located by its slug hook and the button taken from within it.
+    const row = root.querySelector<HTMLElement>('[data-connection-slug="zai-live"]');
+    const detailButton = row?.querySelector('button') ?? null;
     detailButton?.click();
     return Boolean(detailButton);
   }
-  if (target === 'oauth') {
-    const oauthTab = root.querySelector<HTMLButtonElement>('button[data-catalog-tab="oauth"]');
-    oauthTab?.click();
-    return Boolean(oauthTab);
+  if (target === 'catalog' || target === 'oauth') {
+    // Account sign-ins are rows in the catalog, not a tab on the page, so both
+    // targets rest on the catalog level itself.
+    return Boolean(reachCatalog(root));
   }
   if (target === 'xai-device') {
-    const dialog = document.querySelector<HTMLElement>(
-      '[aria-labelledby="provider-connection-dialog-xai-oauth"]',
-    );
-    if (dialog) {
-      const code = dialog.querySelector('code');
-      if (code?.textContent?.trim() === 'ABCD-EFGH') return true;
-      const loginButton = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
-        .find((button) => button.textContent?.includes('SuperGrok / X Premium'));
-      if (loginButton && !loginButton.disabled) loginButton.click();
+    const setup = root.querySelector<HTMLElement>('[data-maka-contract="provider-setup"]');
+    if (!setup) {
+      const catalog = reachCatalog(root);
+      catalog?.querySelector<HTMLElement>('[data-card-id="xai"]')?.querySelector('button')?.click();
       return false;
     }
-    const xaiCard = root.querySelector<HTMLButtonElement>('button[data-card-id="xai"]');
-    if (xaiCard) {
-      xaiCard.click();
-      return false;
-    }
-    root.querySelector<HTMLButtonElement>('button[data-catalog-tab="oauth"]')?.click();
+    const code = setup.querySelector('code');
+    if (code?.textContent?.trim() === 'ABCD-EFGH') return true;
+    const loginButton = Array.from(setup.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('SuperGrok / X Premium'));
+    if (loginButton && !loginButton.disabled) loginButton.click();
     return false;
   }
 
-  const addButton = Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
-    .find((button) => button.textContent?.trim() === '自定义');
-  addButton?.click();
-  return Boolean(addButton);
+  // 'add': walk to the catalog, then into one provider's form.
+  const catalog = reachCatalog(root);
+  if (!catalog) return false;
+  const providerRow = catalog.querySelector<HTMLElement>('[data-provider="deepseek"]')?.querySelector('button') ?? null;
+  providerRow?.click();
+  return Boolean(providerRow);
 }
 
 function ProviderStory(props: {
@@ -374,7 +407,27 @@ export const ProblemConnections: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })} />,
 };
 
-// Real path: 设置 → 模型 → 添加 → the provider catalog and the add form.
+// Real path: 设置 → 模型 → click a connection row — the detail page it routes to.
+export const ConnectionDetailPage: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="detail"
+    />
+  ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 — level two, the provider catalog.
+export const AddConnectionCatalog: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="catalog"
+    />
+  ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 → pick a provider — level three, its form.
 export const AddProvider: Story = {
   render: () => (
     <ProviderStory

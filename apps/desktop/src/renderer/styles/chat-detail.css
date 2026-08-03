@@ -54,13 +54,17 @@
 }
 
 .maka-session-workbar-count {
+  font: var(--maka-text-supporting);
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
   min-width: var(--space-4);
   padding-inline: var(--space-1);
   border-radius: var(--radius-pill);
   background: var(--control);
   color: var(--foreground-dimmed);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   font-variant-numeric: tabular-nums;
 }
 
@@ -160,6 +164,7 @@
 }
 
 .maka-artifact-row {
+  font: var(--maka-text-supporting);
   width: 100%;
   justify-content: flex-start;
   padding: var(--space-1) var(--space-1-5);
@@ -169,8 +174,6 @@
   background: transparent;
   color: var(--foreground);
   text-align: left;
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   transition:
     background var(--duration-base) var(--ease-out-strong),
     border-color var(--duration-base) var(--ease-out-strong);
@@ -207,19 +210,18 @@
 }
 
 .maka-artifact-row-meta {
+  font: var(--maka-text-supporting);
   display: inline-flex;
   flex-direction: column;
   align-items: flex-end;
   margin-left: auto;
   gap: 1px;
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   color: oklch(from var(--foreground) l c h / 0.62);
   font-variant-numeric: tabular-nums;
 }
 
 .maka-artifact-row-size {
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-5);
 }
 
 .maka-artifact-row-badge {
@@ -235,31 +237,27 @@
 }
 
 .maka-artifact-preview[data-empty="true"] {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   justify-content: center;
   color: oklch(from var(--foreground) l c h / 0.5);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-preview-empty {
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
+  font: var(--maka-text-supporting);
 }
 
 .maka-artifact-preview-file {
+  font: var(--maka-text-supporting);
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-preview-diff {
+  font: var(--maka-text-supporting);
   margin: 0;
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-preview-html {
@@ -280,8 +278,7 @@
 }
 
 .maka-artifact-preview-external-links-bar {
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
+  font: var(--maka-text-supporting);
   padding: var(--space-1) var(--space-1-5);
   border-radius: var(--radius-control);
   background: oklch(from var(--info) l c h / 0.10);
@@ -329,35 +326,31 @@
 }
 
 .maka-artifact-preview-unsupported-title {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-4);
   color: var(--foreground);
 }
 
 .maka-artifact-preview-unsupported-body {
+  font: var(--maka-text-body);
   margin: 0;
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   color: var(--foreground-secondary);
 }
 
 .maka-artifact-preview-unsupported-meta {
+  font: var(--maka-text-body);
   display: grid;
   grid-template-columns: auto 1fr;
   gap: var(--space-1) var(--space-4);
   margin: 0;
   padding: 0;
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   color: var(--foreground-secondary);
 }
 .maka-artifact-preview-unsupported-meta > div {
   display: contents;
 }
 .maka-artifact-preview-unsupported-meta dt {
+  font: var(--maka-text-label);
   color: var(--foreground-secondary);
-  font-weight: var(--font-weight-medium);
 }
 .maka-artifact-preview-unsupported-meta dd {
   margin: 0;
@@ -383,18 +376,16 @@
 }
 
 .maka-artifact-preview-pdf-fallback {
+  font: var(--maka-text-supporting);
   margin: 0;
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   color: oklch(from var(--foreground) l c h / 0.6);
 }
 
 .maka-artifact-preview-loading {
+  font: var(--maka-text-body);
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   color: oklch(from var(--foreground) l c h / 0.65);
 }
 
@@ -403,13 +394,12 @@
 }
 
 .maka-artifact-preview-fail {
+  font: var(--maka-text-body);
   display: grid;
   gap: var(--space-1-5);
   padding: var(--space-2-5) var(--space-3);
   border-radius: var(--radius-surface);
   border: var(--border-width-hairline) solid var(--border);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
 }
 
 .maka-artifact-preview-fail[data-tone="destructive"] {
@@ -425,13 +415,12 @@
 }
 
 .maka-artifact-preview-fail-title {
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-4);
 }
 
 .maka-artifact-preview-fail-body {
+  font: var(--maka-text-supporting);
   margin: 0;
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-toolbar {
@@ -502,7 +491,6 @@
     overflow-y: auto;
   }
 }
-
 
 /* Search-highlight ring on the turn the search panel just navigated to.
  * This styles the `.maka-turn` container (NOT a per-turn marker), so it

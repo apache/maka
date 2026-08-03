@@ -146,7 +146,7 @@ const conversation: StoredMessage[] = [
   user('msg-1', 'turn-1', 14, '帮我把这轮 Storybook 覆盖的风险列出来，只保留真正会影响 review 的部分。'),
   assistant('msg-2', 'turn-1', 12, '现在最值得先固定的是几个高频但还没有 story 的页面：权限弹窗、顶层布局、首次启动引导。把它们的可见状态摆出来，reviewer 就能在 Storybook 里逐个看，不用手动把 app 驱动到这些路径。'),
   user('msg-3', 'turn-2', 6, '顶层布局怎么处理？它依赖很多 IPC。'),
-  assistant('msg-4', 'turn-2', 4, '直接挂载 Astryx AppShell，并通过官方 topNav、sideNav 和 content 插槽组合真实侧栏、聊天区与标题栏。Story 只隔离 IPC，布局 authority 与产品保持一致。'),
+  assistant('msg-4', 'turn-2', 4, '直接挂载 Astryx AppShell 的 sideNav 与 content 列，窗体标题栏作为透明 drag 叠层挂在 frame 上。Story 只隔离 IPC，布局 authority 与产品保持一致。'),
 ];
 
 const baseChatProps: ChatViewProps = {
@@ -192,9 +192,9 @@ const baseComposerProps: ComposerProps = {
   activeThinkingLevel: 'medium',
   onThinkingLevelChange: noop,
   mentionSkills: [
-    { ref: 'user:pdf', id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
-    { ref: 'user:commit', id: 'commit', name: 'Commit', description: '生成提交信息' },
-    { ref: 'project:review', id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
+    { id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
+    { id: 'commit', name: 'Commit', description: '生成提交信息' },
+    { id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
   ],
   workspacePicker: {
     label: 'maka-agent',
@@ -208,20 +208,30 @@ const baseComposerProps: ComposerProps = {
   },
 };
 
-function ShellFrame(props: { children: ReactNode; motionEnabled?: boolean }) {
+function ShellFrame(props: {
+  children: ReactNode;
+  motionEnabled?: boolean;
+  sidebarCollapsed?: boolean;
+}) {
   return (
     <div
+      className="appFrame agents-layout-root"
       data-maka-e2e-fixture={props.motionEnabled ? undefined : 'true'}
-      style={{ background: 'var(--surface-canvas)', height: '100%', minHeight: 640 }}
+      /* Production writes this on the frame and keys collapsed-state rules off
+         it (app-shell.tsx). Without it here the story renders a state the app
+         does not have — the collapsed rail kept its footer hairline in
+         Storybook while the app dropped it — and these stories are the pixel
+         review surface, so the drift lands exactly where it is trusted. */
+      data-sidebar-state={props.sidebarCollapsed ? 'collapsed' : 'expanded'}
+      style={{ height: '100%', minHeight: 640 }}
     >
       {props.children}
     </div>
   );
 }
 
-// Production-faithful shell composition: Astryx AppShell owns the frame,
-// SideNav owns sidebar geometry, and Maka supplies only Electron chrome and
-// product content through their public slots.
+// Production-faithful shell composition: Astryx AppShell owns the columns;
+// window chrome is a transparent frame-level drag overlay (not topNav).
 function ComposedShell(props: {
   sidebarCollapsed?: boolean;
   initialViewMode?: SessionViewMode;
@@ -295,33 +305,33 @@ function ComposedShell(props: {
   }));
 
   return (
-    <ShellFrame motionEnabled={props.motionEnabled}>
+    <ShellFrame motionEnabled={props.motionEnabled} sidebarCollapsed={collapsed}>
+      <header className="maka-window-titlebar">
+        <AppShellTopbarActions
+          sidebarCollapsed={collapsed}
+          sidebarHandleRef={sidebarHandleRef}
+          onOpenSearchModal={noop}
+        />
+        <AppShellWorkspaceTopActions
+          workbarAvailable
+          workbarCollapsed={false}
+          onToggleWorkbar={noop}
+          onOpenFeedback={noop}
+          onOpenPalette={noop}
+          onOpenHelp={noop}
+          onOpenHealth={noop}
+        />
+      </header>
       <AstryxAppShell
         className="app maka-shell-astryx agents-layout-body"
-        variant="surface"
+        /* Astryx's default: nav column takes --color-background-body, content takes
+           --color-background-surface. Both point at the product palette through
+           makaTheme.ts, so the shell follows a palette switch. Declared rather
+           than defaulted — it decides what separates the two columns. */
+        variant="elevated"
         height="fill"
         contentPadding={0}
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
-        data-sidebar-state={collapsed ? 'collapsed' : 'expanded'}
-        topNav={
-          <header className="maka-window-titlebar">
-            <AppShellTopbarActions
-              sidebarCollapsed={collapsed}
-              sidebarHandleRef={sidebarHandleRef}
-              onOpenSearchModal={noop}
-              onCreateSession={noop}
-            />
-            <AppShellWorkspaceTopActions
-              workbarAvailable
-              workbarCollapsed={false}
-              onToggleWorkbar={noop}
-              onOpenFeedback={noop}
-              onOpenPalette={noop}
-              onOpenHelp={noop}
-              onOpenHealth={noop}
-            />
-          </header>
-        }
         sideNav={
           <SessionListPanel
             collapseHandleRef={sidebarHandleRef}
@@ -349,10 +359,7 @@ function ComposedShell(props: {
           />
         }
       >
-        <AppShellDetailPanel
-          data-sidebar-state={collapsed ? 'collapsed' : 'expanded'}
-          agentsView="im_hub"
-        >
+        <AppShellDetailPanel agentsView="im_hub">
           {props.detailChildren ?? (
             // Same two wrappers the renderer puts between the detail panel and
             // the chat column (app-shell.tsx). `.mainColumn` owns composer
@@ -505,35 +512,35 @@ const longConversation: StoredMessage[] = [
   ),
 ];
 
-// Multi-step reasoning turn (streaming UI rework): two think->say->call steps
+// Multi-step reasoning turn: two think->say->call steps
 // in a single turn. Each step persists an assistant row (thinking + text) plus
 // tool_calls tagged with that row's id as `stepId`, so the turn timeline
 // reconstructs the real order — 深度思考 → answer text → tool row — per step,
 // instead of lumping every tool into one trailing group.
 const multiStepConversation: StoredMessage[] = [
-  user('msg-user-multistep', 'turn-multistep', 12, '看一下 stream-fade 的环逻辑有没有边界问题，然后跑一下单测。'),
+  user('msg-user-multistep', 'turn-multistep', 12, '看一下 assistant-stream 的投影逻辑有没有边界问题，然后跑一下单测。'),
   {
     type: 'tool_call',
-    id: 'tool-read-stream-fade',
+    id: 'tool-read-assistant-stream',
     turnId: 'turn-multistep',
     ts: NOW - 11 * 60_000,
     toolName: 'Read',
-    displayName: '读取 stream-fade.ts',
-    intent: '读取淡入环的实现，确认窗口滑动与上限',
+    displayName: '读取 assistant-stream.ts',
+    intent: '读取 assistant delta 的脱敏与截断边界',
     stepId: 'msg-assistant-step-1',
-    args: { file_path: 'packages/ui/src/stream-fade.ts' },
+    args: { file_path: 'packages/ui/src/assistant-stream.ts' },
   },
   {
     type: 'tool_result',
-    id: 'tool-read-stream-fade-result',
+    id: 'tool-read-assistant-stream-result',
     turnId: 'turn-multistep',
     ts: NOW - 11 * 60_000 + 900,
-    toolUseId: 'tool-read-stream-fade',
+    toolUseId: 'tool-read-assistant-stream',
     isError: false,
     durationMs: 640,
     content: {
       kind: 'text',
-      text: 'export function updateFadeRing(...) { /* prune + cap */ }',
+      text: 'export function applyAssistantDelta(...) { /* redact + cap */ }',
     },
   },
   {
@@ -541,9 +548,9 @@ const multiStepConversation: StoredMessage[] = [
     id: 'msg-assistant-step-1',
     turnId: 'turn-multistep',
     ts: NOW - 10 * 60_000,
-    text: '环逻辑没问题：增长记录批次、超窗剪枝、再按上限截断，收缩时整体重置。接下来我跑一下单测确认。',
+    text: '状态边界顺序正确：delta 先脱敏，append 后覆盖跨 delta 密钥，再执行总量截断。接下来我跑一下单测确认。',
     thinking: {
-      text: '先读实现，确认 boundary 取的是最老存活批次的 start，age 用 now 减去覆盖该 offset 的批次时间。看起来窗口滑动和上限都覆盖了，值得跑一遍测试坐实。',
+      text: '重点确认原始 delta 不会先进入状态，跨 delta 拼接后会再次脱敏，并且总量上限保留用户正在阅读的前缀。',
     },
     modelId: 'claude-sonnet-4-5',
   },
@@ -553,10 +560,10 @@ const multiStepConversation: StoredMessage[] = [
     turnId: 'turn-multistep',
     ts: NOW - 10 * 60_000 + 500,
     toolName: 'Bash',
-    displayName: '运行 stream-fade 单测',
-    intent: '执行 node --test 跑淡入环与 tokenizer 的单测',
+    displayName: '运行 assistant-stream 单测',
+    intent: '执行 assistant stream 脱敏与截断单测',
     stepId: 'msg-assistant-step-2',
-    args: { cmd: 'node --test dist/main/__tests__/stream-fade.test.js' },
+    args: { cmd: 'node --test dist/main/__tests__/assistant-stream.test.js' },
   },
   {
     type: 'tool_result',
@@ -569,12 +576,12 @@ const multiStepConversation: StoredMessage[] = [
     content: {
       kind: 'terminal',
       cwd: '/workspace/maka-agent/apps/desktop',
-      cmd: 'node --test dist/main/__tests__/stream-fade.test.js',
+      cmd: 'node --test dist/main/__tests__/assistant-stream.test.js',
       status: 'completed',
       exitCode: 0,
       output: {
         mode: 'pipes',
-        stdout: 'tests 13\npass 13\nfail 0\n',
+        stdout: 'tests 8\npass 8\nfail 0\n',
         stderr: '',
         stdoutTruncated: false,
         stderrTruncated: false,
@@ -729,6 +736,48 @@ export const SessionContextLayer: Story = {
         },
         onBranchBannerClick: noop,
         onRevisionNavigate: noop,
+      }}
+    />
+  ),
+};
+
+// Real path: 开启 Plan Mode from the ＋ menu. The mode is session-scoped — it
+// survives the send — so it reads as a mark at the tail of the composer's
+// footer controls rather than as staged context in the drawer (#1897). It
+// trails the model + thinking pair so switching it never shifts those two.
+export const PlanModeOn: Story = {
+  render: () => <ComposedShell composer={{ planModeActive: true }} />,
+};
+
+// Real path: the same for the orchestration side. All marks share the one
+// product accent, so the icon is what has to keep the modes distinguishable —
+// this story is where that carries its own weight.
+export const SwarmModeOn: Story = {
+  render: () => <ComposedShell composer={{ swarmModeActive: true }} />,
+};
+
+// Real path: Plan and Swarm are independent switches (collaborationMode vs
+// orchestrationMode), so both can be on at once. This is the widest the mode
+// tail ever gets next to a real model name.
+export const PlanAndSwarmModeOn: Story = {
+  render: () => (
+    <ComposedShell composer={{ planModeActive: true, swarmModeActive: true }} />
+  ),
+};
+
+// Real path: a mode is on AND context is staged for the next send. The point of
+// the story is the split: the drawer badge counts the two attachments only,
+// while Plan reads off the footer — the mode is not something the send consumes.
+export const ModeOnWithPendingAttachments: Story = {
+  render: () => (
+    <ComposedShell
+      composer={{
+        planModeActive: true,
+        pendingAttachments: [
+          { displayName: 'design-review.pdf', kind: 'pdf', size: 182_400 },
+          { displayName: 'composer.tsx', kind: 'code', size: 41_200 },
+        ],
+        onRemoveAttachment: noop,
       }}
     />
   ),

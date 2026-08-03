@@ -424,7 +424,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
     });
   }
 
-  function addManualMemoryDraftEntry() {
+  async function addManualMemoryEntry() {
     const result = appendManualLocalMemoryEntryDraft(draft, {
       title: newMemoryTitle,
       content: newMemoryContent,
@@ -443,15 +443,24 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           return;
       }
     }
-    setDraft(result.draft);
-    setNewMemoryTitle('');
-    setNewMemoryTags('');
-    setNewMemoryContent('');
-    toast.success(copy.text.addedDraft, copy.text.addedDraftDetail);
-    requestAnimationFrame(() => {
-      editorRef.current?.focus();
-      editorRef.current?.setSelectionRange(result.draft.length, result.draft.length);
-    });
+    try {
+      await runMemoryWriteAction('save', async (isCurrent) => {
+        const next = await window.maka.memory.save(result.draft);
+        if (!isCurrent()) return;
+        setState(next);
+        setDraft(next.content);
+        if (next.status === 'safe_mode') {
+          toast.error(copy.text.saveBlocked, copy.text.safeMode);
+          return;
+        }
+        setNewMemoryTitle('');
+        setNewMemoryTags('');
+        setNewMemoryContent('');
+        toast.success(copy.text.addedDraft, newMemoryTitle.trim());
+      });
+    } catch (error) {
+      toast.error(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
+    }
   }
 
   async function updateMemoryEntryStatus(
@@ -474,12 +483,6 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           toast.error(copy.text.updateFailed, copy.text.oversizeDetail);
           return;
       }
-    }
-
-    if (memoryDraftDirty) {
-      setDraft(result.draft);
-      toast.success(status === 'archived' ? copy.text.archivedDraft : copy.text.restoredDraft, copy.text.addedDraftDetail);
-      return;
     }
 
     try {
@@ -571,7 +574,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
     copyLatestBackupReference,
     copyMemoryEntryReference,
     focusMemoryEntryInDraft,
-    addManualMemoryDraftEntry,
+    addManualMemoryEntry,
     updateMemoryEntryStatus,
     effective,
     memoryDraftDirty,

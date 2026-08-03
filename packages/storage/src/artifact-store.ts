@@ -37,7 +37,7 @@ import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 import {
   ARTIFACT_PUBLICATION_STAGING_PATTERN,
   ARTIFACT_PURGE_INTENT_FILE,
-  isCanonicalArtifactRecoveryTempName,
+  isArtifactPurgeRecoveryTempName,
 } from './artifact-storage-layout.js';
 import {
   isSafeRelativeArtifactPath,
@@ -51,10 +51,7 @@ import {
 import type { ArtifactWriterLockAuthority } from './root-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 import type { ArtifactMetadataRepository } from './artifact-metadata-repository.js';
-import {
-  createSqliteArtifactMetadataRepository,
-  type CreateSqliteArtifactMetadataOptions,
-} from './sqlite-artifact-metadata.js';
+import { createSqliteArtifactMetadataRepository } from './sqlite-artifact-metadata.js';
 
 export { isSafeRelativeArtifactPath } from './artifact-metadata-codec.js';
 
@@ -185,6 +182,7 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     sessionId: string,
     options: { offset: number; limit: number },
   ): Promise<ArtifactListPage>;
+  listTurnArtifacts(sessionId: string, turnId: string): Promise<ArtifactRecord[]>;
   getInSession(sessionId: string, artifactId: string): Promise<ArtifactSessionEntry>;
   readTextInSession(
     sessionId: string,
@@ -204,14 +202,11 @@ export interface ArtifactStoreWriteAuthority {
   close(): void;
 }
 
-export function createSqliteArtifactStore(
-  workspaceRoot: string,
-  options: CreateSqliteArtifactMetadataOptions = {},
-): ArtifactStore {
+export function createSqliteArtifactStore(workspaceRoot: string): ArtifactStore {
   return new SqliteArtifactStore(
     workspaceRoot,
     'self_managed',
-    createSqliteArtifactMetadataRepository(workspaceRoot, options),
+    createSqliteArtifactMetadataRepository(workspaceRoot),
     undefined,
     undefined,
   );
@@ -222,13 +217,12 @@ export function createSqliteArtifactStoreWriteAuthority(
   options: {
     assertAuthority?: () => Promise<void>;
     leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority;
-    cutover?: CreateSqliteArtifactMetadataOptions;
   } = {},
 ): ArtifactStoreWriteAuthority {
   const store = new SqliteArtifactStore(
     workspaceRoot,
     'authority',
-    createSqliteArtifactMetadataRepository(workspaceRoot, options.cutover),
+    createSqliteArtifactMetadataRepository(workspaceRoot),
     options.assertAuthority,
     options.leaseBoundWriterLockAuthority,
   );
@@ -510,12 +504,11 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     canonical: { id: string; name: string; relativePath: string },
   ): Promise<ArtifactRecord> {
     const expectedBytes = Buffer.from(input.content);
-    const compatibleNames = compatibleArtifactNames(input.name, canonical.name);
     if (
       existing.id !== canonical.id ||
       existing.sessionId !== input.sessionId ||
       existing.turnId !== input.turnId ||
-      !compatibleNames.has(existing.name) ||
+      existing.name !== canonical.name ||
       existing.kind !== input.kind ||
       existing.relativePath !== `${input.sessionId}/${canonical.id}-${existing.name}` ||
       existing.sizeBytes !== expectedBytes.byteLength ||
@@ -608,6 +601,18 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         records: snapshot.records.slice(offset, offset + limit).map((record) => ({ ...record })),
         total: snapshot.records.length,
       };
+    });
+  }
+
+  async listTurnArtifacts(sessionId: string, turnId: string): Promise<ArtifactRecord[]> {
+    assertCanonicalArtifactEntityId(sessionId, 'sessionId');
+    assertArtifactTurnKey(turnId);
+    return this.enqueue(async () => {
+      await this.load();
+      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      return snapshot.records
+        .filter((record) => record.turnId === turnId && record.status !== 'deleted')
+        .map((record) => ({ ...record }));
     });
   }
 
@@ -937,7 +942,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       if (isNotFound(error)) return false;
       throw error;
     }
-    if (sessionEntries.some((entry) => isCanonicalArtifactRecoveryTempName(entry.name))) {
+    if (sessionEntries.some((entry) => isArtifactPurgeRecoveryTempName(entry.name))) {
       return true;
     }
     for (const sessionEntry of sessionEntries) {
@@ -968,7 +973,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     input: CreateArtifactInput,
     identity: { id: string; canonicalName: string },
   ): Promise<ArtifactRecord | null> {
-    const names = [...compatibleArtifactNames(input.name, identity.canonicalName)];
+    const names = [identity.canonicalName];
     const candidates = names
       .map((name) => ({
         name,
@@ -1087,7 +1092,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const referencedPaths = new Set(
       this.records.map((record) => filesystemPathKey(record.relativePath)),
     );
-    for (const name of compatibleArtifactNames(input.name, identity.canonicalName)) {
+    for (const name of [identity.canonicalName]) {
       const relativePath = `${input.sessionId}/${identity.id}-${name}`;
       if (referencedPaths.has(filesystemPathKey(relativePath))) continue;
       const path = join(this.artifactRoot, relativePath);
@@ -1116,9 +1121,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   ): Promise<void> {
     const sessionDirectory = join(this.artifactRoot, input.sessionId);
     const targetHashes = new Set(
-      [...compatibleArtifactNames(input.name, identity.canonicalName)].map((name) =>
-        artifactTargetHash(`${identity.id}-${name}`),
-      ),
+      [identity.canonicalName].map((name) => artifactTargetHash(`${identity.id}-${name}`)),
     );
     let entries: Dirent[];
     try {
@@ -1143,7 +1146,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
     identity: { id: string; canonicalName: string },
   ): Promise<void> {
-    const names = compatibleArtifactNames(input.name, identity.canonicalName);
+    const names = new Set([identity.canonicalName]);
     for (const name of names) {
       const path = join(this.artifactRoot, input.sessionId, `${identity.id}-${name}`);
       try {
@@ -1160,9 +1163,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     identity: { id: string; canonicalName: string },
   ): Promise<void> {
     const targetHashes = new Set(
-      [...compatibleArtifactNames(input.name, identity.canonicalName)].map((name) =>
-        artifactTargetHash(`${identity.id}-${name}`),
-      ),
+      [identity.canonicalName].map((name) => artifactTargetHash(`${identity.id}-${name}`)),
     );
     let entries: Dirent[];
     try {
@@ -1275,7 +1276,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw error;
     }
     for (const entry of entries) {
-      if (!isCanonicalArtifactRecoveryTempName(entry.name)) continue;
+      if (!isArtifactPurgeRecoveryTempName(entry.name)) continue;
       if (!entry.isFile()) {
         throw new Error(`Artifact recovery temp is not a regular file: ${entry.name}`);
       }
@@ -1574,21 +1575,6 @@ export function sanitizeArtifactName(name: string): string {
     .replace(/[ .-]+$/, '');
   const truncated = truncateWithoutSplittingSurrogate(cleaned, 120).replace(/[ .-]+$/, '');
   return truncated || 'artifact';
-}
-
-function sanitizeLegacyArtifactName(name: string): string {
-  const cleaned = name
-    .trim()
-    .replace(/[\\/:*?"<>|\0]/g, '-')
-    .replace(/\s+/g, ' ')
-    .replace(/^\.+/, '')
-    .replace(/^-+/, '')
-    .trim();
-  return (cleaned || 'artifact').slice(0, 120);
-}
-
-function compatibleArtifactNames(inputName: string, canonicalName: string): ReadonlySet<string> {
-  return new Set([canonicalName, sanitizeLegacyArtifactName(inputName)]);
 }
 
 function filesystemPathKey(path: string): string {

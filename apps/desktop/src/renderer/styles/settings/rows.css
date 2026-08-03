@@ -1,23 +1,62 @@
+/* The open row group (SettingsSection variant='rows'). The Astryx settings
+   idiom — the CLI's settings/settings-dialog templates and `astryx docs
+   layout` — is edge-to-edge rows split by hairline dividers, with NO card
+   chrome ("no stacked full-width Cards as page structure"). The former
+   `.settingsRows` Card is gone; this is a plain block that owns only the
+   row track and the divider rhythm. */
 .settingsRows {
   display: grid;
+  /* Explicit track (#1362): the implicit `auto` track sizes to the widest
+     child's max-content, so one wide row (an English SegmentedControl, a
+     long input placeholder) would push every row past the content column.
+     minmax(0,1fr) pins the track and lets rows wrap instead of clip. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
-  overflow: hidden;
   container: settings-rows / inline-size;
 }
 
-.settingsReadOnlyValue,
-.settingsReadOnlyValueGroup {
+/* Hairline between neighboring rows — the templates' own row-then-Divider
+   idiom, owned by the group so call sites can't forget it. */
+.settingsRows > * + *,
+.settingsRowsGroup > * + * {
+  border-block-start: var(--border-width-hairline) solid var(--border);
+}
+
+/* Form blocks inside a row group (SettingsField / SettingsActions): block
+   padding only — the open idiom has no inline inset, so fields stay flush
+   with the section heading and the Item rows around them. */
+.settingsRows > .settingsFieldRow,
+.settingsRowsGroup > .settingsFieldRow {
+  padding-block: var(--space-3);
+}
+
+/* Not on .settingsActionRow — that one stays the flex cluster from form.css
+   (grid would stretch each button to a full-width stacked bar). */
+.settingsRows > .settingsFieldRow:not(.settingsActionRow),
+.settingsRowsGroup > .settingsFieldRow:not(.settingsActionRow) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+/* A semantic wrapper (role="group" + aria-label) around consecutive rows in
+   a group. Lays out exactly like the group itself so its rows keep the
+   shared track and divider rhythm. */
+.settingsRowsGroup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settingsReadOnlyValue {
   min-width: 0;
   max-width: min(320px, 45cqi);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
+  font: var(--maka-text-body);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
   text-align: end;
 }
 
-.settingsReadOnlyValueGroup,
 .settingsFormRowControlCluster {
   display: inline-flex;
   align-items: center;
@@ -27,22 +66,54 @@
 }
 
 .settingsReadOnlyValue[data-mono="true"] {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
+  /* Machine text renders as its own full-width line under the description
+     (see SettingRow) — never as a right-anchored ragged block. */
+  display: block;
+  max-width: 100%;
+  font: var(--maka-text-code);
   text-align: start;
   word-break: break-all;
 }
 
-.settingsRows > .settingsFormLayout,
-.settingsRows > .settingsProxyBypassField,
-.settingsRows > .settingsActionRow {
-  margin: var(--space-3);
+/* A multi-button flow rendered under a row's description (Permission Center
+   grant cluster). Breathing room from the text above; buttons are real
+   interactive children so the description stays plain supporting text. */
+.settingsRowActionsUnder {
+  margin-block-start: var(--space-2);
+}
+
+/* A quiet subgroup label inside a row group (health layers, palette groups):
+   more air above than below so it binds to the rows it introduces. */
+.settingsRows > .settingsRowsSubheading {
+  padding-block: var(--space-3) var(--space-1);
+}
+
+/* StatusDot + text, the quiet status idiom shared by health / permission /
+   memory / web-search rows. */
+.settingsStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-body);
+  white-space: nowrap;
+}
+
+/* The row's end slot (SettingsRow `end`): right-aligned, allowed to wrap,
+   and capped so a wide control shrinks/wraps before it crushes the label. */
+.settingsRowEnd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: min(360px, 62cqi);
 }
 
 @container settings-rows (max-width: 460px) {
   .settingsReadOnlyValue,
-  .settingsReadOnlyValueGroup {
+  .settingsRowEnd {
     max-width: 100%;
     text-align: start;
   }
@@ -50,6 +121,6 @@
   .settingsActionRow > button {
     flex-shrink: 1;
     height: auto;
-    min-height: 26px;
+    min-height: 2rem;
   }
 }

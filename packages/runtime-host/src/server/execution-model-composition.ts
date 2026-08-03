@@ -71,6 +71,8 @@ import {
   type HostOAuthExecutionAuthority,
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
+import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
+import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 const CHILD_INSTRUCTION_BOUNDARY = [
   'A child agent inherits the current session permission, privacy, workspace, and skill constraints.',
@@ -106,8 +108,10 @@ export interface HostExecutionModelCompositionInput {
   readonly now?: () => Date;
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
+  readonly hostTools?: readonly MakaTool[];
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
+  readonly parentAgentTools?: readonly MakaTool[];
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -121,8 +125,10 @@ export function createHostExecutionModelComposition(
         input.taskLedger,
         inventoryFor,
         input.builtinTools,
+        input.hostTools,
         input.automationTool,
         input.goalTools,
+        input.parentAgentTools,
       );
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
@@ -214,8 +220,12 @@ export interface HostAiSdkBackendInput {
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly builtinTools?: BuildBuiltinToolsOptions;
+  readonly hostTools?: readonly MakaTool[];
+  readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
+  readonly parentAgentTools?: readonly MakaTool[];
+  readonly childAgents?: HostChildAgentBackendCapabilities;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
@@ -273,7 +283,7 @@ export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEval
       ]);
       const pricing = buildPricingLookup(pricingSnapshot.overrides);
       const transport = createFetchTransport(
-        toProxySettings(target.networkProxy, target.proxySecret),
+        toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
       );
       let apiKey = target.apiKey;
       let modelFetch: typeof fetch = transport.fetch;
@@ -405,7 +415,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     input.context.abortSignal,
   );
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
-  const transport = createFetchTransport(toProxySettings(target.networkProxy, target.proxySecret));
+  const transport = createFetchTransport(
+    toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
+  );
   let apiKey = target.apiKey;
   let modelFetch: typeof fetch = transport.fetch;
   const oauthBinding = target.oauthBinding;
@@ -440,6 +452,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     : input.clientCapabilities.snapshotForSession(input.context.sessionId);
   let modelComposition: HostExecutionModelComposition;
   try {
+    const rootTools =
+      input.resolveRootTools && !input.context.tools && !input.context.header.subagentParent
+        ? await readDuringBackendCreation(
+            () => input.resolveRootTools!(input.context.sessionId),
+            input.context.abortSignal,
+          )
+        : [];
+    const hostTools = [...(input.hostTools ?? []), ...rootTools];
     modelComposition = createHostExecutionModelComposition({
       policy: input.runtimePolicy.runtimePolicy,
       skills: input.skills,
@@ -449,8 +469,10 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.context.tools ? { boundTools: input.context.tools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
+      ...(hostTools.length > 0 ? { hostTools } : {}),
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       ...(input.goalTools ? { goalTools: input.goalTools } : {}),
+      ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
       skillBudget: {
         contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
       },
@@ -479,14 +501,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     }
   };
   const telemetry = {
-    insertLlmCall: (record: Parameters<typeof input.usage.telemetry.recordLlmCall>[0]) =>
-      persistTelemetry(() => input.usage.telemetry.recordLlmCall(record)),
     insertToolInvocation: (
       record: Parameters<typeof input.usage.telemetry.recordToolInvocation>[0],
     ) => persistTelemetry(() => input.usage.telemetry.recordToolInvocation(record)),
-  };
-  const recordLlmUsage = (event: Parameters<typeof recordLlmCall>[1]) => {
-    void recordLlmCall({ repo: telemetry, lookupPricing: pricing }, event);
   };
   /**
    * One canonical record, one commit point (#1679).
@@ -591,6 +608,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         modelFactory,
         tools: [...modelComposition.tools],
         toolAvailability: modelComposition.toolAvailability,
+        ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
         contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
           name: 'runtime-host-default-history-budget',
@@ -614,24 +632,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
               modelId: target.model,
             }),
           providerOptions,
-          ...(providerRequestCapture
-            ? {
-                providerRequestTracking: {
-                  now: Date.now,
-                  newId: randomUUID,
-                  persistCapture: providerRequestCapture,
-                  recordAttempt: recordProviderRequestAttempt,
-                },
-              }
-            : {}),
-          telemetry: {
-            connectionSlug: target.connection.slug,
-            providerId: target.connection.providerType,
-            modelId: target.model,
-            newId: randomUUID,
-            now: Date.now,
-            recordLlmCall: recordLlmUsage,
-          },
         }),
         recordHistoryCompactCheckpoint: input.context.recordHistoryCompactCheckpoint,
         loadTurnRuntimeEvents: input.context.loadTurnRuntimeEvents,
@@ -643,7 +643,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         turnTailPrompt: modelComposition.turnTailPrompt,
         shellRunContextSummary: input.context.shellRunContextSummary,
         lookupPricing: pricing,
-        recordLlmCall: recordLlmUsage,
         recordModelCallAttempt,
         assertModelCallAccountingReady,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
@@ -796,7 +795,7 @@ async function resolveExecutionTarget(
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) throw new Error('Runtime Host OAuth credential is not configured');
-    const refreshProxy = toProxySettings(
+    const refreshProxy = toRuntimePolicyProxy(
       resolved.networkProxy,
       resolved.secretMaterial.networkProxy?.secret,
     );
@@ -832,25 +831,30 @@ function buildDefaultHostTools(
   taskLedger: TaskLedgerStore,
   inventoryFor: SkillInventoryResolver,
   builtinOptions?: BuildBuiltinToolsOptions,
+  hostTools: readonly MakaTool[] = [],
   automationTool?: MakaTool,
   goalTools: readonly MakaTool[] = [],
+  parentAgentTools: readonly MakaTool[] = [],
 ): MakaTool[] {
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
   const taskTools = buildTaskLedgerTools({ store: taskLedger });
   const toolNames = [
     ...builtins.map((tool) => tool.name),
+    ...hostTools.map((tool) => tool.name),
     question.name,
     'Skill',
     'SkillSearch',
     ...taskTools.map((tool) => tool.name),
     ...(automationTool ? [automationTool.name] : []),
     ...goalTools.map((tool) => tool.name),
+    ...parentAgentTools.map((tool) => tool.name),
   ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
   return [
     ...builtins,
+    ...hostTools,
     question,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, {
       shadowTracker,
@@ -861,6 +865,7 @@ function buildDefaultHostTools(
     ...taskTools,
     ...(automationTool ? [automationTool] : []),
     ...goalTools,
+    ...parentAgentTools,
   ];
 }
 
@@ -911,21 +916,6 @@ function renderMemoryPrompt(body: string): string {
     body,
     '</local-memory>',
   ].join('\n');
-}
-
-function toProxySettings(
-  proxy: ResolvedExecutionTarget['networkProxy'],
-  password: string | undefined,
-): ProxiedFetchProxy | null {
-  if (!proxy.enabled) return null;
-  return {
-    enabled: true,
-    type: proxy.protocol,
-    host: proxy.host,
-    port: proxy.port,
-    ...(proxy.authEnabled ? { username: proxy.username, password: password ?? '' } : {}),
-    bypassList: [...new Set([...proxy.bypassList, ...proxy.autoBypassDomains])],
-  };
 }
 
 function renderTaskLedgerTail(

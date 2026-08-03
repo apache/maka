@@ -10,11 +10,11 @@
 //      `.maka-plan-hero` (.maka-plan-heading > h2+p + .maka-plan-top-actions).
 //
 //   2. SETTINGS intros (as='h3'): the smaller Permission / Health / Voice /
-//      About page intro cards — an --font-size-ui semibold title, a lede,
+//      About page intro cards — a body-tier semibold title, a lede,
 //      and a trailing quieter META cluster (RelativeTime + refresh Button)
 //      or a leading feature ICON + trailing BADGE chip. Previously
 //      `.settingsPermissionIntro`, `.settingsHealthIntro`,
-//      `.settingsFeatureStatusHero`, `.settingsAboutHero`.
+//      `.settingsAboutHero`.
 //
 // Layout & typography strategy: the shell is styled with portable semantic
 // utilities, but every call site KEEPS its existing wrapper class (passed via
@@ -76,9 +76,9 @@ export interface PageHeaderProps {
    * Lets a call site keep a wrapper that its CSS targets as the heading group.
    */
   contentClassName?: string;
-  /** Class for the leading icon box (e.g. `settingsFeatureStatusIcon`, `settingsAboutLogo`). */
+  /** Class for the leading icon box (e.g. `settingsAboutLogo`). */
   iconClassName?: string;
-  /** Class for the inline title+badge row (e.g. `settingsFeatureStatusHeroHeading`, `settingsAboutHeading`). */
+  /** Class for the inline title+badge row (e.g. `settingsAboutHeading`). */
   headingRowClassName?: string;
   /** Class for the subtitle line (e.g. `settingsAboutTagline`), when a call site's CSS targets it. */
   subtitleClassName?: string;

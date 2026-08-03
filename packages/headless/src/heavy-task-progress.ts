@@ -1,6 +1,6 @@
 import type { MakaTool, MakaToolContext } from '@maka/runtime';
 import { z } from 'zod';
-import type { HeavyTaskInventoryState, HeavyTaskTodoState, TaskEvent } from './task-contracts.js';
+import type { HeavyTaskInventoryState, HeavyTaskTodoState } from './task-contracts.js';
 import type { TaskRunWriter } from './task-run-store.js';
 
 export const HEAVY_TASK_PROGRESS_TOOL_NAMES = ['inventory_submit', 'todo_update'] as const;
@@ -236,8 +236,3 @@ function oneLine(value: string, maxChars: number): string {
   const clean = value.replace(/\s+/g, ' ').trim();
   return clean.length <= maxChars ? clean : `${clean.slice(0, maxChars - 3)}...`;
 }
-
-export type HeavyTaskProgressEvent = Extract<
-  TaskEvent,
-  { type: 'heavy_task_inventory_recorded' | 'heavy_task_todos_recorded' }
->;

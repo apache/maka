@@ -78,7 +78,7 @@ import type {
   VoiceFinishCaptureResult,
   VoiceRealtimeClientSession,
   DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
   WebSearchProvider,
   WebSearchResponse,
@@ -120,6 +120,7 @@ import type {
 } from '@maka/core/mcp';
 import type {
   AttachmentRef,
+  InlineReference,
   OnboardingMilestoneId,
   QuoteRef,
 } from '@maka/core';
@@ -207,12 +208,14 @@ const makaBridge = {
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
+            workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
           },
     ): Promise<
       | {
           ok: true;
           turnId: string;
           attachments: AttachmentRef[];
+          inlineReferences: InlineReference[];
           skillInvocation: import('@maka/runtime').SkillInvocationResult;
         }
       | {
@@ -959,7 +962,7 @@ const makaBridge = {
     setConfig(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig> {
       return ipcRenderer.invoke('daily-review:setConfig', patch);
     },
-    runOnce(input: { mode: DailyReviewMode; day?: number; modelKey?: string }): Promise<{ archiveId: string }> {
+    runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
       return ipcRenderer.invoke('daily-review:runOnce', input);
     },
     list(): Promise<DailyReviewArchiveSummary[]> {

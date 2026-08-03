@@ -66,6 +66,12 @@ import type {
   ConversationCopyRuntimeEventBatch,
   ImmutableSteeringMessageProof,
 } from './agent-run-store.js';
+import {
+  assertEvidenceReadBudget,
+  measureEvidenceRows,
+  type BoundedEvidenceReadResult,
+  type EvidenceReadBudget,
+} from './bounded-evidence.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
@@ -141,7 +147,6 @@ export interface ToolCommitResult {
 
 export interface RuntimeEventBatchImportResult {
   created: boolean[];
-  sourceAlreadyImported: boolean;
 }
 
 export interface ToolProjectionRebuildResult {
@@ -340,7 +345,6 @@ export class SqliteRuntimeStore
     sessionId: string;
     runId: string;
     events: readonly RuntimeEvent[];
-    source?: { path: string; fingerprint: string };
   }): Promise<RuntimeEventBatchImportResult> {
     const events = input.events.map(canonicalizeRuntimeEventForStorage);
     for (const event of events) {
@@ -350,32 +354,11 @@ export class SqliteRuntimeStore
       }
     }
     return this.transaction(() => {
-      if (input.source) {
-        const existing = this.db
-          .prepare(`
-          SELECT fingerprint FROM runtime_import_sources WHERE source_path = ?
-        `)
-          .get(input.source.path) as { fingerprint: string } | undefined;
-        if (existing?.fingerprint === input.source.fingerprint) {
-          return { created: [], sourceAlreadyImported: true };
-        }
-      }
       if (events.some(isToolLedgerBearingEvent)) {
         this.assertToolLedgerTransition(events, 'generic_append');
       }
       const created = events.map((event) => this.importRuntimeEventSync(event));
-      if (input.source) {
-        this.db
-          .prepare(`
-          INSERT INTO runtime_import_sources (source_path, fingerprint, imported_at)
-          VALUES (?, ?, ?)
-          ON CONFLICT(source_path) DO UPDATE SET
-            fingerprint = excluded.fingerprint,
-            imported_at = excluded.imported_at
-        `)
-          .run(input.source.path, input.source.fingerprint, Date.now());
-      }
-      return { created, sourceAlreadyImported: false };
+      return { created };
     });
   }
 
@@ -439,17 +422,51 @@ export class SqliteRuntimeStore
     });
   }
 
-  async isRuntimeImportSourceCurrent(path: string, fingerprint: string): Promise<boolean> {
-    const existing = this.db
-      .prepare(`
-      SELECT fingerprint FROM runtime_import_sources WHERE source_path = ?
-    `)
-      .get(path) as { fingerprint: string } | undefined;
-    return existing?.fingerprint === fingerprint;
+  async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
+    return this.readRuntimeEventsSync(sessionId, runId);
   }
 
-  async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
-    const immutable = await this.readImmutableRuntimeEvents(sessionId, runId);
+  async readRuntimeEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>> {
+    assertEvidenceReadBudget(budget);
+    const rows = this.db
+      .prepare(`
+        SELECT stored_bytes
+        FROM (
+          SELECT length(CAST(payload_json AS BLOB)) AS stored_bytes
+          FROM runtime_events
+          WHERE session_id = ? AND run_id = ?
+          UNION ALL
+          SELECT
+            length(CAST(payload_json AS BLOB)) +
+            length(CAST(text_content AS BLOB)) +
+            coalesce(length(CAST(after_event_id AS BLOB)), 0) AS stored_bytes
+          FROM runtime_partial_snapshots
+          WHERE session_id = ? AND run_id = ?
+        )
+        LIMIT ?
+      `)
+      .all(sessionId, runId, sessionId, runId, budget.maxRecords + 1) as Array<{
+      stored_bytes?: unknown;
+    }>;
+    const measurement = measureEvidenceRows(
+      rows,
+      budget,
+      'Invalid SQLite RuntimeEvent evidence measurement row',
+    );
+    if (!measurement) return { status: 'limit_exceeded' };
+    return {
+      status: 'complete',
+      records: this.readRuntimeEventsSync(sessionId, runId),
+      ...measurement,
+    };
+  }
+
+  private readRuntimeEventsSync(sessionId: string, runId: string): RuntimeEvent[] {
+    const immutable = this.readImmutableRuntimeEventsSync(sessionId, runId);
     const partials = this.db
       .prepare(`
       SELECT stream_key, session_id, invocation_id, run_id, turn_id,
@@ -484,6 +501,10 @@ export class SqliteRuntimeStore
   }
 
   async readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
+    return this.readImmutableRuntimeEventsSync(sessionId, runId);
+  }
+
+  private readImmutableRuntimeEventsSync(sessionId: string, runId: string): RuntimeEvent[] {
     const rows = this.db
       .prepare(`
       SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json

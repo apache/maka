@@ -24,20 +24,16 @@
 }
 
 .maka-agent-graph-heading strong {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-4);
 }
 
 .maka-agent-graph-progress,
-.maka-agent-graph-section-label,
 .maka-agent-graph-empty,
 .maka-agent-graph-error,
 .maka-agent-graph-omitted,
 .maka-agent-graph-results {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-agent-graph-error {
@@ -45,10 +41,15 @@
   color: var(--destructive-text);
 }
 
+/* Not in the muted-text group above: it names its own role, and a rule that
+   supplies a role to a selector another rule also gives a role to leaves the
+   first one dead — which is how a grouped role silently moves a site a size
+   tier when someone retunes the group. */
 .maka-agent-graph-section-label {
+  font: var(--maka-text-heading-5);
+  color: var(--muted-foreground);
   margin-top: var(--space-3);
   margin-bottom: var(--space-1);
-  font-weight: var(--font-weight-medium);
 }
 
 .maka-agent-graph-operators {
@@ -106,15 +107,12 @@
 }
 
 .maka-agent-graph-operator-copy strong {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-medium);
+  font: var(--maka-text-label);
 }
 
 .maka-agent-graph-operator-copy span,
 .maka-agent-graph-operator-status {
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
+  font: var(--maka-text-supporting);
 }
 
 .maka-agent-graph-wait {
@@ -132,10 +130,10 @@
 }
 
 .maka-agent-graph-results code {
+  font: var(--maka-text-supporting);
   min-width: 0;
   overflow: hidden;
   color: var(--foreground-secondary);
-  font-family: var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

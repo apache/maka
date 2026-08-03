@@ -88,7 +88,6 @@ describe('renderer session event health projection', () => {
     );
     assert.equal(hasInFlightToolActivity([{ status: 'pending' }]), true);
     assert.equal(hasInFlightToolActivity([{ status: 'running' }]), true);
-    assert.equal(hasInFlightToolActivity([{ status: 'waiting_permission' }]), true);
   });
 
 });

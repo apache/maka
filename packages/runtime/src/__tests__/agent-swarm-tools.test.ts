@@ -28,6 +28,7 @@ import type { SpawnChildAgentResult } from '../session-manager.js';
 import type { RunTraceLike } from '../run-trace.js';
 import {
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
+  MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN,
   ToolRuntime,
   type MakaTool,
   type MakaToolContext,
@@ -46,6 +47,8 @@ describe('AgentSwarm adapter', () => {
     assert.equal(tool.name, AGENT_SWARM_TOOL_NAME);
     assert.equal(tool.categoryHint, 'subagent');
     assert.equal(AGENT_SWARM_DEFAULT_ITEM_TIMEOUT_MS, 2 * 60 * 60 * 1_000);
+    assert.equal(AGENT_SWARM_MAX_CONCURRENCY, 32);
+    assert.equal(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN, AGENT_SWARM_MAX_CONCURRENCY);
     assert.equal(([...AGENT_TOOL_NAMES] as string[]).includes(AGENT_SWARM_TOOL_NAME), true);
     assert.deepEqual(
       schema.safeParse({
@@ -265,6 +268,41 @@ describe('AgentSwarm adapter', () => {
         },
       ],
     );
+  });
+
+  test('routes every configured template item through the selected subagent_id', async () => {
+    const selectors: Array<{ profile: string; subagentId?: string }> = [];
+    const tool = buildAgentSwarmTool();
+    const result = await tool.impl(
+      {
+        prompt_template: `Review ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER}.`,
+        subagent_id: 'fast-reader',
+        items: ['runtime', 'desktop'],
+        max_concurrency: 2,
+      },
+      context({
+        listChildAgents: async () => ({
+          presets: [
+            {
+              id: 'fast-reader',
+              profile: LOCAL_READ_AGENT_PROFILE,
+              availability: { status: 'available' },
+            },
+          ],
+        }),
+        spawnChildSession: async (input) => {
+          selectors.push({ profile: input.agentProfile, subagentId: input.subagentId });
+          const index = selectors.length - 1;
+          return { ...childResult(index), childSessionId: `child-session-${index}` };
+        },
+      }),
+    );
+
+    assert.deepEqual(selectors, [
+      { profile: LOCAL_READ_AGENT_PROFILE, subagentId: 'fast-reader' },
+      { profile: LOCAL_READ_AGENT_PROFILE, subagentId: 'fast-reader' },
+    ]);
+    assert.equal(result.status, 'completed');
   });
 
   test('projects item-scoped child tool and provider retry progress for spawned and resumed items', async () => {
@@ -642,7 +680,9 @@ describe('AgentSwarm adapter', () => {
 
     await assert.rejects(
       Promise.resolve(tool.impl({ items: [swarmItem(0)] }, context())),
-      /spawnChildSession capability is unavailable/,
+      // The sentence names the tool and what to do instead, rather than a host
+      // capability the model has no way to provide.
+      /agent_swarm cannot start new child agents in this session/,
     );
   });
 
@@ -1097,11 +1137,20 @@ describe('AgentSwarm adapter', () => {
     const swarm = executeTool(
       runtime,
       {
-        ...buildAgentSwarmTool(),
+        ...buildAgentSwarmTool({
+          adaptiveSwarmPolicy: {
+            initialLaunchLimit: AGENT_SWARM_MAX_CONCURRENCY,
+            initialLaunchIntervalMs: 1,
+            rateLimitRetryBaseMs: 1,
+            rateLimitRetryFactor: 2,
+            capacityShrinkIntervalMs: 1,
+            capacityRecoveryIntervalMs: 100,
+          },
+        }),
       },
       {
-        items: Array.from({ length: 5 }, (_, index) => swarmItem(index)),
-        max_concurrency: 5,
+        items: Array.from({ length: AGENT_SWARM_MAX_CONCURRENCY }, (_, index) => swarmItem(index)),
+        max_concurrency: AGENT_SWARM_MAX_CONCURRENCY,
       },
       new AbortController(),
     );
@@ -1114,7 +1163,7 @@ describe('AgentSwarm adapter', () => {
     );
 
     releases.get('single')?.();
-    await waitFor(() => started.length === 6);
+    await waitFor(() => started.length === MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN + 1);
     assert.equal(maxActive, MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
 
     for (const release of releases.values()) release();
@@ -1150,11 +1199,11 @@ describe('AgentSwarm adapter', () => {
       { traceEvents },
     );
     const tool = singleChildProbeTool();
-    const pending = Array.from({ length: MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN + 1 }, (_, index) =>
+    const pending = Array.from({ length: MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN + 1 }, (_, index) =>
       executeTool(runtime, tool, {}, new AbortController(), [], `tool-admission-${index}`),
     );
 
-    await waitFor(() => starts === MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
+    await waitFor(() => starts === MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN);
     assert.deepEqual(await pending.at(-1), {
       error: '只读探索并发过多：同一轮最多 5 个子代理。请等待已有探索完成后再继续。',
     });
@@ -1462,7 +1511,7 @@ function buildRuntime(
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
-    getCurrentRunId: () => 'parent-run',
+    runId: 'parent-run',
     spawnChildSession,
     ...(options.traceEvents ? { getRunTrace: () => testTrace(options.traceEvents!) } : {}),
     ...(options.recordToolInvocation ? { recordToolInvocation: options.recordToolInvocation } : {}),

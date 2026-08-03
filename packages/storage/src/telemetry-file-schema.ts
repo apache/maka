@@ -27,18 +27,6 @@ export type PersistedToolInvocationRecord = ToolInvocationRecord & {
   ts: number;
 };
 
-export interface TelemetryFile {
-  readonly version: 1;
-  readonly usageRecords: readonly PersistedLlmCallRecord[];
-  readonly toolInvocations: readonly PersistedToolInvocationRecord[];
-}
-
-export interface DecodedTelemetryFile {
-  readonly file: TelemetryFile;
-  readonly legacyPricingOverrides: readonly unknown[];
-  readonly requiresCanonicalPublication: boolean;
-}
-
 type ExactKeyShape<Value extends object> = {
   readonly [Key in keyof Value]-?: true;
 };
@@ -47,7 +35,6 @@ function exactKeys<Value extends object>(shape: ExactKeyShape<Value>): ReadonlyS
   return new Set(Object.keys(shape));
 }
 
-const FILE_KEYS = new Set(['version', 'usageRecords', 'toolInvocations']);
 const LLM_KEYS = exactKeys<PersistedLlmCallRecord>({
   sessionId: true,
   turnId: true,
@@ -119,108 +106,6 @@ const TOOL_SCHEMA_CHANGE_REASONS = new Set([
   'tool_source_enabled',
   'tool_source_state_changed',
 ]);
-
-export function emptyTelemetryFile(): TelemetryFile {
-  return { version: 1, usageRecords: [], toolInvocations: [] };
-}
-
-export function decodeTelemetryFile(input: unknown): DecodedTelemetryFile {
-  if (!isRecord(input)) throw invalid('expected an object');
-  if (input.version === undefined) return decodeLegacyTelemetryFile(input);
-  if (!hasOnlyKeys(input, FILE_KEYS)) {
-    throw invalid('expected exactly version, usageRecords, toolInvocations');
-  }
-  if (input.version !== 1) throw invalid('expected version 1');
-  assertArray(input, 'usageRecords');
-  assertArray(input, 'toolInvocations');
-  return {
-    file: {
-      version: 1,
-      usageRecords: input.usageRecords.map(decodePersistedLlmCallRecord),
-      toolInvocations: input.toolInvocations.map(decodePersistedToolInvocationRecord),
-    },
-    legacyPricingOverrides: [],
-    requiresCanonicalPublication: false,
-  };
-}
-
-function decodeLegacyTelemetryFile(input: Record<string, unknown>): DecodedTelemetryFile {
-  const hasKnownSection =
-    'usageRecords' in input || 'toolInvocations' in input || 'pricingOverrides' in input;
-  if (!hasKnownSection) throw invalid('expected known telemetry sections');
-  assertOptionalArray(input, 'usageRecords');
-  assertOptionalArray(input, 'toolInvocations');
-  assertOptionalArray(input, 'pricingOverrides');
-  const usageRecords = (input.usageRecords ?? []) as unknown[];
-  const toolInvocations = (input.toolInvocations ?? []) as unknown[];
-  const pricingOverrides = (input.pricingOverrides ?? []) as unknown[];
-  return {
-    file: {
-      version: 1,
-      usageRecords: usageRecords.map((row) =>
-        decodePersistedLlmCallRecord(normalizeLlmCallRecord(row)),
-      ),
-      toolInvocations: toolInvocations.map((row) =>
-        decodePersistedToolInvocationRecord(normalizeToolInvocationRecord(row)),
-      ),
-    },
-    legacyPricingOverrides: pricingOverrides,
-    requiresCanonicalPublication: true,
-  };
-}
-
-export function normalizeLlmCallRecord(input: unknown): PersistedLlmCallRecord {
-  if (!isRecord(input)) throw invalid('LLM record must be an object');
-  const row = input as Partial<PersistedLlmCallRecord>;
-  const inputTokens = finiteNumber(row.inputTokens) ?? 0;
-  const outputTokens = finiteNumber(row.outputTokens) ?? 0;
-  const cacheHitInputTokens =
-    finiteNumber(row.cacheHitInputTokens) ?? finiteNumber(row.cachedInputTokens) ?? 0;
-  const cacheWriteInputTokens = finiteNumber(row.cacheWriteInputTokens) ?? 0;
-  const cacheMissInputTokens =
-    finiteNumber(row.cacheMissInputTokens) ??
-    Math.max(0, inputTokens - cacheHitInputTokens - cacheWriteInputTokens);
-  const reasoningTokens = finiteNumber(row.reasoningTokens) ?? 0;
-  const ts = finiteNumber(row.ts) ?? finiteNumber(row.startedAt) ?? 0;
-  return {
-    ...pickKnown(input, LLM_KEYS),
-    id: typeof row.id === 'string' ? row.id : `usage_${row.turnId ?? ts}`,
-    providerId: typeof row.providerId === 'string' ? row.providerId : 'unknown',
-    modelId: typeof row.modelId === 'string' ? row.modelId : 'unknown',
-    inputTokens,
-    outputTokens,
-    cacheHitInputTokens,
-    cacheMissInputTokens,
-    cachedInputTokens: cacheHitInputTokens,
-    cacheWriteInputTokens,
-    reasoningTokens,
-    totalTokens: finiteNumber(row.totalTokens) ?? inputTokens + outputTokens + reasoningTokens,
-    costUsd: finiteNumber(row.costUsd) ?? 0,
-    latencyMs: finiteNumber(row.latencyMs) ?? 0,
-    status: row.status === 'error' || row.status === 'aborted' ? row.status : 'success',
-    startedAt: finiteNumber(row.startedAt) ?? ts,
-    date: typeof row.date === 'string' ? row.date : new Date(ts).toISOString().slice(0, 10),
-    ts,
-  } as PersistedLlmCallRecord;
-}
-
-export function normalizeToolInvocationRecord(input: unknown): PersistedToolInvocationRecord {
-  if (!isRecord(input)) throw invalid('tool invocation must be an object');
-  const row = input as Partial<PersistedToolInvocationRecord>;
-  const ts = finiteNumber(row.ts) ?? finiteNumber(row.startedAt) ?? 0;
-  return {
-    ...pickKnown(input, TOOL_KEYS),
-    id: typeof row.id === 'string' ? row.id : `tool_${row.toolCallId ?? row.turnId ?? ts}`,
-    toolName: typeof row.toolName === 'string' ? row.toolName : 'unknown',
-    durationMs: finiteNumber(row.durationMs) ?? 0,
-    status: row.status === 'error' || row.status === 'aborted' ? row.status : 'success',
-    bytesIn: finiteNumber(row.bytesIn) ?? 0,
-    bytesOut: finiteNumber(row.bytesOut) ?? 0,
-    startedAt: finiteNumber(row.startedAt) ?? ts,
-    date: typeof row.date === 'string' ? row.date : new Date(ts).toISOString().slice(0, 10),
-    ts,
-  } as PersistedToolInvocationRecord;
-}
 
 export function decodePersistedLlmCallRecord(input: unknown): PersistedLlmCallRecord {
   if (!isRecord(input) || !hasOnlyKeys(input, LLM_KEYS)) throw invalid('invalid LLM row keys');
@@ -421,27 +306,6 @@ function isToolResultSummary(input: unknown): boolean {
   );
 }
 
-function assertArray(
-  value: Record<string, unknown>,
-  key: 'usageRecords' | 'toolInvocations',
-): asserts value is Record<string, unknown> & Record<typeof key, unknown[]> {
-  if (!Array.isArray(value[key])) throw invalid(`${key} must be an array`);
-}
-
-function assertOptionalArray(
-  value: Record<string, unknown>,
-  key: 'usageRecords' | 'toolInvocations' | 'pricingOverrides',
-): void {
-  if (key in value && !Array.isArray(value[key])) throw invalid(`${key} must be an array`);
-}
-
-function pickKnown(
-  value: Record<string, unknown>,
-  allowed: ReadonlySet<string>,
-): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(value).filter(([key]) => allowed.has(key)));
-}
-
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
 }
@@ -471,10 +335,6 @@ function optionalNonNegative(value: unknown): boolean {
 
 function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function finiteNumber(value: unknown): number | undefined {
-  return isNonNegativeFinite(value) ? value : undefined;
 }
 
 function optionalEnum(value: unknown, allowed: ReadonlySet<string>): boolean {
@@ -538,5 +398,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function invalid(message: string): Error {
-  return new Error(`Invalid telemetry file: ${message}`);
+  return new Error(`Invalid telemetry record: ${message}`);
 }

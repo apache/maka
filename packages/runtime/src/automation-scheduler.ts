@@ -64,16 +64,14 @@ const FIRE_CHECK_INTERVAL_MS = 5000; // 5s tick (must be < minimum interval of 1
  * fire after long-running work — agent turns routinely run for many minutes,
  * so a ~120s retry budget silently dropped (and for `once` terminally expired)
  * any fire that landed mid-turn. The old wakeup-scheduler retried with
- * exponential backoff, 5s doubling to a 5min cap (BACKOFF_BASE_MS →
- * BACKOFF_MAX_MS), waiting ~45 minutes in total before giving up. This
+ * exponential backoff, 5s doubling to a 5min cap, waiting ~45 minutes in
+ * total before giving up. This
  * scheduler is tick-driven (a fixed 5s cadence), so the equivalent retry
  * budget is expressed as a wall-clock window: keep deferring for
  * DEFER_WINDOW_MS from the first deferred attempt, and only then skip the
  * fire (skipFire advances a recurring schedule; a `once` automation expires
  * ONLY when this window is exhausted — never on a transient busy blip).
  */
-const BACKOFF_BASE_MS = 5_000;
-const BACKOFF_MAX_MS = 5 * 60 * 1000;
 const DEFER_WINDOW_MS = 45 * 60 * 1000;
 
 /** Per-automation defer bookkeeping for the current pending fire. */
@@ -261,4 +259,4 @@ export class AutomationScheduler {
   }
 }
 
-export { FIRE_CHECK_INTERVAL_MS, DEFER_WINDOW_MS, BACKOFF_BASE_MS, BACKOFF_MAX_MS };
+export { FIRE_CHECK_INTERVAL_MS, DEFER_WINDOW_MS };

@@ -56,7 +56,7 @@ describe('Plan Reminder scanning hierarchy', () => {
     assert.match(markup, /重复：每周/);
     assert.match(markup, /下次触发：/);
     const schedule = markup.match(
-      /<div class="maka-plan-card-schedule">([\s\S]*?)<\/div>/,
+      /<p class="maka-plan-list-row-meta">([\s\S]*?)<\/p>/,
     )?.[1];
     assert.ok(schedule);
     assert.doesNotMatch(schedule, /<svg|lucide-repeat|lucide-clock/);
@@ -142,7 +142,10 @@ describe('Plan Reminder scanning hierarchy', () => {
 
     assert.equal(markup.match(/>已完成</g)?.length, 1);
     assert.equal(markup.match(/>失败</g)?.length, 1);
-    assert.match(markup, /投递目标不可用。/);
+    // Premium-checklist redesign: the task row carries only the exceptional
+    // state (StatusDot + text, once). The run MESSAGE lives in the 执行记录
+    // tab — it must not repeat inside every task row.
+    assert.doesNotMatch(markup, /投递目标不可用。/);
     assert.doesNotMatch(markup, /maka-capability-audit-strip/);
   });
 });

@@ -15,6 +15,9 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS core_agent_runs_session_order
       ON core_agent_runs(session_id, created_at, run_id);
 
+    CREATE INDEX IF NOT EXISTS core_agent_runs_identity
+      ON core_agent_runs(run_id, session_id);
+
     CREATE TABLE IF NOT EXISTS core_agent_run_events (
       session_id TEXT NOT NULL,
       run_id TEXT NOT NULL,

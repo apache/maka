@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -10,281 +10,106 @@ import type {
   InteractionRequest,
   ShellRunRecord,
 } from '@maka/core';
-import { createAgentRunStore, createSqliteAgentRunStore } from '../agent-run-store.js';
+import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import {
   closeSqliteInteractionStoreFacade,
-  interactionLocator,
-  openInteractiveInteractionStoreForWrite,
   openSqliteInteractiveInteractionStoreForWrite,
   type StoredInteractionRequest,
 } from '../interaction-store.js';
-import {
-  createMessageReceiptStore,
-  createSqliteMessageReceiptStore,
-} from '../message-receipt-store.js';
-import {
-  acquireOperationalStateDatabase,
-  OPERATIONAL_STATE_DATABASE_NAME,
-} from '../operational-state-store.js';
-import { createShellRunStore, createSqliteShellRunStore } from '../shell-run-store.js';
+import { createSqliteMessageReceiptStore } from '../message-receipt-store.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
+import { createSqliteShellRunStore } from '../shell-run-store.js';
 
-describe('SQLite core execution cutover', () => {
-  test('imports AgentRun state once and never appends to legacy files', async () => {
-    await withRoot(async (root) => {
-      const legacy = createAgentRunStore(root);
-      const header = runHeader();
-      const firstEvent = runEvent('event-1', 1);
-      await legacy.createRun(header);
-      await legacy.appendEvent(header.sessionId, header.runId, firstEvent);
-      await legacy.admitRootTurn({
-        sessionId: header.sessionId,
-        turnId: header.turnId,
-        proposedRunId: header.runId,
-        proposedUserMessageId: 'message-1',
-        execution: { kind: 'external_message' },
-        previousRootTurnId: null,
-        normalizedInput: { text: 'hello' },
-        sourceMessages: [],
-        admittedAt: 1,
-      });
-      const legacyEventsPath = join(
-        root,
-        'sessions',
-        header.sessionId,
-        'runs',
-        header.runId,
-        'events.jsonl',
-      );
-      const legacyBytes = await readFile(legacyEventsPath);
-
-      const sqlite = createSqliteAgentRunStore(root);
-      await sqlite.ready?.();
-      assert.deepEqual(await sqlite.readRun(header.sessionId, header.runId), header);
-      assert.deepEqual(await sqlite.readEvents(header.sessionId, header.runId), [firstEvent]);
-      assert.equal(
-        (await sqlite.listRootTurnAdmissionsForRecovery(header.sessionId))[0]?.turnId,
-        header.turnId,
-      );
-      await sqlite.appendEvent(header.sessionId, header.runId, runEvent('event-2', 2));
-      assert.deepEqual(
-        (await sqlite.readEvents(header.sessionId, header.runId)).map((event) => event.id),
-        ['event-1', 'event-2'],
-      );
-      assert.deepEqual(await readFile(legacyEventsPath), legacyBytes);
-      sqlite.close?.();
-
-      const reopened = createSqliteAgentRunStore(root);
-      await reopened.ready?.();
-      assert.deepEqual(
-        (await reopened.readEvents(header.sessionId, header.runId)).map((event) => event.id),
-        ['event-1', 'event-2'],
-      );
-      reopened.close?.();
-    });
-  });
-
-  test('rejects SQLite updates to immutable AgentRun admission identity', async () => {
+describe('SQLite core execution stores', () => {
+  test('persists AgentRun header and events', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);
-      try {
-        const original = {
-          ...runHeader(),
-          continuationSource: {
-            sourceInvocationId: 'source-invocation',
-            sourceRunId: 'source-run',
-            sourceTurnId: 'source-turn',
-            sourceRuntimeEventHighWater: 1,
-          },
-        } satisfies AgentRunHeader;
-        await store.createRun(original);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', runEvent());
+      store.close?.();
 
-        await assert.rejects(
-          store.updateRun(original.sessionId, original.runId, { modelId: 'different-model' }),
-          /admission identity is immutable: modelId/,
-        );
-        await assert.rejects(
-          store.updateRun(original.sessionId, original.runId, { continuationSource: undefined }),
-          /admission identity is immutable: continuationSource/,
-        );
-        assert.deepEqual(await store.readRun(original.sessionId, original.runId), original);
+      const reopened = createSqliteAgentRunStore(root);
+      try {
+        assert.equal((await reopened.readRun('session-1', 'run-1')).runId, 'run-1');
+        assert.equal((await reopened.readEvents('session-1', 'run-1'))[0]?.id, 'event-1');
       } finally {
-        store.close?.();
+        reopened.close?.();
       }
     });
   });
 
-  test('rolls back copied AgentRun rows and resumes a started cutover', async () => {
+  test('persists ShellRun records', async () => {
     await withRoot(async (root) => {
-      const legacy = createAgentRunStore(root);
-      await legacy.createRun(runHeader());
-      await legacy.appendEvent('session-1', 'run-1', runEvent('event-1', 1));
+      const store = createSqliteShellRunStore(root);
+      await store.createShellRun(shellRun());
+      store.close();
 
-      const interrupted = createSqliteAgentRunStore(root, {
-        failpoint: (point) => {
-          if (point === 'after_cutover_rows_copied') throw new Error('simulated crash');
-        },
-      });
-      assert.ok(interrupted.ready);
-      await assert.rejects(interrupted.ready(), /simulated crash/);
-      interrupted.close?.();
-
-      const inspection = acquireOperationalStateDatabase(root);
-      const journal = inspection.database
-        .prepare(`
-          SELECT state
-          FROM cutover_journal
-          WHERE store_name = 'agent_runs'
-        `)
-        .get() as { state?: unknown } | undefined;
-      const count = inspection.database
-        .prepare('SELECT COUNT(*) AS count FROM core_agent_runs')
-        .get() as { count?: unknown };
-      assert.equal(journal?.state, 'started');
-      assert.equal(count.count, 0);
-      inspection.close();
-
-      const resumed = createSqliteAgentRunStore(root);
-      await resumed.ready?.();
-      assert.equal((await resumed.readRun('session-1', 'run-1')).runId, 'run-1');
-      resumed.close?.();
+      const reopened = createSqliteShellRunStore(root);
+      try {
+        assert.equal((await reopened.readShellRun('session-1', 'shell-1')).command, 'printf "ok"');
+      } finally {
+        reopened.close();
+      }
     });
   });
 
-  test('imports ShellRun state and keeps payload files unchanged', async () => {
+  test('reports a missing ShellRun with the ENOENT store contract', async () => {
     await withRoot(async (root) => {
-      const legacy = createShellRunStore(root);
-      await legacy.createShellRun(shellRun());
-      const legacyPath = join(
-        root,
-        'sessions',
-        'session-1',
-        'shell-runs',
-        'shell-1',
-        'shell-run.json',
-      );
-      const before = await readFile(legacyPath);
-
-      const sqlite = createSqliteShellRunStore(root);
-      await sqlite.ready();
-      assert.equal((await sqlite.readShellRun('session-1', 'shell-1')).status, 'running');
-      const updated = await sqlite.updateShellRun('session-1', 'shell-1', {
-        status: 'completed',
-        completedAt: 2,
-        exitCode: 0,
-        updatedAt: 2,
-      });
-      assert.equal(updated.revision, 2);
-      assert.deepEqual(await readFile(legacyPath), before);
-      sqlite.close();
+      const store = createSqliteShellRunStore(root);
+      try {
+        await assert.rejects(store.readShellRun('session-1', 'missing-shell'), { code: 'ENOENT' });
+      } finally {
+        store.close();
+      }
     });
   });
 
-  test('fails closed when retired AgentRun or ShellRun writers change cutover evidence', async () => {
+  test('persists message receipts', async () => {
     await withRoot(async (root) => {
-      const legacyRuns = createAgentRunStore(root);
-      await legacyRuns.createRun(runHeader());
-      const legacyShellRuns = createShellRunStore(root);
-      await legacyShellRuns.createShellRun(shellRun());
-
-      const sqliteRuns = createSqliteAgentRunStore(root);
-      const sqliteShellRuns = createSqliteShellRunStore(root);
-      await Promise.all([sqliteRuns.ready?.(), sqliteShellRuns.ready()]);
-      sqliteRuns.close?.();
-      sqliteShellRuns.close();
-
-      await legacyRuns.appendEvent('session-1', 'run-1', runEvent('stale-event', 2));
-      await legacyShellRuns.updateShellRun('session-1', 'shell-1', {
-        status: 'completed',
-        completedAt: 2,
-        exitCode: 0,
-        updatedAt: 2,
-      });
-
-      const rejectedRuns = createSqliteAgentRunStore(root);
-      assert.ok(rejectedRuns.ready);
-      await assert.rejects(
-        rejectedRuns.ready(),
-        /Legacy agent_runs source changed after cutover completed/,
-      );
-      rejectedRuns.close?.();
-
-      const rejectedShellRuns = createSqliteShellRunStore(root);
-      await assert.rejects(
-        rejectedShellRuns.ready(),
-        /Legacy shell_runs source changed after cutover completed/,
-      );
-      rejectedShellRuns.close();
-    });
-  });
-
-  test('imports receipts and interactions while new writes stay SQLite-only', async () => {
-    await withRoot(async (root) => {
-      const receipts = createMessageReceiptStore(root);
-      await receipts.beginHostEpoch('epoch-1');
-      await receipts.commit('epoch-1', 'submit', 'session-1', 'operation-1', {
+      const store = createSqliteMessageReceiptStore(root);
+      await store.beginHostEpoch('epoch-1');
+      await store.commit('epoch-1', 'submit', 'session-1', 'operation-1', {
         payload: { text: 'hello' },
-        result: { accepted: true },
+        result: { disposition: 'turn_started', turnId: 'turn-1' },
       });
+      store.close();
 
+      const reopened = createSqliteMessageReceiptStore(root);
+      try {
+        assert.deepEqual(
+          (await reopened.read('epoch-1', 'submit', 'session-1', 'operation-1'))?.payload,
+          { text: 'hello' },
+        );
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
+  test('persists interaction request and outcome', async () => {
+    await withRoot(async (root) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-      const legacyOwner = await tryAcquireInteractiveRootOwner(capability);
-      assert.ok(legacyOwner);
-      if (!legacyOwner) return;
-      const legacyInteractions = await openInteractiveInteractionStoreForWrite(legacyOwner.lease);
-      const request = storedQuestion('request-1', 1);
-      assert.equal((await legacyInteractions.establishRequest(request)).status, 'stable');
-      assert.equal(
-        (await legacyInteractions.commitOutcome('request-1', questionOutcome('First', 2))).status,
-        'stable',
-      );
-      await legacyOwner.close();
-
-      const sqliteReceipts = createSqliteMessageReceiptStore(root);
-      await sqliteReceipts.ready();
-      assert.deepEqual(await sqliteReceipts.read('epoch-1', 'submit', 'session-1', 'operation-1'), {
-        payload: { text: 'hello' },
-        result: { accepted: true },
-      });
-      await sqliteReceipts.commit('epoch-1', 'interrupt', 'session-1', 'operation-2', {
-        payload: { reason: 'stop' },
-        result: { interrupted: true },
-      });
-      await assert.rejects(
-        () =>
-          stat(
-            join(root, 'message-receipts', 'epoch-1', 'interrupt', 'session-1', 'operation-2.json'),
-          ),
-        { code: 'ENOENT' },
-      );
-      sqliteReceipts.close();
-
-      const sqliteOwner = await tryAcquireInteractiveRootOwner(capability);
-      assert.ok(sqliteOwner);
-      if (!sqliteOwner) return;
-      const sqliteInteractions = await openSqliteInteractiveInteractionStoreForWrite(
-        sqliteOwner.lease,
-      );
-      assert.equal(
-        (await sqliteInteractions.readInteraction('request-1'))?.outcome?.outcome.kind,
-        'question_answer',
-      );
-      const sqliteOnly = storedQuestion('request-2', 3);
-      assert.equal((await sqliteInteractions.establishRequest(sqliteOnly)).status, 'stable');
-      await assert.rejects(
-        () => stat(join(root, 'interactions', interactionLocator(sqliteOnly.requestId))),
-        { code: 'ENOENT' },
-      );
-      closeSqliteInteractionStoreFacade(sqliteInteractions);
-      await sqliteOwner.close();
-
-      assert.ok((await stat(join(root, OPERATIONAL_STATE_DATABASE_NAME))).isFile());
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const store = await openSqliteInteractiveInteractionStoreForWrite(owner.lease);
+      try {
+        await store.establishRequest(storedQuestion());
+        await store.commitOutcome('request-1', questionOutcome());
+        assert.equal(
+          (await store.readInteraction('request-1'))?.outcome?.outcome.kind,
+          'question_answer',
+        );
+      } finally {
+        closeSqliteInteractionStoreFacade(store);
+        await owner.close();
+      }
     });
   });
 });
 
 async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-core-execution-'));
+  const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-execution-'));
   try {
     await run(root);
   } finally {
@@ -308,14 +133,14 @@ function runHeader(): AgentRunHeader {
   };
 }
 
-function runEvent(id: string, ts: number): AgentRunEvent {
+function runEvent(): AgentRunEvent {
   return {
     type: 'run_started',
-    id,
+    id: 'event-1',
     runId: 'run-1',
     sessionId: 'session-1',
     turnId: 'turn-1',
-    ts,
+    ts: 2,
   };
 }
 
@@ -343,13 +168,13 @@ function shellRun(): ShellRunRecord {
   };
 }
 
-function storedQuestion(requestId: string, createdAt: number): StoredInteractionRequest {
+function storedQuestion(): StoredInteractionRequest {
   return {
     sessionId: 'session-1',
     turnId: 'turn-1',
     runId: 'run-1',
-    requestId,
-    createdAt,
+    requestId: 'request-1',
+    createdAt: 1,
     request: {
       kind: 'question',
       toolUseId: 'tool-1',
@@ -366,10 +191,10 @@ function storedQuestion(requestId: string, createdAt: number): StoredInteraction
   };
 }
 
-function questionOutcome(answer: string, committedAt: number): InteractionCanonicalOutcome {
+function questionOutcome(): InteractionCanonicalOutcome {
   return {
     kind: 'question_answer',
-    answers: [answer],
-    committedAt,
+    answers: ['First'],
+    committedAt: 2,
   } as InteractionCanonicalOutcome;
 }

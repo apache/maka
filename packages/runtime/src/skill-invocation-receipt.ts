@@ -1,3 +1,4 @@
+import { SKILL_INVOCATION_TOKEN_SOURCE, type InlineReference } from '@maka/core';
 import type { LoadedSkillInstructions, LoadSkillInstructionsResult } from './skills.js';
 
 export type SkillInvocationMode = 'explicit' | 'model_tool';
@@ -58,6 +59,31 @@ export function loadedSkillInvocationReceipt(
     source: skill.source,
     truncated: skill.truncated,
   };
+}
+
+/** Freeze successful user-authored Skill tokens for transcript rendering. */
+export function skillInvocationInlineReferences(
+  receipts: readonly SkillInvocationReceipt[],
+  displayText: string,
+): InlineReference[] {
+  const receiptByTokenName = new Map<string, Extract<SkillInvocationReceipt, { success: true }>>();
+  for (const receipt of receipts) {
+    if (!receipt.success || receipt.invocation !== 'explicit') continue;
+    receiptByTokenName.set(receipt.request.toLowerCase(), receipt);
+    receiptByTokenName.set(receipt.id.toLowerCase(), receipt);
+  }
+  const references: InlineReference[] = [];
+  for (const match of displayText.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))) {
+    const receipt = receiptByTokenName.get(match[1].toLowerCase());
+    if (!receipt) continue;
+    references.push({
+      kind: 'skill',
+      value: match[0],
+      label: receipt.name,
+      start: match.index,
+    });
+  }
+  return references;
 }
 
 export function failedSkillInvocationReceipt(

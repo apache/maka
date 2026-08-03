@@ -281,11 +281,11 @@ describe('AiSdkBackend deferred tool loading', () => {
     // targets the diagnostics-consistency invariant, not that subsystem.
     type PriorReplayish = { contextBudget?: Record<string, unknown> };
     const patch = be as unknown as {
-      buildPriorMessages: (input: unknown) => Promise<PriorReplayish>;
+      buildPriorMessages: (scope: unknown, input: unknown) => Promise<PriorReplayish>;
     };
     const realBuildPriorMessages = patch.buildPriorMessages.bind(be);
-    patch.buildPriorMessages = async (input: unknown) => {
-      const prior = await realBuildPriorMessages(input);
+    patch.buildPriorMessages = async (scope: unknown, input: unknown) => {
+      const prior = await realBuildPriorMessages(scope, input);
       return {
         ...prior,
         contextBudget: {
@@ -419,6 +419,12 @@ describe('AiSdkBackend deferred agent tools', () => {
         parameters: z.object({}),
         impl: () => ({ ok: true }),
       },
+      {
+        name: 'yield_agent_graph',
+        description: 'Yield graph',
+        parameters: z.object({}),
+        impl: () => ({ ok: true }),
+      },
     ];
     const model = new MockLanguageModelV4({
       doStream: async ({ tools: stepTools, prompt }) => {
@@ -455,6 +461,7 @@ describe('AiSdkBackend deferred agent tools', () => {
 
     assert.ok(capturedTools[0]?.includes('view_agent_graph'));
     assert.ok(capturedTools[0]?.includes('update_agent_graph'));
+    assert.ok(capturedTools[0]?.includes('yield_agent_graph'));
     assert.ok(capturedTools[0]?.includes(AGENT_OUTPUT_TOOL_NAME));
     assert.match(capturedPrompts[0] ?? '', /Orchestration Mode: Graph/);
     assert.match(capturedPrompts[0] ?? '', /supervisor beside the data path/);

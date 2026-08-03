@@ -10,32 +10,39 @@ import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mj
 const DESKTOP_ROOT = process.cwd();
 
 /**
- * Prove the app parked at the modal repair dialog — the only success signal
- * this test accepts.
+ * Startup signal the main process prints synchronously right before showing
+ * the repair modal (see `confirmDesktopStorageRootRepair` in boot.ts). It is
+ * an explicit contract between the app and this test: it can only be printed
+ * after `ready` — the whole boot module runs inside the `whenReady` callback —
+ * and only when the root-identity gate fired, so seeing it proves both
+ * invariants at once.
  *
- * The dialog can only appear after ready: the whole boot module runs inside
- * the `whenReady` callback, so a modal dialog being up simultaneously proves
- * (a) ready was reached and (b) the root-identity gate fired and is holding
- * before any store/db write. On macOS the dialog's modal loop stops answering
- * CDP evaluation, so an evaluate that never settles within the deadline is the
- * observable form of "dialog is open". A deadlocked main process (the
- * regression this test guards) answers every evaluate with `isReady() ===
- * false` forever, and a future removal of the gate would make evaluate answer
- * `true` — both must fail, only the parked dialog may pass.
+ * CDP evaluation is deliberately not the success signal: macOS modal loops
+ * block CDP evaluation while Linux modal dialogs keep answering it, so no
+ * evaluate-based heuristic is portable. A deadlocked main process (the
+ * regression this test guards) never reaches the gate, so the signal never
+ * appears; a future removal of the gate skips the signal too.
  */
-async function appParkedAtRepairDialog(app: ElectronApplication): Promise<boolean> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const outcome = await Promise.race([
-      app
-        .evaluate(({ app: electronApp }) => electronApp.isReady())
-        .then((ready) => (ready ? 'ready' : 'not-ready'))
-        .catch(() => 'evaluate-error'),
-      new Promise<string>((resolve) => setTimeout(() => resolve('modal-dialog'), 1_000)),
-    ]);
-    if (outcome === 'modal-dialog') return true;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  return false;
+const REPAIR_GATE_SIGNAL = '[storage-root] root-identity conflict; parking at repair dialog';
+
+async function appParkedAtRepairGate(app: ElectronApplication): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(false);
+      }
+    }, 30_000);
+    app.on('console', (message) => {
+      if (settled) return;
+      if (message.text().includes(REPAIR_GATE_SIGNAL)) {
+        settled = true;
+        clearTimeout(timeout);
+        resolve(true);
+      }
+    });
+  });
 }
 
 /**
@@ -74,9 +81,9 @@ test('parks at the storage-root repair dialog and writes nothing before the answ
       env: buildFixtureEnv(userDataDir, homeDir, {}),
     });
 
-    // The app must park at the dialog — before this fix the main process
-    // deadlocked in module evaluation and no dialog ever appeared.
-    expect(await appParkedAtRepairDialog(app)).toBe(true);
+    // The gate signal is printed only after ready and only when the conflict
+    // fired; a deadlocked main process (the regression) never prints it.
+    expect(await appParkedAtRepairGate(app)).toBe(true);
 
     // While the dialog is unanswered, no store/db files may be created in
     // the workspace: the root-identity gate must precede all storage.

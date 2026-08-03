@@ -57,13 +57,6 @@ function commandPaletteConnectionTestFailureFallback(result: ConnectionTestResul
   return copy.unknown;
 }
 
-export function createSkillFailureCopy(
-  reason: 'blocked_path' | 'already_exists' | 'write_failed',
-  locale: UiLocale,
-): string {
-  return getShellCopy(locale).skillActions.createFailures[reason];
-}
-
 export function openSkillFailureCopy(
   reason: 'invalid_id' | 'missing' | 'blocked_path' | 'not_file' | 'not_directory' | 'open_failed',
   locale: UiLocale,

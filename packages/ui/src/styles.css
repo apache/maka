@@ -1,19 +1,7 @@
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
-.maka-attachment-file-card { display: flex; width: 200px; max-width: 100%; align-items: center; gap: 10px; padding: 8px; border-radius: var(--radius-surface); background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
-.maka-attachment-file-icon { display: grid; width: 36px; height: 36px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-control); color: var(--foreground-secondary); background: var(--foreground-alpha-10); }
-.maka-attachment-file-icon > svg { width: 20px; height: 20px; }
-.maka-attachment-file-content { min-width: 0; flex: 1; }
-.maka-attachment-file-name,
-.maka-attachment-file-size { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-attachment-file-name { color: var(--foreground); font-size: var(--font-size-base); font-weight: 500; line-height: var(--text-body-leading); }
-.maka-attachment-file-size { margin-top: 2px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--font-size-caption); font-variant-numeric: tabular-nums; line-height: var(--text-supporting-leading); }
-.maka-attachment-file-remove,
 .maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick), background var(--duration-quick); }
-.maka-attachment-file-remove { width: 24px; height: 24px; margin-left: 4px; border-radius: var(--radius-control); }
-.maka-attachment-file-remove > svg { width: 14px; height: 14px; }
-.maka-attachment-file-remove:hover,
 .maka-quote-chip-remove:hover { color: var(--foreground); background: var(--foreground-alpha-10); }
 
 .maka-page-header-title,
@@ -24,10 +12,16 @@
 
 .maka-section-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; }
 .maka-section-header-content { min-width: 0; }
-.maka-section-header-title { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--foreground); font-size: var(--font-size-ui); line-height: var(--text-body-leading); font-weight: 600; }
+.maka-section-header-title {
+  font: var(--maka-text-heading-4);
+ display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--foreground); }
 .maka-section-header-title-accent::before { display: inline-block; width: 3px; height: 12px; border-radius: var(--radius-pill); background: oklch(from var(--status-running) l c h / 0.85); content: ""; }
-.maka-section-header-count { color: var(--muted-foreground); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); font-weight: 400; font-variant-numeric: tabular-nums; }
-.maka-section-header-subtitle { display: block; margin-top: 2px; color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); font-weight: 400; }
+.maka-section-header-count {
+  font: var(--maka-text-supporting);
+ color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.maka-section-header-subtitle {
+  font: var(--maka-text-supporting);
+ display: block; margin-top: 2px; color: var(--foreground-secondary); }
 .maka-section-header-action { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
 
 .maka-stat-tile { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; }
@@ -38,64 +32,202 @@
 .maka-stat-tile-border-warning { border-color: oklch(from var(--warning) l c h / 0.28); }
 .maka-stat-tile-border-destructive { border-color: oklch(from var(--destructive) l c h / 0.3); }
 .maka-stat-tile-empty { opacity: var(--opacity-disabled); }
-.maka-stat-tile-value { display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-weight: 600; font-variant-numeric: tabular-nums; white-space: normal; }
-.maka-stat-tile-value-outline { font-size: var(--font-size-stat); line-height: var(--text-heading-1-leading); }
-.maka-stat-tile-value-filled { font-size: var(--font-size-ui); line-height: var(--text-body-leading); }
+.maka-stat-tile-value-outline { font: var(--maka-text-heading-1); }
+.maka-stat-tile-value-filled { font: var(--maka-text-heading-4); }
+/* After the two role rules, not before them. The `font:` shorthand resets
+   `font-variant-numeric` along with the four axes the role names, and both
+   modifiers land on this same element — so declared first, the tabular figures
+   these tiles exist to align were being reset away by the role. Ordering is
+   the fix rather than repeating the declaration on each modifier: it is one
+   authority, and it is the general rule for any sub-property the roles do not
+   carry. */
+.maka-stat-tile-value { display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
 .maka-stat-tile-value-info { color: var(--info-text); }
 .maka-stat-tile-value-success { color: var(--success-text); }
 .maka-stat-tile-value-warning { color: var(--warning-text); }
 .maka-stat-tile-value-destructive { color: var(--destructive-text); }
-.maka-stat-tile-label { color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); letter-spacing: 0.025em; }
-.maka-stat-tile-detail { color: var(--muted-foreground); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); }
+.maka-stat-tile-label {
+  font: var(--maka-text-supporting);
+ color: var(--foreground-secondary); letter-spacing: 0.025em; }
+.maka-stat-tile-detail {
+  font: var(--maka-text-supporting);
+ color: var(--muted-foreground); }
 
 .maka-quote-chip { display: inline-flex; gap: 4px; padding-left: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
 .maka-quote-chip-expanded { width: 100%; max-width: 100%; align-items: flex-start; padding-block: 4px; border-radius: var(--radius-surface); }
-.maka-quote-chip-collapsed { max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
+/* #1879: measured 24px natural — a 20px line box plus 2 x 2px padding — and
+   `--h-control-sm` IS 24, so the pin is pixel-neutral today and load-bearing
+   the next time a leading moves. This is the collapsed state only; the
+   expanded twin above wraps to many lines and must keep growing. The chip's
+   type lives on `.maka-quote-chip-text`, which is why the derived scan needed
+   two arms rather than three to see it at all. */
+.maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--muted-foreground); }
 .maka-quote-chip-icon-expanded { margin-top: 2px; }
-.maka-quote-chip-text { min-width: 0; flex: 1; border: 0; padding: 0; color: var(--foreground-secondary); background: transparent; font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); text-align: left; }
+.maka-quote-chip-text {
+  font: var(--maka-text-supporting);
+ min-width: 0; flex: 1; border: 0; padding: 0; color: var(--foreground-secondary); background: transparent; text-align: left; }
 .maka-quote-chip-text-expanded { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }
 .maka-quote-chip-remove { width: 16px; height: 16px; border-radius: 50%; }
 .maka-quote-chip-remove > svg { width: 12px; height: 12px; }
 
-.maka-task-ledger-empty { margin: 0; color: var(--muted-foreground); font-size: var(--font-size-ui); line-height: var(--text-body-leading); }
+.maka-task-ledger-empty {
+  font: var(--maka-text-body);
+ margin: 0; color: var(--muted-foreground); }
 
-.maka-user-attachment-thumb-pending { display: grid; width: 128px; height: 128px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-surface); color: var(--muted-foreground); background: var(--foreground-alpha-6); }
-.maka-user-attachment-thumb-pending > svg { width: 20px; height: 20px; animation: maka-spin 1s linear infinite; }
-.maka-user-attachment-thumb { position: relative; display: inline-flex; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-surface); transition: opacity var(--duration-quick); }
-.maka-user-attachment-thumb:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.maka-user-attachment-thumb-image { width: 128px; height: 128px; object-fit: cover; transition: opacity var(--duration-quick); }
-.maka-user-attachment-thumb:hover .maka-user-attachment-thumb-image { opacity: 0.9; }
-.maka-user-attachment-lightbox-image { max-width: 90vw; max-height: 90vh; border-radius: var(--radius-surface); object-fit: contain; box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25); }
 .maka-message-meta { opacity: 0; transition: opacity var(--duration-quick) var(--ease-out-strong); }
 .maka-user-message:hover .maka-message-meta,
 .maka-user-message:focus-within .maka-message-meta { opacity: 1; }
-.maka-user-quotes { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; margin-top: 4px; }
-.maka-user-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,
 .maka-turn-status,
-.maka-turn-continuing { display: flex; align-items: center; padding-block: 2px; color: var(--muted-foreground); font-size: var(--font-size-base); line-height: var(--text-body-leading); }
+.maka-turn-continuing {
+  font: var(--maka-text-body);
+ display: flex; align-items: center; padding-block: 2px; color: var(--muted-foreground); }
 .maka-turn-processing,
 .maka-turn-status { gap: 8px; }
 .maka-turn-processing-spinner { flex: 0 0 auto; animation: maka-spin 1s linear infinite; }
 .maka-turn-indicator-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-turn-continuing { opacity: 0.7; animation: maka-stream-fade-in var(--duration-emphasized) var(--ease-out-strong) both; }
-.maka-turn-truncation-badge { display: inline-block; margin-top: 6px; border: 1px solid oklch(from var(--warning) l c h / 0.24); border-radius: var(--radius-control); padding-inline: 4px; color: var(--warning-text, var(--info-text)); background: oklch(from var(--warning) l c h / 0.05); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); cursor: help; }
+/* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
+   draw by hand (hairline + 5% wash) is a variant, and the box comes with it.
+   Product CSS keeps only what is layout: it is a block-level note under the
+   bubble, so it needs its own line and the gap above it. */
+.maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
 .maka-deep-thinking { min-width: 0; }
+/* The reasoning body inside the Astryx ChatReasoning disclosure. The official
+   atoms own no white-space (the shell assumes children are pre-rendered), so
+   the inherited `white-space: normal` collapses every newline in thinking
+   text. Restore the pre-wrap reading contract the pre-Astryx disclosure had
+   (dropped in the #1748 migration). `word-break` keeps long tokens from
+   overflowing the box, as the old body did. */
+.maka-chat-reasoning-content { white-space: pre-wrap; word-break: break-word; }
 
 @keyframes maka-spin { to { transform: rotate(360deg); } }
 .maka-spin { animation: maka-spin 1s linear infinite; }
 
+/* Markdown code renderers are custom components so Mermaid can be loaded only
+   for settled Mermaid fences. Preserve Astryx's document/compact rhythm here. */
+.maka-markdown-code { min-width: 0; }
+.maka-markdown-code-default { margin-block: var(--space-3) var(--space-4); }
+.maka-markdown-code-compact { margin-block: var(--space-1) var(--space-2); }
+[role="document"] > .maka-markdown-code:first-child { margin-block-start: 0; }
+[role="document"] > .maka-markdown-code:last-child { margin-block-end: 0; }
+.maka-mermaid-diagram {
+  display: flex;
+  max-width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  container-type: inline-size;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--background);
+}
+.maka-mermaid-toolbar {
+  min-height: 40px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--foreground-3);
+}
+.maka-mermaid-title { font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.maka-mermaid-actions { display: flex; align-items: center; gap: 2px; }
+.maka-mermaid-zoom-actions { display: flex; align-items: center; gap: 2px; }
+.maka-mermaid-zoom-level {
+  font: var(--maka-text-code);
+  min-width: 4.5ch;
+  color: var(--muted-foreground);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.maka-mermaid-viewport {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  overflow: auto;
+  padding: var(--space-3);
+  cursor: default;
+  outline: none;
+  overscroll-behavior: auto;
+  touch-action: pan-y;
+}
+.maka-mermaid-viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--focus-ring); }
+.maka-mermaid-viewport[data-maka-mermaid-pannable="horizontal"] { cursor: grab; overscroll-behavior-x: contain; }
+.maka-mermaid-viewport[data-maka-mermaid-pannable="vertical"],
+.maka-mermaid-viewport[data-maka-mermaid-pannable="both"] {
+  cursor: grab;
+  overscroll-behavior: contain;
+  touch-action: none;
+}
+.maka-mermaid-viewport[data-maka-mermaid-panning="true"] { cursor: grabbing; user-select: none; }
+.maka-mermaid-canvas { min-width: 0; margin-inline: auto; }
+.maka-mermaid-svg { display: flex; width: 100%; height: 100%; min-width: 0; justify-content: center; }
+.maka-mermaid-svg > svg {
+  display: block;
+  width: 100%;
+  max-width: none !important;
+  height: 100%;
+  overflow: visible;
+}
+.maka-mermaid-diagram-expanded {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  margin: 0 !important;
+  border: 0;
+  border-radius: 0;
+}
+.maka-mermaid-diagram-expanded .maka-mermaid-toolbar {
+  padding-left: max(var(--space-3), var(--maka-titlebar-area-x, 0px));
+  padding-right: calc(var(--space-1) + var(--maka-titlebar-overlay-right-width, 0px));
+}
+.maka-mermaid-diagram-expanded .maka-mermaid-actions { -webkit-app-region: no-drag; }
+.maka-mermaid-diagram-expanded .maka-mermaid-viewport { min-height: 0; flex: 1 1 auto; }
+.maka-mermaid-dialog { -webkit-app-region: no-drag; }
+.maka-mermaid-source {
+  max-height: min(40%, 320px);
+  flex: 0 1 auto;
+  overflow: auto;
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.maka-mermaid-fallback { display: grid; gap: var(--space-1-5); }
+.maka-mermaid-fallback-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.maka-mermaid-status {
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+}
+
+@container (max-width: 520px) {
+  .maka-mermaid-title { display: none; }
+}
+
+@container (max-width: 360px) {
+  .maka-mermaid-diagram:not(.maka-mermaid-diagram-expanded) .maka-mermaid-zoom-actions { display: none; }
+}
+
 .maka-tool-output-panel { display: grid; gap: 8px; margin-top: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-surface); background: var(--foreground-3); }
-.maka-tool-output-command { display: block; min-width: 0; color: var(--foreground); font-family: var(--font-mono); font-size: var(--font-size-base); font-variant-ligatures: none; line-height: var(--text-body-leading); white-space: pre-wrap; word-break: break-word; }
-.maka-tool-output-body { max-height: 256px; margin: 0; overflow-y: auto; color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--font-size-base); font-variant-ligatures: none; line-height: var(--text-body-leading); scroll-behavior: auto; white-space: pre-wrap; word-break: break-word; }
-.maka-tool-output-note { margin: 0; color: var(--muted-foreground); font-size: var(--font-size-base); line-height: var(--text-body-leading); }
+.maka-tool-output-command {
+  font: var(--maka-text-code);
+ display: block; min-width: 0; color: var(--foreground); font-variant-ligatures: none; white-space: pre-wrap; word-break: break-word; }
+.maka-tool-output-body {
+  font: var(--maka-text-code);
+ max-height: 256px; margin: 0; overflow-y: auto; color: var(--muted-foreground); font-variant-ligatures: none; scroll-behavior: auto; white-space: pre-wrap; word-break: break-word; }
+.maka-tool-output-note {
+  font: var(--maka-text-body);
+ margin: 0; color: var(--muted-foreground); }
 .maka-tool-output-wrap { min-width: 0; overflow-wrap: anywhere; }
 .maka-tool-output-destructive { color: var(--destructive); }
 .maka-tool-output-warning { color: var(--warning-text, var(--info-text)); }
@@ -104,44 +236,51 @@
 .maka-tool-output-stack { display: flex; min-width: 0; flex-direction: column; gap: 6px; margin-top: 4px; }
 .maka-pty-shell { gap: 0; overflow: hidden; padding: 0; }
 .maka-pty-shell-header { display: flex; min-width: 0; align-items: center; padding: 10px 12px 4px; }
-.maka-pty-shell-title { color: var(--foreground-secondary); font-size: var(--font-size-base); line-height: var(--text-body-leading); font-weight: 500; }
+.maka-pty-shell-title {
+  font: var(--maka-text-label);
+ color: var(--foreground-secondary); }
 .maka-pty-shell-body { display: grid; min-width: 0; gap: 8px; padding: 6px 12px; }
-.maka-pty-shell-footer { display: flex; min-height: 32px; align-items: center; justify-content: flex-end; gap: 6px; padding: 4px 12px 10px; color: var(--muted-foreground); font-size: var(--font-size-base); line-height: var(--text-body-leading); }
+.maka-pty-shell-footer {
+  font: var(--maka-text-body);
+ display: flex; min-height: 32px; align-items: center; justify-content: flex-end; gap: 6px; padding: 4px 12px 10px; color: var(--muted-foreground); }
 .maka-pty-terminal-body { overflow: auto; white-space: pre; word-break: normal; }
 
-.maka-web-result { display: grid; gap: 8px; font-family: var(--font-sans); }
+.maka-web-result { display: grid; gap: 8px; }
 .maka-web-result-header { display: grid; gap: 2px; }
-.maka-web-result-header strong { color: var(--foreground); font-size: var(--font-size-base); line-height: var(--text-body-leading); }
+.maka-web-result-header strong {
+  font: var(--maka-text-heading-4);
+ color: var(--foreground); }
 .maka-web-result-header small,
-.maka-web-result-list small { color: var(--muted-foreground); font-size: var(--font-size-base); line-height: var(--text-body-leading); }
+.maka-web-result-list small {
+  font: var(--maka-text-body);
+ color: var(--muted-foreground); }
 .maka-web-result-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .maka-web-result-list li { display: grid; gap: 2px; }
-.maka-web-result-list a { color: var(--link); font-size: var(--font-size-base); line-height: var(--text-body-leading); font-weight: 500; }
-.maka-web-result-list p { margin: 0; color: var(--foreground-secondary); font-size: var(--font-size-base); line-height: var(--text-body-leading); }
+.maka-web-result-list a {
+  font: var(--maka-text-label);
+ color: var(--link); }
+.maka-web-result-list p {
+  font: var(--maka-text-body);
+ margin: 0; color: var(--foreground-secondary); }
 .maka-web-result-error { gap: 6px; }
 .maka-web-result-error-message,
-.maka-web-result-repair { margin: 0; font-size: var(--font-size-base); line-height: var(--text-body-leading); }
+.maka-web-result-repair {
+  font: var(--maka-text-body);
+ margin: 0; }
 .maka-web-result-error-message { color: var(--destructive); }
 .maka-web-result-repair { color: var(--muted-foreground); }
-.maka-tool-header-full { width: 100%; }
-.maka-tool-card-body { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
-.maka-tool-settle-fade { animation: maka-stream-fade-in var(--duration-emphasized) var(--ease-out-strong) both; }
-.maka-tool-tone-destructive { color: var(--destructive); }
-.maka-tool-tone-warning { color: var(--warning-text, var(--info-text)); }
-.maka-tool-tone-muted { color: var(--muted-foreground); }
-.maka-tool-trow { display: flex; flex-direction: column; }
-.maka-tool-trow-trigger { display: flex; min-width: 0; align-items: center; gap: var(--spacing-1-5, 6px); padding-block: 2px; }
-.maka-tool-trow-icon { flex: 0 0 auto; }
-.maka-tool-trow-summary { min-width: 0; overflow: hidden; font-size: var(--text-supporting-size); line-height: var(--text-supporting-leading); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.maka-tool-trow-children { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; margin-left: 8px; padding-left: 10px; border-left: 1px solid var(--border); }
-.maka-tool-trow-duration { flex: 0 0 auto; color: var(--muted-foreground); font-size: var(--text-supporting-size); line-height: var(--text-supporting-leading); font-variant-numeric: tabular-nums; }
+.maka-tool-call-detail { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
 .maka-tool-output-redacted { display: inline; margin-left: 2px; color: var(--warning-text, var(--info-text)); }
 .maka-sandbox-blocked-banner { margin-bottom: 10px; }
-.maka-sandbox-blocked-description { display: flex; flex-direction: column; gap: 4px; font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); white-space: pre-wrap; word-break: break-word; }
-.maka-sandbox-blocked-error { font-family: var(--font-mono); }
+.maka-sandbox-blocked-description {
+  font: var(--maka-text-supporting);
+ display: flex; flex-direction: column; gap: 4px; white-space: pre-wrap; word-break: break-word; }
+.maka-sandbox-blocked-error {
+  font: var(--maka-text-supporting);
+ }
 .maka-sandbox-blocked-copy { align-self: start; }
 .maka-sandbox-blocked-copy[data-pending="true"] { cursor: progress; }
 .maka-sandbox-blocked-copy[data-copy-feedback="copied"] { border-color: oklch(from var(--link) l c h / 0.35); color: var(--link); }
@@ -150,8 +289,6 @@
 .maka-daily-review-save { min-width: 64px; }
 .maka-daily-review-append { min-width: 80px; }
 .maka-daily-review-quick-run { min-width: 96px; }
-.maka-composer-mention-panel,
-.maka-composer-skill-panel { z-index: var(--z-overlay); border-radius: var(--radius-surface); color: var(--popover-foreground); background: var(--popover); box-shadow: var(--shadow-maka-panel); }
 .maka-agent-preview-failure { color: var(--destructive); }
 .maka-automation-result-icon { display: inline; margin-right: 4px; vertical-align: text-bottom; }
 .maka-turn-status-icon { flex: 0 0 auto; }
@@ -159,13 +296,12 @@
 .maka-turn-aborted-marker,
 .maka-turn-automation-origin,
 .maka-turn-failed-banner {
+  font: var(--maka-text-supporting);
   display: inline-flex;
   width: fit-content;
   align-items: center;
   margin-inline: 0;
   border-radius: var(--radius-control);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-turn-aborted-marker {
@@ -283,119 +419,16 @@
   -webkit-text-fill-color: transparent;
   animation: maka-text-shimmer 1.8s linear infinite;
 }
-.maka-text-shimmer-sweep[data-delayed="true"] {
-  animation-delay: var(--duration-emphasized);
-}
 @media (prefers-reduced-motion: reduce) {
   .maka-text-shimmer-sweep { opacity: 0; animation: none; }
 }
 
-.maka-tool-container {
-  width: min(680px, 100%);
-  margin: var(--space-0-5) auto 0;
-  padding-inline: var(--space-4);
-}
-.maka-tool-container-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-0-5);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-}
-.maka-tool-count {
-  display: inline-flex;
-  min-width: 22px;
-  height: 18px;
-  align-items: center;
-  justify-content: center;
-  padding-inline: var(--space-1-5);
-  border-radius: var(--radius-pill);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-variant-numeric: tabular-nums;
-}
-.maka-tool-item {
-  margin-top: var(--space-2);
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-2);
-  box-shadow: var(--shadow-minimal-flat);
-  color: var(--foreground-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-}
-.maka-tool-item[data-status="waiting_permission"] { border-color: oklch(from var(--info) l c h / 0.4); }
-.maka-tool-item[data-status="running"] { border-color: oklch(from var(--status-running) l c h / 0.4); }
-.maka-tool-item[data-status="completed"] { border-color: var(--border); }
-.maka-tool-item[data-status="blocked"] {
-  border-color: oklch(from var(--warning) l c h / 0.4);
-  background: oklch(from var(--warning) l c h / 0.04);
-}
-.maka-tool-item[data-status="errored"] {
-  border-color: oklch(from var(--destructive) l c h / 0.4);
-  background: oklch(from var(--destructive) l c h / 0.04);
-}
-.maka-tool-item[data-status="interrupted"] {
-  border-color: var(--border);
-  background: var(--foreground-3);
-  opacity: 0.7;
-}
-.maka-tool-header {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2-5);
-  padding: var(--space-2) var(--space-3);
-  color: var(--foreground-secondary);
-  list-style: none;
-}
-.maka-tool-status-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border-radius: var(--radius-pill);
-  background: var(--muted-foreground);
-}
-.maka-tool-status-dot[data-status="waiting_permission"] { background: var(--info); }
-.maka-tool-status-dot[data-status="running"] {
-  background: var(--status-running);
-  box-shadow: 0 0 0 3px oklch(from var(--status-running) l c h / 0.15);
-  animation: maka-tool-pulse 1.5s ease-in-out infinite;
-}
-.maka-tool-status-dot[data-status="completed"] { background: var(--success); }
-.maka-tool-status-dot[data-status="blocked"] { background: var(--warning); }
-.maka-tool-status-dot[data-status="errored"] { background: var(--destructive); }
-.maka-tool-status-dot[data-status="interrupted"] { background: var(--muted-foreground); }
-.maka-tool-name {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--foreground);
-  font-family: var(--font-mono);
-  font-weight: var(--font-weight-medium);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.maka-tool-meta { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--muted-foreground); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); }
-.maka-tool-duration { font-variant-numeric: tabular-nums; }
-.maka-tool-status-label { color: var(--foreground-secondary); }
-.maka-tool-body { padding: var(--space-2-5) var(--space-3) var(--space-3); }
-.maka-tool-intent { margin: 0 0 var(--space-2); color: var(--foreground-secondary); font-family: var(--font-default); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); }
-.maka-tool-args { max-height: 110px; margin: 0; overflow: auto; }
 
 .maka-overlay-preview {
+  font: var(--maka-text-supporting);
   max-height: 180px;
   margin: var(--space-1) 0 0;
   overflow: auto;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   font-variant-ligatures: none;
   white-space: pre-wrap;
   word-break: break-word;
@@ -413,46 +446,63 @@
 }
 .maka-tool-diff-paths,
 .maka-tool-terminal-head {
+  font: var(--maka-text-supporting);
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1-5);
   padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--border);
   background: var(--foreground-2);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 .maka-tool-terminal-head { align-items: center; font-variant-ligatures: none; }
 .maka-tool-diff-paths code { color: var(--foreground-secondary); background: transparent; }
 .maka-tool-diff-body {
+  font: var(--maka-text-supporting);
   max-height: 320px;
   margin: 0;
   padding-block: var(--space-1);
   overflow: auto;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
   font-variant-ligatures: none;
-  line-height: var(--text-supporting-leading);
   white-space: pre;
   word-break: normal;
 }
 .maka-tool-diff-line { display: block; padding-inline: var(--space-2); white-space: pre; }
 .maka-tool-diff-line[data-line="add"] { background: oklch(from var(--success) l c h / 0.1); color: var(--success-text); }
 .maka-tool-diff-line[data-line="del"] { background: oklch(from var(--destructive) l c h / 0.1); color: var(--destructive); }
-.maka-tool-diff-line[data-line="hunk"] { background: oklch(from var(--link) l c h / 0.08); color: var(--foreground-secondary); font-weight: var(--font-weight-semibold); }
+.maka-tool-diff-line[data-line="hunk"] {
+  font: var(--maka-text-heading-5);
+ background: oklch(from var(--link) l c h / 0.08); color: var(--foreground-secondary); }
 .maka-tool-diff-line[data-line="meta"] { color: var(--muted-foreground); }
 .maka-tool-diff-line[data-line="ctx"] { color: var(--foreground-secondary); }
 .maka-tool-terminal-cwd { color: var(--muted-foreground); background: transparent; }
-.maka-tool-terminal-cmd { min-width: 0; flex: 1 1 auto; overflow: hidden; background: transparent; color: var(--foreground); font-weight: var(--font-weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
-.maka-tool-terminal-exit { padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); font-weight: var(--font-weight-bold); letter-spacing: 0.04em; }
+.maka-tool-terminal-cmd {
+  font: var(--maka-text-heading-5);
+ min-width: 0; flex: 1 1 auto; overflow: hidden; background: transparent; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
+/* Pinned like every other pill in the scan, even though the whole
+   `.maka-tool-terminal-*` family is currently unreachable:
+   `previewVariants({part: 'terminal-*'})` has no call site — `TerminalPreview`
+   renders `maka-tool-output-stack` / `ShellOutputBody` / `ToolCodeBlock`
+   instead — and `check-dead-css` cannot see that because the literals still
+   exist in `previewVariants`. The alternative is an exemption whose reason is
+   "nothing renders this", which is a fact about call sites recorded in a
+   stylesheet and would outlive the day someone wires the family back up.
+   Deleting the family is its own change. */
+.maka-tool-terminal-exit {
+  font: var(--maka-text-heading-5);
+ height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: 0.04em; }
 .maka-tool-terminal-exit[data-ok="true"] { background: oklch(from var(--success) l c h / 0.14); color: var(--success); }
 .maka-tool-terminal-exit[data-ok="false"] { background: oklch(from var(--destructive) l c h / 0.14); color: var(--destructive); }
-.maka-tool-terminal-empty { margin: 0; padding: var(--space-2); color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); font-style: italic; }
-.maka-tool-terminal-stream { max-height: 180px; margin: 0; padding: var(--space-1-5) var(--space-2); overflow: auto; font-family: var(--font-mono); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); font-variant-ligatures: none; white-space: pre-wrap; word-break: break-word; }
+.maka-tool-terminal-empty {
+  font: var(--maka-text-supporting);
+ margin: 0; padding: var(--space-2); color: var(--muted-foreground); font-style: italic; }
+.maka-tool-terminal-stream {
+  font: var(--maka-text-supporting);
+ max-height: 180px; margin: 0; padding: var(--space-1-5) var(--space-2); overflow: auto; font-variant-ligatures: none; white-space: pre-wrap; word-break: break-word; }
 .maka-tool-terminal-stream[data-stream="stdout"] { color: var(--foreground); }
 .maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: oklch(from var(--destructive) l c h / 0.04); color: var(--destructive); }
-.maka-tool-terminal-truncated-note { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: oklch(from var(--warning) l c h / 0.06); color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); }
+.maka-tool-terminal-truncated-note {
+  font: var(--maka-text-supporting);
+ display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: oklch(from var(--warning) l c h / 0.06); color: var(--foreground-secondary); }
 .maka-tool-terminal-truncated-note > span { min-width: 0; }
 .maka-tool-terminal-copy,
 .maka-agent-preview-copy { flex: 0 0 auto; }
@@ -461,55 +511,89 @@
 .maka-tool-terminal-copy[data-copy-error="true"],
 .maka-agent-preview-copy[data-copy-error="true"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
 
-.maka-agent-preview { display: grid; gap: var(--space-2-5); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); font-family: var(--font-sans); white-space: normal; }
+.maka-agent-preview {
+  font: var(--maka-text-supporting);
+ display: grid; gap: var(--space-2-5); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); white-space: normal; }
 .maka-agent-preview[data-ok="false"],
 .maka-agent-preview[data-status="failed"],
 .maka-agent-preview[data-status="cancelled"] { border-color: oklch(from var(--destructive) l c h / 0.22); }
 .maka-agent-preview-head { display: grid; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }
-.maka-agent-preview-head strong { min-width: 0; overflow: hidden; color: var(--foreground); font-size: var(--font-size-ui); line-height: var(--text-body-leading); text-overflow: ellipsis; white-space: nowrap; }
+.maka-agent-preview-head strong {
+  font: var(--maka-text-heading-4);
+ min-width: 0; overflow: hidden; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
 .maka-agent-preview-head small,
 .maka-agent-preview-section small,
-.maka-agent-preview-meta dt { color: var(--muted-foreground); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); letter-spacing: 0.04em; text-transform: uppercase; }
+.maka-agent-preview-meta dt {
+  font: var(--maka-text-supporting);
+ color: var(--muted-foreground); letter-spacing: 0.04em; text-transform: uppercase; }
 .maka-agent-preview-summary-line,
 .maka-agent-preview-section-head { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .maka-agent-preview-summary-line small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-agent-preview-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1-5); margin-top: var(--space-1); }
-.maka-agent-preview-message { padding: var(--space-2) var(--space-2-5); border-radius: var(--radius-control); background: oklch(from var(--destructive) l c h / 0.07); color: var(--destructive); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); }
+.maka-agent-preview-message {
+  font: var(--maka-text-supporting);
+ padding: var(--space-2) var(--space-2-5); border-radius: var(--radius-control); background: oklch(from var(--destructive) l c h / 0.07); color: var(--destructive); }
 .maka-agent-preview-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); margin: 0; }
 .maka-agent-preview-meta > div { display: grid; min-width: 0; gap: var(--space-0-5); }
-.maka-agent-preview-meta dd { min-width: 0; margin: 0; overflow: hidden; color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); text-overflow: ellipsis; white-space: nowrap; }
+.maka-agent-preview-meta dd {
+  font: var(--maka-text-supporting);
+ min-width: 0; margin: 0; overflow: hidden; color: var(--foreground-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .maka-agent-preview-section { display: grid; gap: var(--space-1-5); }
 .maka-agent-preview-section > strong,
-.maka-agent-preview-section-head > strong { min-width: 0; color: var(--foreground); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); }
+.maka-agent-preview-section-head > strong {
+  font: var(--maka-text-heading-5);
+ min-width: 0; color: var(--foreground); }
 .maka-agent-preview-section ul { display: grid; gap: var(--space-1-5); margin: 0; padding: 0; list-style: none; }
 .maka-agent-preview-section li { display: grid; min-width: 0; gap: var(--space-0-5); padding-block: var(--space-1-5); border-top: 1px solid var(--foreground-5); }
 .maka-agent-preview-section li:first-child { padding-top: 0; border-top: 0; }
-.maka-agent-preview-section code { min-width: 0; overflow: hidden; background: transparent; color: var(--foreground); font-family: var(--font-mono); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); text-overflow: ellipsis; white-space: nowrap; }
+.maka-agent-preview-section code {
+  font: var(--maka-text-supporting);
+ min-width: 0; overflow: hidden; background: transparent; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
 .maka-agent-preview-section p,
-.maka-agent-preview-section span { margin: 0; color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); white-space: pre-wrap; word-break: break-word; }
+.maka-agent-preview-section span {
+  font: var(--maka-text-supporting);
+ margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
 .maka-agent-preview-copy[data-copied="true"] { border-color: oklch(from var(--link) l c h / 0.35); color: var(--link); }
 
 .maka-web-search-preview { display: grid; gap: var(--space-2); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); }
 .maka-web-search-preview > header { display: flex; flex-direction: column; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }
-.maka-web-search-preview > header strong { color: var(--foreground); font-size: var(--font-size-ui); line-height: var(--text-body-leading); font-weight: var(--font-weight-semibold); }
+.maka-web-search-preview > header strong {
+  font: var(--maka-text-heading-4);
+ color: var(--foreground); }
 .maka-web-search-preview > header small,
-.maka-web-search-preview li small { color: var(--muted-foreground); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); letter-spacing: 0.04em; text-transform: uppercase; }
+.maka-web-search-preview li small {
+  font: var(--maka-text-supporting);
+ color: var(--muted-foreground); letter-spacing: 0.04em; text-transform: uppercase; }
 .maka-web-search-preview ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .maka-web-search-preview li { display: grid; gap: var(--space-0-5); padding-block: var(--space-2); border-top: 1px solid var(--foreground-5); }
 .maka-web-search-preview li:first-child { padding-top: 0; border-top: 0; }
-.maka-web-search-preview a { color: var(--foreground); font-weight: var(--font-weight-semibold); text-decoration: none; }
+.maka-web-search-preview a {
+  font: var(--maka-text-heading-4);
+ color: var(--foreground); text-decoration: none; }
 .maka-web-search-preview a:hover { text-decoration: underline; }
-.maka-web-search-preview li p { margin: 0; color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); white-space: pre-wrap; word-break: break-word; }
+.maka-web-search-preview li p {
+  font: var(--maka-text-supporting);
+ margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
 .maka-web-search-error { border-color: color-mix(in oklab, var(--destructive-text) 32%, var(--foreground-10)); background: color-mix(in oklab, var(--destructive-text) 8%, var(--foreground-3)); }
 .maka-web-search-error-message,
-.maka-web-search-error-repair { margin: 0; font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); white-space: pre-wrap; word-break: break-word; }
+.maka-web-search-error-repair {
+  font: var(--maka-text-supporting);
+ margin: 0; white-space: pre-wrap; word-break: break-word; }
 .maka-web-search-error-message { color: var(--destructive-text); }
 .maka-web-search-error-repair { color: var(--foreground-secondary); }
 
-.maka-load-tool-preview { display: grid; gap: var(--space-0-5); margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--background); box-shadow: var(--shadow-minimal-flat); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); }
+.maka-load-tool-preview {
+  font: var(--maka-text-supporting);
+ display: grid; gap: var(--space-0-5); margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--background); box-shadow: var(--shadow-minimal-flat); }
 .maka-load-tool-preview p { margin: 0; }
-.maka-load-tool-title { font-weight: var(--font-weight-semibold); }
+.maka-load-tool-title {
+  font: var(--maka-text-heading-5);
+ }
 .maka-load-tool-count,
 .maka-load-tool-footer { color: var(--muted-foreground); }
-.maka-load-tool-tools { font-family: var(--font-mono); word-break: break-word; }
-.maka-load-tool-footer { font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); }
+.maka-load-tool-tools {
+  font: var(--maka-text-supporting);
+ word-break: break-word; }
+.maka-load-tool-footer {
+  font: var(--maka-text-supporting);
+ }

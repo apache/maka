@@ -4,11 +4,13 @@
  *
  * Run: `npm --workspace @maka/runtime run test`
  */
+import { MockLanguageModelV4 } from 'ai/test';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from '../test-helpers.js';
 import type { RuntimeEvent, RuntimeEventContent } from '@maka/core/runtime-event';
-import type { LlmCallRecord } from '@maka/core/usage-stats/types';
+import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
+import { ProviderRequestTracker } from '../provider-request-telemetry.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
 import {
   buildLlmHistorySummarizer,
@@ -96,63 +98,67 @@ describe('buildLlmHistorySummarizer', () => {
     expect(seen?.maxOutputTokens).toBe(undefined);
   });
 
-  test('attributes provider-reported usage to one history-compaction call', async () => {
-    const records: LlmCallRecord[] = [];
+  test('attributes provider-reported usage to one canonical history-compaction record', async () => {
+    // history_compact used to write a per-call row into the frozen table. It
+    // now settles through the same seam as a main send, so the record carries
+    // the run it belongs to and its cost basis (#1679).
+    const recorded: ModelCallAttempt[] = [];
     let now = 100;
     const summarize = buildLlmHistorySummarizer({
-      resolveModel: () => 'fake-model',
-      generateText: async () => ({
-        text: '## Goal\nX',
-        finishReason: 'stop',
-        usage: {
-          inputTokens: 7,
-          outputTokens: 3,
-          totalTokens: 10,
-        },
-      }),
-      telemetry: {
-        connectionSlug: 'connection',
-        providerId: 'provider',
-        modelId: 'model',
-        newId: () => 'call-id',
+      resolveModel: () =>
+        new MockLanguageModelV4({
+          doGenerate: {
+            content: [{ type: 'text', text: '## Goal\nX' }],
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 7, noCache: 7, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 3, text: 3, reasoning: 0 },
+            },
+            warnings: [],
+          },
+        }),
+    });
+
+    // The backend hands over a built tracker; the summarizer assembles nothing.
+    await summarize({
+      ...inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      providerRequestTracker: new ProviderRequestTracker({
+        traceId: 'trace-id',
+        turnId: 'turn-1',
         now: () => {
           now += 10;
           return now;
         },
-        recordLlmCall: (record) => {
-          records.push(record);
+        newId: () => 'trace-id',
+        persistCapture: async () => ({ artifactId: 'artifact-1' }),
+        recordAttempt: () => {},
+        accounting: {
+          sessionId: 'sess-1',
+          resolveRunId: () => 'run-1',
+          connectionSlug: 'connection',
+          providerId: 'provider',
+          callKind: 'history_compact',
+          record: (attempt: ModelCallAttempt) => {
+            recorded.push(attempt);
+          },
         },
-      },
+      }),
     });
 
-    await summarize(
-      inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
-    );
-
-    assert.deepEqual(records, [
-      {
-        sessionId: 'sess-1',
-        turnId: 'turn-1',
-        callKind: 'history_compact',
-        callId: 'history_compact_turn-1_call-id',
-        connectionSlug: 'connection',
-        providerId: 'provider',
-        modelId: 'model',
-        inputTokens: 7,
-        outputTokens: 3,
-        cacheHitInputTokens: 0,
-        cacheMissInputTokens: 7,
-        cacheMissInputSource: 'derived',
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 10,
-        rawFinishReason: 'stop',
-        latencyMs: 10,
-        status: 'success',
-        startedAt: 110,
-      },
-    ]);
+    const attempt = decodeModelCallAttempt(recorded[0]);
+    assert.equal(attempt.callKind, 'history_compact');
+    assert.equal(attempt.sessionId, 'sess-1');
+    assert.equal(attempt.runId, 'run-1');
+    assert.equal(attempt.turnId, 'turn-1');
+    assert.equal(attempt.connectionSlug, 'connection');
+    assert.equal(attempt.providerId, 'provider');
+    assert.equal(attempt.inputTokens, 7);
+    assert.equal(attempt.outputTokens, 3);
+    assert.equal(attempt.usageBasis, 'reported');
+    // No pricing was wired, so the record says the price is unknown rather
+    // than claiming the summarization was free.
+    assert.equal(attempt.costBasis, 'unpriced');
+    assert.equal(attempt.costUsd, undefined);
   });
 
   test('produces schema-valid tool-result messages (toolName + wrapped output) and does not fall back', async () => {

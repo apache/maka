@@ -74,6 +74,8 @@ export {
   MessageCircleQuestion,
   MessageSquare,
   Mic,
+  Maximize2,
+  Minimize2,
   Monitor,
   Moon,
   MoreHorizontal,
@@ -94,6 +96,7 @@ export {
   Repeat,
   RotateCcw,
   RotateCw,
+  Scan,
   Save,
   Search,
   Settings,
@@ -114,4 +117,6 @@ export {
   Wifi,
   Workflow,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';

@@ -160,7 +160,7 @@ function TaskLedgerRow({ task, copy, level, position, setSize, children }: {
       style={{ '--task-depth': Math.min(depth, 6) } as CSSProperties}
     >
       <StatusIcon size={14} aria-hidden="true" />
-      <span className="maka-task-ledger-key">{task.key}</span>
+      <code className="maka-task-ledger-key">{task.key}</code>
       <span className="maka-task-ledger-subject" title={task.subject}>{task.subject}</span>
       <span className="maka-task-ledger-meta">
         <span>{copy.status[task.status]}</span>

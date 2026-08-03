@@ -39,6 +39,7 @@ import {
   FakeBackend,
   SessionManager,
   createLocalContinuationSafetyInspector,
+  createConfiguredSubagentCatalog,
   buildDeepResearchTools,
   getAIModel,
   generateSessionTitle as generateRuntimeSessionTitle,
@@ -215,6 +216,10 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
   if (!app.isReady()) {
     throw new Error('storage-root repair dialog requires app ready');
   }
+  // Explicit startup contract for the storage-root-conflict E2E: printed
+  // synchronously before the modal, so the test can observe the gate firing
+  // on any platform (macOS modal loops block CDP evaluation, Linux does not).
+  console.log('[storage-root] root-identity conflict; parking at repair dialog');
   const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === 'zh';
   const { response } = await dialog.showMessageBox({
     type: 'warning',
@@ -238,7 +243,10 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const store = createSessionStore(workspaceRoot);
 const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
-const projectCatalog = createProjectCatalog(workspaceRoot);
+const projectCatalog = createProjectCatalog(workspaceRoot, {
+  onLegacyImportFailure: (error) =>
+    console.error('[projects] projects.json could not be imported:', error),
+});
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
 const planStore = createSqlitePlanStore(workspaceRoot);
 const executionStoreWiring = await openDesktopExecutionStoreWiring(workspaceRoot);
@@ -249,6 +257,10 @@ const runtimePersistence = await openRuntimeEventPersistence({
 const runtimeEventStore = runtimePersistence.runtimeEventStore;
 const connectionStore = createConnectionStore(workspaceRoot);
 const settingsStore = createSettingsStore(workspaceRoot);
+const subagentCatalog = createConfiguredSubagentCatalog({
+  getSettings: () => settingsStore.get(),
+  getConnection: (slug) => connectionStore.get(slug),
+});
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({ clientName: 'maka-desktop', clientVersion: app.getVersion() });
 let mcpStartup: Promise<void> | undefined;
@@ -301,6 +313,8 @@ const xaiOAuth = new XaiOAuthService({
 });
 const buildSubscriptionModelFetch = createSubscriptionModelFetch({
   claudeSubscription,
+  openAiCodex,
+  xaiOAuth,
 });
 const oauthModelConnections = createOAuthModelConnectionsMainService({
   connectionStore,
@@ -470,7 +484,7 @@ const automationWiring = createMainAutomationWiring({
   },
 });
 
-// Load durable automations from disk on startup (fire-and-forget; errors are logged inside).
+// Load durable Automations from operational storage on startup.
 void automationWiring.loadDurableAutomations();
 
 // Goal execution — autonomous turn-boundary continuation with an external
@@ -645,12 +659,20 @@ const {
   browserTools,
   computerUse,
   computerUseOverlay,
+  computerUsePip,
+  computerUseStatusItem,
+  computerUseScreenLock,
   computerUseTools,
   desktopProductToolSurface,
   builtinTools,
   childAgentTools,
   sandboxDiagnosticsProvider,
 } = assembleDesktopTools({
+  // The mirror anchors to the app window and becomes its child; without this
+  // it falls back to floating above every application on the primary display,
+  // with no pointer to hover-test against and so no controls at all.
+  mainWindow: mainWindowController,
+  keepSystemAwake,
   isComputerUseRealModelE2e,
   workspaceRoot,
   taskLedgerStore,
@@ -681,7 +703,12 @@ const desktopBackendToolSurfaceDeps = {
     agentGraphCoordinator.toolsForSession(sessionId),
 };
 // Cursor-overlay teardown assigns a module-scoped `let`, so it stays in boot.ts.
-onMainWindowClose = () => computerUseOverlay.destroyAll();
+onMainWindowClose = () => {
+  computerUseOverlay.destroyAll();
+  // The mirror is a child of the window that just closed; without this it
+  // outlives its parent, still polling the pointer at 20Hz.
+  computerUsePip.destroyAll();
+};
 const systemPromptService = createSystemPromptMainService({
   settingsStore,
   workspaceRoot,
@@ -838,6 +865,7 @@ const runtime = new SessionManager({
   shellRuns,
   backends,
   childTools: childAgentTools,
+  subagentCatalog,
   worktreeChildExecutor,
   safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
   onContinuationLifecycleEvent: (event) => {
@@ -1060,6 +1088,9 @@ function registerIpc(): void {
     goalWiring,
     automationManager: automationWiring.manager,
     computerUseOverlay,
+    computerUsePip,
+    computerUseStatusItem,
+    computerUseScreenLock,
     computerUseTools,
     artifactStore,
     attachmentApprovals,
@@ -1220,6 +1251,9 @@ const streamEvents = createSessionStreamer({
   sessionActivities,
   goalWiring,
   computerUseOverlay,
+  computerUsePip,
+  computerUseStatusItem,
+  computerUseScreenLock,
   computerUseTools,
   safeSendToRenderer,
   emitSessionsChanged,
@@ -1369,7 +1403,7 @@ function emitConnectionListChanged(): void {
 function emitSessionsChanged(
   reason: SessionChangedReason,
   sessionId?: string,
-  extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId'>,
+  extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
 ): void {
   const event: SessionChangedEvent = {
     type: 'sessions_changed',
@@ -1379,6 +1413,7 @@ function emitSessionsChanged(
   if (sessionId) event.sessionId = sessionId;
   if (extra?.connectionSlug) event.connectionSlug = extra.connectionSlug;
   if (extra?.modelId) event.modelId = extra.modelId;
+  if (extra?.turnId) event.turnId = extra.turnId;
   safeSendToRenderer('sessions:changed', event);
 }
 
@@ -1405,6 +1440,9 @@ wireAppLifecycle({
   goalWiring,
   computerUse,
   computerUseOverlay,
+  computerUsePip,
+  computerUseStatusItem,
+  computerUseScreenLock,
   shellRuns,
   mcpManager,
   runtimePersistence,
@@ -1424,9 +1462,9 @@ wireAppLifecycle({
 });
 
 function computerUseCapabilityInput() {
-  const serviceState = computerUse.backend?.serviceState?.();
+  const executorState = computerUse.backend?.executorState?.();
   return {
     backendId: computerUse.backendId,
-    health: computerUseServiceHealth(computerUse.backendId, serviceState),
+    health: computerUseServiceHealth(computerUse.backendId, executorState),
   };
 }

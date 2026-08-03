@@ -15,15 +15,13 @@
     overflow: hidden;
   }
 .maka-lazy-fallback {
+    font: var(--maka-text-heading-4);
     min-width: 0;
     min-height: 72px;
     display: grid;
     place-items: center;
     padding: var(--space-4);
     color: var(--muted-foreground);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
-    font-weight: var(--font-weight-semibold);
     text-align: center;
   }
 .maka-lazy-fallback[data-surface="panel"] {

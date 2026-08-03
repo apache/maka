@@ -14,8 +14,9 @@ import { defineConfig } from '@playwright/test';
  * What parallel windows DO share is OS focus. Specs that assert
  * `toBeFocused()` (e.g. plan-reminders) fail when another window steals
  * activation mid-assertion — Chromium blurs the document when its window
- * deactivates. CI stays at 1 until those are hardened; local runs take the
- * parallel win, and a local focus failure re-runs alone to confirm.
+ * deactivates. Each CI shard therefore keeps one worker on an isolated X
+ * display; local runs take the parallel win, and a local focus failure re-runs
+ * alone to confirm.
  *
  * Run from apps/desktop via `npm run e2e`, which builds the app first.
  */
@@ -23,6 +24,9 @@ export default defineConfig({
   testDir: '.',
   fullyParallel: true,
   workers: process.env.CI ? 1 : 4,
+  // CI publishes no Playwright report that consumes Git metadata. Disable its
+  // best-effort shallow-history fetch, which otherwise waits on a fixed timeout.
+  captureGitInfo: { commit: false, diff: false },
   // No retries: flakes should fail loudly. The fixture waits for the composer
   // to mount (the cold-start convergence point — connection seed, onboarding
   // clear, renderer hydrated), so cold-start variance never reaches the test.

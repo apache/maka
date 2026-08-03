@@ -1192,6 +1192,11 @@ export function buildAiSdkCellBackendRegistration(input: {
         newId: input.newId,
         now: input.now,
         recordRunTrace: ctx.recordRunTrace,
+        // The canonical metering sink (#1679); the controller has always
+        // exposed it, this composition just never passed it through.
+        ...(ctx.recordModelCallAttempt
+          ? { recordModelCallAttempt: ctx.recordModelCallAttempt }
+          : {}),
         ...(ctx.recordProviderRequestCapture
           ? {
               recordProviderRequestCapture: createProviderRequestCaptureRecorder({

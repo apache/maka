@@ -34,7 +34,16 @@ export type OperationHandlerMap = {
 };
 
 export type DomainOperationKey = Exclude<OperationKey, 'host.status'>;
-export type TurnOperationKey = Extract<OperationKey, 'turn.start' | 'turn.query' | 'turn.stop'>;
+export type TurnOperationKey = Extract<
+  OperationKey,
+  | 'turn.start'
+  | 'turn.query'
+  | 'turn.stop'
+  | 'turn.regenerate'
+  | 'turn.resume.query'
+  | 'turn.resume.start'
+>;
+export type ContextOperationKey = Extract<OperationKey, `context.${string}`>;
 export type RuntimePolicyOperationKey = Extract<
   OperationKey,
   `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`
@@ -49,6 +58,8 @@ export type MessageOperationKey = Extract<
 >;
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
 export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
+export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.inspect.${string}`>;
+export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
 export type SessionContinuityOperationKey = Extract<
   OperationKey,
   'subscription.open' | 'subscription.close'
@@ -76,6 +87,7 @@ export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capabil
 export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
+export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
 export type ConnectionEffectOperationHandlerMap = Pick<
   OperationHandlerMap,
@@ -84,6 +96,11 @@ export type ConnectionEffectOperationHandlerMap = Pick<
 export type MessageOperationHandlerMap = Pick<OperationHandlerMap, MessageOperationKey>;
 export type InteractionOperationHandlerMap = Pick<OperationHandlerMap, InteractionOperationKey>;
 export type GoalOperationHandlerMap = Pick<OperationHandlerMap, GoalOperationKey>;
+export type ExecutionInspectOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ExecutionInspectOperationKey
+>;
+export type AgentGraphOperationHandlerMap = Pick<OperationHandlerMap, AgentGraphOperationKey>;
 export type SessionContinuityOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionContinuityOperationKey

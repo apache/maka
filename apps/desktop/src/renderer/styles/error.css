@@ -45,22 +45,20 @@
   }
 
 .maka-error-copy h2 {
+    font: var(--maka-text-heading-4);
     margin: 0;
     color: var(--foreground);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
-    font-weight: var(--font-weight-semibold);
   }
 
 .maka-error-copy p {
+    font: var(--maka-text-body);
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
     max-width: 56ch;
   }
 
 .maka-error-stack {
+    font: var(--maka-text-supporting);
     margin: var(--space-1) 0 0;
     max-height: 220px;
     padding: var(--space-2-5) var(--space-3);
@@ -69,9 +67,6 @@
     background: var(--foreground-3);
     color: var(--foreground-secondary);
     overflow: auto;
-    font-family: var(--font-mono);
-    font-size: var(--font-size-caption);
-    line-height: var(--text-supporting-leading);
     white-space: pre-wrap;
     word-break: break-word;
   }

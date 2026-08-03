@@ -1,6 +1,12 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { SessionHeader, StoredMessage, E2eFixtureScenario } from '@maka/core';
+import {
+  acquireOperationalStateDatabase,
+  createSqliteSessionMetadataStore,
+  OPERATIONAL_STATE_DATABASE_NAME,
+  projectSessionCatalogMessages,
+} from '@maka/storage';
 
 // Fixed clock for the e2e-fixture. All seeded timestamps and
 // transient fixture state derive from this value unless tests explicitly
@@ -26,7 +32,6 @@ export const WORKSTATION_ABORTED_SESSION_ID = 'e2e-fixture-ws-aborted';
 export const ERROR_SESSION_ID = 'e2e-fixture-error';
 export const ARTIFACT_SESSION_ID = 'e2e-fixture-artifact';
 export const STALE_FAKE_SESSION_ID = 'e2e-fixture-stale-fake';
-export const STALE_LEGACY_SESSION_ID = 'e2e-fixture-stale-legacy';
 export const HEALTHY_SESSION_ID = 'e2e-fixture-healthy';
 // PR109f (g): turn-control-history primary + branch sessions. The
 // `BRANCH_ORPHAN` session's `parentSessionId` intentionally references
@@ -83,13 +88,8 @@ export function header(input: {
   now: number;
   lastMessageAt: number;
   hasUnread?: boolean;
-  /**
-   * Override default `backend: 'ai-sdk'`. Used by stale-sessions fixture
-   * to seed FakeBackend + legacy backend kinds. SessionHeader's BackendKind
-   * union allows widening via `as unknown` for legacy values like
-   * 'claude' that no longer exist in the type.
-   */
-  backend?: SessionHeader['backend'] | 'claude';
+  /** Override default `backend: 'ai-sdk'` for the unavailable-connection fixture. */
+  backend?: SessionHeader['backend'];
   connectionLocked?: boolean;
   /**
    * PR109b workstation-statuses fixture: override default
@@ -118,27 +118,37 @@ export function header(input: {
     statusUpdatedAt: input.lastMessageAt,
     hasUnread: input.hasUnread ?? false,
     ...(input.orchestrationMode ? { orchestrationMode: input.orchestrationMode } : {}),
-    // Legacy backend kinds like 'claude' aren't in the current BackendKind
-    // union but are needed for the stale-sessions reproduction. Forward
-    // the value verbatim into the JSONL so the renderer sees exactly what
-    // a real legacy workspace would have on disk.
-    backend: (input.backend ?? 'ai-sdk') as SessionHeader['backend'],
+    backend: input.backend ?? 'ai-sdk',
     llmConnectionSlug: input.connection,
     connectionLocked: input.connectionLocked ?? true,
     model: input.model,
     permissionMode: 'ask',
+    collaborationMode: 'agent',
+    orchestrationMode: input.orchestrationMode ?? 'default',
     schemaVersion: 1,
   };
 }
 
-export async function writeSession(workspaceRoot: string, session: SessionHeader, messages: StoredMessage[]): Promise<void> {
-  const dir = join(workspaceRoot, 'sessions', session.id);
-  await mkdir(dir, { recursive: true });
-  await writeFile(
-    join(dir, 'session.jsonl'),
-    [session, ...messages].map((entry) => JSON.stringify(entry)).join('\n') + '\n',
-    'utf8',
+export async function writeSession(
+  workspaceRoot: string,
+  session: SessionHeader,
+  messages: StoredMessage[],
+): Promise<void> {
+  const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
+  const sessions = createSqliteSessionMetadataStore(
+    join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+    { databaseLease },
   );
+  try {
+    await sessions.create(session);
+    await sessions.appendMessages(
+      session.id,
+      messages,
+      projectSessionCatalogMessages(messages),
+    );
+  } finally {
+    sessions.close();
+  }
 }
 
 export async function writeJson(path: string, value: unknown): Promise<void> {

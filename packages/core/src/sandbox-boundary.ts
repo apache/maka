@@ -88,14 +88,20 @@ export interface SandboxBoundaryResponse {
   readonly decision: SandboxBoundaryDecision;
 }
 
+export const SANDBOX_BOUNDARY_CLOSURE_REASONS = [
+  'turn_stopped',
+  'turn_terminal',
+  'host_restarted',
+] as const;
+export type SandboxBoundaryClosureReason = (typeof SANDBOX_BOUNDARY_CLOSURE_REASONS)[number];
 export const SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON = 'host_restarted';
 
 export interface SettleSandboxBoundaryRequest {
   readonly sessionId: string;
   readonly requestId: string;
   readonly decision: SandboxBoundaryDecision;
-  /** Internal fail-closed settlement used when a live request owner cannot survive restart. */
-  readonly closureReason?: typeof SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON;
+  /** Internal fail-closed settlement used when a live request owner cannot continue. */
+  readonly closureReason?: SandboxBoundaryClosureReason;
 }
 
 /**

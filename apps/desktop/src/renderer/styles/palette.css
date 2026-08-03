@@ -25,10 +25,8 @@
 }
 
 .maka-palette-hint {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   font-variant-numeric: tabular-nums;
 }
 

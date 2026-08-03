@@ -299,18 +299,21 @@ async function resolveWritableInsideCwd(
   inputPath: string,
   label: string,
 ): Promise<string> {
-  if (isAbsolute(inputPath)) {
-    throw new Error(`${label} path must be relative to session cwd`);
-  }
   const root = await fs.realpath(cwd);
-  const candidate = resolve(root, inputPath);
+  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
+
   if (!isPathInside(root, candidate)) {
-    throw new Error(`${label} path must stay inside session cwd`);
+    throw new Error(
+      `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
+        `received ${JSON.stringify(inputPath)}.`,
+    );
   }
+
   const parent = await fs.realpath(dirname(candidate));
   if (!isPathInside(root, parent)) {
     throw new Error(`${label} path must stay inside session cwd`);
   }
+
   return candidate;
 }
 
@@ -319,17 +322,20 @@ async function resolveExistingInsideCwd(
   inputPath: string,
   label: string,
 ): Promise<string> {
-  if (isAbsolute(inputPath)) {
-    throw new Error(`${label} path must be relative to session cwd`);
-  }
   const root = await fs.realpath(cwd);
-  const candidate = resolve(root, inputPath);
+  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
+
   if (!isPathInside(root, candidate)) {
-    throw new Error(`${label} path must stay inside session cwd`);
+    throw new Error(
+      `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
+        `received ${JSON.stringify(inputPath)}.`,
+    );
   }
+
   const target = await fs.realpath(candidate);
   if (!isPathInside(root, target)) {
     throw new Error(`${label} path must stay inside session cwd`);
   }
+
   return target;
 }

@@ -72,18 +72,8 @@ test('usage IPC leaves settings usage session-derived while detailed usage waits
   }
 });
 
-test('pricing IPC mutations serialize through the canonical SQLite repo after legacy import', async () => {
+test('pricing IPC mutations serialize through the canonical SQLite repo', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-usage-ipc-pricing-'));
-  const legacy = pricing('openai:legacy');
-  await writeFile(
-    join(root, 'telemetry.json'),
-    JSON.stringify({
-      usageRecords: [],
-      toolInvocations: [],
-      pricingOverrides: [legacy],
-    }),
-    'utf8',
-  );
   const telemetryRepo = createSqliteTelemetryRepo(root);
   const handlers = new Map<string, Handler>();
   const firstWrite = deferred();
@@ -133,11 +123,11 @@ test('pricing IPC mutations serialize through the canonical SQLite repo after le
     assert.ok(list);
     assert.ok(put);
     assert.ok(reset);
-    assert.deepEqual(await list({}), { ok: true, data: [legacy] });
+    assert.deepEqual(await list({}), { ok: true, data: [] });
 
     const first = put({}, pricing('openai:first'));
     const second = put({}, pricing('openai:second'));
-    const third = reset({}, 'openai:legacy');
+    const third = reset({}, 'openai:first');
     await firstWriteStarted.promise;
     assert.deepEqual(events, ['upsert:openai:first']);
 
@@ -147,17 +137,17 @@ test('pricing IPC mutations serialize through the canonical SQLite repo after le
     assert.equal((await third).ok, true);
     assert.deepEqual(
       telemetryRepo.listPricingOverrides().map((item) => item.modelKey),
-      ['openai:first', 'openai:second'],
+      ['openai:second'],
     );
     assert.deepEqual(events, [
       'upsert:openai:first',
-      'refresh:2',
+      'refresh:1',
       'notify:usage:pricing:changed',
       'upsert:openai:second',
-      'refresh:3',
-      'notify:usage:pricing:changed',
-      'delete:openai:legacy',
       'refresh:2',
+      'notify:usage:pricing:changed',
+      'delete:openai:first',
+      'refresh:1',
       'notify:usage:pricing:changed',
     ]);
   } finally {

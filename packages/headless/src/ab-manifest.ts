@@ -15,7 +15,7 @@ export function buildAbRunManifest(input: AbRunManifestInput): AbRunManifest {
         fingerprint: arm.fingerprint,
         metadata: arm.metadata,
       }),
-    ) as [AbRunManifest['arms'][number], AbRunManifest['arms'][number]],
+    ),
     taskBudgetSec: input.taskBudgetSec,
     harborTimeoutMs: input.harborTimeoutMs,
     subjectFingerprint: input.subjectFingerprint,

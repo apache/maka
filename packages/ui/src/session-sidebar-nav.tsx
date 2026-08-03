@@ -23,8 +23,19 @@ export function SessionSidebarNav(props: {
     (reminder) => reminder.status !== 'completed',
   ).length;
 
+  // Always SideNavItem — expanded and collapsed. Astryx collapse context turns
+  // these into icon-only slots without remounting a different control recipe
+  // (which read as a squeeze when the rail previously swapped to IconButton).
+  //
+  // SideNavSection, like the footer below, rather than a bare fragment in a
+  // product div: the section is what owns the space BETWEEN nav rows
+  // (`items` → --spacing-0-5). Handed to `topContent` as a plain div these three
+  // were the only group on the rail outside that authority, so they stacked
+  // edge to edge — invisible expanded, where the label separates the rows, and
+  // plainly three-icons-as-one-slab at 48px. The header is hidden because the
+  // rail landmark already names the panel; the title stays for a11y.
   return (
-    <>
+    <SideNavSection title={copy.mainLabel} isHeaderHidden className="maka-session-panel-top">
       <SideNavItem
         label={copy.newTask}
         icon={SquarePen}
@@ -48,7 +59,7 @@ export function SessionSidebarNav(props: {
         isSelected={automationsActive}
         onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
       />
-    </>
+    </SideNavSection>
   );
 }
 
@@ -94,7 +105,11 @@ export function SessionSidebarFooter(props: {
           data-update-state={props.updateReminder.state}
           style={{ '--maka-update-progress': String(Math.max(0, Math.min(100, props.updateReminder.progressPercent ?? 0)) / 100) } as CSSProperties}
           label={updateTitle}
-          size="sm"
+          // #1879: was `sm` with a 34px height forced from product CSS. Astryx
+          // sizes Button off --size-element-* (sm 28 / md 32), so `md` IS the
+          // 32px this button wants, and the CSS height is gone rather than
+          // fighting the component's own size token.
+          size="md"
           variant="ghost"
           width="100%"
           onClick={props.onOpenUpdate}

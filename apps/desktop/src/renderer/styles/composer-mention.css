@@ -1,46 +1,33 @@
-/* Composer mention popup — the @ file / skill overlay rendered by
-   ComposerMentionPopup (@maka/ui). The package owns its popover surface;
-   this file owns renderer placement + row chrome only.
+/* Composer mention rows — the two-line content Composer renders inside the
+   Astryx trigger menu for `@` files and `/` Skills.
 
-   The popup is an ABSOLUTE overlay anchored to `.maka-composer-input` (which is
-   already position:relative at rest), bottom-anchored so it floats above the
-   textarea and never grows the composer box (composer-constant-footprint-
-   contract). Astryx remains the only composer-shell chrome owner. */
-.maka-composer-mention-popup {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + var(--space-2));
-  width: min(360px, 100%);
-  max-height: 280px;
-  overflow-y: auto;
-  padding: var(--space-1);
-}
+   Placement, row padding and the highlighted state all belong to
+   `useTriggerMenu`; this file styles what our `renderItem` puts inside a row,
+   plus the one surface dimension upstream leaves open. */
 
-.maka-composer-mention-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: var(--space-0-5);
-}
+/* `useTriggerMenu` gives the menu a 180px floor and no ceiling, so it sizes to
+   its widest row — and our rows carry a second line (a Skill's description, a
+   file's full path) that never wraps. A long one therefore stretches the
+   popover past the composer it is anchored to, with nothing to stop it at the
+   window edge.
 
-.maka-composer-mention-option {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1-5) var(--space-2);
-  border-radius: var(--radius-control);
-  color: var(--foreground);
-  /* Cursor: styles/native-cursor.css (hand only on links). */
-  transition: background var(--duration-base) var(--ease-out-strong);
-}
+   Cap it here rather than upstream: the row content is ours, and its two lines
+   already carry `overflow: hidden` + `text-overflow: ellipsis` waiting for a
+   constraint to act on. 420px matches the model switcher above it — the other
+   composer-anchored control that had to choose a width — so the two floats
+   over this footer agree.
 
-.maka-composer-mention-option[data-active="true"] {
-  background: var(--muted);
+   Deliberately unscoped. `.astryx-trigger-menu` is the component's stable
+   theming hook (`themeProps`), not an internal class, and every trigger menu
+   in the app is this one: the composer's `@` and `/` are its only mounts, and
+   a future one would want the same ceiling for the same reason. */
+.astryx-trigger-menu {
+  max-width: min(420px, calc(100vw - var(--space-6)));
 }
 
 .maka-composer-mention-icon {
   flex: 0 0 auto;
+  margin-inline-end: var(--space-2);
   color: var(--muted-foreground);
 }
 
@@ -52,9 +39,8 @@
 }
 
 .maka-composer-mention-name {
+  font: var(--maka-text-body);
   min-width: 0;
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   color: var(--foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -62,9 +48,8 @@
 }
 
 .maka-composer-mention-secondary {
+  font: var(--maka-text-supporting);
   min-width: 0;
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   color: var(--muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -73,247 +58,4 @@
 
 .maka-composer-mention-secondary:empty {
   display: none;
-}
-
-.maka-composer-mention-status {
-  padding: var(--space-2) var(--space-2);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  color: var(--muted-foreground);
-  text-align: center;
-}
-
-/* PR-COMPOSER-TOOLBAR-SPLIT Skills picker — the toolbar button + its panel. Same overlay
-   discipline as the mention popup above: an ABSOLUTE layer anchored to the
-   trigger wrapper and bottom-anchored, so opening it never grows the composer
-   box (composer-constant-footprint-contract). The wrapper is the positioning
-   context so the panel tracks the button rather than the whole card. */
-.maka-composer-skill-picker {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.maka-composer-skill-trigger[data-selected="true"],
-.maka-composer-skill-trigger[data-open="true"] {
-  color: var(--foreground);
-  background: var(--state-selected-bg);
-}
-
-/* Selection count rides the trigger's top-right corner so an active skill
-   selection is legible without opening the panel. Pointer-events off: the
-   badge must never swallow a click meant for the button underneath it. */
-.maka-composer-skill-trigger-count {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 var(--space-0-5);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-pill);
-  background: var(--control);
-  color: var(--control-foreground);
-  /* --font-size-caption is the smallest governed size (typography-converge
-     contract), so the pill is sized to fit it rather than the reverse. */
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--text-supporting-leading);
-  pointer-events: none;
-}
-
-.maka-composer-skill-panel {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + var(--space-2));
-  width: min(340px, calc(100vw - var(--space-8)));
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-1-5);
-}
-
-.maka-composer-skill-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: 0 var(--space-1);
-}
-
-.maka-composer-skill-panel-hint {
-  min-width: 0;
-  flex: 1 1 auto;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-composer-skill-panel-actions {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-0-5);
-}
-
-.maka-composer-skill-panel-action {
-  appearance: none;
-  height: 20px;
-  padding: 0 var(--space-1-5);
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--link);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-medium);
-  white-space: nowrap;
-  transition: background var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-composer-skill-panel-action:hover:not(:disabled) {
-  background: var(--state-hover-bg);
-}
-
-.maka-composer-skill-panel-action:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-composer-skill-panel-action:disabled {
-  color: var(--muted-foreground);
-  opacity: var(--opacity-disabled);
-}
-
-.maka-composer-skill-panel-search {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: 0 var(--space-2);
-  height: 28px;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  color: var(--muted-foreground);
-}
-
-.maka-composer-skill-panel-search:focus-within {
-  border-color: oklch(from var(--focus-ring) l c h / 0.45);
-}
-
-.maka-composer-skill-panel-search-input {
-  min-width: 0;
-  flex: 1 1 auto;
-  appearance: none;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--foreground);
-  font-family: var(--font-default);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-}
-
-.maka-composer-skill-panel-search-input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.maka-composer-skill-panel-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: var(--space-0-5);
-  max-height: 240px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.maka-composer-skill-panel-option {
-  appearance: none;
-  width: 100%;
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-1-5) var(--space-2);
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--foreground);
-  text-align: left;
-  transition: background var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-composer-skill-panel-option:hover {
-  background: var(--muted);
-}
-
-/* The row fills the panel's inner width, so the focus ring sits on the row
-   itself with the shared offset — a negative inset would clip against the
-   panel edge and diverges from the focus-ring recipe. */
-.maka-composer-skill-panel-option:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-composer-skill-panel-box {
-  flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  margin-top: 1px;
-  display: grid;
-  place-items: center;
-  border: var(--border-width-hairline) solid var(--border-strong, var(--border));
-  /* One step tighter than --radius-control so a 14px box reads as a checkbox
-     rather than a radio, matching the Astryx checkbox items in the modes menu
-     next to it. */
-  border-radius: calc(var(--radius-control) - 2px);
-  color: var(--control-foreground);
-}
-
-.maka-composer-skill-panel-option[data-checked="true"] .maka-composer-skill-panel-box {
-  border-color: transparent;
-  background: var(--control);
-}
-
-.maka-composer-skill-panel-text {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.maka-composer-skill-panel-name {
-  min-width: 0;
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-composer-skill-panel-secondary {
-  min-width: 0;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-composer-skill-panel-secondary:empty {
-  display: none;
-}
-
-.maka-composer-skill-panel-status {
-  padding: var(--space-3) var(--space-2);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  text-align: center;
 }

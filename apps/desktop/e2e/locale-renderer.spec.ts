@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect } from './fixtures';
+import { test, expect, COMPOSER_INPUT } from './fixtures';
 
 /** Sidebar expand is absent when already expanded (state can survive reload). */
 async function ensureSidebarExpanded(page: Page): Promise<void> {
@@ -35,7 +35,7 @@ test('locale switching, persistence, and Follow system need no reload', async ({
 
   // Boot path: first paint after remount must honor the persisted store.
   await page.reload();
-  await page.waitForSelector('.maka-composer-textarea', { timeout: 20_000 });
+  await page.waitForSelector(COMPOSER_INPUT, { timeout: 20_000 });
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect.poll(() => page.evaluate(() => window.maka.settings.get().then((value) => value.personalization.uiLocale))).toBe('en');
 

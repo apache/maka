@@ -2,11 +2,11 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { LocaleProvider, ToolActivity } from '@maka/ui';
+import { LocaleProvider, ToolCallDetail, type ToolActivityItem } from '@maka/ui';
 
 describe('subagent UI contract', () => {
   it('renders a compact subagent card without exposing internal ids', () => {
-    const item: Parameters<typeof ToolActivity>[0]['items'][number] = {
+    const item: ToolActivityItem = {
       toolUseId: 'subagent',
       toolName: 'Subagent',
       status: 'completed',
@@ -26,7 +26,7 @@ describe('subagent UI contract', () => {
     };
     const markup = renderToStaticMarkup(createElement(LocaleProvider, {
       locale: 'zh',
-      children: createElement(ToolActivity, { items: [item], open: true }),
+      children: createElement(ToolCallDetail, { item: item }),
     }));
 
     assert.match(markup, /data-kind="subagent"/);

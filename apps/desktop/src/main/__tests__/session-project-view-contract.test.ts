@@ -181,15 +181,19 @@ describe('sidebar project view mode', () => {
     assert.doesNotMatch(fallbackMarkup, /maka-list-group-label/);
   });
 
-  it('moves the conversation/project controls into the session-list heading menu', () => {
+  it('puts the conversation/project switch inline in the session-list heading', () => {
     const markup = renderSessionListPanel({ viewMode: 'conversation' });
 
     assert.match(markup, /maka-session-heading-section/);
     assert.match(markup, /aria-label="会话分组方式"/);
-    const trigger = markup.match(/<button(?=[^>]*aria-label="会话分组方式")[\s\S]*?<\/button>/)?.[0] ?? '';
-    assert.ok(trigger, 'the grouping trigger must render');
-    assert.doesNotMatch(trigger, />按时间|>按项目/);
-    assert.match(markup, /role="menuitemradio"/);
+    // Icon-only segments: the label names each one for assistive tech, and must
+    // not also render as visible text beside the icon in a 260px rail.
+    const segments = markup.match(/<button(?=[^>]*role="radio")[\s\S]*?<\/button>/g) ?? [];
+    assert.equal(segments.length, 2, 'both grouping axes must render as segments');
+    for (const segment of segments) {
+      assert.doesNotMatch(segment, />按时间<|>按项目</);
+    }
+    assert.match(markup, /aria-checked="true"[^>]*aria-label="按时间"/);
   });
 
   it('renders lifecycle state only on non-active conversation rows', () => {

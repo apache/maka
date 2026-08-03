@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures';
+import { expect, test, COMPOSER_INPUT } from './fixtures';
 
 /**
  * #1611 + #1616: cross-boundary permission journeys only.
@@ -54,10 +54,10 @@ test('approving an expansion updates the permission label at once and after a re
     .toBe(0);
 
   await page.reload();
-  await expect(page.locator('.maka-composer-textarea')).toBeVisible();
+  await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
   await expect(page.locator('.maka-boundary-unreadable-notice')).toHaveCount(0);
   await expect(trigger).toHaveAccessibleName('权限模式：自动');
 
   await expect(prompt).toHaveCount(0);
-  await expect(page.locator('.maka-composer-textarea')).toBeVisible();
+  await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
 });

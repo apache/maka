@@ -1,11 +1,13 @@
 /**
  * App-region hygiene for the frameless Electron shell.
  *
- * `.maka-window-titlebar` is the only `-webkit-app-region: drag` surface; action
- * clusters carve themselves out with `no-drag`. Live rendered-geometry checks
- * stay in e2e/window-titlebar.spec.ts (Playwright cannot exercise the OS hit
- * test). These contracts pin the declarations that used to be only assumed by
- * comments in main-window.ts — scoped to each rule body, not a cross-`}` scan.
+ * `.maka-window-titlebar` is the only `-webkit-app-region: drag` surface — a
+ * transparent absolute overlay so column surfaces paint to the window top;
+ * action clusters carve themselves out with `no-drag`. Playwright cannot
+ * exercise the native OS hit test, so a rendered-geometry loop only repeated
+ * CSS values without proving dragging. These contracts pin the declarations
+ * that used to be assumed by comments in main-window.ts — scoped to each rule
+ * body, not a cross-`}` scan.
  */
 import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
@@ -19,6 +21,7 @@ import {
 } from './css-test-helpers.js';
 
 const SHELL_LAYOUT = resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles/shell-layout.css');
+const UI_STYLES = resolve(REPO_ROOT, 'packages/ui/src/styles.css');
 const WINDOW_STATE = resolve(REPO_ROOT, 'apps/desktop/src/main/window-state.ts');
 const MAIN_WINDOW = resolve(REPO_ROOT, 'apps/desktop/src/main/main-window.ts');
 
@@ -38,10 +41,14 @@ describe('app-region hygiene', () => {
       '.maka-window-titlebar',
       [
         /-webkit-app-region:\s*drag/,
+        /position:\s*absolute/,
+        /background:\s*transparent/,
         /height:\s*calc\(\s*var\(--h-titlebar\)\s*-\s*var\(--maka-window-resize-edge\)\s*\)/,
-        /margin:\s*var\(--maka-window-resize-edge\)\s+var\(--maka-window-resize-edge\)\s+0/,
+        /top:\s*var\(--maka-window-resize-edge\)/,
+        /left:\s*var\(--maka-window-resize-edge\)/,
+        /right:\s*var\(--maka-window-resize-edge\)/,
       ],
-      'titlebar must be the sole drag surface with resize-edge insets',
+      'titlebar must be a transparent absolute drag overlay with resize-edge insets',
     );
     assertCssRuleDecls(
       shell,
@@ -54,6 +61,23 @@ describe('app-region hygiene', () => {
       '.maka-workspace-top-actions',
       [/-webkit-app-region:\s*no-drag/],
       'workspace action cluster must carve no-drag',
+    );
+
+    const ui = stripCssComments(await readFile(UI_STYLES, 'utf8'));
+    assertCssRuleDecls(
+      ui,
+      '.maka-mermaid-diagram-expanded .maka-mermaid-actions',
+      [/-webkit-app-region:\s*no-drag/],
+      'fullscreen Mermaid actions must stay clickable above the titlebar drag region',
+    );
+    assertCssRuleDecls(
+      ui,
+      '.maka-mermaid-diagram-expanded .maka-mermaid-toolbar',
+      [
+        /padding-left:\s*max\([^;]*--maka-titlebar-area-x/,
+        /padding-right:\s*calc\([^;]*--maka-titlebar-overlay-right-width/,
+      ],
+      'fullscreen Mermaid toolbar must clear native window controls on both sides',
     );
   });
 

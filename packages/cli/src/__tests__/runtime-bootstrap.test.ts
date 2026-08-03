@@ -5,6 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
+import {
   createConnectionStore,
   createFileCredentialStore,
   createSessionStore,
@@ -23,6 +27,9 @@ import {
   GOAL_SET_TOOL_NAME,
   GOAL_STATUS_TOOL_NAME,
   IMPLEMENTATION_AGENT_ID,
+  UPDATE_AGENT_GRAPH_TOOL_NAME,
+  VIEW_AGENT_GRAPH_TOOL_NAME,
+  YIELD_AGENT_GRAPH_TOOL_NAME,
   type AiSdkBackendInput,
   type MakaTool,
   type SessionStore,
@@ -34,6 +41,29 @@ import {
   isMakaClaudeSubscriptionCloakEnabled,
   resolveCliStreamConnectTimeoutMs,
 } from '../runtime-bootstrap.js';
+
+function modelCallAttemptFixture(): ModelCallAttempt {
+  return {
+    schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+    logicalCallId: 'call-1',
+    attemptId: 'attempt-1',
+    traceId: 'trace-1',
+    sessionId: 'session-1',
+    runId: 'run-1',
+    turnId: 'turn-1',
+    step: 0,
+    attempt: 0,
+    callKind: 'history_compact',
+    providerId: 'ollama',
+    modelId: 'llama3.2',
+    startedAt: 1,
+    completedAt: 2,
+    latencyMs: 1,
+    status: 'completed',
+    usageBasis: 'missing',
+    costBasis: 'unpriced',
+  };
+}
 
 describe('Maka CLI runtime bootstrap', () => {
   test('parses the CLI stream connect timeout override', () => {
@@ -196,6 +226,61 @@ describe('Maka CLI runtime bootstrap', () => {
         });
         assert.equal(backendInput.spawnChildAgent, undefined);
         assert.equal(backendInput.spawnChildSession, undefined);
+      } finally {
+        await context.close();
+      }
+    });
+  });
+
+  test('forwards the canonical metering sink from the backend context', async () => {
+    // The CLI factory used to wire capture and attempt diagnostics but not the
+    // canonical sink, so `/compact` and ordinary sends produced no
+    // `ModelCallAttempt` at all — the kernel offered one and nothing took it.
+    await withWorkspace(async (workspaceRoot) => {
+      const connectionStore = createConnectionStore(workspaceRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+      const context = await createMakaCliRuntimeContext({
+        surface: 'tui',
+        workspaceRoot,
+        cwd: '/repo',
+      });
+      try {
+        const session = await context.runtime.createSession({
+          cwd: context.cwd,
+          backend: 'ai-sdk',
+          llmConnectionSlug: context.target.connection.slug,
+          model: context.target.model,
+          permissionMode: 'explore',
+          name: 'metering-sink',
+        });
+        const runtimeDeps = (context.runtime as unknown as RuntimeWithPrivateDeps).deps;
+        const header = await runtimeDeps.store.readHeader(session.id);
+        const recorded: ModelCallAttempt[] = [];
+        const backend = await runtimeDeps.backends.build('ai-sdk', {
+          sessionId: session.id,
+          workspaceRoot,
+          header,
+          store: runtimeDeps.store,
+          recordModelCallAttempt: (attempt: ModelCallAttempt) => {
+            recorded.push(attempt);
+            return Promise.resolve();
+          },
+        });
+        const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
+
+        assert.equal(
+          typeof backendInput.recordModelCallAttempt,
+          'function',
+          'the composition must pass the sink the kernel offers',
+        );
+        await backendInput.recordModelCallAttempt?.(modelCallAttemptFixture());
+        assert.equal(recorded.length, 1, 'and it must reach the context, not a local stub');
+        assert.equal(recorded[0]?.callKind, 'history_compact');
       } finally {
         await context.close();
       }
@@ -500,6 +585,9 @@ describe('Maka CLI runtime bootstrap', () => {
                 AGENT_SWARM_TOOL_NAME,
                 AGENT_LIST_TOOL_NAME,
                 AGENT_OUTPUT_TOOL_NAME,
+                VIEW_AGENT_GRAPH_TOOL_NAME,
+                UPDATE_AGENT_GRAPH_TOOL_NAME,
+                YIELD_AGENT_GRAPH_TOOL_NAME,
               ],
             },
           ],
@@ -1000,8 +1088,8 @@ describe('Maka CLI runtime bootstrap', () => {
           name: 'isolated',
         });
 
-        await access(join(stateRoot, 'sessions', session.id, 'session.jsonl'));
-        await assert.rejects(access(join(configRoot, 'sessions', session.id, 'session.jsonl')));
+        await access(join(stateRoot, 'runtime.sqlite'));
+        await assert.rejects(access(join(configRoot, 'runtime.sqlite')));
         await access(join(configRoot, 'llm-connections.json'));
         await access(join(configRoot, 'credentials.json'));
         await assert.rejects(access(join(stateRoot, 'credentials.json')));

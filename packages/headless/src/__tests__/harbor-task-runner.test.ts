@@ -16,7 +16,17 @@ import {
   type HarborRunRequest,
   type HarborRunResult,
 } from '../harbor-task-runner.js';
+import {
+  providerProxyClientAuthMode,
+  providerProxyClientBaseUrl,
+  providerProxyUpstreamAuthMode,
+  providerProxyUsageProtocol,
+} from '../harness-agent-registry.js';
 import { HARBOR_ORACLE_EXECUTION_POLICY } from '../harness-oracle-policy.js';
+import {
+  CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
+  CLAUDE_CODE_TOOLCHAIN_SPEC,
+} from '../claude-code-toolchain.js';
 
 function cellOutput(overrides: Partial<HarborCellOutput> = {}): HarborCellOutput {
   return {
@@ -78,6 +88,19 @@ function copilotModelsResponse(): Response {
     ],
   });
 }
+
+test('DeepSeek routes each CLI through its native wire protocol', () => {
+  assert.equal(providerProxyUsageProtocol('codex', 'deepseek'), 'openai-responses-sse');
+  assert.equal(providerProxyUsageProtocol('codex', 'openai-codex'), 'openai-responses-sse');
+  assert.equal(providerProxyUsageProtocol('claude-code', 'deepseek'), 'anthropic-sse');
+  assert.equal(providerProxyClientAuthMode('codex', 'deepseek'), 'bearer');
+  assert.equal(providerProxyClientAuthMode('claude-code', 'deepseek'), 'x-api-key');
+  assert.equal(providerProxyUpstreamAuthMode('claude-code', 'deepseek'), 'bearer');
+  assert.equal(
+    providerProxyClientBaseUrl('https://proxy.invalid/lease', 'claude-code', 'deepseek'),
+    'https://proxy.invalid/lease/anthropic',
+  );
+});
 
 interface FakeOptions {
   reward?: string;
@@ -2318,6 +2341,37 @@ describe('buildHarborJobConfig', () => {
     );
     assert.equal(env.OPENAI_API_KEY, undefined);
     assert.equal(env.CODEX_API_KEY, undefined);
+  });
+
+  test('pins the Claude Code adapter and native toolchain behind the host provider proxy', () => {
+    const config = buildHarborJobConfig(runInput(), {
+      makaRepoPath: '/repo',
+      jobsDir: '/jobs/x',
+      jobName: 'trial',
+      agent: 'claude-code',
+      model: 'deepseek/deepseek-v4-flash',
+      provider: 'deepseek',
+      reasoningEffort: 'max',
+      agentVersion: CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version,
+      claudeCodeToolchainPath: '/cache/claude-code-2.1.220-linux-x64',
+      dockerPlatform: 'linux/amd64',
+    });
+    const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
+    const env = agent.env as Record<string, string>;
+    const mounts = (config.environment as { mounts: Array<Record<string, unknown>> }).mounts;
+
+    assert.equal(agent.import_path, 'claude_code_agent:MakaClaudeCodeAgent');
+    assert.equal(agent.model_name, 'deepseek-v4-flash');
+    assert.deepEqual(agent.kwargs, { version: '2.1.220', reasoning_effort: 'max' });
+    assert.equal(env.MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT, CLAUDE_CODE_TOOLCHAIN_FINGERPRINT);
+    assert.ok(
+      mounts.some(
+        (mount) =>
+          mount.source === '/cache/claude-code-2.1.220-linux-x64' &&
+          mount.target === '/opt/maka-claude-code-toolchain' &&
+          mount.read_only === true,
+      ),
+    );
   });
 
   test('requires a prepared toolchain for OpenCode before Harbor starts', () => {

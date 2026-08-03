@@ -27,8 +27,8 @@ test('tool catalogs are complete and independently selectable', () => {
   const zh = getToolActivityCopy('zh');
   const en = getToolActivityCopy('en');
 
-  assert.equal(zh.status.running, '运行中');
-  assert.equal(en.status.running, 'Running');
+  assert.equal(zh.status.interrupted, '已中断');
+  assert.equal(en.status.interrupted, 'Interrupted');
   assert.equal(zh.sandboxBlocked.title, '操作可能被沙箱阻止');
   assert.equal(en.sandboxBlocked.title, 'Operation may have been blocked by sandbox');
 });

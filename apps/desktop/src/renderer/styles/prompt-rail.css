@@ -61,6 +61,7 @@
 }
 
 .maka-prompt-rail-preview {
+  font: var(--maka-text-supporting);
   position: absolute;
   right: calc(100% + var(--space-2));
   top: 50%;
@@ -75,8 +76,6 @@
   border: var(--border-width-hairline) solid var(--border);
   background: var(--card-bg);
   box-shadow: var(--card-shadow);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   text-align: left;
   opacity: 0;
   pointer-events: none;
@@ -84,9 +83,9 @@
 }
 
 .maka-prompt-rail-preview-prompt {
+  font: var(--maka-text-heading-5);
   min-width: 0;
   color: var(--foreground);
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

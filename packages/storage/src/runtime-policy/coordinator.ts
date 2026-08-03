@@ -69,6 +69,7 @@ import {
   type RuntimePolicyCredentialMaterial,
   type RuntimePolicyOperationSecretMaterial,
   type ResolveExecutionConnectionResult,
+  type ResolveWebSearchExecutionResult,
 } from './operations.js';
 import { policySnapshot, RuntimePolicyDocumentOwner } from './policy-document.js';
 import { SerializedOperationLane } from '../serialized-operation-lane.js';
@@ -527,6 +528,55 @@ export class RuntimePolicyCoordinator {
         connection: structuredClone(connection),
         secretMaterial: prepared.secretMaterial,
         networkProxy: structuredClone(prepared.networkProxy),
+      });
+    });
+  }
+
+  resolveWebSearchExecution(): Promise<ResolveWebSearchExecutionResult> {
+    return this.inLane(async (root) => {
+      const policy = (await this.policy.read(root)).policy;
+      if (policy.privacy.incognitoActive) {
+        return deepFreeze({ kind: 'privacy_mode' as const });
+      }
+
+      const provider = policy.webSearch.defaultProvider;
+      if (!policy.webSearch.enabled) {
+        return deepFreeze({ kind: 'disabled' as const, provider });
+      }
+
+      const vault = await this.vault.read(root);
+      const locator = { scope: 'web_search', provider, kind: 'api_key' } as const;
+      const webSearchCredential = findCredential(vault, locator);
+      if (!webSearchCredential) {
+        return deepFreeze({
+          kind: 'credential_not_configured' as const,
+          status: credentialStatus(vault, locator),
+        });
+      }
+
+      const proxyLocator = requiresNetworkProxyCredential(policy.networkProxy)
+        ? networkProxyCredentialLocator()
+        : null;
+      let proxyCredential: RuntimePolicyCredentialMaterial | undefined;
+      if (proxyLocator) {
+        const entry = findCredential(vault, proxyLocator);
+        if (!entry) {
+          return deepFreeze({
+            kind: 'credential_not_configured' as const,
+            status: credentialStatus(vault, proxyLocator),
+          });
+        }
+        proxyCredential = credentialMaterial(entry);
+      }
+
+      return deepFreeze({
+        kind: 'ready' as const,
+        provider,
+        secretMaterial: {
+          webSearch: credentialMaterial(webSearchCredential),
+          ...(proxyCredential ? { networkProxy: proxyCredential } : {}),
+        },
+        networkProxy: structuredClone(policy.networkProxy),
       });
     });
   }

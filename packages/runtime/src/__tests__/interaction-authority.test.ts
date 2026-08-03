@@ -1,6 +1,8 @@
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { createWorkspaceWritePermissionProfile, type SandboxBoundarySettlement } from '@maka/core';
+import type { HostedInteractionBridge } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
 
@@ -13,6 +15,7 @@ import {
   bindRuntimeInteractionRun,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunOwner,
+  type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 import { SessionManager } from '../session-manager.js';
@@ -62,6 +65,7 @@ describe('Runtime Interaction authority seam', () => {
           bindRun: () => ({
             ...RUN,
             runId: 'wrong-run',
+            acceptSandboxBoundaryRequest: async () => {},
             acceptUserQuestionRequest: async () => {},
             close: async (reason) => {
               log.push(`close:${reason}`);
@@ -125,8 +129,7 @@ describe('Runtime Interaction authority seam', () => {
       }),
       RUN,
     );
-    const runtime = toolRuntime(events);
-    runtime.beginTurn(RUN.turnId, binding);
+    const runtime = toolRuntime(events, binding);
     const pending = settleTool(
       runtime,
       buildAskUserQuestionTool(),
@@ -161,19 +164,100 @@ describe('Runtime Interaction authority seam', () => {
     assert.equal(settled, false);
     assert.throws(
       () =>
-        runtime.respondToUserQuestion(RUN.turnId, {
+        runtime.respondToUserQuestion({
           requestId: question!.requestId,
           answers: ['Yes'],
         }),
       RuntimeInteractionInvariantError,
     );
-    assert.equal(runtime.pendingUserQuestionCount(RUN.turnId), 1);
+    assert.equal(runtime.pendingUserQuestionCount(), 1);
     await question!.applyAnswer({ answers: ['Yes'] });
     assert.deepEqual(await pending, {
       answers: [{ question: 'Continue?', answer: 'Yes' }],
     });
 
-    runtime.endTurn(RUN.turnId);
+    runtime.endTurn();
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('matches a hosted sandbox boundary acknowledgement to its exact durable settlement', async () => {
+    let continuation: RuntimeSandboxBoundaryContinuation | undefined;
+    let applied = false;
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        acceptSandboxBoundaryRequest: async ({ continuation: admitted }) => {
+          continuation = admitted;
+        },
+      }),
+      RUN,
+    );
+    const request = {
+      type: 'sandbox_boundary_request' as const,
+      id: 'boundary-event-1',
+      turnId: RUN.turnId,
+      ts: 1,
+      requestId: 'boundary-1',
+      toolUseId: 'tool-boundary-1',
+      expansion: {
+        filesystem: {
+          entries: [
+            { path: '/outside/file.txt', access: 'read' as const, scope: 'exact' as const },
+          ],
+        },
+      },
+      justification: 'Read the selected file.',
+    };
+    await binding.admitSandboxBoundaryRequest({
+      request,
+      settlement: {
+        applyDecision: async () => {
+          applied = true;
+        },
+        applyClosure: async () => {},
+      },
+    });
+    binding.assertPendingAdmission(request);
+    assert.ok(continuation);
+    const settlement: SandboxBoundarySettlement = {
+      request: {
+        sessionId: RUN.sessionId,
+        requestId: request.requestId,
+        status: 'approved',
+        baseRevision: 0,
+        expansion: request.expansion,
+        justification: request.justification,
+        createdAt: 1,
+        settledAt: 2,
+        appliedRevision: 1,
+        turnId: RUN.turnId,
+        runId: RUN.runId,
+      },
+      boundary: {
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 1,
+      },
+      changed: true,
+    };
+    await continuation.applyDecision(settlement);
+    assert.equal(applied, true);
+    assert.equal(
+      await binding.canResumeAfterSettlementAck({
+        type: 'sandbox_boundary_decision_ack',
+        id: 'boundary-ack-1',
+        turnId: RUN.turnId,
+        ts: 2,
+        requestId: request.requestId,
+        toolUseId: request.toolUseId,
+        decision: 'allow',
+        status: 'approved',
+        revision: 1,
+      }),
+      true,
+    );
+
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -192,8 +276,7 @@ describe('Runtime Interaction authority seam', () => {
       }),
       RUN,
     );
-    const runtime = toolRuntime(events);
-    runtime.beginTurn(RUN.turnId, binding);
+    const runtime = toolRuntime(events, binding);
     const execute = settleTool(
       runtime,
       buildAskUserQuestionTool(),
@@ -277,7 +360,7 @@ describe('Runtime Interaction authority seam', () => {
       true,
     );
 
-    runtime.endTurn(RUN.turnId);
+    runtime.endTurn();
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -301,9 +384,7 @@ describe('Runtime Interaction authority seam', () => {
       }),
       RUN,
     );
-    let currentRunId: string | undefined = RUN.runId;
-    const runtime = toolRuntime(events, () => currentRunId);
-    runtime.beginTurn(RUN.turnId, binding);
+    const runtime = toolRuntime(events, binding);
     const pending = settleTool(
       runtime,
       buildAskUserQuestionTool(),
@@ -328,8 +409,7 @@ describe('Runtime Interaction authority seam', () => {
     binding.assertPendingAdmission(published);
 
     const rejected = assert.rejects(pending, /turn_stopped/);
-    currentRunId = undefined;
-    runtime.endTurn(RUN.turnId, 'aborted');
+    runtime.endTurn('aborted');
     await immediate();
     assert.deepEqual(log, []);
     await binding.close('turn_stopped');
@@ -352,8 +432,7 @@ describe('Runtime Interaction authority seam', () => {
       }),
       RUN,
     );
-    const runtime = toolRuntime(events);
-    runtime.beginTurn(RUN.turnId, binding);
+    const runtime = toolRuntime(events, binding);
     await assert.rejects(
       settleTool(
         runtime,
@@ -376,12 +455,12 @@ describe('Runtime Interaction authority seam', () => {
         error.requestId === 'runtime-2' &&
         error.reason === 'invalid_request',
     );
-    assert.equal(runtime.pendingUserQuestionCount(RUN.turnId), 0);
+    assert.equal(runtime.pendingUserQuestionCount(), 0);
     assert.equal(
       events.some((event) => event.type === 'user_question_request'),
       false,
     );
-    runtime.endTurn(RUN.turnId);
+    runtime.endTurn();
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -428,6 +507,7 @@ function authority(
   return {
     bindRun: (identity) => ({
       ...identity,
+      acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
       close: async () => {},
       release: () => {},
@@ -438,10 +518,12 @@ function authority(
 
 function toolRuntime(
   events: SessionEvent[],
-  getCurrentRunId: () => string | undefined = () => RUN.runId,
+  hostedInteraction?: HostedInteractionBridge,
 ): ToolRuntime {
   let id = 0;
   return createTestToolRuntime({
+    turnId: RUN.turnId,
+    ...(hostedInteraction ? { hostedInteraction } : {}),
     sessionId: RUN.sessionId,
     header: header(),
     connection: { providerType: 'openai', slug: 'c' } as never,
@@ -450,7 +532,7 @@ function toolRuntime(
     newId: () => `runtime-${++id}`,
     now: () => 1,
     getPermissionPauseTarget: () => null,
-    getCurrentRunId,
+    runId: RUN.runId,
     recordToolInvocation: () => void events,
   });
 }

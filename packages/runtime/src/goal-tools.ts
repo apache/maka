@@ -15,7 +15,7 @@ import {
   type GoalManager,
   type GoalState,
 } from './goal-state.js';
-import type { GoalContinuationCoordinator } from './goal-continuation.js';
+import type { GoalContinuationCoordinator, GoalControlDecline } from './goal-continuation.js';
 
 export const GOAL_SET_TOOL_NAME = 'GoalSet';
 export const GOAL_CLEAR_TOOL_NAME = 'GoalClear';
@@ -23,13 +23,114 @@ export const GOAL_STATUS_TOOL_NAME = 'GoalStatus';
 export const GOAL_PAUSE_TOOL_NAME = 'GoalPause';
 export const GOAL_RESUME_TOOL_NAME = 'GoalResume';
 
+/**
+ * What a declined Goal mutation tells the model to do next.
+ *
+ * These four tools all failed the same way and said so in one sentence: the
+ * turn no longer owns Goal control. Opaque, but it asked for nothing. Replacing
+ * it with a single cause and a retry made it worse, because only one of the
+ * causes is a race. A turn that was never registered under a Goal boundary —
+ * every turn started with `goalBoundary: 'none'`, and every turn whose session
+ * was closed and removed — declines permanently. Told to call GoalStatus and
+ * then retry "if there is still no active goal", such a turn gets "No goal set
+ * for this session", satisfies the condition, retries, and receives the
+ * identical refusal, forever.
+ *
+ * So a retry is prescribed only where a retry can succeed — and that turned out
+ * to be nowhere. `goal_changed` reads like a race, and it is one, but the loser
+ * of that race cannot re-enter it: `observedControlLease` is written once in
+ * `beginObservedTurn` and refreshed only by a mutation that succeeds, so once
+ * the lease has moved on, every gate this turn passes through declines with the
+ * same cause until the turn ends. Driven against the real coordinator — one
+ * turn registers, a second arms a goal and clears it — GoalSet declines
+ * `goal_changed` on the first call and on the fourth, and GoalStatus in between
+ * reports a goal that only makes the model want to call again.
+ *
+ * `goal_already_armed` is the same shape. It is reachable from GoalSet only
+ * once the armed goal has left `active` — otherwise the "unfinished goal is
+ * active" guard answers first — and by then `registration.controlLease` is set
+ * and nothing this turn can call will clear it, because clearing it requires a
+ * mutation that the moved lease also declines.
+ *
+ * Every branch therefore ends by closing the retry. Reading the goal is still
+ * safe, so GoalStatus is still offered where it would tell the model something
+ * it does not know; it is offered as the last thing to do, not as a step on the
+ * way back to the call that just failed.
+ *
+ * The advice also has to know which tool it is answering. `goal_already_armed`
+ * is produced by the activation gate, and GoalResume goes through that gate too
+ * — so a turn that arrived while a goal was active, paused it and then tried to
+ * resume it read "this turn cannot arm a second one" in reply to a request that
+ * asked to arm nothing. Same cause, different thing to say about it.
+ *
+ * "Already armed" was also the wrong noun for the cause. A turn holds the lease
+ * either because it armed a goal or because `beginObservedTurn` bound it to a
+ * goal that was already active — the second turn never armed anything. What the
+ * gate observes is a binding, so that is what the sentence names.
+ */
+function declineAdvice(reason: GoalControlDecline, tool: string): string {
+  switch (reason) {
+    case 'goal_changed':
+      return (
+        'the session goal changed while this turn was running, and this turn can act only on the ' +
+        'goal it observed. Call GoalStatus to see the current goal, then report what it shows; ' +
+        `do not call ${tool} again in this turn, because it will decline the same way.`
+      );
+    case 'goal_already_armed':
+      return tool === GOAL_SET_TOOL_NAME
+        ? 'this turn is already bound to a goal, and a turn can bind only once, so it cannot arm ' +
+            'a second one. Call GoalStatus to see that goal, then report what it shows; do not ' +
+            'call GoalSet again in this turn, because it will decline the same way.'
+        : 'this turn is already bound to a goal, and a turn can bind only once, so ' +
+            `${tool} cannot take another. Call GoalStatus to see the current goal. ` +
+            `Do not call ${tool} again in this turn; report what GoalStatus shows.`;
+    case 'coordinator_disposed':
+      return (
+        'the goal system is shutting down, so it can no longer be changed. ' +
+        'Do not call this tool again in this turn; say what you were trying to change.'
+      );
+    case 'goal_not_observed':
+      return (
+        'this turn began before the current goal existed, so it cannot change it. ' +
+        'Do not call this tool again in this turn; say what you were trying to change.'
+      );
+    case 'turn_not_registered':
+      return (
+        'this turn does not run under the session goal boundary, so it cannot change the goal. ' +
+        'Do not call this tool again in this turn; say what you were trying to change.'
+      );
+  }
+}
+
+/**
+ * Shown when the enclosing Goal authority has stopped accepting mutations.
+ *
+ * Its only producer is `GoalCoordinator.beginDrain`, which is one-way: the flag
+ * is set once, the continuation coordinator is disposed alongside it, and
+ * nothing clears it. "Goal authority is unavailable." left the model free to
+ * read that as a passing condition and call again for the rest of the turn, so
+ * the replacement says the door does not reopen and names the move that is
+ * always left.
+ */
+const GOAL_AUTHORITY_GONE =
+  'Goal authority has been shut down, so goals can no longer be set or changed, and it will not ' +
+  'come back. Do not call this tool again; say what you were trying to change.';
+
 export interface GoalToolsDeps {
   goalManager: GoalManager;
   /** Owns atomic turn authorization for every model-triggered Goal mutation. */
-  goalContinuation: Pick<GoalContinuationCoordinator, 'activateGoal' | 'mutateGoal'>;
+  goalContinuation: Pick<
+    GoalContinuationCoordinator,
+    'activateGoal' | 'mutateGoal' | 'activationStanding' | 'mutationStanding'
+  >;
   /** Current cumulative token count for a session (baseline for budget). */
   getTokenCount?: (sessionId: string) => number;
-  /** Reject new model-owned mutations while the enclosing authority drains. */
+  /**
+   * Reject new model-owned mutations while the enclosing authority drains.
+   *
+   * One-way by contract: once this returns false it must never return true
+   * again. `GOAL_AUTHORITY_GONE` tells the model the door does not reopen.
+   */
   isAvailable?: () => boolean;
   now?: () => number;
 }
@@ -99,7 +200,7 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         ),
     }),
     impl: (input, ctx) => {
-      if (deps.isAvailable?.() === false) return 'Goal authority is unavailable.';
+      if (deps.isAvailable?.() === false) return GOAL_AUTHORITY_GONE;
       const existing = deps.goalManager.get(ctx.sessionId);
       if (existing && !TERMINAL_GOAL_STATUSES.has(existing.status)) {
         return (
@@ -117,7 +218,11 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         }).goal;
       });
       if (!goal) {
-        return 'Goal not set: this turn no longer owns Goal activation.';
+        // Nothing was mutated on this path, so asking now returns the same
+        // answer the attempt acted on.
+        const standing = deps.goalContinuation.activationStanding(ctx.sessionId, ctx.turnId);
+        const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
+        return `Goal not set: ${declineAdvice(cause, GOAL_SET_TOOL_NAME)}`;
       }
       const limits = [
         `max ${goal.maxIterations} turns`,
@@ -141,7 +246,7 @@ function buildGoalClearTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
     description: 'Clear the active goal, stopping autonomous execution after the current turn.',
     parameters: z.object({}),
     impl: (_input, ctx) => {
-      if (deps.isAvailable?.() === false) return 'Goal authority is unavailable.';
+      if (deps.isAvailable?.() === false) return GOAL_AUTHORITY_GONE;
       const current = deps.goalManager.get(ctx.sessionId);
       if (!current || TERMINAL_GOAL_STATUSES.has(current.status)) {
         return 'No active goal to clear.';
@@ -150,7 +255,9 @@ function buildGoalClearTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
         return deps.goalManager.clear(ctx.sessionId)!;
       });
       if (!goal) {
-        return 'Goal not cleared: this turn no longer owns Goal control.';
+        const standing = deps.goalContinuation.mutationStanding(ctx.sessionId, ctx.turnId);
+        const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
+        return `Goal not cleared: ${declineAdvice(cause, GOAL_CLEAR_TOOL_NAME)}`;
       }
       return `Goal cleared: "${goal.condition}" after ${goal.iterations} turn(s).`;
     },
@@ -165,7 +272,7 @@ function buildGoalPauseTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
       'Pause the active goal. Autonomous continuation stops until GoalResume is called; state is preserved.',
     parameters: z.object({}),
     impl: (_input, ctx) => {
-      if (deps.isAvailable?.() === false) return 'Goal authority is unavailable.';
+      if (deps.isAvailable?.() === false) return GOAL_AUTHORITY_GONE;
       const current = deps.goalManager.get(ctx.sessionId);
       if (!current || (current.status !== 'active' && current.status !== 'waiting')) {
         return 'No active goal to pause.';
@@ -174,7 +281,9 @@ function buildGoalPauseTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
         return deps.goalManager.pause(ctx.sessionId)!;
       });
       if (!goal) {
-        return 'Goal not paused: this turn no longer owns Goal control.';
+        const standing = deps.goalContinuation.mutationStanding(ctx.sessionId, ctx.turnId);
+        const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
+        return `Goal not paused: ${declineAdvice(cause, GOAL_PAUSE_TOOL_NAME)}`;
       }
       return `Goal paused: "${goal.condition}" at turn ${goal.iterations}. Use GoalResume to continue.`;
     },
@@ -188,7 +297,7 @@ function buildGoalResumeTool(deps: GoalToolsDeps): MakaTool<Record<string, never
     description: 'Resume a paused goal, re-enabling autonomous continuation.',
     parameters: z.object({}),
     impl: (_input, ctx) => {
-      if (deps.isAvailable?.() === false) return 'Goal authority is unavailable.';
+      if (deps.isAvailable?.() === false) return GOAL_AUTHORITY_GONE;
       if (deps.goalManager.get(ctx.sessionId)?.status !== 'paused') {
         return 'No paused goal to resume.';
       }
@@ -196,7 +305,9 @@ function buildGoalResumeTool(deps: GoalToolsDeps): MakaTool<Record<string, never
         return deps.goalManager.resume(ctx.sessionId)!;
       });
       if (!goal) {
-        return 'Goal not resumed: this turn no longer owns Goal activation.';
+        const standing = deps.goalContinuation.activationStanding(ctx.sessionId, ctx.turnId);
+        const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
+        return `Goal not resumed: ${declineAdvice(cause, GOAL_RESUME_TOOL_NAME)}`;
       }
       return `Goal resumed: "${goal.condition}". Autonomous continuation re-enabled.`;
     },

@@ -1,15 +1,17 @@
 import {
   deriveTurnRecords,
+  isInFlightToolStatus,
   isActiveShellRunStatus,
   mergeShellRunStateWithDiagnostics,
   projectToolActivityArgs,
   STEP_LIMIT_NOTICE_TEXT,
   toolResultActivityStatus,
+  unfinishedToolActivityStatus,
 } from '@maka/core';
-import type { AttachmentRef, QuoteRef, ShellRunUpdate, StoredMessage, ToolActivityKind, ToolResultContent, TurnRecord, TurnStatus, UserMessage } from '@maka/core';
+import type { AttachmentRef, ToolActivityStatus, InlineReference, QuoteRef, ShellRunUpdate, StoredMessage, ToolActivityKind, ToolResultContent, TurnRecord, TurnStatus, UserMessage } from '@maka/core';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 
-export { isCancelledToolResultContent, toolResultActivityStatus } from '@maka/core';
+export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core';
 
 export interface ChatItem {
   id: string;
@@ -21,6 +23,8 @@ export interface ChatItem {
   attachments?: AttachmentRef[];
   /** Inline quoted excerpts projected from StoredMessage; user rows only. */
   quotes?: QuoteRef[];
+  /** Frozen inline token metadata projected from StoredMessage; user rows only. */
+  inlineReferences?: InlineReference[];
   /** Present when the Host authored this message instead of the user. */
   hostOrigin?: NonNullable<UserMessage['origin']>;
 }
@@ -54,7 +58,7 @@ export interface ToolActivityItem {
    * legacy call with no step association.
    */
   stepId?: string;
-  status: 'pending' | 'waiting_permission' | 'running' | 'completed' | 'errored' | 'interrupted';
+  status: ToolActivityStatus;
   args: unknown;
   result?: ToolResultContent;
   durationMs?: number;
@@ -115,6 +119,9 @@ export function materializeChat(messages: StoredMessage[]): ChatItem[] {
         ts: message.ts,
         ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
         ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
+        ...(message.inlineReferences !== undefined
+          ? { inlineReferences: message.inlineReferences }
+          : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),
       });
     }
@@ -133,6 +140,7 @@ export function materializeChat(messages: StoredMessage[]): ChatItem[] {
 
 export function materializeTools(messages: StoredMessage[]): ToolActivityItem[] {
   const results = new Map(messages.filter((message) => message.type === 'tool_result').map((message) => [message.toolUseId, message]));
+  const turnStatusById = new Map(deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]));
   return messages
     .filter((message) => message.type === 'tool_call')
     .map((call) => {
@@ -144,7 +152,9 @@ export function materializeTools(messages: StoredMessage[]): ToolActivityItem[] 
         displayName: call.displayName,
         intent: call.intent,
         ...(call.stepId !== undefined ? { stepId: call.stepId } : {}),
-        status: result ? materializeToolResultStatus(result) : 'interrupted',
+        status: result
+          ? materializeToolResultStatus(result)
+          : unfinishedToolActivityStatus(turnStatusById.get(call.turnId)),
         args: projectToolActivityArgs(call.toolName, call.args),
         result: result?.content,
         durationMs: result?.durationMs,
@@ -159,33 +169,34 @@ function materializeToolResultStatus(
 }
 
 /**
- * PR-UI-12 fixup (@xuan review): merge live tool state on top of the
- * persisted tool. The general rule (preserved from before PR-UI-12) is
- * "live wins" — live events arrive faster than persisted JSONL refresh
- * and represent the most current status.
+ * Merge live tool state on top of the persisted tool. Live normally wins: its
+ * events arrive ahead of the persisted JSONL refresh, so it carries the most
+ * current status, and preferring the lagging side painted every long command
+ * as interrupted until it exited.
  *
- * One scoped exception: if persisted reached `interrupted` while live
- * is still an in-flight status (`pending` / `running` /
- * `waiting_permission`), persisted wins. This catches the post-abort
- * race where the live handler missed a clean status update (e.g.
- * `error` events without a per-tool terminal patch) and live would
- * otherwise mask the persisted `interrupted` signal forever.
- *
- * `completed` / `errored` always defer to live by design — the
- * existing test "merges live tool over persisted tool keeping the
- * latest status" locks the "stale-persisted-completed" case so a tool
- * that's actually still streaming doesn't snap back to "completed"
- * just because JSONL got there first.
+ * The exception is a turn that has already ended. Live only stays current
+ * while events keep arriving, and the subscription does not replay — a missed
+ * `abort`/`error`/`complete` leaves the projection frozen mid-run, and
+ * `reconcileTerminalLiveTurn` hands a tool off only once it is `interrupted`
+ * or has a result, so a frozen `running` never clears. The turn's own settled
+ * status is the counter-evidence: once it has ended, no tool inside it is
+ * still running, and the persisted status is the authority.
  *
  * Live `outputChunks` always come from live — persisted JSONL doesn't
  * store them (PR-REAL-4 contract: chunks are transient UI).
  */
-function mergeLiveOverPersisted(persisted: ToolActivityItem, live: ToolActivityItem): ToolActivityItem {
-  const liveIsInFlight =
-    live.status === 'pending'
-    || live.status === 'running'
-    || live.status === 'waiting_permission';
+function mergeLiveOverPersisted(
+  persisted: ToolActivityItem,
+  live: ToolActivityItem,
+  turnSettled: boolean,
+): ToolActivityItem {
   const merged: ToolActivityItem = { ...persisted, ...live };
+  // A settled turn always yields a settled persisted status — materializeTools
+  // only reads a tool as in-flight while the turn record says `running` — so
+  // this needs no guard on the persisted side.
+  if (turnSettled && isInFlightToolStatus(live.status)) {
+    merged.status = persisted.status;
+  }
   if (live.toolName === 'Tool') {
     merged.toolName = persisted.toolName;
     merged.activityKind = persisted.activityKind;
@@ -205,9 +216,6 @@ function mergeLiveOverPersisted(persisted: ToolActivityItem, live: ToolActivityI
     ).result;
     merged.result = shellRun;
   }
-  if (persisted.status === 'interrupted' && liveIsInFlight) {
-    merged.status = 'interrupted';
-  }
   if (live.outputChunks && live.outputChunks.length > 0) {
     merged.outputChunks = live.outputChunks;
   }
@@ -226,7 +234,7 @@ function mergeLiveOverPersisted(persisted: ToolActivityItem, live: ToolActivityI
  * - `text`: one assistant answer segment (a step's text). `ts` is the source
  *   step's wall-clock for hover meta.
  * - `tools`: one contiguous group of tool activity, rendered as a single
- *   Codex-style trow. Adjacent groups are pre-merged.
+ *   Astryx tool group. Adjacent groups are pre-merged.
  *
  * The model stays FLAT: the collapsed "Processing" fold (#1307) is a render
  * concern applied by `foldTimeline` (timeline-fold.ts) at the component layer,
@@ -251,6 +259,11 @@ export type TurnTimelineItem =
 export interface TurnViewModel {
   turnId: string;
   status: TurnStatus;
+  /**
+   * See `TurnRecord.statusSource` — whether `status` is evidence or a reading.
+   * Absent on hand-built view models, which are treated as non-evidence.
+   */
+  statusSource?: TurnRecord['statusSource'];
   parentTurnId?: string;
   retriedFromTurnId?: string;
   regeneratedFromTurnId?: string;
@@ -314,6 +327,10 @@ export function overlayLiveTurn(
         timeline: [],
         startedAt: Date.now(),
       } satisfies TurnViewModel;
+  // Only a recorded turn_state is evidence the turn ended; a legacy turn's
+  // inferred `completed` is a guess, and such a turn cannot be live anyway.
+  const turnRecordedAsEnded =
+    current.statusSource === 'recorded' && current.status !== 'running';
   const tools = [...current.tools];
   const toolByUseId = new Map(tools.map((tool) => [tool.toolUseId, tool]));
   const liveToolIds = new Set<string>();
@@ -321,7 +338,9 @@ export function overlayLiveTurn(
     for (const liveTool of step.tools) {
       liveToolIds.add(liveTool.toolUseId);
       const persisted = toolByUseId.get(liveTool.toolUseId);
-      const merged = persisted ? mergeLiveOverPersisted(persisted, liveTool) : liveTool;
+      const merged = persisted
+        ? mergeLiveOverPersisted(persisted, liveTool, turnRecordedAsEnded)
+        : liveTool;
       toolByUseId.set(merged.toolUseId, merged);
       const toolIndex = tools.findIndex((tool) => tool.toolUseId === merged.toolUseId);
       if (toolIndex >= 0) tools[toolIndex] = merged;
@@ -440,6 +459,7 @@ export function materializeTurns(messages: StoredMessage[]): TurnViewModel[] {
       turn = {
         turnId,
         status: record?.status ?? 'completed',
+        statusSource: record?.statusSource ?? 'inferred',
         ...(record?.parentTurnId ? { parentTurnId: record.parentTurnId } : {}),
         ...(record?.retriedFromTurnId ? { retriedFromTurnId: record.retriedFromTurnId } : {}),
         ...(record?.regeneratedFromTurnId ? { regeneratedFromTurnId: record.regeneratedFromTurnId } : {}),
@@ -479,6 +499,9 @@ export function materializeTurns(messages: StoredMessage[]): TurnViewModel[] {
         ts: message.ts,
         ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
         ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
+        ...(message.inlineReferences !== undefined
+          ? { inlineReferences: message.inlineReferences }
+          : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),
       };
     } else if (message.type === 'assistant') {
@@ -659,7 +682,7 @@ function findShellRunParentIndex(items: readonly ToolActivityItem[], ref: string
  *    flush as a trailing tools group.
  *
  * Empty text/thinking produce no item. Adjacent thinking blocks merge with
- * a blank line; adjacent tools groups merge into one trow.
+ * a blank line; adjacent tools groups merge into one group.
  */
 function buildTurnTimeline(
   turnMessages: readonly StoredMessage[],

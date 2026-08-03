@@ -23,42 +23,33 @@ async function expandedSidebar(page: Page) {
   return sidebar;
 }
 
-test('session grouping menu switches between flat conversations and project disclosures', async ({
+test('session grouping switch flips between flat conversations and project disclosures', async ({
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
-  const grouping = sidebar.getByRole('button', { name: '会话分组方式' });
-  const popup = page.getByRole('menu', { name: '会话分组方式' });
+  const grouping = sidebar.getByRole('radiogroup', { name: '会话分组方式' });
+  const byTime = grouping.getByRole('radio', { name: '按时间' });
+  const byProject = grouping.getByRole('radio', { name: '按项目' });
 
   await expect(sidebar.locator('[data-maka-contract="session-row"]').first()).toBeVisible();
-  await grouping.click();
-  const byTime = page.getByRole('menuitemradio', { name: '按时间' });
-  const byProject = page.getByRole('menuitemradio', { name: '按项目' });
+
+  // The point of an inline switch over the old dropdown: the current grouping
+  // is readable without opening anything, before and after the change.
   await expect(byTime).toHaveAttribute('aria-checked', 'true');
+  await expect(byProject).toBeVisible();
+
   await byProject.click();
   await expect(sidebar.locator('[data-project-id]').first()).toBeVisible();
   await expect(sidebar.locator('.astryx-badge').first()).toBeVisible();
-
-  // A radio item does not dismiss the menu, so the single trigger click this
-  // used to do was closing the menu, not reopening it — and the radios below
-  // were read off a popup that was disappearing, which is why they sometimes
-  // resolved and sometimes did not. Close and reopen explicitly, waiting for
-  // the popup to actually leave in between: a trigger click landing while the
-  // old popup is still on screen is swallowed as an outside-press.
-  await grouping.click();
-  await expect(popup).toBeHidden();
-  await grouping.press('Enter');
-  await expect(popup).toBeVisible();
-  await expect(page.getByRole('menuitemradio', { name: '按项目' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByRole('menuitemradio', { name: '按时间' })).toHaveAttribute('aria-checked', 'false');
+  await expect(byProject).toHaveAttribute('aria-checked', 'true');
+  await expect(byTime).toHaveAttribute('aria-checked', 'false');
 });
 
 test('project mode nests sessions under collapsible project SideNav items', async ({
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
-  await sidebar.getByRole('button', { name: '会话分组方式' }).click();
-  await page.getByRole('menuitemradio', { name: '按项目' }).click();
+  await sidebar.getByRole('radio', { name: '按项目' }).click();
 
   const project = sidebar.locator('[data-project-id]').first();
   await expect(project).toBeVisible();
@@ -82,8 +73,7 @@ test('project rename owns Enter without toggling the project disclosure', async 
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
-  await sidebar.getByRole('button', { name: '会话分组方式' }).click();
-  await page.getByRole('menuitemradio', { name: '按项目' }).click();
+  await sidebar.getByRole('radio', { name: '按项目' }).click();
 
   const project = sidebar.locator('[data-project-id]').first();
   const projectToggle = project.locator('button[aria-expanded]').first();
@@ -187,6 +177,10 @@ test('scheduled-task hub restores the last selected child module', async ({ wind
   await expect(selector).toHaveAccessibleName('定时任务内容：计划提醒');
   await selector.getByRole('button', { name: '每日回顾' }).click();
   await expect(selector).toHaveAccessibleName('定时任务内容：每日回顾');
+  await expect(page.getByRole('radiogroup', { name: '时间范围切换' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '生成分析' })).toBeVisible();
+  await expect(page.getByText('模型使用', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('工具调用', { exact: true })).toHaveCount(0);
 
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await scheduledTasks.click();

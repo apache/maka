@@ -1,0 +1,210 @@
+import {
+  Banner,
+  EmptyState,
+  List,
+  ListItem,
+  Selector,
+  Toolbar,
+  VStack,
+} from '@astryxdesign/core';
+import { ChevronRight, Search } from '@maka/ui/icons';
+import {
+  CATALOG_PROVIDER_TYPES,
+  PROVIDER_DEFAULTS,
+  RECOMMENDED_PROVIDER_TYPES,
+  type ProviderCatalogGroup,
+  type ProviderType,
+} from '@maka/core';
+import { TextInput, useUiLocale } from '@maka/ui';
+import { AddProviderForm } from './provider-add-form';
+import { ProviderLogo, providerDisplay } from './provider-display';
+import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
+import { type ConnectionsBridge } from './provider-panel-shared';
+import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+
+type CatalogCategory = ProviderCatalogGroup | 'recommended' | 'accounts';
+
+const CATALOG_CATEGORIES: CatalogCategory[] = ['recommended', 'accounts', 'plans', 'api', 'aggregators', 'local'];
+
+/**
+ * How the catalog is filtered. It lives in the panel, not in this component:
+ * picking a provider navigates away and unmounts the catalog, and a search the
+ * user typed should still be there when they come back.
+ */
+export interface CatalogFilter {
+  query: string;
+  category: CatalogCategory;
+}
+
+export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'recommended' };
+
+/**
+ * One provider being set up. `credentials` is a form, `account` is a browser
+ * login — two bodies of one level, not two levels: they are reached the same
+ * way and they go back to the same place.
+ */
+export type SetupTarget =
+  | { method: 'credentials'; providerType: ProviderType; name: string }
+  | { method: 'account'; cardId: OAuthCardId; providerType: ProviderType; name: string };
+
+/**
+ * Level 2: the provider catalog. Search plus a category filter over the 55
+ * keyed providers and the account sign-ins, one row each.
+ *
+ * This used to be step 1 of a Dialog. It is a page because it is a
+ * destination, not an interruption — Astryx's own Dialog guidance says "if the
+ * content grows beyond what fits, consider a full page instead", and a
+ * 560px-wide modal over a ~700px content column preserved almost none of the
+ * context a modal exists to preserve.
+ */
+export function ProviderCatalogPage(props: {
+  filter: CatalogFilter;
+  onFilterChange(filter: CatalogFilter): void;
+  onPick(target: SetupTarget): void;
+}) {
+  const locale = useUiLocale();
+  const providerCopy = getProviderSettingsCopy(locale);
+  const copy = providerCopy.panel;
+  const catalogCopy = providerCopy.catalog;
+  const { query, category } = props.filter;
+  const showsOAuth = category === 'recommended' || category === 'accounts';
+  const oauth = useOAuthCards({ query: showsOAuth ? query : undefined });
+
+  // Category is a Selector, not a second TabList: the page header already owns
+  // one level of navigation, and six tabs beside a search field made the
+  // toolbar the busiest row on the page.
+  const categoryOptions = CATALOG_CATEGORIES.map((value) => ({ value, label: copy.tabs[value] }));
+  const providers = providersForCategory(category, query, locale);
+  const isEmpty = providers.length === 0 && (!showsOAuth || oauth.cards.length === 0);
+
+  return (
+    <VStack gap={4} data-maka-contract="provider-catalog">
+      <Toolbar
+        label={copy.categoriesAria}
+        gap={2}
+        startContent={(
+          <TextInput
+            value={query}
+            onChange={(value) => props.onFilterChange({ ...props.filter, query: value })}
+            placeholder={copy.searchPlaceholder}
+            label={copy.searchAria}
+            isLabelHidden
+            startIcon={<Search aria-hidden="true" />}
+            width="100%"
+          />
+        )}
+        endContent={(
+          <Selector
+            label={copy.category}
+            isLabelHidden
+            value={category}
+            onChange={(value: string) => props.onFilterChange({ ...props.filter, category: value as CatalogCategory })}
+            options={categoryOptions}
+            data-catalog-category={category}
+          />
+        )}
+      />
+      {oauth.refreshError && (
+        <Banner
+          status="warning"
+          role="alert"
+          title={providerCopy.oauthSection.staleState}
+          description={oauth.refreshError}
+        />
+      )}
+      {isEmpty ? (
+        <EmptyState isCompact title={copy.noMatch} />
+      ) : (
+        <List hasDividers>
+          {showsOAuth && oauth.cards.map((card) => (
+            <ListItem
+              key={card.id}
+              className="providerCatalogRow"
+              data-card-id={card.id}
+              data-provider={card.providerType}
+              data-status="ready"
+              data-logged-in={card.isLoggedIn ? 'true' : undefined}
+              startContent={<ProviderLogo type={card.providerType} />}
+              label={<span aria-label={providerCopy.oauthSection.cardAria(card.name, card.status, card.description)}>{card.name}</span>}
+              description={card.description}
+              endContent={<ChevronRight size={15} aria-hidden="true" />}
+              onClick={() => props.onPick({
+                method: 'account',
+                cardId: card.id,
+                providerType: card.providerType,
+                name: card.name,
+              })}
+            />
+          ))}
+          {providers.map((type) => {
+            const display = providerDisplay(type, locale);
+            return (
+              <ListItem
+                key={type}
+                className="providerCatalogRow"
+                data-provider={type}
+                data-status="ready"
+                startContent={<ProviderLogo type={type} />}
+                label={<span aria-label={catalogCopy.cardAria(display.name, display.description)}>{display.name}</span>}
+                description={display.description}
+                endContent={<ChevronRight size={15} aria-hidden="true" />}
+                onClick={() => props.onPick({ method: 'credentials', providerType: type, name: display.name })}
+              />
+            );
+          })}
+        </List>
+      )}
+    </VStack>
+  );
+}
+
+/**
+ * Level 3: one provider being set up — its credential form, or its account
+ * login. Named `setup` rather than `create` because the account body also
+ * signs out and re-authorizes; it is not a one-way create.
+ */
+export function ProviderSetupPage(props: {
+  bridge: ConnectionsBridge;
+  target: SetupTarget;
+  existingSlugs: string[];
+  onCancel(): void;
+  onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
+  onAccountChanged(): Promise<void>;
+}) {
+  if (props.target.method === 'account') {
+    return (
+      <div tabIndex={-1} className="settingsRouteLevel" data-maka-contract="provider-setup">
+        <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountChanged} />
+      </div>
+    );
+  }
+  return (
+    <div tabIndex={-1} className="settingsRouteLevel" data-maka-contract="provider-setup">
+      <AddProviderForm
+        key={props.target.providerType}
+        bridge={props.bridge}
+        providerType={props.target.providerType}
+        existingSlugs={props.existingSlugs}
+        onCancel={props.onCancel}
+        onCreated={props.onCreated}
+      />
+    </div>
+  );
+}
+
+function providersForCategory(category: CatalogCategory, query: string, locale: 'zh' | 'en'): ProviderType[] {
+  // 'accounts' is the OAuth-only category: every row in it comes from
+  // useOAuthCards, so the keyed catalog contributes nothing.
+  if (category === 'accounts') return [];
+  const source = category === 'recommended' ? RECOMMENDED_PROVIDER_TYPES : CATALOG_PROVIDER_TYPES;
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  return source.filter((type) => {
+    if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
+    if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
+    if (category !== 'recommended' && PROVIDER_DEFAULTS[type].catalogGroup !== category) return false;
+    if (!normalizedQuery) return true;
+    const display = providerDisplay(type, locale);
+    return [type, display.name, display.description, PROVIDER_DEFAULTS[type].label]
+      .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+  });
+}

@@ -3,12 +3,12 @@ import type { LlmConnection, SessionSummary, SettingsSection, ThinkingLevel, UiL
 import { thinkingVariantsForModel } from '@maka/core';
 import type { ChatModelChoice } from '@maka/ui';
 import { deriveSessionHealthNotice } from './session-health-notice';
-import { pickCatalogDefaultChatModel } from './model-catalog-choices';
+import { pickCatalogDefaultChatModel, pickNewChatModel } from './model-catalog-choices';
 import { buildChatModelChoices, chatModelChoiceLabel, normalizeActiveChatModel } from './chat-model-selection';
 import type { ComposerDefaults } from './composer-defaults';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
-type NewChatModel = { llmConnectionSlug: string; model: string };
+export type NewChatModel = { llmConnectionSlug: string; model: string };
 
 export type SessionHealthNoticeView = {
   tone: 'info' | 'warning' | 'destructive';
@@ -45,6 +45,7 @@ export function useShellChatModel(options: {
    */
   connectionsRevision: number;
   defaultConnection: string | null;
+  activationCandidate?: NewChatModel;
   activeSession: SessionSummary | undefined;
   /**
    * True when the active session's loaded transcript already contains a
@@ -69,14 +70,13 @@ export function useShellChatModel(options: {
   newChatModelLabel: string | undefined;
   newChatThinkingLevels: readonly ThinkingLevel[];
   newChatThinkingLevel: ThinkingLevel | undefined;
-  validPendingNewChatModel: NewChatModel | null;
   pendingNewChatModel: NewChatModel | null;
   setPendingNewChatModel: (next: NewChatModel | null) => void;
   pendingNewChatThinkingLevel: ThinkingLevel | null;
   setPendingNewChatThinkingLevel: (next: ThinkingLevel | null) => void;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
 } {
-  const { uiLocale, connections, connectionsRevision, defaultConnection, activeSession, activeSessionHasUserMessage, persistedComposerDefaults, openSettingsSection } = options;
+  const { uiLocale, connections, connectionsRevision, defaultConnection, activationCandidate, activeSession, activeSessionHasUserMessage, persistedComposerDefaults, openSettingsSection } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
   // Persisted composer defaults seed the empty-state model so the home view is
   // populated before the async `app:info` round-trip completes on mount.
@@ -94,24 +94,22 @@ export function useShellChatModel(options: {
     [connections],
   );
   // Home / empty-state composer: which model the next NEW chat starts with.
-  // Null = follow the default connection; a pick overrides it (sticky until
-  // changed) and is forwarded to sessions.create in `send()`. Renderer-only —
-  // it never mutates the persisted Settings · 模型 default.
+  // An explicit pick stays sticky; otherwise onboarding's readiness-checked
+  // candidate wins before the legacy catalog default and first offered choice.
+  // Renderer-only — it never mutates the persisted Settings · 模型 default.
   const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] = useState<ThinkingLevel | null>(null);
   // A pick only stays in effect while it is still an offered choice. If the user
-  // later disables/removes that connection or model, fall back to the default so
-  // the home chip never shows — nor sends — a model that no longer exists.
-  const validPendingNewChatModel =
-    pendingNewChatModel &&
-    chatModelChoices.some(
-      (c) => c.connectionSlug === pendingNewChatModel.llmConnectionSlug && c.model === pendingNewChatModel.model,
-    )
-      ? pendingNewChatModel
-      : null;
+  // later disables/removes that connection or model, fall through to another
+  // offered candidate so the home chip never shows — nor sends — a stale model.
   const catalogDefaultNewChatModel = defaultConnectionEntry
     ? pickCatalogDefaultChatModel(defaultConnectionEntry)
     : undefined;
-  const newChatModel = validPendingNewChatModel ?? catalogDefaultNewChatModel;
+  const newChatModel = pickNewChatModel({
+    pending: pendingNewChatModel,
+    activationCandidate,
+    catalogDefault: catalogDefaultNewChatModel,
+    choices: chatModelChoices,
+  });
   const activeConnectionLabel = activeSession?.backend === 'fake'
     ? conversationCopy.model.fakeBackendLabel
     : activeConnection?.name ?? activeSession?.llmConnectionSlug;
@@ -233,7 +231,6 @@ export function useShellChatModel(options: {
     newChatModelLabel,
     newChatThinkingLevels,
     newChatThinkingLevel,
-    validPendingNewChatModel,
     pendingNewChatModel,
     setPendingNewChatModel,
     pendingNewChatThinkingLevel,

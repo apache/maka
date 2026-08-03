@@ -1,5 +1,4 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Volume2 } from '@maka/ui/icons';
 import type {
   AppSettings,
   LlmConnection,
@@ -8,10 +7,8 @@ import type {
 } from '@maka/core';
 import { defaultVoiceCaptureCaps, validateVoiceCaptureRequest } from '@maka/core';
 import {
-  Badge,
   Button,
   FormLayout,
-  PageHeader,
   Selector,
   TextArea,
   TextInput,
@@ -22,6 +19,8 @@ import {
   Banner,
 } from '@maka/ui';
 import { getVoiceSettingsCopy, type VoiceSettingsCopy } from '../locales/settings-voice-copy';
+import { SettingRow } from './settings-rows';
+import { SettingsActions, SettingsField, SettingsPage, SettingsSection } from './settings-section';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderConnectionDialog } from './provider-connection-dialog';
 import { providerPanelActionErrorMessage } from './provider-panel-shared';
@@ -404,26 +403,16 @@ export function VoiceModelsSettingsPage(props: {
   }
 
   return (
-    <section className="settingsFeatureStatusPage" aria-label={copy.aria}>
-      {/* Detail sweep: the always-on shipped-feature announcement banner is
-          gone — release notes don't live in settings, and its privacy copy
-          duplicated the privacy tile and boundary section below. (daily-review
-          made the same banner exception-only earlier.) */}
-      <PageHeader
-        as_wrapper="div"
-        className="settingsFeatureStatusHero"
-        as="h3"
-        icon={<Volume2 size={24} />}
-        iconClassName="settingsFeatureStatusIcon"
-        headingRowClassName="settingsFeatureStatusHeroHeading"
-        title={copy.title}
-        badge={<Badge variant="neutral" label={copy.badge} />}
-        subtitle={copy.subtitle}
-      />
-      <div className="settingsFeatureStatusHeroHeading">
-        <h3>{copy.recognitionTitle}</h3>
-      </div>
-      <FormLayout className="settingsFormLayout" direction="horizontal">
+    /* Detail sweep round 2: the page spoke a private vocabulary — a
+       `PageHeader` hero repeating the surface's own page header (icon,
+       title, badge, subtitle), bare `<h3>`s in `.settingsFeatureStatusHeroHeading`
+       wrappers, loose FormLayouts and action rows on the page background.
+       It is the same labeled-groups page as every other settings page now;
+       the boundary subtitle keeps its copy as the 边界 section description. */
+    <SettingsPage as="section" aria-label={copy.aria}>
+      <SettingsSection title={copy.recognitionTitle}>
+        <SettingsField>
+        <FormLayout direction="horizontal">
         <Selector
           value={recognitionDraft.connectionSlug}
           label={copy.connection}
@@ -454,17 +443,21 @@ export function VoiceModelsSettingsPage(props: {
             void updateVoice({ recognition: { language: recognitionDraft.language } })
           }
         />
+        </FormLayout>
+        {/* The prompt is a textarea — the fourth equal-width grid column
+            clipped it at the card edge; it gets the full row instead. */}
         <TextArea
           value={recognitionDraft.prompt}
           onChange={(prompt) => editVoice({ recognition: { prompt } })}
           isDisabled={saving}
           label={copy.prompt}
+          width="100%"
           onBlur={() =>
             void updateVoice({ recognition: { prompt: recognitionDraft.prompt } })
           }
         />
-      </FormLayout>
-      <div className="settingsActionRow">
+        </SettingsField>
+        <SettingsActions>
         <Button
           variant="secondary"
           type="button"
@@ -487,17 +480,22 @@ export function VoiceModelsSettingsPage(props: {
           }}
           label={copy.editRecognitionConnection}
         />
+        {/* A diagnostic, not the page's committed action — it stays
+            secondary so the page keeps zero standing primaries. */}
         <Button
-          variant="primary"
+          variant="secondary"
           type="button"
           isDisabled={saving || isBusy || recognitionTesting}
           onClick={() => void runRecognitionTest()}
           label={copy.testRecognition}
         />
-      </div>
-      {recognitionTest ? (
-        <Banner status="info" role="status" title={recognitionTest} />
-      ) : null}
+        </SettingsActions>
+        {recognitionTest ? (
+          <SettingsField>
+            <Banner status="info" role="status" title={recognitionTest} />
+          </SettingsField>
+        ) : null}
+      </SettingsSection>
       {recognitionDialog?.kind === 'create' ? (
         <ProviderConnectionDialog
           title={copy.createRecognitionConnectionTitle}
@@ -538,10 +536,9 @@ export function VoiceModelsSettingsPage(props: {
           />
         </ProviderConnectionDialog>
       ) : null}
-      <div className="settingsFeatureStatusHeroHeading">
-        <h3>{copy.realtimeTitle}</h3>
-      </div>
-      <FormLayout className="settingsFormLayout" direction="horizontal">
+      <SettingsSection title={copy.realtimeTitle}>
+        <SettingsField>
+        <FormLayout direction="horizontal">
         <Selector
           value={realtimeDraft.connectionSlug}
           label={copy.connection}
@@ -568,48 +565,50 @@ export function VoiceModelsSettingsPage(props: {
           label={copy.voice}
           onBlur={() => void updateVoice({ realtime: { voice: realtimeDraft.voice } })}
         />
-      </FormLayout>
-      <dl className="settingsBotStatusGrid" aria-label={copy.statusAria}>
-        <div>
-          <dt>{copy.microphone}</dt>
-          <dd>{copy.permissions[permission]}</dd>
+        </FormLayout>
+        </SettingsField>
+      </SettingsSection>
+      <SettingsSection title={copy.statusAria}>
+        <div role="group" aria-label={copy.statusAria} className="settingsRowsGroup">
+          <SettingRow title={copy.microphone} detail="" value={copy.permissions[permission]} />
+          <SettingRow title={copy.captureLimit} detail="" value={copy.durationSize(Math.round(caps.maxDurationMs / 1000), Math.round(caps.maxAudioBytes / 1024 / 1024))} />
+          <SettingRow title={copy.channels} detail="" value={copy.channelValue(Math.round(caps.maxSampleRate / 1000))} />
+          <SettingRow title={copy.privacy} detail="" value={copy.privacyValue} />
         </div>
-        <div>
-          <dt>{copy.captureLimit}</dt>
-          <dd>{copy.durationSize(Math.round(caps.maxDurationMs / 1000), Math.round(caps.maxAudioBytes / 1024 / 1024))}</dd>
-        </div>
-        <div>
-          <dt>{copy.channels}</dt>
-          <dd>{copy.channelValue(Math.round(caps.maxSampleRate / 1000))}</dd>
-        </div>
-        <div>
-          <dt>{copy.privacy}</dt>
-          <dd>{copy.privacyValue}</dd>
-        </div>
-      </dl>
-      <div className="settingsActionRow">
-        <Button
-          variant="primary"
-          onClick={() => void runCaptureSmoke()}
-          isDisabled={isBusy}
-          aria-busy={isBusy}
-          aria-describedby={smokeStatusId}
-          data-pending={isBusy ? 'true' : undefined}
-          label={isBusy ? copy.checking : copy.run}
-        />
-      </div>
-      <Banner
-        status={smoke.status === 'error' ? 'error' : smoke.status === 'ok' ? 'success' : 'info'}
-        id={smokeStatusId}
-        role="status"
-        title={voiceSmokeMessage(smoke, copy)} />
-      <div className="settingsFeatureStatusHeroHeading">
-        <h3>{copy.boundary}</h3>
-      </div>
-      <ul className="settingsFeatureStatusList" aria-label={copy.boundaryAria}>
-        {copy.boundaries.map((boundary) => <li key={boundary}>{boundary}</li>)}
-      </ul>
-    </section>
+        <SettingsActions>
+          <Button
+            variant="secondary"
+            onClick={() => void runCaptureSmoke()}
+            isDisabled={isBusy}
+            aria-busy={isBusy}
+            aria-describedby={smokeStatusId}
+            data-pending={isBusy ? 'true' : undefined}
+            label={isBusy ? copy.checking : copy.run}
+          />
+        </SettingsActions>
+        <SettingsField>
+          {/* Blue is a signal, not texture: the idle "waiting for the
+              self-check" state is quiet supporting text; the Banner only
+              appears once the check has an actual outcome. */}
+          {smoke.status === 'ok' || smoke.status === 'error' ? (
+            <Banner
+              status={smoke.status === 'error' ? 'error' : 'success'}
+              id={smokeStatusId}
+              role="status"
+              title={voiceSmokeMessage(smoke, copy)} />
+          ) : (
+            <p className="settingsQuietStatus" id={smokeStatusId} role="status">
+              {voiceSmokeMessage(smoke, copy)}
+            </p>
+          )}
+        </SettingsField>
+      </SettingsSection>
+      <SettingsSection variant="bare" title={copy.boundary} description={copy.subtitle}>
+        <ul className="settingsFeatureStatusList" aria-label={copy.boundaryAria}>
+          {copy.boundaries.map((boundary) => <li key={boundary}>{boundary}</li>)}
+        </ul>
+      </SettingsSection>
+    </SettingsPage>
   );
 }
 

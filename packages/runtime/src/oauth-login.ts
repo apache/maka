@@ -15,8 +15,8 @@ import {
 export { OAuthTokenEndpointError } from './oauth-provider-contracts.js';
 export type { OAuthTokenEndpointErrorCategory } from './oauth-provider-contracts.js';
 
-export type OAuthLoginProvider = 'claude-subscription' | 'openai-codex';
-export type OAuthInitialTokenProvider = OAuthLoginProvider | 'xai-oauth';
+export type OAuthLoginProvider = 'claude-subscription' | 'xai-oauth';
+export type OAuthInitialTokenProvider = 'claude-subscription' | 'xai-oauth' | 'openai-codex';
 export type OAuthLoginPresentationKind = 'paste-code' | 'loopback';
 
 export const OAUTH_LOGIN_MAX_RESPONSE_BYTES = 64 * 1024;
@@ -24,7 +24,7 @@ export const OAUTH_LOGIN_MAX_TOKEN_CHARS = OAUTH_MAX_TOKEN_CHARS;
 export const OAUTH_LOGIN_DEFAULT_TIMEOUT_MS = 15_000;
 
 const CLAUDE = OAUTH_PROVIDER_CONTRACTS['claude-subscription'];
-const CODEX = OAUTH_PROVIDER_CONTRACTS['openai-codex'];
+const XAI = OAUTH_PROVIDER_CONTRACTS['xai-oauth'];
 
 export const OAUTH_LOGIN_PROVIDER_CONFIG = {
   'claude-subscription': {
@@ -36,14 +36,14 @@ export const OAUTH_LOGIN_PROVIDER_CONFIG = {
     tokenUserAgent: CLAUDE.tokenUserAgent,
     presentation: CLAUDE.presentation,
   },
-  'openai-codex': {
-    clientId: CODEX.clientId,
-    authorizationEndpoint: CODEX.authorizationEndpoint,
-    tokenEndpoint: CODEX.tokenEndpoint,
-    scope: CODEX.scope,
-    tokenUserAgent: CODEX.tokenUserAgent,
-    presentation: CODEX.presentation,
-    authorizationExtras: CODEX.authorizationExtras,
+  'xai-oauth': {
+    clientId: XAI.clientId,
+    authorizationEndpoint: XAI.authorizationEndpoint,
+    tokenEndpoint: XAI.tokenEndpoint,
+    redirectUri: XAI.redirectUri,
+    scope: XAI.scope,
+    presentation: XAI.presentation,
+    authorizationExtras: XAI.authorizationExtras,
   },
 } as const;
 
@@ -51,7 +51,7 @@ export interface OAuthLoginAuthorizationInput {
   provider: OAuthLoginProvider;
   verifier: string;
   state: string;
-  /** Required for Codex because the Host owns the loopback listener. */
+  /** Loopback providers must supply the exact redirect URI bound to the listener. */
   redirectUri?: string;
 }
 
@@ -71,17 +71,18 @@ export function pkceChallengeFromVerifier(verifier: string): string {
   return base64urlEncode(new Uint8Array(createHash('sha256').update(verifier, 'utf8').digest()));
 }
 
-export interface CodexAuthorizationConfig {
+interface LoopbackAuthorizationConfig {
   clientId: string;
   authorizeEndpoint: string;
   redirectUri: string;
   scope: string;
   state: string;
   challenge: string;
-  extras: ReadonlyArray<readonly [string, string]>;
+  extras: ReadonlyArray<readonly [string, string]> | undefined;
 }
 
-export function buildCodexAuthorizationUrl(config: CodexAuthorizationConfig): string {
+/** Build a loopback (authorization-code) authorize URL with PKCE S256. */
+function buildLoopbackAuthorizationUrl(config: LoopbackAuthorizationConfig): string {
   const url = new URL(config.authorizeEndpoint);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', config.clientId);
@@ -90,7 +91,7 @@ export function buildCodexAuthorizationUrl(config: CodexAuthorizationConfig): st
   url.searchParams.set('code_challenge', config.challenge);
   url.searchParams.set('code_challenge_method', 'S256');
   url.searchParams.set('state', config.state);
-  for (const [key, value] of config.extras) url.searchParams.set(key, value);
+  for (const [key, value] of config.extras ?? []) url.searchParams.set(key, value);
   return url.toString();
 }
 
@@ -101,19 +102,19 @@ export function buildOAuthLoginAuthorization(
   assertOAuthState(input.state);
   const config = OAUTH_LOGIN_PROVIDER_CONFIG[input.provider];
   const redirectUri = resolveRedirectUri(input.provider, input.redirectUri);
-  if (input.provider === 'openai-codex') {
-    const codexConfig = OAUTH_LOGIN_PROVIDER_CONFIG['openai-codex'];
+  if (input.provider !== 'claude-subscription') {
+    const loopbackConfig = OAUTH_LOGIN_PROVIDER_CONFIG[input.provider];
     return {
-      authorizationUrl: buildCodexAuthorizationUrl({
-        clientId: codexConfig.clientId,
-        authorizeEndpoint: codexConfig.authorizationEndpoint,
+      authorizationUrl: buildLoopbackAuthorizationUrl({
+        clientId: loopbackConfig.clientId,
+        authorizeEndpoint: loopbackConfig.authorizationEndpoint,
         redirectUri,
-        scope: codexConfig.scope,
+        scope: loopbackConfig.scope,
         state: input.state,
         challenge: pkceChallengeFromVerifier(input.verifier),
-        extras: codexConfig.authorizationExtras,
+        extras: loopbackConfig.authorizationExtras,
       }),
-      presentation: codexConfig.presentation,
+      presentation: loopbackConfig.presentation,
     };
   }
   const url = new URL(config.authorizationEndpoint);
@@ -133,7 +134,7 @@ export interface ExchangeOAuthAuthorizationCodeInput {
   code: string;
   verifier: string;
   state: string;
-  /** Required for Codex and must equal the URI used to build its authorization URL. */
+  /** Loopback providers must pass the URI used to build the authorization URL. */
   redirectUri?: string;
   signal: AbortSignal;
   fetchFn: typeof fetch;
@@ -289,19 +290,23 @@ function buildTokenRequest(
     code_verifier: input.verifier,
     redirect_uri: redirectUri,
   };
+  const tokenHeaders: Record<string, string> = {
+    'Content-Type':
+      input.provider === 'claude-subscription'
+        ? 'application/json'
+        : 'application/x-www-form-urlencoded',
+  };
+  if ('tokenUserAgent' in config) tokenHeaders['User-Agent'] = config.tokenUserAgent;
   if (input.provider === 'claude-subscription') {
     return {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'User-Agent': config.tokenUserAgent },
+      headers: tokenHeaders,
       body: JSON.stringify({ ...common, state: input.state }),
     };
   }
   return {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': config.tokenUserAgent,
-    },
+    headers: tokenHeaders,
     body: new URLSearchParams(common).toString(),
   };
 }
@@ -326,6 +331,12 @@ function resolveRedirectUri(provider: OAuthLoginProvider, redirectUri?: string):
   if (
     parsed.protocol !== 'http:' ||
     !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
+  ) {
+    throw new OAuthTokenEndpointError('invalid_response');
+  }
+  if (
+    provider === 'xai-oauth' &&
+    parsed.toString() !== OAUTH_LOGIN_PROVIDER_CONFIG['xai-oauth'].redirectUri
   ) {
     throw new OAuthTokenEndpointError('invalid_response');
   }

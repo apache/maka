@@ -7,6 +7,7 @@ const USER_VISIBLE_ARTIFACT_SOURCES = {
   history_compact_block: false,
   history_compact_source: false,
   provider_request_capture: false,
+  subagent_writeback: true,
   deep_research: true,
   user_upload: false,
   export: true,

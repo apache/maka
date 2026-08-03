@@ -88,8 +88,8 @@ export function Marker({
 
 /**
  * `TextShimmer` — a running "sweep of light" across short label text
- * (streaming UI rework). Used for the "深度思考" disclosure title while
- * reasoning streams and for a working trow's active-tool summary.
+ * (streaming UI rework). Used for the turn's processing indicator while a turn
+ * is still working.
  *
  * Two overlaid layers on the same grid cell: an opaque `base` (keeps the text
  * readable at all times, and is all a snapshot / reduced-motion user sees) and
@@ -104,23 +104,14 @@ export function Marker({
  * pass `active` false for settled/snap states so the sweep never runs in a
  * deterministic capture. Kept INTERNAL (off the package barrel, imported by
  * relative path) — its only consumers live in `@maka/ui`.
- *
- * `delayed` (#646 run→done seam) holds the sweep at its resting frame for
- * `--duration-emphasized` (~200ms) before it starts — a purely CSS de-flicker so
- * a sub-second tool row (which unmounts inside the window) never visibly sweeps,
- * while the base text is readable from frame 0. The keyframe rests at
- * `background-position:150% 0` (= the sweep's declared start), so the delay reads
- * as plain static muted text, matching `active={false}`.
  */
 export function TextShimmer({
   children,
   active = true,
-  delayed = false,
   className,
 }: {
   children: React.ReactNode;
   active?: boolean;
-  delayed?: boolean;
   className?: string;
 }): React.ReactElement {
   if (!active) {
@@ -130,119 +121,13 @@ export function TextShimmer({
     <span data-slot="text-shimmer" className={cn("maka-text-shimmer", className)}>
       {/* Base: opaque, muted, always readable. */}
       <span className="maka-text-shimmer-base">{children}</span>
-      {/* Sweep: a clipped light band that travels across the glyphs. The delay
-          rides inside the `animation` shorthand (second <time> = animation-delay)
-          so it can't be reset by the shorthand — the governance keyframe name is
-          still `maka-text-shimmer`, the only token the scanner reads. */}
-      <span
-        aria-hidden="true"
-        className="maka-text-shimmer-sweep"
-        data-delayed={delayed ? "true" : undefined}
-      >
+      {/* Sweep: a clipped light band that travels across the glyphs. */}
+      <span aria-hidden="true" className="maka-text-shimmer-sweep">
         {children}
       </span>
     </span>
   );
 }
-
-/**
- * Tool-activity card shell (issue #332, PR3b).
- *
- * Retires the bespoke `ToolActivity` chrome — the inline section + count, the
- * `<details>` card (`.maka-tool` / `.toolItem`), the `<summary>` header row
- * (`.maka-tool-header` / `-name` / `-meta` / `-duration` / `-status-label` /
- * `-status-dot`), the body / intent, and the args `<pre>` override
- * (`.toolArgs`) — moving each onto this semantic class table. The selectors lived
- * across `maka-tokens.css`'s `@layer components` and `styles/tool-output.css`.
- *
- * Every value resolves to a stable package-owned class
- * (the cascade contract asserts the exact strings, no browser needed). Literals
- * over the semantic scale for the same reason as `markerVariants`:
- * the retired CSS hardcoded these pixels, so the literal is the faithful,
- * self-evidently-equal translation and is immune to later scale/token re-tuning
- * (the visual refresh, not this governance pass, owns adopting the scale).
- *
- * The running status dot's `[animation:maka-tool-pulse …]` breath escapes the
- * computed-style proof and stays as a small named residue keyed on
- * `[data-slot="tool"]` in maka-tokens.css. The shorthand rides in the `dot`
- * part here; only the `@keyframes maka-tool-pulse` global rule stays in CSS.
- * The dot's box-shadow ring is a leaf rest-state literal, so it stays here and
- * is diff-proven.
- * (The reduced-motion / e2e-fixture suppression both ride GLOBAL `*` rules in
- * maka-tokens.css / base.css, so the dot and card need no per-element motion
- * utilities; the same global rules cover them as before.)
- *
- * The single consumer (`ToolActivity`) renders an Astryx Collapsible and applies
- * these by `className`. `toolVariants` is kept OFF the package barrel for the
- * same reason as `markerVariants`: the only consumer imports
- * it by relative path, so the part set stays an internal, freely-removable
- * styling detail.
- *
- * NOTE: the args `<pre>` keeps the shared `.maka-code` inline-code base (used by
- * Markdown / artifact previews too — out of scope); the `args` part below is only
- * the `.toolArgs` override.
- */
-type ToolPart =
-  | "container"
-  | "container-header"
-  | "count"
-  | "item"
-  | "header"
-  | "dot"
-  | "name"
-  | "meta"
-  | "duration"
-  | "status-label"
-  | "body"
-  | "intent"
-  | "args";
-
-const TOOL_CLASSES: Record<ToolPart, string> = {
-      // `.toolInline` — the inline section measure column.
-      container: "maka-tool-container",
-      // `.toolInline > header` — the quiet "工具调用" caption row.
-      "container-header":
-        "maka-tool-container-header",
-      // `.maka-tool-count` — the call-count pill.
-      count:
-        "maka-tool-count",
-      // `.maka-tool` (effective: the later `padding: 0` rule wins over `8px 12px`)
-      // + `.toolItem` + the `[data-status]` border / background / opacity swaps.
-      // `[border: …]` / `[border-color: …]` are arbitrary so the status overrides
-      // touch only the color, never width/style.
-      item: "maka-tool-item",
-      // The tool header's 8px · name · meta grid. Astryx owns the surrounding
-      // disclosure button, focus ring, chevron, and open-state chrome.
-      header:
-        "maka-tool-header",
-      // `.maka-tool-status-dot` (+ the `[data-status]` color swaps; running adds
-      // the box-shadow ring + `maka-tool-pulse` breath — keyframe stays in CSS).
-      dot: "maka-tool-status-dot",
-      // `.maka-tool-name` — the mono tool name, ellipsized.
-      name:
-        "maka-tool-name",
-      // `.maka-tool-meta` — duration + status-label cluster.
-      meta:
-        "maka-tool-meta",
-      // `.maka-tool-duration`
-      duration: "maka-tool-duration",
-      // `.maka-tool-status-label`
-      "status-label": "maka-tool-status-label",
-      // `.maka-tool-body`
-      body: "maka-tool-body",
-      // `.maka-tool-intent`
-      intent:
-        "maka-tool-intent",
-      // `.toolArgs` — the override layered over the shared `.maka-code` base
-      // (`.maka-code` stays in CSS; the call site keeps the class).
-      args: "maka-tool-args",
-};
-
-function toolVariants({ part }: { part: ToolPart }): string {
-  return TOOL_CLASSES[part];
-}
-
-export { toolVariants };
 
 /**
  * Tool-result preview surfaces (issue #332, PR4).

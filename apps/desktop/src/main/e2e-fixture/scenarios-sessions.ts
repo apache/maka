@@ -6,7 +6,6 @@ import {
   LONG_SIDEBAR_SESSION_PREFIX,
   LONG_TRANSCRIPT_SESSION_ID,
   STALE_FAKE_SESSION_ID,
-  STALE_LEGACY_SESSION_ID,
   TURN_CONTROL_BRANCH_ORPHAN_SESSION_ID,
   TURN_CONTROL_BRANCH_VISIBLE_SESSION_ID,
   TURN_CONTROL_ORPHAN_PARENT_ID,
@@ -566,11 +565,8 @@ export function longSidebarSessions(now: number): Array<{ header: SessionHeader;
   return seeds;
 }
 
-// Stale-sessions fixture seeds three sessions reproducing the on-disk
-// state that triggered the P0 (WAWQAQ workspace had `fake-claude` +
-// `backend=fake` sessions sitting next to a healthy `zai-coding-plan`
-// one). Locks the @kenji active-stale pill gate (active session is
-// intentionally one of the stale ones).
+// Seeds an unavailable connection beside a healthy one. The active Session is
+// intentionally unavailable so the reconnect affordance remains covered.
 export function staleFakeSession(now: number): SessionHeader {
   return header({
     id: STALE_FAKE_SESSION_ID,
@@ -581,19 +577,6 @@ export function staleFakeSession(now: number): SessionHeader {
     lastMessageAt: now - 4 * 24 * 3_600_000,
     backend: 'fake',
     connectionLocked: false,
-  });
-}
-
-export function staleLegacySession(now: number): SessionHeader {
-  return header({
-    id: STALE_LEGACY_SESSION_ID,
-    name: '旧的 Claude 连接会话',
-    connection: 'fake-claude',
-    model: 'claude-3-sonnet',
-    now,
-    lastMessageAt: now - 7 * 24 * 3_600_000,
-    backend: 'claude' as SessionHeader['backend'],
-    connectionLocked: true,
   });
 }
 
@@ -626,27 +609,6 @@ export function staleFakeMessages(now: number): StoredMessage[] {
       ts: now - 4 * 24 * 3_600_000 + 2_000,
       text: '这是旧的本地模拟会话留下的回复文本。',
       modelId: 'fake-model',
-    },
-  ];
-}
-
-export function staleLegacyMessages(now: number): StoredMessage[] {
-  const turnId = 'stale-legacy-turn-1';
-  return [
-    {
-      type: 'user',
-      id: 'stale-legacy-msg-1',
-      turnId,
-      ts: now - 7 * 24 * 3_600_000,
-      text: '这是历史 Claude 连接留下的会话。原连接 fake-claude 已不在连接列表里。',
-    },
-    {
-      type: 'assistant',
-      id: 'stale-legacy-msg-2',
-      turnId,
-      ts: now - 7 * 24 * 3_600_000 + 3_000,
-      text: '这条历史会话需要切换到当前可用模型后才能继续发送。',
-      modelId: 'claude-3-sonnet',
     },
   ];
 }

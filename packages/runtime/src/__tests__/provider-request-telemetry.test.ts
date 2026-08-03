@@ -719,6 +719,9 @@ describe('canonical model-call accounting', () => {
     resolveCost?: telemetry.ModelCallAccountingInput['resolveCost'];
     assertReady?: () => void;
     resolveRunId?: () => string | undefined;
+    /** Models a deployment with request capture switched off. */
+    withoutCapture?: boolean;
+    recordAttempt?: (attempt: telemetry.ProviderRequestAttemptRecord) => void;
   }): telemetry.ProviderRequestTracker {
     let n = 0;
     return new telemetry.ProviderRequestTracker({
@@ -726,8 +729,10 @@ describe('canonical model-call accounting', () => {
       turnId: 'turn-1',
       now: () => 1_000 + n,
       newId: () => `id-${++n}`,
-      persistCapture: async () => ({ artifactId: 'artifact-1' }),
-      recordAttempt: () => {},
+      ...(overrides.withoutCapture
+        ? {}
+        : { persistCapture: async () => ({ artifactId: 'artifact-1' }) }),
+      recordAttempt: overrides.recordAttempt ?? (() => {}),
       accounting: {
         sessionId: 'session-1',
         resolveRunId: overrides.resolveRunId ?? (() => 'run-1'),
@@ -768,6 +773,69 @@ describe('canonical model-call accounting', () => {
     assert.equal(attempt.pricingRevision, 4);
     // Retries count from zero on the canonical record.
     assert.equal(attempt.attempt, 0);
+  });
+
+  test('a call the provider reported no usage for records usageBasis missing', async () => {
+    // The alternative is a record claiming zero tokens, which is a measurement
+    // nobody made. `missing` says the call happened and the meter did not read.
+    const recorded: ModelCallAttempt[] = [];
+    const tracker = accountingTracker({
+      record: (a) => {
+        recorded.push(a);
+      },
+      resolveCost: () => ({ costUsd: 0.002, pricingRevision: 4 }),
+    });
+
+    await tracker.trackGenerate({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doGenerate: async () => ({ finishReason: 'stop' }),
+    });
+
+    const attempt = decodeModelCallAttempt(recorded[0]);
+    assert.equal(attempt.status, 'completed');
+    assert.equal(attempt.usageBasis, 'missing');
+    assert.equal(attempt.inputTokens, undefined);
+    assert.equal(attempt.outputTokens, undefined);
+    // No usage means nothing to price, whatever the resolver would have said.
+    assert.equal(attempt.costBasis, 'unpriced');
+    assert.equal(attempt.costUsd, undefined);
+  });
+
+  test('metering survives a deployment with request capture switched off', async () => {
+    // Capture is a diagnostic. A record that cannot be joined to a stored
+    // request body is still a record of a call that really was billed, so the
+    // canonical seam must not be gated on the capture sink being configured.
+    const recorded: ModelCallAttempt[] = [];
+    const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
+    const tracker = accountingTracker({
+      withoutCapture: true,
+      record: (a) => {
+        recorded.push(a);
+      },
+      recordAttempt: (a) => {
+        attempts.push(a);
+      },
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    await drain(result.stream);
+
+    const attempt = decodeModelCallAttempt(recorded[0]);
+    assert.equal(attempt.usageBasis, 'reported');
+    assert.equal(attempt.captureArtifactId, undefined, 'there is no artifact to point at');
+    // The request shape is computed locally, so it does not need the sink.
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]?.captureId, undefined);
+    assert.equal(attempts[0]?.captureArtifactId, undefined);
+    assert.ok((attempts[0]?.requestHash?.length ?? 0) > 0);
+    assert.ok((attempts[0]?.requestBytes ?? 0) > 0);
   });
 
   test('an unresolvable price records unpriced rather than zero', async () => {

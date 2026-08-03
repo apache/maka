@@ -16,12 +16,14 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   });
 }
 
-type TestToolRuntimeInput = Omit<ToolRuntimeInput, 'readExecutionBoundary'> &
-  Partial<Pick<ToolRuntimeInput, 'readExecutionBoundary'>>;
+type TestToolRuntimeInput = Omit<ToolRuntimeInput, 'readExecutionBoundary' | 'turnId'> &
+  Partial<Pick<ToolRuntimeInput, 'readExecutionBoundary' | 'turnId'>>;
 
+/** Defaults to the turn id nearly every ToolRuntime test already uses. */
 export function createTestToolRuntime(input: TestToolRuntimeInput): ToolRuntime {
   return new ToolRuntime({
     readExecutionBoundary: readExternalExecutionBoundary,
+    turnId: 'turn-1',
     ...input,
   });
 }

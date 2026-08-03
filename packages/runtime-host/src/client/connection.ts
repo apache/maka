@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { connect } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import {
+  discoverMarkedStorageRoot,
   prepareStorageRootControlDirectory,
+  resolveExistingStorageRootControlDirectory,
   resolveStorageRoot,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
@@ -14,6 +16,10 @@ import {
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type ClientSurface,
+  type ContextCompactInput,
+  type ContextCompactResult,
+  type ContextDiagnosticsQueryInput,
+  type ContextDiagnosticsResult,
   type HostOperationErrorCode,
   type HostIncompatible,
   type HostRegistration,
@@ -27,7 +33,14 @@ import {
   type ResponseFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
+  type SessionCwdRelocateInput,
+  type SessionUpdateResult,
   type TurnQueryInput,
+  type TurnRegenerateInput,
+  type TurnResumePlan,
+  type TurnResumeQueryInput,
+  type TurnResumeStartInput,
+  type TurnResumeStartResult,
   type TurnSnapshot,
   type TurnStartInput,
   type TurnStopInput,
@@ -119,6 +132,18 @@ export interface RuntimeHostConnection {
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  queryContextDiagnostics(
+    input: ContextDiagnosticsQueryInput,
+    timeoutMs?: number,
+  ): Promise<ContextDiagnosticsResult>;
+  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult>;
+  relocateSessionCwd(
+    input: SessionCwdRelocateInput,
+    timeoutMs?: number,
+  ): Promise<SessionUpdateResult>;
+  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
+  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
@@ -292,6 +317,36 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.request('turn.stop', input, timeoutMs);
   }
 
+  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot> {
+    return this.request('turn.regenerate', input, timeoutMs);
+  }
+
+  queryContextDiagnostics(
+    input: ContextDiagnosticsQueryInput,
+    timeoutMs?: number,
+  ): Promise<ContextDiagnosticsResult> {
+    return this.request('context.diagnostics.query', input, timeoutMs);
+  }
+
+  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult> {
+    return this.request('context.compact', input, timeoutMs);
+  }
+
+  relocateSessionCwd(
+    input: SessionCwdRelocateInput,
+    timeoutMs?: number,
+  ): Promise<SessionUpdateResult> {
+    return this.request('session.cwd.relocate', input, timeoutMs);
+  }
+
+  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
+    return this.request('turn.resume.query', input, timeoutMs);
+  }
+
+  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult> {
+    return this.request('turn.resume.start', input, timeoutMs);
+  }
+
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
@@ -356,6 +411,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
             case 'subscription.session_projection':
             case 'subscription.session_delta':
             case 'subscription.session_event':
+            case 'subscription.agent_graph_changed':
             case 'subscription.closed':
               this.#acceptSubscriptionFrame(frame);
               continue;
@@ -479,29 +535,65 @@ function isClientCapabilityMutation(operation: unknown): boolean {
 export async function connectRuntimeHost(
   input: ConnectRuntimeHostInput,
 ): Promise<ConnectRuntimeHostResult> {
-  validateProtocolRange(input.protocol);
-  const connectTimeoutMs = requireTimeout(
-    input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
-    'connectTimeoutMs',
-  );
-  const handshakeTimeoutMs = requireTimeout(
-    input.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
-    'handshakeTimeoutMs',
-  );
-  const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
+  const normalized = normalizeConnectRuntimeHostInput(input);
   const capability = await resolveStorageRoot({
     path: input.rootPath,
     kind: 'interactive',
   });
   const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-  const result = await connectResolvedRuntimeHost({
-    ...input,
-    clientInstanceId,
-    connectTimeoutMs,
-    handshakeTimeoutMs,
-    capability,
-    controlDirectory,
-  });
+  return finalizeConnectRuntimeHostResult(
+    await connectResolvedRuntimeHost({
+      ...input,
+      ...normalized,
+      capability,
+      controlDirectory,
+    }),
+  );
+}
+
+/** Connects only through an already published Host control plane and performs no filesystem writes. */
+export async function connectExistingRuntimeHost(
+  input: ConnectRuntimeHostInput,
+): Promise<ConnectRuntimeHostResult> {
+  const normalized = normalizeConnectRuntimeHostInput(input);
+  const discovered = await discoverMarkedStorageRoot({ path: input.rootPath });
+  if (discovered.kind !== 'interactive') {
+    return { kind: 'unavailable', reason: 'root_mismatch' };
+  }
+  const capability = discovered;
+  const { controlDirectory } = await resolveExistingStorageRootControlDirectory(capability);
+  return finalizeConnectRuntimeHostResult(
+    await connectResolvedRuntimeHost({
+      ...input,
+      ...normalized,
+      capability,
+      controlDirectory,
+    }),
+  );
+}
+
+function normalizeConnectRuntimeHostInput(input: ConnectRuntimeHostInput): {
+  clientInstanceId: string;
+  connectTimeoutMs: number;
+  handshakeTimeoutMs: number;
+} {
+  validateProtocolRange(input.protocol);
+  return {
+    clientInstanceId: requireClientInstanceId(input.clientInstanceId ?? randomUUID()),
+    connectTimeoutMs: requireTimeout(
+      input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+      'connectTimeoutMs',
+    ),
+    handshakeTimeoutMs: requireTimeout(
+      input.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
+      'handshakeTimeoutMs',
+    ),
+  };
+}
+
+function finalizeConnectRuntimeHostResult(
+  result: ConnectResolvedRuntimeHostResult,
+): ConnectRuntimeHostResult {
   if (result.kind === 'election_deadline_elapsed') {
     return {
       kind: 'unavailable',
@@ -684,9 +776,10 @@ function requireTimeout(value: number, label: string): number {
 
 function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number | undefined {
   switch (operation) {
+    case 'agent.graph.stop':
     case 'connection.models.fetch':
     case 'connection.test.run':
-      // Completion effects own provider deadlines and may wait behind same-connection FIFO work.
+      // Completion effects own their deadlines and may wait for admitted work to settle.
       return undefined;
     default:
       return DEFAULT_REQUEST_TIMEOUT_MS;

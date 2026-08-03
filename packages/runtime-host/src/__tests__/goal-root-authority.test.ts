@@ -343,7 +343,7 @@ test('Automation turns can use Goal tools and contribute evaluation evidence', a
       },
     });
 
-    const goal = await waitForGoalStatus(fixture, 'achieved');
+    const goal = await fixture.waitForGoalStatus('achieved');
     assert.equal(goal.condition, 'Automation Goal completes');
     assert.equal(goal.lastReason, 'verified');
     assert.equal(fixture.drainRequested(), false);
@@ -498,8 +498,12 @@ interface Fixture {
   readonly messages: HostMessageCoordinator;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly drainRequested: () => boolean;
+  waitForGoalStatus(status: GoalStatus): Promise<GoalState>;
   close(): Promise<void>;
 }
+
+type GoalState = NonNullable<ReturnType<HostGoalCoordinator['manager']['get']>>;
+type GoalStatus = GoalState['status'];
 
 async function createFixture(options: { recoverAdmissions?: boolean } = {}): Promise<Fixture> {
   const base = await mkdtemp(join(tmpdir(), 'maka-goal-root-'));
@@ -524,6 +528,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   let projection: CanonicalSessionProjectionReader | undefined;
   let goal: HostGoalCoordinator | undefined;
   let requestedDrain = false;
+  const goalChangeListeners = new Set<() => void>();
   const rootPort: HostMessageRootPort = {
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
@@ -573,6 +578,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   );
   const interactions = new HostInteractionCoordinator({
     store: stores.interactionStore,
+    sandboxBoundaries: stores.sessionStore,
     sessionAdmission: admission,
     sessions: stores.sessionStore,
     preflightSessionSnapshot: (sessionId, interactions) =>
@@ -582,6 +588,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     onPoison: () => {
       requestedDrain = true;
     },
+    onSandboxBoundarySettled: async () => {},
   });
   const backends = new BackendRegistry();
   backends.register('fake', (context) => new FakeBackend(context));
@@ -633,8 +640,10 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
       rootCoordinator.admitGoalTurn(sessionId, checkpoint, controlLease, text),
     listActionableTaskKeys: async () => [],
     acquireResidency,
-    onProjectionChanged: (sessionId) =>
-      requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
+    onProjectionChanged: (sessionId) => {
+      requireContinuity(continuity).enqueueCanonicalRefresh(sessionId);
+      for (const listener of goalChangeListeners) listener();
+    },
   });
   const goalCoordinator = goal;
 
@@ -650,6 +659,23 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     messages,
     sessionAdmission: admission,
     drainRequested: () => requestedDrain,
+    waitForGoalStatus: (status) =>
+      new Promise<GoalState>((resolve, reject) => {
+        let timeout: NodeJS.Timeout | undefined;
+        const check = () => {
+          const current = goalCoordinator.manager.get(session.id);
+          if (current?.status !== status) return;
+          if (timeout) clearTimeout(timeout);
+          goalChangeListeners.delete(check);
+          resolve(current);
+        };
+        goalChangeListeners.add(check);
+        timeout = setTimeout(() => {
+          goalChangeListeners.delete(check);
+          reject(new Error(`Goal did not reach ${status}`));
+        }, 10_000);
+        check();
+      }),
     async close() {
       goalCoordinator.beginDrain();
       rootCoordinator.beginDrain();
@@ -685,18 +711,6 @@ async function waitForGoalRun(
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   throw new Error('Goal continuation did not reach the root authority');
-}
-
-async function waitForGoalStatus(
-  fixture: Fixture,
-  status: NonNullable<ReturnType<Fixture['goal']['manager']['get']>>['status'],
-) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const goal = fixture.goal.manager.get(fixture.sessionId);
-    if (goal?.status === status) return goal;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`Goal did not reach ${status}`);
 }
 
 function runHeader(overrides: Partial<AgentRunHeader>): AgentRunHeader {

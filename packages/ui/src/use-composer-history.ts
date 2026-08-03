@@ -6,12 +6,20 @@
  * "mid-navigation" index/savedDraft pair. The pure state machine
  * (`navigateComposerHistory`, `reconcileHistorySync`,
  * `rememberComposerHistoryEntry`) stays in `composer-helpers.ts` and the
- * localStorage seam in `input-history.ts` — both unit-tested there. This
- * hook is the React/DOM seam that applies navigation results to the
- * uncontrolled textarea (value + caret + draft persistence + resize).
+ * localStorage seam in `input-history.ts` — both unit-tested there. This hook
+ * is the React seam that applies navigation results through the input's
+ * `ComposerTextPort`.
+ *
+ * `ChatComposerInput` ships its own arrow-key recall, but that history is
+ * in-memory per mount, unconditional on the draft, and has no deletion story.
+ * Ours is persisted across reloads, shared with every other input surface,
+ * clearable from Settings · 数据, and refuses to hijack the caret inside a
+ * multi-line draft — so the composer mounts the input with `hasHistory={false}`
+ * and keeps this.
  */
 
-import { useRef, type KeyboardEvent, type RefObject } from 'react';
+import { useRef, type KeyboardEvent } from 'react';
+import type { ComposerTextPort } from './chat-input-behavior.js';
 import {
   type ComposerHistoryState,
   navigateComposerHistory,
@@ -34,23 +42,21 @@ export interface ComposerHistoryApi {
   rememberSentEntry(text: string): void;
   /**
    * PR-GLOBAL-INPUT-HISTORY: up/down arrow navigates the global input
-   * history. Bare arrow keys only start navigation when the textarea is
-   * empty, or when the user is already mid-navigation (index >= 0); in a
-   * multi-line draft the caret keeps moving so editing isn't hijacked.
-   * Ctrl/Cmd + ArrowUp/ArrowDown is an explicit shortcut that always
-   * navigates history regardless of the current draft.
+   * history. Bare arrow keys only start navigation when the input is empty,
+   * or when the user is already mid-navigation (index >= 0); in a multi-line
+   * draft the caret keeps moving so editing isn't hijacked. Ctrl/Cmd +
+   * ArrowUp/ArrowDown is an explicit shortcut that always navigates history
+   * regardless of the current draft.
    *
    * Returns true when the keystroke was consumed (a navigation applied, or
    * deliberately swallowed because history is empty) and the caller must
    * stop further key handling.
    */
-  handleArrowKey(event: KeyboardEvent<HTMLTextAreaElement>): boolean;
+  handleArrowKey(event: KeyboardEvent<Element>): boolean;
 }
 
 export function useComposerHistory(input: {
-  textareaRef: RefObject<HTMLTextAreaElement | null>;
-  /** Re-measure the textarea after a programmatic value swap. */
-  autoResize(): void;
+  text: ComposerTextPort;
   /** Persist the applied value under the active draft key. */
   saveCurrentDraft(value?: string): void;
 }): ComposerHistoryApi {
@@ -75,22 +81,19 @@ export function useComposerHistory(input: {
     };
   }
 
-  function applyValue(el: HTMLTextAreaElement, value: string) {
-    el.value = value;
+  function applyValue(value: string) {
+    input.text.setValue(value);
     input.saveCurrentDraft(value);
-    input.autoResize();
-    const length = el.value.length;
-    el.setSelectionRange(length, length);
   }
 
-  function handleArrowKey(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
+  function handleArrowKey(event: KeyboardEvent<Element>): boolean {
     const explicit = Boolean(event.ctrlKey || event.metaKey);
     const plainArrow = !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
     if (!plainArrow && !explicit) return false;
-    const el = input.textareaRef.current;
+    const current = input.text.getValue();
     const isNavigatingHistory = promptHistoryRef.current.index >= 0;
-    const canStartHistory = Boolean(el && !el.value.trim());
-    if (!el || !(explicit || isNavigatingHistory || canStartHistory)) return false;
+    const canStartHistory = !current.trim();
+    if (!(explicit || isNavigatingHistory || canStartHistory)) return false;
     // Re-read global history from localStorage on every navigation so
     // a clear from Settings (an overlay that keeps the Composer
     // mounted) is picked up immediately, and a transient storage
@@ -101,7 +104,7 @@ export function useComposerHistory(input: {
     const { state, restoreDraft } = reconcileHistorySync(promptHistoryRef.current, synced);
     promptHistoryRef.current = state;
     if (restoreDraft) {
-      applyValue(el, state.savedDraft);
+      applyValue(state.savedDraft);
     }
     // Nothing to navigate when history was cleared (synced empty) — the
     // keystroke is swallowed so it can't fall through to other handlers.
@@ -111,12 +114,12 @@ export function useComposerHistory(input: {
     const next = navigateComposerHistory(
       promptHistoryRef.current,
       event.key === 'ArrowUp' ? 'previous' : 'next',
-      el.value,
+      current,
     );
     if (!next.changed) return false;
     event.preventDefault();
     promptHistoryRef.current = next.state;
-    applyValue(el, next.value);
+    applyValue(next.value);
     return true;
   }
 

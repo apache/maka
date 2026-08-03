@@ -1,0 +1,14 @@
+diff --git a/node_modules/@ai-sdk/provider-utils/dist/index.js b/node_modules/@ai-sdk/provider-utils/dist/index.js
+index 851fce4..d16f64c 100644
+--- a/node_modules/@ai-sdk/provider-utils/dist/index.js
++++ b/node_modules/@ai-sdk/provider-utils/dist/index.js
+@@ -3567,6 +3567,9 @@ var StreamingToolCallTracker = class {
+    */
+   flush() {
+     for (const toolCall of this.toolCalls) {
++      if (toolCall == null) {
++        continue;
++      }
+       if (!toolCall.hasFinished) {
+         this.finishToolCall(toolCall);
+       }

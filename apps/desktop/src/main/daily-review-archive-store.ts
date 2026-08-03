@@ -1,15 +1,15 @@
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import {
   DEFAULT_DAILY_REVIEW_CONFIG,
   dailyReviewArchiveToSummary,
+  normalizeDailyReviewArchive,
   normalizeDailyReviewConfig,
   type DailyReviewArchive,
   type DailyReviewArchiveSummary,
   type DailyReviewConfig,
 } from '@maka/core';
+import { acquireOperationalStateDatabase } from '@maka/storage';
 
-const ARCHIVE_ID_PATTERN = /^\d{4}-\d{2}-\d{2}-(daily|deep)$/;
+const ARCHIVE_ID_PATTERN = /^\d{4}-\d{2}-\d{2}-(1d|7d|30d)$/;
 
 export interface DailyReviewArchiveStore {
   getConfig(): Promise<DailyReviewConfig>;
@@ -22,135 +22,138 @@ export interface DailyReviewArchiveStore {
 }
 
 export function createDailyReviewArchiveStore(workspaceRoot: string): DailyReviewArchiveStore {
-  return new FileDailyReviewArchiveStore(workspaceRoot);
+  return new SqliteDailyReviewArchiveStore(workspaceRoot);
 }
 
-class FileDailyReviewArchiveStore implements DailyReviewArchiveStore {
-  private readonly root: string;
-  private readonly archiveRoot: string;
-  private readonly configPath: string;
-  private queue: Promise<void> = Promise.resolve();
-
-  constructor(workspaceRoot: string) {
-    this.root = join(workspaceRoot, 'daily-reviews');
-    this.archiveRoot = join(this.root, 'archive');
-    this.configPath = join(this.root, 'config.json');
-  }
+class SqliteDailyReviewArchiveStore implements DailyReviewArchiveStore {
+  constructor(private readonly workspaceRoot: string) {}
 
   async getConfig(): Promise<DailyReviewConfig> {
-    try {
-      const raw = await readFile(this.configPath, 'utf8');
-      return normalizeDailyReviewConfig(JSON.parse(raw) as Partial<DailyReviewConfig>);
-    } catch (error) {
-      if (isNotFound(error)) return DEFAULT_DAILY_REVIEW_CONFIG;
-      throw error;
-    }
+    return this.withDatabase('read', (database) => {
+      const row = database
+        .prepare('SELECT config_json AS configJson FROM workflow_daily_review_state WHERE singleton = 1')
+        .get() as { configJson?: unknown } | undefined;
+      return typeof row?.configJson === 'string'
+        ? normalizeDailyReviewConfig(JSON.parse(row.configJson) as Partial<DailyReviewConfig>)
+        : DEFAULT_DAILY_REVIEW_CONFIG;
+    });
   }
 
   async setConfig(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig> {
-    let next = DEFAULT_DAILY_REVIEW_CONFIG;
-    await this.withQueue(async () => {
-      const current = await this.getConfig();
-      next = normalizeDailyReviewConfig({
-        ...current,
-        ...patch,
-        sections: { ...current.sections, ...patch.sections },
-        externalNotify: { ...current.externalNotify, ...patch.externalNotify },
-      });
-      await mkdir(this.root, { recursive: true, mode: 0o700 });
-      await writeFile(this.configPath, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+    return this.withDatabase('write', (database) => {
+      const row = database
+        .prepare('SELECT config_json AS configJson FROM workflow_daily_review_state WHERE singleton = 1')
+        .get() as { configJson?: unknown } | undefined;
+      const current =
+        typeof row?.configJson === 'string'
+          ? normalizeDailyReviewConfig(JSON.parse(row.configJson) as Partial<DailyReviewConfig>)
+          : DEFAULT_DAILY_REVIEW_CONFIG;
+      const next = normalizeDailyReviewConfig({ ...current, ...patch });
+      database
+        .prepare(`
+          INSERT INTO workflow_daily_review_state(singleton, config_json)
+          VALUES (1, ?)
+          ON CONFLICT(singleton) DO UPDATE SET config_json = excluded.config_json
+        `)
+        .run(JSON.stringify(next));
+      return next;
     });
-    return next;
   }
 
   async putArchive(archive: DailyReviewArchive): Promise<DailyReviewArchive> {
     assertArchiveId(archive.id);
-    await this.withQueue(async () => {
-      await mkdir(this.archiveRoot, { recursive: true, mode: 0o700 });
-      await writeFile(this.archivePath(archive.id), JSON.stringify(archive, null, 2) + '\n', {
-        encoding: 'utf8',
-        mode: 0o600,
-      });
+    const normalized = normalizeDailyReviewArchive(archive);
+    if (normalized.id !== archive.id) throw new Error(`Daily Review archive id mismatch: ${archive.id}`);
+    this.withDatabase('write', (database) => {
+      database
+        .prepare(`
+          INSERT INTO workflow_daily_review_archives(
+            archive_id, generated_at, day_from_ms, record_json
+          ) VALUES (?, ?, ?, ?)
+          ON CONFLICT(archive_id) DO UPDATE SET
+            generated_at = excluded.generated_at,
+            day_from_ms = excluded.day_from_ms,
+            record_json = excluded.record_json
+        `)
+        .run(normalized.id, normalized.generatedAt, normalized.day.fromMs, JSON.stringify(normalized));
     });
-    return archive;
+    return normalized;
   }
 
   async listArchives(): Promise<DailyReviewArchiveSummary[]> {
-    const archives: DailyReviewArchiveSummary[] = [];
-    for (const id of await this.listArchiveIds()) {
-      const archive = await this.getArchive(id);
-      if (archive) archives.push(dailyReviewArchiveToSummary(archive));
-    }
-    archives.sort((a, b) => b.generatedAt - a.generatedAt || b.day.fromMs - a.day.fromMs || a.id.localeCompare(b.id));
-    return archives;
+    return this.withDatabase('read', (database) =>
+      (
+        database
+          .prepare(`
+            SELECT archive_id AS archiveId, record_json AS recordJson
+            FROM workflow_daily_review_archives
+            ORDER BY generated_at DESC, day_from_ms DESC, archive_id
+          `)
+          .all() as Array<{ archiveId: string; recordJson: string }>
+      ).map((row) => dailyReviewArchiveToSummary(decodeArchive(row.archiveId, row.recordJson))),
+    );
   }
 
   async getArchive(id: string): Promise<DailyReviewArchive | null> {
     assertArchiveId(id);
-    try {
-      const raw = await readFile(this.archivePath(id), 'utf8');
-      const parsed = JSON.parse(raw) as DailyReviewArchive;
-      if (parsed.id !== id) throw new Error(`Daily Review archive id mismatch: ${id}`);
-      return parsed;
-    } catch (error) {
-      if (isNotFound(error)) return null;
-      throw error;
-    }
+    return this.withDatabase('read', (database) => {
+      const row = database
+        .prepare(`
+          SELECT record_json AS recordJson
+          FROM workflow_daily_review_archives
+          WHERE archive_id = ?
+        `)
+        .get(id) as { recordJson?: unknown } | undefined;
+      return typeof row?.recordJson === 'string' ? decodeArchive(id, row.recordJson) : null;
+    });
   }
 
   async deleteArchive(id: string): Promise<void> {
     assertArchiveId(id);
-    await rm(this.archivePath(id), { force: true });
+    this.withDatabase('write', (database) => {
+      database.prepare('DELETE FROM workflow_daily_review_archives WHERE archive_id = ?').run(id);
+    });
   }
 
   async prune(maxArchives: number): Promise<void> {
     const limit = Math.max(0, Math.trunc(maxArchives));
     if (limit === 0) return;
-    const archives = await this.listArchives();
-    for (const archive of archives.slice(limit)) {
-      await this.deleteArchive(archive.id);
-    }
-  }
-
-  private async listArchiveIds(): Promise<string[]> {
-    try {
-      const entries = await readdir(this.archiveRoot, { withFileTypes: true });
-      return entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-        .map((entry) => entry.name.slice(0, -'.json'.length))
-        .filter((id) => ARCHIVE_ID_PATTERN.test(id));
-    } catch (error) {
-      if (isNotFound(error)) return [];
-      throw error;
-    }
-  }
-
-  private archivePath(id: string): string {
-    assertArchiveId(id);
-    return join(this.archiveRoot, `${id}.json`);
-  }
-
-  private async withQueue<T>(fn: () => Promise<T>): Promise<T> {
-    const previous = this.queue;
-    let release!: () => void;
-    this.queue = new Promise<void>((resolve) => {
-      release = resolve;
+    this.withDatabase('write', (database) => {
+      database
+        .prepare(`
+          DELETE FROM workflow_daily_review_archives
+          WHERE archive_id IN (
+            SELECT archive_id
+            FROM workflow_daily_review_archives
+            ORDER BY generated_at DESC, day_from_ms DESC, archive_id
+            LIMIT -1 OFFSET ?
+          )
+        `)
+        .run(limit);
     });
-    await previous;
+  }
+
+  private withDatabase<T>(
+    mode: 'read' | 'write',
+    operation: (database: import('node:sqlite').DatabaseSync) => T,
+  ): T {
+    const lease = acquireOperationalStateDatabase(this.workspaceRoot);
     try {
-      return await fn();
+      return lease.transaction(mode, () => operation(lease.database));
     } finally {
-      release();
+      lease.close();
     }
   }
+}
+
+function decodeArchive(id: string, recordJson: string): DailyReviewArchive {
+  const archive = normalizeDailyReviewArchive(JSON.parse(recordJson));
+  if (archive.id !== id) throw new Error(`Daily Review archive id mismatch: ${id}`);
+  return archive;
 }
 
 function assertArchiveId(id: string): void {
   if (!ARCHIVE_ID_PATTERN.test(id)) {
     throw new Error(`Invalid Daily Review archive id: ${id}`);
   }
-}
-
-function isNotFound(error: unknown): boolean {
-  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
 }

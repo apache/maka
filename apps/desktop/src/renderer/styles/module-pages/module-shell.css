@@ -35,21 +35,29 @@
 }
 
 /* Module page titles use the display scale. Negative letter-spacing keeps
-   page-level headings compact at that size. */
+   page-level headings compact at that size.
+
+   A deliberate override of Astryx's own guidance, which reserves display for
+   hero, marketing and data-callout text and says not to use it for document
+   headings. Every heading role in the ladder is weight 600 and tops out at
+   20px, so matching this title on weight would drop it from 25px to 20px —
+   level with the section headings underneath it, collapsing the one size step
+   that makes a page title read as one. Display keeps the size and gives up the
+   weight, which is the trade the vendor's own reasoning endorses at this size
+   (large text needs less weight). Same call at .maka-plan-heading h2 and
+   .settingsPageHeader h2; nothing else in the renderer uses display outside a
+   real hero. */
 .maka-module-main-header h2 {
+  font: var(--maka-text-display-2);
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-4xl);
-  font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
-  line-height: var(--text-display-2-leading);
 }
 
 .maka-module-main-header p {
+  font: var(--maka-text-body);
   margin: var(--space-1) 0 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
 }
 
 .maka-module-hub-heading {

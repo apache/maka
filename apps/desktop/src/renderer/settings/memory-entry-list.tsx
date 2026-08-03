@@ -1,5 +1,5 @@
 import type { LocalMemoryState } from '@maka/core';
-import { Button, RelativeTime } from '@maka/ui';
+import { Button, MoreMenu, RelativeTime } from '@maka/ui';
 import { memoryOriginLabel } from './memory-settings-labels';
 import type { MemorySettingsCopy } from '../locales/settings-memory-copy';
 
@@ -9,7 +9,6 @@ export function MemoryEntryList(props: {
   entries: LocalMemoryState['activeEntries'];
   filtered?: boolean;
   archived?: boolean;
-  draftDirty?: boolean;
   busy?: boolean;
   pendingCopyIds?: ReadonlySet<string>;
   onCopyReference?(entry: LocalMemoryState['activeEntries'][number]): void | Promise<void>;
@@ -22,11 +21,6 @@ export function MemoryEntryList(props: {
         <strong>{props.title}</strong>
         <span>{props.copy.countEntries(props.entries.length)}</span>
       </div>
-      {props.draftDirty && props.onStatusChange && (
-        <p className="settingsMemoryEntryDraftNotice" role="status">
-          {props.copy.text.archiveDraftNotice}
-        </p>
-      )}
       {props.entries.length === 0 ? (
         <p className="settingsMemoryEntryEmpty">{props.filtered ? props.copy.text.noMatchEntry : props.copy.text.noEntry}</p>
       ) : (
@@ -40,70 +34,55 @@ export function MemoryEntryList(props: {
         <ul className="settingsMemoryEntryList" aria-label={props.copy.listAria(props.title)}>
           {props.entries.map((entry) => {
             const copyPending = props.pendingCopyIds?.has(`entry:${entry.id}:copy`) ?? false;
-            const statusActionLabel = props.draftDirty
-              ? props.archived
-                ? props.copy.text.restoreDraftAction
-                : props.copy.text.archiveDraftAction
-              : props.archived
-                ? props.copy.text.restoreAction
-                : props.copy.text.archiveAction;
-            const statusActionAriaLabel = props.draftDirty
-              ? props.copy.draftStatusAria(statusActionLabel)
-              : undefined;
+            const statusActionLabel = props.archived
+              ? props.copy.text.restoreAction
+              : props.copy.text.archiveAction;
             return (
               <li key={entry.id}>
-                <article className="settingsMemoryEntryCard">
+                <article className="settingsMemoryEntryRow">
                 <strong>{entry.title}</strong>
                 <small className="settingsMemoryEntryMeta">
                   {memoryOriginLabel(entry.origin, props.copy)}
                   {entry.tags.length > 0 ? ` · ${entry.tags.join(' / ')}` : ''}
                 </small>
                 <small className="settingsMemoryEntryFacts">
-                  <span>ID {entry.id}</span>
-                  {entry.createdAt !== undefined && (
-                    <span>
-                      {props.copy.text.created}<RelativeTime ts={entry.createdAt} className="settingsHelpInlineTime" />
-                    </span>
-                  )}
                   {entry.updatedAt !== undefined && (
                     <span>
-                      {props.copy.text.updated}<RelativeTime ts={entry.updatedAt} className="settingsHelpInlineTime" />
+                      {props.copy.text.updated}<RelativeTime ts={entry.updatedAt} />
                     </span>
                   )}
                 </small>
-                <span className="settingsMemoryPromptScope" data-active={props.archived ? 'false' : 'true'}>
-                  {props.archived ? props.copy.text.archivedNoPrompt : props.copy.text.activePrompt}
-                </span>
                 <p>{entry.content}</p>
                 {(props.onCopyReference || props.onFocusDraft || props.onStatusChange) && (
                   <div className="settingsMemoryEntryActions" role="group" aria-label={props.copy.entryActionsAria(entry.title)}>
-                    {props.onCopyReference && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="settingsActionWidthSm"
-                        isDisabled={copyPending}
-                        onClick={() => void props.onCopyReference?.(entry)}
-                        label={copyPending ? props.copy.text.copying : props.copy.text.copyReference}
-                      />
-                    )}
-                    {props.onFocusDraft && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => void props.onFocusDraft?.(entry)}
-                        label={props.copy.text.locateDraft}
-                      />
-                    )}
                     {props.onStatusChange && (
                       <Button
-                        variant="secondary"
+                        variant="ghost"
                         size="sm"
-                        className="settingsActionWidthMd"
-                        aria-label={statusActionAriaLabel}
                         isDisabled={props.busy}
                         onClick={() => void props.onStatusChange?.(entry, props.archived ? 'active' : 'archived')}
                         label={statusActionLabel}
+                      />
+                    )}
+                    {(props.onCopyReference || props.onFocusDraft) && (
+                      <MoreMenu
+                        label={props.copy.entryActionsAria(entry.title)}
+                        size="sm"
+                        items={[
+                          ...(props.onCopyReference
+                            ? [{
+                                label: copyPending ? props.copy.text.copying : props.copy.text.copyReference,
+                                isDisabled: copyPending,
+                                onClick: () => void props.onCopyReference?.(entry),
+                              }]
+                            : []),
+                          ...(props.onFocusDraft
+                            ? [{
+                                label: props.copy.text.locateDraft,
+                                onClick: () => void props.onFocusDraft?.(entry),
+                              }]
+                            : []),
+                        ]}
                       />
                     )}
                   </div>

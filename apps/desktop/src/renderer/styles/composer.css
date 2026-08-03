@@ -37,29 +37,6 @@
   padding-block: var(--space-1) 0;
 }
 
-/* Skill panel opened from the ＋ menu — containing block is left-controls
-   (starts at ＋), not the zero-width picker host at the end of the row. */
-.maka-composer-left-controls {
-  position: relative;
-}
-
-.maka-composer-skill-picker[data-anchored="footer"] {
-  /* Stay out of the positioning chain so the absolute panel uses left-controls. */
-  position: static;
-  width: 0;
-  height: 0;
-  overflow: visible;
-  margin: 0;
-  padding: 0;
-  border: none;
-  pointer-events: none;
-}
-
-.maka-composer-skill-picker[data-anchored="footer"] .maka-composer-skill-panel {
-  pointer-events: auto;
-  inset-inline-start: 0;
-}
-
 .maka-composer-context-drawer {
   display: flex;
   min-width: 0;
@@ -102,14 +79,19 @@
   justify-content: flex-end;
 }
 
+/* `background-color`, never the `background` shorthand: these rules sit in the
+   last cascade layer (cascade-layers.css), and the shorthand's implicit
+   `background-image: none` would beat the ghost button's own :hover / :active
+   overlay gradients from `astryx-components`, leaving the control with no
+   pointer feedback at all. */
 .maka-composer-voice-button[data-state="recording"] {
   color: var(--status-danger, var(--destructive));
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
 
 .maka-composer-voice-button[data-state="native_ready"] {
   color: var(--status-running);
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
 
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
@@ -134,7 +116,17 @@
 
 /* Model chip (static fallback) still owns its own quiet geometry. */
 .maka-composer-model-chip {
-  height: 26px;
+  font: var(--maka-text-label);
+  /* #1879: was a bare 26px. It is NOT an Astryx component — `ModelChipStatic`
+     puts this class only on its inert `<span>` branch; the `onOpenSettings`
+     branch renders a `Button size="sm"` that carries no class at all
+     (chat-model-switcher.tsx). So nothing sizes this box but this rule, and
+     unpinning it measured 22px (the label role's 20px line box plus two
+     hairlines) against the 28px Selector beside it. `--h-control-md` resolves
+     to `--size-element-sm`, which is the token that Selector's own `size="sm"`
+     reads — so the two agree by deriving from one token rather than by two
+     product rules agreeing on a literal. */
+  height: var(--h-control-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -144,9 +136,6 @@
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
   max-width: min(180px, 28vw);
   transition:
@@ -159,14 +148,23 @@
   border-color: transparent;
 }
 
-/* Mode ON marks are drawer Tokens; wrapper only carries data-mode / title for
-   E2E and tooltips — no second pill geometry on top of Token chrome.
-   Keep a real box (not display:contents) so Playwright visibility and
-   title hover still work on the host. */
-.maka-composer-mode-indicator {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
+/* Mode ON marks sit at the tail of the footer's left controls (#1897) —
+   session state, not context staged for the next send, so they no longer live
+   in the drawer.
+
+   Maka blue is the single product accent (DESIGN.md), and an active mode is
+   exactly what it is for; which mode a mark is comes from its icon, not a hue,
+   so all three share the one accent. The wash derives from currentColor so a
+   disabled mark dims both layers together.
+
+   `background-color`, never the `background` shorthand — see the voice button
+   above: the shorthand would suppress the ghost button's hover and active
+   overlays and leave the one way out of a mode with no pointer feedback.
+   `flex: 0 0 auto` keeps a long model name from compressing the mark away. */
+.maka-composer-mode-button {
+  flex: 0 0 auto;
+  color: var(--accent);
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
 /* Model + thinking pair lives in left-controls (after permission), not send. */
 .maka-composer-left-controls .maka-model-selection-controls {
@@ -201,62 +199,11 @@
   flex: 0 0 auto;
 }
 
-
 /* The active transcript and docked card meet at one boundary. Keeping the
    outer composer's default top padding here exposes an extra strip of panel
    background after the transcript viewport has already ended. */
 .mainColumn:not([data-home-surface="true"]) .composer {
   padding-top: 0;
-}
-
-/* The textarea owns no chrome (the card does). It auto-resizes from
-   --h-composer-min up to 240px (capped in @maka/ui), then scrolls. Type
-   matches Astryx ChatComposer / ChatComposerInput: body scale tokens, not
-   a local 14/22 magic pair. The size keeps its --font-size-base fallback for
-   Storybook or mounts where the theme wrapper is absent; the leading dropped
-   its fallback chain with the product leading tiers it named, and there is no
-   second vocabulary left to fall back to.
-
-   Kill the global `*:focus-visible` ring (maka-tokens) — Astryx ChatComposer
-   elevates the outer shell on focus-within; a second rectangle on the field
-   is the bug users describe as “输入后出现长方形边框”. */
-.composer .maka-composer-textarea {
-  display: block;
-  width: 100%;
-  appearance: none;
-  border: none;
-  outline: none;
-  box-shadow: none;
-  resize: none;
-  overflow-y: auto;
-  background: transparent;
-  color: var(--foreground);
-  font-family: var(--font-default);
-  font-size: var(--text-body-size, var(--font-size-base));
-  font-weight: var(--text-body-weight, var(--font-weight-normal, 400));
-  line-height: var(--text-body-leading);
-  min-height: var(--h-composer-min);
-  max-height: 240px;
-}
-
-.composer .maka-composer-textarea:focus,
-.composer .maka-composer-textarea:focus-visible {
-  border: none;
-  outline: none;
-  box-shadow: none;
-}
-
-.composer .maka-composer-textarea::placeholder {
-  color: var(--muted-foreground);
-  font-family: var(--font-default);
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
-  transition: opacity var(--duration-emphasized) var(--ease-out-strong);
-}
-
-.composer .maka-composer-textarea:focus::placeholder {
-  opacity: var(--opacity-disabled);
 }
 
 /* Composer send button — flat solid action fill. #546: dropped the gradient
@@ -272,7 +219,7 @@
   justify-content: flex-start;
   gap: var(--space-1);
   box-sizing: border-box;
-  margin: var(--space-2) auto 0;
+  margin: 0 auto var(--space-2);
 }
 
 .maka-composer-workspace-picker {
@@ -312,10 +259,9 @@
 }
 
 .maka-composer-branch-empty {
+  font: var(--maka-text-supporting);
   padding: var(--space-2) var(--space-2);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   text-align: center;
 }
 
@@ -351,10 +297,9 @@
 }
 
 .maka-composer-project-status {
+  font: var(--maka-text-supporting);
   margin-left: auto;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-project-check {
@@ -369,6 +314,7 @@
    it never touches the #740 constant footprint). Edged, not pill; quiet caption
    text + one link-button into Settings · 模型. Theme-aware via tokens. Centered to the chat measure, matching the revision-notice layout. */
 .maka-composer-no-model-hint {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -379,16 +325,12 @@
   border: var(--border-width-hairline) solid var(--warning);
   border-radius: var(--radius-control);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-no-model-hint-action {
+  font: var(--maka-text-supporting);
   flex-shrink: 0;
   color: var(--link);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-medium);
   text-decoration: none;
   border-radius: var(--radius-control);
 }
@@ -405,6 +347,7 @@
 /* Edit-and-resend notice. A single quiet inline pill above the composer form,
    matching the composer toolbar chip family (not a heavy info card). */
 .maka-composer-revision-notice {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
@@ -413,13 +356,15 @@
   margin: 0 auto var(--space-1);
   padding: 0 var(--space-1-5);
   box-sizing: border-box;
-  height: 26px;
+  /* #1879: was `height: 26px`, an off-ruler literal. The floor is arithmetic
+     under `border-box`: a 20px supporting line box plus two hairline borders
+     needs 22px, so `--h-control-sm` (24px) is the smallest tier that holds it
+     without clipping. Loses 2px. */
+  height: var(--h-control-sm);
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--background-elevated);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-revision-notice > svg {
@@ -443,18 +388,24 @@
   text-overflow: ellipsis;
 }
 
+/* #1879: the one site in this family where the old height was not merely
+   off-ruler but smaller than the line box it renders — measured, an 18px box
+   around a 20px line box, and `display: block` so the text was not centred
+   either. Nothing clipped (the 2px excess is half-leading, and there is no
+   `overflow: hidden` here), but a box shorter than its own line box has no
+   defensible height. `--h-control-xs` (20px) is that line box. Gains 2px. */
 .maka-composer-revision-notice-cancel {
+  font: var(--maka-text-supporting);
   appearance: none;
   flex: 0 0 auto;
-  height: 18px;
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
   padding: 0 var(--space-1-5);
   border: none;
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
   transition: background-color var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong);
 }

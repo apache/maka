@@ -156,9 +156,9 @@ export interface CuOverlayHook {
 }
 
 /**
- * The host dispatch seam. Implemented in @maka/computer-use by the cua-driver
- * backend, which spawns trycua/cua-driver and speaks its JSON-RPC protocol over
- * stdio. Alternative backends can plug in behind this same interface later.
+ * The host dispatch seam. Implemented in @maka/computer-use by the maka-cu
+ * backend, which spawns the maka-cu executor and speaks `maka.cu/2` over stdio.
+ * Alternative backends can plug in behind this same interface later.
  */
 export interface CuDispatchBackend {
   /** Live macOS TCC status. Called at EVERY action-start — cached "granted" is

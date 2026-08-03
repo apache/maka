@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, type LlmConnection, type OnboardingState, type SessionSummary, type UiLocale } from '@maka/core';
+import { generalizedErrorMessage, generalizedErrorMessageChinese, hasSettledInitialOnboarding, type LlmConnection, type OnboardingState, type SessionSummary, type UiLocale } from '@maka/core';
 import { useUiLocale } from '@maka/ui';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { getOnboardingCopy } from './locales/onboarding-copy.js';
@@ -29,8 +29,8 @@ import { getOnboardingCopy } from './locales/onboarding-copy.js';
  */
 export interface UseOnboardingSnapshotResult {
   snapshot: OnboardingSnapshot | null;
-  /** First successful mounted pull, latched until AppShell consumes the bootstrap handoff. */
-  firstMountedSnapshot: OnboardingSnapshot | null;
+  /** Latest mounted pull, handed to AppShell once for bootstrap reconciliation. */
+  mountedSnapshotHandoff: OnboardingSnapshot | null;
   error: string | null;
   refresh: () => void;
   /** Sessions from the snapshot — populated on first load, before the separate sessions:list IPC. */
@@ -54,20 +54,42 @@ export interface UseOnboardingSnapshotDeps {
 
 export interface OnboardingSnapshotState {
   snapshot: OnboardingSnapshot | null;
-  firstMountedSnapshot: OnboardingSnapshot | null;
+  mountedSnapshotHandoff: OnboardingSnapshot | null;
+}
+
+/**
+ * The core readiness pair may seed only the unfinished first task. Once the
+ * guide is settled or workspace history exists, normal Composer preference
+ * rules own new-task selection again.
+ */
+export function getOnboardingActivationCandidate(
+  snapshot: Pick<OnboardingSnapshot, 'state' | 'milestones'> | null,
+  hasWorkspaceHistory: boolean,
+): { llmConnectionSlug: string; model: string } | undefined {
+  if (
+    snapshot?.state.kind !== 'ready_empty' ||
+    hasWorkspaceHistory ||
+    hasSettledInitialOnboarding(snapshot.milestones)
+  ) {
+    return undefined;
+  }
+  return {
+    llmConnectionSlug: snapshot.state.connectionSlug,
+    model: snapshot.state.model,
+  };
 }
 
 export function createOnboardingSnapshotState(initialSnapshot: OnboardingSnapshot | null): OnboardingSnapshotState {
-  return { snapshot: initialSnapshot, firstMountedSnapshot: null };
+  return { snapshot: initialSnapshot, mountedSnapshotHandoff: null };
 }
 
 export function advanceOnboardingSnapshotState(
-  current: OnboardingSnapshotState,
+  _current: OnboardingSnapshotState,
   next: OnboardingSnapshot,
 ): OnboardingSnapshotState {
   return {
     snapshot: next,
-    firstMountedSnapshot: current.firstMountedSnapshot ?? next,
+    mountedSnapshotHandoff: next,
   };
 }
 
@@ -133,7 +155,7 @@ export function useOnboardingSnapshotImpl(
 
   return {
     snapshot: snapshotState.snapshot,
-    firstMountedSnapshot: snapshotState.firstMountedSnapshot,
+    mountedSnapshotHandoff: snapshotState.mountedSnapshotHandoff,
     error,
     refresh,
     getSessions,
@@ -255,8 +277,7 @@ export function isSetupRequired(state: OnboardingState | undefined): boolean {
   if (!state) return false;
   return (
     state.kind === 'needs_connection' ||
-    state.kind === 'needs_default_connection' ||
     state.kind === 'needs_connection_credentials' ||
-    state.kind === 'needs_default_model'
+    state.kind === 'needs_model'
   );
 }

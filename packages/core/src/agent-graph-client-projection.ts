@@ -54,6 +54,10 @@ export class AgentGraphClientProjectionConflictError extends Error {
   readonly name = 'AgentGraphClientProjectionConflictError';
 }
 
+export class AgentGraphClientTerminalCursorError extends Error {
+  readonly name = 'AgentGraphClientTerminalCursorError';
+}
+
 export interface CommitAgentGraphClientProjectionRequest {
   schemaVersion: typeof AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION;
   graphId: string;

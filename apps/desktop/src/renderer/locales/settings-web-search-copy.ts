@@ -6,7 +6,7 @@ export type WebSearchSettingsCopy = {
   statusAria: string; lastTest: string; enabledAria: string; key: string; envKeyHelp: string; savedKeyHelp: string;
   envPlaceholder: string; storedPlaceholder: string; keyPlaceholder: string; keyAria: string; actions: string; actionsHelp: string;
   saving: string; saveKey: string; testing: string; testKey: string; clearing: string; clearKey: string;
-  liveTitle: string; liveHelp: string; query: string; queryHelp: string; queryPlaceholder: string; queryAria: string;
+  liveTitle: string; liveHelp: string; query: string; queryHelp: string; queryPlaceholder: string;
   execute: string; executeHelp: string; searching: string; search: string; queryFailed(error: string): string; noResults: string; resultsAria: string;
   disabledReasons: { noKey: string; disabled: string; noQuery: string };
   statuses: Record<WebSearchCredentialStatus, string> & { validEnabled: string; validDisabled: string; unknownEnabled: string };
@@ -24,7 +24,7 @@ const SETTINGS_WEB_SEARCH_COPY = {
     envPlaceholder: '由环境变量提供', storedPlaceholder: '已保存（输入新密钥可替换）', keyPlaceholder: 'tvly-xxxxxxxx', keyAria: 'Tavily 密钥',
     actions: '凭据操作', actionsHelp: '保存后可以测试一次真实请求；清空凭据会同步关闭联网搜索。', saving: '保存中…', saveKey: '保存密钥', testing: '测试中…', testKey: '测试凭据', clearing: '清空中…', clearKey: '清空密钥',
     liveTitle: '真实查询验证', liveHelp: '直接发一条真实查询，看到 Tavily 返回的标题 / 摘要 / 来源域名。结果只显示在此页面，不写入会话也不写入遥测。',
-    query: '查询', queryHelp: '输入一条用于验证联网搜索配置的真实请求。', queryPlaceholder: '例如：本周 AI 产品发布动态', queryAria: '联网搜索真实查询',
+    query: '查询', queryHelp: '输入一条用于验证联网搜索配置的真实请求。', queryPlaceholder: '例如：本周 AI 产品发布动态',
     execute: '执行查询', executeHelp: '按钮可用时会走主进程 Tavily 请求并刷新下方结果。', searching: '搜索中…', search: '搜索', queryFailed: (error) => `查询失败：${error}`, noResults: '没有结果。', resultsAria: '联网搜索真实查询结果',
     disabledReasons: { noKey: '先保存 Tavily 密钥，或设置 TAVILY_API_KEY 环境变量', disabled: '先启用联网搜索', noQuery: '输入查询后再搜索' },
     statuses: { valid: '已验证', invalid_credentials: '密钥无效', rate_limited: 'Tavily 限流', timeout: '测试超时', network_error: '网络异常', not_configured: '等待配置', untested: '未测试', validEnabled: '已验证 · 已启用', validDisabled: '已验证 · 未启用', unknownEnabled: '未测试 · 已启用' },
@@ -40,7 +40,7 @@ const SETTINGS_WEB_SEARCH_COPY = {
     envPlaceholder: 'Provided by environment variable', storedPlaceholder: 'Saved (enter a new key to replace)', keyPlaceholder: 'tvly-xxxxxxxx', keyAria: 'Tavily key',
     actions: 'Credential actions', actionsHelp: 'After saving, test with a real request. Clearing credentials also disables web search.', saving: 'Saving…', saveKey: 'Save key', testing: 'Testing…', testKey: 'Test credentials', clearing: 'Clearing…', clearKey: 'Clear key',
     liveTitle: 'Live query verification', liveHelp: 'Send a real query and inspect Tavily titles, snippets, and source domains. Results stay on this page and are not written to sessions or telemetry.',
-    query: 'Query', queryHelp: 'Enter a real query to verify the web search configuration.', queryPlaceholder: 'For example: AI product launches this week', queryAria: 'Web search live query',
+    query: 'Query', queryHelp: 'Enter a real query to verify the web search configuration.', queryPlaceholder: 'For example: AI product launches this week',
     execute: 'Run query', executeHelp: 'When available, the button sends a main-process Tavily request and refreshes the results below.', searching: 'Searching…', search: 'Search', queryFailed: (error) => `Query failed: ${error}`, noResults: 'No results.', resultsAria: 'Web search live query results',
     disabledReasons: { noKey: 'Save a Tavily key or set the TAVILY_API_KEY environment variable first', disabled: 'Enable web search first', noQuery: 'Enter a query before searching' },
     statuses: { valid: 'Verified', invalid_credentials: 'Invalid key', rate_limited: 'Rate limited by Tavily', timeout: 'Test timed out', network_error: 'Network error', not_configured: 'Needs setup', untested: 'Not tested', validEnabled: 'Verified · enabled', validDisabled: 'Verified · disabled', unknownEnabled: 'Not tested · enabled' },

@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures';
+import { test, expect, COMPOSER_INPUT } from './fixtures';
 
 /**
  * Quote companion lifecycle: stage selection → side panel → remove one staged
@@ -10,7 +10,7 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
   window: page,
 }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
-  const mainComposer = page.locator('.maka-composer-textarea');
+  const mainComposer = page.locator(COMPOSER_INPUT);
   await mainComposer.fill('quote companion source one');
   await mainComposer.press('Enter');
 
@@ -60,7 +60,7 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
     }),
   ).toBeVisible();
 
-  const companionComposer = panel.locator('.maka-composer-textarea');
+  const companionComposer = panel.locator(COMPOSER_INPUT);
   await companionComposer.fill('explain this quote');
   await companionComposer.press('Enter');
   await expect(panel.getByText(/Fake backend received: explain this quote/)).toBeVisible();

@@ -6,6 +6,13 @@
     "floor": { "width": 480, "height": 900 }
   },
   "surfaces": {
+    "onboarding": {
+      "storyId": "product-onboarding--needs-connection",
+      "productionHost": "ChatView > OnboardingHero",
+      "state": "Fresh workspace choosing its first model provider",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
     "settings": {
       "storyId": "product-settings-pages--general",
       "productionHost": "SettingsSurface",
@@ -80,6 +87,17 @@
       "viewports": ["wide", "compact", "floor"],
       "colorSchemes": ["light", "dark"]
     },
+    "dailyReviewSettingsBounds": {
+      "storyId": "product-settings-pages--daily-review-model-selector-open-narrow",
+      "productionHost": "SettingsSurface > DailyReviewSettingsPage",
+      "state": "Time input and open analysis-model selector at the minimum window width",
+      "viewports": ["floor"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "wide": "The floor contract is the stricter horizontal-containment case.",
+        "compact": "The floor contract is the stricter horizontal-containment case."
+      }
+    },
     "sessionContext": {
       "storyId": "product-shell-official-appshell--session-context-layer",
       "productionHost": "AppShell > ChatView",
@@ -87,6 +105,18 @@
       "viewports": ["wide", "compact", "floor"],
       "colorSchemes": ["light", "dark"],
       "checks": ["session-context-layer"]
+    },
+    "composer": {
+      "storyId": "product-shell-official-appshell--new-chat-composer",
+      "productionHost": "ChatView > Composer > Astryx ChatComposer",
+      "state": "Focused empty editor before the first message is sent",
+      "viewports": ["wide"],
+      "colorSchemes": ["light", "dark"],
+      "checks": ["composer-focus-ownership"],
+      "viewportOptOuts": {
+        "compact": "Focus ownership is independent of viewport geometry.",
+        "floor": "Focus ownership is independent of viewport geometry."
+      }
     },
     "askUserQuestion": {
       "storyId": "product-ask-user-question--pending-decisions",

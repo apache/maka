@@ -73,8 +73,7 @@ describe('ToolRuntime durable boundary', () => {
     );
   });
 
-  it('does not cross T1 after the captured Run loses ownership', async () => {
-    let runReads = 0;
+  it('refuses durable tool execution when the turn carries no run id', async () => {
     let preparedCalls = 0;
     let implementationCalls = 0;
     const harness = makeHarness(
@@ -88,7 +87,7 @@ describe('ToolRuntime durable boundary', () => {
         },
       },
       undefined,
-      () => (++runReads === 1 ? 'run-1' : undefined),
+      null,
     );
 
     await assert.rejects(
@@ -98,7 +97,7 @@ describe('ToolRuntime durable boundary', () => {
           return { ok: true };
         }),
       ),
-      /lost Run ownership/,
+      /Durable tool execution requires a run id/,
     );
 
     assert.equal(preparedCalls, 0);
@@ -303,11 +302,8 @@ describe('ToolRuntime durable boundary', () => {
   });
 });
 
-function makeHarness(
-  sink: RuntimeCommitSink,
-  order?: string[],
-  getCurrentRunId: () => string | undefined = () => 'run-1',
-) {
+// `null` means the turn carries no run id at all; `undefined` keeps the default.
+function makeHarness(sink: RuntimeCommitSink, order?: string[], runId: string | null = 'run-1') {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
   const runtime = createTestToolRuntime({
@@ -321,7 +317,7 @@ function makeHarness(
     newId: nextId(),
     now: nextNow(),
     getPermissionPauseTarget: () => null,
-    getCurrentRunId,
+    ...(runId ? { runId } : {}),
     runtimeCommitSink: sink,
   });
   return {

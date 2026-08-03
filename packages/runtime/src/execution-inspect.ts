@@ -1,10 +1,21 @@
 import type { AgentRunHeader, RuntimeEvent, SessionHeader } from '@maka/core';
+import {
+  AGENT_RUN_INSPECT_DOCUMENT_VERSION,
+  SESSION_INSPECT_DOCUMENT_VERSION,
+  type AgentRunInspectCompactionCheckpoint,
+  type AgentRunInspectDocument,
+  type AgentRunInspectIdentity,
+  type AgentRunInspectToolFact,
+  type AgentRunInspectToolSummary,
+  type ExecutionInspectDiagnostic,
+  type ExecutionInspectSeverity,
+  type SessionInspectDocument,
+} from '@maka/core/execution-inspect';
 import type { ExecutionLogCoverage } from '@maka/core/execution-evidence';
 import {
   inspectAgentRunReadModel,
   type AgentRunInspectReader,
   type AgentRunInspectDiagnostic as SourceDiagnostic,
-  type AgentRunInspectSourceHealth,
   type InspectAgentRunOptions,
   type RuntimeEventInspectReader,
   type SessionAgentRunInspectReader,
@@ -14,107 +25,13 @@ import {
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
 
-export const AGENT_RUN_INSPECT_DOCUMENT_VERSION = 'maka.agent_run_inspect.v1' as const;
-export const SESSION_INSPECT_DOCUMENT_VERSION = 'maka.session_inspect.v1' as const;
-
-export type ExecutionInspectSeverity = 'error' | 'warning' | 'info';
-
-export interface ExecutionInspectDiagnostic {
-  severity: ExecutionInspectSeverity;
-  code: string;
-  message: string;
-  sessionId: string;
-  agentRunId?: string;
-  turnId?: string;
-  eventId?: string;
-}
-
-export interface AgentRunInspectIdentity {
-  sessionId: string;
-  agentRunId: string;
-  invocationId?: string;
-  turnId: string;
-  parentRunId?: string;
-  resumedFromRunId?: string;
-  retriedFromRunId?: string;
-  parentTurnId?: string;
-  agentId?: string;
-  status: AgentRunHeader['status'];
-  createdAt: number;
-  updatedAt: number;
-  completedAt?: number;
-  failureClass?: string;
-  abortSource?: string;
-}
-
-export interface AgentRunInspectToolFact {
-  toolCallId: string;
-  toolName: string;
-  eventId: string;
-}
-
-export interface AgentRunInspectToolSummary {
-  callCount: number;
-  responseCount: number;
-  errorResponseCount: number;
-  callsWithoutResponse: AgentRunInspectToolFact[];
-  responsesWithoutCall: AgentRunInspectToolFact[];
-}
-
-export interface AgentRunInspectCompactionCheckpoint {
-  eventId: string;
-  validation: 'shape_valid' | 'invalid';
-  checkpointId?: string;
-  policyVersion?: string;
-  sourceCoverage?: ExecutionLogCoverage;
-}
-
-export interface AgentRunInspectDocument {
-  schemaVersion: typeof AGENT_RUN_INSPECT_DOCUMENT_VERSION;
-  kind: 'agent_run';
-  agentRun: AgentRunInspectIdentity;
-  sources: {
-    operationalEventCount: number;
-    runtimeEventCount: number;
-    runtimeCoverage?: ExecutionLogCoverage;
-    health: AgentRunInspectSourceHealth;
-  };
-  tools: AgentRunInspectToolSummary;
-  compactionCheckpoints: AgentRunInspectCompactionCheckpoint[];
-  diagnostics: ExecutionInspectDiagnostic[];
-}
-
-export interface SessionInspectSummary {
-  sessionId: string;
-  name: string;
-  status: SessionHeader['status'];
-  createdAt: number;
-  lastUsedAt: number;
-  lastMessageAt?: number;
-  isArchived: boolean;
-  parentSessionId?: string;
-  branchOfTurnId?: string;
-  revisionRootSessionId?: string;
-  revisionParentSessionId?: string;
-  revisionOfTurnId?: string;
-  revisionIndex?: number;
-  revisionState?: 'preparing' | 'committed';
-}
-
-export interface SessionInspectDocument {
-  schemaVersion: typeof SESSION_INSPECT_DOCUMENT_VERSION;
-  kind: 'session';
-  session: SessionInspectSummary;
-  agentRuns: AgentRunInspectDocument[];
-  diagnostics: ExecutionInspectDiagnostic[];
-}
-
 export interface SessionHeaderReader {
   readHeader(sessionId: string): Promise<SessionHeader>;
 }
 
 export interface InspectSessionDocumentOptions {
   header?: SessionHeader;
+  runHeaders?: readonly AgentRunHeader[];
   isFatalReadError?: InspectAgentRunOptions['isFatalReadError'];
 }
 
@@ -133,6 +50,7 @@ export async function inspectAgentRunDocument(
     runId: input.agentRunId,
     ...(input.header ? { header: input.header } : {}),
     ...(input.isFatalReadError ? { isFatalReadError: input.isFatalReadError } : {}),
+    includeModelReplay: false,
   });
   const diagnostics = model.diagnostics.map((item) => sourceDiagnostic(model.header, item));
   const tools = inspectTools(model.header, model.runtimeEvents, diagnostics);
@@ -167,7 +85,7 @@ export async function inspectSessionDocument(
   options: InspectSessionDocumentOptions = {},
 ): Promise<SessionInspectDocument> {
   const resolvedHeader = options.header ?? (await sessionStore.readHeader(sessionId));
-  const runHeaders = await runStore.listSessionRuns(sessionId);
+  const runHeaders = options.runHeaders ?? (await runStore.listSessionRuns(sessionId));
   const agentRuns: AgentRunInspectDocument[] = [];
   for (const runHeader of runHeaders) {
     agentRuns.push(

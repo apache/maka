@@ -66,9 +66,9 @@ export const makaTheme = defineTheme({
   // leads with Figtree, which Maka does not bundle, so every Astryx surface
   // (Markdown prose included) declared a family that silently fell back —
   // and its stack carries no CJK face, while Maka is CJK-first. Declaring the
-  // product stacks here makes --font-family-body/heading/code identical to
-  // what the product already uses; maka-tokens.css now aliases --font-sans /
-  // --font-mono to these instead of holding a second copy.
+  // product stacks here makes --font-family-body/heading/code the only font
+  // stacks in the renderer; the product's own --font-sans / --font-mono names
+  // are gone, and maka-tokens.css reads these directly (#1875).
   typography: {
     scale: { base: 14, ratio: 1.125 },
     // PR-UI-ALIGN-0's "clean native" feel comes from the SYSTEM font (SF Pro
@@ -87,6 +87,79 @@ export const makaTheme = defineTheme({
       fallbacks:
         '"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, ' +
         '"Liberation Mono", monospace',
+    },
+  },
+  // The neutral background stack and the hairline, pointed back at the product
+  // palette.
+  //
+  // Astryx ships these as static light-dark() pairs, which cannot follow Maka's
+  // eleven switchable palettes — every one of them overrides --background and
+  // none can reach an Astryx token. Left stock, Astryx surfaces would hold one
+  // hardcoded neutral ramp while the product around them moved, and in dark mode
+  // the two disagree outright: Astryx's surface is #262626 against the product's
+  // #171719, so the nav column rendered LIGHTER than the content it navigates.
+  //
+  // Direction of authority is the opposite of the type scale above, and for the
+  // opposite reason: Astryx's scale covers everything Maka needs from type,
+  // while its neutrals are a fraction of a palette that also carries status,
+  // chat, and per-theme colors. So type flows Astryx → product, neutrals flow
+  // product → Astryx.
+  //
+  // The whole ramp moves or none of it does. Remapping only the two the shell
+  // reads (surface/body) leaves card, popover, muted and the hairline on the
+  // static pair, and a ramp with one half palette-driven and the other half
+  // frozen does not just drift — it INVERTS: stock muted is #1b1b1b (L 0.222),
+  // and once surface follows --background (L 0.18–0.24 across the dark
+  // palettes) the recessive fill sits at or above the surface it is recessed
+  // into. Card, Code, ChatToolCalls, Slider and TableRow are the transcript, not
+  // chrome, so that inversion is visible in the main reading surface.
+  //
+  // The product tokens these land on are the product's own stated hierarchy:
+  // --surface-canvas is the plate behind everything, --background is what cards
+  // paint, --background-elevated is aliased to it on purpose (lift comes from
+  // the plate and the hairline, not a darker shade). --muted is the one
+  // structural upgrade over what Astryx ships: it is foreground at 5% rather
+  // than an opaque literal, so it is defined RELATIVE to whatever it sits on and
+  // cannot invert in any palette or mode — the failure above is unrepresentable
+  // rather than merely fixed.
+  tokens: {
+    '--color-background-body': 'var(--surface-canvas)',
+    '--color-background-surface': 'var(--background)',
+    '--color-background-card': 'var(--background-elevated)',
+    '--color-background-popover': 'var(--background-elevated)',
+    '--color-background-muted': 'var(--muted)',
+    '--color-border': 'var(--border)',
+  },
+  // The column edge itself. Astryx draws a divider only on
+  // `AppShell variant="section"`, which is a hardcoded `variant === 'section'`
+  // in AppShell.tsx and pairs the line with no wash at all. Cursor and Codex
+  // both do the opposite of one-or-the-other: a 1px rule AND a wash, with the
+  // wash pulled far back (measured off their windows, sidebar→content ΔL 0.025
+  // and ~0.010 against Maka's 0.045). The line states the boundary; the wash
+  // only says the two columns are different material. Authored here rather than
+  // as a product override so the shell keeps one paint authority — this emits
+  // `.astryx-app-shell-sidenav { border-inline-end }` inside the theme's own
+  // @scope. It draws with --color-border, the same token Divider, Card and the
+  // generated `hr` rule use, so the column edge cannot drift away from every
+  // other hairline in the app; that token is remapped to the product's --border
+  // just above. Keyed on the variant, not `base`: the edge belongs to the
+  // elevated treatment, so a future variant change re-decides it instead of
+  // inheriting a line that no longer matches the columns.
+  components: {
+    'app-shell-sidenav': {
+      // Both halves of the edge are animated, in `base` rather than under the
+      // variant: the ease belongs to the column whatever material it wears, and
+      // only the collapsed state (shell-layout.css) decides what it eases to.
+      base: {
+        transitionProperty: 'background-color, border-color',
+        transitionDuration: 'var(--duration-base)',
+        transitionTimingFunction: 'var(--ease-out-strong)',
+      },
+      'variant:elevated': {
+        borderInlineEndWidth: '1px',
+        borderInlineEndStyle: 'solid',
+        borderInlineEndColor: 'var(--color-border)',
+      },
     },
   },
 });

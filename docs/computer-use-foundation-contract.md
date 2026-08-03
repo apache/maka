@@ -33,7 +33,7 @@
    - drag/zoom 两端必须属于同一个 bound window。
 
 4. Execution ownership
-   - cua-driver 是唯一 native executor；window/page discovery、semantic preparation、input dispatch 和 effect readback 均留在该边界内。
+   - maka-cu 是唯一 native executor；window/page discovery、semantic preparation、input dispatch 和 effect readback 均留在该边界内。
    - agent 不得移动真实鼠标、抢前台焦点、临时 activate 窗口或执行 windowless desktop input。
    - keyboard ownership 绑定 `session + turn + generation + pid + windowId + page/frame`，并在失败、stale、新 observation、intervention、service generation 变化、turn/session 结束时撤销。
    - child process 在未知 action outcome 下退出时必须 re-observe，禁止自动重放。

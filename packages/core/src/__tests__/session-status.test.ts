@@ -74,6 +74,7 @@ describe('TurnStatus contract', () => {
       {
         turnId: 't1',
         status: 'aborted',
+        statusSource: 'recorded',
         retriedFromTurnId: 't0',
         abortedAt: 4,
         partialOutputRetained: true,

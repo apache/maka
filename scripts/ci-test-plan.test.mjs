@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
+import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
 
 const graph = loadWorkspaceGraph();
 
@@ -57,10 +57,21 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
 });
 
 test('stress and specialized script checks run only for their owning surfaces', () => {
+  for (const path of [
+    'packages/storage/src/agent-run-store.ts',
+    'packages/storage/src/git-workspace-service.ts',
+    'packages/storage/src/__tests__/fixtures/git-workspace-service-crash-child.ts',
+    'packages/storage/src/root-authority.ts',
+    'packages/storage/src/__tests__/root-authority.test.ts',
+    'packages/storage/src/__tests__/fixtures/root-lock-holder.ts',
+  ]) {
+    assert.equal(planTests([path], { graph }).storageStress, true, path);
+  }
   assert.equal(
-    planTests(['packages/storage/src/agent-run-store.ts'], { graph }).storageStress,
-    true,
+    planTests(['packages/storage/src/session-store.ts'], { graph }).storageStress,
+    false,
   );
+  assert.equal(planTests([], { graph, forceFull: true }).storageStress, false);
   for (const path of [
     'scripts/fixture-env.mjs',
     'scripts/ci-test-plan.test.mjs',
@@ -89,12 +100,43 @@ test('sandbox is flagged whenever the cli workspace runs in the closure', () => 
   }
 });
 
+test('heavy workspaces are projected onto dedicated CI lanes', () => {
+  const runtimeHost = planTests(['packages/runtime-host/src/server/index.ts'], { graph });
+  assert.equal(runtimeHost.runtimeHost, true);
+  assert.equal(runtimeHost.headless, false);
+  assert.deepEqual(runtimeHost.standardWorkspaces, ['packages/cli']);
+
+  const runtime = planTests(['packages/runtime/src/index.ts'], { graph });
+  assert.equal(runtime.runtimeHost, true);
+  assert.equal(runtime.headless, true);
+  assert.deepEqual(runtime.standardWorkspaces, [
+    'packages/runtime',
+    'packages/computer-use',
+    'packages/cli',
+    'apps/desktop',
+  ]);
+
+  const full = planTests([], { graph, forceFull: true });
+  assert.equal(full.runtimeHost, true);
+  assert.equal(full.headless, true);
+  assert.deepEqual(
+    full.standardWorkspaces,
+    graph.dirs.filter((dir) => dir !== 'packages/runtime-host' && dir !== 'packages/headless'),
+  );
+
+  const outputs = formatGitHubOutputs(runtimeHost).split('\n');
+  assert.ok(outputs.includes('runtime_host=true'));
+  assert.ok(outputs.includes('headless=false'));
+  assert.ok(outputs.includes('standard_workspaces=packages/cli'));
+});
+
 test('global and unknown production changes fail safe to the complete suite', () => {
   for (const path of ['package-lock.json', 'scripts/ci-test-plan.mjs', 'new-root/file.ts']) {
     const plan = planTests([path], { graph });
     assert.equal(plan.full, true);
     assert.equal(plan.e2e, true);
     assert.equal(plan.storybook, true);
+    assert.equal(plan.storageStress, false);
     assert.deepEqual(plan.workspaces, graph.dirs);
   }
 });

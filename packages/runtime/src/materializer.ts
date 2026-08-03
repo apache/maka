@@ -1,7 +1,7 @@
 /**
- * Materializer — converts the raw JSONL message stream into the view-model
- * shape the UI renders. Lives in `runtime` (not `storage`) because correlation
- * is a semantic operation, not a disk concern.
+ * Materializer — converts durable messages into the view-model shape the UI
+ * renders. Lives in `runtime` (not `storage`) because correlation is a semantic
+ * operation, not a disk concern.
  *
  * Runtime/UI materializer for rebuilding chat and tool activity state from
  * append-only stored messages.
@@ -17,10 +17,12 @@ import type {
   TokenUsageMessage,
   SystemNoteMessage,
   ToolActivityKind,
+  ToolActivityStatus,
   ToolResultContent,
+  TurnStatus,
 } from '@maka/core';
-import { projectToolActivityArgs } from '@maka/core';
-import { toolResultActivityStatus } from '@maka/core';
+import { deriveTurnRecords, projectToolActivityArgs } from '@maka/core';
+import { toolResultActivityStatus, unfinishedToolActivityStatus } from '@maka/core';
 
 // ============================================================================
 // View-model types (mirror packages/ui/src exports, lifted here for reuse)
@@ -32,7 +34,7 @@ export interface ToolActivityItem {
   activityKind?: ToolActivityKind;
   displayName?: string;
   intent?: string;
-  status: 'pending' | 'waiting_permission' | 'running' | 'completed' | 'errored' | 'interrupted';
+  status: ToolActivityStatus;
   args: unknown;
   result?: ToolResultContent;
   isError?: boolean;
@@ -56,12 +58,12 @@ export interface SessionViewModel {
 // ============================================================================
 
 /**
- * Convert StoredMessage[] (raw JSONL) into a ChatItem[] for rendering.
+ * Convert StoredMessage[] into a ChatItem[] for rendering.
  *
- * Orphan ToolCallMessage (no matching ToolResultMessage by toolUseId) is
- * rendered as ToolActivityItem.status === 'interrupted'. Storage never
- * synthesizes a fake ToolResultMessage — that's our
- * job here.
+ * A ToolCallMessage with no matching ToolResultMessage is read against its
+ * turn: still `running` means the call is in flight, anything else makes it
+ * `interrupted`. Storage never synthesizes a fake ToolResultMessage — that's
+ * our job here.
  */
 export function materializeSession(messages: readonly StoredMessage[]): SessionViewModel {
   const items: ChatItem[] = [];
@@ -73,6 +75,9 @@ export function materializeSession(messages: readonly StoredMessage[]): SessionV
   // Index for tool correlation. ToolCallMessage.id === toolUseId, by §4.2.
   const resultsByToolUseId = new Map<string, ToolResultMessage>();
   const decisionsByToolUseId = new Map<string, PermissionDecisionMessage>();
+  const turnStatusById = new Map(
+    deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
+  );
 
   // First pass: index results + decisions.
   for (const m of messages) {
@@ -98,7 +103,7 @@ export function materializeSession(messages: readonly StoredMessage[]): SessionV
         const decision = decisionsByToolUseId.get(m.id);
         items.push({
           kind: 'tool',
-          item: toolActivityFromPair(m, result),
+          item: toolActivityFromPair(m, result, turnStatusById.get(m.turnId)),
           decision,
         });
         break;
@@ -134,7 +139,7 @@ export function materializeSession(messages: readonly StoredMessage[]): SessionV
 /**
  * Build a ToolActivityItem from a (ToolCallMessage, ToolResultMessage?) pair.
  *
- * - Missing result → status 'interrupted' (orphan from crash)
+ * - Missing result → `unfinishedToolActivityStatus` reads it against the turn
  * - Cancelled shell / aborted explore → 'interrupted' (not failure)
  * - Result with isError === true → 'errored' (includes permission deny/block)
  * - Result with isError === false → 'completed'
@@ -142,6 +147,7 @@ export function materializeSession(messages: readonly StoredMessage[]): SessionV
 function toolActivityFromPair(
   call: ToolCallMessage,
   result: ToolResultMessage | undefined,
+  turnStatus: TurnStatus | undefined,
 ): ToolActivityItem {
   if (result === undefined) {
     return {
@@ -150,7 +156,7 @@ function toolActivityFromPair(
       ...(call.activityKind !== undefined ? { activityKind: call.activityKind } : {}),
       ...(call.displayName !== undefined ? { displayName: call.displayName } : {}),
       ...(call.intent !== undefined ? { intent: call.intent } : {}),
-      status: 'interrupted',
+      status: unfinishedToolActivityStatus(turnStatus),
       args: projectToolActivityArgs(call.toolName, call.args),
       ts: call.ts,
     };

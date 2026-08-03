@@ -10,54 +10,34 @@ import {
 } from '../computer-use-host.js';
 
 describe('Computer Use host health', () => {
-  const role = (
+  const snapshot = (
     state: 'idle' | 'starting' | 'ready' | 'backing_off' | 'unavailable' | 'disposed',
-  ) => ({
-    role: 'action' as const,
-    state,
-    generation: 1,
-    restartAttempts: 0,
-  });
+  ) => ({ state, generation: 1, restartAttempts: 0 });
 
-  it('does not report a binary-only backend as healthy before first use', () => {
-    assert.deepEqual(computerUseServiceHealth('cua-driver', {
-      action: role('idle'),
-      capture: { ...role('idle'), role: 'capture' },
-    }), {
+  it('does not report a binary-only executor as healthy before first use', () => {
+    assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('idle')), {
       state: 'not_run',
-      reason: 'cua-driver 已可用，将在首次调用时启动。',
+      reason: 'maka-cu 已可用，将在首次调用时启动。',
     });
   });
 
-  it('reports ready, recovery, and unavailable states from both roles', () => {
-    assert.equal(computerUseServiceHealth('cua-driver', {
-      action: role('ready'),
-      capture: { ...role('ready'), role: 'capture' },
-    }).state, 'healthy');
-    assert.equal(computerUseServiceHealth('cua-driver', {
-      action: role('backing_off'),
-      capture: { ...role('ready'), role: 'capture' },
-    }).reason, 'cua-driver service 正在启动或恢复。');
-    assert.deepEqual(computerUseServiceHealth('cua-driver', {
-      action: role('unavailable'),
-      capture: { ...role('ready'), role: 'capture' },
-    }), {
+  it('reports ready, recovery, and unavailable states', () => {
+    assert.equal(computerUseServiceHealth('maka-cu', snapshot('ready')).state, 'healthy');
+    assert.equal(
+      computerUseServiceHealth('maka-cu', snapshot('backing_off')).reason,
+      'maka-cu executor 正在启动或恢复。',
+    );
+    assert.equal(
+      computerUseServiceHealth('maka-cu', snapshot('starting')).state,
+      'degraded',
+    );
+    assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('unavailable')), {
       state: 'not_available',
-      reason: 'cua-driver service 启动失败或已退出。',
+      reason: 'maka-cu executor 启动失败或已退出。',
     });
-    assert.deepEqual(computerUseServiceHealth('cua-driver', {
-      action: role('ready'),
-      capture: { ...role('idle'), role: 'capture' },
-    }), {
-      state: 'not_run',
-      reason: 'cua-driver 部分服务已启动，其余服务将在需要时启动。',
-    });
-    assert.deepEqual(computerUseServiceHealth('cua-driver', {
-      action: role('disposed'),
-      capture: { ...role('ready'), role: 'capture' },
-    }), {
+    assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('disposed')), {
       state: 'not_available',
-      reason: 'cua-driver service 已停止。',
+      reason: 'maka-cu executor 已停止。',
     });
   });
 
@@ -68,14 +48,14 @@ describe('Computer Use host health', () => {
   it('constructs a backend only when the local artifact matches the manifest hash', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-'));
     try {
-      const binaryPath = join(directory, 'cua-driver');
+      const binaryPath = join(directory, 'maka-cu');
       const manifestPath = join(directory, 'bundled-tools.json');
       const bytes = Buffer.from('#!/bin/sh\nexit 0\n');
       await writeFile(binaryPath, bytes);
       await chmod(binaryPath, 0o755);
       const hash = createHash('sha256').update(bytes).digest('hex');
       await writeFile(manifestPath, JSON.stringify({
-        cuaDriver: { binarySha256: hash, distributionReady: false },
+        makaCu: { binarySha256: hash, distributionReady: false },
       }));
 
       const validForDevelopment = createComputerUseHost({
@@ -86,7 +66,7 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(validForDevelopment.selected.backendId, process.platform === 'darwin'
-        ? 'cua-driver'
+        ? 'maka-cu'
         : 'none');
 
       const blockedForDistribution = createComputerUseHost({
@@ -99,7 +79,7 @@ describe('Computer Use host health', () => {
       assert.equal(blockedForDistribution.selected.backendId, 'none');
 
       await writeFile(manifestPath, JSON.stringify({
-        cuaDriver: { binarySha256: hash, distributionReady: true },
+        makaCu: { binarySha256: hash, distributionReady: true },
       }));
       const validForDistribution = createComputerUseHost({
         isPackaged: true,
@@ -109,11 +89,11 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(validForDistribution.selected.backendId, process.platform === 'darwin'
-        ? 'cua-driver'
+        ? 'maka-cu'
         : 'none');
 
       await writeFile(manifestPath, JSON.stringify({
-        cuaDriver: {
+        makaCu: {
           binarySha256: '0'.repeat(64),
           distributionReady: true,
         },
@@ -127,7 +107,7 @@ describe('Computer Use host health', () => {
       });
       assert.equal(invalid.selected.backendId, 'none');
 
-      const linkedBinaryPath = join(directory, 'linked-cua-driver');
+      const linkedBinaryPath = join(directory, 'linked-maka-cu');
       await symlink(binaryPath, linkedBinaryPath);
       const linked = createComputerUseHost({
         isPackaged: false,

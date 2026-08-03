@@ -8,7 +8,6 @@ import {
   Loader2,
   Pin,
   PinOff,
-  Plus,
   Search,
   Trash2,
 } from './icons.js';
@@ -22,6 +21,7 @@ import {
   Switch,
   Tab,
   TabList,
+  Token,
 } from '@astryxdesign/core';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
@@ -47,7 +47,6 @@ const DELETE_CONFIRM_TIMEOUT_MS = 4_000;
 function SkillLibraryPanel(props: {
   skills?: SkillEntry[];
   onRefreshSkills?(): void | Promise<void>;
-  onCreateSkillTemplate?(): void | Promise<void>;
   onOpenSkill?(skillId: string): void | Promise<void>;
   onUseSkill?(skillId: string, skillName: string): void;
   onImportManagedSkillSource?(): void | Promise<void>;
@@ -59,13 +58,14 @@ function SkillLibraryPanel(props: {
   onDeleteSkill?(skillRef: string): void | Promise<void>;
   actionBusy?: boolean;
   refreshPending?: boolean;
-  createPending?: boolean;
   openingSkillId?: string | null;
   installingSourceId?: string | null;
   updatingSkillId?: string | null;
   togglingSkillId?: string | null;
   deletingSkillId?: string | null;
   searchQuery?: string;
+  /** Clears the module-header search box (owned by the outer panel). */
+  onClearSearch?: () => void;
   managedSkillSources?: ManagedSkillSourceEntry[];
   bundledSkillCatalog?: BundledSkillCatalogEntry[];
   onInstallBundledSkill?(id: string): void | Promise<void>;
@@ -311,6 +311,9 @@ function SkillLibraryPanel(props: {
           description={normalizedSkillQuery
             ? copy.market.emptySearchBody
             : copy.market.emptyBody}
+          actions={normalizedSkillQuery && props.onClearSearch
+            ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={props.onClearSearch} />
+            : undefined}
           className="maka-skill-installed-empty"
         />
       ) : marketSources.length === 0 ? (
@@ -318,6 +321,17 @@ function SkillLibraryPanel(props: {
           icon={<Search />}
           title={copy.market.emptySearchTitle}
           description={copy.market.emptyFilterBody}
+          actions={(
+            <UiButton
+              variant="ghost"
+              size="sm"
+              label={copy.market.clearFilters}
+              onClick={() => {
+                setMarketCategory(MARKET_CATEGORY_ALL);
+                props.onClearSearch?.();
+              }}
+            />
+          )}
           className="maka-skill-installed-empty"
         />
       ) : (
@@ -334,7 +348,10 @@ function SkillLibraryPanel(props: {
                   </span>
                   <div className="maka-skill-market-card-title">
                     <h3>{source.name}</h3>
-                    <small>{source.id}</small>
+                    {/* The source id is an identifier, not an aside — and it
+                        is the markup, not a call-site font-family, that puts
+                        it in the code family now. */}
+                    <code>{source.id}</code>
                   </div>
                   {/* + install acts; the card itself is inert (honest
                       affordance). Disabled once the source is in the
@@ -351,7 +368,7 @@ function SkillLibraryPanel(props: {
                 </div>
                 <p>{description}</p>
                 <div className="maka-skill-market-card-foot">
-                  <Badge variant="neutral" className="maka-skill-market-category" label={copy.categories[source.category]} />
+                  <Token size="sm" className="maka-skill-market-category" label={copy.categories[source.category]} />
                   <span>{installed ? copy.install.installed : copy.install.notInstalled}</span>
                 </div>
               </article>
@@ -380,6 +397,9 @@ function SkillLibraryPanel(props: {
           icon={<Search />}
           title={copy.builtin.noMatchTitle}
           description={copy.builtin.noMatchBody}
+          actions={props.onClearSearch
+            ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={props.onClearSearch} />
+            : undefined}
           className="maka-skill-installed-empty"
         />
       ) : (
@@ -395,7 +415,7 @@ function SkillLibraryPanel(props: {
                   </span>
                   <div className="maka-skill-market-card-title">
                     <h3>{entry.name}</h3>
-                    <small>{entry.id}</small>
+                    <code>{entry.id}</code>
                   </div>
                   {/* Install copies the shipped body into the workspace. Disabled
                       once installed, so the button reads as a state, not a toggle. */}
@@ -411,7 +431,7 @@ function SkillLibraryPanel(props: {
                 </div>
                 <p>{description}</p>
                 <div className="maka-skill-market-card-foot">
-                  <Badge variant="neutral" className="maka-skill-market-category" label={copy.categories[entry.category]} />
+                  <Token size="sm" className="maka-skill-market-category" label={copy.categories[entry.category]} />
                   <span>{entry.installed ? copy.install.installed : copy.install.notInstalled}</span>
                 </div>
               </article>
@@ -430,10 +450,9 @@ function SkillLibraryPanel(props: {
           title={emptyTitle}
           description={emptyBody}
           actions={(
-            <>
-              {props.onCreateSkillTemplate ? <UiButton variant="primary" label={props.createPending ? copy.installed.createPending : copy.installed.createExample} onClick={props.onCreateSkillTemplate} isDisabled={props.actionBusy} /> : null}
-              {props.onRefreshSkills ? <UiButton variant="ghost" label={props.refreshPending ? copy.installed.refreshPending : copy.installed.refresh} onClick={props.onRefreshSkills} isDisabled={props.actionBusy} /> : null}
-            </>
+            props.onRefreshSkills
+              ? <UiButton variant="ghost" label={props.refreshPending ? copy.installed.refreshPending : copy.installed.refresh} onClick={props.onRefreshSkills} isDisabled={props.actionBusy} />
+              : undefined
           )}
           className="maka-skill-installed-empty"
         />
@@ -509,7 +528,7 @@ function SkillLibraryPanel(props: {
                       <span className="maka-skill-library-name">
                         {displayName}
                         {!isDiscoveryDiagnostic && (skillNameCounts.get(skill.name) ?? 0) > 1 && (
-                          <span className="maka-skill-library-slug">{skill.id}</span>
+                          <code className="maka-skill-library-slug">{skill.id}</code>
                         )}
                       </span>
                       {description && (
@@ -773,7 +792,6 @@ export function SkillsModuleMain(props: {
   bundledSkillCatalog?: BundledSkillCatalogEntry[];
   auditReport?: CapabilityAuditReport;
   onRefreshSkills?(): void | Promise<void>;
-  onCreateSkillTemplate?(): void | Promise<void>;
   onOpenSkill?(skillId: string): void | Promise<void>;
   onUseSkill?(skillId: string, skillName: string): void;
   onOpenSkillsFolder?(): void | Promise<void>;
@@ -818,7 +836,6 @@ export function SkillsModuleMain(props: {
   }
 
   const skillActionBusy = pendingSkillAction !== null;
-  const skillCreateLegacyLabel = pendingSkillAction === 'create' ? copy.page.creating : copy.page.createExample;
   const auditReport = props.auditReport ?? deriveCapabilityAuditReport({ skills: props.skills ?? [] });
   return (
     <main className="maka-main detailPane maka-module-main agents-chat-panel" aria-label={props.hubHeader?.title ?? copy.page.title}>
@@ -849,20 +866,6 @@ export function SkillsModuleMain(props: {
             isDisabled={!props.onOpenSkillsFolder || skillActionBusy}
             label={copy.page.openFolder}
           />
-          {/* Detail round 6: the page CTA is a REAL primary (variant default,
-              same recipe as daily-review's 生成每日回顾) — previously a ghost
-              re-skinned by CSS into a hardcoded black-gradient pill (theme-leak
-              literals + off-family radius). */}
-          <UiButton
-            variant="primary"
-            onClick={() => void runSkillAction('create', props.onCreateSkillTemplate)}
-            isDisabled={!props.onCreateSkillTemplate || skillActionBusy}
-            label={pendingSkillAction === 'create' ? copy.page.creating : copy.page.add}
-          >
-            <Plus size={15} aria-hidden="true" />
-            {pendingSkillAction === 'create' ? copy.page.creating : copy.page.add}
-            <span className="maka-visually-hidden">{skillCreateLegacyLabel}</span>
-          </UiButton>
           <UiButton
             className="maka-skill-header-utility"
             variant="secondary"
@@ -879,7 +882,6 @@ export function SkillsModuleMain(props: {
         managedSkillSources={props.managedSkillSources}
         bundledSkillCatalog={props.bundledSkillCatalog}
         onRefreshSkills={props.onRefreshSkills ? () => runSkillAction('refresh', props.onRefreshSkills) : undefined}
-        onCreateSkillTemplate={props.onCreateSkillTemplate ? () => runSkillAction('create', props.onCreateSkillTemplate) : undefined}
         onOpenSkill={props.onOpenSkill ? (skillId) => runSkillAction(`open:${skillId}`, () => props.onOpenSkill?.(skillId)) : undefined}
         onImportManagedSkillSource={props.onImportManagedSkillSource ? () => runSkillAction('source:import', props.onImportManagedSkillSource) : undefined}
         onInstallManagedSkill={props.onInstallManagedSkill ? (sourceId) => runSkillAction(`source:install:${sourceId}`, () => props.onInstallManagedSkill?.(sourceId)) : undefined}
@@ -893,7 +895,6 @@ export function SkillsModuleMain(props: {
         onUseSkill={props.onUseSkill}
         actionBusy={skillActionBusy}
         refreshPending={pendingSkillAction === 'refresh'}
-        createPending={pendingSkillAction === 'create'}
         openingSkillId={pendingSkillAction?.startsWith('open:') ? pendingSkillAction.slice('open:'.length) : null}
         installingSourceId={pendingSkillAction?.startsWith('source:install:') ? pendingSkillAction.slice('source:install:'.length) : null}
         installingBundledId={pendingSkillAction?.startsWith('bundled:install:') ? pendingSkillAction.slice('bundled:install:'.length) : null}
@@ -901,6 +902,7 @@ export function SkillsModuleMain(props: {
         togglingSkillId={pendingSkillAction?.startsWith('runtime:set:') ? pendingSkillAction.slice('runtime:set:'.length) : null}
         deletingSkillId={pendingSkillAction?.startsWith('delete:') ? pendingSkillAction.slice('delete:'.length) : null}
         searchQuery={skillSearchQuery}
+        onClearSearch={() => setSkillSearchQuery('')}
       />
     </main>
   );

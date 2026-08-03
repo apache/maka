@@ -12,7 +12,7 @@
  * minted inside a flow stay 1:1 with the invocation that produced them.
  */
 
-import type { AttachmentRef, QuoteRef } from '@maka/core/events';
+import type { AttachmentRef, InlineReference, QuoteRef } from '@maka/core/events';
 import type { SteeringLease } from '@maka/core/backend-types';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { StoredMessage } from '@maka/core/session';
@@ -87,6 +87,8 @@ export interface InvocationRequest {
   attachments?: AttachmentRef[];
   /** Optional inline quoted excerpts bound to this user turn. */
   quotes?: QuoteRef[];
+  /** Display-only sent token metadata; excluded from FlowInput/provider context. */
+  inlineReferences?: InlineReference[];
   /**
    * Prior conversation history resolved by the caller/gate. RuntimeRunner
    * passes this to AgentFlow as `context`, defaulting to [] so flows never

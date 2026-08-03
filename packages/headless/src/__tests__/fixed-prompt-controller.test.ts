@@ -3184,6 +3184,103 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('keeps rejected runner verifier output ungraded', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const sparseAttempts = new Array(2) as NonNullable<
+        TaskRunOutput['harbor']['verifier']
+      >['attempts'];
+      sparseAttempts[1] = {
+        attempt: 2,
+        classification: 'failed',
+        durationMs: 20,
+        reward: 0,
+      };
+
+      for (const { label, reward, verifier } of [
+        { label: 'missing-attempts', reward: 0, verifier: { outcome: 'failed' } },
+        {
+          label: 'non-array-attempts',
+          reward: 0,
+          verifier: { outcome: 'failed', attempts: 'not-an-array' },
+        },
+        {
+          label: 'sparse-attempts',
+          reward: 0,
+          verifier: { outcome: 'failed', attempts: sparseAttempts },
+        },
+        {
+          label: 'reward-disagreement',
+          reward: 1,
+          verifier: {
+            outcome: 'failed',
+            attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+          },
+        },
+      ] as const) {
+        const result = await runFixedPromptController({
+          runId: `run-${label}`,
+          roundId: 'round-1',
+          config,
+          systemPromptPath,
+          resultsJsonlPath: join(dir, `results-${label}.jsonl`),
+          tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+          taskRunner: async () =>
+            harborOutput({
+              taskId: 'task-a',
+              reward,
+              status: 'failed',
+              errorClass: 'max_tokens',
+              verifier: verifier as unknown as TaskRunOutput['harbor']['verifier'],
+            }),
+        });
+
+        assert.equal(result.events[0]?.type, 'task_completed');
+        assert.equal(result.events[0]?.passed, false);
+        assert.equal(result.events[0]?.scored, false);
+        assert.equal(result.events[0]?.eligible, false);
+        assert.equal(result.events[0]?.errorClass, 'max_tokens');
+      }
+    });
+  });
+
+  test('rejects a sparse verifier attempt array as provider infrastructure output', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const attempts = new Array(2) as NonNullable<TaskRunOutput['harbor']['verifier']>['attempts'];
+      attempts[1] = {
+        attempt: 2,
+        classification: 'failed',
+        durationMs: 20,
+        reward: 0,
+      };
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        taskRunner: async () =>
+          harborOutput({
+            taskId: 'task-a',
+            reward: 0,
+            status: 'failed',
+            errorClass: 'network',
+            verifier: { outcome: 'failed', attempts },
+          }),
+      });
+
+      assert.equal(result.events[0]?.type, 'task_infra_failed');
+      assert.equal(result.events[0]?.scored, false);
+      assert.equal(result.events[0]?.eligible, false);
+      assert.equal(result.events[0]?.errorClass, 'network');
+    });
+  });
+
   test('projects a stored structured verifier failure without resampling Harbor', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
@@ -3198,7 +3295,7 @@ describe('fixed prompt controller', () => {
         passed: false,
         scored: false,
         eligible: false,
-        errorClass: 'runtime_error',
+        errorClass: 'infra_failed',
         harbor: {
           reward: 0,
           verifier: {
@@ -3231,14 +3328,32 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('keeps malformed stored verifier attempts on the ungraded path', async () => {
+  test('reprojects stale fallback scores when stored verifier data is rejected', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
       await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const sparseAttempts = new Array(2);
+      sparseAttempts[1] = {
+        attempt: 2,
+        classification: 'failed',
+        durationMs: 20,
+        reward: 0,
+      };
 
-      for (const [label, verifier] of [
-        ['missing', { outcome: 'failed' }],
-        ['non-array', { outcome: 'failed', attempts: 'not-an-array' }],
+      for (const [label, reward, verifier, errorClass] of [
+        ['missing-attempts', 0, { outcome: 'failed' }, 'max_tokens'],
+        ['non-array-attempts', 0, { outcome: 'failed', attempts: 'not-an-array' }, 'max_tokens'],
+        ['sparse-attempts', 0, { outcome: 'failed', attempts: sparseAttempts }, 'max_tokens'],
+        [
+          'reward-disagreement',
+          1,
+          {
+            outcome: 'failed',
+            attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+          },
+          'max_tokens',
+        ],
+        ['policy-denied', 0, { outcome: 'failed' }, 'policy_denied'],
       ] as const) {
         const resultsJsonlPath = join(dir, `results-${label}.jsonl`);
         const stored = taskCompletedEvent({ taskId: 'task-a' });
@@ -3250,10 +3365,10 @@ describe('fixed prompt controller', () => {
             ...stored,
             status: 'failed',
             passed: false,
-            scored: false,
-            eligible: false,
-            errorClass: 'infra_failed',
-            harbor: { reward: 0, verifier },
+            scored: true,
+            eligible: true,
+            errorClass,
+            harbor: { reward, verifier },
           })}\n`,
           'utf8',
         );
@@ -3274,10 +3389,149 @@ describe('fixed prompt controller', () => {
 
         assert.equal(runnerCalls, 0);
         assert.equal(result.events[0]?.type, 'task_completed');
+        assert.equal(result.events[0]?.passed, false);
         assert.equal(result.events[0]?.scored, false);
         assert.equal(result.events[0]?.eligible, false);
-        assert.equal(result.events[0]?.errorClass, 'infra_failed');
+        assert.equal(result.events[0]?.errorClass, errorClass);
       }
+    });
+  });
+
+  test('removes a stale pass from rejected legacy verifier output', async () => {
+    await withDir(async (dir) => {
+      const resultsJsonlPath = join(dir, 'results.jsonl');
+      const stored = taskCompletedEvent({ taskId: 'task-a' });
+      assert.equal(stored.type, 'task_completed');
+      if (stored.type !== 'task_completed') throw new Error('expected completed fixture');
+      const { errorClass: _storedErrorClass, ...legacy } = stored;
+      await writeFile(
+        resultsJsonlPath,
+        `${JSON.stringify({
+          ...legacy,
+          status: 'failed',
+          passed: true,
+          scored: true,
+          eligible: true,
+          harbor: {
+            reward: 1,
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
+          },
+        })}\n`,
+        'utf8',
+      );
+
+      const [projected] = await readFixedPromptWal(resultsJsonlPath);
+
+      assert.equal(projected?.type, 'task_completed');
+      assert.equal(projected?.passed, false);
+      assert.equal(projected?.scored, false);
+      assert.equal(projected?.eligible, false);
+      assert.equal(projected?.errorClass, 'verification_failed');
+    });
+  });
+
+  test('preserves non-verifier scoring authorities while projecting stored WAL', async () => {
+    await withDir(async (dir) => {
+      const resultsJsonlPath = join(dir, 'results.jsonl');
+      const base = taskCompletedEvent({ taskId: 'task-a' });
+      assert.equal(base.type, 'task_completed');
+      if (base.type !== 'task_completed') throw new Error('expected completed fixture');
+      const malformedVerifier = { outcome: 'failed' };
+      await writeFile(
+        resultsJsonlPath,
+        [
+          {
+            ...base,
+            id: 'tool-step-cap',
+            taskId: 'tool-step-cap',
+            status: 'failed',
+            passed: false,
+            scored: true,
+            eligible: true,
+            errorClass: 'tool_step_cap_reached',
+            harbor: { reward: 0, verifier: malformedVerifier },
+          },
+          {
+            ...base,
+            id: 'deadline',
+            taskId: 'deadline',
+            status: 'failed',
+            passed: false,
+            scored: true,
+            eligible: true,
+            errorClass: 'budget_exhausted',
+            deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
+            harbor: { reward: 0, verifier: malformedVerifier },
+          },
+          {
+            ...base,
+            id: 'completed',
+            taskId: 'completed',
+            passed: false,
+            scored: true,
+            eligible: true,
+            errorClass: 'verification_failed',
+            harbor: { reward: 0, verifier: malformedVerifier },
+          },
+          {
+            ...base,
+            id: 'no-verifier',
+            taskId: 'no-verifier',
+            status: 'failed',
+            passed: false,
+            scored: true,
+            eligible: true,
+            errorClass: 'max_tokens',
+            harbor: { reward: 0 },
+          },
+        ]
+          .map((event) => JSON.stringify(event))
+          .join('\n') + '\n',
+        'utf8',
+      );
+
+      const projected = await readFixedPromptWal(resultsJsonlPath);
+      assert.deepEqual(
+        projected.map((event) => {
+          assert.equal(event.type, 'task_completed');
+          if (event.type !== 'task_completed') throw new Error('expected completed event');
+          return {
+            taskId: event.taskId,
+            scored: event.scored,
+            eligible: event.eligible,
+            errorClass: event.errorClass,
+          };
+        }),
+        [
+          {
+            taskId: 'tool-step-cap',
+            scored: false,
+            eligible: true,
+            errorClass: 'tool_step_cap_reached',
+          },
+          {
+            taskId: 'deadline',
+            scored: true,
+            eligible: true,
+            errorClass: 'budget_exhausted',
+          },
+          {
+            taskId: 'completed',
+            scored: true,
+            eligible: true,
+            errorClass: 'verification_failed',
+          },
+          {
+            taskId: 'no-verifier',
+            scored: true,
+            eligible: true,
+            errorClass: 'max_tokens',
+          },
+        ],
+      );
     });
   });
 

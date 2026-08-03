@@ -62,7 +62,11 @@ describe('Artifact turn key', () => {
 
 describe('Artifact user-delete policy', () => {
   test('makes every source decision explicit and protects durable evidence', () => {
-    const protectedSources = new Set<ArtifactSource>(['deep_research', 'tool_result_archive']);
+    const protectedSources = new Set<ArtifactSource>([
+      'deep_research',
+      'subagent_writeback',
+      'tool_result_archive',
+    ]);
     for (const source of ARTIFACT_SOURCES) {
       assert.equal(canUserDeleteArtifact({ source }), !protectedSources.has(source), source);
     }

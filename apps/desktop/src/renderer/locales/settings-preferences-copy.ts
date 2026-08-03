@@ -21,6 +21,26 @@ export type SettingsPreferencesCopy = {
     assistantToneHelp: string;
     assistantTonePlaceholder: string;
   };
+  /**
+   * Group titles for the SettingsSection headers. They live in one block
+   * rather than beside each control's own copy because they name the GROUP,
+   * not a setting — keeping them together is what makes an inconsistent
+   * grouping visible when it is edited.
+   */
+  sections: {
+    identity: string;
+    identityHelp: string;
+    privacy: string;
+    privacyHelp: string;
+    chatDefaults: string;
+    chatDefaultsHelp: string;
+    network: string;
+    networkHelp: string;
+    theme: string;
+    themeHelp: string;
+    palette: string;
+    paletteHelp: string;
+  };
   appearance: {
     saveFailed: string;
     theme: string;
@@ -114,6 +134,14 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh', '中文'], ['en', 'English']],
       assistantTone: '助手语气偏好', assistantToneHelp: '最多 500 字，只影响回答的语气和风格。权限确认与安全规则不受影响；改动会自动保存。', assistantTonePlaceholder: '例如：技术严谨、偏简洁、不要 emoji。',
     },
+    sections: {
+      identity: '身份', identityHelp: 'Maka 如何称呼你，以及界面语言和回答语气。',
+      privacy: '隐私与通知', privacyHelp: '本地数据的读写范围，以及桌面通知时机。',
+      chatDefaults: '对话默认', chatDefaultsHelp: '新对话的起始模型与权限模式。',
+      network: '网络', networkHelp: 'AI 模型请求走的网络通道。',
+      theme: '主题', themeHelp: '界面跟随系统，还是固定浅色或深色。',
+      palette: '调色板', paletteHelp: '强调色与画布色调；切换会立即生效并保存在本地。',
+    },
     appearance: {
       saveFailed: '保存外观设置失败', theme: '主题', palette: '调色板',
       themeOptions: { light: { label: '浅色', help: '始终使用浅色界面。' }, dark: { label: '深色', help: '始终使用深色界面。' }, auto: { label: '跟随系统', help: '匹配系统当前的浅色或深色偏好。' } },
@@ -134,6 +162,14 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
   en: {
     personalization: {
       saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh', '中文'], ['en', 'English']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
+    },
+    sections: {
+      identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',
+      privacy: 'Privacy and notifications', privacyHelp: 'What Maka may read and write locally, and when it notifies you.',
+      chatDefaults: 'Conversation defaults', chatDefaultsHelp: 'The model and permission mode a new conversation starts on.',
+      network: 'Network', networkHelp: 'The network path AI model requests take.',
+      theme: 'Theme', themeHelp: 'Follow the system appearance, or stay on light or dark.',
+      palette: 'Color palette', paletteHelp: 'Accent and canvas colors. Changes apply immediately and are saved locally.',
     },
     appearance: {
       saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' }, persistenceHelp: 'Changes apply immediately and are saved locally for the next launch.',

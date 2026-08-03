@@ -132,6 +132,7 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     // Host-managed agent graph supervisor surface
     { name: 'view_agent_graph' },
     { name: 'update_agent_graph' },
+    { name: 'yield_agent_graph' },
   ].map(freezeTool),
 );
 
@@ -179,7 +180,15 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       label: 'Agent',
       description: 'Spawn, fan out, and inspect foreground child agents.',
       economy: 'deferred' as const,
-      toolNames: ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output'],
+      toolNames: [
+        'agent_spawn',
+        'agent_swarm',
+        'agent_list',
+        'agent_output',
+        'view_agent_graph',
+        'update_agent_graph',
+        'yield_agent_graph',
+      ],
       hosts: allHosts(),
     },
   ].map(freezeSurface),

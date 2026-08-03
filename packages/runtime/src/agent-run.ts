@@ -114,6 +114,7 @@ export interface AgentRunInput {
   sessionId: string;
   header: SessionHeader;
   userInput: UserMessageInput;
+  rootExecutionKind?: AgentRunHeader['rootExecutionKind'];
   runId?: string;
   userMessageId?: string;
   durability?: AgentRunDurability;
@@ -475,6 +476,9 @@ export class AgentRun {
           ? { attachments: this.input.userInput.attachments }
           : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
+        ...(this.input.userInput.inlineReferences
+          ? { inlineReferences: this.input.userInput.inlineReferences }
+          : {}),
         context: begin.backendInput.context,
         ...(begin.backendInput.runtimeContext
           ? { runtimeContext: begin.backendInput.runtimeContext }
@@ -583,6 +587,9 @@ export class AgentRun {
           ? { attachments: this.input.userInput.attachments }
           : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
+        ...(this.input.userInput.inlineReferences
+          ? { inlineReferences: this.input.userInput.inlineReferences }
+          : {}),
         ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
       };
       await this.input.store.appendMessage(this.sessionId, userMsg);
@@ -736,6 +743,9 @@ export class AgentRun {
         ? { attachments: this.input.userInput.attachments }
         : {}),
       ...(this.input.userInput.quotes !== undefined ? { quotes: this.input.userInput.quotes } : {}),
+      ...(this.input.userInput.inlineReferences !== undefined
+        ? { inlineReferences: this.input.userInput.inlineReferences }
+        : {}),
       ...(this.toolBoundaryProtocol ? { toolBoundaryProtocol: this.toolBoundaryProtocol } : {}),
     });
   }
@@ -1076,6 +1086,7 @@ export class AgentRun {
             agentGraphWakeAttemptId: this.input.userInput.origin.attemptId,
           }
         : {}),
+      ...(this.input.rootExecutionKind ? { rootExecutionKind: this.input.rootExecutionKind } : {}),
     };
     const header =
       continuation && this.input.claimedRunHeader ? this.input.claimedRunHeader : computedHeader;

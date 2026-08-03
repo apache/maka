@@ -31,7 +31,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await expect(sidebar.getByRole('button', { name: 'MCP', exact: true })).toHaveCount(0);
   await extensions.click();
   await expect(extensions).toHaveAttribute('aria-current', 'page');
-  await expect(sidebar.getByRole('button', { name: '会话分组方式' })).toBeVisible();
+  await expect(sidebar.getByRole('radiogroup', { name: '会话分组方式' })).toBeVisible();
   await expect(sidebar.locator('.maka-session-list')).toBeVisible();
 
   const extensionSelector = page.locator('.maka-module-hub-selector');

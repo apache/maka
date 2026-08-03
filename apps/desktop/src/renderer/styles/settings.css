@@ -5,6 +5,7 @@
 @import "./settings/about.css";
 @import "./settings/theme-preview.css";
 @import "./settings/bot.css";
+@import "./settings/usage.css";
 @import "./settings/wechat.css";
 @import "./settings/connection.css";
 @import "./settings/provider-editor.css";

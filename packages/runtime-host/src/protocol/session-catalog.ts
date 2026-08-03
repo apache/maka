@@ -155,6 +155,12 @@ export interface SessionConfigurationUpdateInput {
   readonly configuration: SessionConfiguration;
 }
 
+export interface SessionCwdRelocateInput {
+  readonly sessionId: string;
+  readonly expectedRevision: number;
+  readonly cwd: string;
+}
+
 export interface SessionReadMarkerSetInput {
   readonly sessionId: string;
   readonly readThroughMessageId: string;
@@ -283,6 +289,18 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
     availability: 'ready',
     errors: CONFIGURATION_UPDATE_ERRORS,
     decodeInput: decodeSessionConfigurationUpdateInput,
+    decodeOutput: decodeSessionUpdateResult,
+    assertOutputForInput: assertUpdateOutputIdentity,
+  }),
+  'session.cwd.relocate': defineOperation<
+    SessionCwdRelocateInput,
+    SessionUpdateResult,
+    (typeof CONFIGURATION_UPDATE_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: CONFIGURATION_UPDATE_ERRORS,
+    decodeInput: decodeSessionCwdRelocateInput,
     decodeOutput: decodeSessionUpdateResult,
     assertOutputForInput: assertUpdateOutputIdentity,
   }),
@@ -441,6 +459,19 @@ export function decodeSessionConfigurationUpdateInput(
       collaborationMode: collaborationMode(configuration.collaborationMode),
       orchestrationMode: orchestrationMode(configuration.orchestrationMode),
     },
+  };
+}
+
+export function decodeSessionCwdRelocateInput(value: unknown): SessionCwdRelocateInput {
+  const input = requireExactRecord(value, 'Session cwd relocate input', [
+    'sessionId',
+    'expectedRevision',
+    'cwd',
+  ]);
+  return {
+    sessionId: requireEntityId(input.sessionId, 'sessionId'),
+    expectedRevision: positiveRevision(input.expectedRevision, 'expected Session revision'),
+    cwd: requireUtf8String(input.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
   };
 }
 
@@ -856,7 +887,7 @@ function boolean(value: unknown, label: string): boolean {
 }
 
 function assertUpdateOutputIdentity(
-  input: SessionMetadataUpdateInput | SessionConfigurationUpdateInput,
+  input: SessionMetadataUpdateInput | SessionConfigurationUpdateInput | SessionCwdRelocateInput,
   output: SessionUpdateResult,
 ): void {
   if (output.kind === 'committed') assertSessionIdentity(input.sessionId, output.session);

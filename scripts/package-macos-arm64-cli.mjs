@@ -25,6 +25,7 @@ const execFileAsync = promisify(execFile);
 const requireFromHere = createRequire(import.meta.url);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const releaseDirectory = join(repoRoot, 'apps', 'desktop', 'release');
+const dependencyPatchesDirectory = join(repoRoot, 'patches');
 const cliPackageName = 'maka-agent';
 const localPackagePrefix = '@maka/';
 const requiredSigningEnvironment = [
@@ -221,6 +222,40 @@ async function stageWorkspacePackages(installRoot, workspacePackages) {
       await pruneTestArtifacts(join(targetDirectory, 'dist'));
     }),
   ]);
+}
+
+export async function listDependencyPatchNames() {
+  let entries;
+  try {
+    entries = await readdir(dependencyPatchesDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.patch'))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+export async function applyDependencyPatches(
+  installRoot,
+  { env = process.env, run = runCommand, patchPackageEntry } = {},
+) {
+  const patchNames = await listDependencyPatchNames();
+  if (patchNames.length === 0) return patchNames;
+
+  const stagedPatchesDirectory = join(installRoot, 'patches');
+  await mkdir(stagedPatchesDirectory, { recursive: true });
+  await Promise.all(
+    patchNames.map((name) =>
+      copyFile(join(dependencyPatchesDirectory, name), join(stagedPatchesDirectory, name)),
+    ),
+  );
+
+  const entry = patchPackageEntry ?? requireFromHere.resolve('patch-package/index.js');
+  await run(process.execPath, [entry, '--error-on-fail'], { cwd: installRoot, env });
+  return patchNames;
 }
 
 async function retainOnlyDirectory(parent, retainedName) {
@@ -517,6 +552,7 @@ export async function packageMacosArm64Cli({
     await mkdir(installRoot, { recursive: true });
     await stageWorkspacePackages(installRoot, workspacePackages);
     await run('npm', macosArm64CliInstallArgs(), { cwd: installRoot, env });
+    const dependencyPatches = await applyDependencyPatches(installRoot, { env, run });
 
     const nodeModulesDirectory = join(installRoot, 'node_modules');
     await rewriteCliVersion(installRoot, workspacePackages, version);
@@ -551,6 +587,7 @@ export async function packageMacosArm64Cli({
             version,
             nodeVersion: toolchain.nodeVersion,
             npmVersion: toolchain.npmVersion,
+            dependencyPatches,
             workspacePackages: workspacePackages.map(({ name }) => name).sort(),
             signing: releaseSigning ? 'developer-id-notarized' : 'development',
           },
@@ -588,7 +625,7 @@ export async function packageMacosArm64Cli({
     const sha256 = await sha256File(archivePath);
     await writeFile(checksumPath, `${sha256}  ${basename(archivePath)}\n`, 'utf8');
     complete = true;
-    return { archivePath, checksumPath, sha256, signing, version };
+    return { archivePath, checksumPath, dependencyPatches, sha256, signing, version };
   } finally {
     await rm(stagingRoot, { recursive: true, force: true });
     if (!complete) {

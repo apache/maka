@@ -89,6 +89,7 @@ export class CanonicalSessionProjectionReader {
 
     const interactions = projectSessionInteractions(
       await this.#stores.interactionStore.listSessionPending(sessionId),
+      await this.#stores.sessionStore.listPendingSandboxBoundaryRequests(sessionId),
     );
     // The Session lane barrier must remain held through this final synchronous read.
     const queue = this.#messages.projection(sessionId);

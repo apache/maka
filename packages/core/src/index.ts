@@ -21,6 +21,7 @@ export * from './agent-graph-supervisor-wake.js';
 export * from './agent-graph-timeline.js';
 export * from './runtime-policy.js';
 export * from './goal.js';
+export * from './execution-inspect.js';
 export * from './interaction.js';
 export * from './project.js';
 export * from './subagent-workspace.js';
@@ -74,6 +75,7 @@ export type {
   StorageRef,
   AttachmentRef,
   QuoteRef,
+  InlineReference,
   MessageContent,
   AttachmentIngestItem,
   CompleteStopReason,
@@ -92,8 +94,11 @@ export {
   isAttachmentRef,
   isCanonicalAttachmentRef,
   isCanonicalStorageRef,
+  isInlineReference,
   isMessageContent,
   isStorageRef,
+  INLINE_REFERENCE_LABEL_MAX_LENGTH,
+  INLINE_REFERENCE_MAX_COUNT,
   messageContentsEqual,
   normalizeMessageContent,
   ToolOutcomeUnknownError,
@@ -102,11 +107,17 @@ export {
   TOOL_OUTPUT_STREAMS,
 } from './events.js';
 
-// tool-result-status.ts — settled tool activity status from tool_result
-export type { SettledToolActivityStatus } from './tool-result-status.js';
+// tool-result-status.ts — tool activity status from a result, or from its absence
+export type {
+  InFlightToolActivityStatus,
+  SettledToolActivityStatus,
+  ToolActivityStatus,
+} from './tool-result-status.js';
 export {
   isCancelledToolResultContent,
+  isInFlightToolStatus,
   toolResultActivityStatus,
+  unfinishedToolActivityStatus,
 } from './tool-result-status.js';
 
 // agent-swarm.ts — bounded projection over the canonical settled tool result.
@@ -288,7 +299,11 @@ export {
   interpretScannedToolRecovery,
   validateToolRecoveryEventBundle,
 } from './tool-recovery-bundle.js';
-export { canonicalToolArgsHash, stableJsonStringify } from './tool-args-identity.js';
+export {
+  canonicalToolArgsHash,
+  stableJsonStringify,
+  stripUndefinedDeep,
+} from './tool-args-identity.js';
 export {
   encodeCanonicalRuntimeEvent,
   type CanonicalRuntimeEventEncoding,
@@ -576,6 +591,7 @@ export type {
   ComputerUseBoundAction,
   ComputerUseFrameIdentity,
   ComputerUseFrameSourceKind,
+  ComputerUseModelCallArgs,
   ComputerUseObservationIdentity,
   ComputerUsePageIdentity,
   ComputerUseRect,
@@ -590,6 +606,7 @@ export type {
 export {
   COMPUTER_USE_ACTION_TYPES,
   COMPUTER_USE_APPROVAL_CLASSES,
+  COMPUTER_USE_SEMANTIC_ACTIONS,
   COMPUTER_USE_DISPATCH_TIERS,
   COMPUTER_USE_EFFECTS,
   COMPUTER_USE_ERROR_CODES,
@@ -598,6 +615,7 @@ export {
   CU_SCROLL_DIRECTIONS,
   computerUseApprovalScopeKey,
   computerUseApprovalSummary,
+  computerUseModelCallArgs,
   isComputerUseErrorCode,
 } from './computer-use.js';
 
@@ -650,6 +668,7 @@ export type {
   SandboxBoundaryExpansionValidationResult,
   SandboxBoundaryFilesystemEntry,
   SandboxBoundaryDecision,
+  SandboxBoundaryClosureReason,
   SandboxBoundaryResponse,
   SandboxBoundaryRequest,
   SandboxBoundaryRequestStatus,
@@ -664,6 +683,7 @@ export {
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
   MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES,
   SANDBOX_BOUNDARY_ACCESS_MODES,
+  SANDBOX_BOUNDARY_CLOSURE_REASONS,
   SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
   SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
@@ -928,6 +948,22 @@ export {
   isWorkspacePrivacyContext,
   validateWorkspacePrivacyContext,
 } from './incognito.js';
+
+// cron-expression.ts — shared five-field cron grammar and occurrence authority.
+export type {
+  CompiledCronExpression,
+  CompileCronExpressionResult,
+  CronCompatibilityProfile,
+  CronCompileError,
+  CronCompileErrorCode,
+  CronFieldName,
+  CronSearchBounds,
+} from './cron-expression.js';
+export {
+  CRON_COMPATIBILITY_PROFILES,
+  compileCronExpression,
+  matchesCronField,
+} from './cron-expression.js';
 
 // plan-reminders.ts (PR-PLAN-REMINDER-MVP-0)
 export type {
@@ -1348,6 +1384,7 @@ export {
   connectionEnabledModelIds,
   deriveConnectionSlug,
   isWiredOAuthProvider,
+  reconcileConnectionAfterEnabledModelsChange,
   reconcileConnectionAfterModelFetch,
   effectiveBaseUrl,
   migrateConnectionV1ToV2,
@@ -1521,6 +1558,16 @@ export type {
   UsageSummary,
   UsageTab,
 } from './settings.js';
+
+export type { SubagentPreset, SubagentProfile, SubagentSettings } from './subagent-settings.js';
+export {
+  MAX_SUBAGENT_PRESETS,
+  SUBAGENT_PRESET_ID_MAX_CHARS,
+  SUBAGENT_PROFILES,
+  isSafeSubagentPresetId,
+  isSubagentProfile,
+  normalizeSubagentSettings,
+} from './subagent-settings.js';
 export {
   CHAT_DEFAULT_PERMISSION_MODES,
   DEFAULT_PROXY_BYPASS_DOMAINS,
@@ -1675,10 +1722,8 @@ export type {
   DailyReviewArchiveStatus,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
-  DailyReviewExternalNotify,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSectionKey,
-  DailyReviewSectionToggles,
   DailyReviewSessionRow,
   DailyReviewSummary,
   DailyReviewTopEntry,
@@ -1689,7 +1734,7 @@ export type {
 export {
   DAILY_REVIEW_ARCHIVE_STATUSES,
   DAILY_REVIEW_LIST_LIMIT,
-  DAILY_REVIEW_MODES,
+  DAILY_REVIEW_RANGES,
   DAILY_REVIEW_SECTION_KEYS,
   DEFAULT_DAILY_REVIEW_CONFIG,
   buildDailyReviewSummary,
@@ -1700,6 +1745,7 @@ export {
   localDayBoundsAt,
   localDayBoundsForInstant,
   normalizeDailyReviewConfig,
+  normalizeDailyReviewArchive,
   pickDailyReviewSessions,
   pickDailyReviewTopEntries,
 } from './daily-review.js';
@@ -1793,3 +1839,4 @@ export type {
   AutomationSchedule,
   AutomationStatus,
 } from './automation.js';
+export { SKILL_INVOCATION_TOKEN_SOURCE } from './skill-invocation-token.js';

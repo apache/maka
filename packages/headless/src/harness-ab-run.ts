@@ -1,7 +1,8 @@
 import { buildRunManifestFingerprint } from './ab-manifest.js';
-import { runAbComparison } from './ab-run.js';
+import { runArmCohort } from './ab-run.js';
 import { withAbRunLock } from './ab-run-lock.js';
-import type { AbComparisonSummary } from './ab-types.js';
+import type { AbComparisonSummary, ArmCohortResult } from './ab-types.js';
+import { isEvaluatedOutcome, summarizeAbComparison } from './ab-summary.js';
 import type { Config } from './contracts.js';
 import type { HarborBillingMode } from './harbor-task-runner.js';
 import {
@@ -35,6 +36,23 @@ export interface RunHarnessAbComparisonInput {
   newId?: () => string;
 }
 
+export interface RunHarnessArmCohortInput extends Omit<RunHarnessAbComparisonInput, 'arms'> {
+  arms: readonly HarnessAbRuntimeArm[];
+}
+
+export interface HarnessArmCohortSummary {
+  runId: string;
+  armIds: readonly HarnessAbArmId[];
+  taskCount: number;
+  commonCohort: {
+    groups: number;
+    comparableGroups: number;
+    excludedGroupIds: string[];
+  };
+  pairwise: AbComparisonSummary[];
+  stopReason?: AbComparisonSummary['stopReason'];
+}
+
 export async function runHarnessAbComparison(
   input: RunHarnessAbComparisonInput,
 ): Promise<AbComparisonSummary> {
@@ -48,6 +66,74 @@ export function withHarnessAbRunLock<T>(runRoot: string, action: () => Promise<T
 export async function runHarnessAbComparisonUnlocked(
   input: RunHarnessAbComparisonInput,
 ): Promise<AbComparisonSummary> {
+  const cohort = await executeHarnessArmCohort(input);
+  const summary = summarizeAbComparison({
+    runId: input.runId,
+    roundId: 'ab-summary',
+    baselineArmId: input.arms[0].id,
+    candidateArmId: input.arms[1].id,
+    evaluationTaskIds: cohort.evaluationTaskIds,
+    baselineRuns: cohort.runsByArmId[input.arms[0].id]!,
+    candidateRuns: cohort.runsByArmId[input.arms[1].id]!,
+  });
+  return cohort.stopReason ? { ...summary, stopReason: cohort.stopReason } : summary;
+}
+
+export async function runHarnessArmCohort(
+  input: RunHarnessArmCohortInput,
+): Promise<HarnessArmCohortSummary> {
+  return withAbRunLock(input.runRoot, () => runHarnessArmCohortUnlocked(input));
+}
+
+export async function runHarnessArmCohortUnlocked(
+  input: RunHarnessArmCohortInput,
+): Promise<HarnessArmCohortSummary> {
+  if (input.arms.length < 3) throw new Error('harness cohort requires at least three arms');
+  const cohort = await executeHarnessArmCohort(input);
+  const arms = input.arms.map((arm) => ({ id: arm.id }));
+  const pairwise: AbComparisonSummary[] = [];
+  for (let baseline = 0; baseline < arms.length; baseline += 1) {
+    for (let candidate = baseline + 1; candidate < arms.length; candidate += 1) {
+      pairwise.push(
+        summarizeAbComparison({
+          runId: input.runId,
+          roundId: `cohort-summary-${arms[baseline]!.id}-vs-${arms[candidate]!.id}`,
+          baselineArmId: arms[baseline]!.id,
+          candidateArmId: arms[candidate]!.id,
+          evaluationTaskIds: cohort.evaluationTaskIds,
+          baselineRuns: cohort.runsByArmId[arms[baseline]!.id]!,
+          candidateRuns: cohort.runsByArmId[arms[candidate]!.id]!,
+        }),
+      );
+    }
+  }
+  const excludedGroupIds: string[] = [];
+  for (const taskId of cohort.evaluationTaskIds) {
+    const comparable = arms.every((arm) => {
+      const event = cohort.runsByArmId[arm.id]![0]!.find(
+        (candidate) => candidate.taskId === taskId,
+      );
+      return event !== undefined && isEvaluatedOutcome(event);
+    });
+    if (!comparable) excludedGroupIds.push(`r0-${taskId}`);
+  }
+  return {
+    runId: input.runId,
+    armIds: input.arms.map((arm) => arm.id),
+    taskCount: cohort.evaluationTaskIds.length,
+    commonCohort: {
+      groups: cohort.evaluationTaskIds.length,
+      comparableGroups: cohort.evaluationTaskIds.length - excludedGroupIds.length,
+      excludedGroupIds,
+    },
+    pairwise: cohort.stopReason
+      ? pairwise.map((summary) => ({ ...summary, stopReason: cohort.stopReason }))
+      : pairwise,
+    ...(cohort.stopReason ? { stopReason: cohort.stopReason } : {}),
+  };
+}
+
+async function executeHarnessArmCohort(input: RunHarnessArmCohortInput): Promise<ArmCohortResult> {
   const pairConcurrency = input.pairConcurrency ?? HARNESS_AB_PAIR_CONCURRENCY;
   if (!Number.isSafeInteger(pairConcurrency) || pairConcurrency < 1) {
     throw new Error('pairConcurrency must be a positive integer');
@@ -74,20 +160,18 @@ export async function runHarnessAbComparisonUnlocked(
       )
       .map((event) => event.id),
   );
-  return runAbComparison({
+  const arms = input.arms.map((arm) => ({
+    id: arm.id,
+    kind: 'harness' as const,
+    fingerprint: buildRunManifestFingerprint({
+      config: arm.config,
+      expectedPricingProfile: arm.expectedPricingProfile,
+      billingMode: arm.billingMode,
+    }),
+  }));
+  const cohort = await runArmCohort({
     runId: input.runId,
-    arms: input.arms.map((arm) => ({
-      id: arm.id,
-      kind: 'harness' as const,
-      fingerprint: buildRunManifestFingerprint({
-        config: arm.config,
-        expectedPricingProfile: arm.expectedPricingProfile,
-        billingMode: arm.billingMode,
-      }),
-    })) as unknown as [
-      { id: HarnessAbArmId; kind: 'harness'; fingerprint: string },
-      { id: HarnessAbArmId; kind: 'harness'; fingerprint: string },
-    ],
+    arms,
     evaluationTasks: input.evaluationTasks,
     reps: 1,
     maxConcurrency: pairConcurrency,
@@ -95,7 +179,7 @@ export async function runHarnessAbComparisonUnlocked(
     preexistingEventIds,
     runArm: async ({ roundId, arm, task }) => {
       const runtimeArm = input.arms.find((candidate) => candidate.id === arm.id);
-      if (!runtimeArm) throw new Error(`harness A/B arm ${arm.id} is not configured`);
+      if (!runtimeArm) throw new Error(`harness cohort arm ${arm.id} is not configured`);
       const result = await runFixedPromptController({
         runId: input.runId,
         roundId,
@@ -116,8 +200,9 @@ export async function runHarnessAbComparisonUnlocked(
         ...(input.newId ? { newId: input.newId } : {}),
       });
       const event = result.events.find((candidate) => candidate.taskId === task.id);
-      if (!event) throw new Error(`harness A/B arm ${roundId} produced no event for ${task.id}`);
+      if (!event) throw new Error(`harness cohort arm ${roundId} produced no event for ${task.id}`);
       return event;
     },
   });
+  return cohort;
 }

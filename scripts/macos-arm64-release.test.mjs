@@ -14,6 +14,9 @@ const signingEnvironment = {
 };
 
 test('release tooling fails closed on unsupported hosts, signing, and architecture', async () => {
+  const desktopManifest = JSON.parse(
+    await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'),
+  );
   const { packageMacosArm64 } = await import(new URL('package-macos-arm64.mjs', import.meta.url));
   const { verifyPackagedMacApp } = await import(
     new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
@@ -33,7 +36,9 @@ test('release tooling fails closed on unsupported hosts, signing, and architectu
       run: async (command, args) => {
         if (command === 'plutil') {
           if (args[1] === 'CFBundleIdentifier') return { stdout: 'com.maka.desktop\n' };
-          if (args[1] === 'CFBundleShortVersionString') return { stdout: '0.1.2\n' };
+          if (args[1] === 'CFBundleShortVersionString') {
+            return { stdout: `${desktopManifest.version}\n` };
+          }
           return { stdout: 'Maka\n' };
         }
         if (command === 'lipo') return { stdout: 'x86_64\n', stderr: '' };
@@ -216,6 +221,55 @@ test('CLI staging removes test output and rejects dangling symlinks', async () =
   }
 });
 
+test('CLI staging applies repository dependency patches before relocation', async () => {
+  const { applyDependencyPatches, listDependencyPatchNames } = await import(
+    new URL('package-macos-arm64-cli.mjs', import.meta.url)
+  );
+  const root = await mkdtemp(join(tmpdir(), 'maka-cli-patches-'));
+  try {
+    const calls = [];
+    const expectedPatchNames = await listDependencyPatchNames();
+    assert.ok(expectedPatchNames.includes('@ai-sdk+provider-utils+5.0.11.patch'));
+    const appliedPatchNames = await applyDependencyPatches(root, {
+      patchPackageEntry: '/tools/patch-package/index.js',
+      run: async (command, args, options) => {
+        calls.push({ command, args, options });
+      },
+    });
+    assert.deepEqual(appliedPatchNames, expectedPatchNames);
+    await Promise.all(expectedPatchNames.map((name) => access(join(root, 'patches', name))));
+    assert.deepEqual(calls, [
+      {
+        command: process.execPath,
+        args: ['/tools/patch-package/index.js', '--error-on-fail'],
+        options: { cwd: root, env: process.env },
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('packaged streaming smoke rejects provider-utils index-hole regressions', async () => {
+  const { assertPatchedStreamingToolCalls } = await import(
+    new URL('verify-macos-arm64-cli.mjs', import.meta.url)
+  );
+  const expectedCalls = [
+    { type: 'tool-call', toolCallId: 'call_1', toolName: 'read_file', input: '{"path":"a.txt"}' },
+    { type: 'tool-call', toolCallId: 'call_2', toolName: 'read_file', input: '{"path":"b.txt"}' },
+    { type: 'finish' },
+  ];
+  assert.doesNotThrow(() => assertPatchedStreamingToolCalls(expectedCalls));
+  assert.throws(
+    () => assertPatchedStreamingToolCalls([{ type: 'error', error: new Error('index hole') }]),
+    /failed to finish/,
+  );
+  assert.throws(
+    () => assertPatchedStreamingToolCalls([expectedCalls[1], expectedCalls[0], { type: 'finish' }]),
+    /reordered or dropped/,
+  );
+});
+
 test('release workflow pins the toolchain and gates CLI publication on signing', async () => {
   const workflow = parseYaml(
     await readFile(
@@ -240,4 +294,47 @@ test('release workflow pins the toolchain and gates CLI publication on signing',
   assert.match(release.run, /steps\.release\.outputs\.cli/);
   assert.match(release.run, /steps\.release\.outputs\.cli \}\}\.sha256/);
   assert.ok(cleanupIndex > steps.indexOf(verifyCli));
+});
+
+test('the packaged app is checked for every unsigned helper that could still be in a tree', async () => {
+  // `apps/desktop/resources/bin` is gitignored, so removing a helper from the
+  // repository does not remove it from the machine of anyone who prepared it
+  // once. Dropping its forbid alongside the source is how a leftover ad-hoc
+  // binary gets into a build that then fails notarization as a whole.
+  const { verifyPackagedMacApp } = await import(
+    new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
+  );
+  const desktopManifest = JSON.parse(
+    await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'),
+  );
+  const forbidden = [];
+  // Everything before the forbids has to pass, so the run that fails is the
+  // architecture check that comes after them.
+  await assert.rejects(
+    verifyPackagedMacApp('/tmp/Maka.app', {
+      run: async (command, args) => {
+        if (command === 'plutil') {
+          if (args[1] === 'CFBundleIdentifier') return { stdout: 'com.maka.desktop\n' };
+          if (args[1] === 'CFBundleShortVersionString') {
+            return { stdout: `${desktopManifest.version}\n` };
+          }
+          return { stdout: 'Maka\n' };
+        }
+        if (command === 'lipo') return { stdout: 'x86_64\n', stderr: '' };
+        return { stdout: '', stderr: '' };
+      },
+      requirePath: async () => {},
+      forbidPath: async (path) => {
+        forbidden.push(path);
+      },
+      smokeRenderer: async () => {},
+    }),
+    /arm64/,
+  );
+  for (const helper of ['cua-driver', 'maka-cu', 'officecli']) {
+    assert.ok(
+      forbidden.some((path) => path.endsWith(`/${helper}`)),
+      `${helper} is not among the paths the packaged app is checked against`,
+    );
+  }
 });

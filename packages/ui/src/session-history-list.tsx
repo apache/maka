@@ -13,13 +13,20 @@ import type { ProjectRecord, SessionSummary, UiLocale } from '@maka/core';
 import { formatCompactTimestamp } from '@maka/core';
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   Bot,
   FolderGit2,
   FolderOpen,
-  MessageSquare,
+  Pencil,
+  Pin,
+  PinOff,
+  Plug,
+  SquarePen,
+  Trash2,
 } from './icons.js';
 import { Badge } from '@astryxdesign/core/Badge';
-import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
   SideNavItem,
@@ -93,42 +100,33 @@ export function SessionHistoryList(props: {
     }
   }
 
-  const body =
-    props.sessions.length === 0 &&
-    !(props.groupVariant === 'project' && (props.groups?.length ?? 0) > 0) ? (
-      <EmptyState
-        icon={<MessageSquare />}
-        title={copy.emptyTitle}
-        description={copy.emptyBody}
-        className="maka-session-empty-state"
-      />
-    ) : (
-      <SessionListGroups
-        groups={
-          props.groups
-            ? props.groups.map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-                project: g.project,
-              }))
-            : groupSessionsForHistory(props.sessions, locale).map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-              }))
-        }
-        groupVariant={props.groupVariant ?? 'conversation'}
-        activeId={props.activeId}
-        streamingSessionIds={props.streamingSessionIds}
-        staleSessionIds={props.staleSessionIds}
-        childSessionsByParentId={props.childSessionsByParentId}
-        worktreeSessionIds={props.worktreeSessionIds}
-        onSelectSession={props.onSelectSession}
-        rowActions={props.rowActions}
-        projectActions={props.projectActions}
-      />
-    );
+  const body = (
+    <SessionListGroups
+      groups={
+        props.groups
+          ? props.groups.map((g) => ({
+              key: g.id,
+              label: g.label,
+              sessions: g.sessions,
+              project: g.project,
+            }))
+          : groupSessionsForHistory(props.sessions, locale).map((g) => ({
+              key: g.id,
+              label: g.label,
+              sessions: g.sessions,
+            }))
+      }
+      groupVariant={props.groupVariant ?? 'conversation'}
+      activeId={props.activeId}
+      streamingSessionIds={props.streamingSessionIds}
+      staleSessionIds={props.staleSessionIds}
+      childSessionsByParentId={props.childSessionsByParentId}
+      worktreeSessionIds={props.worktreeSessionIds}
+      onSelectSession={props.onSelectSession}
+      rowActions={props.rowActions}
+      projectActions={props.projectActions}
+    />
+  );
 
   // Outer SideNav is the sole navigation landmark; this is scroll content only.
   return (
@@ -560,6 +558,7 @@ function ProjectItemEndContent(props: {
       ? [
           {
             label: copy.projectRestore,
+            icon: ArchiveRestore,
             onClick: () => runProjectAction('restore', () => actions.onRestore(project.id)),
           },
         ]
@@ -568,23 +567,27 @@ function ProjectItemEndContent(props: {
             ? [
                 {
                   label: copy.projectNewTask,
+                  icon: SquarePen,
                   onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
                 },
               ]
             : [
                 {
                   label: copy.projectRelink,
+                  icon: Plug,
                   onClick: () => runProjectAction('relink', () => actions.onRelink(project.id)),
                 },
               ]),
           {
             label: copy.projectRename,
+            icon: Pencil,
             onClick: () => {
               pendingMenuIntentRef.current = props.onStartRename;
             },
           },
           {
             label: copy.projectArchive,
+            icon: Archive,
             onClick: () => runProjectAction('archive', () => actions.onArchive(project.id)),
           },
         ]
@@ -675,13 +678,25 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
   return (
     <EndContentHitTarget className="maka-session-row-end">
       {props.stale && (
-        <span
-          className="maka-list-row-stale-pill"
-          title={copy.staleTitle}
-          aria-label={copy.staleAriaLabel}
-        >
-          {copy.stale}
-        </span>
+        <Tooltip content={copy.staleTitle}>
+          {/* `yellow`, not `warning`. Astryx keeps two archives: the semantic
+              names paint a solid saturated fill (maka's `warning` is a flat
+              #ffce2f that does not adapt to dark mode), the colour names paint
+              a tint. This pill sits on every stale row in the rail, where the
+              chrome it replaced was an 18% wash — a solid block on each row
+              reads as an alert the state does not mean. */}
+          <Badge
+            variant="yellow"
+            label={copy.stale}
+            className="maka-list-row-stale-pill"
+            /* The reason belongs in the name, not only in the Tooltip. `title`
+               used to carry it, and a screen reader read it as the accessible
+               description; Astryx's Tooltip points `aria-describedby` at a
+               popover that is `display: none` until hovered, so off the mouse
+               the description computes to empty. */
+            aria-label={`${copy.staleAriaLabel}. ${copy.staleTitle}`}
+          />
+        </Tooltip>
       )}
       {props.worktree && (
         <FolderGit2
@@ -712,6 +727,7 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
             items={[
               {
                 label: props.session.isFlagged ? copy.unpin : copy.pin,
+                icon: props.session.isFlagged ? PinOff : Pin,
                 onClick: () =>
                   runRowAction('flag', () =>
                     actions.onToggleFlag(props.session.id, !props.session.isFlagged),
@@ -719,6 +735,7 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
               },
               {
                 label: copy.rename,
+                icon: Pencil,
                 onClick: () => {
                   pendingMenuIntentRef.current = () =>
                     props.setEditingSessionId(props.session.id);
@@ -726,6 +743,7 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
               },
               {
                 label: props.session.isArchived ? copy.unarchive : copy.archive,
+                icon: props.session.isArchived ? ArchiveRestore : Archive,
                 onClick: () =>
                   runRowAction('archive', () =>
                     props.session.isArchived
@@ -736,6 +754,7 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
               { type: 'divider' },
               {
                 label: copy.delete,
+                icon: Trash2,
                 onClick: () => {
                   pendingMenuIntentRef.current = () =>
                     runRowAction('delete', () => actions.onDelete(props.session.id));

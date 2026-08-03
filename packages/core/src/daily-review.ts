@@ -183,30 +183,19 @@ export function dailyUsageQuery(day: DayRangeMs): UsageQuery {
   return { range: { from: day.fromMs, to: day.toMs } };
 }
 
-/** Default cap for "today's sessions" / "top tools" / "top models" lists. */
+/** Default cap for activity sessions and generated report evidence. */
 export const DAILY_REVIEW_LIST_LIMIT = 8;
 
 /**
  * PR-DAILY-REVIEW-FULL-0 — config + archive contract.
  *
- * Adds the missing pieces on top of MVP-0: a scheduled run, LLM-
- * generated narrative sections, a persisted archive of past reports,
- * and a 深度分析 (deep-analysis) mode. The locked interface is
- * documented in the project thread; this file is the single source
- * of truth used by core, main, preload, and renderer.
- *
- * borrow: external reference's "every morning auto-summary" + Settings
- * sub-toggles for content categories (对话摘要 / 遗漏提醒 / 使用洞察 /
- * 代码建议).
- *
- * diverge: archive lives on disk as plain JSON files in the workspace
- * (no DB), no cloud sync, manual + cron run the same pipeline, model
- * selection reuses the existing connection picker.
+ * One range contract shared by core, main, preload, and renderer. Archives
+ * remain local JSON files; manual and scheduled runs use the same pipeline.
  */
 
-export type DailyReviewMode = 'daily' | 'deep';
+export type DailyReviewRange = 1 | 7 | 30;
 
-export const DAILY_REVIEW_MODES: readonly DailyReviewMode[] = ['daily', 'deep'] as const;
+export const DAILY_REVIEW_RANGES: readonly DailyReviewRange[] = [1, 7, 30] as const;
 
 export type DailyReviewSectionKey = 'summary' | 'gaps' | 'usage' | 'code';
 
@@ -217,32 +206,16 @@ export const DAILY_REVIEW_SECTION_KEYS: readonly DailyReviewSectionKey[] = [
   'code',
 ] as const;
 
-export interface DailyReviewSectionToggles {
-  readonly summary: boolean;
-  readonly gaps: boolean;
-  readonly usage: boolean;
-  readonly code: boolean;
-}
-
-export interface DailyReviewExternalNotify {
-  readonly enabled: boolean;
-  readonly channelId?: string;
-}
-
 export interface DailyReviewConfig {
   readonly enabled: boolean;
   /** Local-TZ HH:mm string, e.g. "08:00". */
   readonly executeTime: string;
-  readonly sections: DailyReviewSectionToggles;
-  readonly deepEnabled: boolean;
   /**
    * Composite model key (e.g. `connectionSlug::modelId`). Empty string
    * means "use the chat default model". The pipeline treats empty as
    * "no explicit model selected".
    */
   readonly modelKey: string;
-  readonly includeClaudeCode: boolean;
-  readonly externalNotify: DailyReviewExternalNotify;
 }
 
 export type DailyReviewArchiveStatus = 'ok' | 'no_model' | 'no_data' | 'failed' | 'skipped';
@@ -265,10 +238,10 @@ export interface DailyReviewArchiveSectionContent {
 }
 
 export interface DailyReviewArchive {
-  /** Stable id: `YYYY-MM-DD-{mode}`. Same-day re-runs overwrite. */
+  /** Stable id: `YYYY-MM-DD-{range}d`. Re-runs for the same range overwrite. */
   readonly id: string;
   readonly day: DayRangeMs;
-  readonly mode: DailyReviewMode;
+  readonly range: DailyReviewRange;
   readonly status: DailyReviewArchiveStatus;
   readonly generatedAt: number;
   readonly trigger: DailyReviewTrigger;
@@ -282,7 +255,7 @@ export interface DailyReviewArchive {
 export interface DailyReviewArchiveSummary {
   readonly id: string;
   readonly day: DayRangeMs;
-  readonly mode: DailyReviewMode;
+  readonly range: DailyReviewRange;
   readonly status: DailyReviewArchiveStatus;
   readonly generatedAt: number;
   readonly trigger: DailyReviewTrigger;
@@ -294,16 +267,7 @@ export interface DailyReviewArchiveSummary {
 export const DEFAULT_DAILY_REVIEW_CONFIG: DailyReviewConfig = {
   enabled: false,
   executeTime: '08:00',
-  sections: {
-    summary: true,
-    gaps: true,
-    usage: false,
-    code: false,
-  },
-  deepEnabled: false,
   modelKey: '',
-  includeClaudeCode: false,
-  externalNotify: { enabled: false },
 };
 
 const EXECUTE_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -315,45 +279,154 @@ export function isDailyReviewExecuteTime(value: unknown): value is string {
 
 /** Coerces an arbitrary partial config to a fully-valid `DailyReviewConfig`. */
 export function normalizeDailyReviewConfig(
-  input: Partial<DailyReviewConfig> | null | undefined,
+  input:
+    | (Partial<DailyReviewConfig> & {
+        readonly sections?: unknown;
+        readonly deepEnabled?: unknown;
+        readonly includeClaudeCode?: unknown;
+        readonly externalNotify?: unknown;
+      })
+    | null
+    | undefined,
 ): DailyReviewConfig {
   const base = DEFAULT_DAILY_REVIEW_CONFIG;
   if (!input) return base;
-  const sections = input.sections ?? base.sections;
-  const externalNotify = input.externalNotify ?? base.externalNotify;
   return {
     enabled: typeof input.enabled === 'boolean' ? input.enabled : base.enabled,
     executeTime: isDailyReviewExecuteTime(input.executeTime) ? input.executeTime : base.executeTime,
-    sections: {
-      summary: typeof sections.summary === 'boolean' ? sections.summary : base.sections.summary,
-      gaps: typeof sections.gaps === 'boolean' ? sections.gaps : base.sections.gaps,
-      usage: typeof sections.usage === 'boolean' ? sections.usage : base.sections.usage,
-      code: typeof sections.code === 'boolean' ? sections.code : base.sections.code,
-    },
-    deepEnabled: typeof input.deepEnabled === 'boolean' ? input.deepEnabled : base.deepEnabled,
     modelKey: typeof input.modelKey === 'string' ? input.modelKey : base.modelKey,
-    includeClaudeCode:
-      typeof input.includeClaudeCode === 'boolean'
-        ? input.includeClaudeCode
-        : base.includeClaudeCode,
-    externalNotify: {
-      enabled:
-        typeof externalNotify.enabled === 'boolean'
-          ? externalNotify.enabled
-          : base.externalNotify.enabled,
-      channelId:
-        typeof externalNotify.channelId === 'string' ? externalNotify.channelId : undefined,
-    },
   };
 }
 
-/** Builds the canonical archive id for a given day + mode. */
-export function dailyReviewArchiveId(day: DayRangeMs, mode: DailyReviewMode): string {
+/** Builds the canonical archive id for a given range. */
+export function dailyReviewArchiveId(day: DayRangeMs, range: DailyReviewRange): string {
   const d = new Date(day.fromMs);
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}-${mode}`;
+  return `${yyyy}-${mm}-${dd}-${range}d`;
+}
+
+/** Maps the retired daily/deep read format onto the one range contract. */
+export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive {
+  if (!isRecord(input)) throw invalidDailyReviewArchive('record');
+  let range: DailyReviewRange;
+  let expectedIdSuffix: string;
+  if ('range' in input) {
+    if (!DAILY_REVIEW_RANGES.includes(input.range as DailyReviewRange)) {
+      throw invalidDailyReviewArchive('range');
+    }
+    range = input.range as DailyReviewRange;
+    expectedIdSuffix = `${range}d`;
+  } else if (input.mode === 'daily' || input.mode === 'deep') {
+    range = input.mode === 'deep' ? 7 : 1;
+    expectedIdSuffix = input.mode;
+  } else {
+    throw invalidDailyReviewArchive('range');
+  }
+
+  if (typeof input.id !== 'string' || input.id.length === 0) {
+    throw invalidDailyReviewArchive('id');
+  }
+  if (
+    !isRecord(input.day) ||
+    !isFiniteNumber(input.day.fromMs) ||
+    !isFiniteNumber(input.day.toMs) ||
+    input.day.toMs <= input.day.fromMs
+  ) {
+    throw invalidDailyReviewArchive('day');
+  }
+  const day = { fromMs: input.day.fromMs, toMs: input.day.toMs };
+  if (!hasValidDailyReviewArchiveId(input.id, expectedIdSuffix)) {
+    throw invalidDailyReviewArchive('id');
+  }
+  if (!DAILY_REVIEW_ARCHIVE_STATUSES.includes(input.status as DailyReviewArchiveStatus)) {
+    throw invalidDailyReviewArchive('status');
+  }
+  const status = input.status as DailyReviewArchiveStatus;
+  if (!isFiniteNumber(input.generatedAt)) throw invalidDailyReviewArchive('generatedAt');
+  if (input.trigger !== 'cron' && input.trigger !== 'manual') {
+    throw invalidDailyReviewArchive('trigger');
+  }
+  if (typeof input.modelKey !== 'string') throw invalidDailyReviewArchive('modelKey');
+  const sections = normalizeDailyReviewArchiveSections(input.sections);
+  if (status === 'ok' && !Object.values(sections).some((content) => content.trim().length > 0)) {
+    throw invalidDailyReviewArchive('sections');
+  }
+  const totals = normalizeDailyReviewArchiveTotals(input.totals);
+  if (input.errorMessage !== undefined && typeof input.errorMessage !== 'string') {
+    throw invalidDailyReviewArchive('errorMessage');
+  }
+
+  return {
+    id: input.id,
+    day,
+    range,
+    status,
+    generatedAt: input.generatedAt,
+    trigger: input.trigger,
+    modelKey: input.modelKey,
+    sections,
+    totals,
+    errorMessage: input.errorMessage,
+  };
+}
+
+function normalizeDailyReviewArchiveSections(input: unknown): DailyReviewArchiveSectionContent {
+  if (!isRecord(input)) throw invalidDailyReviewArchive('sections');
+  const sections: Record<string, string> = {};
+  for (const key of DAILY_REVIEW_SECTION_KEYS) {
+    const value = input[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string') throw invalidDailyReviewArchive(`sections.${key}`);
+    sections[key] = value;
+  }
+  return sections;
+}
+
+function normalizeDailyReviewArchiveTotals(input: unknown): DailyReviewTotals {
+  if (!isRecord(input)) throw invalidDailyReviewArchive('totals');
+  for (const key of ['sessionCount', 'requestCount', 'totalTokens', 'errorCount'] as const) {
+    if (!isNonNegativeInteger(input[key])) throw invalidDailyReviewArchive(`totals.${key}`);
+  }
+  if (!isFiniteNumber(input.costUsd) || input.costUsd < 0) {
+    throw invalidDailyReviewArchive('totals.costUsd');
+  }
+  return {
+    sessionCount: input.sessionCount as number,
+    requestCount: input.requestCount as number,
+    totalTokens: input.totalTokens as number,
+    costUsd: input.costUsd,
+    errorCount: input.errorCount as number,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return isFiniteNumber(value) && Number.isInteger(value) && value >= 0;
+}
+
+function hasValidDailyReviewArchiveId(id: string, suffix: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})-(1d|7d|30d|daily|deep)$/.exec(id);
+  if (!match || match[4] !== suffix) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
+function invalidDailyReviewArchive(field: string): Error {
+  return new Error(`Invalid Daily Review archive ${field}`);
 }
 
 /** Strips the section bodies down to a lightweight history-list row. */
@@ -363,7 +436,7 @@ export function dailyReviewArchiveToSummary(
   return {
     id: archive.id,
     day: archive.day,
-    mode: archive.mode,
+    range: archive.range,
     status: archive.status,
     generatedAt: archive.generatedAt,
     trigger: archive.trigger,

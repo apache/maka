@@ -13,7 +13,7 @@ describe('SQLite runtime schema migration', () => {
         return {
           get() {
             versionReads += 1;
-            return { user_version: versionReads === 1 ? 4 : 7 };
+            return { user_version: versionReads === 1 ? 4 : 8 };
           },
         };
       },

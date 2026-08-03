@@ -14,7 +14,7 @@ export interface MainAutomationWiring {
   manager: AutomationManager;
   scheduler: AutomationScheduler;
   tools: MakaTool[];
-  /** Load durable automations from disk and register them. Call once at startup. */
+  /** Load durable Automations from operational storage. Call once at startup. */
   loadDurableAutomations: () => Promise<void>;
 }
 
@@ -33,14 +33,11 @@ export function createMainAutomationWiring(deps: CreateMainAutomationWiringDeps)
     now: () => Date.now(),
   });
 
-  const store = createAutomationStore<AutomationDefinition>(deps.workspaceRoot);
+  const store = createAutomationStore(deps.workspaceRoot);
 
   // Durable persistence is tied to cron capability: only a host that can run
-  // crons (createFreshRun present) owns durable automations and may load/write
-  // the shared automations.json. A cron-disabled host has no durable state of
-  // its own and must never overwrite the store (its full-file sync would clobber
-  // the owning host's crons). The desktop always provides createFreshRun; this
-  // gate keeps the invariant explicit and symmetric with the CLI.
+  // crons (createFreshRun present) owns durable Automations. A cron-disabled
+  // host has no durable state of its own and must not reconcile shared state.
   const cronEnabled = deps.createFreshRun !== undefined;
 
   // If we fail to READ the existing durable store, we must not WRITE over it — a
@@ -53,7 +50,7 @@ export function createMainAutomationWiring(deps: CreateMainAutomationWiringDeps)
         if (!durableStoreReadable) return;
         const all = manager.listAll().filter(a => a.durable && (a.status === 'active' || a.status === 'paused'));
         store.sync(all).catch(err => {
-          console.warn('[automation-wiring] failed to sync durable automations to disk:', err);
+          console.warn('[automation-wiring] failed to sync durable automations:', err);
         });
       }
     : (): void => { /* no durable automations to persist on a cron-disabled host */ };
@@ -90,4 +87,3 @@ export function createMainAutomationWiring(deps: CreateMainAutomationWiringDeps)
 
   return { manager, scheduler, tools, loadDurableAutomations };
 }
-

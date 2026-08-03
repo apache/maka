@@ -1,428 +1,57 @@
-/* Onboarding hero — first-run, no real connection configured. */
 .maka-onboarding {
-  width: min(var(--maka-chat-measure), 100%);
-  margin: auto;
-  padding: var(--space-3) var(--space-4) var(--space-4);
-  display: grid;
-  gap: var(--space-2-5);
-  color: var(--foreground);
+  min-width: 0;
 }
 
-/* PR-AUDIT-CLEANUP-BATCH-2 (WAWQAQ msg `01efbebb`): deleted unused
-   `@keyframes maka-agents-slide-up` and `@keyframes maka-agents-fade-in`.
-   Both were referenced only from rules that previous PRs removed
-   (PR-ONBOARDING-HERO-STAGGER-0 + PR-FRONTEND-AUDIT-CLEANUP-0 F1).
-   decorative entrance keyframes are retired by issue #406 gap 3. */
-
-.maka-onboarding header {
-  display: grid;
-  gap: var(--space-1);
-  justify-items: start;
-  text-align: left;
+.maka-onboarding-center {
+  min-width: 0;
 }
 
-.maka-onboarding-eyebrow {
-  display: none;
+.maka-onboarding-wordmark {
+  color: var(--maka-brand);
 }
 
-.maka-onboarding header h1 {
-  margin: 0;
-  max-width: 32ch;
-  color: var(--foreground);
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--text-large-leading);
-  letter-spacing: var(--tracking-normal);
-}
-
-.maka-onboarding header p {
-  display: none;
-}
-
-/* ============================================================
-   First-run hero (needs_connection) — selection-led redesign.
-   Scoped via `.maka-firstrun` so the other onboarding hero states
-   (SetupHero) keep their existing layout. Title leads, the three
-   setup steps compress to one quiet stepper line, and the provider
-   list is the clear subject.
-   ============================================================ */
-.maka-firstrun {
-  width: min(600px, 100%);
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-/* PR-FIRSTRUN-FOLD-0: keep the primary CTA above the fold at the default
-   1280x800 window. Three stacked paddings (home-surface chatContent
-   clamp(72px,10vh,116px) + onboarding-stack clamp(40px,7vh,76px) + a 56vh
-   provider list) pushed the footer button below the viewport, so the very
-   first screen rendered a half-clipped CTA. First-run flattens the outer
-   padding stack; the other onboarding states keep their centered rhythm. */
-.mainColumn[data-home-surface="true"] .maka-chatContent:has(.maka-firstrun) {
-  padding-top: clamp(var(--space-6), 3.5vh, var(--space-10));
-  align-content: start;
-}
-
-.maka-onboarding-surface:has(.maka-firstrun) {
-  min-height: 0;
-  padding-top: clamp(var(--space-3), 2vh, var(--space-6));
-}
-
-/* PR-FRONTEND-AUDIT-CLEANUP-0 F1 (WAWQAQ msg `dde696a1`): the earlier
-   `maka-agents-fade-in var(--duration-base)` block + nth-child delay ladder was
-   completely overridden by the `maka-card-enter var(--duration-large)` block below,
-   plus that block's own delay ladder. The dead rules silently caused
-   any "polish" attempt on the upper block to look like a no-op. Deleted. */
-
-.maka-firstrun-title {
-  margin: 0;
-  max-width: none;
-  font-size: var(--font-size-3xl);
-  font-weight: var(--font-weight-bold);
-  line-height: var(--text-display-3-leading);
-  letter-spacing: var(--tracking-normal);
-  color: var(--foreground);
-}
-
-.maka-firstrun-sub {
-  margin: var(--space-2) 0 0;
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  color: var(--muted-foreground);
-}
-
-/* --- compact stepper (numbered nodes + connectors) --- */
-.maka-firstrun-stepper {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0;
-  margin: var(--space-6) 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.maka-firstrun-step {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2-5) var(--space-1) var(--space-1-5);
-  border-radius: var(--radius-pill);
-}
-
-.maka-firstrun-step-dot {
-  display: inline-grid;
-  place-items: center;
-  width: 21px;
-  height: 21px;
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-semibold);
-  border: var(--border-width-hairline) solid var(--border-strong);
-  color: var(--muted-foreground);
-}
-
-.maka-firstrun-step-label {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  color: var(--muted-foreground);
-  white-space: nowrap;
-}
-
-.maka-firstrun-step[data-state="active"] {
-  background: oklch(from var(--nav-active) l c h / 0.12);
-}
-.maka-firstrun-step[data-state="active"] .maka-firstrun-step-dot {
-  background: var(--nav-active);
-  border-color: var(--nav-active);
-  color: var(--background);
-}
-.maka-firstrun-step[data-state="active"] .maka-firstrun-step-label {
-  color: var(--foreground);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-firstrun-step[data-state="done"] .maka-firstrun-step-dot {
-  background: var(--foreground-8);
-  border-color: transparent;
-  color: var(--foreground-secondary);
-}
-
-.maka-firstrun-step[data-state="warning"] .maka-firstrun-step-dot {
-  border-color: var(--warning);
-  color: var(--warning-text);
-}
-
-.maka-firstrun-step-line {
-  width: 20px;
-  height: 1.5px;
-  flex: 0 0 auto;
-  margin: 0 var(--space-0-5);
-  border-radius: var(--radius-control);
-  background: var(--border-strong);
-}
-
-/* --- section label above the provider list --- */
-.maka-firstrun-pick {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2-5);
-  margin: var(--space-8) 0 var(--space-3);
-}
-.maka-firstrun-pick-label {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
-  color: var(--foreground);
-}
-.maka-firstrun-pick-hint {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  color: var(--muted-foreground);
-}
-
-/* --- provider list panel (scrolls vertically as the list grows) --- */
-.maka-firstrun-list {
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
+.maka-onboarding-card {
   overflow: hidden;
-  background: var(--background-elevated);
 }
 
-/* Designer audit P2-15: the height clamp cut the last visible provider row
-   in half with no cue that the list scrolls — it read as broken clipping.
-   A bottom fade signals "more below". The cue must retire at scroll end:
-   an always-on fade veils the last row and reads as broken dimming. The
-   fade therefore lives on the scroller itself as a sticky ::after, and a
-   scroll-state container query (Chromium 133+, Electron 43) drops it once
-   the list can no longer scroll down — including when the list fits and
-   never overflows. */
-.maka-firstrun-list ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  /* PR-FIRSTRUN-FOLD-0: 56vh let the list eat the CTA's room at short
-     windows. The clamp keeps all six compact rows visible at 800px-tall
-     windows while still bounding growth as more providers are added. */
-  max-height: clamp(240px, 42vh, 420px);
+.maka-onboarding-header h1 {
+  text-wrap: balance;
+}
+
+.maka-onboarding-header p {
+  text-wrap: pretty;
+}
+
+.maka-onboarding-provider-group,
+.maka-onboarding-actions {
+  min-width: 0;
+}
+
+.maka-onboarding-provider-list {
+  max-height: min(320px, 42vh);
   overflow-y: auto;
-  container-type: scroll-state;
-}
-.maka-firstrun-list ul::after {
-  content: "";
-  display: block;
-  /* Sticky pins the fade to the scrollport's bottom edge while more
-     content follows; margin-top pulls the last row back up under it so the
-     pseudo adds no scrollable height. pointer-events none keeps rows
-     clickable. */
-  position: sticky;
-  bottom: 0;
-  /* 56px: tall enough to fully veil a half-clipped row's text — at 28px the
-     cut row stayed half-legible under the fade and still read as broken.
-     margin-top derives from the same local var so the two never drift. */
-  --firstrun-fade-height: 56px;
-  height: var(--firstrun-fade-height);
-  margin-top: calc(-1 * var(--firstrun-fade-height));
-  border-radius: 0 0 var(--radius-surface) var(--radius-surface);
-  background: linear-gradient(to bottom, oklch(from var(--background-elevated) l c h / 0), var(--background-elevated));
-  pointer-events: none;
-  transition: opacity var(--duration-quick) var(--ease-out-strong);
-}
-@container not scroll-state(scrollable: bottom) {
-  .maka-firstrun-list ul::after {
-    opacity: 0;
-  }
-}
-.maka-firstrun-list li + li {
-  border-top: var(--border-width-hairline) solid var(--border);
+  overscroll-behavior: contain;
 }
 
-.maka-firstrun .maka-onboarding-footer {
-  margin-top: var(--space-6);
+/* ChatLayout always paints its frosted composer dock, even when the Composer
+   itself is hidden. Onboarding owns the whole empty surface, so that dock has
+   no content to support and would blur the card actions behind it. Derive the
+   opt-out from the mounted surface instead of duplicating onboarding state. */
+.maka-chat-layout:has(.maka-onboarding-surface) > :last-child {
+  display: none;
 }
 
-.maka-onboarding-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-}
-
-.maka-onboarding-setup-steps {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: var(--space-0-5);
-}
-
-.maka-onboarding-setup-steps > li {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) max-content;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-}
-
-.maka-onboarding-setup-steps > li[data-state="active"] {
-  border-color: oklch(from var(--nav-active) l c h / 0.34);
-  background: oklch(from var(--nav-active) l c h / 0.06);
-}
-
-.maka-onboarding-setup-steps > li[data-state="warning"] {
-  border-color: oklch(from var(--destructive-text) l c h / 0.30);
-  background: oklch(from var(--destructive-text) l c h / 0.06);
-}
-
-.maka-onboarding-setup-steps > li[data-state="done"] {
-  border-color: oklch(from var(--success, var(--status-running)) l c h / 0.28);
-}
-
-.maka-onboarding-setup-step-marker {
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-pill);
-  background: var(--background-elevated);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-onboarding-setup-steps > li[data-state="active"] .maka-onboarding-setup-step-marker {
-  background: var(--nav-active);
-  color: var(--control-foreground);
-}
-
-.maka-onboarding-setup-steps > li[data-state="warning"] .maka-onboarding-setup-step-marker {
-  background: var(--destructive-text);
-  color: var(--background);
-}
-
-.maka-onboarding-setup-step-copy {
-  min-width: 0;
-  display: grid;
-  gap: var(--space-0-5);
-}
-
-.maka-onboarding-setup-step-copy strong {
-  color: var(--foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--text-supporting-leading);
-}
-
-.maka-onboarding-setup-step-copy small {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-}
-
-.maka-onboarding-setup-step-state {
-  justify-self: end;
-  padding: var(--space-0-5) var(--space-1-5);
-  border-radius: var(--radius-pill);
-  background: var(--background-elevated);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-semibold);
-  white-space: nowrap;
-}
-
-.maka-onboarding-setup-steps > li[data-state="active"] .maka-onboarding-setup-step-state {
-  background: oklch(from var(--nav-active) l c h / 0.12);
-  color: var(--nav-active);
-}
-
-.maka-onboarding-setup-steps > li[data-state="warning"] .maka-onboarding-setup-step-state {
-  background: oklch(from var(--destructive-text) l c h / 0.12);
-  color: var(--destructive-text);
-}
-
-@media (max-width: 620px) {
-  .maka-onboarding-setup-steps > li {
-    grid-template-columns: 24px minmax(0, 1fr);
-  }
-
-  .maka-onboarding-setup-step-state {
-    grid-column: 2;
-    justify-self: start;
-  }
-}
-/* PR110c: extended OnboardingHero variants. The setup variants
-   reuse the base `.maka-onboarding` chrome but skip the provider
-   grid; we add a compact body + a single CTA.
-   PR-UI-LAYOUT-25: clearer tone treatment on the warm canvas.
-   - Headline color stays neutral for `setup` (default), shifts
-     warm/amber for `warning` (info family), shifts destructive
-     for `blocked` so a stranded user immediately sees gravity. */
-.maka-onboarding-setup header h1 {
-  font-size: var(--font-size-xl);
-  line-height: var(--text-heading-2-leading);
-}
-/* No leading here on purpose: this paragraph declares no size either, so it
-   takes the body tier whole from `body` in maka-tokens.css. Naming the leading
-   without the size is the split this branch exists to end — it pins a ratio
-   that stops matching the moment anything above changes the size. */
-.maka-onboarding-setup header p {
-  margin-top: var(--space-2);
-  color: var(--foreground-secondary);
-}
-.maka-onboarding-setup[data-tone="warning"] header h1 {
-  color: var(--warning, var(--info-text));
-}
-.maka-onboarding-setup[data-tone="destructive"] header h1 {
-  color: var(--destructive-text);
-}
-
-/* PR-UI-LAYOUT-25: setup hero eyebrow icon picks up the tone for
- * each variant so the visual hierarchy reads (icon tone → headline
- * tone → body) instead of relying on copy alone. */
-.maka-onboarding-setup[data-tone="warning"] .maka-onboarding-eyebrow {
-  color: var(--info-text);
-}
-.maka-onboarding-setup[data-tone="destructive"] .maka-onboarding-eyebrow {
-  color: var(--destructive-text);
-}
-
-.maka-onboarding-slug {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  padding: var(--space-0-5) var(--space-1-5);
-  /* PR-UI-LAYOUT-25: slug radius 6 → 8 to join the form input
-   * family (same chrome as inline code badges). */
-  border-radius: var(--radius-surface);
-  background: var(--foreground-5, oklch(from var(--foreground) l c h / 0.06));
-  color: var(--foreground-secondary);
-}
-
-/* @kenji PR110c review: loading slot rendered while the first
-   onboarding snapshot resolves. Empty visual — just blocks the
-   default EmptyChatHero so the user doesn't see prompt suggestions
-   flash before the state-routed hero mounts. */
+/* The snapshot slot blocks the ordinary empty-chat hero while main resolves
+   onboarding state. Its shape previews the single card that will replace it. */
 .maka-onboarding-loading {
   position: relative;
-  width: min(620px, calc(100% - 48px));
-  min-height: 132px;
+  width: min(460px, calc(100% - 32px));
+  min-height: 196px;
   margin: auto;
   overflow: hidden;
   border: var(--border-width-hairline) solid var(--border-strong);
   border-radius: var(--radius-modal);
   background: var(--foreground-5);
-  box-shadow:
-    0 0 0 1px oklch(from var(--foreground) l c h / 0.03),
-    0 10px 24px oklch(from var(--foreground) l c h / 0.06);
 }
 
 .maka-onboarding-loading::before,
@@ -430,45 +59,38 @@
   content: "";
   position: absolute;
   left: 24px;
-  right: 24px;
   border-radius: var(--radius-pill);
-  background: linear-gradient(
-    90deg,
-    var(--foreground-8),
-    oklch(from var(--foreground) l c h / 0.16),
-    var(--foreground-8)
-  );
+  background: var(--foreground-8);
 }
 
 .maka-onboarding-loading::before {
-  top: 34px;
-  width: min(280px, calc(100% - 48px));
+  top: 32px;
+  width: min(240px, calc(100% - 48px));
   height: 16px;
 }
 
 .maka-onboarding-loading::after {
-  top: 66px;
-  width: min(460px, calc(100% - 48px));
+  top: 64px;
+  width: min(360px, calc(100% - 48px));
   height: 12px;
-  opacity: var(--opacity-muted);
 }
 
-/* Page-level frame for the setup hero. The hero card itself sizes to its
-   content; this owns the viewport rhythm around it. Relocated from
-   tool-stream.css — issue #546 PR1. */
 .maka-onboarding-surface {
   display: grid;
-  align-content: start;
-  justify-items: center;
+  place-items: center;
   width: 100%;
   min-height: calc(100dvh - 84px);
-  padding: clamp(var(--space-10), 7vh, 76px) var(--space-6) var(--space-12);
+  padding: var(--space-8) var(--space-6);
 }
 
-.maka-firstrun-row { padding: 8px 14px; }
-
-@media (max-width: 760px) {
+@media (max-width: 560px) {
   .maka-onboarding-surface {
-    padding: var(--space-6) var(--space-4) var(--space-8);
+    padding: var(--space-6) var(--space-4);
+  }
+}
+
+@media (max-height: 720px) {
+  .maka-onboarding-surface {
+    align-items: start;
   }
 }

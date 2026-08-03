@@ -1,8 +1,8 @@
 import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime';
-import { test, expect } from './fixtures.js';
+import { test, expect, COMPOSER_INPUT } from './fixtures.js';
 
 test('answers three questions and continues the same fake-backend turn', async ({ window: page }) => {
-  const composer = page.locator('.maka-composer-textarea');
+  const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(FAKE_ASK_USER_QUESTION_PROMPT);
   await composer.press('Enter');
 

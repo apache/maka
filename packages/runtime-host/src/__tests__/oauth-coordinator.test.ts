@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
-import { parseOAuthSubscriptionTokens, type OAuthSubscriptionTokens } from '@maka/runtime';
+import {
+  OAuthDeviceAuthorizationExpiredError,
+  OAuthTokenEndpointError,
+  parseOAuthSubscriptionTokens,
+  type OAuthSubscriptionTokens,
+} from '@maka/runtime';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyStoresWriter,
@@ -16,6 +21,7 @@ import {
   OAUTH_PRESENTATION_SERVICE_VERSION,
   type ClientCapabilityServiceCallFrame,
   type OAuthLoginProjection,
+  type OAuthPresentationRequest,
 } from '../protocol/index.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import { HostOAuthCoordinator } from '../server/oauth-coordinator.js';
@@ -182,10 +188,9 @@ test('xAI cancellation waits for an admitted token poll and commits its successf
   });
 });
 
-test('Codex login deadline closes an abandoned callback and releases residency', async () => {
+test('Codex device login fails when approval never arrives before expiry', async () => {
   await withFixture('openai-codex', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-codex-timeout', []);
-    let loopbackClosed = false;
     const coordinator = new HostOAuthCoordinator({
       runtimePolicy: fixture.stores,
       activation: fixture.activation,
@@ -196,14 +201,22 @@ test('Codex login deadline closes an abandoned callback and releases residency',
       onFatal: (error) => {
         throw error;
       },
-      authorizationTimeoutMs: 10,
-      openCodexLoopback: async () => ({
-        callback: new Promise(() => undefined),
-        close: async () => {
-          loopbackClosed = true;
-        },
+      now: () => NOW,
+      startCodexAuthorization: async () => ({
+        deviceAuthId: 'deviceauth-expired',
+        userCode: 'CODE-1234',
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        expiresAt: NOW - 1,
+        intervalMs: 1_000,
       }),
-      exchangeCode: async () => {
+      pollCodexAuthorization: async (input) => {
+        input.onPollAdmission?.();
+        // The real poll throws OAuthDeviceAuthorizationExpiredError when the
+        // device window elapses without approval — a timeout, not a
+        // provider rejection of the account.
+        throw new OAuthDeviceAuthorizationExpiredError();
+      },
+      exchangeCodexCode: async () => {
         throw new Error('OAuth exchange must not start');
       },
     });
@@ -220,8 +233,147 @@ test('Codex login deadline closes an abandoned callback and releases residency',
       phase: 'failed',
       failure: 'authorization_failed',
     });
-    assert.equal(loopbackClosed, true);
     assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('Codex device login cancels between polls but commits an admitted poll result', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-codex-cut', []);
+    let markPollAdmitted!: () => void;
+    const pollAdmitted = new Promise<void>((resolve) => {
+      markPollAdmitted = resolve;
+    });
+    let releasePoll!: () => void;
+    const pollRelease = new Promise<void>((resolve) => {
+      releasePoll = resolve;
+    });
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startCodexAuthorization: async () => ({
+        deviceAuthId: 'deviceauth-cut',
+        userCode: 'CODE-CUT',
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        expiresAt: NOW + 60_000,
+        intervalMs: 1_000,
+      }),
+      pollCodexAuthorization: async (input) => {
+        input.onPollAdmission?.();
+        markPollAdmitted();
+        await pollRelease;
+        return { authorizationCode: 'device-cut-code', codeVerifier: 'device-cut-verifier' };
+      },
+      exchangeCodexCode: async () => tokenFixture('codex-after-cancel'),
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-codex-cut', connectionId: fixture.connection.connectionId },
+      operationContext('client-codex-cut', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    await pollAdmitted;
+    const cancelled = await coordinator.handlers['oauth.login.cancel'](
+      { attemptId: 'attempt-codex-cut' },
+      operationContext('client-codex-cut', fixture.acquireResidency),
+    );
+    assert.equal(cancelled.ok, true);
+    if (cancelled.ok) assert.equal(cancelled.result.phase, 'exchanging');
+    releasePoll();
+    assert.equal((await waitForTerminal(coordinator, 'attempt-codex-cut')).phase, 'authenticated');
+    assert.equal(fixture.invalidations, 1);
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('Codex device login presents the one-time code and commits exchanged tokens', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const presentationCalls: string[] = [];
+    const presentationInputs: Array<{ connectionId: string; input: Record<string, unknown> }> = [];
+    const client = await attachPresentation(
+      fixture.capabilities,
+      'client-codex-device',
+      presentationCalls,
+      {},
+      presentationInputs,
+    );
+    const tokens = tokenFixture('codex-device-access');
+    let polls = 0;
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startCodexAuthorization: async () => ({
+        deviceAuthId: 'deviceauth-host-only',
+        userCode: 'CODE-9XYZ',
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        expiresAt: NOW + 60_000,
+        intervalMs: 1_000,
+      }),
+      pollCodexAuthorization: async () => {
+        polls += 1;
+        return { authorizationCode: 'device-auth-code', codeVerifier: 'device-verifier' };
+      },
+      exchangeCodexCode: async (input) => {
+        assert.equal(input.grant.authorizationCode, 'device-auth-code');
+        assert.equal(input.grant.codeVerifier, 'device-verifier');
+        return tokens;
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-codex-device', connectionId: fixture.connection.connectionId },
+      operationContext('client-codex-device', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-codex-device');
+    assert.equal(terminal.phase, 'authenticated');
+    // The one-time code is surfaced to the presenting Client via stateHint.
+    assert.deepEqual(presentationInputs, [
+      {
+        connectionId: 'client-codex-device',
+        input: {
+          url: 'https://auth.openai.com/codex/device',
+          stateHint: 'CODE-9XYZ',
+        },
+      },
+    ]);
+    assert.equal(polls, 1);
+    assert.equal(fixture.invalidations, 1);
+    assert.equal(fixture.activeResidencies, 0);
+    const resolved = await fixture.stores.operations.resolveExecutionConnection(
+      fixture.connection.slug,
+    );
+    assert.equal(resolved.kind, 'ready');
+    if (resolved.kind === 'ready') {
+      assert.deepEqual(
+        parseOAuthSubscriptionTokens(resolved.secretMaterial.connection?.secret ?? ''),
+        tokens,
+      );
+    }
     await coordinator.close();
     client.close();
   });
@@ -445,6 +597,7 @@ async function attachPresentation(
   connectionId: string,
   calls: string[],
   options: { authorizationCode?: string; authorizationDelayMs?: number } = {},
+  inputCalls?: Array<{ connectionId: string; input: Record<string, unknown> }>,
 ) {
   const serviceCalls = new Map<string, ClientCapabilityServiceCallFrame>();
   let connection!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
@@ -452,6 +605,7 @@ async function attachPresentation(
     send: async (frame) => {
       if (frame.kind === 'client.capability.service_call') {
         calls.push(connectionId);
+        if (inputCalls) inputCalls.push({ connectionId, input: frame.input });
         serviceCalls.set(frame.invocationId, frame);
         connection.accept({
           kind: 'client.capability.accepted',
@@ -622,7 +776,7 @@ async function withFixture(
   try {
     await run(fixture);
   } finally {
-    capabilities.close();
+    await capabilities.close();
     if (!owner.closed) await owner.close();
     await rm(root, { recursive: true, force: true });
   }

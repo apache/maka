@@ -28,8 +28,7 @@
    hand-rolled 1.6154em (21px) that matched neither Maka's --leading-* tiers
    nor Astryx's. */
 .maka-chat-message-bubble {
-  font-size: var(--text-body-size);
-  line-height: var(--text-body-leading);
+  font: var(--maka-text-body);
 }
 
 /* Geometry (radius, padding, max-width) belongs to ChatMessageBubble: under
@@ -60,7 +59,7 @@
    styles/native-cursor.css (role=button + default !important). */
 
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
-  font-family: var(--font-family-body);
+  font: var(--maka-text-label);
 }
 
 /* Reasoning and tool-call rows read at BODY size, not supporting size.
@@ -124,14 +123,11 @@
    is declared with the type tiers in maka-tokens.css, so a turn reads as one
    rhythm rather than a stack of differently-spaced blocks. */
 .maka-turn [data-trow] .astryx-collapsible-trigger {
+  font: var(--maka-text-label);
   min-height: 24px;
   gap: var(--spacing-1-5, 6px);
   padding-block: 2px;
   border-radius: var(--radius-element);
-  font-family: var(--font-family-body);
-  font-size: var(--text-body-size);
-  line-height: var(--maka-line-body);
-  font-weight: var(--font-weight-medium, 500);
   color: var(--color-text-secondary);
 }
 
@@ -146,7 +142,15 @@
   height: 10px;
 }
 
-/* Row detail open: same 0fr→1fr medium motion as group/reasoning. */
+/* Row detail open: same 0fr→1fr medium motion as group/reasoning.
+
+   The Astryx duration/ease below are deliberate, not a leak of the product
+   scale. Astryx ChatToolCalls animates its own group open with
+   `grid-template-rows --duration-medium --ease-standard`; a detail row that
+   expands beside one has to share that clock or the two disclosures visibly
+   desync. Product motion belongs on the maka-tokens scale — this is the
+   exception that follows a neighbouring Astryx component, so retune it only
+   when ChatToolCalls moves. */
 @keyframes maka-chat-tool-detail-open {
   from { grid-template-rows: 0fr; }
   to { grid-template-rows: 1fr; }
@@ -187,12 +191,19 @@
    touch + from assistive tech). It stays quiet — caption tier at
    normal weight, muted — and rides in the user turn's meta row beneath
    the block. Aligned to the same tier the footer-action cva uses (text-xs). */
+/* #1879: height off the control ruler, not off the line box. `inline-block`
+   let the leading decide the box — measured, bumping this element's own
+   leading to 40px took the box from 20px to 40px and carried the meta row
+   with it. `--h-control-xs` is 20px, the value the supporting leading
+   already resolves to, so the pin is pixel-neutral today and load-bearing
+   the next time a leading moves. Safe to pin because `white-space: nowrap`
+   below makes single-line a property of this box rather than an assumption. */
 .maka-message-time-inline {
-  display: inline-block;
+  font: var(--maka-text-supporting);
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-normal);
-  line-height: var(--text-supporting-leading);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -239,15 +250,11 @@
    the turn still reads as one rhythm because 24 is the next step of the same
    grid, not a different one. */
 .maka-turn [data-maka-contract="markdown"] h1 {
-  font-size: var(--font-size-lg);
-  line-height: var(--text-large-leading);
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-3);
 }
 
 .maka-turn [data-maka-contract="markdown"] :is(h2, h3, h4, h5, h6) {
-  font-size: var(--text-body-size);
-  line-height: var(--maka-line-body);
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-4);
 }
 
 .maka-chat-message pre:not([data-maka-contract="markdown"] pre) {
@@ -259,11 +266,10 @@
    boundary so raw-pre treatment cannot become a second code-block authority. */
 .maka-chat-message[data-sender="system"]
   pre:not([data-maka-contract="markdown"] pre) {
+  font: var(--maka-text-supporting);
   display: inline-flex;
   border-radius: var(--radius-pill);
   background: oklch(from var(--info) l c h / 0.08);
   color: var(--info-text);
   padding: var(--space-0-5) var(--space-1-5);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }

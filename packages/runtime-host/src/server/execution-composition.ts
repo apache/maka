@@ -1,8 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
   AgentGraphCoordinator,
+  AgentGraphSupervisorWakeCoordinator,
+  agentGraphIdForRootSession,
   BackendRegistry,
+  createLocalContinuationSafetyInspector,
   createBuiltinSandboxManager,
   createFilesystemWorkerLaunchSpecProvider,
   FakeBackend,
@@ -10,6 +13,7 @@ import {
   isOAuthEnrollmentProviderEnabled,
   isBuiltinFilesystemWorkerSandboxAvailable,
   SessionManager,
+  SessionActivityRegistry,
   ShellRunProcessManager,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
@@ -19,7 +23,11 @@ import {
   openInteractiveArtifactStoreForWrite,
 } from '@maka/storage/artifact-stores';
 import { openInteractiveAutomationAuthorityForWrite } from '@maka/storage/automation-authority';
-import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import {
+  isSessionNotFoundError,
+  openInteractiveExecutionStoresForWrite,
+} from '@maka/storage/execution-stores';
+import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import {
   type InteractiveLongTermMemoryWriter,
   openInteractiveLongTermMemoryStoreForWrite,
@@ -30,14 +38,25 @@ import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtim
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
+import {
+  bindHostChildAgentBackend,
+  createHostChildAgentToolComposition,
+} from './child-agent-composition.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
+import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAutomationCoordinator } from './automation-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
-import { createHostAiSdkBackend, createHostGoalEvaluator } from './execution-model-composition.js';
+import {
+  createHostAiSdkBackend,
+  createHostExecutionModelComposition,
+  createHostGoalEvaluator,
+} from './execution-model-composition.js';
+import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
@@ -49,6 +68,7 @@ import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
+import { notifySandboxBoundaryGraphWake } from './sandbox-boundary-graph-wake.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
@@ -60,6 +80,7 @@ import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
+import { createHostWebSearchTool } from './web-search-tool.js';
 
 export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
@@ -76,6 +97,7 @@ export async function createExecutionRuntimeHostComposition(
   let automationStore:
     | Awaited<ReturnType<typeof openInteractiveAutomationAuthorityForWrite>>
     | undefined;
+  let graphClient: HostAgentGraphCoordinator | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
@@ -94,12 +116,19 @@ export async function createExecutionRuntimeHostComposition(
     usageStores = openedUsageStores;
     const openedShellRunStore = await openInteractiveShellRunStoreForWrite(context.owner.lease);
     shellRunStore = openedShellRunStore;
+    const worktreeChildExecutor = createGitWorktreeChildExecutor({
+      storageRoot: context.owner.capability.canonicalPath,
+    });
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const sessionAdmission = new SessionAdmissionGate();
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
+    let manager: SessionManager | undefined;
+    let graphCoordinator: AgentGraphCoordinator | undefined;
+    let graphSupervisorWake: AgentGraphSupervisorWakeCoordinator | undefined;
+    const graphWakeActivities = new SessionActivityRegistry();
     const shellRuns = new ShellRunProcessManager({
       store: openedShellRunStore,
       newId: randomUUID,
@@ -127,6 +156,33 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       stores.sessionStore,
     );
+    runtimeResources = new HostRuntimeResourceCoordinator({
+      manager: shellRuns,
+      sessions: {
+        listShellRunUpdates: (sessionId) =>
+          requireSessionManager(manager).listShellRunUpdates(sessionId),
+      },
+      sessionHeaders: stores.sessionStore,
+      sessionAdmission,
+      acquireResidency: context.acquireResidency,
+      requestDrain: context.requestDrain,
+    });
+    const builtinTools = {
+      shellRuns: runtimeResources,
+      runtimeResources,
+      backgroundTasks: runtimeResources,
+      ptyControls: runtimeResources,
+      snapshotImage: createReadImageSnapshotter(openedArtifactStore),
+      ...(sandboxManager ? { sandboxManager } : {}),
+      ...(filesystemWorker ? { filesystemWorker } : {}),
+    };
+    const hostTools = [createHostWebSearchTool({ policy: runtimePolicyStores.operations })];
+    const childAgentTools = createHostChildAgentToolComposition({
+      taskLedger,
+      builtinTools,
+      hostTools,
+      worktreePatchWriteBackAvailable: true,
+    });
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
     );
@@ -214,6 +270,7 @@ export async function createExecutionRuntimeHostComposition(
     };
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
+      sandboxBoundaries: stores.sessionStore,
       sessionAdmission,
       sessions: stores.sessionStore,
       preflightSessionSnapshot: (sessionId, interactionProjection) =>
@@ -229,6 +286,10 @@ export async function createExecutionRuntimeHostComposition(
         beginDrain();
         context.requestDrain();
       },
+      onSandboxBoundarySettled: (sessionId) =>
+        notifySandboxBoundaryGraphWake(sessionId, stores.sessionStore, (rootSessionId) =>
+          requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
+        ),
     });
     const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
       store: stores.interactionStore,
@@ -253,15 +314,15 @@ export async function createExecutionRuntimeHostComposition(
         clientCapabilities: requireClientCapabilities(clientCapabilities),
         automationTool: requireAutomationCoordinator(automations).modelTool,
         goalTools: requireGoal(goal).tools,
-        builtinTools: {
-          shellRuns: requireRuntimeResources(runtimeResources),
-          runtimeResources: requireRuntimeResources(runtimeResources),
-          backgroundTasks: requireRuntimeResources(runtimeResources),
-          ptyControls: requireRuntimeResources(runtimeResources),
-          snapshotImage: createReadImageSnapshotter(openedArtifactStore),
-          ...(sandboxManager ? { sandboxManager } : {}),
-          ...(filesystemWorker ? { filesystemWorker } : {}),
-        },
+        builtinTools,
+        hostTools,
+        resolveRootTools: (sessionId) =>
+          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+        parentAgentTools: childAgentTools.parentTools,
+        childAgents: bindHostChildAgentBackend(
+          requireSessionManager(manager),
+          backendContext.sessionId,
+        ),
         runtimeCommitSink: stores.runtimeEventStore,
         requestDrain: context.requestDrain,
       }),
@@ -274,7 +335,7 @@ export async function createExecutionRuntimeHostComposition(
       stopSession: (sessionId, input) =>
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
     };
-    const manager = new SessionManager({
+    manager = new SessionManager({
       store: stores.sessionStore,
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
@@ -282,6 +343,54 @@ export async function createExecutionRuntimeHostComposition(
       backends,
       newId: randomUUID,
       now: Date.now,
+      safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
+      inspectContinuationSafety: createLocalContinuationSafetyInspector({
+        readSessionCwd: async (sessionId) =>
+          (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
+        resolveWorkspaceIdentity: async (cwd) => resolveWorkspaceIdentity({ path: cwd }),
+        listAvailableToolNames: async (sessionId) => {
+          const capabilitySnapshot =
+            requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
+          try {
+            const graphTools =
+              await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId);
+            return createHostExecutionModelComposition({
+              policy: runtimePolicyStores.runtimePolicy,
+              skills,
+              memory: requireMemory(memory),
+              taskLedger,
+              ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
+              builtinTools,
+              hostTools: [...hostTools, ...graphTools],
+              automationTool: requireAutomationCoordinator(automations).modelTool,
+              goalTools: requireGoal(goal).tools,
+              parentAgentTools: childAgentTools.parentTools,
+            }).tools.map((tool) => tool.name);
+          } finally {
+            capabilitySnapshot?.release();
+          }
+        },
+        hasPendingBackgroundOperations: async (sessionId) => {
+          const graph = requireGraphCoordinator(graphCoordinator);
+          const graphWake = requireGraphSupervisorWake(graphSupervisorWake);
+          const [resourcesLive, graphLive, descendantLive] = await Promise.all([
+            runtimeResources!.hasLiveSessionResources(sessionId),
+            graph.hasLiveSessionState(sessionId),
+            hasLiveLinkedDescendantState(
+              requireSessionManager(manager),
+              stores.agentRunStore,
+              sessionId,
+              async (descendantSessionId) =>
+                (await runtimeResources!.hasLiveSessionResources(descendantSessionId)) ||
+                graph.hasLiveSessionState(descendantSessionId) ||
+                graphWake.hasLiveSessionState(descendantSessionId),
+            ),
+          ]);
+          return (
+            resourcesLive || graphLive || graphWake.hasLiveSessionState(sessionId) || descendantLive
+          );
+        },
+      }),
       runBackendActivation: (operation) => runtimePolicyActivation.runBackendActivation(operation),
       messageAuthority: runtimeAuthority,
       hostedAgentGraphExecution: {
@@ -297,22 +406,45 @@ export async function createExecutionRuntimeHostComposition(
       interactionAuthority: interactions,
       canonicalPermissionOutcomes,
       shellRuns,
+      childTools: childAgentTools.childTools,
+      worktreeChildExecutor,
+      listArtifactsForTurn: (sessionId, turnId) =>
+        openedArtifactStore.listTurnArtifacts(sessionId, turnId),
+      publishChildWorkspacePatch: ({ sessionId, turnId, binding, patch }) =>
+        openedArtifactStore.create({
+          id: subagentWritebackArtifactId(sessionId, turnId),
+          sessionId,
+          turnId,
+          name: 'workspace.patch',
+          kind: 'diff',
+          content: patch,
+          mimeType: 'text/x-diff; charset=utf-8',
+          source: 'subagent_writeback',
+          summary: `Workspace changes relative to ${binding.baseCommit}.`,
+        }),
+      assertChildWorkspaceQuiescent: async (sessionId) => {
+        if (await runtimeResources!.hasLiveSessionResources(sessionId)) {
+          throw new Error(
+            `Child Session ${sessionId} still owns live Runtime Resources; patch publication requires a quiescent workspace`,
+          );
+        }
+      },
     });
-    runtimeResources = new HostRuntimeResourceCoordinator({
-      manager: shellRuns,
-      sessions: manager,
-      sessionHeaders: stores.sessionStore,
-      sessionAdmission,
-      acquireResidency: context.acquireResidency,
-      requestDrain: context.requestDrain,
-    });
-    const graphCoordinator = new AgentGraphCoordinator({
+    graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
       controlStore: openedGraphControlStore,
       runtime: manager,
       newId: randomUUID,
+      acquireResidency: () => context.acquireResidency(),
+      onReconciliation: (rootSessionId, result) => {
+        void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result);
+      },
+    });
+    graphClient = new HostAgentGraphCoordinator({
+      authority: graphCoordinator,
+      continuity: continuityCoordinator,
     });
     const observeBackendInvalidation = (completion: Promise<void>) => {
       void completion.catch(() => {
@@ -367,6 +499,43 @@ export async function createExecutionRuntimeHostComposition(
       (admission) => requireAutomationCoordinator(automations).assertRecoveryAdmission(admission),
     );
     const coordinator = rootCoordinator;
+    graphSupervisorWake = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: graphWakeActivities,
+      wakeStore: openedGraphControlStore,
+      readSnapshot: (rootSessionId) =>
+        requireGraphCoordinator(graphCoordinator).getSnapshot(rootSessionId),
+      startTurn: (sessionId, input, _activity, abortSignal, isCurrent) =>
+        coordinator.runAgentGraphSupervisorTurn(sessionId, input, abortSignal, isCurrent),
+      inspectAttempt: async (rootSessionId, attemptId, turnId) => {
+        const runs = (await stores.agentRunStore.listSessionRuns(rootSessionId)).filter(
+          (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
+        );
+        if (runs.length > 1) {
+          throw new Error(
+            `Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`,
+          );
+        }
+        return runs[0]?.status ?? 'missing';
+      },
+      recoverContextOverflow: (rootSessionId, { abortSignal }) =>
+        coordinator.recoverAgentGraphSupervisorContextOverflow(
+          rootSessionId,
+          randomUUID(),
+          abortSignal,
+        ),
+      newId: randomUUID,
+      isSessionDeliverable: async (sessionId) => {
+        try {
+          const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+          return !header.isArchived && header.status !== 'archived';
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return false;
+          throw error;
+        }
+      },
+      acquireResidency: () => context.acquireResidency(),
+      onError: () => context.requestDrain(),
+    });
     automations = new HostAutomationCoordinator({
       store: openedAutomationStore,
       sessions: stores.sessionStore,
@@ -431,6 +600,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       requestDrain: context.requestDrain,
     });
+    const executionInspect = new HostExecutionInspectCoordinator(stores);
     const sessionRevisions = new HostSessionRevisionCoordinator({
       stores,
       artifacts: openedArtifactStore,
@@ -450,12 +620,20 @@ export async function createExecutionRuntimeHostComposition(
       goals: requireGoal(goal),
       automation: automations,
       resources: runtimeResources,
+      graph: requireGraphCoordinator(graphCoordinator),
+      graphWake: requireGraphSupervisorWake(graphSupervisorWake),
       manager,
       capabilities: clientCapabilities,
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
       taskLedger: taskLedgerStore,
       purgeOperationalState: (sessionId) => stores.purgeConversationOperationalState(sessionId),
+      purgeAgentGraphState: async (sessionId) => {
+        await openedGraphControlStore.purgeAgentGraphControlState(
+          agentGraphIdForRootSession(sessionId),
+        );
+      },
+      worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,
     });
     const artifacts = new HostArtifactCoordinator(
@@ -468,6 +646,8 @@ export async function createExecutionRuntimeHostComposition(
       ...coordinator.handlers,
       ...requireGoal(goal).handlers,
       ...sessionCatalog.handlers,
+      ...executionInspect.handlers,
+      ...graphClient.handlers,
       ...sessionRevisions.handlers,
       ...sessionRetirement.handlers,
       ...messages.handlers,
@@ -491,8 +671,13 @@ export async function createExecutionRuntimeHostComposition(
         await skills.recover();
         await openedArtifactStore.recover();
         await sessionRetirement.recover();
-        await sessionRevisions.recover();
         const sessions = await stores.sessionStore.listForRecovery();
+        await worktreeChildExecutor.recover(
+          sessions.flatMap((session) =>
+            session.subagentWorkspace ? [session.subagentWorkspace] : [],
+          ),
+        );
+        await sessionRevisions.recover();
         for (const session of sessions) {
           await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
             session.id,
@@ -506,9 +691,13 @@ export async function createExecutionRuntimeHostComposition(
         await coordinator.prepareRecovery();
         await interactions.recoverPendingAfterHostRestart();
         await manager.recoverInterruptedSessionsStrict(stores);
-        await graphCoordinator.recover();
+        await manager.recoverChildWorkspacePatches(
+          sessions.flatMap((session) => (session.subagentWorkspace ? [session.id] : [])),
+        );
         await coordinator.recover();
         rootRecoveryCompleted = true;
+        await requireGraphSupervisorWake(graphSupervisorWake).recover();
+        await requireGraphCoordinator(graphCoordinator).recover();
         await requireAutomationCoordinator(automations).recover();
         requireAutomationCoordinator(automations).start();
       })();
@@ -534,7 +723,17 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
-          await graphCoordinator.close();
+          await graphSupervisorWake?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          graphClient?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await graphCoordinator?.close();
         } catch (error) {
           errors.push(error);
         }
@@ -562,11 +761,6 @@ export async function createExecutionRuntimeHostComposition(
           } catch (error) {
             errors.push(error);
           }
-        }
-        try {
-          openedGraphControlStore.close();
-        } catch (error) {
-          errors.push(error);
         }
         try {
           await messages.close();
@@ -604,7 +798,7 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
-          clientCapabilities?.close();
+          await clientCapabilities?.close();
         } catch (error) {
           errors.push(error);
         }
@@ -615,6 +809,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           await sessionRetirement.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          openedGraphControlStore.close();
         } catch (error) {
           errors.push(error);
         }
@@ -666,6 +865,11 @@ export async function createExecutionRuntimeHostComposition(
   } catch (error) {
     const errors: unknown[] = [error];
     try {
+      graphClient?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
       graphControlStore?.close();
     } catch (closeError) {
       errors.push(closeError);
@@ -715,6 +919,17 @@ function requireRootCoordinator(coordinator: RootTurnCoordinator | undefined): R
   return coordinator;
 }
 
+function subagentWritebackArtifactId(sessionId: string, turnId: string): string {
+  const digest = createHash('sha256')
+    .update('maka-subagent-writeback-v1\0')
+    .update(sessionId)
+    .update('\0')
+    .update(turnId)
+    .digest('hex')
+    .slice(0, 32);
+  return `subagent_writeback_${digest}`;
+}
+
 function requireContinuity(
   continuity: SessionContinuityCoordinator | undefined,
 ): SessionContinuityCoordinator {
@@ -748,14 +963,65 @@ function requireAutomationCoordinator(
   return coordinator;
 }
 
-function requireRuntimeResources(
-  coordinator: HostRuntimeResourceCoordinator | undefined,
-): HostRuntimeResourceCoordinator {
-  if (!coordinator) throw new Error('Runtime Host Runtime Resource coordinator is not composed');
+function requireSessionManager(manager: SessionManager | undefined): SessionManager {
+  if (!manager) throw new Error('Runtime Host SessionManager is not composed');
+  return manager;
+}
+
+function requireGraphCoordinator(
+  coordinator: AgentGraphCoordinator | undefined,
+): AgentGraphCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Agent Graph coordinator is not composed');
+  return coordinator;
+}
+
+function requireGraphSupervisorWake(
+  coordinator: AgentGraphSupervisorWakeCoordinator | undefined,
+): AgentGraphSupervisorWakeCoordinator {
+  if (!coordinator) {
+    throw new Error('Runtime Host Agent Graph supervisor wake coordinator is not composed');
+  }
   return coordinator;
 }
 
 function requireGoal(coordinator: HostGoalCoordinator | undefined): HostGoalCoordinator {
   if (!coordinator) throw new Error('Runtime Host Goal coordinator is not composed');
   return coordinator;
+}
+
+async function hasLiveLinkedDescendantState(
+  manager: SessionManager,
+  runStore: {
+    listSessionRuns(sessionId: string): Promise<readonly { status: string }[]>;
+  },
+  rootSessionId: string,
+  hasLiveSessionState: (sessionId: string) => Promise<boolean>,
+): Promise<boolean> {
+  const pending = [rootSessionId];
+  const seen = new Set(pending);
+  while (pending.length > 0) {
+    const parentSessionId = pending.shift()!;
+    const children = await manager.listChildSessions(parentSessionId);
+    for (const child of children) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      pending.push(child.id);
+      const [runs, liveState] = await Promise.all([
+        runStore.listSessionRuns(child.id),
+        hasLiveSessionState(child.id),
+      ]);
+      if (liveState) return true;
+      if (
+        runs.some(
+          (run) =>
+            run.status === 'created' ||
+            run.status === 'running' ||
+            run.status === 'waiting_for_user',
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }

@@ -1,7 +1,8 @@
 import { FileCode, FileImage, FileText, FileType, Paperclip, type LucideIcon } from './icons.js';
 import type { AttachmentRef } from '@maka/core';
+import { Icon } from '@astryxdesign/core/Icon';
 
-/** Per-kind lucide icon for attachment chips and thumbnails. Replaces the
+/** Per-kind lucide icon for attachment tokens. Replaces the
  *  emoji labels (🖼📄📘💻📎) with a consistent icon set. */
 export const ATTACHMENT_KIND_ICON: Record<AttachmentRef['kind'], LucideIcon> = {
   image: FileImage,
@@ -12,6 +13,6 @@ export const ATTACHMENT_KIND_ICON: Record<AttachmentRef['kind'], LucideIcon> = {
 };
 
 export function AttachmentKindIcon(props: { kind: AttachmentRef['kind']; className?: string }) {
-  const Icon = ATTACHMENT_KIND_ICON[props.kind];
-  return <Icon className={props.className} aria-hidden="true" />;
+  const AttachmentIcon = ATTACHMENT_KIND_ICON[props.kind];
+  return <Icon icon={AttachmentIcon} size="sm" color="inherit" className={props.className} />;
 }

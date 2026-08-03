@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION } from '@maka/core/agent-graph-control';
 import type { RootExecutionDescriptor } from '@maka/core/agent-run';
-import { createAgentRunStore, type AdmitRootTurnInput } from '../agent-run-store.js';
+import { createSqliteAgentRunStore, type AdmitRootTurnInput } from '../agent-run-store.js';
 
 describe('claimed agent graph root admission', () => {
   test('round-trips an exact, deeply frozen durable descriptor', async () => {
     await withTempRoot(async (root) => {
-      const store = createAgentRunStore(root);
+      const store = createSqliteAgentRunStore(root);
       const result = await store.admitRootTurn(admissionInput());
       assert.equal(result.kind, 'admitted');
       assert.equal(result.admission.execution.kind, 'claimed_agent_graph_intent');
@@ -21,27 +21,19 @@ describe('claimed agent graph root admission', () => {
       assert.equal(Object.isFrozen(result.admission.execution), true);
       assert.equal(Object.isFrozen(result.admission.execution.claim), true);
 
-      const reopened = createAgentRunStore(root);
+      const reopened = createSqliteAgentRunStore(root);
       const stored = await reopened.readRootTurnAdmission('session-child', 'turn-next');
       assert.deepEqual(stored, result.admission);
       assert.equal(Object.isFrozen(stored?.execution), true);
       if (stored?.execution.kind === 'claimed_agent_graph_intent') {
         assert.equal(Object.isFrozen(stored.execution.claim), true);
       }
-
-      const serialized = JSON.parse(
-        await readFile(
-          join(root, 'sessions', 'session-child', 'turn-admissions', 'turn-next.json'),
-          'utf8',
-        ),
-      ) as { execution: unknown };
-      assert.deepEqual(serialized.execution, admissionInput().execution);
     });
   });
 
   test('rejects descriptor unknown fields and malformed claims', async () => {
     await withTempRoot(async (root) => {
-      const store = createAgentRunStore(root);
+      const store = createSqliteAgentRunStore(root);
       await assert.rejects(
         () =>
           store.admitRootTurn(
@@ -87,7 +79,7 @@ describe('claimed agent graph root admission', () => {
 
   test('rejects every claim target identity drift before writing admission', async () => {
     await withTempRoot(async (root) => {
-      const store = createAgentRunStore(root);
+      const store = createSqliteAgentRunStore(root);
       for (const [field, value] of [
         ['targetSessionId', 'different-session'],
         ['targetTurnId', 'different-turn'],
@@ -127,7 +119,7 @@ describe('claimed agent graph root admission', () => {
 
   test('rejects queue sources and a missing canonical UserMessage', async () => {
     await withTempRoot(async (root) => {
-      const store = createAgentRunStore(root);
+      const store = createSqliteAgentRunStore(root);
       await assert.rejects(
         () =>
           store.admitRootTurn(
@@ -152,7 +144,7 @@ describe('claimed agent graph root admission', () => {
               proposedUserMessageId: null,
             }),
           ),
-        /only linked child provider retry omits UserMessage/,
+        /execution has an invalid UserMessage requirement/,
       );
       await assert.rejects(
         access(join(root, 'sessions', 'session-child', 'turn-admissions', 'turn-next.json')),

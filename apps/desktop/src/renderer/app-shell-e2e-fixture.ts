@@ -165,15 +165,9 @@ export function createAppShellE2eFixtureActions(options: {
       // of keyboard interaction instead of mounting a test-only popup.
       await nextVisualSmokeFrame();
       await nextVisualSmokeFrame();
+      // The input is controlled now, so `setText` alone commits the draft —
+      // no synthetic input event is needed to make the surface catch up.
       composerRef.current?.setText(state.composerText);
-      const textarea = document.querySelector<HTMLTextAreaElement>(
-        '.maka-composer textarea[name="text"]',
-      );
-      textarea?.dispatchEvent(new Event('input', { bubbles: true }));
-      await nextVisualSmokeFrame();
-    }
-    if (state.composerSkills !== undefined) {
-      composerRef.current?.setSkills(state.composerSkills);
       await nextVisualSmokeFrame();
     }
     // focusActiveRow: SideNavItem marks the selected control with

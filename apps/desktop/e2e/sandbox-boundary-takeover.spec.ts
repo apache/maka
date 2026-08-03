@@ -11,11 +11,13 @@ test('sandbox boundary request takes over the composer slot without hiding the w
   await expect(slot.locator('.maka-sandbox-boundary-prompt')).toHaveCount(1);
   await expect(composer).toHaveCount(1);
   await expect(composer).toBeHidden();
-  const textarea = composer.locator('textarea[aria-label="消息输入框"]');
-  await textarea.evaluate((element, value) => {
-    const input = element as HTMLTextAreaElement;
-    input.value = value;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+  // The composer is hidden behind the boundary prompt, so the draft is seeded
+  // through the input event ChatComposerInput listens on rather than by typing.
+  const editable = composer.locator('[aria-label="消息输入框"]');
+  const draftText = () => editable.evaluate((element) => element.textContent);
+  await editable.evaluate((element, value) => {
+    element.textContent = value;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
   }, draft);
   await expect(sandboxBoundaryWindow.locator('dialog[open]')).toHaveCount(0);
   await expect(sandboxBoundaryWindow.locator('[role="dialog"]')).toHaveCount(0);
@@ -35,10 +37,10 @@ test('sandbox boundary request takes over the composer slot without hiding the w
 
   await sandboxBoundaryWindow.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(composer).toBeHidden();
-  await expect(textarea).toHaveValue(draft);
+  await expect.poll(draftText).toBe(draft);
 
   await prompt.getByRole('button', { name: '本会话允许' }).click();
   await expect(prompt).toHaveCount(0);
   await expect(composer).toBeVisible();
-  await expect(textarea).toHaveValue(draft);
+  await expect.poll(draftText).toBe(draft);
 });

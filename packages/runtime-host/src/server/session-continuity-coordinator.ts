@@ -6,6 +6,8 @@ import {
   RUNTIME_HOST_MAX_FRAME_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
+  type AgentGraphChangedFrame,
+  type AgentGraphChangedReason,
   type SessionAssistantDelta,
   type SessionContinuitySnapshot,
   type SessionDeltaFrame,
@@ -93,6 +95,14 @@ interface PendingRefresh {
   inFlight: boolean;
 }
 
+interface PendingAgentGraphChange {
+  event: {
+    rootSessionId: string;
+    graphId: string;
+    reason: AgentGraphChangedReason;
+  };
+}
+
 export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly handlers: SessionContinuityOperationHandlerMap = {
     'subscription.open': async (input, context) => {
@@ -116,6 +126,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly #sessions = new Map<string, SessionProjectionState>();
   readonly #subscriptions = new Map<string, Subscriber>();
   readonly #pendingRefreshes = new Map<string, PendingRefresh>();
+  readonly #pendingAgentGraphChanges = new Map<string, PendingAgentGraphChange>();
   readonly #hostEpoch: string;
   readonly #readCanonical: ReadCanonicalSessionProjection;
   #closed = false;
@@ -203,6 +214,46 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           this.onPublicationFailure(error);
         },
       );
+  }
+
+  /** Coalesce process-local graph invalidations onto the root Session sequence. */
+  enqueueAgentGraphChanged(event: {
+    rootSessionId: string;
+    graphId: string;
+    reason: AgentGraphChangedReason;
+  }): void {
+    if (this.#closed) return;
+    const pending = this.#pendingAgentGraphChanges.get(event.rootSessionId);
+    if (pending) {
+      pending.event = { ...event };
+      return;
+    }
+    const change: PendingAgentGraphChange = { event: { ...event } };
+    this.#pendingAgentGraphChanges.set(event.rootSessionId, change);
+    void this.sessionAdmission
+      .enqueueDetached(event.rootSessionId, () => {
+        if (this.#pendingAgentGraphChanges.get(event.rootSessionId) !== change) return;
+        this.#pendingAgentGraphChanges.delete(event.rootSessionId);
+        if (this.#closed) return;
+        const state = this.#sessions.get(event.rootSessionId);
+        if (!state) return;
+        for (const subscriber of state.subscribers.values()) {
+          const frame: AgentGraphChangedFrame = {
+            kind: 'subscription.agent_graph_changed',
+            hostEpoch: this.#hostEpoch,
+            subscriptionId: subscriber.subscriptionId,
+            sequence: subscriber.nextSequence,
+            ...change.event,
+          };
+          this.#enqueue(subscriber, frame);
+        }
+      })
+      .catch((error: unknown) => {
+        if (this.#pendingAgentGraphChanges.get(event.rootSessionId) === change) {
+          this.#pendingAgentGraphChanges.delete(event.rootSessionId);
+        }
+        this.onPublicationFailure(error);
+      });
   }
 
   async holdTerminalPublication(
@@ -362,6 +413,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     this.#sessions.clear();
     this.#subscriptions.clear();
     this.#pendingRefreshes.clear();
+    this.#pendingAgentGraphChanges.clear();
   }
 
   async #open(

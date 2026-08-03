@@ -227,7 +227,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('composition process-exit retention requires termination without releasing ownership', async () => {
+  test('process-exit retention closes admission before requiring termination without releasing ownership', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -250,6 +250,14 @@ describe('non-serving Runtime Host kernel', () => {
           (error: unknown) =>
             error instanceof RuntimeHostProcessTerminationRequiredError &&
             error.code === 'process_termination_required',
+        );
+        await assert.rejects(
+          () => openSocket(host.endpoint),
+          (error: unknown) =>
+            error instanceof Error &&
+            'code' in error &&
+            ((error as NodeJS.ErrnoException).code === 'ENOENT' ||
+              (error as NodeJS.ErrnoException).code === 'ECONNREFUSED'),
         );
         assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
       } finally {
@@ -613,7 +621,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('a Host launched by the public Electron Client survives its parent process', async () => {
+  test('an Electron Client using the real Candidate launcher survives its parent process', async () => {
     const electronPath = require('electron') as string;
     await withHostPaths(async (paths) => {
       const parent = paths.resources.trackChild(
@@ -624,9 +632,16 @@ describe('non-serving Runtime Host kernel', () => {
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
         }),
       );
-      const launched = await waitForElectronParentLaunch(parent);
-      paths.resources.trackPid(launched.pid);
+      const launched = await waitForElectronParentLaunch(parent, (pid) =>
+        paths.resources.trackPid(pid),
+      );
       await waitForSuccessfulExit(parent, 'Electron connect parent');
+      assert.ok(launched.candidatePids.includes(launched.pid));
+      for (const pid of launched.candidatePids) {
+        if (pid === launched.pid) continue;
+        await waitForProcessExit(pid);
+        paths.resources.forgetPid(pid);
+      }
 
       const connected = await retryConnect(paths, CURRENT_PROTOCOL);
       assert.equal(connected.kind, 'connected');
@@ -639,6 +654,34 @@ describe('non-serving Runtime Host kernel', () => {
       await waitForProcessExit(launched.pid);
       paths.resources.forgetPid(launched.pid);
     });
+  });
+
+  test('Electron Candidate cleanup owns a launch reported before its parent fails', async () => {
+    const electronPath = require('electron') as string;
+    let candidatePid: number | undefined;
+    await withHostPaths(async (paths) => {
+      const parent = paths.resources.trackChild(
+        fork(
+          new URL('./fixtures/electron-connect-parent.js', import.meta.url),
+          [paths.root, 'exit-after-candidate-launch'],
+          {
+            execPath: electronPath,
+            execArgv: [],
+            stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+          },
+        ),
+      );
+      await assert.rejects(
+        waitForElectronParentLaunch(parent, (pid) => {
+          candidatePid = paths.resources.trackPid(pid);
+        }),
+        /Electron connect parent exited before reporting its Host: 23/,
+      );
+      assert.ok(candidatePid);
+    });
+    assert.ok(candidatePid);
+    assert.equal(isProcessAlive(candidatePid), false);
   });
 
   test('a response timeout is connection-fatal and Client close stays local', {
@@ -1638,8 +1681,10 @@ function waitForLaunch(child: ChildProcess): Promise<number> {
 
 function waitForElectronParentLaunch(
   child: ChildProcess,
-): Promise<{ hostEpoch: string; pid: number }> {
+  onCandidateLaunched: (pid: number) => void,
+): Promise<{ hostEpoch: string; pid: number; candidatePids: number[] }> {
   return new Promise((resolve, reject) => {
+    const candidatePids: number[] = [];
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error('Electron connect parent did not report its Host'));
@@ -1661,9 +1706,18 @@ function waitForElectronParentLaunch(
       );
     };
     const onMessage = (message: unknown) => {
+      if (isElectronCandidateLaunch(message)) {
+        candidatePids.push(message.pid);
+        onCandidateLaunched(message.pid);
+        return;
+      }
       if (!isElectronParentLaunch(message)) return;
       cleanup();
-      resolve({ hostEpoch: message.hostEpoch, pid: message.pid });
+      resolve({
+        hostEpoch: message.hostEpoch,
+        pid: message.pid,
+        candidatePids,
+      });
     };
     child.once('error', onError);
     child.once('exit', onExit);
@@ -1671,9 +1725,23 @@ function waitForElectronParentLaunch(
   });
 }
 
-function isElectronParentLaunch(
+function isElectronCandidateLaunch(
   value: unknown,
-): value is { type: 'electron-parent-launched'; hostEpoch: string; pid: number } {
+): value is { type: 'electron-candidate-launched'; pid: number } {
+  if (!value || typeof value !== 'object') return false;
+  const message = value as Record<string, unknown>;
+  return (
+    message.type === 'electron-candidate-launched' &&
+    Number.isSafeInteger(message.pid) &&
+    (message.pid as number) > 0
+  );
+}
+
+function isElectronParentLaunch(value: unknown): value is {
+  type: 'electron-parent-launched';
+  hostEpoch: string;
+  pid: number;
+} {
   if (!value || typeof value !== 'object') return false;
   const message = value as Record<string, unknown>;
   return (

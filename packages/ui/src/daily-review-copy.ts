@@ -7,8 +7,8 @@ export interface DailyReviewCopy {
     section: Record<ArchiveSectionKey, string>;
     status: Record<DailyReviewArchive['status'], string>;
     trigger: Record<DailyReviewArchive['trigger'], string>;
-    mode: { daily: string; deep: string };
-    title: (date: string, mode: string) => string;
+    title: (date: string, range: string) => string;
+    range: Record<DailyReviewArchive['range'], string>;
     generated: (trigger: string, time: string) => string;
     sessionCount: (count: number) => string;
     defaultModel: string;
@@ -46,43 +46,23 @@ export interface DailyReviewCopy {
   };
   page: {
     title: string;
-    subtitle: string;
-    generateAriaLabel: string;
-    analysisModel: string;
-    generating: string;
-    generateDaily: string;
-    generateDeep: string;
+    generateAnalysis: string;
+    retryAnalysis: string;
+    viewAnalysis: string;
+    backToActivity: string;
     timeRange: string;
     rangeOptions: ReadonlyArray<readonly [string, string]>;
     rangeSwitch: string;
   };
   overview: {
     ariaLabel: (label: string) => string;
-    title: string;
     refreshFailed: (error: string) => string;
     retry: string;
-    readFailed: string;
     conversations: string;
     requests: string;
     tokens: string;
     cost: string;
-    errors: string;
     activeConversations: string;
-    activeConversationList: string;
-    modelUsage: string;
-    toolCalls: string;
-  };
-  reports: {
-    title: string;
-    count: (count: number) => string;
-    readFailed: (error: string) => string;
-    emptyTitle: string;
-    emptyBody: string;
-    historyAriaLabel: string;
-  };
-  list: {
-    ariaLabel: (title: string) => string;
-    requestCount: (count: number) => string;
   };
   errorFallback: string;
   markdown: {
@@ -106,8 +86,8 @@ const DAILY_REVIEW_COPY = {
       section: { summary: '对话摘要', gaps: '遗漏提醒', usage: '使用洞察', code: '代码建议' },
       status: { ok: '已生成', no_model: '缺少模型', no_data: '无数据', failed: '生成失败', skipped: '已跳过' },
       trigger: { cron: '定时', manual: '手动' },
-      mode: { daily: '每日回顾', deep: '深度分析' },
       title: (date, mode) => `${date} · ${mode}`,
+      range: { 1: '单日', 7: '7 天', 30: '30 天' },
       generated: (trigger, time) => `${trigger}生成 ${time}`,
       sessionCount: (count) => `${count} 对话`,
       defaultModel: '默认对话模型',
@@ -125,15 +105,11 @@ const DAILY_REVIEW_COPY = {
       ariaLabel: '回顾导出操作', copyTitle: '复制为 Markdown 摘要，方便分享 / 贴到笔记', copying: '复制中…', copy: '复制', appendTitle: '追加到当前输入框草稿', appending: '追加中…', append: '粘到输入框', saveTitle: '保存为 Markdown 文件', saving: '保存中…', save: '保存',
     },
     page: {
-      title: '每日回顾', subtitle: '自动汇总本机对话，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。', generateAriaLabel: '生成回顾', analysisModel: '分析模型', generating: '生成中…', generateDaily: '生成每日回顾', generateDeep: '生成深度分析', timeRange: '时间范围', rangeOptions: [['1', '今日'], ['7', '本周'], ['30', '本月']], rangeSwitch: '时间范围切换',
+      title: '每日回顾', generateAnalysis: '生成分析', retryAnalysis: '重新生成', viewAnalysis: '查看分析', backToActivity: '返回活动', timeRange: '时间范围', rangeOptions: [['1', '今日'], ['7', '最近 7 天'], ['30', '最近 30 天']], rangeSwitch: '时间范围切换',
     },
     overview: {
-      ariaLabel: (label) => `${label}概览`, title: '概览', refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', readFailed: '读取失败', conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃对话', activeConversationList: '活跃对话列表', modelUsage: '模型使用', toolCalls: '工具调用',
+      ariaLabel: (label) => `${label}概览`, refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', activeConversations: '活跃对话',
     },
-    reports: {
-      title: '报告', count: (count) => `${count} 份`, readFailed: (error) => `回顾报告读取失败：${error}`, emptyTitle: '还没有生成报告', emptyBody: '点击「生成每日回顾」后，报告会保存到本机并显示在这里。', historyAriaLabel: '回顾报告历史',
-    },
-    list: { ariaLabel: (title) => `${title}列表`, requestCount: (count) => `${count} 次` },
     errorFallback: '每日回顾暂时不可用，请稍后重试。',
     markdown: {
       separator: '：', title: (dayLabel) => `# Maka · 每日回顾 · ${dayLabel}`, conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃对话', modelUsage: '模型使用', toolCalls: '工具调用', requestCount: (count) => `${count} 次`,
@@ -144,8 +120,8 @@ const DAILY_REVIEW_COPY = {
       section: { summary: 'Conversation summary', gaps: 'Missed items', usage: 'Usage insights', code: 'Code suggestions' },
       status: { ok: 'Generated', no_model: 'Model unavailable', no_data: 'No data', failed: 'Generation failed', skipped: 'Skipped' },
       trigger: { cron: 'Scheduled', manual: 'Manual' },
-      mode: { daily: 'Daily review', deep: 'Deep analysis' },
       title: (date, mode) => `${date} · ${mode}`,
+      range: { 1: '1 day', 7: '7 days', 30: '30 days' },
       generated: (trigger, time) => `${trigger} · ${time}`,
       sessionCount: (count) => `${count} ${count === 1 ? 'conversation' : 'conversations'}`,
       defaultModel: 'Default conversation model',
@@ -163,15 +139,11 @@ const DAILY_REVIEW_COPY = {
       ariaLabel: 'Review export actions', copyTitle: 'Copy a Markdown summary to share or add to notes', copying: 'Copying…', copy: 'Copy', appendTitle: 'Append to the current composer draft', appending: 'Appending…', append: 'Add to composer', saveTitle: 'Save as a Markdown file', saving: 'Saving…', save: 'Save',
     },
     page: {
-      title: 'Daily review', subtitle: 'Summarize local conversations into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.', generateAriaLabel: 'Generate review', analysisModel: 'Analysis model', generating: 'Generating…', generateDaily: 'Generate daily review', generateDeep: 'Generate deep analysis', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'This week'], ['30', 'This month']], rangeSwitch: 'Change time range',
+      title: 'Daily review', generateAnalysis: 'Generate analysis', retryAnalysis: 'Generate again', viewAnalysis: 'View analysis', backToActivity: 'Back to activity', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], rangeSwitch: 'Change time range',
     },
     overview: {
-      ariaLabel: (label) => `${label} overview`, title: 'Overview', refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', readFailed: 'Failed to load', conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active conversations', activeConversationList: 'Active conversation list', modelUsage: 'Model usage', toolCalls: 'Tool calls',
+      ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', activeConversations: 'Active conversations',
     },
-    reports: {
-      title: 'Reports', count: (count) => `${count} ${count === 1 ? 'report' : 'reports'}`, readFailed: (error) => `Failed to load review reports: ${error}`, emptyTitle: 'No reports yet', emptyBody: 'Generate a daily review to save a local report and show it here.', historyAriaLabel: 'Review report history',
-    },
-    list: { ariaLabel: (title) => `${title} list`, requestCount: (count) => `${count} ${count === 1 ? 'request' : 'requests'}` },
     errorFallback: 'Daily review is temporarily unavailable. Try again later.',
     markdown: {
       separator: ':', title: (dayLabel) => `# Maka · Daily review · ${dayLabel}`, conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active conversations', modelUsage: 'Model usage', toolCalls: 'Tool calls', requestCount: (count) => `${count} ${count === 1 ? 'request' : 'requests'}`,

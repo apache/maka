@@ -62,18 +62,31 @@
 }
 
 .settingsActionWidthXs { min-width: 46px; }
-.settingsActionWidthSm { min-width: 52px; }
-.settingsActionWidthMd { min-width: 65px; }
-.settingsActionWidthLg { min-width: 78px; }
-.settingsActionWidthXl { min-width: 91px; }
-.settingsActionWidth2Xl { min-width: 98px; }
 
-.settingsSubheading {
+/* Astryx convergence (task #136): `.settingsSubheading` (uppercase eyebrow)
+   retired with the Claude subscription card's move onto SectionHeader. */
+
+/* Quiet informational voice — replaces the info Banner where content is
+   guidance, not an alert (Signal-Not-Texture: blue never becomes ambient
+   explanatory wash). */
+.settingsQuietStatus {
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-bold);
-  letter-spacing: var(--tracking-wider);
-  text-transform: uppercase;
+  font: var(--maka-text-body);
+}
+
+.settingsQuietCallout {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.settingsQuietCallout strong {
+  color: var(--foreground);
+  font: var(--maka-text-label);
+}
+
+.settingsQuietCallout p {
+  margin: 0;
+  color: var(--foreground-secondary);
+  font: var(--maka-text-body);
 }

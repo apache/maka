@@ -397,15 +397,22 @@ test('bundle export holds Artifact authority through selected-session projection
       });
       await assertPending(bundleExport, 'bundle export');
 
-      const projectedTranscript = withArtifactWriterLock(stateRoot, () =>
-        readFile(join(destinationRoot, 'sessions', session.id, 'session.jsonl'), 'utf8'),
-      );
-      await assertPending(projectedTranscript, 'writer queued after bundle export');
+      const projectedMessages = withArtifactWriterLock(stateRoot, async () => {
+        const projectedSessions = createSessionStore(destinationRoot);
+        try {
+          return await projectedSessions.readMessagesSnapshot(session.id);
+        } finally {
+          await projectedSessions.close?.();
+        }
+      });
+      await assertPending(projectedMessages, 'writer queued after bundle export');
 
       await releaseHolder(holder);
-      assert.match(
-        await withTimeout(projectedTranscript, OPERATION_TIMEOUT_MS, 'selected-session projection'),
-        /portable transcript/,
+      assert.equal(
+        (
+          await withTimeout(projectedMessages, OPERATION_TIMEOUT_MS, 'selected-session projection')
+        ).find((message) => message.type === 'user')?.text,
+        'portable transcript',
       );
       await withTimeout(bundleExport, OPERATION_TIMEOUT_MS, 'bundle export');
     } finally {

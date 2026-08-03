@@ -1,26 +1,31 @@
 /**
- * Unit tests for the shared CSS test helpers used by the typography converge
- * contracts (line-height / font-weight / letter-spacing) and other renderer
- * CSS contracts.
+ * Unit tests for the shared CSS test helpers used by the type-scale contract
+ * and other renderer CSS contracts.
  *
- * Two invariants locked here:
+ * Four invariants locked here:
  *
  * 1. `expandCssImports` fails closed — a missing/bad `@import` must throw
  *    (surfacing the import path), not silently degrade to reading only the
  *    entry file. Otherwise a converge contract could pass while skipping
  *    every `styles/*` file the convergence is supposed to cover.
  *
- * 2. `findFontShorthandOffenders` bans every non-literal `font:` shorthand
- *    (only `inherit` / `initial` / `unset` / `revert` allowed). This is the
- *    shared backstop for the font-weight and line-height converge contracts,
- *    which scan longhand declarations only and would otherwise miss bare
- *    weight or line-height smuggled in via `font:` shorthand.
+ * 2. `findTextRoleOffenders` is the whole text-style vocabulary: a rule names
+ *    one role and declares no font longhand. The shorthand inverted here — it
+ *    used to be the bypass vector and is now the only legal form, because it
+ *    is the one CSS mechanism that makes size, leading, weight and family
+ *    inseparable. Two arms matter most, because both are silent: a `var()`
+ *    that resolves to nothing makes the declaration invalid at computed-value
+ *    time and the element keeps what it inherits, and a type token rebound to
+ *    a VALUE reopens all four axes while the call site still names one role.
  *
- * 3. `parseCssBlocks` reports every rule's OWN declarations at any nesting
- *    depth, and reads the last declaration of a repeated property. Both are
- *    silent-failure shapes: the innermost-block-only form it replaced dropped
- *    a nested rule's parent entirely, and a first-match read reports the value
- *    the browser discards. Untested, the pairing contract inherits both.
+ * 3. `parseCssBlocks` reports every declaring context's OWN declarations at
+ *    any nesting depth, including a rule-nested at-rule, and reads the last
+ *    declaration of a repeated property. All three are silent-failure shapes:
+ *    the hand-rolled parser this replaced dropped at-rule bodies whole, and a
+ *    first-match read reports the value the browser discards.
+ *
+ * 4. `stripCssComments` does not treat a comment delimiter inside a string as
+ *    structural. The naive form deletes real declarations between them.
  */
 
 import { strict as assert } from 'node:assert';
@@ -30,8 +35,14 @@ import { join } from 'node:path';
 import { describe, it, after } from 'node:test';
 import {
   expandCssImports,
-  findFontShorthandOffenders,
+  findBadgeClassNames,
+  findUnreadableBadgeCallSites,
+  mergeByContext,
+  UNCONDITIONAL,
+  findTextRoleOffenders,
+  mergeBySelector,
   parseCssBlocks,
+  stripCssComments,
   assertCustomPropPinnedOnce,
   cssRuleBody,
   cssMediaBody,
@@ -67,61 +78,224 @@ describe('css-test-helpers', () => {
     });
   });
 
-  describe('findFontShorthandOffenders', () => {
-    it('accepts literal font: shorthand (inherit / initial / unset / revert)', () => {
-      assert.deepEqual(findFontShorthandOffenders('font: inherit', 'test'), []);
-      assert.deepEqual(findFontShorthandOffenders('font: initial', 'test'), []);
-      assert.deepEqual(findFontShorthandOffenders('font: unset', 'test'), []);
-      assert.deepEqual(findFontShorthandOffenders('font: revert', 'test'), []);
+  describe('findTextRoleOffenders', () => {
+    const TOKENS = ':root { --maka-text-body: 400 14px/1.4 sans; --maka-text-code: 400 14px/1.4 mono; }';
+    const find = (css: string) => findTextRoleOffenders(css, TOKENS, 'test');
+
+    it('accepts a defined role token and the whole-inheritance literals', () => {
+      assert.deepEqual(find('.a { font: var(--maka-text-body); }'), []);
+      assert.deepEqual(find('.a { font: var( --maka-text-code ); }'), []);
+      for (const literal of ['inherit', 'initial', 'unset', 'revert']) {
+        assert.deepEqual(find(`.a { font: ${literal}; }`), []);
+      }
     });
 
-    it('rejects non-literal font: shorthand (bare weight, line-height, var() size)', () => {
-      assert.ok(findFontShorthandOffenders('font: 600 12px sans-serif', 'test').length > 0, 'bare weight must fail');
-      assert.ok(findFontShorthandOffenders('font: bold 12px sans-serif', 'test').length > 0, 'bold keyword must fail');
-      assert.ok(findFontShorthandOffenders('font: 12px/1.4 sans-serif', 'test').length > 0, 'bare line-height must fail');
-      assert.ok(findFontShorthandOffenders('font: 600 var(--font-size-ui) var(--font-sans)', 'test').length > 0, 'var() size with bare weight must fail');
-      assert.ok(findFontShorthandOffenders('font: var(--font-size-ui)/1.4 var(--font-sans)', 'test').length > 0, 'var() size with bare line-height must fail');
+    it('rejects every font longhand at a call site', () => {
+      for (const decl of [
+        'font-size: var(--font-size-ui)',
+        'line-height: 1.4286',
+        'font-weight: var(--font-weight-medium)',
+        'font-family: var(--font-family-code)',
+      ]) {
+        assert.equal(find(`.a { ${decl}; }`).length, 1, `${decl} must be reported`);
+      }
     });
 
-    it('ignores font: inside comments', () => {
-      assert.deepEqual(findFontShorthandOffenders('/* font: 600 12px sans-serif */', 'test'), []);
+    it('rejects a hand-composed shorthand — the four choices on one line', () => {
+      assert.equal(find('.a { font: 600 12px/1.4 sans-serif; }').length, 1);
+      assert.equal(find('.a { font: 600 var(--font-size-lg)/1.4 sans-serif; }').length, 1);
+      assert.equal(find('.a { font: var(--font-size-ui); }').length, 1);
+    });
+
+    it('rejects a role the table does not define', () => {
+      const offenders = find('.a { font: var(--maka-text-display-1); }');
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0], /--maka-text-display-1/);
+    });
+
+    it('reads the last declaration, so a longhand after a role is still caught', () => {
+      assert.equal(find('.a { font: var(--maka-text-body); font-weight: 700; }').length, 1);
+    });
+
+    it('rejects a second font declaration, which would make the role line dead', () => {
+      const offenders = find('.a { font: var(--maka-text-body); font: inherit; }');
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0], /declares font 2 times/);
+    });
+
+    it('ignores declarations inside comments', () => {
+      assert.deepEqual(find('.a { /* font-size: 12px; */ font: var(--maka-text-body); }'), []);
+    });
+
+    it('reads a property name case-insensitively, as CSS does', () => {
+      // `font-size` and `FONT-SIZE` are the same property. The scan this
+      // replaced lost the `i` flag its predecessor had, so an upper-cased
+      // longhand walked through. Biome does not format apps/desktop or
+      // packages/ui, so nothing else normalizes the source either.
+      assert.equal(find('.a { FONT-SIZE: 12px; }').length, 1);
+      assert.equal(find('.a { Line-Height: 1.9; }').length, 1);
+      assert.equal(find('.a { FONT : 600 12px/1.4 sans; }').length, 1);
+    });
+
+    it('rejects a type token rebound to a value, at any rule', () => {
+      // One line, and the call site below it still names exactly one role
+      // while having re-chosen size, leading, weight and family.
+      const offenders = find(
+        '.a { --maka-text-body: 700 44px/1.05 Impact; font: var(--maka-text-body); }',
+      );
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0], /never to a value/);
+      // The family axis is a type token too — it fills the shorthand's
+      // mandatory family slot for every role.
+      assert.equal(find('.a { --maka-font-family: "Comic Sans", cursive; }').length, 1);
+      // Astryx's own atoms, including the wrapped forms a digit-prefix ban
+      // never saw.
+      assert.equal(find('.a { --text-body-leading: calc(2.5); }').length, 1);
+      assert.equal(find('.a { --text-body-size: max(24px, 1rem); }').length, 1);
+    });
+
+    it('accepts a type token rebound to another token', () => {
+      // The transcript does exactly this to retune the disclosure rows, and
+      // it is the mechanism that keeps a retune inside the scale.
+      assert.deepEqual(find('.a { --text-supporting-leading: var(--maka-line-body); }'), []);
+      assert.deepEqual(
+        find('.a { --maka-text-body: var(--text-body-weight) var(--text-body-size)/var(--text-body-leading) var(--maka-font-family); }'),
+        [],
+      );
+      assert.deepEqual(find('.a { --maka-font-family: var(--font-family-code, var(--font-family-body)); }'), []);
+    });
+
+    it('sees declarations inside an at-rule nested in a rule', () => {
+      // The hole that made the previous parser's ban conditional on nobody
+      // using the shape Astryx itself uses for coarse pointers.
+      const offenders = find(
+        '.a { font: var(--maka-text-body); @media (pointer: coarse) { font-size: 16px; } }',
+      );
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0], /@media \(pointer: coarse\) declares font-size/);
+    });
+
+    it('does not count a media-nested role against the base rule', () => {
+      // Two cascade contexts, one role each — not "declares font 2 times".
+      assert.deepEqual(
+        find('.a { font: var(--maka-text-body); @media (pointer: coarse) { font: var(--maka-text-code); } }'),
+        [],
+      );
+    });
+
+    it('is not fooled by a brace inside a string', () => {
+      const offenders = find('.a::after { content: "}"; font-size: 40px; }');
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0], /declares font-size/);
+    });
+
+    it('rejects a selector given a role by two rules in the same context', () => {
+      // The grouped-role shape: the group's role is dead, and a later retune
+      // of the group moves every other member while this one stays put.
+      // Measured, `.plan-proposal-kicker` had already drifted a size tier.
+      const offenders = find(
+        '.a, .b { font: var(--maka-text-body); }\n.a { font: var(--maka-text-code); }',
+      );
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0], /\.a is given a text role by more than one rule/);
+    });
+
+    it('allows the same selector to name a role in a different cascade context', () => {
+      // A responsive or layered variant is a replacement, not a duplicate.
+      assert.deepEqual(
+        find('.a { font: var(--maka-text-body); }\n@media (pointer: coarse) { .a { font: var(--maka-text-code); } }'),
+        [],
+      );
+      // A comma inside :is()/:where() is not a selector-list separator.
+      assert.deepEqual(find(':is(.a, .b) { font: var(--maka-text-body); }\n.a { font: var(--maka-text-code); }'), []);
+    });
+
+    it('exempts only the code element group’s family longhand', () => {
+      // The one declaration in the renderer that must be a longhand: a bare
+      // <code> inside migrated prose inherits a resolved family string, which
+      // no variable rebind can reach.
+      assert.deepEqual(find(':where(code, kbd, samp, pre) { font-family: var(--font-family-code); }'), []);
+      assert.equal(find(':where(code, kbd, samp, pre) { font-size: 12px; }').length, 1);
+      assert.equal(find('.a { font-family: var(--font-family-code); }').length, 1);
+    });
+  });
+
+  describe('stripCssComments', () => {
+    it('does not treat a comment delimiter inside a string as structural', () => {
+      const css = '.a { content: "/*"; font-size: 99px; --tail: "*/"; }';
+      assert.match(stripCssComments(css), /font-size:\s*99px/);
+    });
+
+    it('still removes a real comment', () => {
+      assert.doesNotMatch(stripCssComments('.a { /* font-size: 99px; */ color: red; }'), /99px/);
     });
   });
 
   describe('parseCssBlocks (own declarations, at any depth)', () => {
-    const bodyOf = (css: string, selector: string) =>
-      parseCssBlocks(css).find((b) => b.selector === selector)?.body;
+    const declsOf = (css: string, selector: string) =>
+      parseCssBlocks(css).find((b) => b.selector === selector)?.decls ?? [];
+    const props = (css: string, selector: string) => declsOf(css, selector).map((d) => d.prop);
 
     it('keeps a parent rule’s declarations when a nested rule follows them', () => {
-      // The regression that motivated replacing the innermost-block-only
-      // parser: under it `.a` disappeared entirely, taking its font-size out
-      // of the pairing scan and silently exempting the rule.
       const css = '.a { font-size: 18px; & span { color: red; } }';
-      assert.match(bodyOf(css, '.a') ?? '', /font-size:\s*18px/);
-      assert.match(bodyOf(css, '& span') ?? '', /color:\s*red/);
+      assert.deepEqual(props(css, '.a'), ['font-size']);
+      // Resolved against the parent, not emitted as the literal `& span`. The
+      // raw form is a key every nested rule in the tree collides on, and one
+      // that no scan keyed on real selectors can ever reach.
+      assert.deepEqual(props(css, '.a span'), ['color']);
+    });
+
+    it('resolves a bare nested selector as a descendant', () => {
+      assert.deepEqual(props('.a { span { color: red; } }', '.a span'), ['color']);
+    });
+
+    it('resolves `&` in every position it can take', () => {
+      assert.deepEqual(props('.a { &:hover { color: red; } }', '.a:hover'), ['color']);
+      assert.deepEqual(props('.a { .b & { color: red; } }', '.b .a'), ['color']);
     });
 
     it('keeps a parent rule’s declarations that follow the nested rule', () => {
-      const css = '.a { & span { color: red; } line-height: 1.9; }';
-      assert.match(bodyOf(css, '.a') ?? '', /line-height:\s*1\.9/);
+      assert.deepEqual(props('.a { & span { color: red; } line-height: 1.9; }', '.a'), ['line-height']);
     });
 
-    it('emits rules inside at-rules but not the at-rule body itself', () => {
+    it('emits rules inside a top-level at-rule, not the at-rule itself', () => {
       const blocks = parseCssBlocks('@media (min-width: 40rem) { .a { font-size: 18px; } }');
-      assert.deepEqual(
-        blocks.map((b) => b.selector),
-        ['.a'],
-      );
+      assert.deepEqual(blocks.map((b) => b.selector), ['.a']);
+    });
+
+    it('emits a rule-nested at-rule as its own context, attributed to the rule', () => {
+      // Its declarations apply to the rule's selector but in a different
+      // cascade context, so they are neither dropped nor merged.
+      const blocks = parseCssBlocks('.a { color: red; @media (pointer: coarse) { font-size: 16px; } }');
+      assert.deepEqual(blocks.map((b) => [b.selector, b.rule, b.decls.map((d) => d.prop)]), [
+        ['.a', '.a', ['color']],
+        ['.a @media (pointer: coarse)', '.a', ['font-size']],
+      ]);
+    });
+
+    it('skips a top-level declaration at-rule, which is a definition not a call site', () => {
+      assert.deepEqual(parseCssBlocks('@font-face { font-family: Bad; src: url(x); }'), []);
     });
 
     it('does not leak a sibling rule’s declarations into a block', () => {
       const css = '.a { font-size: 18px; }\n.b { color: red; }';
-      assert.doesNotMatch(bodyOf(css, '.a') ?? '', /color/);
-      assert.doesNotMatch(bodyOf(css, '.b') ?? '', /font-size/);
+      assert.deepEqual(props(css, '.a'), ['font-size']);
+      assert.deepEqual(props(css, '.b'), ['color']);
     });
 
-    it('strips comments before parsing', () => {
-      assert.doesNotMatch(bodyOf('.a { /* font-size: 18px; */ color: red; }', '.a') ?? '', /18px/);
+    it('does not end a rule at a brace inside a string', () => {
+      assert.deepEqual(props('.a::after { content: "}"; font-size: 40px; }', '.a::after'), [
+        'content',
+        'font-size',
+      ]);
+    });
+
+    it('lower-cases property names, as CSS matching does', () => {
+      assert.deepEqual(props('.a { FONT-SIZE: 18px; }', '.a'), ['font-size']);
+    });
+
+    it('ignores comments', () => {
+      assert.deepEqual(props('.a { /* font-size: 18px; */ color: red; }', '.a'), ['color']);
     });
   });
 
@@ -282,6 +456,145 @@ describe('css-test-helpers', () => {
 
     it('strips comments before parsing (inline comment after value)', () => {
       assert.doesNotThrow(() => assertCustomPropPinnedOnce('--leading-none: 1;        /* single-line: kbd */', '--leading-none', '1'));
+    });
+  });
+
+  describe('mergeBySelector (one box per selector, unconditional only)', () => {
+    it('merges rules that name the same selector, in source order', () => {
+      const merged = mergeBySelector('.a { border-radius: 9999px; }\n.a { height: 20px; }');
+      assert.match(merged.get('.a') ?? '', /border-radius/);
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+    });
+
+    it('merges a selector reached through a group with one reached on its own', () => {
+      const merged = mergeBySelector('.a, .b { border-radius: 9999px; }\n.a { height: 20px; }');
+      assert.match(merged.get('.a') ?? '', /border-radius/);
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+      assert.match(merged.get('.b') ?? '', /border-radius/);
+    });
+
+    it('skips rules gated by a conditional at-rule', () => {
+      // Folding these in read a chip pinned only inside a breakpoint as pinned
+      // everywhere, and made a deliberate responsive unpin illegal. The
+      // unconditional box is what the box contracts are about.
+      const merged = mergeBySelector('.a { height: 20px; }\n@media (min-width: 900px) { .a { height: auto; } }');
+      assert.doesNotMatch(merged.get('.a') ?? '', /auto/);
+    });
+
+    it('keeps rules inside a non-conditional at-rule', () => {
+      const merged = mergeBySelector('@layer components { .a { height: 20px; } }');
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+    });
+
+    it('does not let a nested rule collide on a global `&` key', () => {
+      const merged = mergeBySelector('.a { & { color: red; } }\n.b { & { color: blue; } }');
+      assert.equal(merged.get('&'), undefined);
+      assert.match(merged.get('.a') ?? '', /red/);
+      assert.match(merged.get('.b') ?? '', /blue/);
+    });
+
+    it('keeps a qualified override as its own key', () => {
+      // Documented limitation, asserted so it cannot change silently: this
+      // models one rule per selector, not the cascade. `.wrap .a` is a
+      // different box here, and what covers it is the Badge call-site contract
+      // and the live e2e measurement.
+      const merged = mergeBySelector('.a { height: 20px; }\n.wrap .a { height: auto; }');
+      assert.doesNotMatch(merged.get('.a') ?? '', /auto/);
+      assert.match(merged.get('.wrap .a') ?? '', /auto/);
+    });
+  });
+
+  describe('findBadgeClassNames (a scanner that cannot quietly stop seeing a call site)', () => {
+    // A fresh dir per case: one shared root would let each case see every
+    // other case's fixture, and `deepEqual` on the whole result would then be
+    // asserting the suite's execution order rather than the scanner.
+    const dirs: string[] = [];
+    const write = async (name: string, src: string) => {
+      const dir = await mkdtemp(join(tmpdir(), 'badge-scan-'));
+      dirs.push(dir);
+      await writeFile(join(dir, name), src, 'utf8');
+      return dir;
+    };
+    after(async () => {
+      await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    it('reads a className past a `>` inside a prop expression', async () => {
+      // `/<Badge\b[^>]*?>/` ended the tag at the `>` in the ternary, and the
+      // truncated text held neither `className="` nor `className={` — so the
+      // call site left BOTH Badge contracts while they reported green.
+      const root = await write('gt.tsx', `<Badge label={a > b ? 'x' : 'y'} className="evil" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['evil']);
+    });
+
+    it('reads a className past an apostrophe inside a prop comment', async () => {
+      // Measured on the real tree: `/* the Tooltip's popover */` inside a
+      // `<Badge>` put a quote-aware walk into string mode at the apostrophe and
+      // carried the tag end past its own `/>`. Three live call sites silently
+      // left the scan, which still reported green on the other 16.
+      const root = await write('apos.tsx', `<Badge\n  label="x"\n  /* the Tooltip's popover is display:none */\n  className="quiet"\n/>`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['quiet']);
+    });
+
+    it('reads both quote styles and whitespace around `=`', async () => {
+      const root = await write('quotes.tsx', `<Badge className = 'spaced' label="x" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['spaced']);
+    });
+
+    it('reads a className past a `>` inside a line comment', async () => {
+      // The other spelling of the comment above, and the same failure: a `//`
+      // holding a `>` ends the tag there.
+      const root = await write('line.tsx', `<Badge\n  // show this when a > b\n  className="commented"\n/>`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['commented']);
+    });
+
+    it('reports a computed className as unreadable', async () => {
+      const root = await write('dyn.tsx', `<Badge label={a > b} className={cls} />`);
+      assert.deepEqual(await findBadgeClassNames([root]), []);
+      assert.equal((await findUnreadableBadgeCallSites([root])).length, 1);
+    });
+
+    it('reports a spread call site as unreadable rather than as class-less', async () => {
+      // Legal JSX that neither scanner could read: the static one finds no
+      // `className="…"` and the computed one finds no `className={`, so the
+      // geometry contract concluded there was nothing to govern. Measured on a
+      // real call site, with a `height` added to the class it hides — green.
+      const root = await write('spread.tsx', `<Badge {...{ className: 'hidden' }} label="x" />`);
+      assert.deepEqual(await findBadgeClassNames([root]), []);
+      assert.equal((await findUnreadableBadgeCallSites([root])).length, 1);
+    });
+
+    it('does not read a spread inside a prop expression as a prop spread', async () => {
+      const root = await write('inner.tsx', `<Badge label={[...parts]} className="readable" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['readable']);
+      assert.deepEqual(await findUnreadableBadgeCallSites([root]), []);
+    });
+  });
+
+  describe('mergeByContext (one box per selector PER cascade context)', () => {
+    it('keeps mutually exclusive conditions apart', () => {
+      // Flattened, `height: auto` here and `white-space: normal` there satisfy
+      // two independent matches while applying at no viewport at all.
+      const contexts = mergeByContext(
+        '@media (max-width: 620px) { .a { height: auto; } }\n@media (min-width: 621px) { .a { white-space: normal; } }',
+      );
+      const bodies = [...(contexts.get('.a') ?? new Map<string, string>()).values()];
+      assert.equal(bodies.length, 2);
+      assert.equal(bodies.filter((b) => /height/.test(b) && /white-space/.test(b)).length, 0);
+    });
+
+    it('keys unconditional declarations under UNCONDITIONAL', () => {
+      const contexts = mergeByContext('.a { height: 20px; }\n@media print { .a { height: auto; } }');
+      const byContext = contexts.get('.a') ?? new Map<string, string>();
+      assert.match(byContext.get(UNCONDITIONAL) ?? '', /20px/);
+      assert.match(byContext.get('@media print') ?? '', /auto/);
+    });
+
+    it('does not split one context on a cascade-only at-rule', () => {
+      // `@layer` changes how a rule cascades, not whether it applies.
+      const contexts = mergeByContext('.a { height: 20px; }\n@layer components { .a { color: red; } }');
+      const byContext = contexts.get('.a') ?? new Map<string, string>();
+      assert.deepEqual([...byContext.keys()], [UNCONDITIONAL]);
     });
   });
 });

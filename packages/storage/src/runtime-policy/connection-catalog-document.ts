@@ -259,6 +259,11 @@ export class ConnectionCatalogDocumentOwner {
             {
               defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
               enabledModelIds: previous.enabledModelIds,
+              // An entry always carries a `models` array, so "has an inventory"
+              // has to be read off its contents: empty means this connection has
+              // never had a list to pick from and discovery may seed one. A
+              // non-empty one means an empty selection is the user's answer.
+              hasModelInventory: previous.models.length > 0,
             },
             result.models,
           )

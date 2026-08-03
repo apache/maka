@@ -3,9 +3,9 @@
  * paths. One configured provider handles a query; failures are returned as
  * closed reasons rather than silently rotating providers.
  *
- * Main owns credentials, provider calls, and the incognito gate. Renderer
- * results contain normalized title, URL, and snippet fields and never expose
- * cleartext credentials or raw provider errors.
+ * The active execution owner controls credentials, provider calls, and the
+ * incognito gate. Renderer results contain normalized title, URL, and snippet
+ * fields and never expose cleartext credentials or raw provider errors.
  */
 
 /** Closed enum of providers V0.1 will accept. */

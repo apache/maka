@@ -7,20 +7,10 @@ export const ARTIFACT_PURGE_INTENT_TEMP_PATTERN = new RegExp(
   `^\\.artifact-purge-intent\\.json\\.[0-9]+\\.${UUID_V4_FRAGMENT}\\.tmp$`,
 );
 
-export const ARTIFACT_METADATA_TEMP_PATTERN = new RegExp(
-  `^metadata\\.jsonl\\.[0-9]+\\.${UUID_V4_FRAGMENT}\\.tmp$`,
-);
-
-export const ARTIFACT_LEGACY_METADATA_TEMP_PATTERN = /^metadata\.jsonl\.[0-9]+\.[0-9]+\.tmp$/;
-
 export const ARTIFACT_PUBLICATION_STAGING_PATTERN = new RegExp(
   `^\\.artifact-publish\\.([a-f0-9]{64})\\.${UUID_V4_FRAGMENT}\\.tmp$`,
 );
 
-export function isCanonicalArtifactRecoveryTempName(name: string): boolean {
-  return (
-    ARTIFACT_PURGE_INTENT_TEMP_PATTERN.test(name) ||
-    ARTIFACT_METADATA_TEMP_PATTERN.test(name) ||
-    ARTIFACT_LEGACY_METADATA_TEMP_PATTERN.test(name)
-  );
+export function isArtifactPurgeRecoveryTempName(name: string): boolean {
+  return ARTIFACT_PURGE_INTENT_TEMP_PATTERN.test(name);
 }

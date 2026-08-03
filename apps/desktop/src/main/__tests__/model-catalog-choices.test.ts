@@ -21,6 +21,17 @@ type ModelCatalogChoicesModule = {
   pickCatalogDefaultChatModel(connection: LlmConnection):
     | { llmConnectionSlug: string; model: string }
     | undefined;
+  pickNewChatModel(input: {
+    pending: { llmConnectionSlug: string; model: string } | null;
+    activationCandidate?: { llmConnectionSlug: string; model: string };
+    catalogDefault: { llmConnectionSlug: string; model: string } | undefined;
+    choices: Array<{
+      connectionSlug: string;
+      providerType: LlmConnection['providerType'];
+      model: string;
+      label: string;
+    }>;
+  }): { llmConnectionSlug: string; model: string } | undefined;
   buildCatalogDailyReviewModelOptions(
     connections: readonly LlmConnection[],
     currentModelKey: string,
@@ -81,6 +92,71 @@ function choiceIdentity(choice: {
 }
 
 describe('model catalog picker helpers', () => {
+  it('uses the first offered model when no user or workspace preference exists', async () => {
+    const { pickNewChatModel } = await importModelCatalogChoices();
+    assert.deepEqual(
+      pickNewChatModel({
+        pending: null,
+        catalogDefault: undefined,
+        choices: [
+          {
+            connectionSlug: 'opencode-free',
+            providerType: 'opencode-free',
+            model: 'mimo-v2.5-free',
+            label: 'MiMo V2.5 Free',
+          },
+        ],
+      }),
+      { llmConnectionSlug: 'opencode-free', model: 'mimo-v2.5-free' },
+    );
+  });
+
+  it('uses the readiness-checked activation candidate before an unverified first choice', async () => {
+    const { pickNewChatModel } = await importModelCatalogChoices();
+    assert.deepEqual(
+      pickNewChatModel({
+        pending: null,
+        activationCandidate: {
+          llmConnectionSlug: 'ready-second',
+          model: 'ready-model',
+        },
+        catalogDefault: undefined,
+        choices: [
+          {
+            connectionSlug: 'missing-key-first',
+            providerType: 'anthropic',
+            model: 'unusable-model',
+            label: 'Unusable',
+          },
+          {
+            connectionSlug: 'ready-second',
+            providerType: 'opencode-free',
+            model: 'ready-model',
+            label: 'Ready',
+          },
+        ],
+      }),
+      { llmConnectionSlug: 'ready-second', model: 'ready-model' },
+    );
+  });
+
+  it('offers the normalized fallback for legacy Codex-only inventory', async () => {
+    const { buildCatalogChatModelChoices } = await importModelCatalogChoices();
+    const choices = buildCatalogChatModelChoices([
+      connection({
+        slug: 'codex-account',
+        providerType: 'openai-codex',
+        defaultModel: 'gpt-5-codex',
+        enabledModelIds: ['gpt-5-codex'],
+        models: [{ id: 'gpt-5-codex' }],
+      }),
+    ]);
+
+    assert.deepEqual(choices.map(choiceIdentity), [
+      'codex-account:openai-codex:gpt-5.6-sol',
+    ]);
+  });
+
   it('projects enabled models across wired providers without collapsing provider identities', async () => {
     const { buildCatalogChatModelChoices, buildCatalogModelChoices } =
       await importModelCatalogChoices();

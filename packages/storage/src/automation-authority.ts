@@ -1,6 +1,3 @@
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
 import { isThinkingLevel } from '@maka/core/model-thinking';
@@ -10,7 +7,6 @@ import {
   AUTOMATION_NAME_LIMIT,
   AUTOMATION_PROMPT_LIMIT,
   isAutomationTextWithinLimit,
-  truncateAutomationText,
   type AutomationAuthoritySnapshot,
   type AutomationDefinition,
   type AutomationExecutionTemplate,
@@ -18,10 +14,8 @@ import {
   type AutomationSchedule,
 } from '@maka/core/automation';
 import {
-  completeOperationalStoreCutover,
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
-  type OperationalStoreCutoverFailpoint,
 } from './operational-state-store.js';
 import {
   assertStorageRootLease,
@@ -30,7 +24,6 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 
-export const LEGACY_AUTOMATION_FILE = 'automations.json';
 const MAX_AUTOMATIONS = 10_000;
 const MAX_PENDING_FIRES = 10_000;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -98,8 +91,17 @@ export interface InteractiveAutomationAuthorityWriter {
   close(): void;
 }
 
-export interface OpenAutomationAuthorityOptions {
-  readonly failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
+export interface AutomationAuthorityRepository {
+  ready(): Promise<void>;
+  read(): AutomationAuthoritySnapshot;
+  commit(input: CommitAutomationAuthorityInput): CommitAutomationAuthorityResult;
+  close(): void;
+}
+
+export function createSqliteAutomationAuthority(
+  workspaceRoot: string,
+): AutomationAuthorityRepository {
+  return new SqliteAutomationAuthority(workspaceRoot);
 }
 
 export function authenticateInteractiveAutomationAuthorityWriter(
@@ -116,7 +118,6 @@ export function authenticateInteractiveAutomationAuthorityWriter(
 
 export async function openInteractiveAutomationAuthorityForWrite(
   lease: StorageRootLease<'interactive', 'write'>,
-  options: OpenAutomationAuthorityOptions = {},
 ): Promise<InteractiveAutomationAuthorityWriter> {
   await assertStorageRootLease(lease, 'interactive', 'write');
   const existing = writerByLease.get(lease);
@@ -128,7 +129,7 @@ export async function openInteractiveAutomationAuthorityForWrite(
     let store: SqliteAutomationAuthority | undefined;
     try {
       store = await runWithStorageRootLease(lease, 'interactive', 'write', async (root) => {
-        const opened = new SqliteAutomationAuthority(root, options);
+        const opened = new SqliteAutomationAuthority(root);
         await opened.ready();
         return opened;
       });
@@ -188,17 +189,15 @@ function createWriterFacade(
   return Object.freeze(writer);
 }
 
-class SqliteAutomationAuthority {
+class SqliteAutomationAuthority implements AutomationAuthorityRepository {
   readonly #lease: OperationalStateDatabaseLease;
-  readonly #ready: Promise<void>;
 
-  constructor(root: string, options: OpenAutomationAuthorityOptions) {
+  constructor(root: string) {
     this.#lease = acquireOperationalStateDatabase(root);
-    this.#ready = importLegacyAutomations(root, this.#lease, options);
   }
 
   ready(): Promise<void> {
-    return this.#ready;
+    return Promise.resolve();
   }
 
   read(): AutomationAuthoritySnapshot {
@@ -313,101 +312,6 @@ class SqliteAutomationAuthority {
   }
 }
 
-async function importLegacyAutomations(
-  root: string,
-  lease: OperationalStateDatabaseLease,
-  options: OpenAutomationAuthorityOptions,
-): Promise<void> {
-  const sourcePath = join(root, LEGACY_AUTOMATION_FILE);
-  const source = await readLegacyAutomationFile(sourcePath);
-  completeOperationalStoreCutover(lease, {
-    storeName: 'automations',
-    sourcePath,
-    sourceFingerprint: source.fingerprint,
-    ...(options.failpoint ? { failpoint: options.failpoint } : {}),
-    importAndValidate: (database) => {
-      const insert = database.prepare(`
-        INSERT OR IGNORE INTO automation_definitions(
-          automation_id, session_id, created_at, status, durable, record_json
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      for (const automation of source.automations) {
-        const encoded = JSON.stringify(automation);
-        const result = insert.run(
-          automation.id,
-          automation.sessionId,
-          automation.createdAt,
-          automation.status,
-          automation.durable === true ? 1 : 0,
-          encoded,
-        );
-        if (result.changes === 0) {
-          const row = database
-            .prepare('SELECT record_json FROM automation_definitions WHERE automation_id = ?')
-            .get(automation.id) as { record_json?: unknown } | undefined;
-          if (!row || row.record_json !== encoded) {
-            throw new Error(`Automation cutover conflict: ${automation.id}`);
-          }
-        }
-      }
-      if (source.automations.length > 0) {
-        database
-          .prepare(`
-            UPDATE automation_authority_state
-            SET revision = CASE WHEN revision = 0 THEN 1 ELSE revision END
-            WHERE singleton = 1
-          `)
-          .run();
-      }
-      return { automations: source.automations.length };
-    },
-  });
-}
-
-async function readLegacyAutomationFile(
-  path: string,
-): Promise<{ fingerprint: string; automations: readonly AutomationDefinition[] }> {
-  let contents: string;
-  try {
-    contents = await readFile(path, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return {
-        fingerprint: `sha256:${createHash('sha256').update('absent').digest('hex')}`,
-        automations: [],
-      };
-    }
-    throw error;
-  }
-  return {
-    fingerprint: `sha256:${createHash('sha256').update(contents).digest('hex')}`,
-    automations: decodeLegacyAutomationFile(contents),
-  };
-}
-
-export function decodeLegacyAutomationFile(contents: string): readonly AutomationDefinition[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(contents);
-  } catch (error) {
-    throw new Error('Legacy Automation store is not valid JSON', { cause: error });
-  }
-  if (!isRecord(parsed) || parsed.version !== 1 || !Array.isArray(parsed.automations)) {
-    throw new Error('Legacy Automation store has an unsupported shape or version');
-  }
-  if (parsed.automations.length > MAX_AUTOMATIONS) {
-    throw new Error('Legacy Automation store exceeds the definition limit');
-  }
-  const automations = parsed.automations.map((automation) =>
-    normalizeAutomationDefinition(automation, { legacy: true }),
-  );
-  assertUnique(
-    automations.map((automation) => automation.id),
-    'Automation id',
-  );
-  return automations;
-}
-
 function normalizeCommitInput(
   input: CommitAutomationAuthorityInput,
 ): CommitAutomationAuthorityInput {
@@ -466,10 +370,7 @@ function assertSnapshotRelationships(
   }
 }
 
-function normalizeAutomationDefinition(
-  value: unknown,
-  options: { readonly legacy?: boolean } = {},
-): AutomationDefinition {
+function normalizeAutomationDefinition(value: unknown): AutomationDefinition {
   if (!isRecord(value) || !hasOnlyKeys(value, DEFINITION_KEYS)) {
     throw new Error('Invalid Automation definition');
   }
@@ -490,7 +391,7 @@ function normalizeAutomationDefinition(
   ) {
     throw new Error('Invalid Automation state');
   }
-  const lastError = normalizeLastError(value.lastError, options.legacy === true);
+  const lastError = normalizeLastError(value.lastError);
   if (
     !isNonnegativeInteger(value.createdAt) ||
     !isNonnegativeInteger(value.updatedAt) ||
@@ -730,11 +631,9 @@ function isBoundedString(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= max;
 }
 
-function normalizeLastError(value: unknown, legacy: boolean): string | null | undefined {
+function normalizeLastError(value: unknown): string | null | undefined {
   if (value === null) return null;
-  if (legacy && value === '') return null;
   if (typeof value !== 'string' || value.length === 0) return undefined;
-  if (legacy) return truncateAutomationText(value, AUTOMATION_LAST_ERROR_LIMIT);
   return isAutomationTextWithinLimit(value, AUTOMATION_LAST_ERROR_LIMIT) ? value : undefined;
 }
 

@@ -1,86 +1,87 @@
+/** Either a React synthetic event or the native one it wraps. */
 export interface ChatInputCompositionEvent {
   key?: string;
-  nativeEvent: object;
+  nativeEvent?: object;
 }
 
 export function isChatInputComposing(
   event: ChatInputCompositionEvent,
   trackedComposition = false,
 ): boolean {
+  const native: object = event.nativeEvent ?? event;
   return trackedComposition || event.key === 'Process'
-    || ('isComposing' in event.nativeEvent && event.nativeEvent.isComposing === true);
+    || ('isComposing' in native && native.isComposing === true);
+}
+
+/**
+ * The draft text as the backend should receive it.
+ *
+ * `ChatComposerInput` anchors an inline token to what follows it with a
+ * NO-BREAK SPACE, and its own backspace-eats-the-token check keys on that exact
+ * codepoint — so the editor has to keep it and only the wire is normalized.
+ * Without this, every message written after a mention carries a U+00A0 where
+ * the user typed an ordinary space: invisible in the transcript, and a
+ * character no tool splitting a path on ASCII whitespace will match.
+ */
+export function composerWireText(draft: string): string {
+  return draft.replace(/ /g, ' ').trim();
+}
+
+/**
+ * Wraps an async lookup into the shape Astryx's trigger menu expects, adding
+ * the two things `useTriggerMenu` assumes a `SearchSource` provides.
+ *
+ * `searchItems` probes the source with `search('')` once per keystroke purely
+ * to learn whether it is async — it reads nothing but `instanceof Promise` and
+ * discards the value — and it calls `cancel()` immediately before, and only
+ * before, each real search. So the probe is answered from a resolved constant
+ * and never reaches the network, every real search runs fresh, and a search
+ * superseded by a newer one is abandoned rather than allowed to race its stale
+ * results into an open menu.
+ */
+export function createTriggerSearchSource<Item>(
+  run: (query: string) => Promise<Item[]>,
+): { bootstrap(): Promise<Item[]>; search(query: string): Promise<Item[]>; cancel(): void } {
+  const probeAnswer = Promise.resolve<Item[]>([]);
+  /** Never settles, so a superseded search can never write to the menu. */
+  const abandoned = (): Promise<Item[]> => new Promise<Item[]>(() => {});
+  let generation = 0;
+  let armed = false;
+  return {
+    bootstrap: () => run('').catch(() => []),
+    search(query) {
+      if (!armed) return probeAnswer;
+      armed = false;
+      const ownGeneration = generation;
+      const fresh = (items: Item[]) => (ownGeneration === generation ? items : abandoned());
+      return run(query).then(fresh, () => fresh([]));
+    },
+    cancel() {
+      generation += 1;
+      armed = true;
+    },
+  };
 }
 
 export function fileTransferContainsFiles(types: Iterable<string>, fileCount: number): boolean {
   return fileCount > 0 || Array.from(types).includes('Files');
 }
 
-export interface TextInputSelectionTarget {
-  value: string;
-  focus(): void;
-  setSelectionRange(start: number, end: number): void;
-}
-
-export function focusTextInputAtEnd(input: TextInputSelectionTarget): void {
-  input.focus();
-  const end = input.value.length;
-  input.setSelectionRange(end, end);
-}
-
 /**
- * Composer `@` / `/` mention trigger detection.
+ * The composer's text surface, seen by the hooks that own draft persistence and
+ * prompt-history recall.
  *
- * Decompiled from the QoderWork/WorkBuddy composer bundles and adapted to our
- * plain-text v1 (see docs/archive/composer-mentions-spec-2026-07-14.md). Pure so it
- * can be unit-pinned without a DOM: given the current textarea value + caret
- * offset it reports the active trigger, the query typed after it, and the
- * trigger char's index (so the caller can splice `[start, caret)` on select).
- *
- * `@` references a workspace file (query may contain single spaces — filenames
- * do); `/` references a skill (single-token — any space kills it).
+ * Those hooks used to hold an `HTMLTextAreaElement` ref and poke `.value` /
+ * `.setSelectionRange()` directly. The input is now Astryx's contentEditable
+ * `ChatComposerInput`, whose value is React state and whose caret is owned by
+ * the component — so they talk to this two-method port instead and stay free
+ * of any DOM shape.
  */
-export type MentionTriggerChar = '@' | '/';
-
-export interface MentionTrigger {
-  trigger: MentionTriggerChar;
-  query: string;
-  /** Index of the trigger char itself in `value` (the `@` or `/`). */
-  start: number;
-}
-
-export function detectMentionTrigger(value: string, caret: number): MentionTrigger | null {
-  // Clamp the caret into the value so a stale/oversized offset can't slice
-  // out of bounds (selectionStart can momentarily lead the value on paste).
-  const pos = Math.max(0, Math.min(caret, value.length));
-  // The word boundary defines what counts as a trigger at all: an `@`/`/` is a
-  // trigger only when the char before it is start-of-input or whitespace. A
-  // `/` inside a path (`@src/app`) or an `@` inside an email (`user@host`) is
-  // NOT a trigger — it's just part of a query. So we scan left from the caret
-  // for the NEAREST boundary-anchored `@`/`/` (the "consider the nearer one"
-  // rule, applied to real triggers) and ignore the non-boundary ones.
-  let start = -1;
-  let trigger: MentionTriggerChar | null = null;
-  for (let i = pos - 1; i >= 0; i--) {
-    const ch = value[i];
-    if (ch !== '@' && ch !== '/') continue;
-    if (i === 0 || /\s/.test(value[i - 1]!)) {
-      start = i;
-      trigger = ch;
-      break;
-    }
-    // A non-boundary `@`/`/` is part of the query text — keep scanning.
-  }
-  if (start < 0 || trigger === null) return null;
-  const query = value.slice(start + 1, pos);
-  if (trigger === '@') {
-    // Filenames can contain single spaces and slashes, so only a double space
-    // or a newline (never part of one path token) invalidates the `@` query.
-    if (query.includes('\n') || query.includes('  ')) return null;
-  } else if (/\s/.test(query)) {
-    // Skills are a single token — any whitespace (incl. newline) ends it.
-    return null;
-  }
-  return { trigger, query, start };
+export interface ComposerTextPort {
+  /** The serialized draft text, tokens included. */
+  getValue(): string;
+  /** Replace the draft text without moving focus. */
+  setValue(value: string): void;
 }
 
 /**

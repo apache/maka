@@ -40,9 +40,9 @@
       "!apps/desktop/**",
       "!packages/ui/**",
       // Byte-sensitive provenance / generated artifacts — NOT hand-authored
-      // source. SOURCE.json is read whole and SHA-256'd + size-checked by
-      // scripts/prepare-cua-driver.mjs, so reformatting breaks provenance
-      // verification; bundled-tools.json is its generated sibling.
+      // source. These are read whole and SHA-256'd + size-checked by the
+      // executor preparation scripts, so reformatting breaks provenance
+      // verification; bundled-tools.json is their generated sibling.
       "!apps/desktop/resources/licenses/**",
       "!apps/desktop/bundled-tools.json"
     ]
