@@ -1,4 +1,5 @@
 import { BOT_PROVIDERS, isBotDeliveryProvider, type BotProvider } from './bot-chat-settings.js';
+import { compileCronExpression, type CronCompileError } from './cron-expression.js';
 
 export const PLAN_REMINDER_TITLE_MAX_CHARS = 120;
 export const PLAN_REMINDER_NOTE_MAX_CHARS = 1000;
@@ -316,8 +317,8 @@ export function normalizePlanReminderCronExpression(
       `Plan reminder cron expression must be ${PLAN_REMINDER_CRON_EXPRESSION_MAX_CHARS} characters or fewer`,
     );
   }
-  const parsed = parsePlanReminderCronExpression(expression);
-  if (!parsed.ok) return invalid('invalid_cron', parsed.message);
+  const compiled = compileCronExpression(expression, { profile: 'plan-reminder-v1' });
+  if (!compiled.ok) return invalid('invalid_cron', planReminderCronErrorMessage(compiled.error));
   return { ok: true, value: expression };
 }
 
@@ -512,147 +513,40 @@ function addMonthsClamped(anchor: number, monthOffset: number): number {
   ).getTime();
 }
 
-interface ParsedCronField {
-  wildcard: boolean;
-  values: Set<number>;
-}
-
-interface ParsedCronExpression {
-  minute: ParsedCronField;
-  hour: ParsedCronField;
-  dayOfMonth: ParsedCronField;
-  month: ParsedCronField;
-  dayOfWeek: ParsedCronField;
-}
-
 function nextCronRunAtAfter(schedule: PlanReminderCronSchedule, after: number): number | undefined {
-  const parsed = parsePlanReminderCronExpression(schedule.expression);
-  if (!parsed.ok) return undefined;
-  const searchStart = Math.max(after + 1, schedule.startAt);
-  let candidate = Math.ceil(searchStart / 60_000) * 60_000;
-  const searchEnd = after + PLAN_REMINDER_MAX_DELAY_MS;
-  while (candidate <= searchEnd) {
-    if (cronExpressionMatches(parsed.value, new Date(candidate))) return candidate;
-    candidate += 60_000;
-  }
-  return undefined;
+  const compiled = compileCronExpression(schedule.expression, { profile: 'plan-reminder-v1' });
+  if (!compiled.ok) return undefined;
+  return (
+    compiled.value.nextAfter(after, {
+      notBefore: schedule.startAt,
+      notAfter: after + PLAN_REMINDER_MAX_DELAY_MS,
+    }) ?? undefined
+  );
 }
 
-function parsePlanReminderCronExpression(
-  input: string,
-): PlanReminderNormalizeResult<ParsedCronExpression> {
-  const parts = input.split(' ');
-  if (parts.length !== 5) {
-    return invalid('invalid_cron', 'Plan reminder cron expression must have exactly 5 fields');
+function planReminderCronErrorMessage(error: CronCompileError): string {
+  switch (error.code) {
+    case 'invalid_field_count':
+      return 'Plan reminder cron expression must have exactly 5 fields';
+    case 'unsupported_syntax':
+      return 'Plan reminder cron fields support only numbers, *, ranges, lists, and steps';
+    case 'empty_list_item':
+      return 'Plan reminder cron field contains an empty list item';
+    case 'invalid_step':
+      return 'Plan reminder cron field has an invalid step';
+    case 'invalid_range':
+      return 'Plan reminder cron field has an invalid range';
+    case 'reversed_range':
+      return 'Plan reminder cron range start must be before its end';
+    case 'invalid_integer':
+      return 'Plan reminder cron field values must be integers';
+    case 'out_of_range':
+      return `Plan reminder cron field value must be between ${error.min} and ${error.max}`;
+    case 'empty_field':
+      return 'Plan reminder cron field cannot be empty';
+    case 'unsatisfiable':
+      return 'Plan reminder cron expression has no run within one year';
   }
-  const minute = parseCronField(parts[0] ?? '', 0, 59, false);
-  if (!minute.ok) return minute;
-  const hour = parseCronField(parts[1] ?? '', 0, 23, false);
-  if (!hour.ok) return hour;
-  const dayOfMonth = parseCronField(parts[2] ?? '', 1, 31, false);
-  if (!dayOfMonth.ok) return dayOfMonth;
-  const month = parseCronField(parts[3] ?? '', 1, 12, false);
-  if (!month.ok) return month;
-  const dayOfWeek = parseCronField(parts[4] ?? '', 0, 7, true);
-  if (!dayOfWeek.ok) return dayOfWeek;
-  return {
-    ok: true,
-    value: {
-      minute: minute.value,
-      hour: hour.value,
-      dayOfMonth: dayOfMonth.value,
-      month: month.value,
-      dayOfWeek: dayOfWeek.value,
-    },
-  };
-}
-
-function parseCronField(
-  input: string,
-  min: number,
-  max: number,
-  normalizeSevenToZero: boolean,
-): PlanReminderNormalizeResult<ParsedCronField> {
-  if (!/^[\d*,/\-]+$/.test(input)) {
-    return invalid(
-      'invalid_cron',
-      'Plan reminder cron fields support only numbers, *, ranges, lists, and steps',
-    );
-  }
-  const values = new Set<number>();
-  let wildcard = false;
-  for (const rawPart of input.split(',')) {
-    if (!rawPart)
-      return invalid('invalid_cron', 'Plan reminder cron field contains an empty list item');
-    const stepSplit = rawPart.split('/');
-    if (stepSplit.length > 2)
-      return invalid('invalid_cron', 'Plan reminder cron field has an invalid step');
-    const base = stepSplit[0] ?? '';
-    const step =
-      stepSplit[1] === undefined
-        ? { ok: true as const, value: 1 }
-        : parseCronInteger(stepSplit[1], 1, max - min + 1);
-    if (!step.ok) return step;
-    let start: number;
-    let end: number;
-    if (base === '*') {
-      wildcard = true;
-      start = min;
-      end = max;
-    } else if (base.includes('-')) {
-      const range = base.split('-');
-      if (range.length !== 2)
-        return invalid('invalid_cron', 'Plan reminder cron field has an invalid range');
-      const parsedStart = parseCronInteger(range[0] ?? '', min, max);
-      if (!parsedStart.ok) return parsedStart;
-      const parsedEnd = parseCronInteger(range[1] ?? '', min, max);
-      if (!parsedEnd.ok) return parsedEnd;
-      start = parsedStart.value;
-      end = parsedEnd.value;
-      if (start > end)
-        return invalid('invalid_cron', 'Plan reminder cron range start must be before its end');
-    } else {
-      const parsed = parseCronInteger(base, min, max);
-      if (!parsed.ok) return parsed;
-      start = parsed.value;
-      end = parsed.value;
-    }
-    for (let value = start; value <= end; value += step.value) {
-      values.add(normalizeSevenToZero && value === 7 ? 0 : value);
-    }
-  }
-  if (values.size === 0) return invalid('invalid_cron', 'Plan reminder cron field cannot be empty');
-  return { ok: true, value: { wildcard, values } };
-}
-
-function parseCronInteger(
-  input: string,
-  min: number,
-  max: number,
-): PlanReminderNormalizeResult<number> {
-  if (!/^\d+$/.test(input)) {
-    return invalid('invalid_cron', 'Plan reminder cron field values must be integers');
-  }
-  const value = Number(input);
-  if (!Number.isSafeInteger(value) || value < min || value > max) {
-    return invalid(
-      'invalid_cron',
-      `Plan reminder cron field value must be between ${min} and ${max}`,
-    );
-  }
-  return { ok: true, value };
-}
-
-function cronExpressionMatches(expression: ParsedCronExpression, date: Date): boolean {
-  if (!expression.minute.values.has(date.getMinutes())) return false;
-  if (!expression.hour.values.has(date.getHours())) return false;
-  if (!expression.month.values.has(date.getMonth() + 1)) return false;
-  const dayOfMonthMatches = expression.dayOfMonth.values.has(date.getDate());
-  const dayOfWeekMatches = expression.dayOfWeek.values.has(date.getDay());
-  if (!expression.dayOfMonth.wildcard && !expression.dayOfWeek.wildcard) {
-    return dayOfMonthMatches || dayOfWeekMatches;
-  }
-  return dayOfMonthMatches && dayOfWeekMatches;
 }
 
 function isBotProvider(value: unknown): value is BotProvider {
