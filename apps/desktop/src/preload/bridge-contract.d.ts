@@ -204,7 +204,7 @@ export type AppUpdateStatus =
   | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
 
 export type AppUpdateInstallRequest = {
-  allowInterruptActiveTasks: boolean;
+  maxInterruptibleActiveTasks: number;
 };
 
 export type AppUpdateInstallResult =

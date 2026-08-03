@@ -19,7 +19,7 @@ describe('requestDownloadedAppUpdate', () => {
       },
     });
 
-    assert.deepEqual(requests, [{ allowInterruptActiveTasks: false }]);
+    assert.deepEqual(requests, [{ maxInterruptibleActiveTasks: 0 }]);
     assert.deepEqual(outcome, { kind: 'install-started' });
   });
 
@@ -38,7 +38,7 @@ describe('requestDownloadedAppUpdate', () => {
     });
 
     assert.equal(confirmedCount, 2);
-    assert.deepEqual(requests, [{ allowInterruptActiveTasks: false }]);
+    assert.deepEqual(requests, [{ maxInterruptibleActiveTasks: 0 }]);
     assert.deepEqual(outcome, { kind: 'cancelled' });
   });
 
@@ -57,8 +57,8 @@ describe('requestDownloadedAppUpdate', () => {
     });
 
     assert.deepEqual(requests, [
-      { allowInterruptActiveTasks: false },
-      { allowInterruptActiveTasks: true },
+      { maxInterruptibleActiveTasks: 0 },
+      { maxInterruptibleActiveTasks: 1 },
     ]);
     assert.deepEqual(outcome, { kind: 'install-started' });
   });
@@ -74,5 +74,33 @@ describe('requestDownloadedAppUpdate', () => {
     });
 
     assert.deepEqual(outcome, { kind: 'failed', reason: 'install_failed' });
+  });
+
+  test('asks again instead of expanding authority when more tasks start', async () => {
+    const requests: AppUpdateInstallRequest[] = [];
+    const confirmedCounts: number[] = [];
+    const results: AppUpdateInstallResult[] = [
+      { ok: false, reason: 'active_tasks', activeTaskCount: 1 },
+      { ok: false, reason: 'active_tasks', activeTaskCount: 3 },
+      { ok: true },
+    ];
+    const outcome = await requestDownloadedAppUpdate({
+      installUpdate: async (request) => {
+        requests.push(request);
+        return results.shift()!;
+      },
+      confirmActiveTasks: async (count) => {
+        confirmedCounts.push(count);
+        return true;
+      },
+    });
+
+    assert.deepEqual(confirmedCounts, [1, 3]);
+    assert.deepEqual(requests, [
+      { maxInterruptibleActiveTasks: 0 },
+      { maxInterruptibleActiveTasks: 1 },
+      { maxInterruptibleActiveTasks: 3 },
+    ]);
+    assert.deepEqual(outcome, { kind: 'install-started' });
   });
 });

@@ -216,20 +216,27 @@ describe('AppUpdateService', () => {
     });
 
     assert.deepEqual(
-      await service.installUpdate({ allowInterruptActiveTasks: false }),
+      await service.installUpdate({ maxInterruptibleActiveTasks: 0 }),
       { ok: false, reason: 'active_tasks', activeTaskCount: 2 },
     );
     assert.equal(updater.quitAndInstallCalls, 0);
 
+    activeTaskCount = 3;
     assert.deepEqual(
-      await service.installUpdate({ allowInterruptActiveTasks: true }),
+      await service.installUpdate({ maxInterruptibleActiveTasks: 2 }),
+      { ok: false, reason: 'active_tasks', activeTaskCount: 3 },
+    );
+    assert.equal(updater.quitAndInstallCalls, 0);
+
+    assert.deepEqual(
+      await service.installUpdate({ maxInterruptibleActiveTasks: 3 }),
       { ok: true },
     );
     assert.equal(updater.quitAndInstallCalls, 1);
 
     activeTaskCount = 0;
     assert.deepEqual(
-      await service.installUpdate({ allowInterruptActiveTasks: false }),
+      await service.installUpdate({ maxInterruptibleActiveTasks: 0 }),
       { ok: true },
     );
     assert.equal(updater.quitAndInstallCalls, 2);
@@ -251,13 +258,13 @@ describe('AppUpdateService', () => {
     for (const invalid of [Number.NaN, -1, 1.5]) {
       snapshot = invalid;
       assert.deepEqual(
-        await service.installUpdate({ allowInterruptActiveTasks: false }),
+        await service.installUpdate({ maxInterruptibleActiveTasks: 0 }),
         { ok: false, reason: 'install_failed' },
       );
     }
     snapshot = new Error('snapshot unavailable');
     assert.deepEqual(
-      await service.installUpdate({ allowInterruptActiveTasks: false }),
+      await service.installUpdate({ maxInterruptibleActiveTasks: 0 }),
       { ok: false, reason: 'install_failed' },
     );
     assert.equal(updater.quitAndInstallCalls, 0);

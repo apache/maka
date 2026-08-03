@@ -138,6 +138,8 @@ export function registerAppIpc(deps: AppIpcDeps): void {
 function isAppUpdateInstallRequest(input: unknown): input is AppUpdateInstallRequest {
   return typeof input === 'object' &&
     input !== null &&
-    'allowInterruptActiveTasks' in input &&
-    typeof input.allowInterruptActiveTasks === 'boolean';
+    'maxInterruptibleActiveTasks' in input &&
+    typeof input.maxInterruptibleActiveTasks === 'number' &&
+    Number.isSafeInteger(input.maxInterruptibleActiveTasks) &&
+    input.maxInterruptibleActiveTasks >= 0;
 }

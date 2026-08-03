@@ -37,7 +37,7 @@ export type AppUpdateStatus =
   | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
 
 export type AppUpdateInstallRequest = {
-  allowInterruptActiveTasks: boolean;
+  maxInterruptibleActiveTasks: number;
 };
 
 export type AppUpdateInstallResult =
@@ -307,7 +307,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (!Number.isSafeInteger(activeTaskCount) || activeTaskCount < 0) {
       return { ok: false, reason: 'install_failed' };
     }
-    if (activeTaskCount > 0 && !input.allowInterruptActiveTasks) {
+    if (activeTaskCount > input.maxInterruptibleActiveTasks) {
       return { ok: false, reason: 'active_tasks', activeTaskCount };
     }
     if (deps.mockLatestVersion) {

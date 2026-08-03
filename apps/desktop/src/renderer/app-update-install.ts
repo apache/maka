@@ -12,17 +12,17 @@ export async function requestDownloadedAppUpdate(input: {
   installUpdate(request: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
   confirmActiveTasks(activeTaskCount: number): Promise<boolean>;
 }): Promise<AppUpdateInstallOutcome> {
-  const initial = await input.installUpdate({ allowInterruptActiveTasks: false });
-  if (initial.ok) return { kind: 'install-started' };
-  if (initial.reason !== 'active_tasks') return { kind: 'failed', reason: initial.reason };
+  let maxInterruptibleActiveTasks = 0;
+  for (;;) {
+    const result = await input.installUpdate({ maxInterruptibleActiveTasks });
+    if (result.ok) return { kind: 'install-started' };
+    if (result.reason !== 'active_tasks') return { kind: 'failed', reason: result.reason };
+    if (result.activeTaskCount <= maxInterruptibleActiveTasks) {
+      return { kind: 'failed', reason: 'install_failed' };
+    }
 
-  const confirmed = await input.confirmActiveTasks(initial.activeTaskCount);
-  if (!confirmed) return { kind: 'cancelled' };
-
-  const authorized = await input.installUpdate({ allowInterruptActiveTasks: true });
-  if (authorized.ok) return { kind: 'install-started' };
-  return {
-    kind: 'failed',
-    reason: authorized.reason === 'active_tasks' ? 'install_failed' : authorized.reason,
-  };
+    const confirmed = await input.confirmActiveTasks(result.activeTaskCount);
+    if (!confirmed) return { kind: 'cancelled' };
+    maxInterruptibleActiveTasks = result.activeTaskCount;
+  }
 }
