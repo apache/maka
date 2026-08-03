@@ -34,6 +34,7 @@ const allowedAuthorityExternalImports = new Set([
   'node:path',
 ]);
 const allowedSessionBundleCodecExternalImports = new Set([
+  'fs-native-extensions',
   'node:buffer',
   'node:crypto',
   'node:fs',

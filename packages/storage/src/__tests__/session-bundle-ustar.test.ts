@@ -48,7 +48,19 @@ test('uses the rightmost representable USTAR prefix split', () => {
 });
 
 test('rejects noncanonical metadata and unrepresentable paths', () => {
-  for (const path of ['/absolute', '../outside', 'state//file', 'C:/drive']) {
+  for (const path of [
+    '/absolute',
+    '../outside',
+    'state//file',
+    'C:/drive',
+    'workspace/file:stream',
+    'workspace/CON',
+    'workspace/con.txt',
+    'workspace/LPT9.log',
+    'workspace/trailing.',
+    'workspace/trailing ',
+    'workspace/question?',
+  ]) {
     assertBundleError(
       () => encodeSessionBundleUstarHeaderV1({ kind: 'file', path, mode: 0o644, size: 0 }),
       'unsafe_path',

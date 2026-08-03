@@ -74,8 +74,9 @@ test('packs deterministically, inspects completely, and atomically hydrates', as
   );
   assert.equal(
     first.archiveDigest,
-    'sha256:5d4d93d96a0906827a6296a1bd9f87f7189be829052796cd0a8a4cb35262fb52',
+    'sha256:c7c9efbe9fc8a1c84f22ec016985457d82070001c4579d5cecb1304459fed5e1',
   );
+  assert.equal(firstBytes.lastIndexOf(Buffer.from('28b52ffd', 'hex')), 0);
 
   const inspected = await service.inspect({
     source: { path: firstPath, expectedArchiveDigest: first.archiveDigest },
@@ -139,6 +140,44 @@ test('an independent process verifies and hydrates the same archive contract', a
     destinationRoot,
   });
   assert.equal(await readFile(join(destinationRoot, 'state', 'session.bin'), 'utf8'), 'state');
+  assert.equal(
+    await readFile(join(destinationRoot, 'workspace', 'run.sh'), 'utf8'),
+    '#!/bin/sh\necho ok\n',
+  );
+});
+
+test('concurrent publications never overwrite an existing destination', async () => {
+  const fixture = await createFixture();
+  const archivePath = join(fixture.root, 'concurrent.tar.zst');
+  const packResults = await Promise.allSettled(
+    Array.from({ length: 8 }, () => packFixture(archivePath, fixture)),
+  );
+  assert.equal(packResults.filter((result) => result.status === 'fulfilled').length, 1);
+  for (const result of packResults) {
+    if (result.status === 'rejected') assertBundleErrorValue(result.reason, 'destination_exists');
+  }
+
+  const artifact = packResults.find(
+    (result): result is PromiseFulfilledResult<SessionBundleArtifact> =>
+      result.status === 'fulfilled',
+  )?.value;
+  assert.ok(artifact);
+  const destinationRoot = join(fixture.root, 'concurrent-hydration');
+  const service = createSessionBundleFileService();
+  const hydrateInput = {
+    source: { path: archivePath, expectedArchiveDigest: artifact.archiveDigest },
+    limits,
+    expectedSessionId: 'cloud-session-1',
+    destinationRoot,
+  } as const;
+  const hydrateResults = await Promise.allSettled([
+    service.hydrate(hydrateInput),
+    service.hydrate(hydrateInput),
+  ]);
+  assert.equal(hydrateResults.filter((result) => result.status === 'fulfilled').length, 1);
+  for (const result of hydrateResults) {
+    if (result.status === 'rejected') assertBundleErrorValue(result.reason, 'destination_exists');
+  }
   assert.equal(
     await readFile(join(destinationRoot, 'workspace', 'run.sh'), 'utf8'),
     '#!/bin/sh\necho ok\n',
@@ -244,6 +283,25 @@ test('rejects corrupted manifest, descriptor, tree digest, and Zstandard stream'
   await writeFile(noncanonicalZstandardPath, zstdCompressSync(originalTar));
   await assertBundleRejects(
     service.inspect({ source: { path: noncanonicalZstandardPath }, limits }),
+    'integrity_mismatch',
+  );
+
+  const oversizedWindowPath = join(fixture.root, 'oversized-window-zstd.tar.zst');
+  const oversizedWindow = Buffer.from(archiveBytes);
+  assert.equal(oversizedWindow[5], 0x58);
+  oversizedWindow[5] = 0x60;
+  await writeFile(oversizedWindowPath, oversizedWindow);
+  await assertBundleRejects(
+    service.inspect({ source: { path: oversizedWindowPath }, limits }),
+    'integrity_mismatch',
+  );
+
+  const emptyFrame = compressTar(Buffer.alloc(0));
+  assert.equal(zstdDecompressSync(emptyFrame).byteLength, 0);
+  const multipleFramesPath = join(fixture.root, 'multiple-frames-zstd.tar.zst');
+  await writeFile(multipleFramesPath, Buffer.concat([archiveBytes, emptyFrame]));
+  await assertBundleRejects(
+    service.inspect({ source: { path: multipleFramesPath }, limits }),
     'integrity_mismatch',
   );
 });
@@ -524,15 +582,19 @@ function rewriteChecksum(header: Buffer): void {
 }
 
 function compressTar(tar: Uint8Array): Buffer {
-  return zstdCompressSync(tar, {
+  const compressed = zstdCompressSync(tar, {
     params: {
       [zlibConstants.ZSTD_c_compressionLevel]: 3,
       [zlibConstants.ZSTD_c_checksumFlag]: 1,
       [zlibConstants.ZSTD_c_contentSizeFlag]: 0,
       [zlibConstants.ZSTD_c_dictIDFlag]: 0,
       [zlibConstants.ZSTD_c_nbWorkers]: 0,
+      [zlibConstants.ZSTD_c_windowLog]: 21,
     },
   });
+  // One-shot compression shrinks the descriptor to the known input size; V1 pins 2 MiB.
+  compressed[5] = 0x58;
+  return compressed;
 }
 
 async function assertMutatedTarRejected(
@@ -556,4 +618,9 @@ async function assertBundleRejects(
     assert.equal(error.code, code);
     return true;
   });
+}
+
+function assertBundleErrorValue(error: unknown, code: SessionBundleFileError['code']): void {
+  assert.ok(error instanceof SessionBundleFileError);
+  assert.equal(error.code, code);
 }

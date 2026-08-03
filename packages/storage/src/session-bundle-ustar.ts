@@ -8,6 +8,9 @@ const USTAR_PREFIX_BYTES = 155;
 const USTAR_SIZE_MAX = 0o77_777_777_777;
 const ASCII_ZERO = '0'.charCodeAt(0);
 const ASCII_SPACE = ' '.charCodeAt(0);
+const WINDOWS_FORBIDDEN_PATH_CHARACTERS = /[\u0000-\u001f<>:"|?*]/u;
+const WINDOWS_RESERVED_PATH_SEGMENT =
+  /^(?:con|prn|aux|nul|conin\$|conout\$|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])(?:\..*)?$/iu;
 
 export interface SessionBundleUstarHeader {
   kind: 'directory' | 'file';
@@ -120,11 +123,19 @@ function splitUstarPath(path: string): { name: string; prefix: string } {
     throw unsafePath('Session bundle path is not valid for USTAR');
   }
   const logicalPath = path.endsWith('/') ? path.slice(0, -1) : path;
+  const segments = logicalPath.split('/');
   if (
     logicalPath.length === 0 ||
-    logicalPath
-      .split('/')
-      .some((segment) => segment.length === 0 || segment === '.' || segment === '..')
+    segments.some(
+      (segment) =>
+        segment.length === 0 ||
+        segment === '.' ||
+        segment === '..' ||
+        WINDOWS_FORBIDDEN_PATH_CHARACTERS.test(segment) ||
+        segment.endsWith('.') ||
+        segment.endsWith(' ') ||
+        WINDOWS_RESERVED_PATH_SEGMENT.test(segment),
+    )
   ) {
     throw unsafePath('Session bundle path is not valid for USTAR');
   }

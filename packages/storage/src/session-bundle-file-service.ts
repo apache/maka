@@ -3,6 +3,7 @@ import { createHash, randomUUID, type Hash } from 'node:crypto';
 import { constants as fsConstants, type BigIntStats } from 'node:fs';
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -17,6 +18,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { PassThrough, Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { constants as zlibConstants, createZstdCompress, createZstdDecompress } from 'node:zlib';
+import { unlock, waitForLock } from 'fs-native-extensions';
 import {
   compareSessionBundleCanonicalPaths,
   computeSessionBundleCanonicalTreeDigest,
@@ -72,7 +74,12 @@ const ZERO_BLOCK = Buffer.alloc(SESSION_BUNDLE_USTAR_BLOCK_BYTES);
 const ARCHIVE_TERMINATOR = Buffer.alloc(SESSION_BUNDLE_USTAR_BLOCK_BYTES * 2);
 const HYDRATION_STAGING_MARKER = '.maka-session-bundle-staging-';
 const PACK_TEMP_MARKER = '.maka-session-bundle-pack-';
+const PUBLICATION_LOCK_MARKER = '.maka-session-bundle-publish-';
 const PACK_FILE_CHUNK_BYTES = 64 * 1024;
+const SESSION_BUNDLE_ZSTD_WINDOW_LOG = 21;
+const SESSION_BUNDLE_ZSTD_WINDOW_DESCRIPTOR = 0x58;
+const NODE_ZSTD_TRAILING_EMPTY_FRAME = Buffer.from('28b52ffd040001000099e9d851', 'hex');
+const publicationLockGates = new Map<string, Promise<void>>();
 
 interface FileFingerprint {
   dev: bigint;
@@ -175,18 +182,22 @@ export class NodeSessionBundleFileService implements SessionBundleFileService {
         stagingRoot,
       });
 
-      await assertDestinationMissing(validated.destinationRoot, 'hydrate');
-      const currentStaging = await lstat(stagingRoot, { bigint: true });
-      if (
-        !currentStaging.isDirectory() ||
-        !sameFilesystemNode(stagingFingerprint, fingerprint(currentStaging))
-      ) {
-        throw new SessionBundleFileError(
-          'source_changed',
-          'Session bundle hydration staging root changed before publication',
-        );
-      }
-      await rename(stagingRoot, validated.destinationRoot);
+      const publicationStagingRoot = stagingRoot;
+      const publicationStagingFingerprint = stagingFingerprint;
+      await withDestinationPublicationLock(validated.destinationRoot, 'hydrate', async () => {
+        await assertDestinationMissing(validated.destinationRoot, 'hydrate');
+        const currentStaging = await lstat(publicationStagingRoot, { bigint: true });
+        if (
+          !currentStaging.isDirectory() ||
+          !sameFilesystemNode(publicationStagingFingerprint, fingerprint(currentStaging))
+        ) {
+          throw new SessionBundleFileError(
+            'source_changed',
+            'Session bundle hydration staging root changed before publication',
+          );
+        }
+        await rename(publicationStagingRoot, validated.destinationRoot);
+      });
       published = true;
       return {
         ...inspectionFromReadResult(result),
@@ -294,7 +305,6 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
     `.${basename(validated.destination)}${PACK_TEMP_MARKER}${randomUUID()}.tmp`,
   );
   let handle: FileHandle | undefined;
-  let published = false;
   const archiveHash = createHash('sha256');
   const compressedMeter = new HashingQuotaTransform(
     archiveHash,
@@ -313,7 +323,13 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
         generatedTarBytes += bytes;
       }),
     );
-    await pipeline(tar, createSessionBundleZstdCompressor(), compressedMeter, output);
+    await pipeline(
+      tar,
+      createSessionBundleZstdCompressor(),
+      new CanonicalZstdOutputTransform(),
+      compressedMeter,
+      output,
+    );
     if (generatedTarBytes !== decompressedTarBytes) {
       throw new SessionBundleFileError(
         'integrity_mismatch',
@@ -326,9 +342,7 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
     output = undefined;
     await handle.close();
     handle = undefined;
-    await assertDestinationMissing(validated.destination, 'pack');
-    await rename(temporaryPath, validated.destination);
-    published = true;
+    await publishPackFileNoReplace(temporaryPath, validated.destination);
     return {
       path: validated.destination,
       archiveDigest: `sha256:${archiveHash.digest('hex')}` as Sha256Digest,
@@ -340,7 +354,7 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
   } finally {
     output?.destroy();
     await handle?.close().catch(() => {});
-    if (!published) await removeOwnedPackTemporary(temporaryPath, parent).catch(() => {});
+    await removeOwnedPackTemporary(temporaryPath, parent).catch(() => {});
   }
 }
 
@@ -607,7 +621,11 @@ async function readAndValidateSessionBundle(input: {
     assertQuota(input.operation, input.limits, 'maxCompressedBytes', sourceBytes);
 
     source = handle.createReadStream({ autoClose: false, emitClose: false });
-    const decompressor = createZstdDecompress();
+    const decompressor = createZstdDecompress({
+      params: {
+        [zlibConstants.ZSTD_d_windowLogMax]: SESSION_BUNDLE_ZSTD_WINDOW_LOG,
+      },
+    });
     pump = pipeline(
       source,
       compressedMeter,
@@ -1031,6 +1049,34 @@ class HashingQuotaTransform extends CountingQuotaTransform {
   }
 }
 
+/** Remove the empty frame Node's streaming compressor appends after multi-chunk input. */
+class CanonicalZstdOutputTransform extends Transform {
+  #tail = Buffer.alloc(0);
+
+  override _transform(
+    value: Buffer | Uint8Array,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null, data?: Buffer) => void,
+  ): void {
+    const combined = Buffer.concat([this.#tail, Buffer.from(value)]);
+    if (combined.byteLength <= NODE_ZSTD_TRAILING_EMPTY_FRAME.byteLength) {
+      this.#tail = combined;
+      callback();
+      return;
+    }
+    const retainedBytes = NODE_ZSTD_TRAILING_EMPTY_FRAME.byteLength;
+    const emittedBytes = combined.byteLength - retainedBytes;
+    this.#tail = combined.subarray(emittedBytes);
+    callback(null, combined.subarray(0, emittedBytes));
+  }
+
+  override _flush(callback: (error?: Error | null) => void): void {
+    if (!this.#tail.equals(NODE_ZSTD_TRAILING_EMPTY_FRAME)) this.push(this.#tail);
+    this.#tail = Buffer.alloc(0);
+    callback();
+  }
+}
+
 type ZstdFramePhase = 'block-header' | 'block-payload' | 'checksum' | 'frame-header';
 
 /**
@@ -1060,7 +1106,7 @@ class CanonicalZstdFrameTransform extends Transform {
   }
 
   override _flush(callback: (error?: Error | null) => void): void {
-    if (this.#phase !== 'frame-header' || this.#buffer.byteLength !== 0 || this.#frameCount === 0) {
+    if (this.#phase !== 'frame-header' || this.#buffer.byteLength !== 0 || this.#frameCount !== 1) {
       callback(
         new SessionBundleFileError(
           'integrity_mismatch',
@@ -1075,8 +1121,18 @@ class CanonicalZstdFrameTransform extends Transform {
   #consumeAvailableBytes(): void {
     while (true) {
       if (this.#phase === 'frame-header') {
+        if (this.#frameCount !== 0 && this.#buffer.byteLength !== 0) {
+          throw new SessionBundleFileError(
+            'integrity_mismatch',
+            'Session bundle must contain exactly one canonical Zstandard frame',
+          );
+        }
         if (this.#buffer.byteLength < 6) return;
-        if (this.#buffer.readUInt32LE(0) !== 0xfd2fb528 || this.#buffer[4] !== 0x04) {
+        if (
+          this.#buffer.readUInt32LE(0) !== 0xfd2fb528 ||
+          this.#buffer[4] !== 0x04 ||
+          this.#buffer[5] !== SESSION_BUNDLE_ZSTD_WINDOW_DESCRIPTOR
+        ) {
           throw new SessionBundleFileError(
             'integrity_mismatch',
             'Session bundle Zstandard frame settings are not canonical',
@@ -1137,6 +1193,7 @@ function createSessionBundleZstdCompressor(): Transform {
       [zlibConstants.ZSTD_c_contentSizeFlag]: 0,
       [zlibConstants.ZSTD_c_dictIDFlag]: 0,
       [zlibConstants.ZSTD_c_nbWorkers]: 0,
+      [zlibConstants.ZSTD_c_windowLog]: SESSION_BUNDLE_ZSTD_WINDOW_LOG,
     },
   });
 }
@@ -1350,11 +1407,90 @@ async function assertDestinationMissing(
     if (isErrno(error, 'ENOENT')) return;
     throw error;
   }
-  throw new SessionBundleFileError(
-    'destination_exists',
-    'Session bundle destination already exists',
-    { details: { operation } },
+  throw destinationExists(operation);
+}
+
+async function publishPackFileNoReplace(temporaryPath: string, destination: string): Promise<void> {
+  try {
+    // Both paths are siblings, so a hard link is an atomic no-replace publication.
+    await link(temporaryPath, destination);
+  } catch (error) {
+    if (isErrno(error, 'EEXIST')) throw destinationExists('pack');
+    throw error;
+  }
+}
+
+async function withDestinationPublicationLock<T>(
+  destination: string,
+  operation: 'hydrate',
+  action: () => Promise<T>,
+): Promise<T> {
+  const lockPath = join(
+    dirname(destination),
+    `${PUBLICATION_LOCK_MARKER}${createHash('sha256')
+      .update(basename(destination).normalize('NFC').toLocaleLowerCase('en-US'))
+      .digest('hex')}.lock`,
   );
+  return runWithPublicationLockGate(lockPath, async () => {
+    const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
+    const handle = await open(lockPath, fsConstants.O_CREAT | fsConstants.O_RDWR | noFollow, 0o600);
+    let acquired = false;
+    try {
+      if (process.platform !== 'win32') await handle.chmod(0o600);
+      await assertStablePublicationLock(handle, lockPath, operation);
+      await waitForLock(handle.fd);
+      acquired = true;
+      await assertStablePublicationLock(handle, lockPath, operation);
+      return await action();
+    } finally {
+      if (acquired) {
+        try {
+          unlock(handle.fd);
+        } catch {
+          // Closing the handle is the final OS-level release path.
+        }
+      }
+      await handle.close().catch(() => {});
+    }
+  });
+}
+
+async function runWithPublicationLockGate<T>(
+  lockPath: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const previous = publicationLockGates.get(lockPath);
+  let release!: () => void;
+  const current = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  publicationLockGates.set(lockPath, current);
+  await previous?.catch(() => {});
+  try {
+    return await action();
+  } finally {
+    release();
+    if (publicationLockGates.get(lockPath) === current) publicationLockGates.delete(lockPath);
+  }
+}
+
+async function assertStablePublicationLock(
+  handle: FileHandle,
+  lockPath: string,
+  operation: 'hydrate',
+): Promise<void> {
+  const [handleMetadata, pathMetadata] = await Promise.all([
+    handle.stat({ bigint: true }),
+    lstat(lockPath, { bigint: true }),
+  ]);
+  if (
+    !handleMetadata.isFile() ||
+    !pathMetadata.isFile() ||
+    handleMetadata.dev !== pathMetadata.dev ||
+    handleMetadata.ino !== pathMetadata.ino
+  ) {
+    throw ioError(operation);
+  }
 }
 
 async function openPackSourceFile(path: string): Promise<FileHandle> {
@@ -1491,6 +1627,14 @@ function sourceChanged(): SessionBundleFileError {
   return new SessionBundleFileError(
     'source_changed',
     'Session bundle source changed while it was being consumed',
+  );
+}
+
+function destinationExists(operation: 'pack' | 'hydrate'): SessionBundleFileError {
+  return new SessionBundleFileError(
+    'destination_exists',
+    'Session bundle destination already exists',
+    { details: { operation } },
   );
 }
 
