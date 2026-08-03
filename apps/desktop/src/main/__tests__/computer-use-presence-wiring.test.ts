@@ -16,10 +16,14 @@
  * the calls.
  */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, it, test } from 'node:test';
 import type { SessionEvent } from '@maka/core';
+import { createComputerUseHost } from '../computer-use-host.js';
 import { createSessionStreamer } from '../session-stream.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
@@ -289,4 +293,98 @@ describe('Computer Use presence is reachable from production', () => {
       }
     }
   });
+});
+
+/**
+ * The probe above pins the top of the wire — tool assembly hands
+ * `createComputerUseHost` a `screenLocked` — and the runtime's screen-lock
+ * suite pins the bottom — `buildComputerUseTools` refuses when its
+ * `screenLocked` says so. Neither touches the two forwarding hops in between:
+ * `computer-use-host.ts` handing it to `selectComputerUseBackend`, and
+ * `select-backend.ts` handing it to `buildComputerUseTools`. Delete both and
+ * every suite in the repo stays green with the guard dead in production, which
+ * is the same shape of defect the rest of this file exists to catch.
+ *
+ * So this drives the real chain rather than reading it: a real
+ * `createComputerUseHost` over a temp manifest and a stand-in binary, whose
+ * tool must refuse. Nothing is stubbed between the two ends — a dropped hop
+ * anywhere along it turns the refusal into a dispatch.
+ *
+ * `selectComputerUseBackend` is darwin-only and CI is Linux, so the platform is
+ * forced rather than skipped; skipping would make this vacuous exactly where it
+ * is most needed. Nothing spawns: the lock refusal happens in the tool layer
+ * before the backend is ever asked for anything.
+ */
+test('a lock reaches the tool layer through the real host and backend selection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'maka-cu-lock-wire-'));
+  const binaryPath = join(dir, 'cua-driver');
+  writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n');
+  chmodSync(binaryPath, 0o755);
+  const manifestPath = join(dir, 'bundled-tools.json');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      cuaDriver: {
+        binarySha256: createHash('sha256').update(readFileSync(binaryPath)).digest('hex'),
+        distributionReady: true,
+      },
+    }),
+  );
+
+  const realPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+  try {
+    const locked: string[] = [];
+    const host = createComputerUseHost({
+      isPackaged: false,
+      resourcesPath: dir,
+      manifestPath,
+      binaryPath,
+      physicalInputRecentlyActive: () => false,
+      screenLocked: ({ sessionId }) => {
+        locked.push(sessionId);
+        return true;
+      },
+    });
+
+    const tools = host.selected.tools;
+    assert.ok(tools, 'the fixture must select a backend, or this asserts nothing');
+    const [tool] = tools;
+    // A dropped hop does not return a wrong answer, it dispatches: the call
+    // goes past the missing guard and tries to drive the machine, and the
+    // stand-in binary fails somewhere inside the driver. Name that here rather
+    // than leaving a lifecycle stack trace as the only evidence.
+    let result: { text: string; error?: string };
+    try {
+      result = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, {
+        sessionId: 'session-locked',
+        turnId: 'turn-1',
+        toolCallId: 'observe',
+        cwd: '/tmp',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      })) as { text: string; error?: string };
+    } catch (error) {
+      assert.fail(
+        'the call reached the driver instead of being refused, so the lock never got ' +
+          `to the tool layer: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    assert.equal(
+      result.error,
+      'screen_locked',
+      'the probe must be asked and its answer must refuse the call',
+    );
+    assert.deepEqual(
+      locked,
+      ['session-locked'],
+      'the probe must be consulted for the session that called, not a stand-in',
+    );
+
+    host.selected.backend?.dispose?.();
+  } finally {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
