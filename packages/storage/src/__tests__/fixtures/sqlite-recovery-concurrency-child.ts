@@ -1,4 +1,5 @@
 import { existsSync, writeSync } from 'node:fs';
+import { dirname } from 'node:path';
 import {
   createRuntimeBoundaryCursor,
   runtimePrefixSegment,
@@ -7,6 +8,7 @@ import {
   type WorkspaceBaselineAuthorityInput,
 } from '@maka/core';
 import { createSqliteRuntimeStore } from '../../sqlite-runtime-store.js';
+import { acquireOperationalStateDatabase } from '../../operational-state-store.js';
 import { commitWorkspaceBaselineInternal } from '../../workspace-version-authority-internal.js';
 
 const mode = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_MODE');
@@ -20,28 +22,33 @@ while (!existsSync(startPath)) {
 }
 
 let store: ReturnType<typeof createSqliteRuntimeStore> | undefined;
+let operationalLease: ReturnType<typeof acquireOperationalStateDatabase> | undefined;
 try {
-  store = createSqliteRuntimeStore(dbPath);
+  if (mode === 'operational_open_only') {
+    operationalLease = acquireOperationalStateDatabase(dirname(dbPath));
+  } else {
+    store = createSqliteRuntimeStore(dbPath);
+  }
   writeSync(1, 'OPENED\n');
-  if (mode === 'open_only') {
+  if (mode === 'open_only' || mode === 'operational_open_only') {
     if (!stopPath) throw new Error('Missing MAKA_SQLITE_RECOVERY_CONCURRENCY_STOP');
     while (!existsSync(stopPath)) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
     }
   } else if (mode === 'completed') {
-    await store.commitToolRecoveryBundle(completedBundle());
+    await store!.commitToolRecoveryBundle(completedBundle());
   } else if (mode === 'parked') {
-    await store.commitToolRecoveryBundle(parkedBundle());
+    await store!.commitToolRecoveryBundle(parkedBundle());
   } else if (mode === 'rebuild') {
-    await store.rebuildToolProjectionsFromRuntimeEvents();
+    await store!.rebuildToolProjectionsFromRuntimeEvents();
   } else if (mode === 'workspace_baseline_a' || mode === 'workspace_baseline_b') {
     const result = await commitWorkspaceBaselineInternal(
-      store,
+      store!,
       workspaceBaselineInput(mode === 'workspace_baseline_b' ? 'b' : 'a'),
     );
     writeSync(1, `BASELINE ${result.created ? 'created' : 'existing'}\n`);
   } else if (mode === 'append_source') {
-    await store.ensureTerminalRuntimeEventDurable('session-1', 'run-1', {
+    await store!.ensureTerminalRuntimeEventDurable('session-1', 'run-1', {
       ...baseEvent('concurrent-source-terminal', 3),
       status: 'failed',
       actions: {
@@ -51,7 +58,7 @@ try {
     });
     writeSync(1, 'APPEND committed\n');
   } else if (mode === 'append_target') {
-    await store.appendRuntimeEvent('session-1', 'fixed-target-run', {
+    await store!.appendRuntimeEvent('session-1', 'fixed-target-run', {
       id: `target-event-${process.pid}`,
       sessionId: 'session-1',
       invocationId: 'fixed-target-invocation',
@@ -66,7 +73,7 @@ try {
     writeSync(1, 'TARGET_APPEND committed\n');
   } else if (mode === 'claim' || mode === 'claim_fixed_target' || mode === 'claim_nonterminal') {
     const sourceRunId = mode === 'claim_nonterminal' ? 'run-1' : 'continuation-source-run';
-    const prefix = await store.readImmutableRuntimePrefix({
+    const prefix = await store!.readImmutableRuntimePrefix({
       sessionId: 'session-1',
       runId: sourceRunId,
       ...(mode === 'claim_nonterminal' ? { upToEventSeq: 2 } : {}),
@@ -87,7 +94,7 @@ try {
             runId: `run-${process.pid}`,
             turnId: `turn-${process.pid}`,
           };
-    const result = await store.claimContinuation({
+    const result = await store!.claimContinuation({
       claim: {
         protocol: 'continuation_claim_v1',
         claimId: `claim-${process.pid}`,
@@ -137,6 +144,7 @@ try {
   process.exitCode = 2;
 } finally {
   store?.close();
+  operationalLease?.close();
 }
 
 function completedBundle() {

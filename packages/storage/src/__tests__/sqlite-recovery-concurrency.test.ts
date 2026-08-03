@@ -162,6 +162,40 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
+  it('allows concurrent operational owners to initialize the same fresh WAL database', async () => {
+    for (let round = 0; round < 12; round += 1) {
+      const root = await mkdtemp(join(tmpdir(), 'maka-operational-fresh-open-race-'));
+      const dbPath = join(root, 'runtime.sqlite');
+      const startPath = join(root, 'start');
+      try {
+        const results = await runOpenWorkers(dbPath, startPath, 'operational_open_only');
+        assert.deepEqual(
+          results.map(({ code }) => code),
+          [0, 0],
+          `fresh concurrent operational open failed in round ${round + 1}: ${JSON.stringify(results)}`,
+        );
+
+        const database = new DatabaseSync(dbPath, { readOnly: true });
+        try {
+          assert.equal(
+            (database.prepare('PRAGMA journal_mode').get() as { journal_mode: string })
+              .journal_mode,
+            'wal',
+          );
+          assert.equal(
+            (database.prepare('PRAGMA user_version').get() as { user_version: number })
+              .user_version,
+            SQLITE_RUNTIME_SCHEMA_VERSION,
+          );
+        } finally {
+          database.close();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('makes an exact concurrent workspace baseline open idempotent', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const results = await runWorkers(dbPath, startPath, [
@@ -323,10 +357,14 @@ async function runWorkers(
   }
 }
 
-async function runOpenWorkers(dbPath: string, startPath: string): Promise<WorkerResult[]> {
+async function runOpenWorkers(
+  dbPath: string,
+  startPath: string,
+  mode = 'open_only',
+): Promise<WorkerResult[]> {
   const stopPath = `${startPath}.stop`;
-  const workers = ['open_only', 'open_only'].map((mode) =>
-    startWorker(dbPath, startPath, mode, stopPath),
+  const workers = [mode, mode].map((workerMode) =>
+    startWorker(dbPath, startPath, workerMode, stopPath),
   );
   try {
     await withTimeout(
