@@ -3791,6 +3791,17 @@ def written_payload(command, marker):
         payload = min((token for token in shlex.split(payload) if marker in token), key=len)
     return payload
 
+def redirect_target(command):
+    """Return the path a write command redirects into, peeling bash -lc wrappers."""
+    while True:
+        tokens = shlex.split(command)
+        if ">" in tokens:
+            return tokens[tokens.index(">") + 1]
+        nested = [token for token in tokens if ">" in token]
+        if not nested:
+            return None
+        command = max(nested, key=len)
+
 class RecordingEnvironment:
     def __init__(self):
         self.calls = []
@@ -3966,6 +3977,10 @@ with tempfile.TemporaryDirectory() as tmp:
     managed_command, _, managed_as_root = managed_calls[0]
     # Only the root-owned managed scope binds a session that cannot be overridden.
     assert managed_as_root is True, managed_calls
+    assert redirect_target(managed_command) == "/etc/claude-code/managed-settings.json", managed_command
+    # A swallowed failure would leave the tools enabled while install reports
+    # success; Harbor's exec raises on a non-zero exit, so keep that reachable.
+    assert "|| true" not in managed_command, managed_command
     assert json.loads(written_payload(managed_command, "permissions")) == {
         "permissions": {"deny": ["WebSearch", "WebFetch"]}
     }, managed_command
@@ -4005,6 +4020,17 @@ def written_payload(command, marker):
     while "printf" in payload:
         payload = min((token for token in shlex.split(payload) if marker in token), key=len)
     return payload
+
+def redirect_target(command):
+    """Return the path a write command redirects into, peeling bash -lc wrappers."""
+    while True:
+        tokens = shlex.split(command)
+        if ">" in tokens:
+            return tokens[tokens.index(">") + 1]
+        nested = [token for token in tokens if ">" in token]
+        if not nested:
+            return None
+        command = max(nested, key=len)
 
 module("harbor")
 module("harbor.agents")
@@ -4154,8 +4180,8 @@ with tempfile.TemporaryDirectory() as tmp:
     commands = []
 
     class Environment:
-        async def exec(self, command, env=None, **kwargs):
-            commands.append((command, env or {}))
+        async def exec(self, command, env=None, as_root=False, **kwargs):
+            commands.append((command, env or {}, as_root))
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
     context = types.SimpleNamespace(
@@ -4187,14 +4213,14 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     environment = Environment()
     asyncio.run(agent.install(environment))
-    install_command, install_env = commands[0]
+    install_command, install_env, _install_root = commands[0]
     assert "sha256sum --check" in install_command, install_command
     assert "/opt/maka-codex-toolchain/bin/codex" in install_command, install_command
     assert install_env["MAKA_EXPECTED_TOOLCHAIN_FINGERPRINT"] == "sha256:" + "a" * 64, install_env
     assert "ca-certificates" not in install_command, install_command
     assert "npm" not in install_command, install_command
     assert "curl" not in install_command, install_command
-    alias_commands = [command for command, _env in commands if "ln -sf" in command]
+    alias_commands = [command for command, _env, _root in commands if "ln -sf" in command]
     assert len(alias_commands) == 1, commands
     assert "/opt/maka-codex-toolchain/bin/node" not in alias_commands[0], alias_commands[0]
     assert "/usr/local/bin/node" not in alias_commands[0], alias_commands[0]
@@ -4203,7 +4229,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     asyncio.run(agent.run("hi", environment, context))
     http_provider_command = next(
-        command for command, _env in commands if "supports_websockets = false" in command
+        command for command, _env, _root in commands if "supports_websockets = false" in command
     )
     assert 'model_provider = "maka-http"' in http_provider_command, http_provider_command
     assert 'base_url = "http://host.docker.internal:43210"' in http_provider_command, http_provider_command
@@ -4214,13 +4240,19 @@ with tempfile.TemporaryDirectory() as tmp:
     written_config = tomllib.loads(written_payload(http_provider_command, "model_provider"))
     assert written_config["web_search"] == "disabled", written_config
     assert "web_search" not in written_config["model_providers"]["maka-http"], written_config
-    requirements_commands = [
-        command for command, _env in commands if "/etc/codex/requirements.toml" in command
+    requirements_calls = [
+        call for call in commands if "/etc/codex/requirements.toml" in call[0]
     ]
-    assert len(requirements_commands) == 1, commands
-    assert tomllib.loads(written_payload(requirements_commands[0], "allowed_web_search_modes")) == {
+    assert len(requirements_calls) == 1, commands
+    requirements_command, _requirements_env, requirements_as_root = requirements_calls[0]
+    # /etc is root-owned: writing this as the agent user fails silently enough to
+    # leave web search enabled, so the privilege is part of the contract.
+    assert requirements_as_root is True, requirements_calls
+    assert redirect_target(requirements_command) == "/etc/codex/requirements.toml", requirements_command
+    assert "|| true" not in requirements_command, requirements_command
+    assert tomllib.loads(written_payload(requirements_command, "allowed_web_search_modes")) == {
         "allowed_web_search_modes": ["disabled"]
-    }, requirements_commands
+    }, requirements_command
     deepseek_agent = MakaCodexAgent(
         logs,
         version="0.144.6",

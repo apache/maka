@@ -7,11 +7,13 @@ import { describe, test } from 'node:test';
 import { tokenSummary } from './helpers/cell-output-fixtures.js';
 import type { HarborCellExecutionIdentity, HarborCellOutput } from '../cell-output.js';
 import { FixedPromptBudgetExhaustedError, type TaskRunInput } from '../fixed-prompt-controller.js';
+import { CODEX_TOOLCHAIN_SPEC } from '../codex-toolchain.js';
 import {
   buildHarborJobConfig,
   createHarborOracleQualifier,
   createHarborTaskRunner,
   HarborInfraError,
+  MAKA_SETTLEMENT_GRACE_SEC,
   type HarborProcessRunner,
   type HarborRunRequest,
   type HarborRunResult,
@@ -2537,16 +2539,72 @@ describe('buildHarborJobConfig', () => {
     assert.equal(env.MAKA_BACKEND, 'ai-sdk');
   });
 
-  test('mirrors the cell timeout into Harbor agent timeout', () => {
+  test('every arm gets the same model budget and only Maka a settlement tail', () => {
+    // Maka's cell stops calling the model one grace window before its own budget
+    // runs out; native CLIs run until Harbor cancels. Taking the grace out of the
+    // budget would hand Maka less model time than its competitors for the same task.
+    const agentFor = (adapter: 'maka' | 'codex') => {
+      const config = buildHarborJobConfig(runInput(), {
+        makaRepoPath: '/repo',
+        jobsDir: '/jobs/x',
+        jobName: 'trial',
+        model: 'deepseek/deepseek-v4-flash',
+        agentEnv: { MAKA_CELL_TIMEOUT_SEC: '1800' },
+        ...(adapter === 'codex'
+          ? {
+              agent: adapter,
+              agentVersion: CODEX_TOOLCHAIN_SPEC.codex.version,
+              codexToolchainPath: '/toolchains/codex',
+            }
+          : {}),
+      });
+      return (
+        config.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
+      )[0]!;
+    };
+
+    // Pin the window as a real quantity: with a zero grace every assertion below
+    // would hold for an implementation that gives no arm any settlement tail.
+    assert.ok(MAKA_SETTLEMENT_GRACE_SEC > 0, 'the settlement window must be a real window');
+
+    const maka = agentFor('maka');
+    assert.equal(maka.max_timeout_sec, 1800 + MAKA_SETTLEMENT_GRACE_SEC);
+    assert.equal(maka.env.MAKA_CELL_TIMEOUT_SEC, String(1800 + MAKA_SETTLEMENT_GRACE_SEC));
+    assert.equal(maka.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, String(MAKA_SETTLEMENT_GRACE_SEC));
+    // Model time = cell budget - grace, which is the task-native budget itself.
+    assert.equal(
+      Number(maka.env.MAKA_CELL_TIMEOUT_SEC) - Number(maka.env.MAKA_CELL_SETTLEMENT_GRACE_SEC),
+      1800,
+    );
+
+    const codex = agentFor('codex');
+    assert.equal(codex.max_timeout_sec, 1800);
+    assert.equal(codex.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, undefined);
+    // The whole asymmetry: Maka's phase is longer by exactly the window it
+    // spends settling, and both arms still call the model for the same 1800s.
+    assert.equal(maka.max_timeout_sec! - codex.max_timeout_sec!, MAKA_SETTLEMENT_GRACE_SEC);
+  });
+
+  test('an operator-widened settlement window is honoured, not overwritten', () => {
+    // The grace is a default, not a constant: a run that needs a longer tail
+    // must keep it, and the budget must widen with it so model time is unchanged.
+    const widened = MAKA_SETTLEMENT_GRACE_SEC + 45;
     const config = buildHarborJobConfig(runInput(), {
       makaRepoPath: '/repo',
       jobsDir: '/jobs/x',
       jobName: 'trial',
       model: 'deepseek/deepseek-v4-flash',
-      agentEnv: { MAKA_CELL_TIMEOUT_SEC: '1800' },
+      agentEnv: {
+        MAKA_CELL_TIMEOUT_SEC: '1800',
+        MAKA_CELL_SETTLEMENT_GRACE_SEC: String(widened),
+      },
     });
-    const agent = (config.agents as Array<{ max_timeout_sec?: number }>)[0]!;
-    assert.equal(agent.max_timeout_sec, 1800);
+    const agent = (
+      config.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
+    )[0]!;
+    assert.equal(agent.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, String(widened));
+    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, String(1800 + widened));
+    assert.equal(agent.max_timeout_sec, 1800 + widened);
   });
 
   test('a malformed cell timeout falls back instead of failing the run', () => {
@@ -2597,7 +2655,11 @@ describe('buildHarborJobConfig', () => {
       const metadataAgent = (
         withMetadata.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
       )[0]!;
-      assert.equal(metadataAgent.env.MAKA_CELL_TIMEOUT_SEC, String(parsed ?? 1234), label);
+      assert.equal(
+        metadataAgent.env.MAKA_CELL_TIMEOUT_SEC,
+        String((parsed ?? 1234) + MAKA_SETTLEMENT_GRACE_SEC),
+        label,
+      );
       assert.equal(
         metadataAgent.env.MAKA_STREAM_CONNECT_TIMEOUT_MS,
         String((parsed ?? 1234) * 1_000),
@@ -2608,7 +2670,11 @@ describe('buildHarborJobConfig', () => {
         String((parsed ?? 1234) * 1_000),
         label,
       );
-      assert.equal(metadataAgent.max_timeout_sec, parsed ?? 1234, label);
+      assert.equal(
+        metadataAgent.max_timeout_sec,
+        (parsed ?? 1234) + MAKA_SETTLEMENT_GRACE_SEC,
+        label,
+      );
 
       // Without metadata, a parsed value is rewritten into the env; a parse
       // miss passes the raw string through for the adapter's default.
@@ -2623,10 +2689,14 @@ describe('buildHarborJobConfig', () => {
       )[0]!;
       assert.equal(
         agent.env.MAKA_CELL_TIMEOUT_SEC,
-        parsed !== undefined ? String(parsed) : raw,
+        parsed !== undefined ? String(parsed + MAKA_SETTLEMENT_GRACE_SEC) : raw,
         label,
       );
-      assert.equal(agent.max_timeout_sec, parsed, label);
+      assert.equal(
+        agent.max_timeout_sec,
+        parsed === undefined ? undefined : parsed + MAKA_SETTLEMENT_GRACE_SEC,
+        label,
+      );
     }
   });
 
@@ -2650,10 +2720,10 @@ describe('buildHarborJobConfig', () => {
     const agent = (
       config.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
     )[0]!;
-    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, '1234');
+    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, String(1234 + MAKA_SETTLEMENT_GRACE_SEC));
     assert.equal(agent.env.MAKA_STREAM_CONNECT_TIMEOUT_MS, '1234000');
     assert.equal(agent.env.MAKA_STREAM_IDLE_TIMEOUT_MS, '1234000');
-    assert.equal(agent.max_timeout_sec, 1234);
+    assert.equal(agent.max_timeout_sec, 1234 + MAKA_SETTLEMENT_GRACE_SEC);
   });
 
   test('merges per-attempt agent env into the Harbor agent config', () => {
@@ -2673,7 +2743,7 @@ describe('buildHarborJobConfig', () => {
       },
     );
     const env = (config.agents as Array<{ env: Record<string, string> }>)[0]!.env;
-    assert.equal(env.MAKA_CELL_TIMEOUT_SEC, '1800');
+    assert.equal(env.MAKA_CELL_TIMEOUT_SEC, String(1800 + MAKA_SETTLEMENT_GRACE_SEC));
     assert.equal(env.MAKA_CONTEXT_BUDGET, 'off');
     assert.equal(env.MAKA_CONTEXT_STALE_TOOL_RESULT_PRUNE, 'on');
   });
@@ -2732,6 +2802,39 @@ describe('createHarborTaskRunner timeout', () => {
           },
         }),
       );
+      // The agent phase Harbor is handed is the model budget plus Maka's
+      // settlement window, so the watchdog has to outlast that sum — otherwise
+      // it can kill a trial that is still legitimately settling.
+      assert.equal(seenTimeout, (7_200 + MAKA_SETTLEMENT_GRACE_SEC + 1_320 + 15 * 60) * 1_000);
+    });
+  });
+
+  test('gives a native CLI arm no settlement window in the outer watchdog', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      let seenTimeout: number | undefined;
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        agent: 'codex',
+        agentVersion: CODEX_TOOLCHAIN_SPEC.codex.version,
+        codexToolchainPath: '/toolchains/codex',
+        runHarbor: async (request) => {
+          seenTimeout = request.timeoutMs;
+          return fakeRunner({ reward: '1\n' })(request);
+        },
+      });
+      await runner(
+        runInput({
+          task: {
+            id: 'task-1',
+            path: '/tasks/task-1',
+            metadata: { agentTimeoutSec: 7_200, verifierTimeoutSec: 600 },
+          },
+        }),
+      );
+      // Codex is cancelled at its own deadline with nothing to settle, so its
+      // watchdog must not carry Maka's window either.
       assert.equal(seenTimeout, (7_200 + 1_320 + 15 * 60) * 1_000);
     });
   });
@@ -2759,7 +2862,7 @@ describe('createHarborTaskRunner timeout', () => {
           },
         }),
       );
-      assert.equal(seenTimeout, (7_200 + 1_320 + 15 * 60) * 1_000);
+      assert.equal(seenTimeout, (7_200 + MAKA_SETTLEMENT_GRACE_SEC + 1_320 + 15 * 60) * 1_000);
     });
   });
 

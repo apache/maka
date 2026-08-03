@@ -16,7 +16,7 @@ import {
 } from '../fixed-prompt-controller.js';
 import { CODEX_TOOLCHAIN_FINGERPRINT, CODEX_TOOLCHAIN_SPEC } from '../codex-toolchain.js';
 import { OPENCODE_TOOLCHAIN_FINGERPRINT, OPENCODE_TOOLCHAIN_SPEC } from '../opencode-toolchain.js';
-import { findTrialDir } from '../harbor-task-runner.js';
+import { findTrialDir, MAKA_SETTLEMENT_GRACE_SEC } from '../harbor-task-runner.js';
 import { MAKA_NODE_TOOLCHAIN_FINGERPRINT } from '../maka-node-toolchain.js';
 import type { ProviderRequestTelemetry } from '../provider-auth-proxy.js';
 import {
@@ -327,10 +327,59 @@ test('createPierTaskRunner gives Maka a controller-owned settlement tail', async
     assert.ok(request);
     const agentTimeoutFlag = request.args.indexOf('--agent-timeout-multiplier');
     assert.equal(request.args[agentTimeoutFlag + 1], '1.0055555555555555');
+    // Container task-run reads the cell budget as the model budget itself and
+    // takes its settlement window out of the agent phase, so the model already
+    // gets the full 5400s here without adding the grace to the budget.
     assert.ok(request.args.includes('MAKA_CELL_TIMEOUT_SEC=5400'));
     assert.ok(request.args.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=30'));
     assert.ok(request.args.includes('MAKA_AGENT_PHASE_TIMEOUT_SEC=5430'));
     assert.equal(request.timeoutMs, 13_890_000);
+  });
+});
+
+test('createPierTaskRunner gives a native CLI arm no settlement tail', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'codex',
+        agentVersion: CODEX_TOOLCHAIN_SPEC.codex.version,
+        codexToolchainPath: repo,
+        backend: 'ai-sdk',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-sol',
+        resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
+        providerProxyPort: 0,
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: {
+            agentTimeoutSec: 5_400,
+            buildTimeoutSec: 1_800,
+            verifierTimeoutSec: 1_800,
+          },
+        },
+      }),
+    );
+
+    const request = captured.request;
+    assert.ok(request);
+    // Codex has nothing to settle: it runs until Pier cancels it at the
+    // task-native deadline, so it gets neither the phase stretch nor the
+    // wall-clock window Maka needs on top of it.
+    assert.ok(!request.args.includes('--agent-timeout-multiplier'));
+    assert.ok(!request.args.some((arg) => arg.startsWith('MAKA_CELL_SETTLEMENT_GRACE_SEC=')));
+    assert.ok(!request.args.some((arg) => arg.startsWith('MAKA_AGENT_PHASE_TIMEOUT_SEC=')));
+    assert.equal(request.timeoutMs, 13_890_000 - MAKA_SETTLEMENT_GRACE_SEC * 1_000);
   });
 });
 

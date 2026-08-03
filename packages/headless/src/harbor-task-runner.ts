@@ -79,6 +79,21 @@ import {
 const execFileAsync = promisify(execFile);
 
 const CONTAINER_MAKA_REPO = '/opt/maka-agent';
+/** Wall-clock Maka's cell reserves to settle artifacts after it stops calling
+ * the model. Shared with the Pier runner so both executors bound model time the
+ * same way. */
+export const MAKA_SETTLEMENT_GRACE_SEC = 30;
+
+/** Seconds this arm spends settling after its model budget runs out. Only the
+ * Maka cell has such a window; native CLIs run until Harbor cancels them. Both
+ * the job config and the wall-clock watchdog resolve it here so the watchdog can
+ * never bound a shorter lifecycle than the one the job config hands out. */
+function settlementGraceSec(adapter: string, agentEnv: Record<string, string> | undefined): number {
+  if (adapter !== 'maka') return 0;
+  return (
+    lenientPositiveIntEnv(agentEnv?.MAKA_CELL_SETTLEMENT_GRACE_SEC) ?? MAKA_SETTLEMENT_GRACE_SEC
+  );
+}
 const TRIAL_CELL_OUTPUT = 'agent/maka-cell-output.json';
 const TRIAL_EXECUTION_IDENTITY = 'agent/maka-cell-execution-identity.json';
 const TRIAL_USAGE_CHECKPOINT = 'agent/maka-cell-usage-checkpoint.json';
@@ -647,7 +662,7 @@ function resolveHarborTimeoutMs(options: HarborTaskRunnerOptions, input: TaskRun
 }
 
 function resolveNativeHarborTimeoutMs(
-  options: Pick<HarborTaskRunnerOptions, 'timeoutMultiplier' | 'agentEnv'>,
+  options: Pick<HarborTaskRunnerOptions, 'timeoutMultiplier' | 'agentEnv' | 'agent'>,
   task: TaskRunInput['task'],
 ): number {
   const configuredCellTimeoutSec = lenientPositiveIntEnv(options.agentEnv?.MAKA_CELL_TIMEOUT_SEC);
@@ -656,7 +671,12 @@ function resolveNativeHarborTimeoutMs(
     configuredCellTimeoutSec ?? 0,
   );
   return resolveNativeTrialTimeoutMs({
-    nativePhasesSec: agentTimeoutSec + verifierPolicy(task).outerTimeoutSec,
+    // The agent phase Harbor is given is the model budget plus Maka's
+    // settlement window, so the watchdog has to bound that same sum.
+    nativePhasesSec:
+      agentTimeoutSec +
+      settlementGraceSec(options.agent ?? 'maka', options.agentEnv) +
+      verifierPolicy(task).outerTimeoutSec,
     timeoutMultiplier: options.timeoutMultiplier ?? 1,
   });
 }
@@ -1088,11 +1108,23 @@ export function buildHarborJobConfig(
   Object.assign(agentEnv, attemptAgentEnv ?? {});
   // Lenient by shared contract with the Python adapter: a malformed value must
   // fall back (metadata, then the adapter's default) rather than fail the run.
-  const cellTimeoutSec =
+  const modelBudgetSec =
     lenientPositiveIntEnv(agentEnv.MAKA_CELL_TIMEOUT_SEC) ?? input.task.metadata?.agentTimeoutSec;
-  if (cellTimeoutSec !== undefined) {
-    agentEnv.MAKA_CELL_TIMEOUT_SEC = String(cellTimeoutSec);
-    const streamTimeoutMs = cellTimeoutSec * 1_000;
+  // Maka's cell stops calling the model one grace window before its cell budget
+  // runs out (maka_agent.py _cell_soft_timeout_ms). Native CLIs have no such
+  // window: they run until Harbor cancels at the task-native deadline. Give the
+  // grace on top of the budget, not out of it, so every arm gets the same model
+  // time and only Maka's extra settlement lands outside it. An operator that
+  // widens the window keeps it — the budget then carries the wider window too.
+  const graceSec = settlementGraceSec(adapter, agentEnv);
+  let agentPhaseTimeoutSec: number | undefined;
+  if (modelBudgetSec !== undefined) {
+    agentPhaseTimeoutSec = modelBudgetSec + graceSec;
+    agentEnv.MAKA_CELL_TIMEOUT_SEC = String(agentPhaseTimeoutSec);
+    if (adapter === 'maka') {
+      agentEnv.MAKA_CELL_SETTLEMENT_GRACE_SEC = String(graceSec);
+    }
+    const streamTimeoutMs = modelBudgetSec * 1_000;
     if (adapter === 'maka' && Number.isSafeInteger(streamTimeoutMs)) {
       // Harbor already owns the task-native hard deadline. Keep the runtime's
       // first-event and between-event watchdogs from imposing a shorter,
@@ -1145,7 +1177,7 @@ export function buildHarborJobConfig(
                 }
               : {},
         env: agentEnv,
-        ...(cellTimeoutSec !== undefined ? { max_timeout_sec: cellTimeoutSec } : {}),
+        ...(agentPhaseTimeoutSec !== undefined ? { max_timeout_sec: agentPhaseTimeoutSec } : {}),
       },
     ],
     datasets: [],

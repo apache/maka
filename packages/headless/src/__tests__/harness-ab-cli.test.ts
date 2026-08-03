@@ -731,6 +731,9 @@ test('harness CLI freezes the synchronized DeepSeek three-way composition', asyn
   );
 });
 
+// Baselines move only when arm identity genuinely changes; the current values
+// cover the settlement-grace and externalSystemPrompt corrections, which both
+// alter what an arm actually runs with.
 test('harness composition preserves historical manifest fingerprints', async () => {
   const { buildHarnessAbManifest, resolveHarnessComposition } = await import(
     new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
@@ -740,31 +743,31 @@ test('harness composition preserves historical manifest fingerprints', async () 
       name: 'Terminal-Bench Kimi Code',
       composition: { competitor: 'kimi-code' },
       pierVersion: null,
-      fingerprint: 'sha256:c1f1f4ef3c1de99a4f20ba71f5deddc144f942d5cdb1d9b1223b2ac65e551f9b',
+      fingerprint: 'sha256:6469fb00ceeec168799d67bb84d73a288cd7b68e118f36398185a298278fe2ab',
     },
     {
       name: 'Terminal-Bench OpenCode',
       composition: { competitor: 'opencode' },
       pierVersion: null,
-      fingerprint: 'sha256:700267bbe62f37892d72c2b6ee327dd37632b3f0563a755e693681730a07bb68',
+      fingerprint: 'sha256:375894a49ddfe2a2ce2c195c2b0f14075be4416135bb63e2382b400efc9f460b',
     },
     {
       name: 'Terminal-Bench Codex',
       composition: { competitor: 'codex' },
       pierVersion: null,
-      fingerprint: 'sha256:176c2b12f36b6a78e7558d79a43bc7f12a0073afb8b1e893d0178bccf6d23de4',
+      fingerprint: 'sha256:08d30757e28717184889a9d71ecb2aabac2f223997b9b164d4969ab7a3adcbef',
     },
     {
       name: 'DeepSWE Kimi Code',
       composition: { benchmark: 'deep-swe-1.1', competitor: 'kimi-code' },
       pierVersion: '0.3.0',
-      fingerprint: 'sha256:4a3979f0ccf085063e9cd812444d3739d9f792bac58397eac25ba76120785779',
+      fingerprint: 'sha256:4e4b8fb414b9f3ba9ebe0697592cdc4f9cf20c2bad46d73a6f11c35670e9266a',
     },
     {
       name: 'DeepSWE Codex',
       composition: { benchmark: 'deep-swe-1.1', competitor: 'codex' },
       pierVersion: '0.3.0',
-      fingerprint: 'sha256:e61cf1e48747d6fafc696f334ea609e62d00e98e8b79db2352964aafca128c25',
+      fingerprint: 'sha256:732cdafa5a804485ec6af4f3268e73bf6bd639bdb55926fc6da843e5ad5fdbb8',
     },
   ] as const;
 
@@ -1448,7 +1451,22 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
   // No executor key for Harbor benchmarks: the manifest payload (and with it
   // the resume fingerprint) must stay byte-identical to historical runs.
   assert.equal('executor' in tbenchManifest.metadata.benchmark, false);
-  assert.equal('agentSettlementGraceSec' in tbenchManifest.metadata.benchmark, false);
+  // The settlement grace is executor-independent: both runners give the Maka arm
+  // the same window on top of the task-native model budget, so both manifests
+  // must record it.
+  assert.equal(tbenchManifest.metadata.benchmark.agentSettlementGraceSec, 30);
+  // Every arm is handed MAKA_SYSTEM_PROMPT but only the Maka cell applies it, so
+  // the arm identity has to say so in a readable field rather than only inside a
+  // hash. Asserting both arms keeps the asymmetry itself under test.
+  for (const manifestUnderTest of [manifest, pierManifest, tbenchManifest]) {
+    assert.equal(
+      manifestUnderTest.arms[0].metadata.config.externalSystemPrompt,
+      'default-headless',
+    );
+    for (const competitor of manifestUnderTest.arms.slice(1)) {
+      assert.equal(competitor.metadata.config.externalSystemPrompt, 'none');
+    }
+  }
 });
 
 test('harness A/B benchmark profiles bind their executor and resolve from env', async () => {

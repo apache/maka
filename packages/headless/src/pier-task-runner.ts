@@ -30,6 +30,7 @@ import {
   resolveNativeTrialTimeoutMs,
   withProviderTelemetryArtifact,
   incompleteTerminalProviderRequest,
+  MAKA_SETTLEMENT_GRACE_SEC,
   modelForOpenCode,
   type HarborTaskPricing,
 } from './harbor-task-runner.js';
@@ -84,7 +85,6 @@ const PROVIDER_REQUEST_TELEMETRY = 'provider-request-telemetry.json';
  * container reaching the host proxy through Squid must present one of those.
  * 443 keeps the model endpoint on the conventional TLS port. */
 export const PIER_PROVIDER_PROXY_DEFAULT_PORT = 443;
-export const PIER_MAKA_SETTLEMENT_GRACE_SEC = 30;
 
 /** Compatibility fallback for callers that do not provide a run-scoped proxy
  * hub. Such callers still bind one fixed port per attempt, so concurrent binds
@@ -296,8 +296,8 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
       taskAgentTimeoutSec !== undefined
         ? {
             modelBudgetSec: taskAgentTimeoutSec,
-            settlementGraceSec: PIER_MAKA_SETTLEMENT_GRACE_SEC,
-            phaseTimeoutSec: taskAgentTimeoutSec + PIER_MAKA_SETTLEMENT_GRACE_SEC,
+            settlementGraceSec: MAKA_SETTLEMENT_GRACE_SEC,
+            phaseTimeoutSec: taskAgentTimeoutSec + MAKA_SETTLEMENT_GRACE_SEC,
           }
         : undefined;
     const jobsDir = join(
@@ -783,6 +783,11 @@ function buildPierAgentEnv(
   Object.assign(env, providerAgentEnv);
   Object.assign(env, mergeAgentEnv(options.agentEnv, input.agentEnv) ?? {});
   if (makaDeadline) {
+    // Container task-run drops MAKA_CELL_SOFT_TIMEOUT_MS and derives the model
+    // deadline straight from the cell budget (maka_agent.py
+    // _container_task_run_env), so this budget already is the model budget and
+    // the settlement window lives in the agent phase. Harbor's cell mode instead
+    // subtracts the grace from the budget, which is why only that runner adds it.
     env.MAKA_CELL_TIMEOUT_SEC = String(makaDeadline.modelBudgetSec);
     env.MAKA_CELL_SETTLEMENT_GRACE_SEC = String(makaDeadline.settlementGraceSec);
     env.MAKA_AGENT_PHASE_TIMEOUT_SEC = String(makaDeadline.phaseTimeoutSec);
