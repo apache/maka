@@ -428,7 +428,7 @@ test('harness A/B defaults to pinned Kimi Code and keeps OpenCode selectable', a
   assert.equal(resolveHarnessCompetitorProfile('opencode').version, '1.17.18');
   const codexProfile = resolveHarnessCompetitorProfile('codex');
   const codexComposition = resolveHarnessComposition({ competitor: 'codex' });
-  assert.equal(codexProfile.version, '0.144.6');
+  assert.equal(codexProfile.version, '0.146.0');
   assert.deepEqual(codexComposition.runtimeProfile, {
     id: 'openai-codex-gpt-5.6-sol-xhigh',
     provider: 'openai-codex',
@@ -756,7 +756,7 @@ test('harness composition preserves historical manifest fingerprints', async () 
       name: 'Terminal-Bench Codex',
       composition: { competitor: 'codex' },
       pierVersion: null,
-      fingerprint: 'sha256:08d30757e28717184889a9d71ecb2aabac2f223997b9b164d4969ab7a3adcbef',
+      fingerprint: 'sha256:d8907d44340a1ee4b2f35b015ce78faa527b6b6c4fcefb553556eb9011f54bb6',
     },
     {
       name: 'DeepSWE Kimi Code',
@@ -768,7 +768,7 @@ test('harness composition preserves historical manifest fingerprints', async () 
       name: 'DeepSWE Codex',
       composition: { benchmark: 'deep-swe-1.1', competitor: 'codex' },
       pierVersion: '0.3.0',
-      fingerprint: 'sha256:732cdafa5a804485ec6af4f3268e73bf6bd639bdb55926fc6da843e5ad5fdbb8',
+      fingerprint: 'sha256:afb6a70de939312d998a613a62647842dff85addcd265fdfd4bceadf42ec1688',
     },
   ] as const;
 

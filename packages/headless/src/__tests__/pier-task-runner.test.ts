@@ -1498,12 +1498,12 @@ test('buildPierRunArgs targets the Codex adapter and forwards constructor kwargs
     timeoutMultiplier: 1,
     mounts: [],
     agentEnv: {},
-    agentKwargs: { version: '0.144.6', reasoning_effort: 'xhigh' },
+    agentKwargs: { version: '0.146.0', reasoning_effort: 'xhigh' },
   });
   assert.match(args.join(' '), /--agent-import-path codex_agent:MakaCodexAgent/);
   assert.ok(!args.includes('--agent-timeout-multiplier'));
   assert.ok(args.includes('--ak'));
-  assert.ok(args.includes('version=0.144.6'));
+  assert.ok(args.includes('version=0.146.0'));
   assert.ok(args.includes('reasoning_effort=xhigh'));
 });
 

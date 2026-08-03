@@ -4487,7 +4487,7 @@ with tempfile.TemporaryDirectory() as tmp:
     agent = MakaCodexAgent(
         logs,
         prompt_template_path=template,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4548,7 +4548,7 @@ with tempfile.TemporaryDirectory() as tmp:
     }, requirements_command
     deepseek_agent = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="deepseek-v4-flash",
         extra_env={"MAKA_MODEL": "deepseek-v4-flash"},
     )
@@ -4583,7 +4583,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     failing = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4606,7 +4606,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     transport = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4629,7 +4629,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     incomplete = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4654,7 +4654,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     transcript = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="deepseek-v4-flash",
         reasoning_effort="max",
         extra_env={
@@ -4672,7 +4672,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     policy = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4727,7 +4727,7 @@ with tempfile.TemporaryDirectory() as tmp:
     timeout_environment = TimeoutEnvironment()
     timeout_agent = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={

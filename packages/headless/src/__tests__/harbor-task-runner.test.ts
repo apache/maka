@@ -712,7 +712,7 @@ describe('createHarborTaskRunner', () => {
         jobsDir,
         agent: 'codex',
         codexToolchainPath: '/toolchain',
-        agentVersion: '0.144.6',
+        agentVersion: '0.146.0',
         model: 'openai/gpt-5.6-sol',
         provider: 'openai',
         reasoningEffort: 'max',
@@ -757,7 +757,7 @@ describe('createHarborTaskRunner', () => {
           jobsDir,
           agent: 'codex',
           codexToolchainPath: '/toolchain',
-          agentVersion: '0.144.6',
+          agentVersion: '0.146.0',
           model: 'openai-codex/gpt-5.6-sol',
           provider: 'openai-codex',
           reasoningEffort: 'max',
@@ -2445,8 +2445,8 @@ describe('buildHarborJobConfig', () => {
       model: 'openai/gpt-5.6-sol',
       provider: 'openai',
       reasoningEffort: 'max',
-      agentVersion: '0.144.6',
-      codexToolchainPath: '/cache/codex-0.144.6-linux-x64',
+      agentVersion: '0.146.0',
+      codexToolchainPath: '/cache/codex-0.146.0-linux-x64',
       dockerPlatform: 'linux/amd64',
     } as unknown as Parameters<typeof buildHarborJobConfig>[1]);
     const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
@@ -2456,12 +2456,12 @@ describe('buildHarborJobConfig', () => {
     assert.equal(agent.name, undefined);
     assert.equal(agent.import_path, 'codex_agent:MakaCodexAgent');
     assert.equal(agent.model_name, 'gpt-5.6-sol');
-    assert.deepEqual(agent.kwargs, { version: '0.144.6', reasoning_effort: 'max' });
+    assert.deepEqual(agent.kwargs, { version: '0.146.0', reasoning_effort: 'max' });
     assert.match(env.MAKA_CODEX_TOOLCHAIN_FINGERPRINT, /^sha256:[a-f0-9]{64}$/);
     assert.ok(
       mounts.some(
         (mount) =>
-          mount.source === '/cache/codex-0.144.6-linux-x64' &&
+          mount.source === '/cache/codex-0.146.0-linux-x64' &&
           mount.target === '/opt/maka-codex-toolchain' &&
           mount.read_only === true,
       ),
@@ -2557,7 +2557,7 @@ describe('buildHarborJobConfig', () => {
           agent: 'codex',
           model: 'openai/gpt-5.6-sol',
           provider: 'openai',
-          agentVersion: '0.144.6',
+          agentVersion: '0.146.0',
         } as unknown as Parameters<typeof buildHarborJobConfig>[1]),
       /codexToolchainPath is required for the Codex adapter/,
     );
@@ -2573,7 +2573,7 @@ describe('buildHarborJobConfig', () => {
           agentVersion: '0.143.0',
           codexToolchainPath: '/toolchain',
         } as unknown as Parameters<typeof buildHarborJobConfig>[1]),
-      /Codex adapter version must match toolchain version 0\.144\.6/,
+      /Codex adapter version must match toolchain version 0\.146\.0/,
     );
   });
 
