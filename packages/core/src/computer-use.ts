@@ -26,6 +26,19 @@ export const COMPUTER_USE_ERROR_CODES = [
   'target_missing',
   'ambiguous_target',
   'target_changed',
+  // The action is bound to an observation and the model also named an app or a
+  // window, and the two disagree. Its own word because the recovery is its own:
+  // not "look again" but "look at the thing you meant". It was being written
+  // into refusal text without being in this list, so the model read a
+  // twenty-ninth error word that appeared in no table, and the result carried no
+  // `error` at all — a refusal recorded as a successful invocation.
+  'target_mismatch',
+  // An argument arrived holding one of the placeholders this host writes into
+  // the model's own call record in place of a withheld value — `<text:18>`,
+  // `<point>`. Nothing was dispatched: the model is replaying the shape of its
+  // history rather than the text it means, and typing those characters into the
+  // user's field is the one outcome worse than refusing.
+  'withheld_value_replayed',
   'target_occluded',
   'page_target_changed',
   'duplicate_action',
@@ -444,7 +457,12 @@ export interface ComputerUseModelCallArgs {
  * path, so without this the model would read back a call carrying a key it has
  * no way to send and whose value came off the accessibility tree.
  */
-const HOST_ONLY_ARGS = new Set(['approvalClass', 'rememberForTurnAllowed', 'element_identity']);
+const HOST_ONLY_ARGS = new Set([
+  'approvalClass',
+  'rememberForTurnAllowed',
+  'element_identity',
+  'elementIdentity',
+]);
 
 /** The keys projected by name above, so the sweep below does not repeat them. */
 const MODEL_CALL_NAMED_ARGS = new Set([
@@ -512,6 +530,15 @@ function integerTuple(value: unknown): readonly number[] | undefined {
  * The value is what a person typed or what a window showed, so it stays out.
  * The key does not: without it the model reads its own history as a call it
  * never made.
+ *
+ * A string carries its length. `<text>` on its own was a placeholder in the
+ * shape of a fill-in-the-blank, and `value`/`text` are `z.string().max(8000)`
+ * with no lower bound or pattern — so `"<text>"` was a legal call at the wire
+ * schema and at the strict union both, and a model replaying its own
+ * `set_value` typed those six characters into the user's field. A length is a
+ * description of the value rather than a substitute for it, and
+ * `COMPUTER_USE_WITHHELD_VALUE` below is what the tool refuses on so the
+ * mistake is named instead of typed.
  */
 function shapeOf(value: unknown): string {
   if (Array.isArray(value)) {
@@ -519,10 +546,19 @@ function shapeOf(value: unknown): string {
       ? '<point>'
       : `<${value.length} ${value.length === 1 ? 'item' : 'items'}>`;
   }
-  if (typeof value === 'string') return '<text>';
+  if (typeof value === 'string') return `<text:${value.length}>`;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return '<value>';
 }
+
+/**
+ * The marks a withheld argument leaves in the record the model reads back.
+ *
+ * Exported so the tool can refuse one instead of acting on it literally: the
+ * record is the shape a model imitates, and these are the only strings in it
+ * that were never a value.
+ */
+export const COMPUTER_USE_WITHHELD_VALUE = /^<(?:text:\d+|point|value|\d+ items?)>$/;
 
 export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArgs {
   const record = asRecord(args);

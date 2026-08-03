@@ -287,7 +287,27 @@ test('an element says what it accepts beyond a click, and where the keys go', ()
   // costs tokens to say what click_element already does.
   assert.doesNotMatch(rows[2] ?? '', /\+/);
   assert.match(rows[3] ?? '', /\+show_menu/);
-  assert.match(rows[3] ?? '', /focused/);
+  // The exact marker, not merely the word. The tool description tells the model
+  // `[focused]` marks where a key sent without an element_id will land, and a
+  // loose /focused/ here matched any spelling — renaming the marker to anything
+  // containing "focused" left the suite green while the description became a
+  // lie about a document the model has to read literally.
+  assert.match(rows[3] ?? '', /\[focused\]/);
+});
+
+test('the states a line can carry are written together in one bracket', () => {
+  // Pins the whole vocabulary, not one marker: `disabled` and `selected` are
+  // documented the same way and were unpinned in the same manner.
+  const text = renderObservationForModel(
+    observation([
+      { elementId: '0', role: 'AXWindow', label: '计算器' },
+      { elementId: '1', role: 'AXButton', label: '7', enabled: false },
+      { elementId: '2', role: 'AXRow', label: 'report', selected: true, focused: true },
+    ]),
+  );
+  const rows = lines(text);
+  assert.match(rows[2] ?? '', /\[disabled\]/);
+  assert.match(rows[3] ?? '', /\[selected,focused\]/);
 });
 
 test('a subrole is written only where it says something the role does not', () => {

@@ -6,8 +6,12 @@
 // several of them drive a full model loop and need the `observation_id` and
 // element ids that the loop just handed the model.
 //
-// Kept in one place because three suites need it and three copies of a parser
-// is three chances to disagree about the format under test.
+// Kept in one place because four suites need it and four copies of a parser is
+// four chances to disagree about the format under test. One of those suites is
+// in @maka/computer-use, which reaches it through the
+// `@maka/runtime/test-only/observation-text-reader` entry point rather than by
+// carrying its own copy — that suite went red on this PR precisely because it
+// had its own `JSON.parse`.
 
 export interface ParsedObservationElement {
   element_id: string;

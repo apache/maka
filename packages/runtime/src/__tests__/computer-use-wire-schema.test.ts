@@ -19,7 +19,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { computerWireParams } from '../computer-use-tools.js';
-import { computerParams } from '../computer-use-codec.js';
+import { computerActionNames, computerParams } from '../computer-use-codec.js';
 
 /**
  * One legal call per action, written the way a model would send it.
@@ -70,7 +70,32 @@ const CALLS: Array<Record<string, unknown>> = [
   },
   { action: 'window_action', observation_id: 'o', element_id: '0', window_action: 'minimize' },
   { action: 'screenshot', app: 'com.apple.TextEdit' },
+  { action: 'cursor_position' },
+  { action: 'mouse_move', observation_id: 'o', coordinate: [10, 20] },
   { action: 'left_click', observation_id: 'o', coordinate: [10, 20] },
+  { action: 'right_click', observation_id: 'o', coordinate: [10, 20] },
+  { action: 'middle_click', observation_id: 'o', coordinate: [10, 20] },
+  { action: 'double_click', observation_id: 'o', coordinate: [10, 20] },
+  { action: 'triple_click', observation_id: 'o', coordinate: [10, 20] },
+  { action: 'left_mouse_down', observation_id: 'o', coordinate: [10, 20] },
+  { action: 'left_mouse_up', observation_id: 'o', coordinate: [10, 20] },
+  {
+    action: 'left_click_drag',
+    observation_id: 'o',
+    start_coordinate: [10, 20],
+    coordinate: [90, 120],
+  },
+  { action: 'type', observation_id: 'o', text: 'hello' },
+  { action: 'key', observation_id: 'o', text: 'Return' },
+  { action: 'hold_key', observation_id: 'o', text: 'shift', duration: 1 },
+  {
+    action: 'scroll',
+    observation_id: 'o',
+    coordinate: [10, 20],
+    scroll_direction: 'down',
+    scroll_amount: 10,
+  },
+  { action: 'zoom', observation_id: 'o', region: [0, 0, 100, 100] },
   { action: 'wait', duration: 1 },
   { action: 'wait', wait_for_text: 'Saved', duration: 5 },
   { action: 'wait', wait_for_text_gone: 'Loading' },
@@ -104,11 +129,30 @@ for (const call of CALLS) {
 test('every action in the strict union is offered by the wire enum', () => {
   // The other half of the same gap: an action the union understands and the
   // enum does not is one the model is never told exists.
+  //
+  // Read from `computerParams`, not from CALLS. Built from CALLS this asserted
+  // that the actions this file happens to list are in the enum — which is true
+  // by construction the moment each one has a passing sample above, and stays
+  // true when an action is added to the strict union and to neither. Injecting
+  // an action into the union alone (the historical `window_action` bug class)
+  // left this suite at 24 pass, 0 fail.
   const offered = new Set(
     (computerWireParams.shape.action as unknown as { options: string[] }).options,
   );
-  const known = new Set(CALLS.map((call) => String(call.action)));
+  const known = computerActionNames();
+  assert.ok(known.length > 0, 'the strict union declares no actions at all');
   for (const action of known) {
     assert.ok(offered.has(action), `${action} is not in the action enum the model is shown`);
+  }
+});
+
+test('every action in the strict union has a sample call above', () => {
+  // The per-call assertions are what prove a field reaches the model, and they
+  // only cover the actions CALLS names. An action with no sample is one whose
+  // arguments nothing here holds against the wire schema, which is exactly how
+  // `window_action` shipped unusable.
+  const sampled = new Set(CALLS.map((call) => String(call.action)));
+  for (const action of computerActionNames()) {
+    assert.ok(sampled.has(action), `${action} has no sample call in CALLS`);
   }
 });

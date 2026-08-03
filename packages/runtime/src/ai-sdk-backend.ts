@@ -1387,6 +1387,8 @@ export class AiSdkBackend implements AgentBackend {
                   availableToolNames: currentRepairToolNames(),
                   toolParameters: (name) =>
                     providerTools.find((candidate) => candidate.name === name)?.parameters,
+                  toolCategoryHint: (name) =>
+                    providerTools.find((candidate) => candidate.name === name)?.categoryHint,
                   error,
                 });
               },
@@ -3338,6 +3340,13 @@ export function repairMakaToolCall(input: {
   error: unknown;
   /** Schema lookup for the tool that was called, when the caller has one. */
   toolParameters?: (toolName: string) => unknown;
+  /**
+   * Category lookup for the same tool.
+   *
+   * Computer Use declares one flat wire object standing in for a per-action
+   * union, so its schema shape alone names every field of every action.
+   */
+  toolCategoryHint?: (toolName: string) => string | undefined;
 }): RepairableAiSdkToolCall | null {
   const requestedName = input.toolCall.toolName;
   if (requestedName === INVALID_TOOL_NAME) return null;
@@ -3375,6 +3384,7 @@ function describeUnrepairableToolCall(input: {
   availableToolNames: readonly string[];
   error: unknown;
   toolParameters?: (toolName: string) => unknown;
+  toolCategoryHint?: (toolName: string) => string | undefined;
 }): string {
   const requestedName = input.toolCall.toolName;
   const known = input.availableToolNames.includes(requestedName);
@@ -3386,6 +3396,7 @@ function describeUnrepairableToolCall(input: {
   return formatToolArgsViolationText({
     toolName: requestedName,
     parameters: input.toolParameters?.(requestedName),
+    categoryHint: input.toolCategoryHint?.(requestedName),
     args: parseToolCallInput(input.toolCall.input),
     error: input.error,
   });

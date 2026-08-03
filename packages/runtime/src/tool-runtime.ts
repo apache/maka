@@ -46,7 +46,7 @@ import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
-import { describeComputerUseArgsViolation } from './computer-use-codec.js';
+import { computerActionFields, describeComputerUseArgsViolation } from './computer-use-codec.js';
 import { createToolOutputDeltaEmitter } from './tool-output-delta.js';
 import { truncateToolOutput } from './tool-output.js';
 import { stableHash } from './request-shape.js';
@@ -2264,7 +2264,22 @@ function stringKeys(shape: object): string[] {
  * Names only, never values: these arguments carry file contents, shell
  * commands and typed text. Field names are the model's own input vocabulary.
  */
-export function toolParameterFields(parameters: unknown, args?: unknown): string[] | undefined {
+export function toolParameterFields(
+  parameters: unknown,
+  args?: unknown,
+  categoryHint?: string,
+): string[] | undefined {
+  // Computer Use is one flat `z.object` standing in for a per-action union,
+  // because a function-tool JSON schema has to have an object at the top. Its
+  // shape therefore names every field of every action, and reading it here
+  // broke the policy stated below in the one place it matters most: a model
+  // whose `click_element` had a camelCase key was told `maka_computer` takes
+  // `menu`, `duration` and `region`, added one, and was refused again. The
+  // strict union knows which fields go with which action, and answers
+  // undefined — say nothing — for an action it does not recognise.
+  if (categoryHint === 'computer_use') {
+    return computerActionFields((args as { action?: unknown } | undefined)?.action);
+  }
   try {
     return readSchemaFields(parameters, args);
   } catch {
@@ -2324,10 +2339,11 @@ function readSchemaFields(schema: unknown, args: unknown): string[] | undefined 
 export function formatToolArgsViolationText(input: {
   toolName: string;
   parameters?: unknown;
+  categoryHint?: string;
   args?: unknown;
   error: unknown;
 }): string {
-  const fields = toolParameterFields(input.parameters, input.args);
+  const fields = toolParameterFields(input.parameters, input.args, input.categoryHint);
   const guidance =
     fields === undefined
       ? ''

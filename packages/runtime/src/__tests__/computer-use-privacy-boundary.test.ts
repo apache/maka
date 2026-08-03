@@ -339,7 +339,7 @@ test('the model reads its own call back in the names the tool accepts', async ()
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
-    getCurrentRunId: () => 'run-1',
+    runId: 'run-1',
     runtimeCommitSink: {
       commitToolPrepared: async (input) => {
         runtimeEvents.push(input.runtimeEvent);

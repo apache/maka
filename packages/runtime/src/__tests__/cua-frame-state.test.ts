@@ -6,6 +6,7 @@ import {
   bindCuaActionToObservation,
   bindCuaSemanticActionToObservation,
   CuaFrameState,
+  fingerprintCuaSemanticAction,
 } from '../cua-frame-state.js';
 
 function createState(): CuaFrameState {
@@ -208,8 +209,41 @@ describe('CuaFrameState', () => {
     state.claimAction(action);
     state.retireAction(action);
 
-    // Retired, not released. Sending it again is `duplicate_action`, which is
-    // the truth and is a better answer than being refused identically forever.
+    // Retired, not released — and said apart from a dispatched repeat, because
+    // the two carry opposite instructions. `duplicate_action` means the action
+    // may already have taken effect and the model should look; this one means
+    // nothing was dispatched either time, which is the same thing the refusal
+    // it just received told it.
+    assert.deepEqual(state.claimAction(action), { ok: false, reason: 'retired_action' });
+  });
+
+  test('a lookup can tell a retired action from one that ran', () => {
+    // `wasRetired` mirrors `isConsumed` exactly — same arguments, same
+    // recomputed binding — because the pre-check that uses them has only a
+    // frame and a fingerprint, not a bound action.
+    const state = createState();
+    const frame = state.observe(observation());
+    const retire = bindCuaAction(
+      frame,
+      fingerprintCuaSemanticAction('click_element'),
+      frame.target,
+    );
+    state.claimAction(retire);
+    state.retireAction(retire);
+    assert.equal(state.isConsumed(frame, retire.actionFingerprint), true);
+    assert.equal(state.wasRetired(frame, retire.actionFingerprint), true);
+  });
+
+  test('a repeat of an action that did run is still duplicate_action', () => {
+    // The other half of the same fact, through the claim path: this one reached
+    // the window, so "observe and see whether it took effect" is the right
+    // thing to say about it and the wrong thing to say about a retired one.
+    const state = createState();
+    const frame = state.observe(observation());
+    const action = bindCuaAction(frame, fingerprintCuaSemanticAction('set_value'), frame.target);
+    state.claimAction(action);
+    state.confirmAction(action);
+
     assert.deepEqual(state.claimAction(action), { ok: false, reason: 'duplicate_action' });
   });
 

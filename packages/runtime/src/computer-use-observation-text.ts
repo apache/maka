@@ -142,6 +142,16 @@ export function renderObservationText(
     for (const [element, depth] of walk(dropSeparators(collapseMenuContainers(menu)))) {
       lines.push(`${'\t'.repeat(depth)}${elementLine(element)}`);
     }
+  } else if (observation.menu?.unavailable === true) {
+    // A menu was asked for and this observation has no menu bar in it. Said
+    // here because the alternative is silence: the model asked to see a menu,
+    // read a document with no menus in it, and had nothing to distinguish "this
+    // executor does not report the menu bar" from "this application has no such
+    // menu". Both of those it would answer by asking again.
+    lines.push(
+      'menu_bar=unavailable(this executor did not return the menu bar, so the menu argument had no ' +
+        "effect and no menu command is reachable from here; use the window's own controls)",
+    );
   }
   return lines.join('\n');
 }

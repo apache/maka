@@ -29,6 +29,15 @@ export type CuaActionRejectionReason =
   | 'stale_epoch'
   | 'stale_frame'
   | 'duplicate_action'
+  // The same action again, where the first attempt was refused before anything
+  // was dispatched. Its own label because the recovery is the opposite one:
+  // `duplicate_action` means "it may already have taken effect, look", and this
+  // means "it did not, and the window is as it was". Both used to come back as
+  // `duplicate_action`, so the sentence that followed a retired action told the
+  // model to observe for a change that provably had not happened — directly
+  // contradicting the refusal it had just been given, which said the frame was
+  // still current and observing again was the round trip to skip.
+  | 'retired_action'
   | 'action_not_claimed';
 
 export type CuaActionClaimResult = { ok: true } | { ok: false; reason: CuaActionRejectionReason };
@@ -42,6 +51,13 @@ export class CuaFrameState {
   private currentFrame: CuaObservation | undefined;
   private readonly claimedActions = new Set<string>();
   private readonly consumedActions = new Set<string>();
+  /**
+   * The subset of `consumedActions` that never reached the window.
+   *
+   * Kept apart because the two produce opposite instructions, and the model was
+   * being given the wrong one half the time.
+   */
+  private readonly retiredActions = new Set<string>();
 
   constructor(private readonly createFrameId: (epoch: number) => string = () => randomUUID()) {}
 
@@ -69,7 +85,10 @@ export class CuaFrameState {
 
   claimAction(action: CuaBoundAction): CuaActionClaimResult {
     if (this.consumedActions.has(action.fingerprint)) {
-      return { ok: false, reason: 'duplicate_action' };
+      return {
+        ok: false,
+        reason: this.retiredActions.has(action.fingerprint) ? 'retired_action' : 'duplicate_action',
+      };
     }
     const rejection = this.validateAction(action);
     if (rejection) return { ok: false, reason: rejection };
@@ -87,6 +106,7 @@ export class CuaFrameState {
       return { ok: false, reason: 'action_not_claimed' };
     }
     this.consumedActions.add(action.fingerprint);
+    this.retiredActions.delete(action.fingerprint);
     return { ok: true, epoch: this.invalidate() };
   }
 
@@ -113,11 +133,25 @@ export class CuaFrameState {
     }
     this.claimedActions.delete(action.fingerprint);
     this.consumedActions.add(action.fingerprint);
+    this.retiredActions.add(action.fingerprint);
     return { ok: true, epoch: this.epoch };
   }
 
   isConsumed(frame: CuaFrameIdentity, actionFingerprint: string): boolean {
     return this.consumedActions.has(
+      bindCuaAction(frame, actionFingerprint, this.requireTarget(frame)).fingerprint,
+    );
+  }
+
+  /**
+   * Whether a consumed action was retired rather than dispatched.
+   *
+   * The companion to `isConsumed`, for the pre-check that refuses a repeat
+   * before it is bound: "already sent" and "already refused without being sent"
+   * are the same lookup and opposite instructions.
+   */
+  wasRetired(frame: CuaFrameIdentity, actionFingerprint: string): boolean {
+    return this.retiredActions.has(
       bindCuaAction(frame, actionFingerprint, this.requireTarget(frame)).fingerprint,
     );
   }

@@ -476,3 +476,188 @@ describe('B7 — the tool description states nothing the model cannot act on', (
     assert.doesNotMatch(description, /uniquely resolved page identity/i);
   });
 });
+
+describe('B8 — a refusal is recorded as one, and says the thing that is true', () => {
+  /** `observeOnlyBackend` has no `runSemantic`, which refuses before the target is compared. */
+  function semanticBackend(runSemantic: CuDispatchBackend['runSemantic']): CuDispatchBackend {
+    return {
+      async preflight() {
+        return { accessibility: true, screenRecording: true };
+      },
+      async observeApp() {
+        return observation();
+      },
+      async run() {
+        return { outcome: { ok: true, tier: 'ax', verified: true } };
+      },
+      runSemantic,
+    };
+  }
+
+  const dispatchOk: CuDispatchBackend['runSemantic'] = async () => ({
+    outcome: { ok: true, tier: 'ax', verified: true },
+    observation: observation(),
+  });
+
+  test('target_mismatch carries an error code rather than passing as a success', async () => {
+    const [tool] = buildComputerUseTools({ backend: semanticBackend(dispatchOk) });
+    const context = ctx();
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, context)) as {
+      modelText?: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationIdOf(observed.modelText),
+        element_id: '5',
+        app: 'SomeOtherApp',
+      } as never,
+      context,
+    )) as { text: string; error?: string };
+
+    assert.match(result.text, /target_mismatch/);
+    // Both returns were bare `{ text }`. A refusal with no error field is
+    // recorded as a successful invocation, and `target_mismatch` was a word in
+    // no table the model has.
+    assert.equal(result.error, 'target_mismatch');
+  });
+
+  test('a replayed placeholder from the call record is refused, not typed', async () => {
+    const backend = observeOnlyBackend();
+    const [tool] = buildComputerUseTools({ backend });
+    const context = ctx();
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, context)) as {
+      modelText?: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'set_value',
+        observation_id: observationIdOf(observed.modelText),
+        element_id: '5',
+        // What the model reads back as its own last set_value. Both schemas
+        // accept it as a string, so nothing above this refused it and the
+        // characters went into the user's field.
+        value: '<text:18>',
+      } as never,
+      context,
+    )) as { text: string; error?: string };
+
+    assert.equal(result.error, 'withheld_value_replayed');
+    assert.match(result.text, /placeholder from your own call record/);
+    assert.match(result.text, /Nothing was sent/);
+  });
+
+  test('a real value that merely contains a placeholder is still sent', async () => {
+    const sent: string[] = [];
+    const [tool] = buildComputerUseTools({
+      backend: semanticBackend(async (action) => {
+        if (action.type === 'set_value') sent.push(action.value);
+        return { outcome: { ok: true, tier: 'ax', verified: true }, observation: observation() };
+      }),
+    });
+    const context = ctx();
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, context)) as {
+      modelText?: string;
+    };
+    await tool.impl(
+      {
+        action: 'set_value',
+        observation_id: observationIdOf(observed.modelText),
+        element_id: '5',
+        value: '<text:18> is a thing I meant to write',
+      } as never,
+      context,
+    );
+
+    assert.deepEqual(sent, ['<text:18> is a thing I meant to write']);
+  });
+
+  test('a repeat of a refusal that never ran is not told to observe for a change', async () => {
+    // The executor refuses without dispatching, so the action is retired and
+    // the frame survives. Sending it again used to come back `duplicate_action`
+    // — "observe to see whether it took effect" — directly contradicting the
+    // refusal one call earlier, which said nothing was dispatched and observing
+    // again was the round trip to skip.
+    const backend: CuDispatchBackend = {
+      async preflight() {
+        return { accessibility: true, screenRecording: true };
+      },
+      async observeApp() {
+        return observation();
+      },
+      async run() {
+        return { outcome: { ok: true, tier: 'ax', verified: true } };
+      },
+      async runSemantic() {
+        return {
+          outcome: {
+            ok: false,
+            error: 'unsupported_action',
+            message: 'this element does not offer that',
+            evidence: { path: 'none' },
+          },
+        } as CuRunResult;
+      },
+    };
+    const [tool] = buildComputerUseTools({ backend });
+    const context = ctx();
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, context)) as {
+      modelText?: string;
+    };
+    const args = {
+      action: 'click_element',
+      observation_id: observationIdOf(observed.modelText),
+      element_id: '5',
+    };
+    const first = (await tool.impl(args as never, context)) as { text: string };
+    assert.match(first.text, /nothing was dispatched/i);
+
+    const second = (await tool.impl(args as never, ctx({ toolCallId: 'call2' }))) as {
+      text: string;
+      error?: string;
+    };
+    assert.equal(second.error, 'duplicate_action');
+    assert.match(second.text, /nothing was dispatched either time/);
+    assert.doesNotMatch(second.text, /see whether it took effect/);
+  });
+});
+
+describe('B9 — an observation says what it is showing, whatever the executor returned', () => {
+  test('a query filters and announces itself even when the executor ignores it', async () => {
+    // The renderer filters from `observation.query` and the executor was
+    // expected to echo it. The one that shipped did not, so a model asking for
+    // a filtered view of a large window received all of it under a header that
+    // said nothing about a query.
+    const backend: CuDispatchBackend = {
+      async preflight() {
+        return { accessibility: true, screenRecording: true };
+      },
+      async observeApp() {
+        return {
+          ...observation(),
+          elements: [
+            { elementId: '1', role: 'AXButton', label: 'Downloads' },
+            { elementId: '2', role: 'AXButton', label: 'Documents' },
+          ],
+        };
+      },
+      async run() {
+        return { outcome: { ok: true, tier: 'ax', verified: true } };
+      },
+    };
+    const result = await call(backend, { action: 'observe', app: 'Fixture', query: 'Downloads' });
+    assert.match(result.modelText ?? '', /query="Downloads"/);
+    assert.match(result.modelText ?? '', /Downloads/);
+    assert.doesNotMatch(result.modelText ?? '', /Documents/);
+  });
+
+  test('a menu the executor cannot open says so instead of saying nothing', async () => {
+    const result = await call(observeOnlyBackend(), {
+      action: 'observe',
+      app: 'Fixture',
+      menu: 'File',
+    });
+    assert.match(result.modelText ?? '', /menu_bar=unavailable/);
+    assert.match(result.modelText ?? '', /did not return the menu bar/);
+  });
+});

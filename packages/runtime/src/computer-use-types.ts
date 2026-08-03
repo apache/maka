@@ -143,11 +143,24 @@ export interface CuObservation {
    * and nothing below, which is the affordable default and is also the state a
    * model has to be told about — a list of menu names with no note that they
    * open reads as a list of things that cannot be used.
+   *
+   * `unavailable` is the host's own word, not the executor's: it is set when a
+   * menu was asked for and the observation came back with no menu bar in it at
+   * all. An executor that does not walk the menu bar is a real configuration —
+   * the cua-driver backend never returned one — and without this the model read
+   * a description promising "every observation already lists the menu titles",
+   * asked for a menu, and got a document that did not mention menus.
    */
-  menu?: { opened?: string; truncated?: boolean };
+  menu?: { opened?: string; truncated?: boolean; unavailable?: boolean };
   /**
    * The filter this observation was asked for, echoed so the rendering can say
    * it is showing a part rather than the whole.
+   *
+   * The filtering itself is done by the renderer, so the host stamps this from
+   * the request when the executor does not echo it. It used to be read only
+   * from the executor's answer, and the one shipped executor did not return it:
+   * a model that asked for a filtered view of a 1,200-element window received
+   * all 1,200 elements under a header that said nothing about a query.
    */
   query?: string;
   appId: string;

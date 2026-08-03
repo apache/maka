@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import {
   CU_TOOL_ACTION_TYPES,
+  COMPUTER_USE_WITHHELD_VALUE,
   computerUseModelCallArgs,
   isComputerUseErrorCode,
   isCuMutatingAction,
@@ -156,11 +157,13 @@ export const computerWireParams = z
       .optional()
       .describe(
         'For observe: the title of one menu bar menu to open, exactly as the observation lists it ' +
-          '("文件", "Format"). Every observation already lists the menu titles; this lists one menu\'s commands, ' +
-          'and they can then be clicked with click_element like any other element. Most of what an application ' +
-          'can do is a menu command and nothing in the window reaches it. Open the one menu you need — the whole ' +
-          'menu bar is several times the size of the window. A command shown as disabled cannot be pressed: it ' +
-          'needs its application in front, which Computer Use does not do.',
+          '("文件", "Format"). An observation lists the menu titles when the executor walks the menu bar; ' +
+          "this lists one menu's commands, and they can then be clicked with click_element like any other " +
+          'element. Most of what an application can do is a menu command and nothing in the window reaches it. ' +
+          'Open the one menu you need — the whole menu bar is several times the size of the window. A command ' +
+          'shown as disabled cannot be pressed: it needs its application in front, which Computer Use does not do. ' +
+          'An observation that answers menu_bar=unavailable came from an executor that does not report the menu ' +
+          'bar at all, and no menu command is reachable there however the argument is spelled.',
       ),
     wait_for_text: z
       .string()
@@ -399,6 +402,37 @@ function observationText(observation: CuObservation): string {
   return renderObservationForModel(observation);
 }
 
+/**
+ * What the model asked to see, carried on the observation the executor
+ * returned.
+ *
+ * Both of these were advertised in the tool description as facts of the format
+ * and neither was produced by the only executor there was. `query` is filtered
+ * by the renderer from `observation.query` and the executor was expected to
+ * echo it; it did not, so the filter never ran, and the header — which is where
+ * a filtered view announces itself — said nothing either. Stamping the request
+ * makes the filter the host's own work, which is where it already was.
+ *
+ * `menu` cannot be synthesized: opening a menu is a walk of the menu bar and
+ * only the executor can do it. So it is named as missing instead. An
+ * unanswerable request that says nothing is the failure mode this whole surface
+ * exists to remove.
+ */
+function withRequestedView(
+  observation: CuObservation,
+  request: { query?: string; menu?: string },
+): CuObservation {
+  const menuAsked = request.menu !== undefined;
+  const menuReturned = observation.elements.some((element) => element.role === 'AXMenuBar');
+  return {
+    ...observation,
+    ...(request.query !== undefined && observation.query === undefined
+      ? { query: request.query }
+      : {}),
+    ...(menuAsked && !menuReturned ? { menu: { ...observation.menu, unavailable: true } } : {}),
+  };
+}
+
 function persistedObservationText(observation: CuObservation): string {
   return JSON.stringify({
     observation_id: observation.observationId,
@@ -469,7 +503,7 @@ function stripUnverifiedTargetHints<T extends ComputerParams>(input: T): T {
 function targetHintConflict(
   input: ComputerParams,
   record: { appId?: string; appAlias?: string; windowId?: number },
-): string | undefined {
+): ComputerToolResult | undefined {
   const hinted = input as ComputerParams & { app?: string; window_id?: number };
   if (
     hinted.app !== undefined &&
@@ -478,16 +512,65 @@ function targetHintConflict(
     // The name that resolved this observation is not a contradiction of it.
     hinted.app !== record.appAlias
   ) {
-    return `maka_computer.${input.action} failed: target_mismatch — this observation is of ${record.appId}, not ${hinted.app}. Observe the app you mean, then act on an element from that observation.`;
+    return {
+      error: 'target_mismatch',
+      text: `maka_computer.${input.action} failed: target_mismatch — this observation is of ${record.appId}, not ${hinted.app}. Observe the app you mean, then act on an element from that observation.`,
+    };
   }
   if (
     hinted.window_id !== undefined &&
     record.windowId !== undefined &&
     hinted.window_id !== record.windowId
   ) {
-    return `maka_computer.${input.action} failed: target_mismatch — this observation is of window ${record.windowId}, not ${hinted.window_id}. Observe that window, then act on an element from that observation.`;
+    return {
+      error: 'target_mismatch',
+      text: `maka_computer.${input.action} failed: target_mismatch — this observation is of window ${record.windowId}, not ${hinted.window_id}. Observe that window, then act on an element from that observation.`,
+    };
   }
   return undefined;
+}
+
+/**
+ * Says so when an argument holds a placeholder from the model's own call
+ * record instead of a value.
+ *
+ * The record the model reads back withholds screen-derived and typed values and
+ * leaves a shape in their place. Those shapes are legal strings: `value` and
+ * `text` are `z.string().max(8000)` with no lower bound and no pattern, so
+ * `"<text:18>"` passes the wire schema and the strict union both, and a model
+ * replaying its own `set_value` would type those characters into the user's
+ * field. Nothing here reads the argument's contents beyond matching that shape.
+ */
+function withheldValueReplayed(input: ComputerParams): ComputerToolResult | undefined {
+  const candidate = input as ComputerParams & {
+    value?: unknown;
+    text?: unknown;
+    steps?: Array<{ value?: unknown }>;
+  };
+  const offending: string[] = [];
+  if (typeof candidate.value === 'string' && COMPUTER_USE_WITHHELD_VALUE.test(candidate.value)) {
+    offending.push('value');
+  }
+  if (typeof candidate.text === 'string' && COMPUTER_USE_WITHHELD_VALUE.test(candidate.text)) {
+    offending.push('text');
+  }
+  if (
+    Array.isArray(candidate.steps) &&
+    candidate.steps.some(
+      (step) => typeof step?.value === 'string' && COMPUTER_USE_WITHHELD_VALUE.test(step.value),
+    )
+  ) {
+    offending.push('steps[].value');
+  }
+  if (offending.length === 0) return undefined;
+  return {
+    error: 'withheld_value_replayed',
+    text:
+      `maka_computer.${input.action} failed: withheld_value_replayed — ` +
+      `${offending.join(', ')} holds a placeholder from your own call record, not text. ` +
+      'Your earlier calls are recorded with typed and screen-derived values replaced by their ' +
+      'shape, because those values belong to the user. Nothing was sent. Send the text you mean.',
+  };
 }
 
 /**
@@ -678,6 +761,10 @@ export function buildComputerUseTools(deps: {
     duplicate_action:
       'this exact action was already sent against this observation and was not sent twice. ' +
       'Call action:"observe" to see whether it took effect instead of sending it again.',
+    retired_action:
+      'this exact action was already refused against this observation, and nothing was dispatched ' +
+      'either time, so the window is as it was and observing again would show the same thing. ' +
+      'Address a different element, or use a different action on this one.',
     action_not_claimed:
       'this action was not registered against the observation it quotes. ' +
       'Call action:"observe" and send the action again with the observation_id it returns.',
@@ -813,7 +900,14 @@ export function buildComputerUseTools(deps: {
     | 'capture_failed';
 
   function bindingFailure(reason: BindingFailureReason, action?: string): ComputerToolResult {
-    const error: ComputerUseErrorCode = isComputerUseErrorCode(reason) ? reason : 'stale_frame';
+    // `retired_action` is an internal distinction, not a twenty-ninth word for
+    // the model: it is the same fact as `duplicate_action` with a different
+    // recovery, and the recovery is the sentence, not the code.
+    const error: ComputerUseErrorCode = isComputerUseErrorCode(reason)
+      ? reason
+      : reason === 'retired_action'
+        ? 'duplicate_action'
+        : 'stale_frame';
     const tool = action ? `maka_computer.${action}` : 'maka_computer';
     return {
       text: `${tool} failed: ${error} — ${BINDING_FAILURE_RECOVERY[reason]}`,
@@ -951,7 +1045,14 @@ export function buildComputerUseTools(deps: {
     if (
       record.state.isConsumed({ frameId: observationId, epoch: active?.epoch ?? 0 }, fingerprint)
     ) {
-      return { rejection: 'duplicate_action' };
+      return {
+        rejection: record.state.wasRetired(
+          { frameId: observationId, epoch: active?.epoch ?? 0 },
+          fingerprint,
+        )
+          ? 'retired_action'
+          : 'duplicate_action',
+      };
     }
     if (!active) return { rejection: 'no_active_frame' };
     if (observationId !== active.frameId) return { rejection: 'stale_frame' };
@@ -975,11 +1076,38 @@ export function buildComputerUseTools(deps: {
   function consumeBoundAction(
     record: SessionObservationRecord,
     action: CuaBoundAction,
-  ): ComputerToolResult | undefined {
+  ): BindingFailureReason | undefined {
     const confirmation = record.state.confirmAction(action);
     record.backendObservationId = undefined;
     record.elements = undefined;
-    return confirmation.ok ? undefined : bindingFailure(confirmation.reason);
+    return confirmation.ok ? undefined : confirmation.reason;
+  }
+
+  /**
+   * The frame's refusal, plus the executor's own when it had one.
+   *
+   * Frame bookkeeping can fail after the executor has already answered: the
+   * epoch moves while a dispatch is in flight, and the confirmation that
+   * follows is rejected. Returning only the frame's word threw away the one
+   * sentence saying why the action itself was refused, so a model handed
+   * `stale_frame` did the only thing it says to do — observe, re-pick the same
+   * element, and collect the identical `dispatch_refused` it was never shown.
+   * The executor's account leads, because it is the one that says what to do
+   * differently; the frame's is the reason the retry has to be re-observed.
+   */
+  function refusalAfterDispatch(
+    reason: BindingFailureReason,
+    result: CuRunResult | undefined,
+    action: string,
+  ): ComputerToolResult {
+    if (!result || result.outcome.ok) return bindingFailure(reason, action);
+    const executor = result.outcome;
+    return {
+      error: executor.error,
+      text:
+        `maka_computer.${action} failed: ${executor.error} — ${executor.message} ` +
+        `The observation it quoted has also moved on: ${BINDING_FAILURE_RECOVERY[reason]}`,
+    };
   }
 
   /**
@@ -1001,9 +1129,9 @@ export function buildComputerUseTools(deps: {
   function retireBoundAction(
     record: SessionObservationRecord,
     action: CuaBoundAction,
-  ): ComputerToolResult | undefined {
+  ): BindingFailureReason | undefined {
     const retirement = record.state.retireAction(action);
-    return retirement.ok ? undefined : bindingFailure(retirement.reason);
+    return retirement.ok ? undefined : retirement.reason;
   }
 
   /**
@@ -1346,6 +1474,16 @@ export function buildComputerUseTools(deps: {
       'indented to show containment: "<element_id> <role> \\"<label>\\" =\\"<value>\\" [<state>] @x,y wxh". ' +
       'A field written ~"…" instead of ="…" is empty and that is its placeholder — prompt text, not content, ' +
       'so it still needs filling and must not be read back as a value. ' +
+      // Every one of these is what the executor reported, and executors differ
+      // in what they report. Stated as unconditional facts of the format, the
+      // absent ones read as facts about the window: an element with no
+      // secondary actions listed reads as one that offers none, and an
+      // observation with no [focused] reads as a window with nothing focused.
+      // Both were wrong against the one executor that shipped, which reported
+      // neither field on any element.
+      'Placeholders, subroles, secondary actions and [focused] are written when the executor reports ' +
+      'them, and an executor that reports none of them writes a line with none. Their absence across ' +
+      'a whole observation means the executor does not report them, not that the window has none. ' +
       'Absent parts are omitted, and state is written only when it is not the default, so an element carrying ' +
       'no [disabled] is enabled. A value ending in "…(+N chars)" was shortened for length and is not the whole value. ' +
       // Capturing the picture is what made observe time out on a real machine:
@@ -1369,8 +1507,8 @@ export function buildComputerUseTools(deps: {
       '— Tab, Escape, Return, the arrows, and typing — reach a background window normally. When a command exists ' +
       'only in a menu, say so rather than reaching for its shortcut. ' +
       'A "+name,name" suffix lists what that element accepts as a secondary_action, and an element with no suffix ' +
-      'offers nothing beyond click_element; raise is how a window is brought forward. [focused] marks where a key ' +
-      'sent without an element_id will land. ' +
+      'offers nothing beyond click_element that this executor knows of; raise is how a window is brought forward. ' +
+      '[focused] marks where a key sent without an element_id will land, when the executor reports focus. ' +
       'Coordinate click, pointer move, scroll and drag aim at a pixel and need the window where it is; the element actions aim at a control and do not, ' +
       'which is the difference that shows when the window is behind something else. Prefer an element action whenever one exists. ' +
       'Synthesized input is refused while the user is at the keyboard or the pointer, so a coordinate action can come back user_intervened through no fault of yours. ' +
@@ -1438,6 +1576,11 @@ export function buildComputerUseTools(deps: {
     ): Promise<ComputerToolResult> => {
       if (abortSignal.aborted) return { text: 'computer aborted before start' };
       const input = snapshotComputerParams(computerParams.parse(args));
+      // Before anything is claimed against a frame or dispatched: an argument
+      // holding one of this host's own withheld-value placeholders is a replay
+      // of the record, not a value, and every path below would have typed it.
+      const replayed = withheldValueReplayed(input);
+      if (replayed) return replayed;
       const invocationGeneration = presentationGenerations.get(sessionId) ?? 0;
       const releasePendingInvocation = trackPendingInvocation(sessionId, turnId);
       try {
@@ -1511,7 +1654,7 @@ export function buildComputerUseTools(deps: {
             }
             const record = sessionObservation(sessionId, turnId);
             const hintConflict = targetHintConflict(input, record);
-            if (hintConflict) return { text: hintConflict };
+            if (hintConflict) return hintConflict;
             if (!record.appId || !record.windowId)
               return bindingFailure('no_active_frame', 'element_sequence');
             const active = record.state.activeObservation();
@@ -2068,7 +2211,13 @@ export function buildComputerUseTools(deps: {
               return sessionFailure(blocked.ok ? 'reobserve_required' : blocked.reason, 'observe');
             }
             const record = sessionObservation(sessionId, turnId);
-            const observation = registerObservation(record, backendObservation);
+            const observation = registerObservation(
+              record,
+              withRequestedView(backendObservation, {
+                ...(input.query ? { query: input.query } : {}),
+                ...(input.menu ? { menu: input.menu } : {}),
+              }),
+            );
             const activated = state.freshObservationSucceeded();
             if (activated.status !== 'active') {
               invalidateObservation(sessionId);
@@ -2173,7 +2322,7 @@ export function buildComputerUseTools(deps: {
             }
             const record = sessionObservation(sessionId, turnId);
             const hintConflict = targetHintConflict(input, record);
-            if (hintConflict) return { text: hintConflict };
+            if (hintConflict) return hintConflict;
             const modelAction: CuSemanticAction =
               input.action === 'click_element'
                 ? {
@@ -2275,7 +2424,7 @@ export function buildComputerUseTools(deps: {
                           }
                         : { type: 'key', text: semanticAction.action };
             let result: CuRunResult | undefined;
-            let consumeFailure: ComputerToolResult | undefined;
+            let consumeFailure: BindingFailureReason | undefined;
             let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
             try {
               if (!actionLease) return sessionFailure('no_active_frame', input.action);
@@ -2320,7 +2469,7 @@ export function buildComputerUseTools(deps: {
             }
             if (consumeFailure && !hasUncertainDeliveredOutcome(result)) {
               presentation?.finish();
-              return consumeFailure;
+              return refusalAfterDispatch(consumeFailure, result, input.action);
             }
             if (!result) {
               presentation?.finish();
@@ -2509,11 +2658,11 @@ export function buildComputerUseTools(deps: {
             // block. Kept OFF `text`: coerceResultContent projects this object to a
             // text-only session-log entry (no `kind` ⇒ only `text` survives), so the
             // bounded frame never bloats history.
-            let bindingResult: ComputerToolResult | undefined;
+            let bindingResult: BindingFailureReason | undefined;
             if (boundAction) bindingResult = consumeBoundAction(record, boundAction);
             if (bindingResult && !hasUncertainDeliveredOutcome(result)) {
               presentation?.finish();
-              return bindingResult;
+              return refusalAfterDispatch(bindingResult, result, input.action);
             }
             if (!result) {
               presentation?.finish();

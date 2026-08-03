@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { computerUseModelCallArgs } from '../computer-use.js';
+import { COMPUTER_USE_WITHHELD_VALUE, computerUseModelCallArgs } from '../computer-use.js';
 
 describe('the call a model reads back as its own', () => {
   test('keeps the arguments it sent, so the shape it learns is the shape that worked', () => {
@@ -73,6 +73,39 @@ describe('the call a model reads back as its own', () => {
 
     assert.ok(!('approvalClass' in readBack));
     assert.ok(!('rememberForTurnAllowed' in readBack));
+  });
+
+  test('never shows the element identity the host resolved for itself', () => {
+    // The Computer Use tool attaches the observed element's identity so the
+    // host can verify the target. It is not in the wire schema, and that schema
+    // is `.strict()`: a model imitating this record sends `element_identity`,
+    // the SDK refuses the whole call before `impl`, and the refusal never
+    // reaches the debug journal.
+    const readBack = computerUseModelCallArgs({
+      action: 'click_element',
+      observation_id: 'obs-1',
+      element_id: '4',
+      element_identity: { token: 'ax-token', role: 'AXButton', label: 'Continue' },
+    });
+
+    assert.ok(!('element_identity' in readBack));
+    assert.ok(!JSON.stringify(readBack).includes('ax-token'));
+  });
+
+  test('a withheld value is a description of one, not a string that can be resent', () => {
+    // `value` and `text` are `z.string().max(8000)` with no lower bound and no
+    // pattern, so whatever stands in for a withheld value is a legal call. It
+    // was `<text>` — a fill-in-the-blank — and a model replaying its own
+    // set_value would have typed those six characters into the user's field.
+    const readBack = computerUseModelCallArgs({
+      action: 'set_value',
+      observation_id: 'obs-1',
+      element_id: '4',
+      value: 'the-users-password',
+    });
+
+    assert.equal(readBack.value, '<text:18>');
+    assert.match(String(readBack.value), COMPUTER_USE_WITHHELD_VALUE);
   });
 
   test('answers a camelCase key in the dialect the tool accepts', () => {
