@@ -720,6 +720,12 @@ export class AiSdkBackend implements AgentBackend {
             messageId: stepId,
             text: part.text,
             ...(part.signature !== undefined ? { signature: part.signature } : {}),
+            // No sanitiser here, unlike the tool call below: these options are
+            // not the provider's object. `translateChunk` rebuilds reasoning
+            // metadata from two named string fields, so an omitted provider
+            // field cannot arrive as an explicit `undefined` and break the
+            // canonical encoding. Passing the provider's object through
+            // instead would need the same `stripUndefinedDeep` a tool call has.
             ...(part.providerOptions !== undefined
               ? { providerOptions: part.providerOptions }
               : {}),

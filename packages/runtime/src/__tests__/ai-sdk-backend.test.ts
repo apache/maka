@@ -12880,6 +12880,111 @@ describe('AiSdkBackend steering durability and identity', () => {
       );
     }
   });
+
+  test('rebuilds reasoning metadata rather than persisting what the provider sent', async () => {
+    // The tool-call seam above carries `providerOptions` from the stream into
+    // the persisted event, so an omitted provider field arrives as an explicit
+    // `undefined` and the canonical encoder refuses the write. Reasoning looks
+    // like the same seam and is not: `translateChunk` rebuilds the reasoning
+    // metadata from two named string fields, so nothing the provider sends
+    // reaches the event verbatim and no `undefined` can ride along.
+    //
+    // This pins that, because it is the only reason the reasoning path needs
+    // no sanitiser. If reasoning metadata is ever passed through instead, this
+    // test fails and says so.
+    const anchor = runtimeTextEvent({
+      id: 'runtime-user',
+      turnId: 'turn-1',
+      role: 'user',
+      author: 'user',
+      text: 'think about it',
+    });
+    const ledger: RuntimeEvent[] = [anchor];
+    const mappingMemory = createSessionEventMapMemory();
+    const mappingContext: InvocationContext = {
+      sessionId: 'session-1',
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'desktop',
+      startedAt: 1,
+      request: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        text: 'think about it',
+        source: 'desktop',
+        initialRuntimeEvent: anchor,
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    };
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'reasoning-1' },
+            {
+              type: 'reasoning-delta',
+              id: 'reasoning-1',
+              delta: 'weighing it up',
+              providerMetadata: {
+                openai: { itemId: 'item-1', reasoningEncryptedContent: undefined },
+              },
+            },
+            { type: 'reasoning-end', id: 'reasoning-1' },
+            { type: 'text-start', id: 'text-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+            { type: 'text-end', id: 'text-1' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'end_turn' },
+              usage: emptyUsage(),
+            },
+          ] satisfies LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: async () => ledger,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'think about it',
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+    })) {
+      const mapped = mapSessionEventToRuntimeEvent(event, mappingContext, mappingMemory);
+      if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+    }
+
+    const thinking = ledger.find((event) => event.content?.kind === 'thinking');
+    assert.ok(thinking, 'the reasoning part has to reach the ledger for this to pin anything');
+    assert.deepEqual(
+      thinking.content?.kind === 'thinking' ? thinking.content.providerOptions : undefined,
+      { openai: { itemId: 'item-1' } },
+      'the omitted field was not carried, because the metadata was rebuilt',
+    );
+    for (const event of ledger) {
+      assert.doesNotThrow(
+        () => encodeCanonicalRuntimeEvent(event),
+        `a persisted ${event.content?.kind} event must read back as it was written`,
+      );
+    }
+  });
 });
 
 function textCompletionModel(text: string): MockLanguageModelV4 {

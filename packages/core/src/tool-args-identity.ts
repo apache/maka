@@ -155,24 +155,43 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
  * What it does not do: it never rebuilds a value that needed no change, so
  * symbol keys, getters and object identity survive untouched on that path; a
  * value it does rebuild is a plain-object spread, which keeps symbol keys and
- * loses nothing JSON could have seen. Anything with its own prototype is
- * returned as-is rather than flattened.
+ * loses nothing JSON could have seen. It descends into exactly the two shapes
+ * the encoder accepts — a plain object and a null-prototype one, the shape
+ * prototype-safe JSON parsing produces — and a null prototype is put back on
+ * the rebuilt value, because that prototype is what keeps a `__proto__`
+ * property as data. Anything with any other prototype is returned as-is
+ * rather than flattened.
  */
 export function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
     // An array hole is not a property that can be dropped: JSON writes it as
-    // `null`, so leaving `undefined` in place produces a value that does not
+    // `null`, so leaving the position empty produces a value that does not
     // round-trip and the encoder refuses it just the same. Writing `null` is
     // not inventing a value — it is writing down what would be persisted.
-    const mapped = value.map((entry) => (entry === undefined ? null : stripUndefinedDeep(entry)));
-    return (mapped.some((entry, index) => entry !== value[index]) ? mapped : value) as unknown as T;
+    // `map` would not do: it skips holes and leaves them exactly as they were.
+    let changedEntry = false;
+    const mapped = Array.from({ length: value.length }, (_unused, index) => {
+      if (!Object.hasOwn(value, index) || value[index] === undefined) {
+        changedEntry = true;
+        return null;
+      }
+      const entry = value[index];
+      const next = stripUndefinedDeep(entry);
+      if (next !== entry) changedEntry = true;
+      return next;
+    });
+    return (changedEntry ? mapped : value) as unknown as T;
   }
   if (value === null || typeof value !== 'object') return value;
-  if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
   let changed = false;
+  // Spread rather than assignment, and the prototype restored afterwards: both
+  // keep a `__proto__` property as the data the encoder will read back.
   const out: Record<string, unknown> = { ...record };
+  if (prototype === null) Object.setPrototypeOf(out, null);
   for (const key of keys) {
     const entry = record[key];
     if (entry === undefined) {
