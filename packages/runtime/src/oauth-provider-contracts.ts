@@ -24,6 +24,19 @@ export class OAuthTokenEndpointError extends Error {
   }
 }
 
+/**
+ * The local device-authorization window (`expires_at`) elapsed before the
+ * user approved. Distinct from a provider rejection: the user simply did
+ * not complete authorization in time. Host surfaces map this to
+ * `authorization_failed`, never `provider_rejected`.
+ */
+export class OAuthDeviceAuthorizationExpiredError extends Error {
+  constructor() {
+    super('Device authorization expired');
+    this.name = 'OAuthDeviceAuthorizationExpiredError';
+  }
+}
+
 export const OAUTH_MAX_TOKEN_CHARS = 32 * 1024;
 
 export const OAUTH_PROVIDER_CONTRACTS = {

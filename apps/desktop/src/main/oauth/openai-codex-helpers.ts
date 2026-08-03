@@ -4,26 +4,10 @@
  * import them without dragging in the `electron` ESM module
  * (which is not loadable from node --test directly).
  *
- * Endpoint constants live here too; the service module re-exports
- * them so there is exactly one source of truth.
- *
- * Authorization is the ChatGPT device-code flow (`deviceauth/*` on
- * auth.openai.com/api/accounts), the same flow the official Codex
- * CLI uses — no local loopback listener, no fixed callback port.
+ * The device-auth protocol endpoints/params are owned by
+ * `@maka/runtime`'s codex-oauth-enrollment (single source of truth);
+ * this module holds only JWT claim extraction and the experimental gate.
  */
-
-// =============================================================
-// Endpoints — pinned to the official codex CLI device-auth flow
-// (codex-rs login/src/device_code_auth.rs).
-// =============================================================
-export const CODEX_OAUTH_CONFIG = {
-  clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
-  tokenEndpoint: 'https://auth.openai.com/oauth/token',
-  deviceAuthBaseUrl: 'https://auth.openai.com/api/accounts',
-  deviceVerifyUrl: 'https://auth.openai.com/codex/device',
-  deviceRedirectUri: 'https://auth.openai.com/deviceauth/callback',
-  scopes: 'openid profile email offline_access',
-} as const;
 
 // =============================================================
 // JWT claim extraction. The Codex access token is a JWT carrying

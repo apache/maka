@@ -7,6 +7,7 @@ import {
 } from './oauth-login.js';
 import {
   OAUTH_PROVIDER_CONTRACTS,
+  OAuthDeviceAuthorizationExpiredError,
   oauthExpiresAt,
   requireOAuthBoundedString,
   requireOAuthDataRecord,
@@ -88,7 +89,7 @@ export async function pollXaiDeviceAuthorization(
   let intervalMs = input.authorization.intervalMs;
   for (;;) {
     if (now() >= input.authorization.expiresAt) {
-      throw new OAuthTokenEndpointError('invalid_grant');
+      throw new OAuthDeviceAuthorizationExpiredError();
     }
     await sleep(intervalMs, input.signal);
     input.signal.throwIfAborted();

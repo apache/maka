@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { OAuthTokenEndpointError } from '../oauth-login.js';
+import { OAuthDeviceAuthorizationExpiredError } from '../oauth-provider-contracts.js';
 import {
   exchangeCodexDeviceAuthorizationCode,
   pollCodexDeviceAuthorization,
@@ -113,9 +114,89 @@ test('Codex device polling stops once the device code expires', async () => {
         signal: new AbortController().signal,
         now: () => NOW,
       }),
-    (error: unknown) =>
-      error instanceof OAuthTokenEndpointError && error.category === 'invalid_grant',
+    (error: unknown) => error instanceof OAuthDeviceAuthorizationExpiredError,
   );
+});
+
+test('Codex device polling never issues a request after the window elapses mid-sleep', async () => {
+  let polls = 0;
+  let now = NOW;
+  await assert.rejects(
+    () =>
+      pollCodexDeviceAuthorization({
+        authorization: {
+          deviceAuthId: 'deviceauth_mid',
+          userCode: 'CODE-MID',
+          verificationUrl: 'https://auth.openai.com/codex/device',
+          expiresAt: NOW + 5_000,
+          intervalMs: 5_000,
+        },
+        fetchFn: async () => {
+          polls += 1;
+          return Response.json(
+            { error: { code: 'deviceauth_authorization_pending' } },
+            { status: 403 },
+          );
+        },
+        signal: new AbortController().signal,
+        now: () => now,
+        sleep: async () => {
+          now = NOW + 10_000;
+        },
+      }),
+    (error: unknown) => error instanceof OAuthDeviceAuthorizationExpiredError,
+  );
+  // One in-window poll happened; the post-sleep check must have stopped
+  // the loop before a second (out-of-window) request.
+  assert.equal(polls, 1);
+});
+
+test('Codex device polling completes an admitted request even if the caller cancels', async () => {
+  const controller = new AbortController();
+  let markAdmitted!: () => void;
+  const admitted = new Promise<void>((resolve) => {
+    markAdmitted = resolve;
+  });
+  let resolveResponse!: (response: Response) => void;
+  const response = new Promise<Response>((resolve) => {
+    resolveResponse = resolve;
+  });
+  const polling = pollCodexDeviceAuthorization({
+    authorization: {
+      deviceAuthId: 'deviceauth_admit',
+      userCode: 'CODE-ADM',
+      verificationUrl: 'https://auth.openai.com/codex/device',
+      expiresAt: NOW + 60_000,
+      intervalMs: 1_000,
+    },
+    fetchFn: async (_url, init) => {
+      const requestSignal = init?.signal;
+      assert.ok(requestSignal);
+      markAdmitted();
+      assert.equal(requestSignal.aborted, false);
+      return response;
+    },
+    signal: controller.signal,
+    now: () => NOW,
+    sleep: async () => undefined,
+    onPollAdmission: () => {
+      markAdmitted();
+    },
+  });
+
+  await admitted;
+  controller.abort();
+  resolveResponse(
+    Response.json({
+      authorization_code: 'late-but-in-window',
+      code_challenge: 'c',
+      code_verifier: 'v',
+    }),
+  );
+  assert.deepEqual(await polling, {
+    authorizationCode: 'late-but-in-window',
+    codeVerifier: 'v',
+  });
 });
 
 test('Codex device authorization code exchange posts to the token endpoint with the deviceauth redirect URI', async () => {

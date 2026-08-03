@@ -6,20 +6,18 @@
  * uses (codex-rs login/src/device_code_auth.rs). There is no local
  * loopback listener and no fixed callback port, so the whole class of
  * localhost/IPv6/port-collision/state-hang failures is gone:
- *   - `getAuthorizationUrl` POSTs `{client_id}` to
- *     `/api/accounts/deviceauth/usercode` and receives a one-time
- *     `user_code` + `device_auth_id`.
+ *   - `getAuthorizationUrl` requests a one-time `user_code`.
  *   - The user opens `auth.openai.com/codex/device` in their browser
  *     and enters the code (the renderer shows it via `stateHint`).
- *   - `openAuthorizationUrl` starts a poll of
- *     `/api/accounts/deviceauth/token`; 403/404 means "still pending",
- *     200 returns `{authorization_code, code_challenge, code_verifier}`.
- *   - `completeAuthorization` exchanges the authorization code at
- *     `/oauth/token` with `redirect_uri=auth.openai.com/deviceauth/callback`.
+ *   - `openAuthorizationUrl` starts polling; `completeAuthorization`
+ *     exchanges the resulting authorization code for tokens.
  *
- * Token refresh + persistence are unchanged and shared with the
- * pure-Node surfaces (#1125): desktop, TUI, and headless all read and
- * write the same workspace credential store.
+ * The device-auth protocol itself (usercode / poll / exchange / boundary
+ * validation) is owned by `@maka/runtime`'s codex-oauth-enrollment — the
+ * single protocol authority for both desktop and runtime-host. This
+ * service owns only the product lifecycle: authRequestId + pending state,
+ * browser opening, account-state snapshots, and shared-credential
+ * persistence (#1125).
  *
  * Hard gates (shared with the Claude / xAI services):
  *   - Renderer NEVER sees access_token / refresh_token / id_token.
@@ -39,10 +37,17 @@ import {
   type SubscriptionActionResult,
 } from '@maka/core';
 import {
+  exchangeCodexDeviceAuthorizationCode,
+  OAuthDeviceAuthorizationExpiredError,
+  OAuthTokenEndpointError,
+  pollCodexDeviceAuthorization,
   proxiedFetch,
   refreshAndPersistOAuthSubscriptionTokens,
   refreshOAuthSubscriptionTokens,
   resolveAndPersistOAuthSubscriptionTokens,
+  startCodexDeviceAuthorization,
+  type CodexDeviceAuthorization,
+  type CodexDeviceAuthorizationGrant,
   type OAuthSubscriptionRefreshAndPersistOutcome,
   type OAuthSubscriptionTokens,
 } from '@maka/runtime';
@@ -52,23 +57,7 @@ import {
   saveSharedOAuthTokens,
   type SharedOAuthCredentialStore,
 } from './shared-credential-bridge.js';
-import {
-  CODEX_OAUTH_CONFIG,
-  extractAccountClaims,
-  safeExtractAccountClaims,
-} from './openai-codex-helpers.js';
-
-// Endpoint shortcuts so the existing class body keeps reading
-// like the xAI service (constants at the top, lookups inline).
-const CODEX_CLIENT_ID = CODEX_OAUTH_CONFIG.clientId;
-const CODEX_TOKEN_ENDPOINT = CODEX_OAUTH_CONFIG.tokenEndpoint;
-const CODEX_DEVICE_USERCODE_ENDPOINT = `${CODEX_OAUTH_CONFIG.deviceAuthBaseUrl}/deviceauth/usercode`;
-const CODEX_DEVICE_TOKEN_ENDPOINT = `${CODEX_OAUTH_CONFIG.deviceAuthBaseUrl}/deviceauth/token`;
-const CODEX_DEVICE_VERIFY_URL = CODEX_OAUTH_CONFIG.deviceVerifyUrl;
-const CODEX_DEVICE_REDIRECT_URI = CODEX_OAUTH_CONFIG.deviceRedirectUri;
-
-// The official CLI lets a device auth poll for 15 minutes.
-const CODEX_DEVICE_AUTH_TTL_MS = 15 * 60 * 1000;
+import { extractAccountClaims, safeExtractAccountClaims } from './openai-codex-helpers.js';
 
 // =============================================================
 // Persisted tokens — INTERNAL TO THIS MODULE. Never crosses IPC.
@@ -85,12 +74,8 @@ interface PersistedTokens {
 }
 
 interface PendingAuthorization {
-  deviceAuthId: string;
-  userCode: string;
-  /** Verification page the user opens in their browser. */
-  url: string;
-  expiresAt: number;
-  intervalMs: number;
+  /** Server-issued device authorization (user code, verify URL, window). */
+  authorization: CodexDeviceAuthorization;
   controller: AbortController;
   /**
    * Promise that resolves with the authorization-code exchange inputs
@@ -98,7 +83,7 @@ interface PendingAuthorization {
    * shutdown. Started by `openAuthorizationUrl`, awaited by
    * `completeAuthorization`.
    */
-  pollPromise?: Promise<{ authorizationCode: string; codeVerifier: string }>;
+  pollPromise?: Promise<CodexDeviceAuthorizationGrant>;
 }
 
 // =============================================================
@@ -152,54 +137,36 @@ export class OpenAiCodexService {
   // -----------------------------------------------------------
 
   /**
-   * Start the ChatGPT device-code flow: request a one-time user code
-   * from `deviceauth/usercode`. The returned `authRequestId` scopes
-   * the eventual openAuthUrl / completeAuthorization /
-   * cancelAuthorization calls; `stateHint` carries the `user_code`
-   * the user must enter at auth.openai.com/codex/device.
+   * Start the ChatGPT device-code flow: request a one-time user code.
+   * The returned `authRequestId` scopes the eventual openAuthUrl /
+   * completeAuthorization / cancelAuthorization calls; `stateHint`
+   * carries the `user_code` the user must enter at
+   * auth.openai.com/codex/device.
    */
   async getAuthorizationUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
     this.pruneExpiredPending();
-    let response: Response;
+    const controller = new AbortController();
+    let authorization: CodexDeviceAuthorization;
     try {
-      response = await this.fetchFn(CODEX_DEVICE_USERCODE_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_id: CODEX_CLIENT_ID }),
+      authorization = await startCodexDeviceAuthorization({
+        fetchFn: this.fetchFn,
+        signal: controller.signal,
+        now: this.now,
       });
     } catch (err) {
+      if (err instanceof OAuthTokenEndpointError) {
+        return {
+          ok: false,
+          reason: 'token_exchange_failed',
+          message: `Codex 设备授权启动失败（HTTP ${err.status ?? '未知'}）。`,
+        };
+      }
       return this.failureFromError('unknown', err);
-    }
-    if (!response.ok) {
-      return {
-        ok: false,
-        reason: 'token_exchange_failed',
-        message: `Codex 设备授权启动失败（HTTP ${response.status}）。`,
-      };
-    }
-    const payload = (await response.json()) as Record<string, unknown>;
-    const deviceAuthId = nonEmptyString(payload.device_auth_id);
-    const userCode = nonEmptyString(payload.user_code);
-    const interval = positiveNumber(payload.interval) ?? 5;
-    const expiresAt = deviceAuthExpiry(payload.expires_at, this.now());
-    if (!deviceAuthId || !userCode) {
-      return {
-        ok: false,
-        reason: 'token_exchange_failed',
-        message: 'Codex 设备授权响应无效，请稍后重试。',
-      };
     }
 
     const authRequestId = randomUUID();
-    this.pending.set(authRequestId, {
-      deviceAuthId,
-      userCode,
-      url: CODEX_DEVICE_VERIFY_URL,
-      expiresAt,
-      intervalMs: interval * 1_000,
-      controller: new AbortController(),
-    });
-    return { authRequestId, stateHint: userCode };
+    this.pending.set(authRequestId, { authorization, controller });
+    return { authRequestId, stateHint: authorization.userCode };
   }
 
   /**
@@ -212,12 +179,12 @@ export class OpenAiCodexService {
     if (!pending) {
       return { ok: false, reason: 'authorization_pending', message: '授权会话不存在，请重新点击“登录 Codex”。' };
     }
-    if (pending.expiresAt <= this.now()) {
+    if (pending.authorization.expiresAt <= this.now()) {
       this.disposePending(authRequestId);
       return { ok: false, reason: 'authorization_expired', message: '授权请求已过期，请重新点击“登录 Codex”。' };
     }
     try {
-      await this.openExternal(pending.url);
+      await this.openExternal(pending.authorization.verificationUrl);
       if (this.pending.get(authRequestId) !== pending || pending.controller.signal.aborted) {
         return { ok: false, reason: 'authorization_cancelled', message: 'Codex 授权已取消。' };
       }
@@ -242,8 +209,8 @@ export class OpenAiCodexService {
       return { ok: false, reason: 'authorization_pending', message: '请先点击“登录 Codex”再完成授权。' };
     }
     try {
-      const { authorizationCode, codeVerifier } = await pending.pollPromise;
-      const tokens = await this.exchangeCodeForTokens(authorizationCode, codeVerifier);
+      const grant = await pending.pollPromise;
+      const tokens = await this.exchangeGrantForTokens(grant, pending.controller.signal);
       // Storage failures are not exchange failures: the authorization
       // code was consumed successfully, so tell the user to fix the
       // store instead of implying the code was bad.
@@ -260,11 +227,11 @@ export class OpenAiCodexService {
     } catch (err) {
       this.disposePending(authRequestId);
       this.authorizing = false;
-      if (err instanceof CodexAuthorizationExpiredError) {
-        return { ok: false, reason: 'authorization_expired', message: 'Codex 授权已过期，请重新登录。' };
-      }
       if (err instanceof CodexAuthorizationCancelledError) {
         return { ok: false, reason: 'authorization_cancelled', message: 'Codex 授权已取消。' };
+      }
+      if (err instanceof OAuthDeviceAuthorizationExpiredError) {
+        return { ok: false, reason: 'authorization_expired', message: 'Codex 授权已过期，请重新登录。' };
       }
       return this.failureFromError('token_exchange_failed', err);
     }
@@ -465,7 +432,7 @@ export class OpenAiCodexService {
 
   private pruneExpiredPending(): void {
     for (const [id, pending] of this.pending) {
-      if (pending.expiresAt <= this.now()) {
+      if (pending.authorization.expiresAt <= this.now()) {
         pending.controller.abort();
         this.pending.delete(id);
       }
@@ -480,83 +447,47 @@ export class OpenAiCodexService {
   }
 
   /**
-   * Poll `deviceauth/token` until the browser approval lands.
-   * Mirrors the official CLI: 403/404 means still pending (retry
-   * after the interval), 200 returns the authorization code + PKCE
-   * verifier. Times out after `expires_at` / 15 minutes.
+   * Poll `deviceauth/token` through the runtime enrollment. Caller
+   * cancellation aborts the poll between requests; the poll stops with
+   * `OAuthDeviceAuthorizationExpiredError` once the window elapses.
    */
-  private async pollForTokens(pending: PendingAuthorization): Promise<{ authorizationCode: string; codeVerifier: string }> {
-    for (;;) {
-      if (pending.expiresAt <= this.now()) throw new CodexAuthorizationExpiredError();
-      try {
-        await this.sleep(pending.intervalMs, pending.controller.signal);
-      } catch (error) {
-        if (pending.controller.signal.aborted) throw new CodexAuthorizationCancelledError();
-        throw error;
-      }
-      let response: Response;
-      try {
-        response = await this.fetchFn(CODEX_DEVICE_TOKEN_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            device_auth_id: pending.deviceAuthId,
-            user_code: pending.userCode,
-          }),
-          signal: pending.controller.signal,
-        });
-      } catch (error) {
-        if (pending.controller.signal.aborted) throw new CodexAuthorizationCancelledError();
-        throw error;
-      }
-      if (response.ok) {
-        const payload = (await response.json()) as Record<string, unknown>;
-        const authorizationCode = nonEmptyString(payload.authorization_code);
-        const codeVerifier = nonEmptyString(payload.code_verifier);
-        if (!authorizationCode || !codeVerifier) {
-          throw new Error('Codex 设备授权响应无效。');
-        }
-        return { authorizationCode, codeVerifier };
-      }
-      // 403/404 = still pending (per the official CLI); anything else
-      // is a hard failure.
-      if (response.status === 403 || response.status === 404) continue;
-      throw new Error(`Codex 设备授权失败（HTTP ${response.status}）。`);
+  private async pollForTokens(pending: PendingAuthorization): Promise<CodexDeviceAuthorizationGrant> {
+    try {
+      return await pollCodexDeviceAuthorization({
+        authorization: pending.authorization,
+        fetchFn: this.fetchFn,
+        signal: pending.controller.signal,
+        now: this.now,
+        sleep: this.sleep,
+      });
+    } catch (err) {
+      if (pending.controller.signal.aborted) throw new CodexAuthorizationCancelledError();
+      throw err;
     }
   }
 
-  private async exchangeCodeForTokens(code: string, verifier: string): Promise<PersistedTokens> {
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      client_id: CODEX_CLIENT_ID,
-      code,
-      code_verifier: verifier,
-      redirect_uri: CODEX_DEVICE_REDIRECT_URI,
+  /**
+   * Exchange the device-auth authorization code at the token endpoint
+   * through the runtime enrollment (strict response validation), then
+   * decorate with the ChatGPT account id for backend routing.
+   */
+  private async exchangeGrantForTokens(
+    grant: CodexDeviceAuthorizationGrant,
+    signal: AbortSignal,
+  ): Promise<PersistedTokens> {
+    const tokens = await exchangeCodexDeviceAuthorizationCode({
+      grant,
+      fetchFn: this.fetchFn,
+      signal,
+      now: this.now,
     });
-    const response = await this.fetchFn(CODEX_TOKEN_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'maka-desktop/0.1.0 (oauth-subscription)',
-      },
-      body: body.toString(),
-    });
-    if (!response.ok) {
-      throw new Error(`Token exchange failed (${response.status}).`);
-    }
-    const payload = (await response.json()) as {
-      access_token: string;
-      refresh_token: string;
-      id_token?: string;
-      expires_in: number;
-    };
-    const claims = extractAccountClaims(payload.access_token, payload.id_token);
+    const claims = extractAccountClaims(tokens.access_token, tokens.id_token);
     return {
-      access_token: payload.access_token,
-      refresh_token: payload.refresh_token,
-      id_token: payload.id_token,
-      expires_at: this.now() + 1000 * payload.expires_in,
-      account_id: claims.accountId,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      id_token: tokens.id_token,
+      expires_at: tokens.expires_at,
+      account_id: claims.accountId || tokens.account_id || '',
     };
   }
 
@@ -641,36 +572,9 @@ export interface CodexAccountStateSnapshot {
 // =============================================================
 // Re-exports for the IPC handler + focused protocol tests.
 // =============================================================
-export { CODEX_OAUTH_CONFIG, isOpenAiCodexExperimentalEnabled } from './openai-codex-helpers.js';
+export { isOpenAiCodexExperimentalEnabled } from './openai-codex-helpers.js';
 
-class CodexAuthorizationExpiredError extends Error {}
 class CodexAuthorizationCancelledError extends Error {}
-
-function nonEmptyString(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-function positiveNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-  // The deviceauth response returns `interval` as a numeric string.
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  }
-  return null;
-}
-
-/**
- * `expires_at` arrives as an ISO-8601 UTC string. Fall back to a
- * 15-minute TTL (the official CLI's poll window) when absent.
- */
-function deviceAuthExpiry(value: unknown, now: number): number {
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed) && parsed > now) return parsed;
-  }
-  return now + CODEX_DEVICE_AUTH_TTL_MS;
-}
 
 function abortableSleep(delayMs: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

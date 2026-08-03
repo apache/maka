@@ -1,19 +1,18 @@
 /**
- * Static-analysis + behavior tests for the OpenAI Codex subscription
- * OAuth service (device-code flow).
+ * Behavior tests for the OpenAI Codex subscription OAuth service
+ * (device-code flow).
  *
- * Pins the endpoints/params to the official codex CLI device-auth flow
- * (codex-rs login/src/device_code_auth.rs), plus the JWT account-id
- * extraction and the end-to-end device login behavior against a
- * mocked fetch.
+ * The device-auth protocol endpoints/params are owned and pinned by
+ * `@maka/runtime`'s codex-oauth-enrollment tests; this suite exercises
+ * the desktop service through its public class surface: user-code
+ * surfacing, browser opening, poll completion, expiry/cancellation
+ * semantics, strict exchange validation, and shared-credential
+ * persistence.
  */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import {
-  CODEX_OAUTH_CONFIG,
-  extractAccountClaims,
-} from '../oauth/openai-codex-helpers.js';
+import { extractAccountClaims } from '../oauth/openai-codex-helpers.js';
 import { base64urlEncode } from '@maka/core';
 import { OpenAiCodexService } from '../oauth/openai-codex-service.js';
 
@@ -22,20 +21,6 @@ function makeJwt(payload: Record<string, unknown>): string {
   const body = base64urlEncode(new TextEncoder().encode(JSON.stringify(payload)));
   return `${header}.${body}.signature`;
 }
-
-describe('Codex OAuth config (official codex CLI device-auth flow)', () => {
-  it('pins clientId, token endpoint, device-auth endpoints and verify URL', () => {
-    assert.equal(CODEX_OAUTH_CONFIG.clientId, 'app_EMoamEEZ73f0CkXaXp7hrann');
-    assert.equal(CODEX_OAUTH_CONFIG.tokenEndpoint, 'https://auth.openai.com/oauth/token');
-    assert.equal(CODEX_OAUTH_CONFIG.deviceAuthBaseUrl, 'https://auth.openai.com/api/accounts');
-    assert.equal(CODEX_OAUTH_CONFIG.deviceVerifyUrl, 'https://auth.openai.com/codex/device');
-    assert.equal(
-      CODEX_OAUTH_CONFIG.deviceRedirectUri,
-      'https://auth.openai.com/deviceauth/callback',
-    );
-    assert.equal(CODEX_OAUTH_CONFIG.scopes, 'openid profile email offline_access');
-  });
-});
 
 describe('Codex JWT account-id extraction', () => {
   it('reads the OpenAI-specific chatgpt_account_id claim from the access token', () => {
@@ -99,10 +84,12 @@ interface RecordedRequest {
 
 class FakeCredentialStore {
   private readonly map = new Map<string, string>();
+  failSetSecret = false;
   async getSecret(slug: string, kind: string): Promise<string | null> {
     return this.map.get(`${slug}:${kind}`) ?? null;
   }
   async setSecret(slug: string, kind: string, value: string): Promise<void> {
+    if (this.failSetSecret) throw new Error('simulated credential write failure');
     this.map.set(`${slug}:${kind}`, value);
   }
   async deleteSecret(slug: string, kind?: string): Promise<void> {
@@ -119,6 +106,9 @@ class FakeCredentialStore {
     if (current !== expected) return { committed: false, current };
     this.map.set(key, value);
     return { committed: true };
+  }
+  dump(slug: string, kind: string): string | null {
+    return this.map.get(`${slug}:${kind}`) ?? null;
   }
 }
 
@@ -142,6 +132,7 @@ interface DeviceHarness {
   service: OpenAiCodexService;
   requests: RecordedRequest[];
   openedUrls: string[];
+  store: FakeCredentialStore;
   advance(ms: number): void;
 }
 
@@ -150,6 +141,7 @@ const CLOCK_START = 1_800_000_000_000;
 function createHarness(options: DeviceHarnessOptions): DeviceHarness {
   const requests: RecordedRequest[] = [];
   const openedUrls: string[] = [];
+  const store = new FakeCredentialStore();
   let clock = CLOCK_START;
   let pollIndex = 0;
 
@@ -187,7 +179,7 @@ function createHarness(options: DeviceHarnessOptions): DeviceHarness {
     openExternal: async (url) => {
       openedUrls.push(url);
     },
-    credentialStore: new FakeCredentialStore(),
+    credentialStore: store,
     fetchFn: fetchFn as unknown as typeof fetch,
     // Abortable sleep so cancellation can interrupt the poll loop.
     sleep: async (_ms, signal) => {
@@ -213,6 +205,7 @@ function createHarness(options: DeviceHarnessOptions): DeviceHarness {
     service,
     requests,
     openedUrls,
+    store,
     advance: (ms) => {
       clock += ms;
     },
@@ -384,5 +377,72 @@ describe('Codex device-auth login flow', () => {
     const complete = await h.service.completeAuthorization(payload.authRequestId);
     assert.ok('ok' in complete && complete.ok === false);
     assert.equal(complete.reason, 'authorization_pending');
+  });
+
+  it('rejects a malformed 200 exchange response without writing a credential', async () => {
+    const h = createHarness({
+      usercode: {
+        device_auth_id: 'deviceauth_malformed',
+        user_code: 'CODE-0004',
+        interval: '5',
+        expires_at: '2099-01-01T00:00:00.000+00:00',
+      },
+      tokenPoll: [{ status: 200, body: { authorization_code: 'ac', code_verifier: 'v' } }],
+      // 200 but missing refresh_token / expires_in: must fail validation,
+      // never report success and persist an unparseable credential.
+      tokenExchange: { status: 200, body: { access_token: makeJwt({ sub: 'sub-malformed' }) } },
+    });
+    const { authRequestId } = await startLogin(h);
+    const complete = await h.service.completeAuthorization(authRequestId);
+    assert.ok('ok' in complete && complete.ok === false);
+    assert.equal(complete.reason, 'token_exchange_failed');
+    assert.equal(h.store.dump('codex-subscription', 'oauth_token'), null);
+  });
+
+  it('stops polling once the device window elapses mid-sleep', async () => {
+    const h = createHarness({
+      usercode: {
+        device_auth_id: 'deviceauth_expiremid',
+        user_code: 'CODE-0005',
+        interval: '5',
+        expires_at: new Date(CLOCK_START + 5_000).toISOString(),
+      },
+      tokenPoll: [{ status: 403, body: { error: { code: 'deviceauth_authorization_pending' } } }],
+      tokenExchange: { status: 200, body: {} },
+      // The first (and only) poll returns pending; the sleep then advances
+      // the clock past expiry. No further poll may be issued.
+      onSleep: () => h.advance(10_000),
+    });
+    const { authRequestId } = await startLogin(h);
+    const complete = await h.service.completeAuthorization(authRequestId);
+    assert.ok('ok' in complete && complete.ok === false);
+    assert.equal(complete.reason, 'authorization_expired');
+    const polls = h.requests.filter((r) => r.url.endsWith('/deviceauth/token'));
+    assert.equal(polls.length, 1);
+  });
+
+  it('reports a credential write failure as storage_failed without reporting success', async () => {
+    const h = createHarness({
+      usercode: {
+        device_auth_id: 'deviceauth_storefail',
+        user_code: 'CODE-0006',
+        interval: '5',
+        expires_at: '2099-01-01T00:00:00.000+00:00',
+      },
+      tokenPoll: [{ status: 200, body: { authorization_code: 'ac', code_verifier: 'v' } }],
+      tokenExchange: {
+        status: 200,
+        body: {
+          access_token: makeJwt({ sub: 'sub-storefail' }),
+          refresh_token: 'refresh-storefail',
+          expires_in: 3600,
+        },
+      },
+    });
+    h.store.failSetSecret = true;
+    const { authRequestId } = await startLogin(h);
+    const complete = await h.service.completeAuthorization(authRequestId);
+    assert.ok('ok' in complete && complete.ok === false);
+    assert.equal(complete.reason, 'storage_failed');
   });
 });

@@ -15,6 +15,11 @@ import {
 export { OAuthTokenEndpointError } from './oauth-provider-contracts.js';
 export type { OAuthTokenEndpointErrorCategory } from './oauth-provider-contracts.js';
 
+// LEGACY: the openai-codex loopback presentation is retained only for
+// external consumers of this public library API. Maka's own login paths
+// (desktop service + runtime-host coordinator) use the device-code flow
+// in codex-oauth-enrollment.ts. Remove the codex loopback branch when a
+// public-API break is acceptable.
 export type OAuthLoginProvider = 'claude-subscription' | 'openai-codex' | 'xai-oauth';
 export type OAuthInitialTokenProvider = OAuthLoginProvider;
 export type OAuthLoginPresentationKind = 'paste-code' | 'loopback';

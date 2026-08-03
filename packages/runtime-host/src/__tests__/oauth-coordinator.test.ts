@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import {
+  OAuthDeviceAuthorizationExpiredError,
   OAuthTokenEndpointError,
   parseOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
@@ -210,7 +211,10 @@ test('Codex device login fails when approval never arrives before expiry', async
       }),
       pollCodexAuthorization: async (input) => {
         input.onPollAdmission?.();
-        throw new OAuthTokenEndpointError('invalid_grant');
+        // The real poll throws OAuthDeviceAuthorizationExpiredError when the
+        // device window elapses without approval — a timeout, not a
+        // provider rejection of the account.
+        throw new OAuthDeviceAuthorizationExpiredError();
       },
       exchangeCodexCode: async () => {
         throw new Error('OAuth exchange must not start');
@@ -227,8 +231,69 @@ test('Codex device login fails when approval never arrives before expiry', async
       connectionId: fixture.connection.connectionId,
       provider: 'openai-codex',
       phase: 'failed',
-      failure: 'provider_rejected',
+      failure: 'authorization_failed',
     });
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('Codex device login cancels between polls but commits an admitted poll result', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-codex-cut', []);
+    let markPollAdmitted!: () => void;
+    const pollAdmitted = new Promise<void>((resolve) => {
+      markPollAdmitted = resolve;
+    });
+    let releasePoll!: () => void;
+    const pollRelease = new Promise<void>((resolve) => {
+      releasePoll = resolve;
+    });
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startCodexAuthorization: async () => ({
+        deviceAuthId: 'deviceauth-cut',
+        userCode: 'CODE-CUT',
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        expiresAt: NOW + 60_000,
+        intervalMs: 1_000,
+      }),
+      pollCodexAuthorization: async (input) => {
+        input.onPollAdmission?.();
+        markPollAdmitted();
+        await pollRelease;
+        return { authorizationCode: 'device-cut-code', codeVerifier: 'device-cut-verifier' };
+      },
+      exchangeCodexCode: async () => tokenFixture('codex-after-cancel'),
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-codex-cut', connectionId: fixture.connection.connectionId },
+      operationContext('client-codex-cut', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    await pollAdmitted;
+    const cancelled = await coordinator.handlers['oauth.login.cancel'](
+      { attemptId: 'attempt-codex-cut' },
+      operationContext('client-codex-cut', fixture.acquireResidency),
+    );
+    assert.equal(cancelled.ok, true);
+    if (cancelled.ok) assert.equal(cancelled.result.phase, 'exchanging');
+    releasePoll();
+    assert.equal((await waitForTerminal(coordinator, 'attempt-codex-cut')).phase, 'authenticated');
+    assert.equal(fixture.invalidations, 1);
     assert.equal(fixture.activeResidencies, 0);
     await coordinator.close();
     client.close();

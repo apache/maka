@@ -8,6 +8,7 @@ import {
 } from './oauth-login.js';
 import {
   OAUTH_PROVIDER_CONTRACTS,
+  OAuthDeviceAuthorizationExpiredError,
   requireOAuthBoundedString,
   requireOAuthDataRecord,
 } from './oauth-provider-contracts.js';
@@ -93,9 +94,20 @@ export async function startCodexDeviceAuthorization(
 /**
  * Poll `POST /deviceauth/token` until the browser approval lands. Mirrors
  * the official CLI: 403/404 means still pending (retry after the interval),
- * 200 returns `{authorization_code, code_challenge, code_verifier}`. The
- * poll stops once `expires_at` (server-provided, 15-minute window) passes.
- * Returns the grant; the caller exchanges it for tokens.
+ * 200 returns `{authorization_code, code_challenge, code_verifier}`.
+ *
+ * The poll never issues a request once the local `expires_at` has passed:
+ * it polls first, then sleeps at most until the boundary, and re-checks on
+ * every loop. A 200 issued while the code was still valid is honored even
+ * if it arrives just past the boundary (the grant was created in-window).
+ * An elapsed window throws `OAuthDeviceAuthorizationExpiredError` — the
+ * caller distinguishes "user did not finish in time" from a provider
+ * rejection.
+ *
+ * After `onPollAdmission`, the in-flight request uses an independent
+ * AbortSignal so a caller cancellation cannot discard a poll that has
+ * already consumed the one-time device code; the per-request intrinsic
+ * deadline still bounds it.
  */
 export async function pollCodexDeviceAuthorization(
   input: PollCodexDeviceAuthorizationInput,
@@ -104,9 +116,8 @@ export async function pollCodexDeviceAuthorization(
   const sleep = input.sleep ?? abortableSleep;
   for (;;) {
     if (now() >= input.authorization.expiresAt) {
-      throw new OAuthTokenEndpointError('invalid_grant');
+      throw new OAuthDeviceAuthorizationExpiredError();
     }
-    await sleep(input.authorization.intervalMs, input.signal);
     input.signal.throwIfAborted();
     input.onPollAdmission?.();
     const response = await requestOAuthEndpointJson({
@@ -120,7 +131,9 @@ export async function pollCodexDeviceAuthorization(
         }),
       },
       fetchFn: input.fetchFn,
-      signal: input.signal,
+      // The admitted request must complete even if the caller cancels;
+      // the per-request deadline still bounds it.
+      signal: new AbortController().signal,
       timeoutMs: input.timeoutMs,
     });
     if (response.ok) {
@@ -140,6 +153,11 @@ export async function pollCodexDeviceAuthorization(
     if (response.status === 403 || response.status === 404) {
       input.onPollRetry?.();
       input.signal.throwIfAborted();
+      // Sleep at most until the window elapses; the loop-top check then
+      // stops polling once expired.
+      const remaining = input.authorization.expiresAt - now();
+      if (remaining <= 0) throw new OAuthDeviceAuthorizationExpiredError();
+      await sleep(Math.min(input.authorization.intervalMs, remaining), input.signal);
       continue;
     }
     throw new OAuthTokenEndpointError('provider_rejected', response.status);

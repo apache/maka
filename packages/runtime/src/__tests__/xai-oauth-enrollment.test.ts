@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { OAuthTokenEndpointError } from '../oauth-login.js';
+import { OAuthDeviceAuthorizationExpiredError } from '../oauth-provider-contracts.js';
 import {
   pollXaiDeviceAuthorization,
   startXaiDeviceAuthorization,
@@ -125,4 +126,25 @@ test('xAI token polling completes an admitted request after caller cancellation'
     refresh_token: 'refresh',
     expires_at: NOW + 3_600_000,
   });
+});
+
+test('xAI device polling classifies a local window expiry separately from a provider rejection', async () => {
+  await assert.rejects(
+    () =>
+      pollXaiDeviceAuthorization({
+        authorization: {
+          deviceCode: 'device-code',
+          userCode: 'USER-CODE',
+          verificationUrl: 'https://accounts.x.ai/device',
+          expiresAt: NOW - 1,
+          intervalMs: 1_000,
+        },
+        fetchFn: async () => {
+          throw new Error('must not be fetched');
+        },
+        signal: new AbortController().signal,
+        now: () => NOW,
+      }),
+    (error: unknown) => error instanceof OAuthDeviceAuthorizationExpiredError,
+  );
 });

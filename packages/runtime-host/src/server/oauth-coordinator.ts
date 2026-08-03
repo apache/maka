@@ -5,6 +5,7 @@ import {
   createProxiedFetchTransport,
   exchangeCodexDeviceAuthorizationCode,
   exchangeOAuthAuthorizationCode,
+  OAuthDeviceAuthorizationExpiredError,
   OAuthTokenEndpointError,
   pollCodexDeviceAuthorization,
   pollXaiDeviceAuthorization,
@@ -530,6 +531,9 @@ function terminalAttempt(attempt: ActiveLoginAttempt): TerminalLoginAttempt {
 function loginFailureCode(error: unknown): OAuthLoginFailureCode {
   if (error instanceof LoginFailure) return error.code;
   if (error instanceof RuntimePolicyStoreError) return 'persistence_failed';
+  // A local device window that elapsed without approval is a timeout, not
+  // a provider rejection of the account.
+  if (error instanceof OAuthDeviceAuthorizationExpiredError) return 'authorization_failed';
   if (error instanceof OAuthTokenEndpointError) {
     return error.category === 'invalid_grant' || error.category === 'invalid_token'
       ? 'provider_rejected'
