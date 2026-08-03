@@ -16,11 +16,15 @@
  * lifecycles, and nothing about the app's correctness depends on who started
  * it.
  *
- * The injected payload replaces `default_app.asar` rather than the standard
- * `Resources/app` location. Electron derives `app.isPackaged` from
- * `!process.defaultApp`, so using the packaged-app location would flip
- * `isPackaged` to true and silently disable every dev-mode gate. For the same
- * reason the inner executable keeps the name `Electron`.
+ * `app.isPackaged` is native and computed as
+ * `basename(process.execPath) !== 'electron'`, so the invariant that keeps
+ * every dev-mode gate alive is simply that the inner executable stays named
+ * `Electron` — NOT the payload's location. (It is not derived from
+ * `process.defaultApp`; that flag is set by the stock default_app this module
+ * replaces, and is therefore undefined here.)
+ *
+ * The payload occupies `default_app.asar` rather than `Resources/app` so it
+ * cannot shadow a real packaged app laid down at the standard location.
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -32,7 +36,9 @@ import { fileURLToPath } from 'node:url';
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT = resolve(DESKTOP_DIR, '..', '..');
 const DEV_RUNTIME_DIR = join(DESKTOP_DIR, '.maka-dev');
+const STAGING_DIR = join(DESKTOP_DIR, '.maka-dev.staging');
 const DEV_APP = join(DEV_RUNTIME_DIR, 'Maka Dev.app');
+const STAGING_APP = join(STAGING_DIR, 'Maka Dev.app');
 const DEV_EXECUTABLE = join(DEV_APP, 'Contents', 'MacOS', 'Electron');
 const DEV_ENV_FILE = join(DEV_RUNTIME_DIR, 'dev-env.json');
 const MARKER = join(DEV_RUNTIME_DIR, 'runtime.json');
@@ -47,7 +53,7 @@ const DEV_USER_DATA_DIR = join(
 );
 
 const DEV_BUNDLE_ID = 'com.maka.dev';
-const RUNTIME_SCHEMA_VERSION = 5;
+const RUNTIME_SCHEMA_VERSION = 6;
 const DEV_ENV_SCHEMA_VERSION = 1;
 
 export const developmentAppPath = DEV_APP;
@@ -55,7 +61,9 @@ export const developmentAppPath = DEV_APP;
 export async function resolveMacosDevelopmentLaunch(env = process.env) {
   if (!shouldUseMacosDevelopmentApp(process.platform, env)) return null;
   const appPath = await prepareDevelopmentApp();
-  return createMacosDevelopmentLaunch(appPath);
+  // A leftover app would absorb this launch through the single-instance lock.
+  await ensureNoRunningDevelopmentApp();
+  return createMacosDevelopmentLaunch(appPath, developmentLogFile);
 }
 
 /**
@@ -71,10 +79,26 @@ export function shouldUseMacosDevelopmentApp(platform, env = process.env) {
   return optIn === '1' || optIn === 'true';
 }
 
-export function createMacosDevelopmentLaunch(appPath) {
+export function createMacosDevelopmentLaunch(appPath, logFile) {
   // LaunchServices must own the launch so macOS TCC attributes the running
   // executable to Maka Dev rather than to its parent terminal.
-  return { command: 'open', args: ['-n', '-a', appPath] };
+  const args = ['-n', '-a', appPath];
+  // Without this the detached app's output only reaches Console.app, which is
+  // also where a bootstrap or boot failure would go silent.
+  if (logFile) args.push('--stdout', logFile, '--stderr', logFile);
+  return { command: 'open', args };
+}
+
+export const developmentLogFile = join(DEV_RUNTIME_DIR, 'app.log');
+
+/**
+ * `pkill -f` / `pgrep -f` match an EXTENDED REGEX against the whole command
+ * line, so a path is not a literal. A repository under `~/Dropbox (Personal)`
+ * would otherwise match nothing — leaving the app un-killable — and an
+ * unbalanced `[` makes the pattern fail to compile entirely.
+ */
+export function toProcessMatchPattern(executable) {
+  return executable.replace(/[.[\]{}()*+?^$|\\]/g, '\\$&');
 }
 
 /**
@@ -97,25 +121,65 @@ export async function quitMacosDevelopmentApp(options = {}) {
 }
 
 function sendSignalToExecutable(name, executable) {
-  return spawnSync('pkill', [`-${name}`, '-f', executable]).status === 0;
+  const status = spawnSync('pkill', [`-${name}`, '-f', toProcessMatchPattern(executable)]).status;
+  // 0 = signalled, 1 = no match. Anything else is a usage or pattern error and
+  // must not be read as "nothing was running".
+  if (status !== 0 && status !== 1) {
+    throw new Error(`pkill -${name} failed for ${executable} (exit ${status})`);
+  }
+  return status === 0;
 }
 
 export function isDevelopmentAppRunning(options = {}) {
   const executable = options.executable ?? DEV_EXECUTABLE;
-  const probe = options.probe ?? ((path) => spawnSync('pgrep', ['-f', path]).status === 0);
+  const probe = options.probe ?? defaultLivenessProbe;
   return probe(executable);
 }
 
+function defaultLivenessProbe(executable) {
+  const status = spawnSync('pgrep', ['-f', toProcessMatchPattern(executable)]).status;
+  if (status !== 0 && status !== 1) {
+    throw new Error(`pgrep failed for ${executable} (exit ${status})`);
+  }
+  return status === 0;
+}
+
 /**
- * Application-control variables for the launched app. LaunchServices does not
- * inherit the shell environment, and these must not travel on a command line.
+ * Takes ownership of this worktree's app instance before launching or
+ * rebuilding. Electron's single-instance lock is keyed on userData, so an app
+ * left over from a hard-killed session would absorb the new launch: the new
+ * process exits 0, the OLD window is raised, and it stays pointed at a dead
+ * Vite URL while a liveness probe still reports success.
+ */
+export async function ensureNoRunningDevelopmentApp(options = {}) {
+  const running = options.isRunning ?? isDevelopmentAppRunning;
+  const quit = options.quit ?? quitMacosDevelopmentApp;
+  const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
+  const attempts = options.attempts ?? 10;
+  const pollMs = options.pollMs ?? 200;
+  if (!running(options)) return false;
+  await quit(options);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!running(options)) return true;
+    await delay(pollMs);
+  }
+  throw new Error(
+    'A previous Maka Dev.app is still running and could not be stopped; quit it manually (Cmd-Q) and retry',
+  );
+}
+
+/**
+ * Application-control variables to persist for the app.
  *
- * PATH is deliberately absent: `shell-env.ts` already resolves the login-shell
- * PATH in the main process precisely because GUI-launched apps lack it. Passing
- * PATH here would also mean passing TERM/COLORTERM, which that module reads as
- * "this process was started from a terminal and already has a full
- * environment" — making it skip resolution and leave the app with a worse PATH
- * than it derives on its own.
+ * `open` itself does forward the parent environment, so this file is not what
+ * makes `npm run dev` work. It exists for the launches that have no parent
+ * shell at all — Dock, Spotlight, and Screen Recording's "Quit & Reopen" —
+ * which is exactly the path the whole design has to survive.
+ *
+ * That is also why the list is curated rather than a copy of `process.env`:
+ * this content is written to disk and outlives the session. PATH is excluded
+ * because a recorded PATH goes stale, and `shell-env.ts` resolves the
+ * login-shell PATH in the main process for precisely the GUI-launch case.
  */
 export function selectDevelopmentEnvironment(env, viteUrl) {
   const selected = {};
@@ -151,12 +215,26 @@ function isForwardedEnvironmentKey(key) {
   );
 }
 
+/**
+ * `--user-data-dir` cannot ride along in `electronArgs`: the bootstrap calls
+ * `app.setPath('userData', …)`, which overrides the switch. It has to be
+ * separated so the bootstrap can honour it as a value.
+ */
+export function splitDevelopmentCliArgs(argv = []) {
+  const flag = '--user-data-dir=';
+  return {
+    userDataDir: argv.find((argument) => argument.startsWith(flag))?.slice(flag.length),
+    electronArgs: argv.filter((argument) => !argument.startsWith(flag)),
+  };
+}
+
 export function createDevelopmentEnvironmentFile(input) {
+  const { userDataDir, electronArgs } = splitDevelopmentCliArgs(input.argv);
   return {
     schemaVersion: DEV_ENV_SCHEMA_VERSION,
     env: selectDevelopmentEnvironment(input.env, input.viteUrl),
-    userDataDir: input.userDataDir,
-    electronArgs: input.electronArgs ?? [],
+    userDataDir,
+    electronArgs,
   };
 }
 
@@ -184,24 +262,58 @@ export async function prepareDevelopmentApp() {
   const electronVersion = JSON.parse(readFileSync(ELECTRON_PACKAGE, 'utf8')).version;
   if (isCurrentRuntime(electronVersion)) return DEV_APP;
 
+  // Rebuilding unlinks the bundle an already-running app was launched from,
+  // and deletes the environment file it would read on relaunch.
+  await ensureNoRunningDevelopmentApp();
+
   await rebuildDevelopmentRuntime({
     reset: () => {
-      rmSync(DEV_RUNTIME_DIR, { recursive: true, force: true });
-      mkdirSync(DEV_RUNTIME_DIR, { recursive: true });
+      rmSync(STAGING_DIR, { recursive: true, force: true });
+      mkdirSync(STAGING_DIR, { recursive: true });
     },
     build: () => {
-      run('ditto', [SOURCE_APP, DEV_APP]);
-      const plist = join(DEV_APP, 'Contents', 'Info.plist');
+      run('ditto', [SOURCE_APP, STAGING_APP]);
+      const plist = join(STAGING_APP, 'Contents', 'Info.plist');
       setPlistString(plist, 'CFBundleIdentifier', DEV_BUNDLE_ID);
       setPlistString(plist, 'CFBundleName', 'Maka Dev');
       setPlistString(plist, 'CFBundleDisplayName', 'Maka Dev');
-      installBootstrap();
-      // `ditto` does not copy quarantine metadata by default. Clear any
-      // root-level attribute without the newer recursive `xattr -r` flag,
-      // which is unavailable on older supported macOS releases.
-      run('xattr', ['-c', DEV_APP]);
-      run('codesign', ['--force', '--deep', '--sign', '-', '--identifier', DEV_BUNDLE_ID, DEV_APP]);
-      run('codesign', ['--verify', '--deep', '--strict', DEV_APP]);
+      // Stock Electron seals a SHA256 of its own default_app.asar here. We
+      // replace that payload, so the record would describe a file that no
+      // longer exists — inert today only because the integrity fuse is off.
+      spawnSync('plutil', ['-remove', 'ElectronAsarIntegrity', plist]);
+      installBootstrap(STAGING_APP);
+      // `ditto` preserves quarantine by default (`--qtn`), so clear it from the
+      // whole tree rather than the bundle root alone.
+      run('xattr', ['-cr', STAGING_APP]);
+      // No --identifier: `plutil` already set CFBundleIdentifier, and codesign
+      // derives it per bundle. Passing it with --deep stamps the outer app's
+      // identifier onto all four nested helper bundles.
+      //
+      // The explicit designated requirement is the point of the exercise. An
+      // ad-hoc signature otherwise yields a bare `cdhash` DR, which no TCC
+      // grant survives — every rebuild, Electron bump, or repository move
+      // invalidates it. An identifier-based DR is not weaker in any way that
+      // matters here: the bundle loads dist/main/main.js from OUTSIDE the
+      // seal, so anyone who can write the repository already inherits the
+      // grant without forging anything.
+      // Sign inside-out. A single `--deep` pass carrying the requirement would
+      // stamp it onto the nested helpers too, whose own identifier is
+      // com.github.Electron.helper — codesign then rejects them as
+      // "nested code is modified or invalid".
+      run('codesign', ['--force', '--deep', '--sign', '-', STAGING_APP]);
+      run('codesign', [
+        '--force',
+        '--sign',
+        '-',
+        // `-r=<text>`: a separate argument would be read as a file path.
+        `-r=designated => identifier "${DEV_BUNDLE_ID}"`,
+        STAGING_APP,
+      ]);
+      run('codesign', ['--verify', '--deep', '--strict', STAGING_APP]);
+      // Publish atomically so a concurrent launcher never observes a partial
+      // bundle, and a losing racer simply overwrites with identical bytes.
+      rmSync(DEV_RUNTIME_DIR, { recursive: true, force: true });
+      renameSync(STAGING_DIR, DEV_RUNTIME_DIR);
     },
     writeMarker: () => {
       writeFileSync(
@@ -227,8 +339,8 @@ export async function prepareDevelopmentApp() {
  * resolves it as an ordinary directory, so no archive step or asar dependency
  * is needed to occupy the path Electron looks for.
  */
-function installBootstrap() {
-  const payload = join(DEV_APP, 'Contents', 'Resources', 'default_app.asar');
+export function installBootstrap(appPath = DEV_APP) {
+  const payload = join(appPath, 'Contents', 'Resources', 'default_app.asar');
   rmSync(payload, { recursive: true, force: true });
   mkdirSync(payload, { recursive: true });
   writeFileSync(

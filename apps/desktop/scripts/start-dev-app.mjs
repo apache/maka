@@ -14,13 +14,8 @@ const repoRoot = resolve(desktopDir, '..', '..');
 const cliArgs = process.argv.slice(2);
 const macosLaunch = await resolveMacosDevelopmentLaunch();
 if (macosLaunch) {
-  const userDataArg = cliArgs.find((arg) => arg.startsWith('--user-data-dir='));
   writeDevelopmentEnvironment(
-    createDevelopmentEnvironmentFile({
-      env: process.env,
-      userDataDir: userDataArg?.slice('--user-data-dir='.length),
-      electronArgs: cliArgs.filter((arg) => !arg.startsWith('--user-data-dir=')),
-    }),
+    createDevelopmentEnvironmentFile({ argv: cliArgs, env: process.env }),
   );
 }
 const electronBin =

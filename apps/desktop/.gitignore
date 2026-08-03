@@ -2,3 +2,7 @@
 test-results/
 resources/workers/
 .maka-dev/
+.maka-dev.staging/
+# Written by the pre-opt-in dev launcher, which ran unconditionally on macOS.
+# Its session.json holds forwarded API keys, so keep ignoring any leftover copy.
+.maka-dev-session/

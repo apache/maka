@@ -22,29 +22,43 @@ generated app is ignored by Git and rebuilt when the installed Electron version
 or this repository's path changes; run
 `npm --workspace @maka/desktop run prepare:dev-app` to prepare it explicitly.
 
-This workflow is opt-in because LaunchServices detaches the app from the
-terminal: main-process logs go to Console.app instead of your shell. It also
-costs a codesign rebuild. Developers who are not touching OS permissions should
-not pay either.
+This workflow is opt-in because it costs a codesign rebuild and puts an extra
+app in your Dock and in System Settings. Developers who are not touching OS
+permissions should not pay for it. Main-process logs are still streamed to the
+terminal — `open` redirects them to `.maka-dev/app.log`, which the launcher
+follows.
 
 Everything the bundle needs is fixed when it is built, so a launch with no
 arguments and no environment — the Dock, Spotlight, or Screen Recording's
 “Quit & Reopen” — produces a correct app. There is no session protocol or
 supervising process: the app instance and the dev session are separate
 lifecycles. Application-control variables (API keys, `MAKA_*`, the Vite URL)
-are published to an ignored `0600` file at `.maka-dev/dev-env.json`, never on a
-command line. `PATH` is deliberately not forwarded — `shell-env.ts` resolves the
-login-shell `PATH` in the main process, which is exactly the case a
-GUI-launched app needs.
+are published to an ignored `0600` file at `.maka-dev/dev-env.json` rather than
+a command line. That file, not the shell, is what makes a Dock or “Quit &
+Reopen” launch work, since those have no parent shell at all. `PATH` is not
+recorded in it: a stored `PATH` goes stale, and `shell-env.ts` resolves the
+login-shell `PATH` in the main process for exactly this case.
 
-Because the bootstrap is built from constants, the bundle's cdhash is stable
-across rebuilds, so rebuilding does not invalidate a grant you already gave.
+The bundle is signed with an explicit designated requirement of
+`identifier "com.maka.dev"`. An ad-hoc signature otherwise designates a bare
+`cdhash`, which no grant survives — every rebuild, Electron bump, or repository
+move would invalidate it, and each worktree would silently overwrite the
+others' TCC row. Anchoring on the identifier is not a weaker boundary in any
+way that matters: the bundle loads `dist/main/main.js` from outside the
+signature seal, so anyone able to write this repository already inherits the
+grant without forging anything.
 
 The default profile is `~/Library/Application Support/Maka Dev-<worktree-id>`,
-which keeps development isolated from the packaged Maka profile and lets
-separate worktrees run concurrently; an explicit `--user-data-dir` takes
-precedence. Shutdown matches this worktree's own bundle path, so a concurrent
-worktree's app is unaffected.
+which keeps development isolated from the packaged Maka profile; an explicit
+`--user-data-dir` takes precedence. Shutdown matches this worktree's own bundle
+path, so a concurrent worktree's app is unaffected. Because that lock is keyed
+on the profile, a launch first reclaims any app left over from a hard-killed
+session — otherwise the stale app would absorb the new launch and keep showing
+its old, dead Vite URL.
+
+Known limitation: `dev-env.json` outlives the session, so launching from the
+Dock long after `npm run dev` has stopped points the app at a Vite URL that is
+no longer served, and the window stays blank. Start a dev session first.
 
 Grant permissions to **Maka Dev**, not a generic Electron entry. Screen
 Recording changes require restarting the development app. Without

@@ -18,7 +18,7 @@
  *   Vite dev server + Electron            ─── fork
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
@@ -26,6 +26,7 @@ import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
 import {
   createDevelopmentEnvironmentFile,
+  developmentLogFile,
   isDevelopmentAppRunning,
   quitMacosDevelopmentApp,
   resolveMacosDevelopmentLaunch,
@@ -149,18 +150,21 @@ if (!devUrl) {
 }
 
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
-const appArgs = [DESKTOP_DIR, ...process.argv.slice(2)];
 const cliArgs = process.argv.slice(2);
+const appArgs = [DESKTOP_DIR, ...cliArgs];
 const macosLaunch = await resolveMacosDevelopmentLaunch();
+let logStream = null;
 if (macosLaunch) {
-  const userDataArg = cliArgs.find((arg) => arg.startsWith('--user-data-dir='));
-  writeDevelopmentEnvironment(createDevelopmentEnvironmentFile({
-    viteUrl: devUrl,
-    env: process.env,
-    userDataDir: userDataArg?.slice('--user-data-dir='.length),
-    electronArgs: cliArgs.filter((arg) => !arg.startsWith('--user-data-dir=')),
-  }));
-  log('electron', 'launching Maka Dev.app through LaunchServices (main-process logs go to Console.app)');
+  writeDevelopmentEnvironment(
+    createDevelopmentEnvironmentFile({ argv: cliArgs, env: process.env, viteUrl: devUrl }),
+  );
+  // `open` redirects the detached app's output here; follow it so the terminal
+  // keeps showing main-process logs and startup failures.
+  writeFileSync(developmentLogFile, '');
+  logStream = spawn('tail', ['-n', '+1', '-F', developmentLogFile], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  log('electron', 'launching Maka Dev.app through LaunchServices');
 }
 const electron = spawn(macosLaunch?.command ?? resolveElectronBin(), macosLaunch?.args ?? appArgs, {
   cwd: DESKTOP_DIR,
@@ -172,6 +176,7 @@ let shuttingDown = false;
 async function shutdown(code, options = {}) {
   if (shuttingDown) return;
   shuttingDown = true;
+  logStream?.kill();
   if (macosLaunch) await quitMacosDevelopmentApp();
   if (options.killElectron !== false) {
     await terminateProcessTree(electron);
@@ -211,7 +216,7 @@ if (macosLaunch) {
   // about whether the app came up. Check once that a process actually exists.
   setTimeout(() => {
     if (shuttingDown || isDevelopmentAppRunning()) return;
-    console.error('[dev] Maka Dev.app did not stay running; see Console.app for its output');
+    console.error('[dev] Maka Dev.app did not stay running (see the output above)');
     shutdown(1);
   }, 5_000).unref();
 }

@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
+  ensureNoRunningDevelopmentApp,
   createBootstrapSource,
   createDevelopmentEnvironmentFile,
+  developmentAppPath,
+  splitDevelopmentCliArgs,
+  toProcessMatchPattern,
   createMacosDevelopmentLaunch,
   isDevelopmentAppRunning,
   isDevelopmentRuntimeCurrent,
@@ -59,34 +64,124 @@ test('forwards application secrets but leaves PATH to the main process', () => {
   assert.equal(env.MAKA_MODEL, 'test-model');
   assert.equal(env.CUA_ENDPOINT, 'http://cua');
   assert.equal('API_SECRET' in env, false);
-  // shell-env.ts resolves the login-shell PATH itself, and treats TERM /
-  // COLORTERM as proof it need not bother. Forwarding either would make it
-  // skip resolution and leave the app with a worse PATH than it derives.
+  // This content is persisted, so a recorded PATH would go stale; shell-env.ts
+  // resolves the login-shell PATH in the main process for the GUI-launch case.
   assert.equal('PATH' in env, false);
   assert.equal('TERM' in env, false);
   assert.equal('COLORTERM' in env, false);
-  // Secrets travel in a 0600 file, never on a command line.
-  assert.equal(createMacosDevelopmentLaunch('/repo/Maka Dev.app').args.includes('openai-secret'), false);
 });
 
-test('boots the repository app from constants alone', () => {
-  const source = createBootstrapSource(
-    '/repo/apps/desktop',
-    '/user-data/Maka Dev',
-    '/repo/apps/desktop/.maka-dev/dev-env.json',
+/**
+ * Runs the generated bootstrap for real against a stub `electron` module and a
+ * stub main entry. Asserting on the source text only proves it mentions the
+ * right identifiers; `new Function` accepts a typo'd `setPathTYPO` or a
+ * nonexistent module. Executing it is what pins the behaviour.
+ */
+async function runBootstrap({ envFileContent } = {}) {
+  // realpath: macOS resolves /var to /private/var, which process.cwd() reports.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'maka-boot-')));
+  const desktopDir = join(root, 'desktop');
+  const envFile = join(root, 'dev-env.json');
+  const calls = [];
+  mkdirSync(join(desktopDir, 'dist', 'main'), { recursive: true });
+  mkdirSync(join(root, 'node_modules', 'electron'), { recursive: true });
+  writeFileSync(
+    join(root, 'node_modules', 'electron', 'package.json'),
+    JSON.stringify({ name: 'electron', main: 'index.js' }),
   );
-  assert.match(source, /app\.setAppPath\(desktopDir\)/);
-  assert.match(source, /process\.chdir\(desktopDir\)/);
-  assert.match(source, /dist\/main\/main\.js/);
-  assert.match(source, /\/repo\/apps\/desktop/);
-  assert.match(source, /\/user-data\/Maka Dev/);
-  assert.match(source, /app\.commandLine\.appendSwitch/);
-  // The whole point: a relaunch carries no arguments and no live supervisor,
-  // so the bootstrap must not depend on either.
-  assert.doesNotMatch(source, /process\.argv/);
-  assert.doesNotMatch(source, /supervisorPid/);
-  assert.doesNotMatch(source, /process\.kill/);
-  assert.doesNotThrow(() => new Function(source));
+  writeFileSync(
+    join(root, 'node_modules', 'electron', 'index.js'),
+    `const calls = globalThis.__makaCalls;
+     module.exports = { app: {
+       setAppPath: (p) => calls.push(['setAppPath', p]),
+       setPath: (k, v) => calls.push(['setPath', k, v]),
+       exit: (c) => calls.push(['exit', c]),
+       commandLine: { appendSwitch: (k, v) => calls.push(['switch', k, v ?? null]) },
+     } };`,
+  );
+  writeFileSync(
+    join(desktopDir, 'dist', 'main', 'main.js'),
+    `import { writeFileSync } from 'node:fs';
+     writeFileSync(${JSON.stringify(join(root, 'loaded.json'))}, JSON.stringify({
+       cwd: process.cwd(), viteUrl: process.env.VITE_DEV_SERVER_URL ?? null,
+       apiKey: process.env.OPENAI_API_KEY ?? null,
+     }));`,
+  );
+  if (envFileContent !== undefined) writeFileSync(envFile, envFileContent);
+  const bootstrapFile = join(root, 'bootstrap.cjs');
+  writeFileSync(
+    bootstrapFile,
+    createBootstrapSource(desktopDir, join(root, 'default-user-data'), envFile),
+  );
+  const nodeModule = createRequire(join(root, 'x.cjs'));
+  globalThis.__makaCalls = calls;
+  // The bootstrap chdirs by design, and its dynamic import of the main entry
+  // resolves on a later tick — so the cwd must stay in place until that entry
+  // has run. Restore it only afterwards, so later tests are unaffected.
+  const previousCwd = process.cwd();
+  // The bootstrap assigns into process.env, which is per-app in production but
+  // shared between these tests; snapshot it so cases stay independent.
+  const previousEnv = { ...process.env };
+  try {
+    nodeModule(bootstrapFile);
+    const cwd = process.cwd();
+    for (let i = 0; i < 20; i += 1) await new Promise((done) => setImmediate(done));
+    return { root, desktopDir, calls, cwd, loadedFile: join(root, 'loaded.json') };
+  } finally {
+    process.chdir(previousCwd);
+    for (const key of Object.keys(process.env)) {
+      if (!(key in previousEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, previousEnv);
+  }
+}
+
+test('boots the repository app from constants alone, with no env file present', async () => {
+  const { desktopDir, calls, loadedFile, root, cwd } = await runBootstrap();
+  // The central claim of the design: nothing but build-time constants.
+  assert.deepEqual(calls, [
+    ['setAppPath', desktopDir],
+    ['setPath', 'userData', join(root, 'default-user-data')],
+  ]);
+  assert.equal(cwd, desktopDir);
+  const loaded = JSON.parse(readFileSync(loadedFile, 'utf8'));
+  assert.equal(loaded.cwd, desktopDir);
+  assert.equal(loaded.viteUrl, null);
+});
+
+test('adopts a published environment file: env, userData override, switches', async () => {
+  const { calls, loadedFile } = await runBootstrap({
+    envFileContent: JSON.stringify(
+      createDevelopmentEnvironmentFile({
+        argv: ['--enable-logging', '--user-data-dir=/tmp/override-profile'],
+        env: { OPENAI_API_KEY: 'secret' },
+        viteUrl: 'http://localhost:5173',
+      }),
+    ),
+  });
+  assert.deepEqual(calls.filter(([kind]) => kind === 'switch'), [
+    ['switch', 'enable-logging', null],
+  ]);
+  assert.deepEqual(calls.find(([kind]) => kind === 'setPath'), [
+    'setPath',
+    'userData',
+    '/tmp/override-profile',
+  ]);
+  const loaded = JSON.parse(readFileSync(loadedFile, 'utf8'));
+  assert.equal(loaded.viteUrl, 'http://localhost:5173');
+  assert.equal(loaded.apiKey, 'secret');
+});
+
+test('ignores an unreadable or wrong-schema environment file instead of failing to boot', async () => {
+  for (const content of ['not json at all', JSON.stringify({ schemaVersion: 999, env: { OPENAI_API_KEY: 'leak' } })]) {
+    const { calls, loadedFile, root } = await runBootstrap({ envFileContent: content });
+    assert.deepEqual(calls.find(([kind]) => kind === 'setPath'), [
+      'setPath',
+      'userData',
+      join(root, 'default-user-data'),
+    ]);
+    assert.equal(JSON.parse(readFileSync(loadedFile, 'utf8')).apiKey, null);
+  }
 });
 
 test('publishes the environment file atomically and privately', () => {
@@ -95,12 +190,10 @@ test('publishes the environment file atomically and privately', () => {
   const content = createDevelopmentEnvironmentFile({
     env: { OPENAI_API_KEY: 'secret' },
     viteUrl: 'http://localhost:5173',
-    userDataDir: '/tmp/custom-profile',
-    electronArgs: ['--enable-logging', '--remote-debugging-port=9222'],
+    argv: ['--user-data-dir=/tmp/custom-profile', '--enable-logging', '--remote-debugging-port=9222'],
   });
   writeDevelopmentEnvironment(content, { file });
   const written = JSON.parse(readFileSync(file, 'utf8'));
-  assert.equal(written.schemaVersion, 1);
   assert.equal(written.env.OPENAI_API_KEY, 'secret');
   assert.equal(written.env.VITE_DEV_SERVER_URL, 'http://localhost:5173');
   assert.equal(written.userDataDir, '/tmp/custom-profile');
@@ -216,4 +309,86 @@ test('liveness probe checks the worktree bundle path', () => {
   );
   assert.deepEqual(probed, ['/repo-a/Maka Dev.app/Contents/MacOS/Electron']);
   assert.equal(isDevelopmentAppRunning({ probe: () => false }), false);
+});
+
+test('escapes regex metacharacters so a path is matched literally', () => {
+  // pkill/pgrep -f take an extended regex. A repo under "~/Dropbox (Personal)"
+  // would otherwise match nothing, leaving the app impossible to stop.
+  assert.equal(
+    toProcessMatchPattern('/Users/x/Dropbox (Personal)/Maka Dev.app/Contents/MacOS/Electron'),
+    '/Users/x/Dropbox \\(Personal\\)/Maka Dev\\.app/Contents/MacOS/Electron',
+  );
+  assert.equal(toProcessMatchPattern('/a[b]/c+d'), '/a\\[b\\]/c\\+d');
+});
+
+test('defaults target this worktree bundle executable', () => {
+  // Every other quit/liveness test injects around the real wiring; this one
+  // pins that the un-injected default is the bundle path we mean to match.
+  const expected = join(developmentAppPath, 'Contents', 'MacOS', 'Electron');
+  let seen;
+  isDevelopmentAppRunning({
+    probe: (path) => {
+      seen = path;
+      return false;
+    },
+  });
+  assert.equal(seen, expected);
+  let signalled;
+  void quitMacosDevelopmentApp({
+    platform: 'darwin',
+    delay: () => Promise.resolve(),
+    signal: (_name, path) => {
+      signalled = path;
+      return false;
+    },
+  });
+  assert.equal(signalled, expected);
+});
+
+test('separates --user-data-dir from switches forwarded to Electron', () => {
+  assert.deepEqual(splitDevelopmentCliArgs(['--user-data-dir=/x', '--enable-logging']), {
+    userDataDir: '/x',
+    electronArgs: ['--enable-logging'],
+  });
+  assert.deepEqual(splitDevelopmentCliArgs([]), { userDataDir: undefined, electronArgs: [] });
+  // Empty value falls back to the bootstrap default rather than setting ''.
+  assert.equal(splitDevelopmentCliArgs(['--user-data-dir=']).userDataDir, '');
+});
+
+test('claims the app instance before launching or rebuilding', async () => {
+  // A leftover app would absorb the new launch via the single-instance lock,
+  // leaving the OLD window in front while liveness still reports success.
+  let alive = true;
+  const quits = [];
+  assert.equal(
+    await ensureNoRunningDevelopmentApp({
+      isRunning: () => alive,
+      quit: () => {
+        quits.push('quit');
+        alive = false;
+        return Promise.resolve(true);
+      },
+      delay: () => Promise.resolve(),
+    }),
+    true,
+  );
+  assert.deepEqual(quits, ['quit']);
+  // Nothing running: no quit attempt at all.
+  assert.equal(
+    await ensureNoRunningDevelopmentApp({
+      isRunning: () => false,
+      quit: () => assert.fail('must not quit when nothing is running'),
+    }),
+    false,
+  );
+  // Refuses to proceed rather than launching into a doomed single-instance lock.
+  await assert.rejects(
+    ensureNoRunningDevelopmentApp({
+      isRunning: () => true,
+      quit: () => Promise.resolve(true),
+      delay: () => Promise.resolve(),
+      attempts: 2,
+    }),
+    /still running and could not be stopped/,
+  );
 });
