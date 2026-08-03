@@ -3,8 +3,7 @@
 }
 
 .maka-onboarding-wordmark {
-  color: var(--foreground);
-  opacity: var(--opacity-subtle);
+  color: var(--maka-brand);
 }
 
 .maka-onboarding-card {

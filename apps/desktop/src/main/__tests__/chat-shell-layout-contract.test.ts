@@ -29,6 +29,14 @@ async function readCss(name: string): Promise<string> {
 }
 
 describe('chat shell layout contracts', () => {
+  it('renders the onboarding wordmark in the fixed Maka brand color', async () => {
+    const css = await readCss('onboarding.css');
+    const body = cssRuleBody(css, '.maka-onboarding-wordmark');
+    assert.ok(body != null, '.maka-onboarding-wordmark must exist');
+    assert.match(body!, /color:\s*var\(--maka-brand\)/);
+    assert.doesNotMatch(body!, /opacity\s*:/, 'the identity color must not be muted');
+  });
+
   /**
    * #1897 / #1910. The mode marks' entire visual contract lives in this one
    * rule, and nothing else can see it: the `@maka/ui` SSR tests never load a
