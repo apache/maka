@@ -57,9 +57,49 @@ describe('startup step', () => {
     assert.equal(said.length, afterSettling);
   });
 
-  test('stays quiet while a person is the one being waited on', async () => {
-    // A modal waiting for an answer is not a hang, and reporting one every
-    // three seconds tells somebody reading a dialog that the app is stuck.
+  test('names a dialog that never appears, exactly once', async () => {
+    // The failure this has to catch: `dialog.showMessageBox` is called before
+    // any window exists, the modal never attaches, and the promise never
+    // settles. Nobody is reading a dialog, because there is no dialog. Going
+    // silent for the whole span would print nothing at all here — which is the
+    // silence this file was written to end.
+    //
+    // Once, not every three seconds: a person who does have a dialog on screen
+    // is not told repeatedly that the app is stuck.
+    const said: string[] = [];
+    let answer: (value: string) => void = () => {};
+    const dialog = new Promise<string>((resolve) => {
+      answer = resolve;
+    });
+
+    const pending = startupStep('storage root', whileAwaitingPerson(dialog), {
+      intervalMs: 1,
+      report: (message) => said.push(message),
+    });
+    // Bounded rather than spun on: a version that says nothing has to fail on
+    // the assertion below, not by hanging the suite until the runner times out.
+    const deadline = Date.now() + 2_000;
+    while (said.length < 1 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    try {
+      assert.deepEqual(said, [
+        '[startup] storage root is waiting for an answer; if no dialog is on screen, none opened',
+      ]);
+    } finally {
+      // Answered even when the assertion fails, so the step settles and its
+      // reporting timer is cleared rather than left running for the suite.
+      answer('repair');
+    }
+
+    assert.equal(await pending, 'repair');
+  });
+
+  test('does not call a person reading a dialog a hang', async () => {
+    // The wait belongs to the person, so it is never reported as a step that
+    // has not come back — the line that would send somebody hunting a bug.
     const said: string[] = [];
     let answer: (value: string) => void = () => {};
     const dialog = new Promise<string>((resolve) => {
@@ -71,7 +111,10 @@ describe('startup step', () => {
       report: (message) => said.push(message),
     });
     await new Promise((resolve) => setTimeout(resolve, 15));
-    assert.deepEqual(said, [], 'the wait belongs to the person, not to a stuck step');
+    assert.ok(
+      !said.includes('[startup] still waiting on storage root'),
+      'a person answering a question is not a stuck step',
+    );
     answer('repair');
 
     assert.equal(await pending, 'repair');

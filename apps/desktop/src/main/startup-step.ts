@@ -22,11 +22,20 @@ export const STARTUP_STEP_REPORT_INTERVAL_MS = 3_000;
 /**
  * How many people-waiting states are open.
  *
- * A modal that waits for an answer is not a hang, and reporting one every three
- * seconds tells a person who is reading a dialog that the app is stuck. The
- * step is still tracked — a dialog that fails to appear at all is exactly the
- * failure this file exists for — but it stops narrating while the answer is
- * genuinely somebody else's to give.
+ * A modal that waits for an answer is not a hang, and repeating "still waiting"
+ * every three seconds tells a person who is reading a dialog that the app is
+ * stuck. But going silent instead would hide the failure this file exists for:
+ * a dialog raised before any window exists does not appear, and then nobody is
+ * reading anything and nothing is ever printed.
+ *
+ * So a person-owned wait is said once and then not again, in wording that says
+ * an answer is expected rather than that a step is late. One line names the
+ * step for the dialog that never opened; a person looking at a real dialog is
+ * not narrated at.
+ *
+ * This is a module global, so it mutes every step tracked at the same time, not
+ * only the one whose dialog is open. Boot is sequential today, so no two steps
+ * are ever tracked at once and no case is currently wrong.
  */
 let awaitingPerson = 0;
 
@@ -42,8 +51,16 @@ export async function startupStep<T>(
   options: StartupStepOptions = {},
 ): Promise<T> {
   const report = options.report ?? ((message: string) => console.warn(message));
+  let saidAnswerExpected = false;
   const timer = setInterval(() => {
-    if (awaitingPerson > 0) return;
+    if (awaitingPerson > 0) {
+      if (saidAnswerExpected) return;
+      saidAnswerExpected = true;
+      report(`[startup] ${name} is waiting for an answer; if no dialog is on screen, none opened`);
+      return;
+    }
+    // Said once per span, so the next dialog in this step is named too.
+    saidAnswerExpected = false;
     report(`[startup] still waiting on ${name}`);
   }, options.intervalMs ?? STARTUP_STEP_REPORT_INTERVAL_MS);
   // The timer must never be the reason the process stays alive: a step that
@@ -61,7 +78,9 @@ export async function startupStep<T>(
  *
  * Wrapping the modal rather than excluding the whole step keeps the I/O either
  * side of it tracked: a repair that hangs reading the disk before the dialog
- * opens still gets named.
+ * opens still gets named. And the span is quieter, not silent — a dialog that
+ * never appears is still named once, because that is the failure that leaves
+ * nobody looking at anything.
  */
 export async function whileAwaitingPerson<T>(work: Promise<T>): Promise<T> {
   awaitingPerson += 1;

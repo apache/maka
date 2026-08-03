@@ -226,9 +226,11 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
   // on any platform (macOS modal loops block CDP evaluation, Linux does not).
   console.log('[storage-root] root-identity conflict; parking at repair dialog');
   const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === 'zh';
-  // The person owns this delay, so the startup reporter stops narrating it —
-  // otherwise reading the dialog for four seconds prints "still waiting on
-  // storage root" at somebody who is looking straight at the reason.
+  // The person owns this delay, so the startup reporter stops calling it a
+  // hang — otherwise reading the dialog for four seconds prints "still waiting
+  // on storage root" at somebody who is looking straight at the reason. It
+  // still says once that an answer is expected, which is the only line printed
+  // when this dialog fails to appear at all.
   const { response } = await whileAwaitingPerson(
     dialog.showMessageBox({
       type: 'warning',
