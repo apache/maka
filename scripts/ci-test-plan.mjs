@@ -66,6 +66,19 @@ const EXTENDED_SCRIPT_FILES = new Set([
   'scripts/verify-macos-arm64-dmg.mjs',
 ]);
 
+const STORAGE_STRESS_FILES = new Set([
+  'packages/storage/src/agent-run-store.ts',
+  'packages/storage/src/git-workspace-service.ts',
+  'packages/storage/src/runtime-event-invariants.ts',
+  'packages/storage/src/root-authority.ts',
+  'packages/storage/src/__tests__/agent-run-store.test.ts',
+  'packages/storage/src/__tests__/git-workspace-service.test.ts',
+  'packages/storage/src/__tests__/root-authority.test.ts',
+  'packages/storage/src/__tests__/fixtures/git-workspace-service-crash-child.ts',
+  'packages/storage/src/__tests__/fixtures/root-lock-holder.ts',
+  'packages/storage/src/__tests__/fixtures/root-resolver.ts',
+]);
+
 function normalizePath(path) {
   return path.split(sep).join('/').replace(/^\.\//, '');
 }
@@ -127,7 +140,11 @@ export function planTests(changedFiles, options = {}) {
       headless: graph.dirs.includes('packages/headless'),
       runtimeSandbox: graph.dirs.includes('packages/cli'),
       scriptMode: 'full',
-      storageStress: graph.dirs.includes('packages/storage'),
+      // A complete functional suite is still the default release/main gate.
+      // Stress multipliers and native child-process lock probes run only when
+      // their owning storage seam changes; making --full imply stress turned
+      // every unrelated merge into a 10K-chunk pressure run.
+      storageStress: false,
       storybook: true,
       workspaces: [...graph.dirs],
     };
@@ -172,12 +189,7 @@ export function planTests(changedFiles, options = {}) {
   }
 
   const workspaces = reverseDependencyClosure(directWorkspaces, graph);
-  const storageStress = files.some(
-    (path) =>
-      path === 'packages/storage/src/agent-run-store.ts' ||
-      path === 'packages/storage/src/runtime-event-invariants.ts' ||
-      path === 'packages/storage/src/__tests__/agent-run-store.test.ts',
-  );
+  const storageStress = files.some((path) => STORAGE_STRESS_FILES.has(path));
 
   return {
     code,

@@ -42,6 +42,11 @@ import {
   type StorageRootLease,
 } from '../root-authority.js';
 
+// These probes launch native-lock holders and deliberately exercise abnormal
+// process exits. Keep them on the owning storage seam's stress route; the
+// default suite covers the same-process lease and lock boundaries below.
+const RUN_PROCESS_LOCK_TESTS = process.env.MAKA_STORAGE_STRESS === '1';
+
 describe('storage root authority', () => {
   test('discovers only marked roots without creating or changing filesystem state', async () => {
     await withRoots(async ({ base, root }) => {
@@ -624,7 +629,9 @@ describe('storage root authority', () => {
     });
   });
 
-  test('enforces exclusive/shared lock arbitration across processes', async () => {
+  test('enforces exclusive/shared lock arbitration across processes', {
+    skip: !RUN_PROCESS_LOCK_TESTS,
+  }, async () => {
     await withRoots(async ({ root }) => {
       const writer = spawnHolder(root, 'write');
       try {
@@ -724,7 +731,9 @@ describe('storage root authority', () => {
     });
   });
 
-  test('kernel releases a process lock after normal, uncaught, abort, and forced exits', async () => {
+  test('kernel releases a process lock after normal, uncaught, abort, and forced exits', {
+    skip: !RUN_PROCESS_LOCK_TESTS,
+  }, async () => {
     await withRoots(async ({ root }) => {
       const modes = ['close', 'throw', 'abort', 'SIGKILL'] as const;
       for (const mode of modes) {
@@ -745,7 +754,9 @@ describe('storage root authority', () => {
     });
   });
 
-  test('does not inherit the owner lock into a surviving descendant', async () => {
+  test('does not inherit the owner lock into a surviving descendant', {
+    skip: !RUN_PROCESS_LOCK_TESTS,
+  }, async () => {
     await withRoots(async ({ root }) => {
       const holder = spawnHolder(root, 'write');
       let descendantPid: number | undefined;

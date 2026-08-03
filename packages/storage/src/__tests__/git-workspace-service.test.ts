@@ -31,6 +31,12 @@ const cleanup: string[] = [];
 let gitExecutablePath: string;
 let gitExecutableSha256: `sha256:${string}`;
 
+// These probes fork a second Node process, stop it at a durable failpoint, and
+// kill it to verify restart convergence. Keep the full crash matrix on this
+// service's owning stress route; the default suite still covers recovery,
+// quarantine, corruption, ownership, and symlink boundaries in-process.
+const RUN_REAL_PROCESS_CRASH_TESTS = process.env.MAKA_STORAGE_STRESS === '1';
+
 before(async () => {
   gitExecutablePath = await findGitExecutable();
   gitExecutableSha256 = await sha256File(gitExecutablePath);
@@ -246,6 +252,7 @@ describe('Git workspace service', () => {
   });
 
   test('repairs a crash after baseline ref publication even when the source later advances', {
+    skip: !RUN_REAL_PROCESS_CRASH_TESTS,
     timeout: 60_000,
   }, async () => {
     const root = await temporaryRoot();
@@ -302,6 +309,7 @@ describe('Git workspace service', () => {
     'after_head_ref_updated',
   ] as const) {
     test(`repairs a real-process crash at ${failpoint} without accepting residue`, {
+      skip: !RUN_REAL_PROCESS_CRASH_TESTS,
       timeout: 60_000,
     }, async () => {
       const root = await temporaryRoot();
@@ -354,6 +362,7 @@ describe('Git workspace service', () => {
     'after_quarantine_pruned',
   ] as const) {
     test(`converges quarantine after a real-process crash at ${failpoint}`, {
+      skip: !RUN_REAL_PROCESS_CRASH_TESTS,
       timeout: 60_000,
     }, async () => {
       const root = await temporaryRoot();

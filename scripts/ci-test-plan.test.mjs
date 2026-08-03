@@ -57,10 +57,21 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
 });
 
 test('stress and specialized script checks run only for their owning surfaces', () => {
+  for (const path of [
+    'packages/storage/src/agent-run-store.ts',
+    'packages/storage/src/git-workspace-service.ts',
+    'packages/storage/src/__tests__/fixtures/git-workspace-service-crash-child.ts',
+    'packages/storage/src/root-authority.ts',
+    'packages/storage/src/__tests__/root-authority.test.ts',
+    'packages/storage/src/__tests__/fixtures/root-lock-holder.ts',
+  ]) {
+    assert.equal(planTests([path], { graph }).storageStress, true, path);
+  }
   assert.equal(
-    planTests(['packages/storage/src/agent-run-store.ts'], { graph }).storageStress,
-    true,
+    planTests(['packages/storage/src/session-store.ts'], { graph }).storageStress,
+    false,
   );
+  assert.equal(planTests([], { graph, forceFull: true }).storageStress, false);
   for (const path of [
     'scripts/fixture-env.mjs',
     'scripts/ci-test-plan.test.mjs',
@@ -95,6 +106,7 @@ test('global and unknown production changes fail safe to the complete suite', ()
     assert.equal(plan.full, true);
     assert.equal(plan.e2e, true);
     assert.equal(plan.storybook, true);
+    assert.equal(plan.storageStress, false);
     assert.deepEqual(plan.workspaces, graph.dirs);
   }
 });

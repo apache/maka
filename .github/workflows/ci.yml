@@ -30,11 +30,14 @@ jobs:
       - id: plan
         name: Select affected test surfaces
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
         run: |
-          if [[ "$EVENT_NAME" == "push" ]]; then
+          # A merged PR has already been tested by impact. Re-run the same
+          # affected surfaces for the exact main-branch delta instead of
+          # turning every push (including docs-only pushes) into a full suite.
+          # New branches and unavailable history still fail safe to full.
+          if [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
             node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
           else
             node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
