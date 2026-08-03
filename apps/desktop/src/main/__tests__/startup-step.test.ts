@@ -31,8 +31,15 @@ describe('startup step', () => {
       report: (message) => said.push(message),
     });
     // Two reports, so a launch that stays stuck keeps saying so rather than
-    // mentioning it once and going quiet again.
-    while (said.length < 2) await new Promise((resolve) => setTimeout(resolve, 2));
+    // mentioning it once and going quiet again. Bounded, because a regression
+    // that reports once — swapping setInterval for setTimeout is the obvious
+    // one — would otherwise hang the suite until the CI job times out, with no
+    // failing assertion to say which test stalled.
+    const deadline = Date.now() + 2_000;
+    while (said.length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.ok(said.length >= 2, 'the step should have been named twice while it was still pending');
     settle('opened');
 
     assert.equal(await pending, 'opened');
@@ -134,7 +141,13 @@ describe('startup step', () => {
       readingDisk.then((value) => whileAwaitingPerson(Promise.resolve(value))),
       { intervalMs: 1, report: (message) => said.push(message) },
     );
-    while (said.length < 1) await new Promise((resolve) => setTimeout(resolve, 2));
+    // Bounded for the same reason as the first test: a regression that never
+    // reports should fail here, not stall the runner with nothing to read.
+    const deadline = Date.now() + 2_000;
+    while (said.length < 1 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.ok(said.length >= 1, 'a step stuck before the person is asked should still be named');
     open('read');
 
     assert.equal(await pending, 'read');
