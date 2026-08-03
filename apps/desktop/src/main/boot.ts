@@ -115,6 +115,7 @@ import { registerPlanReminderIpc } from './plan-reminders-ipc-main.js';
 import { registerWorkspaceResourcesIpc } from './workspace-resources-ipc-main.js';
 import type { NewSessionSkillContext } from './workspace-resources-ipc-main.js';
 import { registerDailyReviewIpc } from './daily-review-ipc-main.js';
+import { registerInspectorIpc } from './inspector-ipc-main.js';
 import { registerUsageIpc } from './usage-ipc-main.js';
 import { registerWebSearchIpc } from './web-search-ipc-main.js';
 import { registerNotificationsIpc } from './notifications-ipc-main.js';
@@ -1209,6 +1210,12 @@ function registerIpc(): void {
       : {}),
   });
   registerDailyReviewIpc({ dailyReview, dailyReviewArchiveStore, mainWindowController });
+  registerInspectorIpc({
+    ipcMain,
+    readSessionRuntimeEvents: (sessionId) => runtimeEventStore.readSessionRuntimeEvents(sessionId),
+    listSessionRuns: (sessionId) => runStore.listSessionRuns(sessionId),
+    readRunEvents: (sessionId, runId) => runStore.readEvents(sessionId, runId),
+  });
   registerUsageIpc({
     ipcMain,
     settingsStore,

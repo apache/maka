@@ -2,6 +2,7 @@ import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunStore,
+  EmittedAgentRunEvent,
   RuntimeEvent,
   RuntimeEventStore,
   ToolBoundaryProtocol,
@@ -1567,7 +1568,7 @@ export class AgentRun {
   }
 }
 
-function traceToRunEvent(event: RunTraceEvent, runId: string): AgentRunEvent {
+function traceToRunEvent(event: RunTraceEvent, runId: string): EmittedAgentRunEvent {
   return {
     type: event.type,
     id: event.id,

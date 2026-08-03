@@ -404,12 +404,14 @@ export type {
   AgentRunInputSummary,
   AgentRunStatus,
   AgentRunStore,
+  EmittedAgentRunEvent,
   RootExecutionDescriptor,
 } from './agent-run.js';
 export {
   AGENT_RUN_STATUSES,
   decodeAgentRunEvent,
   decodeAgentRunHeader,
+  isEmittedAgentRunEventType,
   isSessionInlineRun,
 } from './agent-run.js';
 

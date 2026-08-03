@@ -98,6 +98,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import type { SessionTrace } from '@maka/core/session-trace';
 import type {
   AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
@@ -930,6 +931,12 @@ const makaBridge = {
       body?: string;
     }): Promise<void> {
       return ipcRenderer.invoke('notifications:runEnded', payload);
+    },
+  },
+  inspector: {
+    /** Read-only per-session causal trace (#1625). Never writes runtime state. */
+    trace(sessionId: string): Promise<Result<SessionTrace>> {
+      return ipcRenderer.invoke('inspector:trace', sessionId);
     },
   },
   usage: {

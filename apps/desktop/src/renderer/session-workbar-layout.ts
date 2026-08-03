@@ -5,7 +5,7 @@ export const SESSION_WORKBAR_MIN_WIDTH = 320;
 export const SESSION_WORKBAR_MAX_WIDTH = 600;
 // 'quote' is a transient tab that only exists while a quote side-panel excerpt
 // is active; it is never persisted as a default (see readSessionWorkbarTab).
-export type SessionWorkbarTab = 'tasks' | 'browser' | 'files' | 'quote';
+export type SessionWorkbarTab = 'tasks' | 'browser' | 'files' | 'inspector' | 'quote';
 
 /**
  * Seeds `useResizable`'s `defaultSize`. Deliberately unclamped: the hook clamps
@@ -32,5 +32,5 @@ export function readSessionWorkbarCollapsed(): boolean {
 
 export function readSessionWorkbarTab(): SessionWorkbarTab {
   const stored = safeLocalStorageGet('maka-session-workbar-tab-v1');
-  return stored === 'browser' || stored === 'files' ? stored : 'tasks';
+  return stored === 'browser' || stored === 'files' || stored === 'inspector' ? stored : 'tasks';
 }

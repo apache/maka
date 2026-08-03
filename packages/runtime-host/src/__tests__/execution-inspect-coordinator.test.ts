@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader } from '@maka/core';
+import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
@@ -141,7 +141,7 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Exact evidence budget'));
       await stores.agentRunStore.createRun(runHeader(session.id, 'exact-run', 1));
-      const baseEvent: AgentRunEvent = {
+      const baseEvent: EmittedAgentRunEvent = {
         type: 'run_started',
         id: 'exact-event',
         sessionId: session.id,
@@ -152,7 +152,7 @@ describe('HostExecutionInspectCoordinator', () => {
       };
       const baseBytes = Buffer.byteLength(JSON.stringify(baseEvent), 'utf8');
       assert.ok(baseBytes < EXECUTION_INSPECT_EVIDENCE_MAX_BYTES);
-      const event: AgentRunEvent = {
+      const event = {
         ...baseEvent,
         data: {
           payload: 'x'.repeat(EXECUTION_INSPECT_EVIDENCE_MAX_BYTES - baseBytes),

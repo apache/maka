@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentRunEvent, AgentRunHeader } from '@maka/core';
+import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core';
 import type { InvocationResult } from '@maka/runtime';
 import { acquireOperationalStateDatabase } from '@maka/storage';
 
@@ -262,8 +262,8 @@ test('exports a torn AgentRun tail as incomplete provider-request evidence', asy
     const storage = await openHeadlessStorageForWrite(storageRoot);
     const runStore = storage.executionStores.agentRunStore;
     await runStore.createRun(header);
-    await runStore.appendEvent(identity.sessionId, identity.runId, capture as AgentRunEvent);
-    await runStore.appendEvent(identity.sessionId, identity.runId, attempt as AgentRunEvent);
+    await runStore.appendEvent(identity.sessionId, identity.runId, capture as EmittedAgentRunEvent);
+    await runStore.appendEvent(identity.sessionId, identity.runId, attempt as EmittedAgentRunEvent);
     corruptAgentRunEvent(storageRoot, identity.sessionId, identity.runId, 1);
 
     const traceEventsPath = await writeHarborTaskRunTrace({
@@ -336,7 +336,7 @@ test('also diagnoses missing provider evidence when the only run event is corrup
     const exportedEvents = (await readFile(traceEventsPath, 'utf8'))
       .trim()
       .split('\n')
-      .map((line) => JSON.parse(line) as AgentRunEvent);
+      .map((line) => JSON.parse(line) as EmittedAgentRunEvent);
 
     assert.deepEqual(
       exportedEvents.map((event) => event.type),
@@ -415,12 +415,12 @@ test('exports missing provider-request evidence for every continuation invocatio
     await runStore.appendEvent(
       completeIdentity.sessionId,
       completeIdentity.runId,
-      capture as AgentRunEvent,
+      capture as EmittedAgentRunEvent,
     );
     await runStore.appendEvent(
       completeIdentity.sessionId,
       completeIdentity.runId,
-      attempt as AgentRunEvent,
+      attempt as EmittedAgentRunEvent,
     );
 
     const traceEventsPath = await writeHarborTaskRunTrace({
@@ -489,7 +489,7 @@ test('preserves existing run events when exporting a missing-evidence diagnostic
     const exportedEvents = (await readFile(traceEventsPath, 'utf8'))
       .trim()
       .split('\n')
-      .map((line) => JSON.parse(line) as AgentRunEvent);
+      .map((line) => JSON.parse(line) as EmittedAgentRunEvent);
 
     assert.deepEqual(
       exportedEvents.map((event) => event.type),

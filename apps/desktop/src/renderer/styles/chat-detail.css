@@ -75,6 +75,93 @@
 
 .maka-session-workbar-panel[hidden] { display: none; }
 
+/* Session Inspector (#1625): a read-only causal timeline in the workbar. */
+.maka-inspector-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--maka-space-2, 8px);
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--maka-space-3, 12px);
+  font-size: var(--maka-font-size-sm, 12px);
+}
+
+.maka-inspector-totals,
+.maka-inspector-turn-head,
+.maka-inspector-step {
+  display: flex;
+  align-items: baseline;
+  gap: var(--maka-space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.maka-inspector-totals {
+  font-variant-numeric: tabular-nums;
+  color: var(--maka-color-text-secondary, inherit);
+}
+
+.maka-inspector-coverage {
+  margin: 0;
+  padding: var(--maka-space-2, 8px);
+  border-radius: var(--maka-radius-sm, 6px);
+  background: var(--maka-color-surface-warning, rgba(255, 200, 0, 0.12));
+  color: var(--maka-color-text-warning, inherit);
+}
+
+.maka-inspector-error {
+  display: flex;
+  align-items: center;
+  gap: var(--maka-space-2, 8px);
+  color: var(--maka-color-text-danger, inherit);
+}
+
+.maka-inspector-empty {
+  margin: 0;
+  color: var(--maka-color-text-secondary, inherit);
+}
+
+.maka-inspector-turns,
+.maka-inspector-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--maka-space-1, 4px);
+}
+
+.maka-inspector-turn {
+  border-top: 1px solid var(--maka-color-border-subtle, rgba(128, 128, 128, 0.2));
+  padding-top: var(--maka-space-2, 8px);
+}
+
+.maka-inspector-turn-id {
+  font-weight: 600;
+}
+
+.maka-inspector-steps {
+  padding-left: var(--maka-space-3, 12px);
+}
+
+.maka-inspector-step-kind {
+  color: var(--maka-color-text-secondary, inherit);
+  text-transform: lowercase;
+}
+
+.maka-inspector-step[data-failed='true'] {
+  color: var(--maka-color-text-danger, inherit);
+}
+
+.maka-inspector-cost,
+.maka-inspector-step-retries {
+  font-variant-numeric: tabular-nums;
+}
+
+.maka-inspector-failed {
+  color: var(--maka-color-text-danger, inherit);
+}
+
 .maka-session-workbar .maka-browser-panel,
 .maka-session-workbar .maka-artifact-pane {
   width: 100%;

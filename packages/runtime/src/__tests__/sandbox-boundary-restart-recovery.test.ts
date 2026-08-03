@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type {
   AgentRunEvent,
+  EmittedAgentRunEvent,
   AgentRunHeader,
   CreateSessionInput,
   SessionHeader,
@@ -222,7 +223,7 @@ function runHeader(sessionId: string): AgentRunHeader {
   };
 }
 
-function runEvent(sessionId: string): AgentRunEvent {
+function runEvent(sessionId: string): EmittedAgentRunEvent {
   return {
     type: 'run_started',
     id: 'run-1-run_started-11',

@@ -36,6 +36,7 @@ import {
   type AgentRunEventType,
   type AgentRunHeader,
   type AgentRunStore,
+  type EmittedAgentRunEvent,
   type AttachmentRef,
   type MessageContent,
   type RootExecutionDescriptor,
@@ -350,7 +351,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
   async appendEvent(
     sessionId: string,
     runId: string,
-    event: AgentRunEvent,
+    event: EmittedAgentRunEvent,
     _options: { durable?: boolean } = {},
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
