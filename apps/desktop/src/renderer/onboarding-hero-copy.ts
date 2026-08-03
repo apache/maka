@@ -37,12 +37,6 @@ export function getOnboardingHeroCopy(
         ...copy.hero.needs_connection,
         cta: { ...copy.hero.needs_connection.cta, target: { kind: 'provider_catalog' } },
       };
-    case 'needs_default_connection':
-      return {
-        kind: state.kind,
-        ...copy.hero.needs_default_connection,
-        cta: { ...copy.hero.needs_default_connection.cta, target: { kind: 'models' } },
-      };
     case 'needs_connection_credentials':
       return {
         kind: state.kind,
@@ -53,13 +47,13 @@ export function getOnboardingHeroCopy(
           target: { kind: 'connection', connectionSlug: state.connectionSlug },
         },
       };
-    case 'needs_default_model':
+    case 'needs_model':
       return {
         kind: state.kind,
-        ...copy.hero.needs_default_model,
+        ...copy.hero.needs_model,
         connectionSlug: state.connectionSlug,
         cta: {
-          ...copy.hero.needs_default_model.cta,
+          ...copy.hero.needs_model.cta,
           target: { kind: 'connection', connectionSlug: state.connectionSlug },
         },
       };

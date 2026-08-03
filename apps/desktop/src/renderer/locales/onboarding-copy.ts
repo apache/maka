@@ -35,23 +35,17 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
         body: 'Maka 在本地运行，使用你自己的模型账号或 API key。先选一个常用服务商。',
         cta: { label: '浏览全部服务商' },
       },
-      needs_default_connection: {
-        eyebrow: '还差一步',
-        title: '选一个默认连接。',
-        body: 'Maka 需要知道新任务默认使用哪个已配置连接。',
-        cta: { label: '选择默认连接' },
-      },
       needs_connection_credentials: {
         eyebrow: '继续设置连接',
         title: '补齐这个连接的凭据。',
         body: '添加 API key 或完成账号登录，Maka 才能调用模型。',
         cta: { label: '配置连接凭据' },
       },
-      needs_default_model: {
+      needs_model: {
         eyebrow: '继续设置连接',
-        title: '为这个连接选择默认模型。',
-        body: '选择一个可用于对话的模型，新任务就可以开始了。',
-        cta: { label: '选择默认模型' },
+        title: '为这个连接启用一个可用模型。',
+        body: '启用一个可用于对话的模型，新任务就可以开始了。',
+        cta: { label: '选择可用模型' },
       },
       blocked: {
         eyebrow: '连接需要处理',
@@ -83,23 +77,17 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
         body: 'Maka runs locally with your own model account or API key. Choose a common provider to continue.',
         cta: { label: 'Browse all providers' },
       },
-      needs_default_connection: {
-        eyebrow: 'One step left',
-        title: 'Choose a default connection.',
-        body: 'Maka needs to know which configured connection new tasks should use.',
-        cta: { label: 'Choose default connection' },
-      },
       needs_connection_credentials: {
         eyebrow: 'Continue connection setup',
         title: 'Add credentials for this connection.',
         body: 'Add an API key or finish account sign-in so Maka can call the model.',
         cta: { label: 'Configure credentials' },
       },
-      needs_default_model: {
+      needs_model: {
         eyebrow: 'Continue connection setup',
-        title: 'Choose a default model for this connection.',
-        body: 'Choose a conversation-capable model and your first task can begin.',
-        cta: { label: 'Choose default model' },
+        title: 'Enable an available model for this connection.',
+        body: 'Enable a conversation-capable model and your first task can begin.',
+        cta: { label: 'Choose an available model' },
       },
       blocked: {
         eyebrow: 'Connection needs attention',

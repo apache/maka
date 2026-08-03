@@ -255,8 +255,7 @@ export function isSetupRequired(state: OnboardingState | undefined): boolean {
   if (!state) return false;
   return (
     state.kind === 'needs_connection' ||
-    state.kind === 'needs_default_connection' ||
     state.kind === 'needs_connection_credentials' ||
-    state.kind === 'needs_default_model'
+    state.kind === 'needs_model'
   );
 }

@@ -13,7 +13,7 @@ import {
   type SettingsSection,
 } from '@maka/core';
 import { Button, MakaWordmark, useUiLocale } from '@maka/ui';
-import { AlertCircle, ChevronRight, Cpu, KeyRound, Settings as SettingsIcon } from '@maka/ui/icons';
+import { AlertCircle, ChevronRight, Cpu, KeyRound } from '@maka/ui/icons';
 import {
   Banner,
   Card,
@@ -63,14 +63,6 @@ export function OnboardingHero(props: OnboardingHeroProps) {
           onSkip={props.onSkip}
         />
       );
-    case 'needs_default_connection':
-      return (
-        <RecoveryCard
-          state={state}
-          icon={<SettingsIcon size={14} aria-hidden="true" />}
-          {...recoveryCallbacks(props)}
-        />
-      );
     case 'needs_connection_credentials':
       return (
         <RecoveryCard
@@ -80,7 +72,7 @@ export function OnboardingHero(props: OnboardingHeroProps) {
           {...recoveryCallbacks(props)}
         />
       );
-    case 'needs_default_model':
+    case 'needs_model':
       return (
         <RecoveryCard
           state={state}
@@ -279,11 +271,9 @@ function activateTarget(
 
 function refreshLabel(state: RecoveryState, copy: ReturnType<typeof getOnboardingCopy>) {
   switch (state.kind) {
-    case 'needs_default_connection':
-      return copy.refresh.connection;
     case 'needs_connection_credentials':
       return copy.refresh.credentials;
-    case 'needs_default_model':
+    case 'needs_model':
       return copy.refresh.model;
     case 'blocked':
       return copy.refresh.blocked;

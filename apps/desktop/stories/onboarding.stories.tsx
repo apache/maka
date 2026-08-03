@@ -114,18 +114,9 @@ export const NeedsConnection: Story = {
   },
 };
 
-// Real path: a ready connection exists but none is selected as the default.
-export const NeedsDefaultConnection: Story = {
-  render: () => (
-    <DetailPane>
-      <OnboardingHero {...heroProps({ kind: 'needs_default_connection' })} />
-    </DetailPane>
-  ),
-};
-
 const openConnectionDetail = fn();
 
-// Real path: the default connection exists but its credential is unavailable.
+// Real path: a configured connection exists but its credential is unavailable.
 export const NeedsCredentials: Story = {
   render: () => (
     <DetailPane>
@@ -158,12 +149,12 @@ export const NeedsCredentialsUnknownSlug: Story = {
   ),
 };
 
-// Real path: credentials work but the connection has no chat-capable default model.
-export const NeedsDefaultModel: Story = {
+// Real path: credentials work but the connection has no chat-capable enabled model.
+export const NeedsModel: Story = {
   render: () => (
     <DetailPane>
       <OnboardingHero
-        {...heroProps({ kind: 'needs_default_model', connectionSlug: 'zai-live' })}
+        {...heroProps({ kind: 'needs_model', connectionSlug: 'zai-live' })}
       />
     </DetailPane>
   ),

@@ -72,6 +72,22 @@ function derive(input: Partial<DeriveOnboardingStateInput> = {}): OnboardingStat
 }
 
 describe('deriveOnboardingState', () => {
+  it('finishes setup from an enabled model without workspace defaults', () => {
+    const connection = realConnection({
+      slug: 'opencode-free',
+      providerType: 'opencode-free',
+      defaultModel: '',
+      enabledModelIds: ['mimo-v2.5-free'],
+      models: [{ id: 'mimo-v2.5-free' }],
+    });
+
+    assert.deepEqual(derive({ connections: [connection], secrets: { [connection.slug]: true } }), {
+      kind: 'ready_empty',
+      connectionSlug: connection.slug,
+      model: 'mimo-v2.5-free',
+    });
+  });
+
   it('covers the top-level state decision table', () => {
     const ready = realConnection();
     const disabled = realConnection({ enabled: false });
@@ -81,47 +97,37 @@ describe('deriveOnboardingState', () => {
         'fake is not a real connection regardless of test status',
         {
           connections: [fakeConnection()],
-          defaultSlug: 'fake-demo',
           secrets: { 'fake-demo': true },
         },
         { kind: 'needs_connection' },
       ],
       [
         'ready default without history',
-        { connections: [ready], defaultSlug: ready.slug, secrets: { [ready.slug]: true } },
-        {
-          kind: 'ready_empty',
-          defaultConnectionSlug: ready.slug,
-          defaultModel: ready.defaultModel!,
-        },
+        { connections: [ready], secrets: { [ready.slug]: true } },
+        { kind: 'ready_empty', connectionSlug: ready.slug, model: ready.defaultModel! },
       ],
       [
         'ready default with history',
         {
           connections: [ready],
-          defaultSlug: ready.slug,
           secrets: { [ready.slug]: true },
           sessions: [session()],
         },
-        {
-          kind: 'ready_with_history',
-          defaultConnectionSlug: ready.slug,
-          defaultModel: ready.defaultModel!,
-        },
+        { kind: 'ready_with_history', connectionSlug: ready.slug, model: ready.defaultModel! },
       ],
       [
         'unset default',
         { connections: [ready], secrets: { [ready.slug]: true } },
-        { kind: 'needs_default_connection' },
+        { kind: 'ready_empty', connectionSlug: ready.slug, model: ready.defaultModel! },
       ],
       [
         'missing default with a ready alternative',
-        { connections: [ready], defaultSlug: 'deleted', secrets: { [ready.slug]: true } },
-        { kind: 'needs_default_connection' },
+        { connections: [ready], secrets: { [ready.slug]: true } },
+        { kind: 'ready_empty', connectionSlug: ready.slug, model: ready.defaultModel! },
       ],
       [
         'disabled default with no ready alternative',
-        { connections: [disabled], defaultSlug: disabled.slug, secrets: { [disabled.slug]: true } },
+        { connections: [disabled], secrets: { [disabled.slug]: true } },
         { kind: 'blocked', reason: 'all_connections_unhealthy' },
       ],
     ];
@@ -134,7 +140,6 @@ describe('deriveOnboardingState', () => {
       assert.equal(
         derive({
           connections: [connection],
-          defaultSlug: connection.slug,
           secrets: { [connection.slug]: true },
           sessions: [session(status)],
         }).kind,
@@ -153,17 +158,17 @@ describe('deriveOnboardingState', () => {
       [
         realConnection({ slug: 'missing-model', defaultModel: '', models: undefined }),
         { 'missing-model': true },
-        { kind: 'needs_default_model', connectionSlug: 'missing-model' },
+        { kind: 'needs_model', connectionSlug: 'missing-model' },
       ],
       [
         realConnection({ slug: 'empty-models', defaultModel: 'stale', models: [] }),
         { 'empty-models': true },
-        { kind: 'needs_default_model', connectionSlug: 'empty-models' },
+        { kind: 'needs_model', connectionSlug: 'empty-models' },
       ],
       [
         realConnection({ slug: 'stale-model', defaultModel: 'stale', models: [{ id: 'fresh' }] }),
         { 'stale-model': true },
-        { kind: 'needs_default_model', connectionSlug: 'stale-model' },
+        { kind: 'needs_model', connectionSlug: 'stale-model' },
       ],
       [
         realConnection({
@@ -172,14 +177,11 @@ describe('deriveOnboardingState', () => {
           models: [{ id: 'image-only', capabilities: { chat: false, imageGeneration: true } }],
         }),
         { 'image-only': true },
-        { kind: 'needs_default_model', connectionSlug: 'image-only' },
+        { kind: 'needs_model', connectionSlug: 'image-only' },
       ],
     ];
     for (const [connection, secrets, expected] of cases) {
-      assert.deepEqual(
-        derive({ connections: [connection], defaultSlug: connection.slug, secrets }),
-        expected,
-      );
+      assert.deepEqual(derive({ connections: [connection], secrets }), expected);
     }
   });
 
@@ -189,7 +191,6 @@ describe('deriveOnboardingState', () => {
     assert.deepEqual(
       derive({
         connections: [missingSecret, brokenAlternative],
-        defaultSlug: 'current',
         secrets: { 'broken-alt': true },
       }),
       { kind: 'needs_connection_credentials', connectionSlug: 'current' },
@@ -199,10 +200,13 @@ describe('deriveOnboardingState', () => {
     assert.deepEqual(
       derive({
         connections: [missingSecret, readyAlternative],
-        defaultSlug: 'current',
         secrets: { 'ready-alt': true },
       }),
-      { kind: 'needs_default_connection' },
+      {
+        kind: 'ready_empty',
+        connectionSlug: readyAlternative.slug,
+        model: readyAlternative.defaultModel!,
+      },
     );
   });
 
@@ -221,7 +225,6 @@ describe('deriveOnboardingState', () => {
         assert.equal(
           derive({
             connections: [{ ...connection, lastTestStatus }],
-            defaultSlug: connection.slug,
             secrets: { [connection.slug]: true },
           }).kind,
           'ready_empty',

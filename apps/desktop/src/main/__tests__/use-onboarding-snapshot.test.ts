@@ -23,8 +23,8 @@ import type { OnboardingSnapshot } from '../../preload/bridge-contract.js';
 const READY_SNAPSHOT: OnboardingSnapshot = {
   state: {
     kind: 'ready_empty',
-    defaultConnectionSlug: 'a',
-    defaultModel: 'm',
+    connectionSlug: 'a',
+    model: 'm',
   } as OnboardingState,
   milestones: [],
   sessions: [],
@@ -253,15 +253,14 @@ describe('onboarding mounted snapshot handoff', () => {
 });
 
 describe('isSetupRequired', () => {
-  it('returns true for the four needs_* variants', () => {
+  it('returns true for the three needs_* variants', () => {
     for (const kind of [
       'needs_connection',
-      'needs_default_connection',
       'needs_connection_credentials',
-      'needs_default_model',
+      'needs_model',
     ] as const) {
       const state =
-        kind === 'needs_connection_credentials' || kind === 'needs_default_model'
+        kind === 'needs_connection_credentials' || kind === 'needs_model'
           ? ({ kind, connectionSlug: 'a' } as OnboardingState)
           : ({ kind } as OnboardingState);
       assert.equal(isSetupRequired(state), true, `${kind} should be setup-required`);
@@ -271,13 +270,13 @@ describe('isSetupRequired', () => {
   it('returns false for ready_empty / ready_with_history / blocked / undefined', () => {
     const ready: OnboardingState = {
       kind: 'ready_empty',
-      defaultConnectionSlug: 'a',
-      defaultModel: 'm',
+      connectionSlug: 'a',
+      model: 'm',
     };
     const withHistory: OnboardingState = {
       kind: 'ready_with_history',
-      defaultConnectionSlug: 'a',
-      defaultModel: 'm',
+      connectionSlug: 'a',
+      model: 'm',
     };
     const blocked: OnboardingState = { kind: 'blocked', reason: 'all_connections_unhealthy' };
     assert.equal(isSetupRequired(ready), false);

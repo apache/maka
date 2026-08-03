@@ -66,7 +66,7 @@ function createActionsDeps() {
     showModelSetupToast: () => undefined,
     toastApi: { error: () => undefined, info: () => undefined },
     upsertSessionSummary: () => undefined,
-    validPendingNewChatModel: null,
+    newChatModel: null,
     pendingNewChatThinkingLevel: null,
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
@@ -75,6 +75,43 @@ function createActionsDeps() {
 }
 
 describe('composer first-send cleanup', () => {
+  it('passes the effective offered model when creating the first session', async () => {
+    let createInput: unknown;
+    const restoreWindow = installWindow({
+      sessions: {
+        create: async (input: unknown) => {
+          createInput = input;
+          return { id: 'session-1' };
+        },
+        send: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+        readMessages: async () => [],
+      },
+    });
+
+    try {
+      const deps = {
+        ...createActionsDeps(),
+        newChatModel: {
+          llmConnectionSlug: 'opencode-free',
+          model: 'mimo-v2.5-free',
+        },
+      };
+      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(
+      (createInput as { llmConnectionSlug?: unknown }).llmConnectionSlug,
+      'opencode-free',
+    );
+    assert.equal((createInput as { model?: unknown }).model, 'mimo-v2.5-free');
+  });
+
   it('forwards an explicit no-project selection when creating the first session', async () => {
     let createInput: unknown;
     const restoreWindow = installWindow({

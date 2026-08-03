@@ -15,6 +15,39 @@ import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 
 const DAILY_REVIEW_MODEL_KEY_SEPARATOR = '::';
 
+export function pickNewChatModel(input: {
+  pending: { llmConnectionSlug: string; model: string } | null;
+  activationCandidate?: { llmConnectionSlug: string; model: string };
+  catalogDefault: { llmConnectionSlug: string; model: string } | undefined;
+  choices: readonly ChatModelChoice[];
+}): { llmConnectionSlug: string; model: string } | undefined {
+  const pending =
+    input.pending &&
+    input.choices.some(
+      (choice) =>
+        choice.connectionSlug === input.pending?.llmConnectionSlug &&
+        choice.model === input.pending.model,
+    )
+      ? input.pending
+      : null;
+  if (pending) return pending;
+  const activationCandidate =
+    input.activationCandidate &&
+    input.choices.some(
+      (choice) =>
+        choice.connectionSlug === input.activationCandidate?.llmConnectionSlug &&
+        choice.model === input.activationCandidate.model,
+    )
+      ? input.activationCandidate
+      : undefined;
+  if (activationCandidate) return activationCandidate;
+  if (input.catalogDefault) return input.catalogDefault;
+  const first = input.choices[0];
+  return first
+    ? { llmConnectionSlug: first.connectionSlug, model: first.model }
+    : undefined;
+}
+
 export function buildCatalogRecommendedDefaultModel(providerType: ProviderType): string {
   const entry = selectableCatalogEntries({
     slug: providerType,

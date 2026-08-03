@@ -146,7 +146,7 @@ export function createAppShellChatActions(deps: {
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
   upsertSessionSummary: (session: SessionSummary) => void;
-  validPendingNewChatModel: PendingNewChatModel;
+  newChatModel: PendingNewChatModel;
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
@@ -176,7 +176,7 @@ export function createAppShellChatActions(deps: {
     showModelSetupToast,
     toastApi,
     upsertSessionSummary,
-    validPendingNewChatModel,
+    newChatModel,
     pendingNewChatThinkingLevel,
     newChatCollaborationMode,
     newChatOrchestrationMode,
@@ -300,10 +300,10 @@ export function createAppShellChatActions(deps: {
           // Omit permissionMode so main.ts's sessions:create resolves the
           // configured chatDefaults.permissionMode as the single authority.
           name: DEFAULT_SESSION_NAME,
-          ...(validPendingNewChatModel
+          ...(newChatModel
             ? {
-                llmConnectionSlug: validPendingNewChatModel.llmConnectionSlug,
-                model: validPendingNewChatModel.model,
+                llmConnectionSlug: newChatModel.llmConnectionSlug,
+                model: newChatModel.model,
               }
             : {}),
           ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
