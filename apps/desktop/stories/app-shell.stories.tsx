@@ -512,7 +512,7 @@ const longConversation: StoredMessage[] = [
   ),
 ];
 
-// Multi-step reasoning turn (streaming UI rework): two think->say->call steps
+// Multi-step reasoning turn: two think->say->call steps
 // in a single turn. Each step persists an assistant row (thinking + text) plus
 // tool_calls tagged with that row's id as `stepId`, so the turn timeline
 // reconstructs the real order — 深度思考 → answer text → tool row — per step,
@@ -526,7 +526,7 @@ const multiStepConversation: StoredMessage[] = [
     ts: NOW - 11 * 60_000,
     toolName: 'Read',
     displayName: '读取 assistant-stream.ts',
-    intent: '读取淡入环的实现，确认窗口滑动与上限',
+    intent: '读取 assistant delta 的脱敏与截断边界',
     stepId: 'msg-assistant-step-1',
     args: { file_path: 'packages/ui/src/assistant-stream.ts' },
   },
@@ -540,7 +540,7 @@ const multiStepConversation: StoredMessage[] = [
     durationMs: 640,
     content: {
       kind: 'text',
-      text: 'export function updateFadeRing(...) { /* prune + cap */ }',
+      text: 'export function applyAssistantDelta(...) { /* redact + cap */ }',
     },
   },
   {
@@ -548,9 +548,9 @@ const multiStepConversation: StoredMessage[] = [
     id: 'msg-assistant-step-1',
     turnId: 'turn-multistep',
     ts: NOW - 10 * 60_000,
-    text: '环逻辑没问题：增长记录批次、超窗剪枝、再按上限截断，收缩时整体重置。接下来我跑一下单测确认。',
+    text: '状态边界顺序正确：delta 先脱敏，append 后覆盖跨 delta 密钥，再执行总量截断。接下来我跑一下单测确认。',
     thinking: {
-      text: '先读实现，确认 boundary 取的是最老存活批次的 start，age 用 now 减去覆盖该 offset 的批次时间。看起来窗口滑动和上限都覆盖了，值得跑一遍测试坐实。',
+      text: '重点确认原始 delta 不会先进入状态，跨 delta 拼接后会再次脱敏，并且总量上限保留用户正在阅读的前缀。',
     },
     modelId: 'claude-sonnet-4-5',
   },
@@ -561,7 +561,7 @@ const multiStepConversation: StoredMessage[] = [
     ts: NOW - 10 * 60_000 + 500,
     toolName: 'Bash',
     displayName: '运行 assistant-stream 单测',
-    intent: '执行 node --test 跑淡入环与 tokenizer 的单测',
+    intent: '执行 assistant stream 脱敏与截断单测',
     stepId: 'msg-assistant-step-2',
     args: { cmd: 'node --test dist/main/__tests__/assistant-stream.test.js' },
   },
@@ -581,7 +581,7 @@ const multiStepConversation: StoredMessage[] = [
       exitCode: 0,
       output: {
         mode: 'pipes',
-        stdout: 'tests 13\npass 13\nfail 0\n',
+        stdout: 'tests 8\npass 8\nfail 0\n',
         stderr: '',
         stdoutTruncated: false,
         stderrTruncated: false,

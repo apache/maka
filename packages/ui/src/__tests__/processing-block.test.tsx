@@ -13,6 +13,27 @@ function renderToStaticMarkup(node: ReactNode): string {
   }));
 }
 
+function renderInDeterministicFixture(node: ReactNode): string {
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      documentElement: {
+        dataset: { makaE2eFixture: 'true' },
+      },
+    },
+  });
+  try {
+    return renderToStaticMarkup(node);
+  } finally {
+    if (documentDescriptor) {
+      Object.defineProperty(globalThis, 'document', documentDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, 'document');
+    }
+  }
+}
+
 function turnWithTools(tools: ToolActivityItem[]): TurnViewModel {
   return {
     turnId: 'turn-1',
@@ -56,6 +77,28 @@ describe('ProcessingBlock disclosure wiring (#1307)', () => {
 });
 
 describe('deep-thinking disclosure', () => {
+  it('shows complete live reasoning immediately in deterministic fixtures', () => {
+    const markup = renderInDeterministicFixture(createElement(TurnView, {
+      turn: {
+        turnId: 'fixture-thinking-turn',
+        status: 'running',
+        partialOutputRetained: false,
+        tools: [],
+        notes: [],
+        timeline: [{
+          kind: 'thinking',
+          text: 'deterministic fixture reasoning',
+          messageId: 'fixture-thinking-1',
+          live: true,
+        }],
+        startedAt: 1,
+      },
+      liveStreaming: {},
+    }));
+
+    assert.match(markup, /deterministic fixture reasoning/);
+  });
+
   it('renders through official Astryx ChatReasoning with its native collapsed preview', () => {
     const markup = renderToStaticMarkup(createElement(TurnView, {
       turn: {

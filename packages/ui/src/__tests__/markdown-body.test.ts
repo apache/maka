@@ -278,6 +278,33 @@ it('keeps the lazy fallback behind the streaming display cursor', () => {
   assert.doesNotMatch(markup, /lazy unreached tail/);
 });
 
+it('shows the complete stream immediately in deterministic fixtures', () => {
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      documentElement: {
+        dataset: { makaE2eFixture: 'true' },
+      },
+    },
+  });
+
+  try {
+    const markup = renderToStaticMarkup(createElement(Markdown, {
+      text: 'deterministic fixture answer',
+      streaming: true,
+    }));
+
+    assert.match(markup, /deterministic fixture answer/);
+  } finally {
+    if (documentDescriptor) {
+      Object.defineProperty(globalThis, 'document', documentDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, 'document');
+    }
+  }
+});
+
 it('leaves block rhythm to the caller and defaults to document spacing', () => {
   // The transcript wants compact block spacing; the Daily Review panel, which
   // renders through the same component, wants document spacing. Hardcoding

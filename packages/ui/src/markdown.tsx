@@ -29,6 +29,7 @@
 
 import { createContext, lazy, Suspense } from 'react';
 import { redactSecrets } from './redact.js';
+import { isProgressiveStreamingEnabled } from './streaming-presentation.js';
 
 // Heavy pipeline — parsed on first `<Markdown>` mount, not at app boot.
 const MarkdownBody = lazy(() => import('./markdown-body.js').then((m) => ({ default: m.MarkdownBody })));
@@ -40,18 +41,19 @@ export function Markdown(props: {
   density?: 'default' | 'compact';
 }) {
   const safeText = redactSecrets(props.text);
+  const streaming = isProgressiveStreamingEnabled(props.streaming);
   return (
     <Suspense
       // Settled history can show the safe source while the renderer loads.
       // A live stream must stay behind Astryx's display cursor; showing the
       // full source here would flash the unreached tail before Astryx mounts.
-      fallback={props.streaming ? null : (
+      fallback={streaming ? null : (
         <div className="maka-markdown maka-markdown-pending" style={{ whiteSpace: 'pre-wrap' }}>
           {safeText}
         </div>
       )}
     >
-      <MarkdownBody text={safeText} streaming={props.streaming} density={props.density} />
+      <MarkdownBody text={safeText} streaming={streaming} density={props.density} />
     </Suspense>
   );
 }

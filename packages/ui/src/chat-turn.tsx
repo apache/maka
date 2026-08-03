@@ -5,6 +5,7 @@ import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-f
 import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
 import { redactSecrets } from './redact.js';
+import { isProgressiveStreamingEnabled } from './streaming-presentation.js';
 import {
   Badge,
   Button as UiButton,
@@ -886,7 +887,7 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
 function DeepThinking(props: { text: string; live: boolean; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const safeText = redactSecrets(props.text);
-  const displayed = useStreamingText(safeText, props.live);
+  const displayed = useStreamingText(safeText, isProgressiveStreamingEnabled(props.live));
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
     <ChatReasoning
