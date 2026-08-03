@@ -51,6 +51,10 @@ describe('cron expression authority', () => {
     const named = assertCompiled('0 9 * JAN MON', 'automation-v1').nextAfter(after);
     const numeric = assertCompiled('0 9 * 1 1', 'automation-v1').nextAfter(after);
     assert.equal(named, numeric);
+
+    const namedRange = assertCompiled('0 9 * jan mon-fri', 'automation-v1').nextAfter(after);
+    const numericRange = assertCompiled('0 9 * 1 1-5', 'automation-v1').nextAfter(after);
+    assert.equal(namedRange, numericRange);
   });
 
   it('keeps Plan schedules strict outside their normalization entrypoint', () => {
@@ -121,6 +125,29 @@ describe('cron expression authority', () => {
         expression,
       );
     }
+  });
+
+  it('validates every field and impossible dates before searching', () => {
+    const cases = [
+      ['0 9 32 * *', 'day-of-month', 'out_of_range'],
+      ['0 25 * * *', 'hour', 'out_of_range'],
+      ['0 9 * 13 *', 'month', 'out_of_range'],
+      ['0 9 * * BADTOKEN', 'day-of-week', 'invalid_integer'],
+      ['0 0 30 2 *', 'day-of-month', 'unsatisfiable'],
+      ['0 0 31 4 *', 'day-of-month', 'unsatisfiable'],
+    ] as const;
+    const startedAt = Date.now();
+
+    for (const [expression, field, code] of cases) {
+      const result = compileCronExpression(expression, { profile: 'automation-v1' });
+      assert.equal(result.ok, false, expression);
+      if (!result.ok) {
+        assert.equal(result.error.field, field, expression);
+        assert.equal(result.error.code, code, expression);
+      }
+    }
+
+    assert.ok(Date.now() - startedAt < 100, 'invalid expressions must fail before search');
   });
 
   it('normalizes both 0 and 7 to Sunday, including ranges', () => {

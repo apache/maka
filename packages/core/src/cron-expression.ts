@@ -86,7 +86,11 @@ type CronParseResult<T> =
 const MINUTE_MS = 60_000;
 const MINUTES_PER_DAY = 24 * 60;
 
-/** Covers the maximum gap between consecutive leap days across a non-leap century. */
+/**
+ * A sparse valid expression such as Feb 29 can be eight years away when a
+ * century year is not divisible by 400 (2096 -> 2104). This bound covers that
+ * maximum gap while still making an impossible expression terminate.
+ */
 const MAX_SEARCH_MINUTES = 8 * 366 * MINUTES_PER_DAY;
 
 const MONTH_ALIASES: Readonly<Record<string, number>> = Object.freeze({
@@ -322,6 +326,9 @@ function nextCronOccurrence(
   if (bounds?.notBefore !== undefined && !Number.isFinite(bounds.notBefore)) return null;
   if (bounds?.notAfter !== undefined && !Number.isFinite(bounds.notAfter)) return null;
 
+  // Advance in epoch minutes. Mutating local Date fields during a DST fold can
+  // re-encode the repeated wall-clock time with the earlier offset and produce
+  // a candidate at or before `after`, causing a scheduler re-fire loop.
   const firstMinuteAfter = (Math.floor(after / MINUTE_MS) + 1) * MINUTE_MS;
   const notBefore = bounds?.notBefore;
   const boundedStart =
@@ -353,6 +360,8 @@ function cronExpressionMatches(expression: ParsedCronExpression, date: Date): bo
 
   const dayOfMonthMatches = expression.dayOfMonth.values.has(date.getDate());
   const dayOfWeekMatches = expression.dayOfWeek.values.has(date.getDay());
+  // Vixie cron treats DOM and DOW as OR only when both fields are restricted.
+  // When either field is a wildcard it is a no-op, so matching stays AND.
   if (!expression.dayOfMonth.wildcard && !expression.dayOfWeek.wildcard) {
     return dayOfMonthMatches || dayOfWeekMatches;
   }
