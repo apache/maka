@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { LocaleProvider } from '../locale-context.js';
 import type { SkillEntry } from '../module-panel-types.js';
@@ -21,7 +22,10 @@ const INSTALLED_SKILL: SkillEntry = {
   runtimeStatus: 'enabled',
 };
 
-function render(skills: SkillEntry[] = [INSTALLED_SKILL]): string {
+function render(
+  skills: SkillEntry[] = [INSTALLED_SKILL],
+  overrides: Partial<ComponentProps<typeof SkillsModuleMain>> = {},
+): string {
   return renderToStaticMarkup(
     <LocaleProvider locale="en">
       <ToastProvider>
@@ -32,6 +36,7 @@ function render(skills: SkillEntry[] = [INSTALLED_SKILL]): string {
           onSetSkillEnabled={() => {}}
           onSetSkillPinned={() => {}}
           onDeleteSkill={() => {}}
+          {...overrides}
         />
       </ToastProvider>
     </LocaleProvider>,
@@ -47,9 +52,23 @@ describe('Skills page interaction hierarchy', () => {
     assert.match(markup, /aria-label="More actions for Test Skill"/);
     assert.match(markup, /role="menu" aria-label="More actions for Test Skill"/);
     assert.match(markup, /role="menuitem"[\s\S]*?>Open SKILL.md</);
+    assert.match(markup, /role="menuitem"[\s\S]*?>Pin to the skill context</);
     assert.match(markup, /role="menuitem"[\s\S]*?>Delete</);
     assert.doesNotMatch(markup, /aria-label="Open SKILL.md"/);
     assert.doesNotMatch(markup, /aria-label="Delete Test Skill"/);
+  });
+
+  it('keeps managed update review in the contextual menu', () => {
+    const markup = render([{
+      ...INSTALLED_SKILL,
+      sourceType: 'managed',
+      managedUpdateStatus: 'update_available',
+    }], {
+      onPreviewManagedSkillUpdate: async () => null,
+    });
+
+    assert.match(markup, /role="menuitem"[\s\S]*?>View update</);
+    assert.doesNotMatch(markup, /<button[^>]*>View update<\/button>/);
   });
 
   it('renders scope and source as supporting text rather than status chips', () => {

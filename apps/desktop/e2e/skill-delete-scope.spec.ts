@@ -2,9 +2,9 @@
 //
 // The delete path is the one place the Skills panel removes files from the
 // user's HOME rather than from app-managed workspace data, so the journey that
-// matters is the whole round trip: the button is offered for the scopes the
-// backend can actually delete, two clicks remove the directory from disk, and
-// the row is gone on the refresh that follows.
+// matters is the whole round trip: the contextual action is offered for the
+// scopes the backend can actually delete, the confirmation protects the file
+// operation, and the row is gone on the refresh that follows.
 //
 // This spec only exists because `buildE2eEnv` now sandboxes HOME. Before that,
 // running it would have deleted a real skill out of the developer's
@@ -38,13 +38,14 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
   const row = page.locator('.maka-skill-library-list li').filter({ hasText: 'User Only' });
   await expect(row).toHaveCount(1);
 
-  // Two-step confirm: the first click only arms the button, so the skill must
-  // still be on disk at this point — a single stray click cannot delete.
-  const deleteButton = row.getByRole('button', { name: /删除/ });
-  await deleteButton.click();
+  await row.getByRole('button', { name: 'User Only 的更多操作' }).click();
+  await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+
+  // Opening the confirmation alone must not touch disk.
   await access(skillDir);
 
-  await deleteButton.click();
+  const confirm = page.getByRole('alertdialog', { name: '确认删除 User Only' });
+  await confirm.getByRole('button', { name: '删除', exact: true }).click();
 
   await expect(row).toHaveCount(0);
   await expect.poll(() => access(skillDir).then(() => 'present', () => 'gone')).toBe('gone');
@@ -63,5 +64,7 @@ test('offers no delete for a project-scope skill', async ({ invocableSkillsWindo
 
   const projectRow = page.locator('.maka-skill-library-list li').filter({ hasText: 'Project Only' });
   await expect(projectRow).toHaveCount(1);
-  await expect(projectRow.getByRole('button', { name: /删除/ })).toHaveCount(0);
+  await projectRow.getByRole('button', { name: 'Project Only 的更多操作' }).click();
+  const menu = page.getByRole('menu', { name: 'Project Only 的更多操作' });
+  await expect(menu.getByRole('menuitem', { name: '删除', exact: true })).toHaveCount(0);
 });
