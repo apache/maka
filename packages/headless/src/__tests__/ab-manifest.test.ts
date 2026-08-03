@@ -3,7 +3,13 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { buildAbRunManifest, ensureAbRunManifest, readAbRunManifest } from '../ab-manifest.js';
+import {
+  buildAbRunManifest,
+  buildRunManifestFingerprint,
+  canonicalJson,
+  ensureAbRunManifest,
+  readAbRunManifest,
+} from '../ab-manifest.js';
 import { sha256 } from './helpers/hash-fixture.js';
 
 describe('buildAbRunManifest', () => {
@@ -150,5 +156,62 @@ describe('buildAbRunManifest', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// `canonicalJson` and `buildRunManifestFingerprint` are the load-bearing
+// determinism contract for A/B resume identities. These behavior tests pin the
+// invariants (per #1403): key-order independence, `undefined`-field dropping,
+// array-order preservation, and fingerprint stability — rather than asserting on
+// the exact serialized bytes, which would over-constrain the implementation.
+describe('canonicalJson', () => {
+  test('drops undefined object fields so {a:1,b:undefined} equals {a:1}', () => {
+    assert.equal(canonicalJson({ a: 1, b: undefined }), canonicalJson({ a: 1 }));
+    assert.equal(canonicalJson({ a: 1, b: undefined }), '{"a":1}');
+  });
+
+  test('is independent of object key insertion order', () => {
+    assert.equal(canonicalJson({ b: 2, a: 1 }), canonicalJson({ a: 1, b: 2 }));
+  });
+
+  test('preserves array order (order is semantically meaningful)', () => {
+    assert.equal(canonicalJson([3, 1, 2]), '[3,1,2]');
+    assert.notEqual(canonicalJson([3, 1, 2]), canonicalJson([1, 2, 3]));
+  });
+
+  test('recursively sorts keys in nested objects', () => {
+    assert.equal(canonicalJson({ outer: { z: 1, a: 2 } }), '{"outer":{"a":2,"z":1}}');
+  });
+
+  test('serializes scalars via JSON.stringify', () => {
+    assert.equal(canonicalJson(null), 'null');
+    assert.equal(canonicalJson('hi'), '"hi"');
+    assert.equal(canonicalJson(42), '42');
+    assert.equal(canonicalJson(true), 'true');
+  });
+});
+
+describe('buildRunManifestFingerprint', () => {
+  test('produces the same fingerprint for logically equal payloads regardless of key order', () => {
+    assert.equal(
+      buildRunManifestFingerprint({ b: 2, a: 1 }),
+      buildRunManifestFingerprint({ a: 1, b: 2 }),
+    );
+  });
+
+  test('is stable across repeated calls (idempotent)', () => {
+    const payload = { arms: [{ id: 'on' }, { id: 'off' }], reps: 3 };
+    assert.equal(buildRunManifestFingerprint(payload), buildRunManifestFingerprint(payload));
+  });
+
+  test('ignores undefined fields when computing the fingerprint', () => {
+    assert.equal(
+      buildRunManifestFingerprint({ a: 1, b: undefined }),
+      buildRunManifestFingerprint({ a: 1 }),
+    );
+  });
+
+  test('yields a sha256:<64 lowercase hex> string', () => {
+    assert.match(buildRunManifestFingerprint({ a: 1 }), /^sha256:[a-f0-9]{64}$/);
   });
 });

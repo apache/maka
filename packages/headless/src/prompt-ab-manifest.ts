@@ -1,5 +1,8 @@
-import { createHash } from 'node:crypto';
-import { ensureAbRunManifest, buildAbRunManifest } from './ab-manifest.js';
+import {
+  ensureAbRunManifest,
+  buildAbRunManifest,
+  buildRunManifestFingerprint,
+} from './ab-manifest.js';
 import type { PromptAbRunManifest, PromptAbRunManifestInput } from './prompt-ab-types.js';
 
 export function buildPromptAbRunManifest(input: PromptAbRunManifestInput): PromptAbRunManifest {
@@ -68,7 +71,7 @@ export function buildPromptAbRunManifest(input: PromptAbRunManifestInput): Promp
     ...promptManifestWithoutFingerprint,
     experimentKind: 'prompt',
     arms: genericManifest.arms as PromptAbRunManifest['arms'],
-    fingerprint: `sha256:${createHash('sha256').update(canonicalJson(promptManifestWithoutFingerprint)).digest('hex')}`,
+    fingerprint: buildRunManifestFingerprint(promptManifestWithoutFingerprint),
   };
 }
 
@@ -96,17 +99,6 @@ export async function ensurePromptAbRunManifest(
     }
     throw error;
   }
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b));
-    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${canonicalJson(entryValue)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function withoutUndefined<T extends Record<string, unknown>>(value: T): T {

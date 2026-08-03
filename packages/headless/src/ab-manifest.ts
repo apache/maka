@@ -104,7 +104,15 @@ function hasFullBodyFingerprint(
   return schemaVersion === 'maka.ab.run_manifest.v1';
 }
 
-function canonicalJson(value: unknown): string {
+/**
+ * Deterministic JSON serializer shared across `@maka/headless`: drops `undefined`
+ * object fields and recursively sorts object keys, so that two logically equal
+ * objects always serialize to the same bytes. Arrays preserve order (order is
+ * semantically meaningful). This is the single authority — every fingerprint in
+ * the package (`buildRunManifestFingerprint` and its callers) must go through
+ * here so resume identities never drift.
+ */
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
   if (value && typeof value === 'object') {
     const entries = Object.entries(value)
