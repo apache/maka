@@ -3,9 +3,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import type {
-  AgentRunEvent,
   AgentRunHeader,
+  EmittedAgentRunEvent,
   InteractionCanonicalOutcome,
   InteractionRequest,
   ShellRunRecord,
@@ -32,6 +33,50 @@ describe('SQLite core execution stores', () => {
       try {
         assert.equal((await reopened.readRun('session-1', 'run-1')).runId, 'run-1');
         assert.equal((await reopened.readEvents('session-1', 'run-1'))[0]?.id, 'event-1');
+      } finally {
+        reopened.close?.();
+      }
+    });
+  });
+
+  test('reads an AgentRun event type this build does not write', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', runEvent());
+      store.close?.();
+
+      // Rewrite the stored row into what a build that still had this writer would have left
+      // behind. Going through the database rather than appendEvent is the point: this build
+      // must be able to read a record it is no longer allowed to produce (#1942).
+      const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        const record = {
+          ...runEvent(),
+          type: 'written_by_another_version',
+          data: { inputTokens: 7 },
+        };
+        db.prepare(
+          `UPDATE core_agent_run_events SET event_type = ?, record_json = ? WHERE event_id = ?`,
+        ).run('written_by_another_version', JSON.stringify(record), 'event-1');
+      } finally {
+        db.close();
+      }
+
+      const reopened = createSqliteAgentRunStore(root);
+      try {
+        const events = await reopened.readEvents('session-1', 'run-1');
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ['written_by_another_version'],
+        );
+        assert.equal(events[0]?.data?.inputTokens, 7);
+
+        const recovered = await reopened.readEventsForRecovery('session-1', 'run-1');
+        assert.deepEqual(
+          recovered.map((event) => event.type),
+          ['written_by_another_version'],
+        );
       } finally {
         reopened.close?.();
       }
@@ -133,7 +178,7 @@ function runHeader(): AgentRunHeader {
   };
 }
 
-function runEvent(): AgentRunEvent {
+function runEvent(): EmittedAgentRunEvent {
   return {
     type: 'run_started',
     id: 'event-1',

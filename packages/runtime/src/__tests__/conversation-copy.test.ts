@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import type {
   AgentRunHeader,
   AgentRunStore,
+  EmittedAgentRunEvent,
   RuntimeEvent,
   RuntimeEventStore,
   StoredMessage,
@@ -970,6 +971,24 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       turnId: 'turn-1',
       ts: 3,
     });
+    // A record left by a build whose writer this one no longer has. The cast is the point: the
+    // write contract forbids producing this type, and only another version could have put it in
+    // the source ledger. The rewriters cannot check an unknown payload for source-owned ids, so
+    // the copy must drop it rather than carry those ids into the target (#1942).
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'written_by_another_version',
+      id: 'foreign-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 3.5,
+      data: { runtimeEventId: 'event-source-1' },
+    } as unknown as EmittedAgentRunEvent);
+    assert.ok(
+      (await runStore.readEvents('session-source', 'run-source')).some(
+        (event) => event.type === 'written_by_another_version',
+      ),
+    );
     const source = await new RuntimeReadModel({
       runStore,
       runtimeEventStore,

@@ -3,7 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type {
+  AgentRunEvent,
+  AgentRunEventType,
+  AgentRunHeader,
+  EmittedAgentRunEvent,
+  RuntimeEvent,
+} from '@maka/core';
 import { createSessionStore } from '@maka/storage';
 import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import {
@@ -156,7 +162,7 @@ function runHeader(sessionId: string): AgentRunHeader {
   };
 }
 
-function runEvent(sessionId: string, type: AgentRunEvent['type']): AgentRunEvent {
+function runEvent(sessionId: string, type: AgentRunEventType): EmittedAgentRunEvent {
   return { id: `op-${type}`, type, runId: RUN_ID, sessionId, turnId: TURN_ID, ts: TS + 1 };
 }
 

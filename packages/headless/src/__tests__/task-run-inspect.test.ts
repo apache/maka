@@ -3,7 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type {
+  AgentRunEventType,
+  AgentRunHeader,
+  EmittedAgentRunEvent,
+  RuntimeEvent,
+} from '@maka/core';
 import { buildHistoryCompactCheckpoint } from '@maka/runtime';
 import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import type { HeavyTaskSemanticSelfCheckState, TaskEvent } from '../task-contracts.js';
@@ -385,7 +390,7 @@ function runHeader(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
   };
 }
 
-function runEvent(id: string, type: AgentRunEvent['type']): AgentRunEvent {
+function runEvent(id: string, type: AgentRunEventType): EmittedAgentRunEvent {
   return { id, type, runId: RUN_ID, sessionId: SESSION_ID, turnId: TURN_ID, ts: 10 };
 }
 

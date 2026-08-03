@@ -5,6 +5,7 @@ import type {
   AgentRunEvent,
   AgentRunHeader,
   BackendKind,
+  EmittedAgentRunEvent,
   PricingConfig,
   ProviderType,
   RuntimeEvent,
@@ -694,7 +695,7 @@ export async function writeHarborTaskRunTrace(input: {
                 turnId: header.turnId,
                 ts: header.updatedAt,
                 message: header.traceWriteError,
-              } satisfies AgentRunEvent,
+              } satisfies EmittedAgentRunEvent,
             ]
           : events;
       if (header.backendKind !== 'ai-sdk' || evidenceEvents.some(isProviderRequestTraceEvidence)) {
@@ -714,7 +715,7 @@ export async function writeHarborTaskRunTrace(input: {
             reason: 'missing_provider_request_evidence',
             invocationId: invocation.invocationId,
           },
-        } satisfies AgentRunEvent,
+        } satisfies EmittedAgentRunEvent,
       ];
     }),
   );
