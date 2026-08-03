@@ -47,6 +47,7 @@ export interface DailyReviewCopy {
   page: {
     title: string;
     generateAnalysis: string;
+    retryAnalysis: string;
     viewAnalysis: string;
     backToActivity: string;
     timeRange: string;
@@ -104,7 +105,7 @@ const DAILY_REVIEW_COPY = {
       ariaLabel: '回顾导出操作', copyTitle: '复制为 Markdown 摘要，方便分享 / 贴到笔记', copying: '复制中…', copy: '复制', appendTitle: '追加到当前输入框草稿', appending: '追加中…', append: '粘到输入框', saveTitle: '保存为 Markdown 文件', saving: '保存中…', save: '保存',
     },
     page: {
-      title: '每日回顾', generateAnalysis: '生成分析', viewAnalysis: '查看分析', backToActivity: '返回活动', timeRange: '时间范围', rangeOptions: [['1', '今日'], ['7', '最近 7 天'], ['30', '最近 30 天']], rangeSwitch: '时间范围切换',
+      title: '每日回顾', generateAnalysis: '生成分析', retryAnalysis: '重新生成', viewAnalysis: '查看分析', backToActivity: '返回活动', timeRange: '时间范围', rangeOptions: [['1', '今日'], ['7', '最近 7 天'], ['30', '最近 30 天']], rangeSwitch: '时间范围切换',
     },
     overview: {
       ariaLabel: (label) => `${label}概览`, refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', activeConversations: '活跃对话',
@@ -138,7 +139,7 @@ const DAILY_REVIEW_COPY = {
       ariaLabel: 'Review export actions', copyTitle: 'Copy a Markdown summary to share or add to notes', copying: 'Copying…', copy: 'Copy', appendTitle: 'Append to the current composer draft', appending: 'Appending…', append: 'Add to composer', saveTitle: 'Save as a Markdown file', saving: 'Saving…', save: 'Save',
     },
     page: {
-      title: 'Daily review', generateAnalysis: 'Generate analysis', viewAnalysis: 'View analysis', backToActivity: 'Back to activity', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], rangeSwitch: 'Change time range',
+      title: 'Daily review', generateAnalysis: 'Generate analysis', retryAnalysis: 'Generate again', viewAnalysis: 'View analysis', backToActivity: 'Back to activity', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], rangeSwitch: 'Change time range',
     },
     overview: {
       ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', activeConversations: 'Active conversations',

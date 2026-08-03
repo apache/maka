@@ -47,7 +47,7 @@ test('Daily Review run reuses an existing archive', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 7, 3, 9, 0, 0).getTime() });
   let writes = 0;
   const service = createService({
-    getArchive: async () => ({}),
+    getArchive: async () => ({ status: 'ok' }),
     putArchive: async () => {
       writes += 1;
     },
@@ -58,6 +58,26 @@ test('Daily Review run reuses an existing archive', async (t) => {
 
     assert.equal(result.archiveId, '2026-08-03-1d');
     assert.equal(writes, 0);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test('Daily Review run retries every non-success archive status', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 7, 3, 9, 0, 0).getTime() });
+  try {
+    for (const status of ['no_data', 'no_model', 'failed', 'skipped']) {
+      let writes = 0;
+      const service = createService({
+        getArchive: async () => ({ status }),
+        putArchive: async () => {
+          writes += 1;
+        },
+      });
+
+      await service.run({ range: 1, trigger: 'manual' });
+      assert.equal(writes, 1, `${status} should remain retryable`);
+    }
   } finally {
     t.mock.timers.reset();
   }

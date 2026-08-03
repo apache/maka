@@ -272,7 +272,7 @@ export function DailyReviewPanel(props: {
           onClick={() => selectScope(shiftDailyReviewScope({ range, offsetDays }, 1))}
         />
         <StackItem size="fill" />
-        {currentArchive ? (
+        {currentArchive?.status === 'ok' ? (
           <Button
             variant="primary"
             size="sm"
@@ -285,7 +285,7 @@ export function DailyReviewPanel(props: {
           <Button
             variant="primary"
             size="sm"
-            label={copy.page.generateAnalysis}
+            label={currentArchive ? copy.page.retryAnalysis : copy.page.generateAnalysis}
             isLoading={pendingAction === 'generate'}
             isDisabled={
               archiveState.status !== 'ready'

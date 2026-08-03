@@ -668,3 +668,32 @@ export const ScheduledDailyReviewReport: Story = {
     button.click();
   },
 };
+
+// Real path: sidebar → scheduled tasks → Daily Review after a recoverable generation failure.
+export const ScheduledDailyReviewRetryableArchive: Story = {
+  render: () => {
+    const retryableArchive = {
+      ...DAILY_REVIEW_ARCHIVE,
+      status: 'failed' as const,
+      errorMessage: 'temporary fixture failure',
+    };
+    return (
+      <ScheduledDailyReviewSurface
+        bridge={{
+          fetchDay: async () => DAILY_REVIEW_SUMMARY,
+          listArchives: async () => [retryableArchive],
+          runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+          getArchive: async () => DAILY_REVIEW_ARCHIVE,
+        }}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const retry = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('重新生成') === true,
+    );
+    retry.click();
+    await waitForStoryText(canvasElement, '返回活动');
+  },
+};

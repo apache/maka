@@ -36,7 +36,7 @@ test('Daily Review scheduler targets the previous complete local day without ove
       getArchive: async (archiveId: string) => {
         checkedArchiveId = archiveId;
         resolveChecked();
-        return {};
+        return { status: 'ok' };
       },
       putArchive: async () => {
         writes += 1;

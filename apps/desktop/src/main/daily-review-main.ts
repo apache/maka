@@ -127,7 +127,8 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
     const effectiveModelKey = modelKeyOverride ? modelKeyOverride : config.modelKey;
     const summary = await buildSummaryForRange(input.offsetDays ?? 0, range);
     const archiveId = dailyReviewArchiveId(summary.day, range);
-    if (await deps.archiveStore.getArchive(archiveId)) return { archiveId };
+    const existingArchive = await deps.archiveStore.getArchive(archiveId);
+    if (existingArchive?.status === 'ok') return { archiveId };
 
     const inFlight = inFlightRuns.get(archiveId);
     if (inFlight) return inFlight;
