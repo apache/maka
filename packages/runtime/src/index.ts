@@ -856,6 +856,18 @@ export type {
   StartXaiDeviceAuthorizationInput,
   XaiDeviceAuthorization,
 } from './xai-oauth-enrollment.js';
+export {
+  exchangeCodexDeviceAuthorizationCode,
+  pollCodexDeviceAuthorization,
+  startCodexDeviceAuthorization,
+} from './codex-oauth-enrollment.js';
+export type {
+  CodexDeviceAuthorization,
+  CodexDeviceAuthorizationGrant,
+  ExchangeCodexDeviceAuthorizationCodeInput,
+  PollCodexDeviceAuthorizationInput,
+  StartCodexDeviceAuthorizationInput,
+} from './codex-oauth-enrollment.js';
 export type {
   ExchangeOAuthAuthorizationCodeInput,
   OAuthLoginAuthorization,
