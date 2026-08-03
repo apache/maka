@@ -18,11 +18,10 @@ import { tmpdir } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import { DatabaseSync } from 'node:sqlite';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { SESSION_BUNDLE_STATE_ENTRIES } from '@maka/storage';
+import { SESSION_BUNDLE_STATE_ENTRIES, isArtifactPathForSession } from '@maka/storage';
 import { STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
 import {
   constants as zlibConstants,
@@ -53,6 +52,23 @@ const SUPPORTED_OPTIONS = new Set([
 // must be regenerated when a session export is materialized elsewhere.
 const STORAGE_ROOT_AUTHORITY_MARKER = STORAGE_ROOT_MARKER_FILE;
 const PORTABLE_STATE_TOP_LEVEL = new Set(SESSION_BUNDLE_STATE_ENTRIES);
+// Legacy directory exports may still be supplied to this measurement tool,
+// but storage's SQLite-only authority no longer exports these compatibility
+// constants. Keep the historical read allowlist local to the legacy reader.
+const PORTABLE_SESSION_DIRECTORIES = new Set([
+  'deep-research',
+  'projections',
+  'runs',
+  'shell-runs',
+  'turn-admissions',
+]);
+const PORTABLE_SESSION_FILES = new Set([
+  'execution-boundary.json',
+  'plan-events.jsonl',
+  'plans.json',
+  'task-events.jsonl',
+  'tasks.json',
+]);
 const MAX_JSON_BYTES = 1_048_576;
 const EXCLUDED_WORKSPACE_SEGMENTS = new Set(['.git', 'node_modules']);
 const SENSITIVE_WORKSPACE_FILE_PATTERNS = [
@@ -372,13 +388,13 @@ async function prepareStateExport(sourceRoot, destinationRoot, expectedSessionId
   const sourceStats = await stat(source).catch(() => undefined);
   if (!sourceStats?.isDirectory()) throw new Error(`session export is not a directory: ${source}`);
   const entries = await readTreeEntries(source);
-  const sessionId = await readSessionExportId(source);
+  const sessionId = findSessionId(entries);
   if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
     throw new Error(`session export identity changed while preparing: ${source}`);
   }
-  await validateStateExportEntries(entries, sessionId);
-  if (!entries.some((entry) => entry.path === 'runtime.sqlite')) {
-    throw new Error(`session export has no runtime.sqlite: ${source}`);
+  await validateStateExportEntries(source, entries, sessionId);
+  if (!entries.some((entry) => entry.path.startsWith('sessions/'))) {
+    throw new Error(`session export has no sessions/** tree: ${source}`);
   }
   for (const entry of entries) {
     if (entry.path === STORAGE_ROOT_AUTHORITY_MARKER) continue;
@@ -392,13 +408,31 @@ async function prepareStateExport(sourceRoot, destinationRoot, expectedSessionId
   }
 }
 
-async function validateStateExportEntries(entries, sessionId) {
+async function validateStateExportEntries(sourceRoot, entries, sessionId) {
   for (const entry of entries) {
     if (entry.path === STORAGE_ROOT_AUTHORITY_MARKER) continue;
     const [topLevel, child] = entry.path.split('/');
     if (!PORTABLE_STATE_TOP_LEVEL.has(topLevel)) {
       throw new Error(
         `session export contains protected or unclassified state entry: ${entry.path}`,
+      );
+    }
+    if (topLevel === 'sessions') {
+      const sessionPrefix = `sessions/${sessionId}/`;
+      if (entry.path === `sessions/${sessionId}/session.jsonl`) continue;
+      if (!entry.path.startsWith(sessionPrefix)) {
+        throw new Error(`session export contains unfiltered session entry: ${entry.path}`);
+      }
+      const relativePath = entry.path.slice(sessionPrefix.length);
+      const firstSegment = relativePath.split('/')[0];
+      if (
+        (relativePath.includes('/') && PORTABLE_SESSION_DIRECTORIES.has(firstSegment)) ||
+        PORTABLE_SESSION_FILES.has(relativePath)
+      ) {
+        continue;
+      }
+      throw new Error(
+        `session export contains protected or unclassified session entry: ${entry.path}`,
       );
     }
     if (topLevel === 'runtime.sqlite') {
@@ -410,15 +444,40 @@ async function validateStateExportEntries(entries, sessionId) {
       continue;
     }
     if (topLevel !== 'artifacts') continue;
+    if (entry.path === 'artifacts/metadata.jsonl') {
+      await validateArtifactMetadata(sourceRoot, entry, sessionId);
+      continue;
+    }
     if (child !== sessionId || !entry.path.startsWith(`artifacts/${sessionId}/`)) {
       throw new Error(`session export contains unfiltered artifact entry: ${entry.path}`);
     }
   }
 }
 
+async function validateArtifactMetadata(sourceRoot, entry, sessionId) {
+  const text = await readFile(join(sourceRoot, entry.path), 'utf8');
+  for (const [index, line] of text.split('\n').entries()) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`artifact metadata is invalid JSON at line ${index + 1}`, { cause: error });
+    }
+    if (
+      !record ||
+      record.sessionId !== sessionId ||
+      typeof record.relativePath !== 'string' ||
+      !isArtifactPathForSession(record.relativePath, sessionId)
+    ) {
+      throw new Error(`session export contains unfiltered artifact metadata at line ${index + 1}`);
+    }
+  }
+}
+
 async function createBundleArchive({ stateRoot, workspaceEntries, archivePath }) {
   const stateEntries = await readTreeEntries(stateRoot);
-  const sessionId = await readSessionExportId(stateRoot);
+  const sessionId = findSessionId(stateEntries);
   const files = [
     ...stateEntries.map((entry) => ({ ...entry, path: `state/${entry.path}` })),
     ...workspaceEntries.map((entry) => ({ ...entry, path: `workspace/${entry.path}` })),
@@ -688,10 +747,8 @@ async function validateMaterializedBundle(destination, manifest) {
   validateManifest(manifest);
   const stateRoot = join(destination, manifest.stateRoot);
   const workspaceRoot = join(destination, manifest.workspaceRoot);
-  const materializedSessionId = await readSessionExportId(stateRoot);
-  if (materializedSessionId !== manifest.sessionId) {
-    throw new Error('materialized bundle session does not match its manifest');
-  }
+  const sessionPath = join(stateRoot, 'sessions', manifest.sessionId, 'session.jsonl');
+  await stat(sessionPath);
   await stat(workspaceRoot);
   for (const file of manifest.files) {
     const path = join(destination, file.path);
@@ -764,26 +821,20 @@ async function readTreeEntries(root, options = {}) {
   return files;
 }
 
-export async function readSessionExportId(root) {
-  const databasePath = join(root, 'runtime.sqlite');
-  const databaseStats = await stat(databasePath).catch(() => undefined);
-  if (!databaseStats?.isFile()) {
-    throw new Error('state export must contain runtime.sqlite');
+async function readSessionExportId(root) {
+  const sessionsRoot = join(root, 'sessions');
+  const entries = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
+  const sessionIds = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sessionPath = join(sessionsRoot, entry.name, 'session.jsonl');
+    const sessionStats = await stat(sessionPath).catch(() => undefined);
+    if (sessionStats?.isFile()) sessionIds.push(entry.name);
   }
-  const database = new DatabaseSync(databasePath, { readOnly: true });
-  let sessionIds;
-  try {
-    sessionIds = database
-      .prepare('SELECT session_id FROM session_metadata ORDER BY session_id')
-      .all()
-      .map((row) => row.session_id)
-      .filter((sessionId) => typeof sessionId === 'string' && sessionId.length > 0);
-  } finally {
-    database.close();
-  }
-  if (sessionIds.length === 0) throw new Error('state export must contain one SQLite session');
+  if (sessionIds.length === 0)
+    throw new Error('state export must contain sessions/<id>/session.jsonl');
   if (sessionIds.length !== 1)
-    throw new Error('each session export must contain exactly one SQLite session');
+    throw new Error('each session export must contain exactly one sessions/<id>/session.jsonl');
   return sessionIds[0];
 }
 
@@ -829,6 +880,22 @@ function excludedWorkspaceCategory(relativePath) {
     return 'sensitive';
   }
   return undefined;
+}
+
+function findSessionId(entries) {
+  const sessionIds = [
+    ...new Set(
+      entries.flatMap((entry) => {
+        const match = /^sessions\/([^/]+)\/session\.jsonl$/.exec(entry.path);
+        return match ? [match[1]] : [];
+      }),
+    ),
+  ];
+  if (sessionIds.length === 0)
+    throw new Error('state export must contain sessions/<id>/session.jsonl');
+  if (sessionIds.length !== 1)
+    throw new Error('each session export must contain exactly one sessions/<id>/session.jsonl');
+  return sessionIds[0];
 }
 
 export function isDecisionReady(

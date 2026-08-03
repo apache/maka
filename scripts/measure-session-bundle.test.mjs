@@ -3,10 +3,9 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { readSessionExportId, redactText, sanitizeJsonFile } from './measure-session-bundle.mjs';
+import { redactText, sanitizeJsonFile } from './measure-session-bundle.mjs';
 
 const scriptPath = fileURLToPath(new URL('./measure-session-bundle.mjs', import.meta.url));
 
@@ -43,27 +42,6 @@ test('session bundle sanitization redacts secrets', async () => {
     await writeFile(secret, '{\n  "token": "secret-value",\n  "answer": 42\n}\n');
     await sanitizeJsonFile(secret, secretOutput);
     assert.equal(await readFile(secretOutput, 'utf8'), '{"token":"[REDACTED]","answer":42}\n');
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('session bundle measurement reads the sole session from the filtered SQLite export', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-sqlite-'));
-  try {
-    const database = new DatabaseSync(join(root, 'runtime.sqlite'));
-    database.exec('CREATE TABLE session_metadata (session_id TEXT PRIMARY KEY)');
-    database.prepare('INSERT INTO session_metadata(session_id) VALUES (?)').run('session-one');
-    database.close();
-
-    assert.equal(await readSessionExportId(root), 'session-one');
-
-    const secondDatabase = new DatabaseSync(join(root, 'runtime.sqlite'));
-    secondDatabase
-      .prepare('INSERT INTO session_metadata(session_id) VALUES (?)')
-      .run('session-two');
-    secondDatabase.close();
-    await assert.rejects(readSessionExportId(root), /exactly one SQLite session/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
