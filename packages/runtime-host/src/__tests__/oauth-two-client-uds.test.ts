@@ -91,7 +91,7 @@ test('OAuth enrollment presents only on the initiating Client over real UDS', {
           recover: async () => undefined,
           close: async () => {
             await oauth.close();
-            clientCapabilities.close();
+            await clientCapabilities.close();
           },
         };
       },
@@ -232,7 +232,7 @@ async function assertProviderDisabledOverUds(
           recover: async () => undefined,
           close: async () => {
             await oauth.close();
-            clientCapabilities.close();
+            await clientCapabilities.close();
           },
         };
       },

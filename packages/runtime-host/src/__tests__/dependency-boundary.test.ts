@@ -64,6 +64,7 @@ const allowedServerExternalImports = new Set([
   '@maka/storage/shell-run-authority',
   '@maka/storage/task-ledger-authority',
   '@maka/storage/usage-stores',
+  '@maka/storage/workspace-identity',
   'node:async_hooks',
   'node:http',
 ]);

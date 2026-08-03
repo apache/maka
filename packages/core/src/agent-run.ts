@@ -59,6 +59,18 @@ export type RootExecutionDescriptor =
       attemptId: string;
     }
   | {
+      kind: 'safe_boundary_continuation';
+      sourceInvocationId: string;
+      sourceRunId: string;
+      sourceTurnId: string;
+      sourceRuntimeEventHighWater: number;
+      claimId: string;
+      boundaryDigest: `sha256:${string}`;
+      providerReplayDigest: `sha256:${string}`;
+      safetyDigest: `sha256:${string}`;
+      targetInvocationId: string;
+    }
+  | {
       kind: 'linked_child_initial';
       agentId: string;
       agentName: string;
@@ -156,13 +168,45 @@ export interface AgentRunHeader {
 
 type HostedRootExecutionDescriptor = Extract<
   RootExecutionDescriptor,
-  { kind: 'automation' | 'goal' | 'agent_graph_supervisor_wake' }
+  {
+    kind: 'automation' | 'goal' | 'agent_graph_supervisor_wake' | 'safe_boundary_continuation';
+  }
 >;
 
 export function agentRunMatchesHostedRootExecution(
   run: AgentRunHeader,
   execution: HostedRootExecutionDescriptor,
 ): boolean {
+  if (execution.kind === 'safe_boundary_continuation') {
+    const source = run.continuationSource;
+    return (
+      run.invocationId === execution.targetInvocationId &&
+      run.parentRunId === execution.sourceRunId &&
+      run.parentTurnId === execution.sourceTurnId &&
+      source !== undefined &&
+      'protocol' in source &&
+      source.protocol === 'continuation_source_v2' &&
+      source.sourceInvocationId === execution.sourceInvocationId &&
+      source.sourceRunId === execution.sourceRunId &&
+      source.sourceTurnId === execution.sourceTurnId &&
+      source.sourceRuntimeEventHighWater === execution.sourceRuntimeEventHighWater &&
+      source.claimId === execution.claimId &&
+      source.boundaryDigest === execution.boundaryDigest &&
+      source.replayManifestDigest === execution.boundaryDigest &&
+      run.resumedFromRunId === undefined &&
+      run.retriedFromRunId === undefined &&
+      run.agentId === undefined &&
+      run.agentName === undefined &&
+      run.retriedFromTurnId === undefined &&
+      run.regeneratedFromTurnId === undefined &&
+      run.branchOfTurnId === undefined &&
+      run.parentSessionId === undefined &&
+      run.automationId === undefined &&
+      run.goalId === undefined &&
+      run.agentGraphWakeId === undefined &&
+      run.agentGraphWakeAttemptId === undefined
+    );
+  }
   const authorityMatches = hostedRootAuthorityMatches(run, execution);
   return (
     authorityMatches &&
@@ -182,7 +226,7 @@ export function agentRunMatchesHostedRootExecution(
 
 function hostedRootAuthorityMatches(
   run: AgentRunHeader,
-  execution: HostedRootExecutionDescriptor,
+  execution: Exclude<HostedRootExecutionDescriptor, { kind: 'safe_boundary_continuation' }>,
 ): boolean {
   switch (execution.kind) {
     case 'automation':

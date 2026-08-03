@@ -5559,6 +5559,45 @@ describe('SessionManager permission mode updates', () => {
     });
   });
 
+  test('parks when authoritative continuation safety inspection fails', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      safeBoundaryResumeEnabled: true,
+      inspectContinuationSafety: async () => {
+        throw new Error('safety authority unavailable');
+      },
+      newId: nextId(),
+      now: nextNow(6_535),
+    });
+    const session = await manager.createSession(makeInput());
+    const header = await store.readHeader(session.id);
+    await runStore.createRun(
+      makeRunHeader({
+        runId: 'source-run-safety-failure',
+        sessionId: session.id,
+        turnId: 'source-turn-safety-failure',
+        status: 'failed',
+        cwd: header.cwd,
+        workspaceIdentity: 'workspace-safety-failure',
+        completedAt: 2,
+        failureClass: 'app_restarted',
+      }),
+    );
+
+    const plan = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
+      sourceRunId: 'source-run-safety-failure',
+    });
+
+    expect(plan.disposition).toBe('park');
+    expect(plan.rejectionReasons).toEqual(['safety_observation_unavailable']);
+  });
+
   test('keeps the authoritative continuation entry disabled unless the host enables it', async () => {
     const store = new MemorySessionStore();
     const backends = new BackendRegistry();
@@ -7280,6 +7319,115 @@ describe('SessionManager permission mode updates', () => {
       );
       expect(backendCalls).toBe(0);
     }
+  });
+
+  test('revalidates continuation safety inside the backend activation barrier', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let backendCalls = 0;
+    let availableToolNames: readonly string[] = ['Write'];
+    backends.register(
+      'fake',
+      (ctx) =>
+        new CountingFinalTextBackend(ctx, () => {
+          backendCalls += 1;
+        }),
+    );
+    const newId = nextId();
+    const now = nextNow(6_599);
+    const runtimeKernel = new RuntimeKernel({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames,
+      }),
+      runBackendActivation: async (operation) => {
+        availableToolNames = ['Read', 'Write'];
+        return operation();
+      },
+      newId,
+      now,
+      runtimeSource: 'test',
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      runtimeKernel,
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames,
+      }),
+      newId,
+      now,
+      runtimeSource: 'test',
+    });
+    const session = await manager.createSession(makeInput());
+    const header = await store.readHeader(session.id);
+    const sourceRunId = 'source-run-activation-safety-race';
+    const sourceTurnId = 'source-turn-activation-safety-race';
+    const sourceInvocationId = 'source-invocation-activation-safety-race';
+    await seedRuntimeRun(
+      runStore,
+      makeRunHeader({
+        runId: sourceRunId,
+        sessionId: session.id,
+        turnId: sourceTurnId,
+        status: 'failed',
+        cwd: header.cwd,
+        createdAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        failureClass: 'app_restarted',
+      }),
+      [
+        runtimeEvent({
+          id: 'source-user-activation-safety-race',
+          invocationId: sourceInvocationId,
+          runId: sourceRunId,
+          sessionId: session.id,
+          turnId: sourceTurnId,
+          ts: 1,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue under one activation snapshot' },
+        }),
+        runtimeEvent({
+          id: 'source-terminal-activation-safety-race',
+          invocationId: sourceInvocationId,
+          runId: sourceRunId,
+          sessionId: session.id,
+          turnId: sourceTurnId,
+          ts: 2,
+          status: 'failed',
+          actions: { endInvocation: true, stateDelta: { failureClass: 'app_restarted' } },
+        }),
+      ],
+    );
+    const plan = await manager.planSafeBoundaryContinuation(session.id, {
+      sourceRunId,
+      currentCwd: header.cwd,
+      sourceWorkspaceIdentity: 'workspace-1',
+      currentWorkspaceIdentity: 'workspace-1',
+      backgroundOperationsSettled: true,
+      availableToolNames,
+    });
+    if (!plan.continuation) throw new Error('expected continuation');
+
+    await expectRejects(
+      collectSessionEvents(manager.resumeSafeBoundaryContinuation(plan.continuation)),
+      /tool catalog changed/i,
+    );
+
+    expect(backendCalls).toBe(0);
+    await expectRejects(runStore.readRun(session.id, plan.continuation.runId), /Unknown run/);
   });
 
   test('fails closed when continuation execution has no authoritative safety inspector', async () => {

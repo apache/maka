@@ -776,7 +776,7 @@ async function withFixture(
   try {
     await run(fixture);
   } finally {
-    capabilities.close();
+    await capabilities.close();
     if (!owner.closed) await owner.close();
     await rm(root, { recursive: true, force: true });
   }

@@ -6,7 +6,7 @@ export interface ClientCapabilityConnectionSender {
 
 export interface ClientCapabilityConnection {
   accept(frame: ClientCapabilityClientFrame): void;
-  close(): void;
+  close(): Promise<void>;
 }
 
 /** Pure full-duplex seam kept outside the Runtime-backed execution composition. */

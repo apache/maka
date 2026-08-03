@@ -16,6 +16,7 @@ import {
   canonicalToolArgsHash,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
+  RUNTIME_CONTINUATION_AUTHORITY_V1,
   type AgentRunEvent,
   type AgentRunHeader,
   type AttachmentRef,
@@ -233,6 +234,12 @@ describe('execution stores', () => {
       );
       const rawLocalStore = createSessionStore(root);
 
+      assert.equal(
+        writer.runtimeEventStore.continuationAuthorityCapability,
+        RUNTIME_CONTINUATION_AUTHORITY_V1,
+      );
+      assert.equal(typeof writer.runtimeEventStore.readImmutableRuntimePrefix, 'function');
+
       assert.equal(Reflect.set(reader, 'sessionStore', rawLocalStore), false);
       assert.equal(
         Reflect.set(
@@ -315,14 +322,14 @@ describe('execution stores', () => {
         });
         assert.equal(first.kind, 'admitted');
         mutableAttachment.name = 'mutated.png';
-        assert.equal(first.admission.normalizedInput.attachments?.[0]?.name, 'chart.png');
+        assert.equal(first.admission.normalizedInput!.attachments?.[0]?.name, 'chart.png');
         assert.equal(Object.isFrozen(first.admission), true);
         assert.deepEqual(first.admission.turnOrchestration, {
           mode: 'swarm',
           source: 'host_api',
         });
         assert.equal(Object.isFrozen(first.admission.turnOrchestration), true);
-        assert.equal(Object.isFrozen(first.admission.normalizedInput.attachments?.[0]?.ref), true);
+        assert.equal(Object.isFrozen(first.admission.normalizedInput!.attachments?.[0]?.ref), true);
         assert.deepEqual(await stores.agentRunStore.listSessionRuns(session.id), []);
 
         const retry = await stores.agentRunStore.admitRootTurn({
@@ -356,7 +363,7 @@ describe('execution stores', () => {
         assert.equal(retry.admission.runId, 'run-1');
         assert.equal(retry.admission.userMessageId, 'message-1');
         assert.equal(retry.admission.admittedAt, 10);
-        assert.deepEqual(retry.admission.normalizedInput.attachments, [
+        assert.deepEqual(retry.admission.normalizedInput!.attachments, [
           chartAttachment,
           notesAttachment,
         ]);
@@ -604,14 +611,14 @@ describe('execution stores', () => {
       });
       mutableSecondSourceQuotes.length = 0;
 
-      assert.deepEqual(admitted.admission.normalizedInput.quotes, [
+      assert.deepEqual(admitted.admission.normalizedInput!.quotes, [
         expectedFirstQuote,
         expectedSecondQuote,
       ]);
       assert.deepEqual(admitted.admission.sourceMessages[0]?.content.quotes, [expectedFirstQuote]);
       assert.deepEqual(admitted.admission.sourceMessages[1]?.content.quotes, [expectedSecondQuote]);
-      assert.equal(Object.isFrozen(admitted.admission.normalizedInput.quotes), true);
-      assert.equal(Object.isFrozen(admitted.admission.normalizedInput.quotes?.[0]), true);
+      assert.equal(Object.isFrozen(admitted.admission.normalizedInput!.quotes), true);
+      assert.equal(Object.isFrozen(admitted.admission.normalizedInput!.quotes?.[0]), true);
       assert.equal(
         Object.isFrozen(admitted.admission.sourceMessages[0]?.content.quotes?.[0]),
         true,
@@ -622,10 +629,10 @@ describe('execution stores', () => {
         'turn-1',
       );
       assert.deepEqual(stored, admitted.admission);
-      assert.notEqual(stored?.normalizedInput.quotes, admitted.admission.normalizedInput.quotes);
+      assert.notEqual(stored?.normalizedInput?.quotes, admitted.admission.normalizedInput!.quotes);
       assert.notEqual(
-        stored?.normalizedInput.quotes?.[0],
-        admitted.admission.normalizedInput.quotes?.[0],
+        stored?.normalizedInput?.quotes?.[0],
+        admitted.admission.normalizedInput!.quotes?.[0],
       );
 
       await assert.rejects(
@@ -686,7 +693,7 @@ describe('execution stores', () => {
         'source-first',
       );
       assert.deepEqual(receipt?.sourceMessage.content.quotes, [expectedFirstQuote]);
-      assert.deepEqual(receipt?.admission.normalizedInput.quotes, [
+      assert.deepEqual(receipt?.admission.normalizedInput?.quotes, [
         expectedFirstQuote,
         expectedSecondQuote,
       ]);
@@ -697,6 +704,18 @@ describe('execution stores', () => {
   test('rejects invalid root admission contracts before write and when reading disk', async () => {
     await withRoot(async ({ root }) => {
       const store = createAgentRunStore(root);
+      const continuationExecution = {
+        kind: 'safe_boundary_continuation' as const,
+        sourceInvocationId: 'source-invocation',
+        sourceRunId: 'source-run',
+        sourceTurnId: 'source-turn',
+        sourceRuntimeEventHighWater: 2,
+        claimId: 'continuation-claim',
+        boundaryDigest: `sha256:${'a'.repeat(64)}` as const,
+        providerReplayDigest: `sha256:${'b'.repeat(64)}` as const,
+        safetyDigest: `sha256:${'c'.repeat(64)}` as const,
+        targetInvocationId: 'target-invocation',
+      };
       const turnStartedSource = {
         messageId: 'source-message',
         content: { text: 'source' },
@@ -719,6 +738,18 @@ describe('execution stores', () => {
             agentName: 'Agent',
             sourceRunId: 'source-run',
           },
+          sourceMessages: [],
+        },
+        {
+          name: 'continuation-with-message',
+          userMessageId: 'message-1',
+          execution: continuationExecution,
+          sourceMessages: [],
+        },
+        {
+          name: 'continuation-self-source',
+          userMessageId: null,
+          execution: { ...continuationExecution, sourceRunId: 'run-1' },
           sourceMessages: [],
         },
         {
@@ -776,7 +807,12 @@ describe('execution stores', () => {
         const sessionId = `session-${invalid.name}`;
         const turnId = 'turn-1';
         const normalizedInput =
-          invalid.sourceMessages.length > 0 ? { text: 'source' } : { text: 'input' };
+          invalid.execution.kind === 'safe_boundary_continuation' &&
+          invalid.name !== 'continuation-with-message'
+            ? null
+            : invalid.sourceMessages.length > 0
+              ? { text: 'source' }
+              : { text: 'input' };
         await assert.rejects(
           () =>
             store.admitRootTurn({
@@ -822,6 +858,43 @@ describe('execution stores', () => {
           /Invalid root turn admission contract/,
         );
       }
+    });
+  });
+
+  test('persists one closed safe-boundary continuation root admission', async () => {
+    await withRoot(async ({ root }) => {
+      const store = createAgentRunStore(root);
+      const result = await store.admitRootTurn({
+        sessionId: 'session-continuation',
+        turnId: 'turn-continuation',
+        proposedRunId: 'run-continuation',
+        proposedUserMessageId: null,
+        execution: {
+          kind: 'safe_boundary_continuation',
+          sourceInvocationId: 'source-invocation',
+          sourceRunId: 'source-run',
+          sourceTurnId: 'source-turn',
+          sourceRuntimeEventHighWater: 2,
+          claimId: 'continuation-claim',
+          boundaryDigest: `sha256:${'a'.repeat(64)}`,
+          providerReplayDigest: `sha256:${'b'.repeat(64)}`,
+          safetyDigest: `sha256:${'c'.repeat(64)}`,
+          targetInvocationId: 'target-invocation',
+        },
+        previousRootTurnId: null,
+        normalizedInput: null,
+        sourceMessages: [],
+        admittedAt: 10,
+      });
+      assert.equal(result.kind, 'admitted');
+
+      const recovered = await createAgentRunStore(root).readRootTurnAdmission(
+        'session-continuation',
+        'turn-continuation',
+      );
+      assert.deepEqual(recovered, result.admission);
+      assert.equal(recovered?.userMessageId, null);
+      assert.equal(Object.isFrozen(recovered?.execution), true);
     });
   });
 

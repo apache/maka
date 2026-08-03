@@ -12,6 +12,7 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
+  requireCount,
   requireEntityId,
   requireExactRecord,
   requireShapedRecord,
@@ -49,6 +50,53 @@ export interface TurnStopInput {
   turnId: string;
   runId: string;
 }
+
+export interface TurnResumeQueryInput {
+  sessionId: string;
+  sourceRunId?: string;
+  expectedRuntimeEventHighWater?: number;
+}
+
+export interface TurnResumeStartInput {
+  sessionId: string;
+  turnId: string;
+  sourceRunId: string;
+  sourceRuntimeEventHighWater: number;
+}
+
+export const TURN_RESUME_PARK_REASONS = [
+  'resume_candidate_missing',
+  'source_run_unreadable',
+  'safety_check_failed',
+  'continuation_already_exists',
+  'continuation_repair_required',
+  'continuation_started_indeterminate',
+  'continuation_unavailable',
+  'session_busy',
+] as const;
+
+export type TurnResumeParkReason = (typeof TURN_RESUME_PARK_REASONS)[number];
+
+export type TurnResumePlan =
+  | {
+      sessionId: string;
+      disposition: 'ready';
+      sourceRunId: string;
+      sourceTurnId: string;
+      sourceRuntimeEventHighWater: number;
+    }
+  | {
+      sessionId: string;
+      disposition: 'parked';
+      reason: TurnResumeParkReason;
+    };
+
+export type TurnResumeStartResult =
+  | { kind: 'started'; turn: TurnSnapshot }
+  | {
+      kind: 'parked';
+      plan: Extract<TurnResumePlan, { disposition: 'parked' }>;
+    };
 
 export type TurnRunStatus =
   | 'admitted'
@@ -124,6 +172,64 @@ export const TURN_OPERATION_SPECS = {
     ] as const,
     decodeInput: decodeTurnStopInput,
     decodeOutput: decodeTurnSnapshot,
+  }),
+  'turn.resume.query': defineOperation({
+    mode: 'query',
+    availability: 'ready',
+    errors: [
+      'host_not_ready',
+      'host_draining',
+      'operation_unavailable',
+      'not_found',
+      'session_archived',
+      'internal_failure',
+    ] as const,
+    decodeInput: decodeTurnResumeQueryInput,
+    decodeOutput: decodeTurnResumePlan,
+    assertOutputForInput: (input, output) => {
+      if (input.sessionId !== output.sessionId) {
+        throw invalidProtocolFrame('Turn resume query changed Session identity');
+      }
+      if (
+        output.disposition === 'ready' &&
+        input.sourceRunId !== undefined &&
+        input.sourceRunId !== output.sourceRunId
+      ) {
+        throw invalidProtocolFrame('Turn resume query changed source Run identity');
+      }
+      if (
+        output.disposition === 'ready' &&
+        input.expectedRuntimeEventHighWater !== undefined &&
+        input.expectedRuntimeEventHighWater !== output.sourceRuntimeEventHighWater
+      ) {
+        throw invalidProtocolFrame('Turn resume query changed source RuntimeEvent high-water');
+      }
+    },
+  }),
+  'turn.resume.start': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: [
+      'host_not_ready',
+      'host_draining',
+      'operation_unavailable',
+      'not_found',
+      'session_archived',
+      'session_busy',
+      'operation_conflict',
+      'internal_failure',
+    ] as const,
+    decodeInput: decodeTurnResumeStartInput,
+    decodeOutput: decodeTurnResumeStartResult,
+    assertOutputForInput: (input, output) => {
+      const sessionId = output.kind === 'started' ? output.turn.sessionId : output.plan.sessionId;
+      if (input.sessionId !== sessionId) {
+        throw invalidProtocolFrame('Turn resume start changed Session identity');
+      }
+      if (output.kind === 'started' && input.turnId !== output.turn.turnId) {
+        throw invalidProtocolFrame('Turn resume start changed Turn identity');
+      }
+    },
   }),
 } as const;
 
@@ -253,6 +359,108 @@ function decodeTurnStopInput(value: unknown): TurnStopInput {
     turnId: requireEntityId(record.turnId, 'turnId'),
     runId: requireEntityId(record.runId, 'runId'),
   };
+}
+
+function decodeTurnResumeQueryInput(value: unknown): TurnResumeQueryInput {
+  const record = requireShapedRecord(
+    value,
+    'turn.resume.query input',
+    ['sessionId'],
+    ['sourceRunId', 'expectedRuntimeEventHighWater'],
+  );
+  if (record.expectedRuntimeEventHighWater !== undefined && record.sourceRunId === undefined) {
+    throw invalidProtocolFrame('Turn resume high-water requires a source Run');
+  }
+  return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    ...(record.sourceRunId !== undefined
+      ? { sourceRunId: requireEntityId(record.sourceRunId, 'sourceRunId') }
+      : {}),
+    ...(record.expectedRuntimeEventHighWater !== undefined
+      ? {
+          expectedRuntimeEventHighWater: requirePositiveCount(
+            record.expectedRuntimeEventHighWater,
+            'expectedRuntimeEventHighWater',
+          ),
+        }
+      : {}),
+  };
+}
+
+function decodeTurnResumeStartInput(value: unknown): TurnResumeStartInput {
+  const record = requireExactRecord(value, 'turn.resume.start input', [
+    'sessionId',
+    'turnId',
+    'sourceRunId',
+    'sourceRuntimeEventHighWater',
+  ]);
+  return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    turnId: requireEntityId(record.turnId, 'turnId'),
+    sourceRunId: requireEntityId(record.sourceRunId, 'sourceRunId'),
+    sourceRuntimeEventHighWater: requirePositiveCount(
+      record.sourceRuntimeEventHighWater,
+      'sourceRuntimeEventHighWater',
+    ),
+  };
+}
+
+export function decodeTurnResumePlan(value: unknown): TurnResumePlan {
+  const record = requireRecord(value, 'Turn resume plan');
+  if (record.disposition === 'ready') {
+    assertExactKeys(record, 'ready Turn resume plan', [
+      'sessionId',
+      'disposition',
+      'sourceRunId',
+      'sourceTurnId',
+      'sourceRuntimeEventHighWater',
+    ]);
+    return {
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      disposition: 'ready',
+      sourceRunId: requireEntityId(record.sourceRunId, 'sourceRunId'),
+      sourceTurnId: requireEntityId(record.sourceTurnId, 'sourceTurnId'),
+      sourceRuntimeEventHighWater: requirePositiveCount(
+        record.sourceRuntimeEventHighWater,
+        'sourceRuntimeEventHighWater',
+      ),
+    };
+  }
+  if (record.disposition === 'parked') {
+    assertExactKeys(record, 'parked Turn resume plan', ['sessionId', 'disposition', 'reason']);
+    if (!(TURN_RESUME_PARK_REASONS as readonly unknown[]).includes(record.reason)) {
+      throw invalidProtocolFrame('Invalid Turn resume park reason');
+    }
+    return {
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      disposition: 'parked',
+      reason: record.reason as TurnResumeParkReason,
+    };
+  }
+  throw invalidProtocolFrame('Invalid Turn resume disposition');
+}
+
+export function decodeTurnResumeStartResult(value: unknown): TurnResumeStartResult {
+  const record = requireRecord(value, 'Turn resume start result');
+  if (record.kind === 'started') {
+    assertExactKeys(record, 'started Turn resume result', ['kind', 'turn']);
+    return { kind: 'started', turn: decodeTurnSnapshot(record.turn) };
+  }
+  if (record.kind === 'parked') {
+    assertExactKeys(record, 'parked Turn resume result', ['kind', 'plan']);
+    const plan = decodeTurnResumePlan(record.plan);
+    if (plan.disposition !== 'parked') {
+      throw invalidProtocolFrame('Parked Turn resume result requires a parked plan');
+    }
+    return { kind: 'parked', plan };
+  }
+  throw invalidProtocolFrame('Invalid Turn resume start result');
+}
+
+function requirePositiveCount(value: unknown, label: string): number {
+  const count = requireCount(value, label);
+  if (count === 0) throw invalidProtocolFrame(`Invalid ${label}`);
+  return count;
 }
 
 export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
