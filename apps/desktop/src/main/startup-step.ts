@@ -10,11 +10,21 @@
 // Naming the step turns that silence into one line that says where to look.
 // A step that finishes normally prints nothing, so this costs no noise.
 //
+// Who gets to read that line: whoever can see the main process's stderr — a
+// developer running from a terminal, an e2e run capturing output, a crash
+// report gathered by hand. `report` defaults to `console.warn`, and a packaged
+// .app launched from the Finder has nowhere for stderr to land, so somebody
+// who hits this in a shipped build still sees no window and nothing printed,
+// exactly as described above. This is a diagnostic for whoever goes looking,
+// not a message to the person the launch failed on. Ending the silence for
+// them would take a visible surface, which does not exist before the first
+// window and is not what this file does.
+//
 // What it cannot report: a step that never settles and holds no ref'd handle
 // lets the process exit before the unref'd timer ever fires, so nothing is
-// printed. That is not the case for either step wrapped today — a dialog and
-// disk I/O both hold handles — but a future step that awaits nothing but a
-// bare promise would fall through this silently.
+// printed. That is not the case for any of the three steps wrapped today — a
+// dialog and disk I/O both hold handles — but a future step that awaits
+// nothing but a bare promise would fall through this silently.
 
 /** How long a step may run before it is worth saying it has not come back. */
 export const STARTUP_STEP_REPORT_INTERVAL_MS = 3_000;
@@ -59,8 +69,12 @@ export async function startupStep<T>(
       report(`[startup] ${name} is waiting for an answer; if no dialog is on screen, none opened`);
       return;
     }
-    // Said once per span, so the next dialog in this step is named too.
-    saidAnswerExpected = false;
+    // Said once per step, not once per dialog: the flag is never cleared, so a
+    // second person-owned span inside the same step would not be named again.
+    // One step wraps one dialog today (`confirmDesktopStorageRootRepair`, and
+    // `resolveDesktopStorageRoot` calls it at most once), so there is no second
+    // span to lose. Clearing it here would name the next one — do that if a
+    // step ever asks twice.
     report(`[startup] still waiting on ${name}`);
   }, options.intervalMs ?? STARTUP_STEP_REPORT_INTERVAL_MS);
   // The timer must never be the reason the process stays alive: a step that
