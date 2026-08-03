@@ -343,12 +343,16 @@ export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive 
   if (!DAILY_REVIEW_ARCHIVE_STATUSES.includes(input.status as DailyReviewArchiveStatus)) {
     throw invalidDailyReviewArchive('status');
   }
+  const status = input.status as DailyReviewArchiveStatus;
   if (!isFiniteNumber(input.generatedAt)) throw invalidDailyReviewArchive('generatedAt');
   if (input.trigger !== 'cron' && input.trigger !== 'manual') {
     throw invalidDailyReviewArchive('trigger');
   }
   if (typeof input.modelKey !== 'string') throw invalidDailyReviewArchive('modelKey');
   const sections = normalizeDailyReviewArchiveSections(input.sections);
+  if (status === 'ok' && !Object.values(sections).some((content) => content.trim().length > 0)) {
+    throw invalidDailyReviewArchive('sections');
+  }
   const totals = normalizeDailyReviewArchiveTotals(input.totals);
   if (input.errorMessage !== undefined && typeof input.errorMessage !== 'string') {
     throw invalidDailyReviewArchive('errorMessage');
@@ -358,7 +362,7 @@ export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive 
     id: input.id,
     day,
     range,
-    status: input.status as DailyReviewArchiveStatus,
+    status,
     generatedAt: input.generatedAt,
     trigger: input.trigger,
     modelKey: input.modelKey,

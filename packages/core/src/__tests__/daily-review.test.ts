@@ -254,6 +254,8 @@ describe('Daily Review range contract', () => {
       { ...valid, trigger: 'unknown' },
       { ...valid, modelKey: 42 },
       { ...valid, sections: { summary: 42 } },
+      { ...valid, sections: {} },
+      { ...valid, sections: { summary: '   ' } },
       { ...valid, totals: { requestCount: 2 } },
       { ...valid, range: 7 },
       { ...valid, id: '2026-02-30-1d' },
@@ -269,6 +271,14 @@ describe('Daily Review range contract', () => {
         ...legacy,
         id: '2026-08-03-daily',
         mode: 'deep',
+      }),
+    );
+    assert.throws(() =>
+      normalizeDailyReviewArchive({
+        ...legacy,
+        id: '2026-08-03-deep',
+        mode: 'deep',
+        sections: {},
       }),
     );
   });
