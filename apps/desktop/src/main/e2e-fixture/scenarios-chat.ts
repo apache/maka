@@ -212,17 +212,17 @@ function multiStepTurnMessages(now: number): StoredMessage[] {
   const step1 = 'msg-assistant-2a';
   const step2 = 'msg-assistant-2b';
   return [
-    { type: 'user', id: 'msg-user-2', turnId, ts: now - 6 * 60_000, text: '确认 stream-fade 的环逻辑没有边界问题，然后跑一下单测。', origin: { kind: 'automation', automationId: 'auto-fixture-demo' } },
+    { type: 'user', id: 'msg-user-2', turnId, ts: now - 6 * 60_000, text: '确认 assistant-stream 的投影逻辑没有边界问题，然后跑一下单测。', origin: { kind: 'automation', automationId: 'auto-fixture-demo' } },
     {
       type: 'tool_call',
       id: 'tool-read-fade',
       turnId,
       ts: now - 6 * 60_000 + 4_000,
       toolName: 'Read',
-      displayName: '读取 stream-fade.ts',
+      displayName: '读取 assistant-stream.ts',
       intent: '读取淡入环实现，确认窗口滑动与上限',
       stepId: step1,
-      args: { file_path: 'packages/ui/src/stream-fade.ts' },
+      args: { file_path: 'packages/ui/src/assistant-stream.ts' },
     },
     {
       type: 'tool_result',
@@ -249,10 +249,10 @@ function multiStepTurnMessages(now: number): StoredMessage[] {
       turnId,
       ts: now - 5 * 60_000 + 3_000,
       toolName: 'Bash',
-      displayName: '运行 stream-fade 单测',
+      displayName: '运行 assistant-stream 单测',
       intent: '执行 node --test 跑淡入环与 tokenizer 单测',
       stepId: step2,
-      args: { cmd: 'node --test dist/main/__tests__/stream-fade.test.js', cwd: '/workspace/maka' },
+      args: { cmd: 'node --test dist/main/__tests__/assistant-stream.test.js', cwd: '/workspace/maka' },
     },
     {
       type: 'tool_result',
@@ -265,7 +265,7 @@ function multiStepTurnMessages(now: number): StoredMessage[] {
       content: {
         kind: 'terminal',
         cwd: '/workspace/maka',
-        cmd: 'node --test dist/main/__tests__/stream-fade.test.js',
+        cmd: 'node --test dist/main/__tests__/assistant-stream.test.js',
         status: 'completed',
         exitCode: 0,
         output: {

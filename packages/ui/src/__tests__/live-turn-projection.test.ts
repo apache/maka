@@ -687,7 +687,7 @@ describe('reconcileTerminalLiveTurn', () => {
     assert.equal(reconcileTerminalLiveTurn(withOutput, filled), undefined);
   });
 
-  it('leaves text steps to the smoother handoff', () => {
+  it('leaves text steps to the streaming display handoff', () => {
     const textTurn: LiveTurnProjection = {
       ...toolOnly,
       steps: [{

@@ -284,7 +284,7 @@ export function applyLiveTurnEvent(
 }
 
 /**
- * Text smoother handoff: drop the committed text/thinking slots for `stepId`.
+ * Streaming display handoff: drop the committed text/thinking slots for `stepId`.
  * Tools that still carry live stream evidence (outputChunks) stay — empty
  * shell_run durable results do not cover them, and co-located Bash+answer
  * steps must not lose pre-handoff output when the answer settles.
@@ -346,7 +346,7 @@ function durableStreamEvidence(
 /**
  * Removes evidence-only steps once the persisted transcript can render the
  * same durable output, including while a later step is still running. Text
- * steps remain owned by the smoother, whose completion callback performs
+ * steps remain owned by the streaming renderer, whose completion callback performs
  * their handoff after the tail is visible.
  */
 export function reconcileTerminalLiveTurn(

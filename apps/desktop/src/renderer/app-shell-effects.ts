@@ -583,7 +583,7 @@ export function useSessionEventHealthPolling(options: {
 //
 // An active terminal projection is left to its text handoff callback, so this
 // reconcile cannot cut in front of the committed message landing. Background
-// terminal projections have no mounted smoother and are safe to clear.
+// terminal projections have no mounted streaming renderer and are safe to clear.
 // It drops ONLY the turn transient (`clearTurnTransientState`), never the
 // independently-scoped message-load-error / retry / pending-toggle / permission /
 // health state — those survive a mere settle. The clear is idempotent (referentially

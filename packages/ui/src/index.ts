@@ -30,7 +30,6 @@ export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';
 export * from './redact.js';
-export * from './smooth-stream.js';
 export * from './thinking-stream.js';
 export * from './task-ledger-panel.js';
 export * from './toast.js';
@@ -86,24 +85,6 @@ export {
   isToolRowRunning,
   isToolRowSettled,
 } from './tool-activity/tool-row-motion.js';
-// Streaming UI rework: per-word fade-in for streamed text (replaces the ▎
-// caret). Pure append-record ring + tokenizer are unit-tested; the hook feeds
-// markdown-body's rehype pass.
-export {
-  useStreamFade,
-  tokenizeFade,
-  updateFadeRing,
-  createFadeRing,
-  fadeBoundary,
-  fadeAgeAt,
-  FADE_MS,
-  MAX_FADE_BATCHES,
-  type StreamFade,
-  type FadeToken,
-  type FadeRingState,
-  type FadeBatch,
-} from './stream-fade.js';
-
 // #1565 PR 2: Astryx i18n adapter — appended, never reordered (barrel freeze).
 export * from './astryx-i18n.js';
 

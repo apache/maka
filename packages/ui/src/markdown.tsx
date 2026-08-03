@@ -42,14 +42,14 @@ export function Markdown(props: {
   const safeText = redactSecrets(props.text);
   return (
     <Suspense
-      // Plain-text fallback so message content is visible immediately while
-      // the markdown pipeline chunk finishes loading (a few tens of ms on a
-      // local file:// load; once cached, subsequent mounts are synchronous).
-      fallback={
+      // Settled history can show the safe source while the renderer loads.
+      // A live stream must stay behind Astryx's display cursor; showing the
+      // full source here would flash the unreached tail before Astryx mounts.
+      fallback={props.streaming ? null : (
         <div className="maka-markdown maka-markdown-pending" style={{ whiteSpace: 'pre-wrap' }}>
           {safeText}
         </div>
-      }
+      )}
     >
       <MarkdownBody text={safeText} streaming={props.streaming} density={props.density} />
     </Suspense>

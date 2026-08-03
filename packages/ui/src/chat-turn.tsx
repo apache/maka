@@ -4,7 +4,7 @@ import { AlertOctagon, Ban, Check, Copy, GitBranch, Info, Loader2, Pencil, Refre
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
-import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream.js';
+import { redactSecrets } from './redact.js';
 import {
   Badge,
   Button as UiButton,
@@ -19,6 +19,7 @@ import {
   Token,
   useLightbox,
 } from '@astryxdesign/core';
+import { useStreamingText } from '@astryxdesign/core/hooks';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import {
@@ -803,28 +804,21 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
 
 function StreamingAssistantBubble(props: { text: string; live: boolean; truncated?: boolean; onSettled?: () => void }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  // Redact before smoother so typewriter prefixes never leak mid-token.
-  const snap = useStreamSnap();
-  const safeText = prepareSmoothStreamText(props.text);
-  const { displayed, catchingUp } = useSmoothStreamContent(safeText, {
-    streaming: props.live,
-    snap,
-  });
   const settledRef = useRef(false);
 
   useEffect(() => {
     settledRef.current = false;
-  }, [safeText, props.live]);
+  }, [props.text, props.live]);
 
   useEffect(() => {
-    if (props.live || catchingUp || settledRef.current) return;
+    if (props.live || settledRef.current) return;
     settledRef.current = true;
     props.onSettled?.();
-  }, [props.live, catchingUp, props.onSettled]);
+  }, [props.live, props.onSettled]);
 
   return (
     <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming">
-      <Markdown text={displayed} streaming density="compact" />
+      <Markdown text={props.text} streaming={props.live} density="compact" />
       {props.truncated && (
         <Tooltip content={copy.outputTruncatedTitle}>
           {/* Colour-name archive, not the semantic one: Astryx paints
@@ -891,11 +885,8 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
 
 function DeepThinking(props: { text: string; live: boolean; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const snap = useStreamSnap();
-  // Defense-in-depth: redact before smoother so prefixes never leak mid-token.
-  const safeText = prepareSmoothStreamText(props.text);
-  const { displayed } = useSmoothStreamContent(safeText, { streaming: props.live, snap });
-  const visibleText = props.live ? displayed : safeText;
+  const safeText = redactSecrets(props.text);
+  const displayed = useStreamingText(safeText, props.live);
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
     <ChatReasoning
@@ -905,35 +896,7 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
       title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
       data-deep-thinking={props.live ? 'live' : undefined}
     >
-      {visibleText}
+      {displayed}
     </ChatReasoning>
   );
-}
-
-/** Snap streaming smoother under reduced-motion / e2e-fixture / OS preference. */
-function useStreamSnap(): boolean {
-  const [snap, setSnap] = useState(() => readStreamSnap());
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const onChange = () => setSnap(readStreamSnap());
-    setSnap(readStreamSnap());
-    if (typeof mq.addEventListener === 'function') {
-      mq.addEventListener('change', onChange);
-      return () => mq.removeEventListener('change', onChange);
-    }
-    return undefined;
-  }, []);
-  return snap;
-}
-
-function readStreamSnap(): boolean {
-  if (typeof document === 'undefined' || typeof window === 'undefined') return true;
-  const root = document.documentElement;
-  if (root.dataset.makaReducedMotion === 'true') return true;
-  if (root.dataset.makaE2eFixture === 'true') return true;
-  if (typeof window.matchMedia === 'function') {
-    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  }
-  return false;
 }

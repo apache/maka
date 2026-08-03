@@ -176,11 +176,8 @@ type ComposerImportOwner = {
 };
 
 /**
- * Grace period before the committed-history fallback force-settles a draining
- * assistant stream slot. Comfortably past the smoother's completion drain
- * budget (600ms, smooth-stream.ts DEFAULT_COMPLETE_FLUSH_BUDGET_MS) so the
- * primary `onStreamingSettled` signal always wins in the healthy path and the
- * visible tail is never cut mid-typewriter.
+ * Grace period before the committed-history fallback force-settles an
+ * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -1786,25 +1783,17 @@ function AppShellContent({
   // Tool/thinking evidence may survive its event-triggered refresh, including
   // between steps of one running turn. Reconcile from durable evidence whenever
   // either side changes, so old output stays on its original tool instead of
-  // joining the next batch, without deleting text that the smoother still owns.
+  // joining the next batch, without deleting text that the live renderer still owns.
   const reconcilePersistedMessagesEffect = useEffectEvent(reconcilePersistedMessages);
   useEffect(() => {
     if (!activeId) return;
     reconcilePersistedMessagesEffect(activeId, messages);
   }, [activeId, activeLiveTurn, messages]);
 
-  // Streaming-settle handoff, FALLBACK path only. The primary settle signal
-  // is the bubble's own `onStreamingSettled` (ChatView below): it fires once
-  // the smoother has DISPLAYED the final text (catchingUp === false), so the
-  // user watches the tail type out before the live section swaps for the
-  // committed turn. This effect used to settle immediately when the committed
-  // assistant message appeared in `messages` — which lands mid-drain and cut
-  // the visible tail, snapping the last characters in with the swap. It now
-  // waits out a grace period comfortably past the smoother's completion drain
-  // budget (600ms): in the normal path `onStreamingSettled` clears the slot
-  // first and the delayed settle no-ops on its phase guard. The fallback stays
-  // because a stuck slot would otherwise hide the committed answer forever
-  // (`streamingMessageId` suppresses it while draining).
+  // Streaming-settle handoff, FALLBACK path only. The bubble's primary
+  // `onStreamingSettled` signal runs after Astryx commits the terminal text.
+  // Keep a delayed fallback because a stuck slot would otherwise hide the
+  // committed answer forever (`streamingMessageId` suppresses it while live).
   useEffect(() => {
     if (!activeId || !activeStreamingComplete || !activeStreamingMessageId) return;
     const committedAssistantArrived = messages.some(

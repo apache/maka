@@ -518,24 +518,24 @@ const longConversation: StoredMessage[] = [
 // reconstructs the real order — 深度思考 → answer text → tool row — per step,
 // instead of lumping every tool into one trailing group.
 const multiStepConversation: StoredMessage[] = [
-  user('msg-user-multistep', 'turn-multistep', 12, '看一下 stream-fade 的环逻辑有没有边界问题，然后跑一下单测。'),
+  user('msg-user-multistep', 'turn-multistep', 12, '看一下 assistant-stream 的投影逻辑有没有边界问题，然后跑一下单测。'),
   {
     type: 'tool_call',
-    id: 'tool-read-stream-fade',
+    id: 'tool-read-assistant-stream',
     turnId: 'turn-multistep',
     ts: NOW - 11 * 60_000,
     toolName: 'Read',
-    displayName: '读取 stream-fade.ts',
+    displayName: '读取 assistant-stream.ts',
     intent: '读取淡入环的实现，确认窗口滑动与上限',
     stepId: 'msg-assistant-step-1',
-    args: { file_path: 'packages/ui/src/stream-fade.ts' },
+    args: { file_path: 'packages/ui/src/assistant-stream.ts' },
   },
   {
     type: 'tool_result',
-    id: 'tool-read-stream-fade-result',
+    id: 'tool-read-assistant-stream-result',
     turnId: 'turn-multistep',
     ts: NOW - 11 * 60_000 + 900,
-    toolUseId: 'tool-read-stream-fade',
+    toolUseId: 'tool-read-assistant-stream',
     isError: false,
     durationMs: 640,
     content: {
@@ -560,10 +560,10 @@ const multiStepConversation: StoredMessage[] = [
     turnId: 'turn-multistep',
     ts: NOW - 10 * 60_000 + 500,
     toolName: 'Bash',
-    displayName: '运行 stream-fade 单测',
+    displayName: '运行 assistant-stream 单测',
     intent: '执行 node --test 跑淡入环与 tokenizer 的单测',
     stepId: 'msg-assistant-step-2',
-    args: { cmd: 'node --test dist/main/__tests__/stream-fade.test.js' },
+    args: { cmd: 'node --test dist/main/__tests__/assistant-stream.test.js' },
   },
   {
     type: 'tool_result',
@@ -576,7 +576,7 @@ const multiStepConversation: StoredMessage[] = [
     content: {
       kind: 'terminal',
       cwd: '/workspace/maka-agent/apps/desktop',
-      cmd: 'node --test dist/main/__tests__/stream-fade.test.js',
+      cmd: 'node --test dist/main/__tests__/assistant-stream.test.js',
       status: 'completed',
       exitCode: 0,
       output: {

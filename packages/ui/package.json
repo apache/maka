@@ -12,7 +12,6 @@
     "./assistant-stream": "./dist/assistant-stream.js",
     "./icons": "./dist/icons.js",
     "./maka-uri": "./dist/maka-uri.js",
-    "./smooth-stream": "./dist/smooth-stream.js",
     "./styles.css": "./src/styles.css"
   },
   "scripts": {

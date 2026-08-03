@@ -13,7 +13,7 @@ Four export surfaces, in the order to look:
 | `@astryxdesign/core` re-exports in `src/index.ts` | Generic design-system components such as Button, TextInput, TextArea, CheckboxInput, RadioList, and Switch. | target authority |
 | `src/primitives/` | Maka-specific compositions that do not duplicate an Astryx component. | product-specific |
 | `src/ui.tsx` | Shared product compositions and compatibility-free exports. | stable |
-| `src/*.tsx` / `src/*.ts` (top-level) | Feature components + pure logic (e.g. `chat-view.tsx`, `composer.tsx`, `sandbox-boundary-prompt.tsx`, `session-list-panel.tsx`, plus pure helpers like `materialize.ts`, `redact.ts`, `smooth-stream.ts`). | stable |
+| `src/*.tsx` / `src/*.ts` (top-level) | Feature components + pure logic (e.g. `chat-view.tsx`, `composer.tsx`, `sandbox-boundary-prompt.tsx`, `session-list-panel.tsx`, plus pure helpers like `materialize.ts` and `redact.ts`). | stable |
 | `src/components.tsx` | Re-export barrel for the feature components above (ChatView, Composer, SandboxBoundaryPrompt, …). | stable |
 
 `src/index.ts` is the package barrel. It follows an **off-barrel convention**: some styling tables and per-surface helpers are deliberately *not* re-exported, so they stay renamable/removable without a public-API break. A symbol earns barrel export when it has a **cross-package consumer or an explicit public-API need**, not merely a second in-package consumer. Don't add to the barrel speculatively. This README is the source of truth for the barrel promotion rule.
@@ -24,7 +24,7 @@ Four export surfaces, in the order to look:
 import { Badge, Button, ChatView, Composer, PageHeader, useToast } from '@maka/ui';
 ```
 
-Sub-path exports (declared in `package.json` `exports`): `@maka/ui/artifact-preview-registry`, `@maka/ui/assistant-stream`, `@maka/ui/icons`, `@maka/ui/maka-uri`, `@maka/ui/smooth-stream`. (`@maka/ui/icons` re-exports Lucide symbols; model-provider brand logos live in the renderer's `settings/provider-*`, not here — bot-provider logos are in `@maka/ui`'s `bot-brand-logo`.)
+Sub-path exports (declared in `package.json` `exports`): `@maka/ui/artifact-preview-registry`, `@maka/ui/assistant-stream`, `@maka/ui/icons`, and `@maka/ui/maka-uri`. (`@maka/ui/icons` re-exports Lucide symbols; model-provider brand logos live in the renderer's `settings/provider-*`, not here — bot-provider logos are in `@maka/ui`'s `bot-brand-logo`.)
 
 Renderer CSS owns product layout containers only. It must not target Astryx internal elements, roles, slots, or generated classes to restyle component chrome.
 

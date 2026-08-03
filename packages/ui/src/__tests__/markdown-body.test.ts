@@ -252,22 +252,30 @@ it('renders an explicit CommonMark hard break as a native break', () => {
   assert.match(markup, /第一行<br\s*\/?>第二行/);
 });
 
-it('repairs or withholds incomplete Markdown syntax while streaming', () => {
-  const emphasis = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'Hello **world',
-    streaming: true,
-  }));
-  const link = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'Hello [unfinished',
-    streaming: true,
-  }));
-  const settled = renderToStaticMarkup(createElement(MarkdownBody, {
+it('keeps incomplete syntax literal after the stream settles', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: 'Hello **world',
   }));
 
-  assert.match(emphasis, /Hello <strong[^>]*>world<\/strong>/);
-  assert.doesNotMatch(link, /unfinished/);
-  assert.match(settled, /Hello \*\*world/);
+  assert.match(markup, /Hello \*\*world/);
+});
+
+it('does not reveal the unreached tail on the first streaming render', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'visible start and unreached tail',
+    streaming: true,
+  }));
+
+  assert.doesNotMatch(markup, /unreached tail/);
+});
+
+it('keeps the lazy fallback behind the streaming display cursor', () => {
+  const markup = renderToStaticMarkup(createElement(Markdown, {
+    text: 'visible start and lazy unreached tail',
+    streaming: true,
+  }));
+
+  assert.doesNotMatch(markup, /lazy unreached tail/);
 });
 
 it('leaves block rhythm to the caller and defaults to document spacing', () => {
