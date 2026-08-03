@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { stableJsonStringify, type RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core';
+import { stableJsonStringify } from '@maka/core/tool-args-identity';
 import {
   createRuntimeBoundaryCursor,
   runtimePrefixSegment,

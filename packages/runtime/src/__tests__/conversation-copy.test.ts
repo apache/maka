@@ -11,11 +11,8 @@ import type {
   RuntimeEventStore,
   StoredMessage,
 } from '@maka/core';
-import {
-  canonicalToolArgsHash,
-  decodeCanonicalToolResultContent,
-  isSessionInlineRun,
-} from '@maka/core';
+import { decodeCanonicalToolResultContent, isSessionInlineRun } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   createSqliteAgentRunStore,
   createSqliteRuntimeStore,

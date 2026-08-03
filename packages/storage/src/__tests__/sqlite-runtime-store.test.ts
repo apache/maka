@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
-import { canonicalToolArgsHash, type RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
   createRuntimeBoundaryCursor,

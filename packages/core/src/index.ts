@@ -268,16 +268,8 @@ export type {
   ToolLedgerTransitionKind,
   ToolLedgerTransitionValidation,
 } from './tool-ledger-scanner.js';
-export {
-  ToolLedgerCorruptionError,
-  ToolLedgerRejectionError,
-  scanToolLedger,
-  validateGenericToolLedgerAppend,
-  validateToolLedgerEventLane,
-  validateToolLedgerTransition,
-} from './tool-ledger-scanner.js';
-export type {
-  ToolReconcileObservation,
+  export type {
+    ToolReconcileObservation,
   ToolReconcileResultFact,
   ToolRecoveryCompletedDecisionFact,
   ToolRecoveryDecisionFact,
@@ -300,23 +292,9 @@ export type {
   ToolRecoveryEventBundle,
   ToolRecoveryOperationIdentity,
 } from './tool-recovery-bundle.js';
-export {
-  ToolRecoveryBundleValidationError,
-  assertToolRecoveryEventBundle,
-  interpretScannedToolRecovery,
-  validateToolRecoveryEventBundle,
-} from './tool-recovery-bundle.js';
-export {
-  canonicalToolArgsHash,
-  stableJsonStringify,
-  stripUndefinedDeep,
-} from './tool-args-identity.js';
-export {
-  encodeCanonicalRuntimeEvent,
-  type CanonicalRuntimeEventEncoding,
-} from './canonical-runtime-event.js';
-export type {
-  ContinuationClaimV1,
+export type { CanonicalRuntimeEventEncoding } from './canonical-runtime-event.js';
+  export type {
+    ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
   RuntimeBoundaryCursorV1,
   RuntimePrefixIdentityV1,
@@ -325,10 +303,15 @@ export type {
   RuntimePrefixSegmentV1,
   RuntimeBoundaryDigest,
 } from './runtime-boundary.js';
-// runtime-boundary.ts is intentionally type-only in this browser-consumed
-// barrel: its digest implementation depends on node:crypto. Runtime code must
-// import its values from `@maka/core/runtime-boundary` so renderer imports of
-// `@maka/core` do not evaluate Node-only modules before React can mount.
+// The following modules are intentionally type-only (or absent) in this
+// browser-consumed barrel: their value implementations depend on node:* (e.g.
+// runtime-boundary.ts and tool-args-identity.ts use node:crypto, tool-
+// ledger-scanner.ts and canonical-runtime-event.ts use node:util), which the
+// renderer cannot evaluate. Runtime code must import their values from the
+// explicit subpaths (`@maka/core/runtime-boundary`, `@maka/core/tool-args-
+// identity`, `@maka/core/tool-ledger-scanner`, `@maka/core/canonical-runtime-
+// event`, `@maka/core/tool-recovery-bundle`) so renderer imports of `@maka/core`
+// never evaluate Node-only modules before React can mount.
 
 // session.ts
 export type {

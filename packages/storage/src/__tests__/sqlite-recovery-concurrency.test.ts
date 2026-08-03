@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { canonicalToolArgsHash, scanToolLedger, type RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
+import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
