@@ -1,0 +1,100 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { createDailyReviewMainService } from '../daily-review-main.js';
+
+const emptyUsageSummary = {
+  range: { from: 0, to: 0 },
+  totalRequests: 0,
+  totalCostUsd: 0,
+  totalTokens: {
+    input: 0,
+    output: 0,
+    cacheMiss: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+    total: 0,
+  },
+  cacheHitRequests: 0,
+  cacheCreateRequests: 0,
+  errorRequests: 0,
+};
+
+function createService(archiveStore: Record<string, unknown>) {
+  return createDailyReviewMainService({
+    archiveStore: {
+      getConfig: async () => ({ enabled: true, executeTime: '08:00', modelKey: '' }),
+      prune: async () => undefined,
+      ...archiveStore,
+    },
+    telemetryRepo: {
+      summary: () => emptyUsageSummary,
+      buckets: () => [],
+    },
+    modelCallLedger: {
+      read: () => ({ attempts: [], unreadableRecords: 0 }),
+      pendingReprojections: () => [],
+    },
+    ensureUsageReady: async () => undefined,
+    listSessions: async () => [],
+    connectionStore: {},
+    resolveConnectionSecret: async () => null,
+    buildSubscriptionModelFetch: () => undefined,
+  } as unknown as Parameters<typeof createDailyReviewMainService>[0]);
+}
+
+test('Daily Review run reuses an existing archive', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 7, 3, 9, 0, 0).getTime() });
+  let writes = 0;
+  const service = createService({
+    getArchive: async () => ({}),
+    putArchive: async () => {
+      writes += 1;
+    },
+  });
+
+  try {
+    const result = await service.run({ range: 1, trigger: 'manual' });
+
+    assert.equal(result.archiveId, '2026-08-03-1d');
+    assert.equal(writes, 0);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test('Daily Review run coalesces concurrent generation for the same archive', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 7, 3, 9, 0, 0).getTime() });
+  let writes = 0;
+  let releaseWrite!: () => void;
+  let notifyWriteStarted!: () => void;
+  const writeStarted = new Promise<void>((resolve) => {
+    notifyWriteStarted = resolve;
+  });
+  const writeReleased = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  const service = createService({
+    getArchive: async () => null,
+    putArchive: async () => {
+      writes += 1;
+      notifyWriteStarted();
+      await writeReleased;
+    },
+  });
+
+  try {
+    const first = service.run({ range: 7, trigger: 'manual' });
+    await writeStarted;
+    const second = service.run({ range: 7, trigger: 'manual' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseWrite();
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.deepEqual(secondResult, firstResult);
+    assert.equal(writes, 1);
+  } finally {
+    releaseWrite();
+    t.mock.timers.reset();
+  }
+});

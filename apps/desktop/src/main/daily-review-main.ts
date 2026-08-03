@@ -61,6 +61,7 @@ interface DailyReviewMainServiceDeps {
 export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): DailyReviewMainService {
   let schedulerTimer: NodeJS.Timeout | null = null;
   let schedulerLastMinuteKey: string | null = null;
+  const inFlightRuns = new Map<string, Promise<{ archiveId: string }>>();
 
   async function buildSummaryForRange(offsetDays: number, daySpan: number): Promise<DailyReviewSummary> {
     await deps.ensureUsageReady();
@@ -126,12 +127,39 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
     const effectiveModelKey = modelKeyOverride ? modelKeyOverride : config.modelKey;
     const summary = await buildSummaryForRange(input.offsetDays ?? 0, range);
     const archiveId = dailyReviewArchiveId(summary.day, range);
+    if (await deps.archiveStore.getArchive(archiveId)) return { archiveId };
+
+    const inFlight = inFlightRuns.get(archiveId);
+    if (inFlight) return inFlight;
+    const pending = generateArchive({
+      archiveId,
+      effectiveModelKey,
+      range,
+      summary,
+      trigger: input.trigger,
+    });
+    inFlightRuns.set(archiveId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (inFlightRuns.get(archiveId) === pending) inFlightRuns.delete(archiveId);
+    }
+  }
+
+  async function generateArchive(input: {
+    archiveId: string;
+    effectiveModelKey: string;
+    range: DailyReviewRange;
+    summary: DailyReviewSummary;
+    trigger: DailyReviewTrigger;
+  }): Promise<{ archiveId: string }> {
+    const { archiveId, effectiveModelKey, range, summary, trigger } = input;
     const baseArchive: Omit<DailyReviewArchive, 'status' | 'sections' | 'errorMessage'> = {
       id: archiveId,
       day: summary.day,
       range,
       generatedAt: Date.now(),
-      trigger: input.trigger,
+      trigger,
       modelKey: effectiveModelKey,
       totals: summary.totals,
     };
@@ -256,14 +284,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
     const mm = String(now.getMinutes()).padStart(2, '0');
     if (`${hh}:${mm}` !== config.executeTime) return;
 
-    await runIfMissing(1, -1);
-  }
-
-  async function runIfMissing(range: DailyReviewRange, offsetDays: number): Promise<void> {
-    const summary = await buildSummaryForRange(offsetDays, range);
-    const id = dailyReviewArchiveId(summary.day, range);
-    if (await deps.archiveStore.getArchive(id)) return;
-    await run({ range, offsetDays, trigger: 'cron' });
+    await run({ range: 1, offsetDays: -1, trigger: 'cron' });
   }
 
   return {
