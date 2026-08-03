@@ -11,7 +11,7 @@ import {
   type SharedV4ProviderMetadata,
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
-import { type ProviderType, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -397,7 +397,7 @@ export function buildProviderOptions(
       // declared efforts ride the shared compatible fallback shape.
       return level
         ? {
-            [openaiCompatibleNamespace(connection.providerType)]: {
+            [connection.providerType]: {
               reasoningEffort: level === 'off' ? 'none' : level,
             },
           }
@@ -411,20 +411,11 @@ export function buildProviderOptions(
       };
     case 'volcengine-ark':
       return {
-        [openaiCompatibleNamespace(connection.providerType)]: {
+        [connection.providerType]: {
           thinking: { type: level === 'off' ? 'disabled' : 'enabled' },
           ...(level && level !== 'off' ? { reasoningEffort: level } : {}),
         },
       };
-    case 'vercel':
-    case 'ollama-cloud':
-      return level
-        ? {
-            [openaiCompatibleNamespace(connection.providerType)]: {
-              reasoningEffort: level === 'off' ? 'none' : level,
-            },
-          }
-        : {};
     case 'google':
       return {
         google: {
@@ -447,36 +438,13 @@ export function buildProviderOptions(
     case 'cloudflare-workers-ai':
       return level
         ? {
-            [openaiCompatibleNamespace(connection.providerType)]:
+            [connection.providerType]:
               level === 'off'
                 ? thinkingOptions?.offBehavior === 'cloudflare-chat-template-thinking-false'
                   ? { chat_template_kwargs: { thinking: false } }
                   : {}
                 : { reasoningEffort: level },
           }
-        : {};
-    // DeepInfra, OpenRouter, and Groq document `none` as their real off wire
-    // (Groq only for the Qwen3 family; gpt-oss declares no `none` effort and
-    // therefore never reaches this case with an off level).
-    case 'deepinfra':
-    case 'openrouter':
-    case 'groq':
-      return level
-        ? {
-            [openaiCompatibleNamespace(connection.providerType)]: {
-              reasoningEffort: level === 'off' ? 'none' : level,
-            },
-          }
-        : {};
-    // Compatible providers below expose only their confirmed non-off effort values.
-    case 'deepseek':
-    case 'moonshot':
-    case 'tencent-token-plan':
-    case 'zai-coding-plan':
-    case 'stepfun-step-plan':
-    case 'stepfun-ai-step-plan':
-      return level && level !== 'off'
-        ? { [openaiCompatibleNamespace(connection.providerType)]: { reasoningEffort: level } }
         : {};
     // Every remaining path resolves to one of a handful of wire families.
     // Keying the fallback on the resolved adapter — the same object
@@ -535,20 +503,4 @@ function openAiCompatibleProviderOptionsName(
   return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
     ? connection.slug
     : connection.providerType;
-}
-
-/** providerOptions namespace matches the `name` passed to `createOpenAICompatible` in `getAIModel`. */
-function openaiCompatibleNamespace(providerType: ProviderType): string {
-  switch (providerType) {
-    case 'deepseek':
-      return 'deepseek';
-    case 'moonshot':
-      return 'moonshot';
-    case 'zai-coding-plan':
-      return 'zai-coding-plan';
-    case 'ollama':
-      return 'ollama';
-    default:
-      return providerType;
-  }
 }
