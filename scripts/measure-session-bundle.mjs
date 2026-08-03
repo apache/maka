@@ -21,12 +21,7 @@ import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import {
-  SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES,
-  SESSION_BUNDLE_PORTABLE_SESSION_FILES,
-  SESSION_BUNDLE_STATE_ENTRIES,
-  isArtifactPathForSession,
-} from '@maka/storage';
+import { SESSION_BUNDLE_STATE_ENTRIES, isArtifactPathForSession } from '@maka/storage';
 import { STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
 import {
   constants as zlibConstants,
@@ -57,8 +52,6 @@ const SUPPORTED_OPTIONS = new Set([
 // must be regenerated when a session export is materialized elsewhere.
 const STORAGE_ROOT_AUTHORITY_MARKER = STORAGE_ROOT_MARKER_FILE;
 const PORTABLE_STATE_TOP_LEVEL = new Set(SESSION_BUNDLE_STATE_ENTRIES);
-const PORTABLE_SESSION_DIRECTORIES = new Set(SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES);
-const PORTABLE_SESSION_FILES = new Set(SESSION_BUNDLE_PORTABLE_SESSION_FILES);
 const MAX_JSON_BYTES = 1_048_576;
 const EXCLUDED_WORKSPACE_SEGMENTS = new Set(['.git', 'node_modules']);
 const SENSITIVE_WORKSPACE_FILE_PATTERNS = [
@@ -405,24 +398,6 @@ async function validateStateExportEntries(sourceRoot, entries, sessionId) {
     if (!PORTABLE_STATE_TOP_LEVEL.has(topLevel)) {
       throw new Error(
         `session export contains protected or unclassified state entry: ${entry.path}`,
-      );
-    }
-    if (topLevel === 'sessions') {
-      const sessionPrefix = `sessions/${sessionId}/`;
-      if (entry.path === `sessions/${sessionId}/session.jsonl`) continue;
-      if (!entry.path.startsWith(sessionPrefix)) {
-        throw new Error(`session export contains unfiltered session entry: ${entry.path}`);
-      }
-      const relativePath = entry.path.slice(sessionPrefix.length);
-      const firstSegment = relativePath.split('/')[0];
-      if (
-        (relativePath.includes('/') && PORTABLE_SESSION_DIRECTORIES.has(firstSegment)) ||
-        PORTABLE_SESSION_FILES.has(relativePath)
-      ) {
-        continue;
-      }
-      throw new Error(
-        `session export contains protected or unclassified session entry: ${entry.path}`,
       );
     }
     if (topLevel === 'runtime.sqlite') {
