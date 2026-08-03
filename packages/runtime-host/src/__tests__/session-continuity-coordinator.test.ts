@@ -294,6 +294,45 @@ test('rejects a live event that is not owned by the canonical root', async () =>
   coordinator.close();
 });
 
+test('coalesces Agent graph invalidations onto the Session subscription sequence', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  coordinator.enqueueAgentGraphChanged({
+    rootSessionId: SESSION_ID,
+    graphId: 'agent_graph_1',
+    reason: 'observation',
+  });
+  coordinator.enqueueAgentGraphChanged({
+    rootSessionId: SESSION_ID,
+    graphId: 'agent_graph_1',
+    reason: 'stopped',
+  });
+  await waitFor(() => sink.frames.length === 1);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  await waitFor(() => sink.frames.length === 2);
+
+  assert.deepEqual(sink.frames[0], {
+    kind: 'subscription.agent_graph_changed',
+    hostEpoch: HOST_EPOCH,
+    subscriptionId: opened.subscriptionId,
+    sequence: 1,
+    rootSessionId: SESSION_ID,
+    graphId: 'agent_graph_1',
+    reason: 'stopped',
+  });
+  assert.equal(sink.frames[1]?.kind, 'subscription.session_delta');
+  assert.equal(sink.frames[1]?.sequence, 2);
+  coordinator.close();
+});
+
 test('slow subscriber receives a terminal eviction without delaying another subscriber', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,

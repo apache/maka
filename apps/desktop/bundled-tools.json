@@ -31,5 +31,19 @@
     "thirdPartyNotices": "missing",
     "notarization": "missing",
     "distributionReady": false
+  },
+  "makaCu": {
+    "repo": "maka-agent/maka-cu",
+    "branch": "maka/base",
+    "commit": "ca7ef80c721fdaf6e7f4af882f16b9c555f14733",
+    "expectedProtocolVersion": "maka.cu/2",
+    "binaryName": "maka-cu",
+    "binarySizeBytes": 2861584,
+    "binarySha256": "26d45d5243fefd993dc754d5b6bdd64c8c5ff38f3d0ccf6dbb132db89a49f2a7",
+    "buildProvenance": "local-source-build",
+    "signature": "adhoc",
+    "hardenedRuntime": false,
+    "notarization": "missing",
+    "distributionReady": false
   }
 }

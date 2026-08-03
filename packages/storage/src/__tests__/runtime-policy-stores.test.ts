@@ -638,6 +638,54 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('keeps an emptied model selection across the next canonical discovery', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-empty-selection', 'ollama', 'Empty selection'),
+      );
+
+      const first = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(first.kind, 'ready');
+      if (first.kind !== 'ready') return;
+      const seeded = await stores.operations.completeModelFetch(first.ticket, {
+        models: [{ id: 'llama3.3' }, { id: 'qwen3' }],
+        source: 'fetched',
+        fetchedAt: 1,
+      });
+      assert.equal(seeded.kind, 'committed');
+
+      const current = (await stores.connectionCatalog.getSnapshot()).connections[0]!;
+      const emptied = await stores.connectionCatalog.update({
+        expected: connectionBasis(current),
+        changes: {
+          name: current.name,
+          baseUrl: current.baseUrl,
+          enabled: true,
+          enabledModelIds: [],
+        },
+      });
+      assert.equal(emptied.kind, 'committed');
+
+      // Every catalog entry carries a `models` array from birth, so reading
+      // "has an inventory" as "the field exists" made this connection look like
+      // it had never fetched — and each refresh re-seeded `liveIds[0]` over the
+      // selection the user had just emptied.
+      const second = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(second.kind, 'ready');
+      if (second.kind !== 'ready') return;
+      const refetched = await stores.operations.completeModelFetch(second.ticket, {
+        models: [{ id: 'llama3.3' }, { id: 'gemma3' }],
+        source: 'fetched',
+        fetchedAt: 2,
+      });
+      assert.equal(refetched.kind, 'committed');
+      if (refetched.kind !== 'committed') return;
+      assert.deepEqual(refetched.snapshot.connections[0]?.enabledModelIds, []);
+    });
+  });
+
   test('admits only canonical explicit connection test models', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(

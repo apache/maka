@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useRef, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -16,8 +16,9 @@ import type {
   StoredMessage,
 } from '@maka/core';
 import { isDeepResearchSession } from '@maka/core';
-import { Button, ChatMessage, ChatMessageList, EmptyState } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessage, ChatMessageList, EmptyState } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
+import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat, materializeTurns, overlayLiveTurn, overlayShellRunUpdates } from './materialize.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
@@ -344,6 +345,19 @@ export function ChatView(props: {
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
   );
+  const selectionActionsLayer = useLayer({
+    mode: 'fixed',
+    lightDismiss: true,
+    onHide: clearSelectionQuote,
+  });
+  useEffect(() => {
+    if (selectionQuote) selectionActionsLayer.show();
+    else selectionActionsLayer.hide();
+  }, [selectionQuote, selectionActionsLayer.show, selectionActionsLayer.hide]);
+  const selectionActionsLabel = [
+    props.onQuoteSelection ? copy.quoteSelection : null,
+    props.onAskAboutSelection ? copy.askInSidePanel : null,
+  ].filter((label): label is string => label !== null).join(' / ');
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -516,50 +530,55 @@ export function ChatView(props: {
         </ChatMessageList>
         <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} />
         {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
-          <div
-            className="maka-quote-actions"
-            style={{
-              top: `${Math.max(8, selectionQuote.rect.top - 42)}px`,
-              left: `${selectionQuote.rect.left + selectionQuote.rect.width / 2}px`,
-            }}
-            // Keep the live selection alive while clicking an action.
-            onMouseDown={(event) => event.preventDefault()}
-          >
-            {props.onQuoteSelection ? (
-              <button
-                type="button"
-                className="maka-quote-action"
-                onClick={() => {
-                  props.onQuoteSelection?.({
-                    text: selectionQuote.text,
-                    ...(selectionQuote.turnId ? { turnId: selectionQuote.turnId } : {}),
-                  });
-                  clearSelectionQuote();
-                  window.getSelection()?.removeAllRanges();
-                }}
+          selectionActionsLayer.render(
+            <div
+              className="maka-quote-actions"
+              // Keep the live selection alive while clicking an action.
+              onMouseDown={(event) => event.preventDefault()}
+            >
+              <ButtonGroup
+                label={selectionActionsLabel}
+                size="sm"
+                elevation="med"
               >
-                <TextQuote size={14} aria-hidden="true" />
-                {copy.quoteSelection}
-              </button>
-            ) : null}
-            {props.onAskAboutSelection ? (
-              <button
-                type="button"
-                className="maka-quote-action"
-                onClick={() => {
-                  props.onAskAboutSelection?.({
-                    text: selectionQuote.text,
-                    ...(selectionQuote.turnId ? { turnId: selectionQuote.turnId } : {}),
-                  });
-                  clearSelectionQuote();
-                  window.getSelection()?.removeAllRanges();
-                }}
-              >
-                <TextQuote size={14} aria-hidden="true" />
-                {copy.askInSidePanel}
-              </button>
-            ) : null}
-          </div>
+                {props.onQuoteSelection ? (
+                  <Button
+                    type="button"
+                    label={copy.quoteSelection}
+                    icon={<TextQuote aria-hidden="true" />}
+                    onClick={() => {
+                      props.onQuoteSelection?.({
+                        text: selectionQuote.text,
+                        ...(selectionQuote.turnId ? { turnId: selectionQuote.turnId } : {}),
+                      });
+                      clearSelectionQuote();
+                      window.getSelection()?.removeAllRanges();
+                    }}
+                  />
+                ) : null}
+                {props.onAskAboutSelection ? (
+                  <Button
+                    type="button"
+                    label={copy.askInSidePanel}
+                    icon={<TextQuote aria-hidden="true" />}
+                    onClick={() => {
+                      props.onAskAboutSelection?.({
+                        text: selectionQuote.text,
+                        ...(selectionQuote.turnId ? { turnId: selectionQuote.turnId } : {}),
+                      });
+                      clearSelectionQuote();
+                      window.getSelection()?.removeAllRanges();
+                    }}
+                  />
+                ) : null}
+              </ButtonGroup>
+            </div>,
+            {
+              x: selectionQuote.rect.left + selectionQuote.rect.width / 2,
+              y: Math.max(8, selectionQuote.rect.top - 42),
+              style: { transform: 'translateX(-50%)' },
+            },
+          )
         ) : null}
       </div>
     </main>

@@ -3,6 +3,7 @@ import type {
   AgentRunEventType,
   AgentRunHeader,
   RuntimeEvent,
+  RuntimeContinuationAuthorityStore,
   SessionHeader,
   SessionListFilter,
   SessionSummary,
@@ -48,7 +49,7 @@ import {
 import {
   openRuntimeEventPersistence,
   openRuntimeEventReadPersistence,
-} from './runtime-event-transfer.js';
+} from './runtime-event-persistence.js';
 import type {
   CommitToolOutcomeInput,
   CommitToolPreparedInput,
@@ -100,12 +101,13 @@ export type {
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
-export interface ExecutionRuntimeEventWriter extends DurableRuntimeEventStore {
-  readonly toolBoundaryProtocol: ToolBoundaryProtocol;
-  commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult>;
-  commitToolOutcome(input: CommitToolOutcomeInput): Promise<ToolCommitResult>;
-  listUnsettledToolOperations(sessionId: string): Promise<ToolOperationRecord[]>;
-}
+export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
+  RuntimeContinuationAuthorityStore & {
+    readonly toolBoundaryProtocol: ToolBoundaryProtocol;
+    commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult>;
+    commitToolOutcome(input: CommitToolOutcomeInput): Promise<ToolCommitResult>;
+    listUnsettledToolOperations(sessionId: string): Promise<ToolOperationRecord[]>;
+  };
 export type ExecutionMessageReceiptWriter = MessageReceiptStore;
 
 interface ExecutionStoresWriterBase<K extends StorageRootKind> {
@@ -323,6 +325,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.readExecutionBoundary(sessionId)),
       createSandboxBoundaryRequest: (input) =>
         run(() => sessionStore.createSandboxBoundaryRequest(input)),
+      readSandboxBoundaryRequest: (sessionId, requestId) =>
+        run(() => sessionStore.readSandboxBoundaryRequest(sessionId, requestId)),
       listPendingSandboxBoundaryRequests: (sessionId) =>
         run(() => sessionStore.listPendingSandboxBoundaryRequests(sessionId)),
       listSandboxBoundaryRestartClosures: (sessionId) =>
@@ -373,10 +377,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.setSessionsLifecycleVersioned(sessions, state)),
       removeSessionsVersioned: (sessions) =>
         run(() => sessionStore.removeSessionsVersioned(sessions)),
+      reconcileOrphanedAgentGraphRetirements: () =>
+        run(() => sessionStore.reconcileOrphanedAgentGraphRetirements()),
       listPendingSessionRetirementCleanupIds: (sessionId) =>
         run(() => sessionStore.listPendingSessionRetirementCleanupIds(sessionId)),
-      purgeRemovedSessionTranscript: (sessionId) =>
-        run(() => sessionStore.purgeRemovedSessionTranscript(sessionId)),
       completeSessionRetirementCleanup: (sessionId) =>
         run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
       close: () =>
@@ -422,6 +426,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
     },
     runtimeEventStore: {
       durability: runtimeEventStore.durability,
+      continuationAuthorityCapability: runtimeEventStore.continuationAuthorityCapability,
       toolBoundaryProtocol: runtimePersistence.runtimeCommitStore.toolBoundaryProtocol,
       appendRuntimeEvent: (sessionId, runId, event, options) =>
         run(() => runtimeEventStore.appendRuntimeEvent(sessionId, runId, event, options)),
@@ -435,8 +440,21 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
+      readImmutableRuntimePrefix: (input) =>
+        run(() => runtimeEventStore.readImmutableRuntimePrefix(input)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
+      claimContinuation: (input) => run(() => runtimeEventStore.claimContinuation(input)),
+      readContinuationClaimByBoundary: (boundaryDigest) =>
+        run(() => runtimeEventStore.readContinuationClaimByBoundary(boundaryDigest)),
+      readContinuationClaimStateByBoundary: (boundaryDigest) =>
+        run(() => runtimeEventStore.readContinuationClaimStateByBoundary(boundaryDigest)),
+      listContinuationClaimsForRecovery: (sessionId) =>
+        run(() => runtimeEventStore.listContinuationClaimsForRecovery(sessionId)),
+      commitContinuationStart: (input) =>
+        run(() => runtimeEventStore.commitContinuationStart(input)),
+      commitContinuationRepairStart: (input) =>
+        run(() => runtimeEventStore.commitContinuationRepairStart(input)),
       readImmutableSteeringMessageProof: (sessionId, messageId) =>
         run(() => runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId)),
       repairImmutableSteeringMessageProofsForRecovery: (sessionId) =>

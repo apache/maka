@@ -36,7 +36,6 @@ const config: StorybookConfig = {
           { find: '@maka/ui/artifact-preview-registry', replacement: resolve(UI_SRC, 'artifact-preview-registry.ts') },
           { find: '@maka/ui/assistant-stream', replacement: resolve(UI_SRC, 'assistant-stream.ts') },
           { find: '@maka/ui/maka-uri', replacement: resolve(UI_SRC, 'maka-uri.ts') },
-          { find: '@maka/ui/smooth-stream', replacement: resolve(UI_SRC, 'smooth-stream.ts') },
           { find: /^@maka\/ui$/, replacement: resolve(UI_SRC, 'index.ts') },
         ],
       },

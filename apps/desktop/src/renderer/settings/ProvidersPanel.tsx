@@ -1,113 +1,109 @@
-import { useEffect, useRef, useState } from 'react';
-import { Banner, Button, Item, Skeleton, Tab, TabList } from '@astryxdesign/core';
-import { ChevronRight, Search } from '@maka/ui/icons';
-import {
-  CATALOG_PROVIDER_TYPES,
-  PROVIDER_DEFAULTS,
-  RECOMMENDED_PROVIDER_TYPES,
-  type LlmConnection,
-  type ProviderCatalogGroup,
-  type ProviderType,
-  type UiLocale,
-} from '@maka/core';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   Badge,
-  TextInput,
-  SectionHeader,
-  useMountedRef,
-  useUiLocale,
-  useToast,
-} from '@maka/ui';
+  Banner,
+  Button,
+  EmptyState,
+  Heading,
+  HStack,
+  IconButton,
+  List,
+  ListItem,
+  Skeleton,
+  StatusDot,
+  Text,
+  Toolbar,
+  VStack,
+} from '@astryxdesign/core';
+import { ArrowLeft, ChevronRight } from '@maka/ui/icons';
+import {
+  type LlmConnection,
+  type ProviderType,
+} from '@maka/core';
+import { useMountedRef, useUiLocale, useToast } from '@maka/ui';
 import { connectionChipStatus } from './provider-connection-status';
-import { statusBadgeVariant } from './settings-status-badge';
-import { AddProviderForm } from './provider-add-form';
-import { ProviderCatalogCard } from './provider-catalog';
-import { ProviderConnectionDialog } from './provider-connection-dialog';
+import { statusDotVariant } from './settings-status-badge';
+import {
+  CATALOG_INITIAL_FILTER,
+  ProviderCatalogPage,
+  ProviderSetupPage,
+  type CatalogFilter,
+  type SetupTarget,
+} from './provider-catalog-page';
 import { ConnectionDetail } from './provider-connection-detail';
 import { ProviderLogo, providerDisplay } from './provider-display';
-import { ModelOAuthSection } from './provider-oauth-section';
+import { oauthPanelSubtitle } from './provider-oauth-section';
 import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 export type { ConnectionsBridge } from './provider-panel-shared';
 export { ProviderLogo, providerDisplay } from './provider-display';
 
-type ProviderDialogState =
-  | { kind: 'create'; providerType: ProviderType; session: number }
-  | { kind: 'manage'; connection: LlmConnection; session: number }
-  | null;
+/**
+ * Where the panel is. Four levels, one container, one back affordance:
+ *
+ *   list ─┬─ catalog ── setup(credentials | account)
+ *         └─ detail
+ *
+ * Nothing here is a Dialog. A modal exists to interrupt the current task for
+ * something short and immediately decidable while preserving the context
+ * behind it; browsing 55 providers, filling a credential form, or waiting on a
+ * browser login is none of those, and Astryx says as much — "if the content
+ * grows beyond what fits, consider a full page instead."
+ *
+ * `setup` carries its own `origin` rather than the panel keeping a history
+ * stack: the graph is this small, and the one ambiguous edge (the first-run
+ * hero jumps straight to a provider's form, skipping the catalog) is answered
+ * by the route that created it instead of by a rule somewhere else.
+ */
+type PanelRoute =
+  | { kind: 'list' }
+  | { kind: 'catalog' }
+  | { kind: 'setup'; target: SetupTarget; origin: 'list' | 'catalog' }
+  | { kind: 'detail'; slug: string };
 
-type ProviderDialogInput =
-  | { kind: 'create'; providerType: ProviderType }
-  | { kind: 'manage'; connection: LlmConnection };
-
-type CatalogCategory = ProviderCatalogGroup | 'accounts';
-
-const CATALOG_TABS: CatalogCategory[] = ['recommended', 'accounts', 'plans', 'api', 'aggregators', 'local'];
+function backTarget(route: PanelRoute): PanelRoute {
+  if (route.kind === 'setup' && route.origin === 'catalog') return { kind: 'catalog' };
+  return { kind: 'list' };
+}
 
 export function ProvidersPanel({ bridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCreateProviderConsumed }: {
   bridge: ConnectionsBridge;
   initialPage?: 'connections' | 'catalog';
   /**
-   * When set, auto-open the connection detail sheet for this slug once the
-   * connection list has loaded. Used by the `oauth-relogin` e2e-fixture
-   * fixture so the re-login affordance in the detail sheet is captured; a
-   * real user reaches the same sheet by clicking the connection row.
+   * When set, open this connection's detail once the list has loaded. Used by
+   * the `oauth-relogin` e2e fixture so the re-login affordance is captured; a
+   * real user reaches the same page by clicking the connection row.
    */
   initialConnectionSlug?: string;
   /**
-   * When set, auto-open the create-connection dialog for this provider once
-   * the panel has loaded. Used by the first-run hero so clicking a provider
-   * row lands directly in that provider's form; a real user reaches the
-   * same dialog by clicking the provider's catalog card. One-shot: the
-   * caller retires the request via onInitialCreateProviderConsumed.
+   * When set, land straight on this provider's setup once the panel has
+   * loaded — the first-run hero's path. One-shot: the caller retires the
+   * request via onInitialCreateProviderConsumed.
    */
   initialCreateProviderType?: ProviderType;
-  /** Called once the auto-opened create dialog has been raised. */
+  /** Called once the setup level has been entered. */
   onInitialCreateProviderConsumed?: () => void;
 }) {
   const [connections, setConnections] = useState<LlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
-  const [dialogState, setDialogState] = useState<ProviderDialogState>(null);
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('recommended');
-  const [catalogQuery, setCatalogQuery] = useState('');
+  const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
+  // Browsing state, not navigation state: it outlives the catalog so that
+  // backing out of a provider returns the user to the search they typed.
+  const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(CATALOG_INITIAL_FILTER);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providersPanelMountedRef = useMountedRef();
   const providersReloadTicketRef = useRef(0);
-  const providerDialogLifecycleRef = useRef(0);
-  const focusProviderSearchAfterCloseRef = useRef(false);
-  const providerCatalogRef = useRef<HTMLElement>(null);
-  const providerCatalogSearchRef = useRef<HTMLInputElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  // Which row the user left the list from, so returning puts focus back where
+  // they were rather than on the page's primary action.
+  const listReturnFocusRef = useRef<string | null>(null);
+  const hasNavigatedRef = useRef(false);
   const locale = useUiLocale();
   const providerCopy = getProviderSettingsCopy(locale);
   const copy = providerCopy.panel;
   const toast = useToast();
-
-  function openDialog(nextState: ProviderDialogInput) {
-    const lifecycle = providerDialogLifecycleRef.current + 1;
-    providerDialogLifecycleRef.current = lifecycle;
-    setIsDialogOpen(false);
-    setDialogState({ ...nextState, session: lifecycle });
-    window.requestAnimationFrame(() => {
-      if (!providersPanelMountedRef.current || providerDialogLifecycleRef.current !== lifecycle) return;
-      setIsDialogOpen(true);
-    });
-  }
-
-  function requestDialogClose() {
-    providerDialogLifecycleRef.current += 1;
-    setIsDialogOpen(false);
-  }
-
-  function handleDialogOpenChange(nextOpen: boolean) {
-    if (nextOpen) {
-      setIsDialogOpen(true);
-      return;
-    }
-    requestDialogClose();
-  }
 
   async function reload(): Promise<boolean> {
     const ticket = ++providersReloadTicketRef.current;
@@ -139,223 +135,211 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     });
     return () => {
       providersReloadTicketRef.current += 1;
-      providerDialogLifecycleRef.current += 1;
       unsubscribe?.();
     };
   }, [bridge]);
 
+  const initialCatalogOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || initialPage !== 'catalog') return;
-    providerCatalogRef.current?.scrollIntoView({ block: 'start' });
-    providerCatalogSearchRef.current?.focus({ preventScroll: true });
+    if (loading || initialPage !== 'catalog' || initialCatalogOpenedRef.current) return;
+    initialCatalogOpenedRef.current = true;
+    setRoute({ kind: 'catalog' });
   }, [initialPage, loading]);
-
-  useEffect(() => {
-    if (isDialogOpen || !focusProviderSearchAfterCloseRef.current) return;
-    focusProviderSearchAfterCloseRef.current = false;
-    const frame = window.requestAnimationFrame(() => {
-      providerCatalogSearchRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [isDialogOpen]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
     if (loading || !initialConnectionSlug || initialConnectionDetailOpenedRef.current) return;
-    const connection = connections.find((candidate) => candidate.slug === initialConnectionSlug);
-    if (!connection) return;
+    if (!connections.some((candidate) => candidate.slug === initialConnectionSlug)) return;
     initialConnectionDetailOpenedRef.current = true;
-    openDialog({ kind: 'manage', connection });
+    setRoute({ kind: 'detail', slug: initialConnectionSlug });
   }, [loading, initialConnectionSlug, connections]);
 
+  const initialCreateOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || !initialCreateProviderType) return;
-    openDialog({ kind: 'create', providerType: initialCreateProviderType });
+    if (loading || !initialCreateProviderType || initialCreateOpenedRef.current) return;
+    initialCreateOpenedRef.current = true;
+    // Straight to the form, so `origin` is the list: the user never saw a
+    // catalog and must not be dropped into one on the way out.
+    setRoute({
+      kind: 'setup',
+      origin: 'list',
+      target: {
+        method: 'credentials',
+        providerType: initialCreateProviderType,
+        name: providerDisplay(initialCreateProviderType, locale).name,
+      },
+    });
     onInitialCreateProviderConsumed?.();
   }, [loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
 
-  const selected = dialogState?.kind === 'manage'
-    ? connections.find((connection) => connection.slug === dialogState.connection.slug)
-      ?? dialogState.connection
+  function goBack() {
+    setRoute(backTarget(route));
+  }
+
+  function goToList() {
+    setRoute({ kind: 'list' });
+  }
+
+  function openDetail(slug: string) {
+    listReturnFocusRef.current = slug;
+    setRoute({ kind: 'detail', slug });
+  }
+
+  function openCatalog() {
+    listReturnFocusRef.current = null;
+    setRoute({ kind: 'catalog' });
+  }
+
+  const selected = route.kind === 'detail'
+    ? connections.find((connection) => connection.slug === route.slug) ?? null
     : null;
 
-  function chipAriaLabel(connection: LlmConnection): string {
-    const provider = providerDisplay(connection.providerType, locale).name;
-    const status = connectionChipStatus(connection, locale);
-    return copy.chipAria(connection.name, provider, connection.slug === defaultSlug, status?.label);
-  }
+  // A detail route whose connection vanished (deleted in another window) is an
+  // unsatisfiable route, not a state to correct: the list is what it renders
+  // as. Deriving that beats scheduling a setState from inside render.
+  const level: PanelRoute['kind'] = route.kind === 'detail' && !selected ? 'list' : route.kind;
 
-  const configuredByType = (type: ProviderType) =>
-    connections.filter((connection) => connection.providerType === type).length;
+  // Focus follows the level, to its first meaningful control. Navigating
+  // without this leaves the ring on `document.body` every time a level
+  // unmounts, which costs a keyboard user their place on every move.
+  //
+  // Navigating, not arriving: the panel does not grab focus when the settings
+  // page first renders the list — the user is still in the settings nav they
+  // clicked to get here.
+  useEffect(() => {
+    if (loading) return;
+    if (!hasNavigatedRef.current) {
+      hasNavigatedRef.current = true;
+      return;
+    }
+    const frame = window.requestAnimationFrame(focusLevel);
+    return () => window.cancelAnimationFrame(frame);
 
-  function providersForCategory(category: CatalogCategory): ProviderType[] {
-    if (category === 'accounts') return [];
-    const source = category === 'recommended' ? RECOMMENDED_PROVIDER_TYPES : CATALOG_PROVIDER_TYPES;
-    const normalizedQuery = catalogQuery.trim().toLocaleLowerCase();
-    return source.filter((type) => {
-      if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
-      if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
-      if (category !== 'recommended' && PROVIDER_DEFAULTS[type].catalogGroup !== category) return false;
-      if (!normalizedQuery) return true;
-      const display = providerDisplay(type, locale);
-      return [type, display.name, display.description, PROVIDER_DEFAULTS[type].label]
-        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
-    });
-  }
+    function focusLevel() {
+      const find = (selector: string) => document.querySelector<HTMLElement>(selector);
+      // `preventScroll` because this is a landing, not a jump: the level just
+      // rendered at the top of the content area, and scrolling to whatever the
+      // focus target happens to be would push its own header out of view.
+      const focusFirst = (...selectors: string[]) => {
+        for (const selector of selectors) {
+          const element = find(selector);
+          if (element) return element.focus({ preventScroll: true });
+        }
+      };
+      switch (level) {
+        case 'catalog':
+          focusFirst('[data-maka-contract="provider-catalog"] input');
+          return;
+        case 'setup':
+          focusFirst('[data-maka-contract="provider-setup"] input', '[data-maka-contract="provider-setup"]');
+          return;
+        case 'detail':
+          // The region, not its back button: an IconButton opens its tooltip on
+          // focus, so focusing one on arrival would pop a tooltip at every
+          // mouse user who merely clicked a row.
+          focusFirst('[data-maka-contract="connection-detail"]');
+          return;
+        case 'list': {
+          // Consumed here and only here: the ref is set on the way down and has
+          // to survive the levels in between.
+          const returnToSlug = listReturnFocusRef.current;
+          listReturnFocusRef.current = null;
+          // The row the user came from may be gone — that is exactly what
+          // happens after a deletion — so the primary action is the fallback,
+          // not the default.
+          ((returnToSlug ? find(`[data-connection-slug="${returnToSlug}"] button`) : null)
+            ?? addButtonRef.current)?.focus({ preventScroll: true });
+        }
+      }
+    }
+  }, [level, route, loading]);
 
   if (loading) {
     return (
-      <div className="providersPanel providersLoading" data-maka-contract="providers-panel" aria-busy="true" aria-label={copy.loadingAria}>
-        <div className="providersLoadingStrip">
+      <VStack className="providersPanel" gap={6} data-maka-contract="providers-panel" aria-busy="true" aria-label={copy.loadingAria}>
+        <VStack gap={1.5}>
           <Skeleton width="34%" height={16} radius="rounded" index={0} />
           <Skeleton width="52%" height={9} radius="rounded" index={1} />
-        </div>
-        <div className="providersLoadingGrid">
-          {[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} height={92} radius={3} index={index + 2} />)}
-        </div>
-      </div>
+        </VStack>
+        <VStack gap={2}>
+          {[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} height={64} radius={3} index={index + 2} />)}
+        </VStack>
+      </VStack>
     );
   }
 
-  const createType = dialogState?.kind === 'create' ? dialogState.providerType : null;
-
   return (
-    <div className="providersPanel providersMarketPanel" data-maka-contract="providers-panel">
-      <section className="providerMarket">
-        <div className="enabledStrip" aria-label={copy.connectionsAria}>
-          <SectionHeader
-            as="h3"
-            title={copy.connected}
-            subtitle={copy.connectedHelp}
-            count={connections.length > 0 ? copy.count(connections.length) : undefined}
+    <VStack className="providersPanel" gap={6} data-maka-contract="providers-panel">
+      {level === 'detail' && selected ? (
+        // tabIndex -1 so a route change can land focus on the level itself —
+        // the standard SPA answer to "where does focus go when the page
+        // swaps", and it draws no ring.
+        <VStack gap={5} tabIndex={-1} className="settingsRouteLevel" data-maka-contract="connection-detail">
+          <RouteHeader
+            onBack={goToList}
+            backLabel={copy.backToList}
+            contract="connection-detail-back"
+            logo={<ProviderLogo type={selected.providerType} compact />}
+            title={selected.name}
+            badge={selected.slug === defaultSlug ? <Badge variant="neutral" label={copy.default} /> : null}
+            subtitle={connectionSubtitle(selected, locale)}
           />
-          {loadError ? (
-            <Banner
-              status="error"
-              title={copy.loadFailed}
-              description={loadError}
-              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
-            />
-          ) : connections.length === 0 ? (
-            <div className="enabledEmptyChip" role="note">
-              <strong>{copy.empty}</strong>
-              <small>{copy.emptyHelp}</small>
-            </div>
-          ) : (
-            <ul className="connectionList" role="list">
-              {connections.map((connection) => {
-                const status = connectionChipStatus(connection, locale);
-                return (
-                  <li key={connection.slug}>
-                    <Item
-                      className="connectionRow"
-                      isSelected={connection.slug === defaultSlug}
-                      data-connection-slug={connection.slug}
-                      data-disabled={connection.enabled ? undefined : 'true'}
-                      startContent={<ProviderLogo type={connection.providerType} compact />}
-                      label={(
-                        <span aria-label={chipAriaLabel(connection)}>
-                          {connection.name}
-                          {connection.slug === defaultSlug && <Badge variant="neutral" label={copy.default} />}
-                        </span>
-                      )}
-                      description={providerDisplay(connection.providerType, locale).name}
-                      endContent={(
-                        <span className="connectionRowActions">
-                        {status && <Badge variant={statusBadgeVariant(status.tone)} label={status.label} />}
-                        <ChevronRight size={16} aria-hidden="true" />
-                        </span>
-                      )}
-                      onClick={() => openDialog({ kind: 'manage', connection })}
-                    />
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        <section ref={providerCatalogRef} className="providerCatalogSection" aria-labelledby="provider-catalog-title">
-          <SectionHeader
-            as="h3"
-            titleId="provider-catalog-title"
-            title={copy.add}
+          <ConnectionDetail
+            key={selected.slug}
+            bridge={bridge}
+            connection={selected}
+            isDefault={selected.slug === defaultSlug}
+            onChanged={async () => { await reload(); }}
+            onDeleted={async () => {
+              const reloaded = await reload();
+              if (!reloaded || !providersPanelMountedRef.current) return;
+              goToList();
+            }}
+          />
+        </VStack>
+      ) : level === 'catalog' ? (
+        <VStack gap={5}>
+          <RouteHeader
+            onBack={goToList}
+            backLabel={copy.backToList}
+            contract="catalog-back"
+            title={copy.addConnection}
             subtitle={copy.addHelp}
           />
-          <div className="catalogTabsRoot">
-            <TabList
-              value={catalogCategory}
-              onChange={(value) => setCatalogCategory(value as CatalogCategory)}
-              className="catalogTabs catalogPillTabs"
-              aria-label={copy.categoriesAria}
-            >
-              {CATALOG_TABS.map((tab) => (
-                <Tab key={tab} value={tab} label={copy.tabs[tab]} data-catalog-tab={tab} />
-              ))}
-            </TabList>
-            <div className="providerCatalogSearch">
-              <TextInput
-                ref={providerCatalogSearchRef}
-                value={catalogQuery}
-                onChange={setCatalogQuery}
-                placeholder={copy.searchPlaceholder}
-                label={copy.searchAria}
-                isLabelHidden
-                startIcon={<Search aria-hidden="true" />}
-                width="100%"
-              />
-            </div>
-            <div>
-              {(catalogCategory === 'recommended' || catalogCategory === 'accounts') && (
-                <ModelOAuthSection
-                  query={catalogQuery}
-                  onConnectionsChanged={async () => { await reload(); }}
-                />
-              )}
-              {catalogCategory !== 'accounts' && (() => {
-                const providers = providersForCategory(catalogCategory);
-                return providers.length > 0 ? (
-                  <div className="catalogGrid providerMarketGrid">
-                    {providers.map((type) => (
-                      <ProviderCatalogCard
-                        key={type}
-                        type={type}
-                        count={configuredByType(type)}
-                        onSelect={() => openDialog({ kind: 'create', providerType: type })}
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="providerCatalogEmpty" role="status">{copy.noMatch}</div>
-                );
-              })()}
-            </div>
-          </div>
-        </section>
-      </section>
-
-      {createType && (
-        <ProviderConnectionDialog
-          key={dialogState?.session}
-          title={copy.connectTitle(providerDisplay(createType, locale).name)}
-          subtitle={copy.createSubtitle}
-          providerType={createType}
-          isOpen={isDialogOpen}
-          onOpenChange={handleDialogOpenChange}
-        >
-          <AddProviderForm
-            key={createType}
+          <ProviderCatalogPage
+            filter={catalogFilter}
+            onFilterChange={setCatalogFilter}
+            onPick={(target) => setRoute({ kind: 'setup', target, origin: 'catalog' })}
+          />
+        </VStack>
+      ) : level === 'setup' && route.kind === 'setup' ? (
+        <VStack gap={5}>
+          <RouteHeader
+            onBack={goBack}
+            backLabel={route.origin === 'catalog' ? copy.backToCatalog : copy.backToList}
+            contract="setup-back"
+            logo={<ProviderLogo type={route.target.providerType} compact />}
+            title={copy.connectTitle(route.target.name)}
+            subtitle={route.target.method === 'account'
+              ? oauthPanelSubtitle(route.target.cardId, providerCopy.oauthSection)
+              : copy.createSubtitle}
+          />
+          <ProviderSetupPage
             bridge={bridge}
-            providerType={createType}
+            target={route.target}
             existingSlugs={connections.map((connection) => connection.slug)}
-            onCancel={requestDialogClose}
-            onCreated={async (_slug, modelDiscoveryError) => {
-              const lifecycle = providerDialogLifecycleRef.current;
+            onCancel={goBack}
+            onAccountChanged={async () => { await reload(); }}
+            onCreated={async (slug, modelDiscoveryError) => {
               const reloaded = await reload();
-              if (!reloaded || !providersPanelMountedRef.current || providerDialogLifecycleRef.current !== lifecycle) return;
-              requestDialogClose();
+              if (!providersPanelMountedRef.current) return;
+              // The new connection's detail, not the list: creating it is the
+              // start of setting it up, and every next move — pick the default
+              // model, enable models, fix the endpoint the discovery error just
+              // complained about — is on that page.
+              if (reloaded) setRoute({ kind: 'detail', slug });
               if (modelDiscoveryError) {
-                const providerName = providerDisplay(createType, locale).name;
+                const providerName = providerDisplay(route.target.providerType, locale).name;
                 toast.error(
                   providerCopy.detail.modelsFetchFailed(providerName),
                   providerCopy.detail.modelsFetchFailedDetail(
@@ -366,41 +350,140 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               }
             }}
           />
-        </ProviderConnectionDialog>
-      )}
-
-      {selected && (
-        <ProviderConnectionDialog
-          key={dialogState?.session}
-          title={selected.name}
-          subtitle={connectionDialogSubtitle(selected, selected.slug === defaultSlug, locale)}
-          providerType={selected.providerType}
-          isOpen={isDialogOpen}
-          onOpenChange={handleDialogOpenChange}
-        >
-          <ConnectionDetail
-            key={selected.slug}
-            bridge={bridge}
-            connection={selected}
-            isDefault={selected.slug === defaultSlug}
-            onChanged={async () => { await reload(); }}
-            onDeleted={async () => {
-              const reloaded = await reload();
-              if (!reloaded || !providersPanelMountedRef.current) return;
-              focusProviderSearchAfterCloseRef.current = true;
-              requestDialogClose();
-            }}
+        </VStack>
+      ) : (
+        <>
+          <Toolbar
+            label={copy.connectionsAria}
+            gap={2}
+            startContent={(
+              <HStack gap={2} vAlign="center">
+                <Heading level={3}>{copy.connected}</Heading>
+                {connections.length > 0 && (
+                  <Text type="supporting" color="secondary">{copy.count(connections.length)}</Text>
+                )}
+              </HStack>
+            )}
+            endContent={(
+              <Button
+                ref={addButtonRef}
+                variant="primary"
+                label={copy.addConnection}
+                onClick={openCatalog}
+                data-maka-contract="add-connection"
+              />
+            )}
           />
-        </ProviderConnectionDialog>
+          {loadError ? (
+            <Banner
+              status="error"
+              title={copy.loadFailed}
+              description={loadError}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
+          ) : connections.length === 0 ? (
+            <EmptyState
+              title={copy.empty}
+              description={copy.emptyHelp}
+              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} />}
+            />
+          ) : (
+            <List hasDividers>
+              {connections.map((connection) => {
+                const status = connectionChipStatus(connection, locale);
+                const isDefault = connection.slug === defaultSlug;
+                return (
+                  <ListItem
+                    key={connection.slug}
+                    className="connectionRow"
+                    data-connection-slug={connection.slug}
+                    data-disabled={connection.enabled ? undefined : 'true'}
+                    startContent={<ProviderLogo type={connection.providerType} compact />}
+                    label={(
+                      <HStack gap={2} vAlign="center">
+                        <span aria-label={chipAriaLabel(connection, isDefault)}>{connection.name}</span>
+                        {isDefault && <Badge variant="neutral" label={copy.default} />}
+                      </HStack>
+                    )}
+                    description={connectionSubtitle(connection, locale)}
+                    endContent={(
+                      <HStack gap={2} vAlign="center">
+                        {status && (
+                          <span className="settingsStatus">
+                            <StatusDot variant={statusDotVariant(status.tone)} label={status.label} />
+                            <span>{status.label}</span>
+                          </span>
+                        )}
+                        <ChevronRight size={16} aria-hidden="true" />
+                      </HStack>
+                    )}
+                    onClick={() => openDetail(connection.slug)}
+                  />
+                );
+              })}
+            </List>
+          )}
+        </>
       )}
-    </div>
+    </VStack>
+  );
+
+  function chipAriaLabel(connection: LlmConnection, isDefault: boolean): string {
+    const provider = providerDisplay(connection.providerType, locale).name;
+    const status = connectionChipStatus(connection, locale);
+    return copy.chipAria(connection.name, provider, isDefault, status?.label);
+  }
+}
+
+/**
+ * The way out of any level below the list, spelled once. Modelled on the
+ * settings-sidebar template's detail view, which puts the same Toolbar inside
+ * the content area rather than reaching for a second page shell.
+ */
+function RouteHeader(props: {
+  onBack(): void;
+  backLabel: string;
+  contract: string;
+  logo?: ReactNode;
+  title: string;
+  badge?: ReactNode;
+  subtitle?: string;
+}) {
+  return (
+    <Toolbar
+      label={props.title}
+      gap={2}
+      startContent={(
+        <>
+          <IconButton
+            variant="ghost"
+            label={props.backLabel}
+            tooltip={props.backLabel}
+            icon={<ArrowLeft size={16} aria-hidden="true" />}
+            onClick={props.onBack}
+            data-maka-contract={props.contract}
+          />
+          {props.logo}
+          <VStack gap={0}>
+            <HStack gap={2} vAlign="center">
+              <Heading level={3}>{props.title}</Heading>
+              {props.badge}
+            </HStack>
+            {props.subtitle && (
+              <Text type="supporting" color="secondary">{props.subtitle}</Text>
+            )}
+          </VStack>
+        </>
+      )}
+    />
   );
 }
 
-function connectionDialogSubtitle(connection: LlmConnection, isDefault: boolean, locale: UiLocale): string {
-  const copy = getProviderSettingsCopy(locale).panel;
+
+/** Provider · default model — the row's second line, and the detail's subtitle. */
+function connectionSubtitle(connection: LlmConnection, locale: 'zh' | 'en'): string {
   const providerName = providerDisplay(connection.providerType, locale).name;
-  const parts = providerName === connection.name ? [] : [providerName];
-  parts.push(isDefault ? copy.defaultConnection : copy.connection);
+  const parts = [providerName];
+  if (connection.defaultModel) parts.push(connection.defaultModel);
   return parts.join(' · ');
 }

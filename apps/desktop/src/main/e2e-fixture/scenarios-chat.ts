@@ -1,11 +1,10 @@
-import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import type {
   SandboxBoundaryRequestEvent,
   SessionHeader,
   StoredMessage,
   E2eFixtureState,
 } from '@maka/core';
+import { createSqliteTaskLedgerStore } from '@maka/storage';
 import {
   ERROR_SESSION_ID,
   header,
@@ -33,45 +32,69 @@ const STREAMING_ANSWER_MARKDOWN = [
 ].join('\n');
 
 export async function writeTaskLedgerFixture(workspaceRoot: string, now: number): Promise<void> {
-  const tasks = [
-    {
-      id: 'task-root-implementation', key: 'T1', subject: '完成会话任务台账升级', status: 'in_progress',
-      createdAt: now - 50 * 60_000, updatedAt: now - 2 * 60_000,
-      owner: { actor: 'main_agent', runId: 'run-task-parent', turnId: 'turn-fixture-2' },
-    },
-    {
-      id: 'task-child-storage', key: 'T1.1', parentId: 'task-root-implementation',
-      subject: '验证旧 JSONL 迁移与并发短 key 分配', status: 'completed',
-      createdAt: now - 45 * 60_000, updatedAt: now - 8 * 60_000, endedAt: now - 8 * 60_000,
+  void now;
+  const store = createSqliteTaskLedgerStore(workspaceRoot);
+  try {
+    const root = (
+      await store.create(
+        TURN_SESSION_ID,
+        [{ subject: '完成会话任务台账升级' }],
+        { actor: 'main_agent', runId: 'run-task-parent', turnId: 'turn-fixture-2' },
+      )
+    ).created[0]!;
+    await store.update(
+      TURN_SESSION_ID,
+      root.id,
+      { status: 'in_progress' },
+      { actor: 'main_agent', runId: 'run-task-parent', turnId: 'turn-fixture-2' },
+    );
+
+    const storage = (
+      await store.create(TURN_SESSION_ID, [
+        { subject: '验证 SQLite authority 与并发短 key 分配', parentId: root.id },
+      ])
+    ).created[0]!;
+    await store.update(TURN_SESSION_ID, storage.id, { status: 'in_progress' });
+    await store.update(TURN_SESSION_ID, storage.id, {
+      status: 'completed',
       completionEvidence: 'Core 与 Storage 定向测试全部通过。',
-    },
-    {
-      id: 'task-child-ui', key: 'T1.2', parentId: 'task-root-implementation',
-      subject: '检查窄窗口下的任务树布局', status: 'blocked',
-      createdAt: now - 40 * 60_000, updatedAt: now - 3 * 60_000,
+    });
+
+    const ui = (
+      await store.create(TURN_SESSION_ID, [
+        { subject: '检查窄窗口下的任务树布局', parentId: root.id },
+      ])
+    ).created[0]!;
+    await store.claim(TURN_SESSION_ID, ui.id, {
+      actor: 'child_agent',
+      agentId: 'local-read',
+      runId: 'run-task-child',
+      turnId: 'turn-task-child',
+    });
+    await store.update(TURN_SESSION_ID, ui.id, {
+      status: 'blocked',
       blockedReason: '等待视觉回归截图确认 990px 视口没有文字重叠。',
-      owner: { actor: 'child_agent', agentId: 'local-read', runId: 'run-task-child', turnId: 'turn-task-child' },
-    },
-    {
-      id: 'task-grandchild-copy', key: 'T1.2.1', parentId: 'task-child-ui',
-      subject: '核对深层缩进、超长任务描述、owner 与阻塞原因在窄窗口中仍可完整换行且不遮挡后续内容',
-      status: 'pending', createdAt: now - 35 * 60_000, updatedAt: now - 3 * 60_000,
-    },
-    {
-      id: 'task-docs', key: 'T2', subject: '同步生命周期文档与边界说明', status: 'pending',
-      createdAt: now - 30 * 60_000, updatedAt: now - 5 * 60_000,
-    },
-    {
-      id: 'task-runtime', key: 'T3', subject: '验证 Goal 一次提醒门禁', status: 'completed',
-      createdAt: now - 25 * 60_000, updatedAt: now - 6 * 60_000, endedAt: now - 6 * 60_000,
-      completionEvidence: 'Goal gate 定向测试覆盖空任务、阻塞任务、一次提醒和上限放行。',
-    },
-  ];
-  await writeFile(
-    join(workspaceRoot, 'sessions', TURN_SESSION_ID, 'tasks.json'),
-    `${JSON.stringify(tasks, null, 2)}\n`,
-    'utf8',
-  );
+    });
+    await store.create(TURN_SESSION_ID, [
+      {
+        subject:
+          '核对深层缩进、超长任务描述、owner 与阻塞原因在窄窗口中仍可完整换行且不遮挡后续内容',
+        parentId: ui.id,
+      },
+    ]);
+    await store.create(TURN_SESSION_ID, [{ subject: '同步生命周期文档与边界说明' }]);
+    const runtime = (
+      await store.create(TURN_SESSION_ID, [{ subject: '验证 Goal 一次提醒门禁' }])
+    ).created[0]!;
+    await store.update(TURN_SESSION_ID, runtime.id, { status: 'in_progress' });
+    await store.update(TURN_SESSION_ID, runtime.id, {
+      status: 'completed',
+      completionEvidence:
+        'Goal gate 定向测试覆盖空任务、阻塞任务、一次提醒和上限放行。',
+    });
+  } finally {
+    store.close();
+  }
 }
 
 export function turnSession(now: number): SessionHeader {
@@ -212,65 +235,65 @@ function multiStepTurnMessages(now: number): StoredMessage[] {
   const step1 = 'msg-assistant-2a';
   const step2 = 'msg-assistant-2b';
   return [
-    { type: 'user', id: 'msg-user-2', turnId, ts: now - 6 * 60_000, text: '确认 stream-fade 的环逻辑没有边界问题，然后跑一下单测。', origin: { kind: 'automation', automationId: 'auto-fixture-demo' } },
+    { type: 'user', id: 'msg-user-2', turnId, ts: now - 6 * 60_000, text: '确认 assistant-stream 的投影逻辑没有边界问题，然后跑一下单测。', origin: { kind: 'automation', automationId: 'auto-fixture-demo' } },
     {
       type: 'tool_call',
-      id: 'tool-read-fade',
+      id: 'tool-read-assistant-stream',
       turnId,
       ts: now - 6 * 60_000 + 4_000,
       toolName: 'Read',
-      displayName: '读取 stream-fade.ts',
-      intent: '读取淡入环实现，确认窗口滑动与上限',
+      displayName: '读取 assistant-stream.ts',
+      intent: '读取 assistant delta 的脱敏与截断边界',
       stepId: step1,
-      args: { file_path: 'packages/ui/src/stream-fade.ts' },
+      args: { file_path: 'packages/ui/src/assistant-stream.ts' },
     },
     {
       type: 'tool_result',
-      id: 'tool-read-fade-result',
+      id: 'tool-read-assistant-stream-result',
       turnId,
       ts: now - 6 * 60_000 + 4_600,
-      toolUseId: 'tool-read-fade',
+      toolUseId: 'tool-read-assistant-stream',
       isError: false,
       durationMs: 560,
-      content: { kind: 'text', text: 'export function updateFadeRing(...) { /* prune + cap */ }' },
+      content: { kind: 'text', text: 'export function applyAssistantDelta(...) { /* redact + cap */ }' },
     },
     {
       type: 'assistant',
       id: step1,
       turnId,
       ts: now - 5 * 60_000,
-      text: '环逻辑没问题：增长记录批次、超窗剪枝、按上限截断，收缩时整体重置。接下来跑单测确认。',
-      thinking: { text: 'boundary 取最老存活批次的 start，age 用 now 减去覆盖该 offset 的批次时间，窗口滑动和上限都覆盖了，值得跑一遍测试坐实。' },
+      text: '状态边界顺序正确：delta 先脱敏，append 后覆盖跨 delta 密钥，再执行总量截断。接下来跑单测确认。',
+      thinking: { text: '重点确认原始 delta 不会先进入状态，跨 delta 拼接后会再次脱敏，并且总量上限保留用户正在阅读的前缀。' },
       modelId: 'glm-5.1',
     },
     {
       type: 'tool_call',
-      id: 'tool-run-fade-tests',
+      id: 'tool-run-assistant-stream-tests',
       turnId,
       ts: now - 5 * 60_000 + 3_000,
       toolName: 'Bash',
-      displayName: '运行 stream-fade 单测',
-      intent: '执行 node --test 跑淡入环与 tokenizer 单测',
+      displayName: '运行 assistant-stream 单测',
+      intent: '执行 assistant stream 脱敏与截断单测',
       stepId: step2,
-      args: { cmd: 'node --test dist/main/__tests__/stream-fade.test.js', cwd: '/workspace/maka' },
+      args: { cmd: 'node --test dist/main/__tests__/assistant-stream.test.js', cwd: '/workspace/maka' },
     },
     {
       type: 'tool_result',
-      id: 'tool-run-fade-tests-result',
+      id: 'tool-run-assistant-stream-tests-result',
       turnId,
       ts: now - 5 * 60_000 + 5_200,
-      toolUseId: 'tool-run-fade-tests',
+      toolUseId: 'tool-run-assistant-stream-tests',
       isError: false,
       durationMs: 1_930,
       content: {
         kind: 'terminal',
         cwd: '/workspace/maka',
-        cmd: 'node --test dist/main/__tests__/stream-fade.test.js',
+        cmd: 'node --test dist/main/__tests__/assistant-stream.test.js',
         status: 'completed',
         exitCode: 0,
         output: {
           mode: 'pipes',
-          stdout: 'tests 13\npass 13\nfail 0\n',
+          stdout: 'tests 8\npass 8\nfail 0\n',
           stderr: '',
           stdoutTruncated: false,
           stderrTruncated: false,
@@ -456,7 +479,7 @@ export function sandboxBoundaryLiveTurns(): NonNullable<E2eFixtureState['liveTur
           toolName: 'request_sandbox_boundary',
           displayName: '扩展沙箱边界',
           intent: '写入工作区外的构建产物目录',
-          status: 'waiting_permission',
+          status: 'running',
           args: { path: '/outside/dist', access: 'write', scope: 'subtree' },
         }],
       }],

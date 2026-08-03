@@ -59,4 +59,22 @@ describe('inline quote refs are folded into model-facing text', () => {
     assert.equal(formatTextWithInlineRefs('plain turn'), 'plain turn');
     assert.equal(formatTextWithInlineRefs('plain turn', { quotes: [] }), 'plain turn');
   });
+
+  it('keeps sent token metadata out of model-facing text', () => {
+    assert.equal(
+      formatTextWithInlineRefs({
+        kind: 'text',
+        text: 'inspect @docs/plan.md',
+        inlineReferences: [
+          {
+            kind: 'workspace_file',
+            value: '@docs/plan.md',
+            label: 'Secret UI label',
+            start: 8,
+          },
+        ],
+      }),
+      'inspect @docs/plan.md',
+    );
+  });
 });

@@ -1,7 +1,7 @@
 import type { OpenAiCodexService } from './oauth/openai-codex-service.js';
 
 /**
- * Deterministic loopback OAuth service for the `oauth-relogin` Electron E2E.
+ * Deterministic device-code OAuth service for the `oauth-relogin` Electron E2E.
  *
  * This seam is selected only through the dev-only MAKA_E2E_FIXTURE gate in
  * main.ts. It drives the production preload, IPC handlers, shared renderer

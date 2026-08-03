@@ -1,9 +1,10 @@
 import { ipcMain } from 'electron';
 import type {
   DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
 } from '@maka/core';
+import { DAILY_REVIEW_RANGES } from '@maka/core';
 import { tryResult } from '@maka/core/result';
 import type { createMainWindowController } from './main-window.js';
 import type { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
@@ -70,10 +71,10 @@ export function registerDailyReviewIpc(deps: DailyReviewIpcDeps): void {
   );
   ipcMain.handle(
     'daily-review:runOnce',
-    (_event, input: { mode?: DailyReviewMode; day?: number; modelKey?: string } | undefined) =>
+    (_event, input: { range?: DailyReviewRange; offsetDays?: number; modelKey?: string } | undefined) =>
       deps.dailyReview.run({
-        mode: input?.mode === 'deep' ? 'deep' : 'daily',
-        day: Number.isFinite(input?.day) ? Math.trunc(input!.day!) : undefined,
+        range: DAILY_REVIEW_RANGES.includes(input?.range as DailyReviewRange) ? input!.range! : 1,
+        offsetDays: Number.isFinite(input?.offsetDays) ? Math.trunc(input!.offsetDays!) : undefined,
         modelKeyOverride: typeof input?.modelKey === 'string' ? input.modelKey : undefined,
         trigger: 'manual',
       }),

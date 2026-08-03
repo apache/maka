@@ -67,7 +67,7 @@ const addWorkSchema = z
     agent_id: identitySchema
       .optional()
       .describe(
-        'Catalog profile for NEW graph work (for example "implementation"). Set agent_id OR operator_id, never both.',
+        'Catalog agent id for NEW graph work (for example "implementation"). Set agent_id OR operator_id, never both.',
       ),
     operator_id: identitySchema
       .optional()

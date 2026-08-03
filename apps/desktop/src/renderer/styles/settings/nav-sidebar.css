@@ -4,55 +4,16 @@
   background: transparent;
 }
 
+/* Astryx convergence: the orphaned voice hero vocabulary
+   (.settingsFeatureStatusPage / Hero / Icon / HeroHeading) is deleted — the
+   voice page moved onto the SettingsSection kit and nothing consumed it.
+   .settingsFeatureStatusList below is still used by the voice 边界 list. */
+
 .settingsBackButton {
   justify-content: flex-start;
   -webkit-app-region: no-drag;
 }
 
-.settingsFeatureStatusPage {
-  display: grid;
-  align-content: start;
-  /* #1363: same explicit column as .settingsStructuredPage (#1362) — the
-     implicit `auto` track sizes to the widest child's max-content and lets
-     one wide child widen every card past the content column. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2-5);
-}
-
-.settingsFeatureStatusHero {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  align-items: start;
-  gap: var(--space-2-5);
-  padding: var(--space-2-5) var(--space-3);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-3);
-}
-
-.settingsFeatureStatusIcon {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  /* Square icon plate — ratio-governed, see --radius-plate. */
-  border-radius: var(--radius-plate);
-  background: oklch(from var(--link) l c h / 0.08);
-  color: var(--link);
-}
-
-.settingsFeatureStatusHero h3 {
-  font: var(--maka-text-heading-4);
-  margin: 0 0 var(--space-0-5);
-  color: var(--foreground);
-}
-
-.settingsFeatureStatusHero p {
-  font: var(--maka-text-supporting);
-  margin: 0;
-  max-width: 56ch;
-  color: var(--foreground-secondary);
-}
 
 .settingsFeatureStatusList {
   font: var(--maka-text-supporting);
@@ -67,41 +28,6 @@
   color: var(--muted-foreground);
 }
 
-.settingsFeatureStatusHeroHeading {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: 0 0 var(--space-1-5);
-}
-
-.settingsFeatureStatusHeroHeading h3 {
-  margin: 0;
-}
-
-/* PR daily-review-bundled (WAWQAQ msg `afbe542d` 2026-06-25 +
-   @kenji audit finding #6): the Daily Review settings page used to
-   stack a banner + intro hero card + settings rows + "try it now"
-   hero card — too much promo chrome for a workbench settings
-   surface. The unified `.settingsPageFooterActions` is a single
-   right-aligned action row that the page renders below the rows
-   (open Daily Review · generate now · deep). Keep the action set
-   visible and uniform regardless of how many ops the page exposes. */
-.settingsPageFooterActions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-
-/* PR audit2-bundled (@kenji audit #5 msg `e4cfbfb0`): names for the
-   inline `style={{ marginTop: N }}` patches that were sprinkled around
-   settings surfaces. Keeps the spacing decision discoverable + locked
-   in the design token surface instead of buried in JSX. */
-.settingsSurfaceAlert {
-  margin-top: var(--space-3);
-}
 
 .settingsLoadingSkeleton {
   padding: var(--space-2) 0;
@@ -113,24 +39,6 @@
   gap: var(--space-2-5);
 }
 
-.providersLoading {
-  display: grid;
-  align-content: start;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-1);
-}
-
-.providersLoadingStrip {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.providersLoadingGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(198px, 1fr));
-  gap: var(--space-2-5);
-}
-
 /* PR-SETTINGS-REVIEW-0 (2026-06-23, WAWQAQ msgs `f97ed407` + `8577326c`):
    pull the page header into the same centered max-w-3xl column as the
    content. Before this, the header sat in `.settingsMainPane` padding
@@ -139,13 +47,9 @@
    and content were visibly misaligned. Drop the mainpane padding to
    thin top/bottom so the header + content can both share the centered
    column. */
-/* PR-SETTINGS-RESTORE-SURFACE-0 (WAWQAQ msg `32ed9490` correction):
-   previous PR over-corrected — I read "no seam" as "no plate", but
-   reference's content surface is still a lighter-bg plate vs the
-   sidebar. The seam-between rule is: no visible BORDER line between
-   sidebar and content, but the content does have its own background
-   plate + rounded corners + small floating margin. Restore the
-   surface; just no border. */
+/* The settings content column is the same rounded floating plate as the
+   chat shell's content column: flush to the settings sidebar, gap on the
+   other three sides. */
 .settingsMainPane {
   position: relative;
   min-width: 0;
@@ -157,7 +61,6 @@
   border: 0;
   border-radius: var(--radius-modal);
   background: var(--agents-content-area-bg);
-  box-shadow: none;
   overflow: hidden;
 }
 
@@ -213,13 +116,14 @@
    settings `:active` rule below uses it directly. */
 
 /* PR-SETTINGS-NO-PANE-BORDER-0 (WAWQAQ msg `d0e7dfb3`): nested
-   card-in-card was the previous problem — `.settingsStructuredPage`
+   card-in-card was the previous problem — the page container
    was a card AND it contained grouped Astryx cards AND orphan
    `.settingsFormRow` direct children. Reference shows multiple
-   GROUPED cards stacked vertically. So `.settingsStructuredPage` is
+   GROUPED cards stacked vertically. So `.settingsPageStack` (owned by the
+   SettingsPage kit component in settings-section.tsx) is
    no longer a card — it's just the vertical container with gap, and
    `.settingsRows` is the ONLY card primitive. */
-.settingsStructuredPage {
+.settingsPageStack {
   display: grid;
   align-content: start;
   /* #1362: explicit column. The implicit `auto` track sizes to the widest
@@ -229,13 +133,41 @@
      minmax(0, 1fr) the track is the content column, and the .settingsRows
      query containers below actually see narrow widths. */
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
+  /* Sections carry titles now (see settings-section.tsx), so the between-group
+     gap has to out-measure the title-to-body gap inside a section or the two
+     rhythms read as one flat stack. The open row idiom (no card chrome) needs
+     the larger step: 32px outside / 8px inside — the Astryx settings-dialog
+     template's own section rhythm. */
+  gap: var(--space-8);
   background: transparent;
 }
 
-/* Nested `.settingsStructuredPage` (merged pages like 外观 stack two
-   sub-pages, each wrapping in their own `.settingsStructuredPage`):
+/* Nested `.settingsPageStack` (merged pages like 外观 stack two
+   sub-pages, each wrapping in their own SettingsPage):
    the inner one just passes through. */
-.settingsStructuredPage .settingsStructuredPage {
-  gap: var(--space-4);
+.settingsPageStack .settingsPageStack {
+  gap: var(--space-8);
+}
+
+/* ---- The section unit (settings-section.tsx) ---------------------------
+   One labeled group: header, then either the `.settingsRows` card or a bare
+   body. Every settings page is a flat list of these. */
+.settingsSection {
+  display: grid;
+  align-content: start;
+  /* Same explicit column as the page above, for the same reason: a wide row
+     (a long mono path, a scrollable pre) must not widen the section. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.settingsSectionBodyHidden {
+  display: none;
+}
+
+.settingsSectionBody {
+  display: grid;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
 }

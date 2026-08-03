@@ -2,6 +2,7 @@ import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
   isWiredOAuthProvider,
+  reconcileConnectionAfterModelFetch,
   type LlmConnection,
   type ModelDiscoverySource,
 } from '@maka/core/llm-connections';
@@ -9,7 +10,7 @@ import type { ConnectionStore, CredentialStore } from '@maka/storage';
 import type { ClaudeSubscriptionService } from './oauth/claude-subscription-service.js';
 import { isSubscriptionExperimentalEnabled } from './oauth/claude-subscription-helpers.js';
 import type { OpenAiCodexService } from './oauth/openai-codex-service.js';
-import { isOpenAiCodexExperimentalEnabled } from './oauth/openai-codex-helpers.js';
+import { isOpenAiCodexExperimentalEnabled } from './oauth/openai-codex-service.js';
 import {
   fetchProviderModels,
   OpenAiCodexDiscoveryError,
@@ -78,9 +79,8 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
       name: existing?.name ?? displayName,
       providerType: 'claude-subscription',
       baseUrl: defaults.baseUrl,
-      defaultModel: existing?.defaultModel || defaults.fallbackModels[0] || '',
+      ...syncedSelection(existing, existing?.models?.length ? existing.models : fallbackModels),
       enabled: true,
-      enabledModelIds: existing?.enabledModelIds,
       models: existing?.models?.length ? existing.models : fallbackModels,
       modelSource: existing?.modelSource ?? 'fallback',
       lastTestStatus: 'verified',
@@ -137,13 +137,8 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
       name: existing?.name ?? 'Codex OAuth',
       providerType: 'openai-codex',
       baseUrl: defaults.baseUrl,
-      defaultModel: normalizeOpenAiCodexDefaultModel(
-        existing?.defaultModel,
-        models.map((entry) => entry.id),
-        defaults.fallbackModels[0] || '',
-      ),
+      ...syncedSelection(existing, models),
       enabled: true,
-      enabledModelIds: existing?.enabledModelIds,
       models,
       modelSource: fetchedModels.length > 0 ? 'fetched' : 'fallback',
       modelsFetchedAt: fetchedModels.length > 0 ? existing?.modelsFetchedAt : undefined,
@@ -166,18 +161,14 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     const models = cachedFetchedModels.length
       ? cachedFetchedModels
       : defaults.fallbackModels.map((id) => ({ id }));
-    const enabledIds = models.map(({ id }) => id);
     const now = Date.now();
     return deps.connectionStore.save({
       slug: XAI_OAUTH_CONNECTION_SLUG,
       name: existing?.name ?? 'xAI OAuth',
       providerType: 'xai-oauth',
       baseUrl: defaults.baseUrl,
-      defaultModel: enabledIds.includes(existing?.defaultModel ?? '')
-        ? existing!.defaultModel
-        : (enabledIds[0] ?? ''),
+      ...syncedSelection(existing, models),
       enabled: true,
-      enabledModelIds: existing?.enabledModelIds,
       models,
       modelSource: cachedFetchedModels.length ? 'fetched' : 'fallback',
       modelsFetchedAt: cachedFetchedModels.length ? existing?.modelsFetchedAt : undefined,
@@ -281,17 +272,13 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
       // unusable; retain the last fetched snapshot or the shared fallback.
     }
 
-    const enabledIds = models.map(({ id }) => id);
     return deps.connectionStore.save({
       slug: XAI_OAUTH_CONNECTION_SLUG,
       name: existing?.name ?? 'xAI OAuth',
       providerType: 'xai-oauth',
       baseUrl: defaults.baseUrl,
-      defaultModel: enabledIds.includes(existing?.defaultModel ?? '')
-        ? existing!.defaultModel
-        : (enabledIds[0] ?? ''),
+      ...syncedSelection(existing, models),
       enabled: true,
-      enabledModelIds: existing?.enabledModelIds,
       models,
       modelSource,
       modelsFetchedAt,
@@ -353,13 +340,9 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
       }
     }
     if (models.length === 0) return failDiscovery();
-    const enabledIds = models.map((model) => model.id);
-    const defaultModel = enabledIds.includes(existing?.defaultModel ?? '')
-      ? existing!.defaultModel
-      : enabledIds[0] ?? '';
     return deps.connectionStore.save({
       ...discoveryConnection,
-      defaultModel,
+      ...syncedSelection(existing, models),
       models,
       modelSource: 'fetched',
       modelsFetchedAt: now,
@@ -501,19 +484,14 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
       }
     }
 
-    const normalizedDefaultModel = normalizeOpenAiCodexDefaultModel(
-      existing?.defaultModel,
-      models.map((entry) => entry.id),
-      defaults.fallbackModels[0] || '',
-    );
+
     const connection: LlmConnection = {
       slug: CODEX_SUBSCRIPTION_CONNECTION_SLUG,
       name: existing?.name ?? displayName,
       providerType: 'openai-codex',
       baseUrl: defaults.baseUrl,
-      defaultModel: normalizedDefaultModel,
+      ...syncedSelection(existing, models),
       enabled: true,
-      enabledModelIds: existing?.enabledModelIds,
       models,
       modelSource,
       modelsFetchedAt,
@@ -639,17 +617,38 @@ function normalizeOpenAiCodexModels(
   return safeExisting.length ? safeExisting : fallbackModels;
 }
 
-function normalizeOpenAiCodexDefaultModel(
-  existingDefaultModel: string | undefined,
-  enabledModelIds: string[],
-  fallbackModel: string,
-): string {
-  if (
-    existingDefaultModel &&
-    !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(existingDefaultModel) &&
-    enabledModelIds.includes(existingDefaultModel)
-  ) {
-    return existingDefaultModel;
-  }
-  return enabledModelIds[0] || fallbackModel;
+/**
+ * The model selection an account sync may write.
+ *
+ * Every sync path used to derive its own: `existing?.defaultModel ||
+ * fallbackModels[0]`, or "the first live id if the current default isn't in
+ * the account's catalog", while passing `enabledModelIds` straight back
+ * untouched. That got both ends wrong. `''` is falsy, so a default the user
+ * had cleared came back on the very next `connections:list` — which runs this
+ * sync before every read. And a selection echoed back unreconciled kept ids
+ * the provider had retired.
+ *
+ * Both are the same question a model fetch asks, and it already has one
+ * answer. This is a fetch: the account's catalog is the live inventory.
+ *
+ * All four of these providers ship a `fallbackModels` catalog, so a connection
+ * that already exists has had a list in front of the user since the moment it
+ * was created. Whether it happens to hold one *right now* is not the same
+ * question and answers it wrongly: these syncs persist `models: []` when an
+ * account temporarily reports nothing usable, which would make the recovery
+ * look like a first discovery and re-seed a default the user had cleared.
+ */
+function syncedSelection(
+  existing: LlmConnection | null | undefined,
+  models: readonly { id: string }[],
+): { defaultModel: string; enabledModelIds: string[] } {
+  return reconcileConnectionAfterModelFetch(
+    {
+      defaultModel: existing?.defaultModel,
+      enabledModelIds: existing?.enabledModelIds,
+      hasModelInventory: existing !== null && existing !== undefined,
+    },
+    models,
+  );
 }
+

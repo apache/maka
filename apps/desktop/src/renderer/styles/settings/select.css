@@ -1,5 +1,14 @@
 /* Product layout only; Astryx Selector owns trigger, popup, and option chrome. */
-.settingsModelPickerTrigger {
-  width: 100%;
-  max-width: 320px;
+
+/* One trailing-control column for the selects that sit in a settings row.
+   `width: 100%` did not produce it: the Astryx Item's endContent is a
+   shrink-to-fit box, so 100% resolved to the trigger's own content width and
+   the 默认模型 picker rendered at ~103px while its neighbour 默认权限模式 —
+   which carries no width rule — expanded to 320px. Two adjacent rows in the
+   same card staggered their controls by 200px. An explicit width gives both a
+   real column; max-width keeps it from overflowing a narrow settings pane. */
+.settingsRows .settingsModelPickerTrigger,
+.settingsRows .permissionModeSelector {
+  width: 260px;
+  max-width: 100%;
 }

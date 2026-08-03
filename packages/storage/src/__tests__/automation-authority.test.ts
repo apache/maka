@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -67,68 +67,6 @@ describe('interactive Automation authority', () => {
         assert.equal(snapshot.automations[0]?.status, 'completed');
         assert.deepEqual(snapshot.pendingFires, []);
         reopened.close();
-      } finally {
-        if (!owner.closed) await owner.close();
-      }
-    });
-  });
-
-  test('imports the legacy file once and fails closed if that source changes after cutover', async () => {
-    await withInteractiveRoot(async ({ root, capability }) => {
-      await writeLegacy(root, [definition()]);
-      const owner = await tryAcquireInteractiveRootOwner(capability);
-      assert.ok(owner);
-      if (!owner) return;
-      try {
-        const writer = await openInteractiveAutomationAuthorityForWrite(owner.lease);
-        const imported = await writer.read();
-        assert.equal(imported.revision, 1);
-        assert.deepEqual(
-          imported.automations.map((automation) => automation.id),
-          ['automation-1'],
-        );
-        writer.close();
-
-        await writeLegacy(root, [{ ...definition(), name: 'changed legacy source' }]);
-        await assert.rejects(
-          () => openInteractiveAutomationAuthorityForWrite(owner.lease),
-          /cutover|fingerprint|source/i,
-        );
-      } finally {
-        if (!owner.closed) await owner.close();
-      }
-    });
-  });
-
-  test('imports the full legacy text contract and bounds historical failure diagnostics', async () => {
-    await withInteractiveRoot(async ({ root, capability }) => {
-      await writeLegacy(root, [
-        {
-          ...definition(),
-          name: '名'.repeat(100),
-          prompt: '提'.repeat(2_000),
-          lastError: '故'.repeat(4_000),
-        },
-        {
-          ...definition(),
-          id: 'automation-2',
-          createdAt: 2,
-          lastError: '',
-        },
-      ]);
-      const owner = await tryAcquireInteractiveRootOwner(capability);
-      assert.ok(owner);
-      if (!owner) return;
-      try {
-        const writer = await openInteractiveAutomationAuthorityForWrite(owner.lease);
-        const automations = (await writer.read()).automations;
-        const imported = automations[0];
-        assert.equal(imported?.name, '名'.repeat(100));
-        assert.equal(imported?.prompt, '提'.repeat(2_000));
-        assert.equal(imported?.lastError, '故'.repeat(2_000));
-        assert.equal(Buffer.byteLength(imported?.lastError ?? '', 'utf8'), 6_000);
-        assert.equal(automations[1]?.lastError, null);
-        writer.close();
       } finally {
         if (!owner.closed) await owner.close();
       }
@@ -309,17 +247,6 @@ function pendingFire(): AutomationPendingFire {
       orchestrationMode: 'default',
     },
   };
-}
-
-async function writeLegacy(
-  root: string,
-  automations: readonly AutomationDefinition[],
-): Promise<void> {
-  await writeFile(
-    join(root, 'automations.json'),
-    `${JSON.stringify({ version: 1, automations }, null, 2)}\n`,
-    'utf8',
-  );
 }
 
 async function withWriter(

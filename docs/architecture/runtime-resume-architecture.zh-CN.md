@@ -920,7 +920,7 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 
 1. `packages/storage/src/sqlite-runtime-schema.ts`：schema、WAL、FULL synchronous 和 capability。
 2. `packages/storage/src/sqlite-runtime-store.ts`：T1、T2、bundle transaction 与 projection rebuild。
-3. `packages/storage/src/runtime-event-transfer.ts`：sticky SQLite selection、legacy import 和 export。
+3. `packages/storage/src/runtime-event-persistence.ts`：runtime 事件的 SQLite 持久化。
 4. `packages/storage/src/agent-run-store.ts`：AgentRun 与 legacy JSONL authority gate。
 5. `packages/storage/src/workspace-identity.ts`：workspace UUID marker 和 canonical path。
 

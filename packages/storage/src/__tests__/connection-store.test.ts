@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
 import { createConnectionStore } from '../connection-store.js';
 
 describe('FileConnectionStore', () => {
@@ -48,7 +48,7 @@ describe('FileConnectionStore', () => {
     });
   });
 
-  test('normalizes an updated enabled-model list and keeps the default enabled', async () => {
+  test('normalizes an updated enabled-model list and writes it as stated', async () => {
     await withConnectionStore(async (store) => {
       const created = await store.create({
         slug: 'openai-main',
@@ -61,7 +61,271 @@ describe('FileConnectionStore', () => {
         enabledModelIds: [' gpt-5 ', 'gpt-5', ''],
       });
 
-      assert.deepEqual(updated.enabledModelIds, ['gpt-4o-mini', 'gpt-5']);
+      // Trimmed and de-duplicated, but not extended: the default is not merged
+      // back in. A default outside the stated set is no longer the default.
+      assert.deepEqual(updated.enabledModelIds, ['gpt-5']);
+      assert.equal(updated.defaultModel, '');
+    });
+  });
+
+  test('clearing the enabled models clears the default with them', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o-mini',
+      });
+
+      // Enabling no models is a real answer: the connection stays configured
+      // and testable, it just offers nothing to chat. Keeping the default here
+      // would re-assert a choice the user had withdrawn.
+      const updated = await store.update(created.slug, { enabledModelIds: [] });
+
+      assert.deepEqual(updated.enabledModelIds, []);
+      assert.equal(updated.defaultModel, '');
+      // Survives a reload — the emptied list is persisted, not just returned.
+      const reloaded = (await store.list()).find((entry) => entry.slug === created.slug);
+      assert.deepEqual(reloaded?.enabledModelIds, []);
+      assert.equal(reloaded?.defaultModel, '');
+      // And the workspace default goes with it: the runtime starts a chat on a
+      // {connection, model} pair, so half a pair is not a state to keep.
+      assert.equal(await store.getDefault(), null);
+    });
+  });
+
+  test('unchecking the default model is not silently undone', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o',
+      });
+      await store.update(created.slug, { enabledModelIds: ['gpt-4o', 'gpt-4o-mini'] });
+
+      // The store used to merge the default back into every write, so this
+      // selection came back as ['gpt-4o', 'gpt-4o-mini'] — identical to the
+      // current one. Callers that skip no-op writes therefore never wrote, and
+      // the checkbox re-checked itself.
+      const updated = await store.update(created.slug, { enabledModelIds: ['gpt-4o-mini'] });
+
+      assert.deepEqual(updated.enabledModelIds, ['gpt-4o-mini']);
+      assert.equal(updated.defaultModel, '');
+    });
+  });
+
+  test('an emptied selection survives the next model fetch', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o-mini',
+      });
+      // Give it an inventory first: bootstrapping a default is a first-fetch
+      // affordance, and this connection has now had its first fetch.
+      await store.update(created.slug, {
+        models: [{ id: 'gpt-4o' }, { id: 'gpt-4o-mini' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 1,
+      });
+      await store.update(created.slug, { enabledModelIds: [] });
+
+      // Refreshing the catalog used to re-seed `liveIds[0]`, so "enable
+      // nothing" only lasted until the next 更新模型目录 — or until the silent
+      // auto-fetch that follows saving a key.
+      const refreshed = await store.update(created.slug, {
+        models: [{ id: 'gpt-5' }, { id: 'gpt-4o' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 2,
+      });
+
+      assert.deepEqual(refreshed.enabledModelIds, []);
+      assert.equal(refreshed.defaultModel, '');
+    });
+  });
+
+  test('half a default target is unreachable from every write path', async () => {
+    await withConnectionStore(async (store) => {
+      // Created with no default model at all — the four providers that ship no
+      // `fallbackModels`. It used to claim the vacant workspace default on the
+      // way in, which showed a 默认 badge over a picker reading 未设置.
+      await store.create({ slug: 'lmstudio-local', name: 'LM Studio', providerType: 'lm-studio' });
+      assert.equal(await store.getDefault(), null);
+
+      const openai = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o',
+      });
+      assert.equal(await store.getDefault(), openai.slug);
+
+      await store.update(openai.slug, { enabledModelIds: [] });
+      assert.equal(await store.getDefault(), null);
+      // And it cannot be handed back: update() cleared the slug, so setDefault()
+      // has to refuse the same state rather than restore it.
+      await assert.rejects(
+        () => store.setDefault(openai.slug),
+        /Connection has no default model: openai-main/,
+      );
+    });
+  });
+
+  test('a default slug already on disk without a model reads back as unset', async () => {
+    await withConnectionStore(async (store, dir) => {
+      await writeFile(
+        join(dir, 'llm-connections.json'),
+        JSON.stringify({
+          defaultSlug: 'openai-main',
+          connections: [
+            {
+              slug: 'openai-main',
+              name: 'OpenAI',
+              providerType: 'openai',
+              defaultModel: '',
+              enabled: true,
+              enabledModelIds: [],
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+        }),
+        'utf8',
+      );
+
+      assert.equal(await store.getDefault(), null);
+    });
+  });
+
+  test('a saved snapshot keeps the default its caller reconciled', async () => {
+    await withConnectionStore(async (store) => {
+      await store.save({
+        slug: 'github-copilot',
+        name: 'GitHub Copilot',
+        providerType: 'github-copilot',
+        defaultModel: 'gpt-4.1',
+        enabled: true,
+        enabledModelIds: ['gpt-4.1'],
+        models: [{ id: 'gpt-4.1' }],
+        modelSource: 'fetched',
+        createdAt: 1,
+        updatedAt: 1,
+      });
+
+      // The provider retires gpt-4.1 and the sync repairs the default to a live
+      // id, but hands back the stored selection unchanged — the exact snapshot
+      // it used to write. save() sees only a snapshot, so it cannot tell that
+      // repaired default from one a user just contradicted; reading the stale
+      // list as their word threw the repair away and left the connection
+      // pointing at a model that no longer exists.
+      const existing = (await store.get('github-copilot'))!;
+      const synced = await store.save({
+        ...existing,
+        defaultModel: 'gpt-5',
+        enabledModelIds: ['gpt-4.1'],
+        models: [{ id: 'gpt-5' }],
+      });
+
+      assert.equal(synced.defaultModel, 'gpt-5');
+      assert.ok(synced.enabledModelIds?.includes('gpt-5'));
+      assert.equal(await store.getDefault(), 'github-copilot');
+    });
+  });
+
+  test('a cached fallback catalog is an inventory too', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o-mini',
+      });
+      // Providers without live discovery only ever cache a fallback catalog.
+      // That list is still a list the user picked from, so emptying it is an
+      // answer — keying the bootstrap on `modelSource === 'fetched'` would have
+      // treated the next fetch as a first fetch and re-seeded it.
+      await store.update(created.slug, {
+        models: [{ id: 'gpt-4o' }, { id: 'gpt-4o-mini' }],
+        modelSource: 'fallback',
+        modelsFetchedAt: 1,
+      });
+      await store.update(created.slug, { enabledModelIds: [] });
+
+      const refreshed = await store.update(created.slug, {
+        models: [{ id: 'gpt-5' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 2,
+      });
+
+      assert.deepEqual(refreshed.enabledModelIds, []);
+      assert.equal(refreshed.defaultModel, '');
+    });
+  });
+
+  test('the first model fetch still seeds a provider that ships no fallback models', async () => {
+    await withConnectionStore(async (store) => {
+      // LM Studio and the three *-compatible providers have no
+      // `fallbackModels`, so they are created with an empty default. Their
+      // first discovery is the only place a usable default can come from.
+      const created = await store.create({
+        slug: 'lmstudio-local',
+        name: 'LM Studio',
+        providerType: 'lm-studio',
+      });
+      assert.equal(created.defaultModel, '');
+
+      const fetched = await store.update(created.slug, {
+        models: [{ id: 'qwen3-30b' }, { id: 'llama-3.3-70b' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 1,
+      });
+
+      assert.equal(fetched.defaultModel, 'qwen3-30b');
+      assert.deepEqual(fetched.enabledModelIds, ['qwen3-30b']);
+      // And that is where it becomes able to hold the workspace default. It
+      // could not at create — it had no model — so if discovery does not claim
+      // the vacant slug, the user finishes setting up their only connection and
+      // onboarding still has nothing to point at.
+      assert.equal(await store.getDefault(), 'lmstudio-local');
+    });
+  });
+
+  test('a routine account sync never takes the vacant workspace default', async () => {
+    await withConnectionStore(async (store) => {
+      const xai: LlmConnection = {
+        slug: 'xai-oauth',
+        name: 'xAI OAuth',
+        providerType: 'xai-oauth',
+        defaultModel: 'grok-4.5',
+        enabled: true,
+        enabledModelIds: ['grok-4.5'],
+        models: [{ id: 'grok-4.5' }],
+        modelSource: 'fetched',
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o',
+      });
+      await store.save(xai);
+      assert.equal(await store.getDefault(), 'openai-main');
+
+      await store.update('openai-main', { enabledModelIds: [] });
+      assert.equal(await store.getDefault(), null);
+
+      // What one `connections:list` does: it runs the OAuth account sync before
+      // every read, and each sync ends in save() on a connection that already
+      // exists. Claiming any vacant slug meant clearing your own default handed
+      // the workspace to another provider — the next chat went to a different
+      // account, with nothing on screen to say so.
+      await store.save({ ...xai, updatedAt: 2 });
+
+      assert.equal(await store.getDefault(), null);
     });
   });
 

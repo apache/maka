@@ -6,24 +6,32 @@ import { describe, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
+  AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION,
+  AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
+  type AgentGraphIntentClaim,
+  type AgentGraphOperatorProvision,
+  type AgentGraphScheduleUpdate,
+  type AgentRunHeader,
+  type RuntimeEvent,
+} from '@maka/core';
+import {
   createSessionStore,
   createSqliteSessionMetadataStore,
-  SQLITE_SESSION_METADATA_DATABASE_NAME,
+  OPERATIONAL_STATE_DATABASE_NAME,
 } from '@maka/storage';
-import {
-  createLegacyAgentRunStoreForTest,
-  createLegacyRuntimeEventStoreForTest,
-} from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import { FakeBackend } from '../fake-backend.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { SessionActivityRegistry } from '../goal-turn-lifecycle.js';
 import { AgentGraphSupervisorWakeCoordinator } from '../agent-graph-supervisor-wake.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 import {
+  AgentGraphClientOperationError,
   AgentGraphCoordinator,
   agentGraphIdForRootSession,
   type AgentGraphCoordinatorInput,
 } from '../stream-graph-coordinator.js';
+import { encodeAgentGraphTerminalCursor } from '../stream-graph-read-model.js';
 import {
   UPDATE_AGENT_GRAPH_TOOL_NAME,
   YIELD_AGENT_GRAPH_TOOL_NAME,
@@ -34,8 +42,8 @@ describe('host-managed agent graph coordinator', () => {
   test('boots an empty graph from agent work and recovers it without duplicate topology', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-coordinator-'));
     const sessionStore = createSessionStore(root);
-    const runStore = createLegacyAgentRunStoreForTest(root);
-    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
     let graphRuntimeHistoryReads = 0;
     const countedRuntimeEventStore = new Proxy(runtimeEventStore, {
       get(target, property) {
@@ -88,9 +96,7 @@ describe('host-managed agent graph coordinator', () => {
       );
       assert.ok(sourceRun);
 
-      controlStore = createSqliteSessionMetadataStore(
-        join(root, SQLITE_SESSION_METADATA_DATABASE_NAME),
-      );
+      controlStore = createSqliteSessionMetadataStore(join(root, OPERATIONAL_STATE_DATABASE_NAME));
       delayedControlStore = createDelayableControlStore(controlStore);
       const activities = new SessionActivityRegistry();
       let supervisorWakeTurnCount = 0;
@@ -254,13 +260,32 @@ describe('host-managed agent graph coordinator', () => {
       assert.equal(inspection.claims.length, 1);
       assert.equal(inspection.activations.length, 1);
       assert.deepEqual(delayedControlStore.projectionReadCounts(), {
+        snapshot: readsBeforeInspection.snapshot + 1,
         composite: readsBeforeInspection.composite + 1,
         operator: readsBeforeInspection.operator,
+        terminal: readsBeforeInspection.terminal,
       });
       assert.equal(
         graphRuntimeHistoryReads,
         historyReadsBeforeClient,
         'client reads must use the materialized SQLite projection',
+      );
+      const readsBeforeInvalidCursor = delayedControlStore.projectionReadCounts();
+      const commitsBeforeInvalidCursor = delayedControlStore.projectionCommits.length;
+      await assert.rejects(
+        coordinator.getSnapshot(rootSession.id, { terminalCursor: 'invalid-cursor' }),
+        (error: unknown) =>
+          error instanceof AgentGraphClientOperationError && error.code === 'invalid_request',
+      );
+      assert.deepEqual(
+        delayedControlStore.projectionReadCounts(),
+        readsBeforeInvalidCursor,
+        'invalid cursors must fail before reading or repairing the materialized projection',
+      );
+      assert.equal(
+        delayedControlStore.projectionCommits.length,
+        commitsBeforeInvalidCursor,
+        'invalid cursors must fail before committing a repaired materialized projection',
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.ok(clientEvents.includes('reconciled'));
@@ -285,6 +310,16 @@ describe('host-managed agent graph coordinator', () => {
         ).records.length,
         1,
         'the authoritative RuntimeEvent fold must populate terminal history',
+      );
+      await assert.rejects(
+        coordinator.getSnapshot(rootSession.id, {
+          terminalCursor: encodeAgentGraphTerminalCursor(graphId, {
+            recordId: 'missing-terminal-record',
+            eventTime: 1,
+          }),
+        }),
+        (error: unknown) =>
+          error instanceof AgentGraphClientOperationError && error.code === 'invalid_request',
       );
       await assert.rejects(
         coordinator.toolsForSession(childSessions[0]!.id),
@@ -492,6 +527,202 @@ describe('host-managed agent graph coordinator', () => {
     await coordinator.close();
   });
 
+  test('fences retirement from durable open and closing graph state, not a stale client projection', async () => {
+    const rootSessionId = 'root-session';
+    const childSessionId = 'child-session';
+    const graphId = agentGraphIdForRootSession(rootSessionId);
+    const addRequest = compileAgentGraphScheduleUpdate({
+      graphId,
+      input: {
+        operation: 'add_work',
+        add_work: [
+          {
+            target_kind: 'new_agent',
+            agent_id: 'local-read',
+            instruction: 'Inspect the repository.',
+            input_ids: [],
+            replacement_mode: 'none',
+          },
+        ],
+      },
+      context: toolContext(rootSessionId, 'root-run', 'root-turn', 'add-work'),
+    });
+    const addUpdate: AgentGraphScheduleUpdate = {
+      ...addRequest,
+      revision: 1,
+      committedAt: 10,
+    };
+    const workId = addUpdate.addWork[0]!.workId;
+    const finishRequest = compileAgentGraphScheduleUpdate({
+      graphId,
+      input: {
+        operation: 'finish',
+        finish: { result_ids: ['result-1'], reason: 'The result is sufficient.' },
+      },
+      context: toolContext(rootSessionId, 'root-run', 'root-turn', 'finish-work'),
+    });
+    const finishUpdate: AgentGraphScheduleUpdate = {
+      ...finishRequest,
+      revision: 2,
+      committedAt: 20,
+    };
+    const operatorId = `graph_operator_${'1'.repeat(32)}`;
+    const intentId = `graph_intent_${'2'.repeat(32)}`;
+    const runId = 'child-run';
+    const turnId = 'child-turn';
+    const provision: AgentGraphOperatorProvision = {
+      schemaVersion: AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
+      provisionId: `graph_provision_${'3'.repeat(32)}`,
+      provisionFingerprint: `sha256:${'4'.repeat(64)}`,
+      graphId,
+      workId,
+      agentId: 'local-read',
+      operatorId,
+      initialTurnId: turnId,
+      initialRunId: runId,
+      edges: [],
+      targetSessionId: childSessionId,
+      provisionedAt: 11,
+    };
+    const claim: AgentGraphIntentClaim = {
+      schemaVersion: AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION,
+      claimId: `graph_claim_${'5'.repeat(32)}`,
+      graphId,
+      intentId,
+      intentFingerprint: `sha256:${'6'.repeat(64)}`,
+      readinessContextFingerprint: `sha256:${'7'.repeat(64)}`,
+      targetOperatorId: operatorId,
+      targetSessionId: childSessionId,
+      targetTurnId: turnId,
+      targetRunId: runId,
+      claimedAt: 12,
+    };
+    const runningRun: AgentRunHeader = {
+      sessionId: childSessionId,
+      runId,
+      turnId,
+      invocationId: 'child-invocation',
+      backendKind: 'fake',
+      llmConnectionSlug: 'fake',
+      modelId: 'fake',
+      cwd: '/workspace',
+      permissionMode: 'explore',
+      status: 'running',
+      createdAt: 12,
+      updatedAt: 12,
+    };
+    const runningEvent: RuntimeEvent = {
+      id: 'child-started',
+      invocationId: 'child-invocation',
+      sessionId: childSessionId,
+      runId,
+      turnId,
+      ts: 13,
+      role: 'model',
+      author: 'agent',
+      partial: false,
+      content: { kind: 'text', text: 'Working.' },
+    };
+    let scheduleUpdates: AgentGraphScheduleUpdate[] = [];
+    let provisions: AgentGraphOperatorProvision[] = [];
+    let claims: AgentGraphIntentClaim[] = [];
+    let runs: AgentRunHeader[] = [runningRun];
+    let runtimeEvents: RuntimeEvent[] = [runningEvent];
+    let projection:
+      | {
+          schemaVersion: 1;
+          graphId: string;
+          rootSessionId: string;
+          snapshotVersion: string;
+          payload: unknown;
+          materializedAt: number;
+        }
+      | undefined;
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+      },
+      runStore: { listSessionRuns: async () => runs },
+      runtimeEventStore: { readImmutableRuntimeEvents: async () => runtimeEvents },
+      controlStore: {
+        listAgentGraphOperatorProvisions: async () => provisions,
+        listAgentGraphScheduleUpdates: async () => scheduleUpdates,
+        listAgentGraphIntentClaims: async () => claims,
+        listAgentGraphClientClaimAdmissions: async () =>
+          claims.map((entry) => ({
+            graphId,
+            intentId: entry.intentId,
+            state: 'executing' as const,
+            updatedAt: 12,
+          })),
+        readAgentGraphClientProjection: async () => projection,
+        commitAgentGraphClientProjection: async (request: {
+          graphId: string;
+          rootSessionId: string;
+          snapshotVersion: string;
+          snapshot: unknown;
+        }) => {
+          projection = {
+            schemaVersion: 1,
+            graphId: request.graphId,
+            rootSessionId: request.rootSessionId,
+            snapshotVersion: request.snapshotVersion,
+            payload: request.snapshot,
+            materializedAt: 1,
+          };
+          return projection;
+        },
+        readAgentGraphClientOperatorProjection: async () => undefined,
+        listAgentGraphClientTerminalActivities: async () => ({ records: [], hasMore: false }),
+      },
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('lifecycle reads cannot provision operators');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('lifecycle reads cannot dispatch operators');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      rootSessionId,
+    } as unknown as AgentGraphCoordinatorInput);
+    try {
+      assert.equal((await coordinator.getSnapshot(rootSessionId)).scheduleRevision, 0);
+
+      scheduleUpdates = [addUpdate];
+      assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
+
+      scheduleUpdates = [addUpdate, finishUpdate];
+      provisions = [provision];
+      claims = [claim];
+      assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
+
+      runs = [{ ...runningRun, status: 'completed', completedAt: 14, updatedAt: 14 }];
+      runtimeEvents = [
+        runningEvent,
+        {
+          id: 'child-completed',
+          invocationId: 'child-invocation',
+          sessionId: childSessionId,
+          runId,
+          turnId,
+          ts: 14,
+          role: 'system',
+          author: 'system',
+          partial: false,
+          status: 'completed',
+          actions: { endInvocation: true },
+        },
+      ];
+      assert.equal(await coordinator.hasLiveSessionState(rootSessionId), false);
+    } finally {
+      await coordinator.close();
+    }
+  });
+
   test('surfaces topology cleanup failures from close', async () => {
     const topologyFailure = new Error('graph topology unavailable');
     const coordinator = new AgentGraphCoordinator({
@@ -594,6 +825,7 @@ describe('host-managed agent graph coordinator', () => {
       releaseProvisionRead = resolve;
     });
     let holdProvisionRead = true;
+    let residencies = 0;
     const gatedStore = new Proxy(controlStore, {
       get(target, property) {
         if (property === 'listAgentGraphOperatorProvisions') {
@@ -630,6 +862,17 @@ describe('host-managed agent graph coordinator', () => {
       },
       newId: randomUUID,
       rootSessionId,
+      acquireResidency: () => {
+        residencies += 1;
+        let released = false;
+        return {
+          release: () => {
+            if (released) return;
+            released = true;
+            residencies -= 1;
+          },
+        };
+      },
     } as unknown as AgentGraphCoordinatorInput);
     try {
       const tools = await coordinator.toolsForSession(rootSessionId);
@@ -656,6 +899,7 @@ describe('host-managed agent graph coordinator', () => {
 
       coordinator.wake(rootSessionId);
       await provisionReadStarted;
+      assert.equal(residencies, 1);
       let settled = false;
       const yielding = Promise.resolve(
         yieldTool.impl(
@@ -672,7 +916,10 @@ describe('host-managed agent graph coordinator', () => {
         yielding,
         /no in-flight work or pending reconciliation.*future supervisor checkpoint/,
       );
+      await coordinator.waitForIdle(rootSessionId);
+      assert.equal(residencies, 0);
       assert.equal((await coordinator.reconcile(rootSessionId)).status, 'waiting');
+      assert.equal(residencies, 0);
     } finally {
       releaseProvisionRead();
       await coordinator.close();
@@ -683,8 +930,8 @@ describe('host-managed agent graph coordinator', () => {
 
 function createCoordinator(input: {
   sessionStore: ReturnType<typeof createSessionStore>;
-  runStore: ReturnType<typeof createLegacyAgentRunStoreForTest>;
-  runtimeEventStore: ReturnType<typeof createLegacyRuntimeEventStoreForTest>;
+  runStore: ReturnType<typeof createSqliteAgentRunStore>;
+  runtimeEventStore: ReturnType<typeof createWorkspaceRuntimeStore>;
   controlStore: ReturnType<typeof createSqliteSessionMetadataStore>;
   manager: SessionManager;
   onReconciliation?: AgentGraphCoordinatorInput['onReconciliation'];
@@ -701,7 +948,12 @@ function createCoordinator(input: {
 function createDelayableControlStore(store: ReturnType<typeof createSqliteSessionMetadataStore>): {
   store: ReturnType<typeof createSqliteSessionMetadataStore>;
   projectionCommits: Array<Parameters<typeof store.commitAgentGraphClientProjection>[0]>;
-  projectionReadCounts(): { composite: number; operator: number };
+  projectionReadCounts(): {
+    snapshot: number;
+    composite: number;
+    operator: number;
+    terminal: number;
+  };
   failProjectionCommits(error: unknown): void;
   failNextProjectionCommits(count: number, error: unknown): void;
   holdNextCommit(): { started: Promise<void>; release(): void };
@@ -715,8 +967,10 @@ function createDelayableControlStore(store: ReturnType<typeof createSqliteSessio
   const projectionCommits: Array<Parameters<typeof store.commitAgentGraphClientProjection>[0]> = [];
   let projectionFailure: unknown;
   let remainingProjectionFailures: number | 'always' = 0;
+  let snapshotProjectionReads = 0;
   let compositeProjectionReads = 0;
   let operatorProjectionReads = 0;
+  let terminalActivityReads = 0;
   const proxy = new Proxy(store, {
     get(target, property) {
       if (property === 'commitAgentGraphScheduleUpdate') {
@@ -759,6 +1013,20 @@ function createDelayableControlStore(store: ReturnType<typeof createSqliteSessio
           return target.readAgentGraphClientOperatorProjection(...args);
         };
       }
+      if (property === 'readAgentGraphClientProjection') {
+        return async (...args: Parameters<typeof target.readAgentGraphClientProjection>) => {
+          snapshotProjectionReads += 1;
+          return target.readAgentGraphClientProjection(...args);
+        };
+      }
+      if (property === 'listAgentGraphClientTerminalActivities') {
+        return async (
+          ...args: Parameters<typeof target.listAgentGraphClientTerminalActivities>
+        ) => {
+          terminalActivityReads += 1;
+          return target.listAgentGraphClientTerminalActivities(...args);
+        };
+      }
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },
@@ -767,8 +1035,10 @@ function createDelayableControlStore(store: ReturnType<typeof createSqliteSessio
     store: proxy,
     projectionCommits,
     projectionReadCounts: () => ({
+      snapshot: snapshotProjectionReads,
       composite: compositeProjectionReads,
       operator: operatorProjectionReads,
+      terminal: terminalActivityReads,
     }),
     failProjectionCommits(error) {
       projectionFailure = error;

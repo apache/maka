@@ -7,7 +7,11 @@ import type {
   UserQuestionResponse,
 } from '@maka/core';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { isOrchestrationMode, isTurnOrchestrationSource } from '@maka/core';
+import {
+  isCanonicalStorageRef,
+  isOrchestrationMode,
+  isTurnOrchestrationSource,
+} from '@maka/core';
 
 const MAX_PERMISSION_REQUEST_ID_LENGTH = 128;
 const MAX_TURN_ID_LENGTH = 128;
@@ -16,6 +20,13 @@ const MAX_SESSION_SEND_TEXT_LENGTH = 128_000;
 const MAX_QUOTE_COUNT = 16;
 const MAX_QUOTE_TEXT_LENGTH = 32_000;
 const MAX_QUOTE_LABEL_LENGTH = 200;
+const MAX_INLINE_REFERENCE_COUNT = 32;
+const MAX_INLINE_REFERENCE_VALUE_LENGTH = 4_096;
+
+interface WorkspaceFileReferencePosition {
+  value: string;
+  start: number;
+}
 
 interface NormalizedSendSessionCommand {
   type: 'send';
@@ -27,6 +38,7 @@ interface NormalizedSendSessionCommand {
   attachmentItems?: unknown;
   turnOrchestration?: TurnOrchestration;
   quotes?: QuoteRef[];
+  workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
 type NormalizedStopSessionInput = { source?: 'stop_button' };
 
@@ -130,7 +142,49 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
     ...normalizeOptionalQuotes(value.quotes),
+    ...normalizeOptionalWorkspaceFileReferences(
+      value.workspaceFileReferences,
+      displayText ?? text,
+    ),
   };
+}
+
+function normalizeOptionalWorkspaceFileReferences(
+  input: unknown,
+  displayText: string,
+): { workspaceFileReferences?: WorkspaceFileReferencePosition[] } {
+  if (input === undefined) return {};
+  if (!Array.isArray(input) || input.length > MAX_INLINE_REFERENCE_COUNT) {
+    throw new Error('Invalid send workspace file references');
+  }
+  const workspaceFileReferences = input.map((entry) => {
+    const value = requireObject(entry, 'Invalid send workspace file reference');
+    const tokenValue = normalizeRequiredString(
+      value.value,
+      'Invalid send workspace file reference value',
+      MAX_INLINE_REFERENCE_VALUE_LENGTH,
+    );
+    if (
+      !tokenValue.startsWith('@') ||
+      tokenValue.length === 1 ||
+      !isCanonicalStorageRef({
+        kind: 'workspace_file',
+        relativePath: tokenValue.slice(1),
+      })
+    ) {
+      throw new Error('Invalid send workspace file reference value');
+    }
+    if (
+      typeof value.start !== 'number' ||
+      !Number.isSafeInteger(value.start) ||
+      value.start < 0 ||
+      displayText.slice(value.start, value.start + tokenValue.length) !== tokenValue
+    ) {
+      throw new Error('Invalid send workspace file reference start');
+    }
+    return { value: tokenValue, start: value.start };
+  });
+  return workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {};
 }
 
 function normalizeVoiceOperationId(input: unknown): string {

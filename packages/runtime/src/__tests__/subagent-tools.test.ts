@@ -115,6 +115,7 @@ describe('subagent tools', () => {
 
     expect(Object.keys(await advertisedProperties(buildSubagentSpawnTool()))).toEqual([
       'profile',
+      'subagent_id',
       'task',
       'write_back',
       'isolation',
@@ -125,7 +126,7 @@ describe('subagent tools', () => {
           buildSubagentSpawnTool({ taskLedger: taskLedgerStub(undefined, []) }),
         ),
       ),
-    ).toEqual(['profile', 'task', 'write_back', 'isolation', 'task_id']);
+    ).toEqual(['profile', 'subagent_id', 'task', 'write_back', 'isolation', 'task_id']);
   });
 
   test('agent_spawn rejects task_id when task binding is unavailable', () => {
@@ -574,6 +575,51 @@ describe('subagent tools', () => {
       summary: 'done',
       artifactIds: [],
     });
+  });
+
+  test('agent_spawn resolves a configured subagent_id and never accepts a raw model target', async () => {
+    const tool = buildSubagentSpawnTool();
+    const calls: Array<{ agentProfile: string; subagentId?: string; prompt?: string }> = [];
+    await tool.impl(
+      { subagent_id: 'fast-reader', task: 'Inspect the runtime tests.' },
+      {
+        sessionId: 'session-1',
+        turnId: 'parent-turn',
+        cwd: '/tmp/cwd',
+        toolCallId: 'tool-1',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+        listChildAgents: async () => ({
+          presets: [
+            {
+              id: 'fast-reader',
+              profile: LOCAL_READ_AGENT_PROFILE,
+              availability: { status: 'available' },
+            },
+          ],
+        }),
+        spawnChildSession: async (input) => {
+          calls.push(input);
+          return {
+            profile: input.agentProfile,
+            childSessionId: 'child-session',
+            agentId: LOCAL_READ_AGENT_ID,
+            agentName: 'Local Read',
+            turnId: 'child-turn',
+            runId: 'child-run',
+            status: 'completed',
+            permissionMode: 'explore',
+            summary: 'done',
+            artifactIds: [],
+          };
+        },
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.agentProfile).toBe(LOCAL_READ_AGENT_PROFILE);
+    expect(calls[0]?.subagentId).toBe('fast-reader');
+    expect(calls[0]?.prompt).toBe('Inspect the runtime tests.');
   });
 
   test('agent_spawn bounds projected child tool activity', async () => {

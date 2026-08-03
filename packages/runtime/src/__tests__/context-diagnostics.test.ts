@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core';
-import { createLegacyAgentRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore } from '@maka/storage';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 
 test('reads the latest completed provider request instead of a later failed attempt', async () => {
@@ -159,7 +159,7 @@ test('reports the latest history compaction that preceded the displayed request'
 test('reads the same diagnostics after reopening the durable run ledger', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
-    const writer = createLegacyAgentRunStoreForTest(root);
+    const writer = createSqliteAgentRunStore(root);
     const header = runHeader('run-1', 1);
     await writer.createRun(header);
     await writer.appendEvent(
@@ -169,7 +169,7 @@ test('reads the same diagnostics after reopening the durable run ledger', async 
     );
 
     const diagnostics = await readLatestContextDiagnostics(
-      createLegacyAgentRunStoreForTest(root),
+      createSqliteAgentRunStore(root),
       'session-1',
     );
 

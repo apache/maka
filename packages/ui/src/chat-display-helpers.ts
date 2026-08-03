@@ -12,7 +12,7 @@
  * Why this seam: duration formatting has ms→s→m bucket rules, and
  * the abort-marker label is i18n-able copy. Each rule was
  * previously buried between TurnView's 200-line JSX block and
- * StreamingAssistantBubble's stream-snap hookup; the bundle now
+ * StreamingAssistantBubble's rendering lifecycle; the bundle now
  * sits as short pure functions easy to unit-test in isolation.
  *
  * PR-CHAT-CHROME-FOLLOWUP-0: `messageRoleLabel` / `avatarInitial`

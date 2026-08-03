@@ -23,7 +23,6 @@
 @import "./styles/prompt-suggestions.css" layer(components);
 @import "./styles/deep-research.css" layer(components);
 @import "./styles/onboarding.css" layer(components);
-@import "./styles/empty-state.css" layer(components);
 @import "./styles/module-pages.css" layer(components);
 @import "./styles/settings/select.css" layer(components);
 @import "./styles/model-switcher.css" layer(components);
@@ -44,6 +43,5 @@
 @import "./styles/daily-review.css" layer(components);
 @import "./styles/theme-glass.css" layer(components);
 @import "./styles/prompt-rail.css" layer(components);
-@import "./styles/quote-chip.css" layer(components);
 @import "./styles/quote-side-panel.css" layer(components);
 @import "./styles/astryx-mount.css" layer(components);

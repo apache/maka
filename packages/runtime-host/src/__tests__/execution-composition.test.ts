@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -72,15 +72,20 @@ test('production composition closes long-term memory after a later startup failu
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    const sessionRoot = join(root, 'sessions', session.id);
-    await mkdir(sessionRoot, { recursive: true });
-    await writeFile(join(sessionRoot, 'task-events.jsonl'), '{not-json}\n');
     const memory = await openInteractiveLongTermMemoryStoreForWrite(owner.lease);
 
-    await assert.rejects(createExecutionRuntimeHostComposition(compositionContext(owner)));
+    // Fail the composition after the memory store is opened: beginHostEpoch
+    // runs later in the startup sequence and rejects an invalid host epoch,
+    // so the composition must close every resource it opened, including
+    // long-term memory.
+    await assert.rejects(
+      createExecutionRuntimeHostComposition({
+        ...compositionContext(owner),
+        hostEpoch: 'invalid host epoch!',
+      }),
+    );
     await assert.rejects(memory.readItem('after-failed-start'), /closed/);
 
-    await writeFile(join(sessionRoot, 'task-events.jsonl'), '');
     await owner.close();
     const recoveredCapability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const recoveredOwner = await tryAcquireInteractiveRootOwner(recoveredCapability);

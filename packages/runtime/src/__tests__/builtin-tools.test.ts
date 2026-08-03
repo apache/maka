@@ -1295,6 +1295,39 @@ describe('builtin Bash streaming output', () => {
     ]);
   });
 
+  test('Read normalizes a blank ref to "no ref" before validating the file-or-resource union', async () => {
+    const read = buildBuiltinTools({
+      runtimeResources: {
+        readRuntimeResource: async () => ({ kind: 'text', text: 'unused' }),
+      },
+    }).find((tool) => tool.name === 'Read');
+    if (!read) throw new Error('Read tool missing');
+    const parameters = read.parameters as {
+      validate(value: unknown): PromiseLike<{
+        success: boolean;
+        value?: unknown;
+        error?: unknown;
+      }>;
+    };
+
+    // A blank ref alongside a path passes, and the ref key is dropped so the
+    // canonical input is the pure file variant.
+    const normalized = await parameters.validate({
+      path: 'config.yaml',
+      ref: '',
+      offset: 2,
+    });
+    assert.equal(normalized.success, true);
+    if (normalized.success) {
+      assert.deepEqual(normalized.value, { path: 'config.yaml', offset: 2 });
+      assert.ok(!('ref' in (normalized.value as Record<string, unknown>)));
+    }
+    assert.equal((await parameters.validate({ path: 'config.yaml', ref: '   ' })).success, true);
+    // A lone blank ref still fails: there is no readable target.
+    assert.equal((await parameters.validate({ ref: '' })).success, false);
+    assert.equal((await parameters.validate({ ref: '   ' })).success, false);
+  });
+
   test('StopBackgroundTask stops a runtime ref in the current session', async () => {
     const calls: unknown[] = [];
     const backgroundTasks = {
@@ -1778,7 +1811,7 @@ describe('builtin read tools path containment', () => {
     expect(result).toMatchObject({ content: 'executor-window' });
   });
 
-  test('Read rejects absolute, parent traversal, and symlink escape paths', async () => {
+  test('Read accepts contained absolute paths and rejects workspace escapes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-read-root-'));
     const outside = await mkdtemp(join(tmpdir(), 'maka-read-outside-'));
     await writeFile(join(root, 'inside.txt'), 'inside', 'utf8');
@@ -1786,7 +1819,12 @@ describe('builtin read tools path containment', () => {
     await symlink(join(outside, 'secret.txt'), join(root, 'secret-link.txt'));
     const read = tool('Read');
 
-    await expectRejects(runTool(read, { path: '/etc/hosts' }, root), /Read path must be relative/);
+    const absoluteResult = await runTool(read, { path: join(root, 'inside.txt') }, root);
+    expect(absoluteResult).toMatchObject({ content: 'inside' });
+    await expectRejects(
+      runTool(read, { path: join(outside, 'secret.txt') }, root),
+      /Read path must stay inside/,
+    );
     await expectRejects(
       runTool(read, { path: '../outside.txt' }, root),
       /Read path must stay inside/,
@@ -1818,8 +1856,12 @@ describe('builtin read tools path containment', () => {
       /Glob cwd path must stay inside/,
     );
     await expectRejects(
-      runTool(grep, { pattern: 'token', path: '/etc' }, root),
-      /Grep path must be relative/,
+      runTool(glob, { pattern: '*.txt', cwd: outside }, root),
+      /Glob cwd path must stay inside/,
+    );
+    await expectRejects(
+      runTool(grep, { pattern: 'token', path: outside }, root),
+      /Grep path must stay inside/,
     );
     await expectRejects(
       runTool(grep, { pattern: 'secret', path: 'outside-link' }, root),
@@ -1828,8 +1870,16 @@ describe('builtin read tools path containment', () => {
 
     const globResult = await runTool(glob, { pattern: '**/*.ts' }, root);
     expect(globResult).toMatchObject({ files: ['src/main.ts'] });
+    const absoluteGlobResult = await runTool(glob, { pattern: '**/*.ts', cwd: root }, root);
+    expect(absoluteGlobResult).toMatchObject({ files: ['src/main.ts'] });
     const grepResult = await runTool(grep, { pattern: 'token', path: 'src' }, root);
     expect(JSON.stringify(grepResult).includes('main.ts')).toBe(true);
+    const absoluteGrepResult = await runTool(
+      grep,
+      { pattern: 'token', path: join(root, 'src') },
+      root,
+    );
+    expect(JSON.stringify(absoluteGrepResult).includes('main.ts')).toBe(true);
   });
 
   test('Glob delegates matching to the injected workspace executor', async () => {
@@ -1990,15 +2040,19 @@ describe('builtin write tools path containment', () => {
     );
   });
 
-  test('Write rejects absolute, parent traversal, and symlink-parent escape paths', async () => {
+  test('Write accepts contained absolute paths and rejects workspace escapes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-write-root-'));
     const outside = await mkdtemp(join(tmpdir(), 'maka-write-outside-'));
+    await mkdir(join(root, 'src'), { recursive: true });
     await symlink(outside, join(root, 'outside-link'));
     const write = tool('Write');
 
+    const absoluteWritePath = join(root, 'src', 'absolute.txt');
+    await runTool(write, { path: absoluteWritePath, content: 'absolute-inside' }, root);
+    expect(await readFile(absoluteWritePath, 'utf8')).toBe('absolute-inside');
     await expectRejects(
-      runTool(write, { path: '/tmp/outside.txt', content: 'x' }, root),
-      /Write path must be relative/,
+      runTool(write, { path: join(outside, 'outside.txt'), content: 'x' }, root),
+      /Write path must stay inside/,
     );
     await expectRejects(
       runTool(write, { path: '../outside.txt', content: 'x' }, root),
@@ -2009,12 +2063,11 @@ describe('builtin write tools path containment', () => {
       /Write path must stay inside/,
     );
 
-    await mkdir(join(root, 'src'), { recursive: true });
     await runTool(write, { path: 'src/new.txt', content: 'inside' }, root);
     expect(await readFile(join(root, 'src', 'new.txt'), 'utf8')).toBe('inside');
   });
 
-  test('Edit rejects absolute, parent traversal, and symlink file escapes', async () => {
+  test('Edit accepts contained absolute paths and rejects workspace escapes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-edit-root-'));
     const outside = await mkdtemp(join(tmpdir(), 'maka-edit-outside-'));
     await writeFile(join(root, 'inside.txt'), 'hello world', 'utf8');
@@ -2023,8 +2076,12 @@ describe('builtin write tools path containment', () => {
     const edit = tool('Edit');
 
     await expectRejects(
-      runTool(edit, { path: '/tmp/outside.txt', old_string: 'x', new_string: 'y' }, root),
-      /Edit path must be relative/,
+      runTool(
+        edit,
+        { path: join(outside, 'secret.txt'), old_string: 'secret', new_string: 'edited' },
+        root,
+      ),
+      /Edit path must stay inside/,
     );
     await expectRejects(
       runTool(edit, { path: '../outside.txt', old_string: 'x', new_string: 'y' }, root),
@@ -2035,7 +2092,11 @@ describe('builtin write tools path containment', () => {
       /Edit path must stay inside/,
     );
 
-    await runTool(edit, { path: 'inside.txt', old_string: 'world', new_string: 'Maka' }, root);
+    await runTool(
+      edit,
+      { path: join(root, 'inside.txt'), old_string: 'world', new_string: 'Maka' },
+      root,
+    );
     expect(await readFile(join(root, 'inside.txt'), 'utf8')).toBe('hello Maka');
   });
 

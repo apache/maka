@@ -53,6 +53,24 @@ export type RootExecutionDescriptor =
   | { kind: 'automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {
+      kind: 'agent_graph_supervisor_wake';
+      graphId: string;
+      wakeId: string;
+      attemptId: string;
+    }
+  | {
+      kind: 'safe_boundary_continuation';
+      sourceInvocationId: string;
+      sourceRunId: string;
+      sourceTurnId: string;
+      sourceRuntimeEventHighWater: number;
+      claimId: string;
+      boundaryDigest: `sha256:${string}`;
+      providerReplayDigest: `sha256:${string}`;
+      safetyDigest: `sha256:${string}`;
+      targetInvocationId: string;
+    }
+  | {
       kind: 'linked_child_initial';
       agentId: string;
       agentName: string;
@@ -150,17 +168,46 @@ export interface AgentRunHeader {
 
 type HostedRootExecutionDescriptor = Extract<
   RootExecutionDescriptor,
-  { kind: 'automation' | 'goal' }
+  {
+    kind: 'automation' | 'goal' | 'agent_graph_supervisor_wake' | 'safe_boundary_continuation';
+  }
 >;
 
 export function agentRunMatchesHostedRootExecution(
   run: AgentRunHeader,
   execution: HostedRootExecutionDescriptor,
 ): boolean {
-  const authorityMatches =
-    execution.kind === 'automation'
-      ? run.automationId === execution.automationId && run.goalId === undefined
-      : run.goalId === execution.goalId && run.automationId === undefined;
+  if (execution.kind === 'safe_boundary_continuation') {
+    const source = run.continuationSource;
+    return (
+      run.invocationId === execution.targetInvocationId &&
+      run.parentRunId === execution.sourceRunId &&
+      run.parentTurnId === execution.sourceTurnId &&
+      source !== undefined &&
+      'protocol' in source &&
+      source.protocol === 'continuation_source_v2' &&
+      source.sourceInvocationId === execution.sourceInvocationId &&
+      source.sourceRunId === execution.sourceRunId &&
+      source.sourceTurnId === execution.sourceTurnId &&
+      source.sourceRuntimeEventHighWater === execution.sourceRuntimeEventHighWater &&
+      source.claimId === execution.claimId &&
+      source.boundaryDigest === execution.boundaryDigest &&
+      source.replayManifestDigest === execution.boundaryDigest &&
+      run.resumedFromRunId === undefined &&
+      run.retriedFromRunId === undefined &&
+      run.agentId === undefined &&
+      run.agentName === undefined &&
+      run.retriedFromTurnId === undefined &&
+      run.regeneratedFromTurnId === undefined &&
+      run.branchOfTurnId === undefined &&
+      run.parentSessionId === undefined &&
+      run.automationId === undefined &&
+      run.goalId === undefined &&
+      run.agentGraphWakeId === undefined &&
+      run.agentGraphWakeAttemptId === undefined
+    );
+  }
+  const authorityMatches = hostedRootAuthorityMatches(run, execution);
   return (
     authorityMatches &&
     run.parentRunId === undefined &&
@@ -173,10 +220,41 @@ export function agentRunMatchesHostedRootExecution(
     run.regeneratedFromTurnId === undefined &&
     run.branchOfTurnId === undefined &&
     run.parentSessionId === undefined &&
-    run.continuationSource === undefined &&
-    run.agentGraphWakeId === undefined &&
-    run.agentGraphWakeAttemptId === undefined
+    run.continuationSource === undefined
   );
+}
+
+function hostedRootAuthorityMatches(
+  run: AgentRunHeader,
+  execution: Exclude<HostedRootExecutionDescriptor, { kind: 'safe_boundary_continuation' }>,
+): boolean {
+  switch (execution.kind) {
+    case 'automation':
+      return (
+        run.automationId === execution.automationId &&
+        run.goalId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'goal':
+      return (
+        run.goalId === execution.goalId &&
+        run.automationId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'agent_graph_supervisor_wake':
+      return (
+        execution.wakeId.startsWith(`${execution.graphId}:`) &&
+        run.agentGraphWakeId === execution.wakeId &&
+        run.agentGraphWakeAttemptId === execution.attemptId &&
+        run.orchestrationMode === 'graph' &&
+        run.orchestrationSource === 'turn_override' &&
+        run.agentSwarmAuthorization === 'none' &&
+        run.automationId === undefined &&
+        run.goalId === undefined
+      );
+  }
 }
 
 export interface AgentRunInputSummary {
@@ -228,6 +306,8 @@ export const AGENT_RUN_EVENT_TYPES = [
   'sandbox_denial_detected',
   'provider_request_captured',
   'provider_request_attempt_recorded',
+  // No current writer; shipped ledgers still carry it and strict reads must not reject them (#1942).
+  'usage_recorded',
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
   'active_full_compact_block_recorded',

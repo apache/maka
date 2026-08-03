@@ -288,10 +288,7 @@ async function openRepos(
   const telemetry = createSqliteTelemetryRepo(root, { createIfMissing, managePricing: false });
   await telemetry.load();
   const modelCalls = createSqliteModelCallLedger(root);
-  const pricing = createSqlitePricingStore(root, {
-    createIfMissing,
-    initialOverrides: telemetry.legacyPricingOverrides(),
-  });
+  const pricing = createSqlitePricingStore(root, { createIfMissing });
   try {
     await pricing.load();
     return { telemetry, modelCalls, pricing };

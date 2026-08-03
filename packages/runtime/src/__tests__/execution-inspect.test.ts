@@ -5,10 +5,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { AgentRunEvent, AgentRunHeader, RuntimeEvent } from '@maka/core';
 import { createSessionStore } from '@maka/storage';
-import {
-  createLegacyAgentRunStoreForTest,
-  createLegacyRuntimeEventStoreForTest,
-} from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import {
   inspectAgentRunDocument,
   inspectSessionDocument,
@@ -20,8 +17,8 @@ describe('versioned execution inspect documents', () => {
   test('reports unknown tool outcomes without copying Runtime payloads', async () => {
     await withWorkspace(async (root) => {
       const sessionStore = createSessionStore(root);
-      const runStore = createLegacyAgentRunStoreForTest(root);
-      const runtimeStore = createLegacyRuntimeEventStoreForTest(root);
+      const runStore = createSqliteAgentRunStore(root);
+      const runtimeStore = createWorkspaceRuntimeStore(root);
       const session = await sessionStore.create({
         cwd: '/tmp/workspace',
         backend: 'fake',
@@ -88,8 +85,8 @@ describe('versioned execution inspect documents', () => {
   test('projects a Session as bounded AgentRun documents without reading messages', async () => {
     await withWorkspace(async (root) => {
       const sessionStore = createSessionStore(root);
-      const runStore = createLegacyAgentRunStoreForTest(root);
-      const runtimeStore = createLegacyRuntimeEventStoreForTest(root);
+      const runStore = createSqliteAgentRunStore(root);
+      const runtimeStore = createWorkspaceRuntimeStore(root);
       const session = await sessionStore.create({
         cwd: '/tmp/workspace',
         name: 'Inspectable session',

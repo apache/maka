@@ -42,6 +42,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
   '@maka/core/runtime-inputs',
+  '@maka/core/sandbox-boundary',
   '@maka/core/session',
   '@maka/core/session-name',
   '@maka/core/shell-run',
@@ -63,6 +64,7 @@ const allowedServerExternalImports = new Set([
   '@maka/storage/shell-run-authority',
   '@maka/storage/task-ledger-authority',
   '@maka/storage/usage-stores',
+  '@maka/storage/workspace-identity',
   'node:async_hooks',
   'node:http',
 ]);

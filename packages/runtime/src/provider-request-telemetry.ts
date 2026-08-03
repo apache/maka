@@ -63,8 +63,13 @@ export interface ProviderRequestAttemptRecord extends ProviderRequestUsage {
   turnId: string;
   step: number;
   attempt: number;
-  captureId: string;
-  captureArtifactId: string;
+  /**
+   * Present only when a capture sink is wired. The request shape below is
+   * computed locally and always present; these two are the join keys to the
+   * persisted artifact, so they are absent when there is nothing to join to.
+   */
+  captureId?: string;
+  captureArtifactId?: string;
   providerId: string;
   modelId: string;
   contextWindow?: number;
@@ -96,7 +101,12 @@ export interface ProviderRequestTrackerInput {
   contextWindow?: number;
   now: () => number;
   newId: () => string;
-  persistCapture: (
+  /**
+   * Request-body capture sink. Optional because capture is a diagnostic, and
+   * metering must not depend on one: a deployment with capture switched off
+   * still settles canonical records, it just has no artifact to join them to.
+   */
+  persistCapture?: (
     capture: ProviderRequestCaptureRecord,
   ) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>>;
   recordAttempt: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
@@ -163,6 +173,42 @@ export interface TrackProviderGenerateInput {
   doGenerate: () => PromiseLike<ProviderGenerateResult>;
 }
 
+interface ProviderMiddlewareGenerateInput {
+  doGenerate: () => PromiseLike<ProviderGenerateResult>;
+  params: Record<string, unknown> & { abortSignal?: AbortSignal };
+  model: { provider: string; modelId: string };
+}
+
+/**
+ * Wraps a language model so its single `generate` call is tracked.
+ *
+ * The AI SDK's `wrapLanguageModel` is passed in rather than imported: both
+ * callers load the `ai` package dynamically, and there is no reason for this
+ * module to load it a third time. Non-streaming counterpart of what
+ * `ModelAdapter.startStream` does with `wrapStream`, and the only place either
+ * auxiliary caller attaches a tracker to a model.
+ */
+export function withProviderGenerateTracking(input: {
+  model: unknown;
+  wrapLanguageModel: (input: Record<string, unknown>) => unknown;
+  tracker: ProviderRequestTracker;
+  abortSignal?: AbortSignal;
+}): unknown {
+  return input.wrapLanguageModel({
+    model: input.model,
+    middleware: {
+      wrapGenerate: async ({ doGenerate, params, model }: ProviderMiddlewareGenerateInput) =>
+        await input.tracker.trackGenerate({
+          providerId: model.provider,
+          modelId: model.modelId,
+          params,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          doGenerate,
+        }),
+    },
+  });
+}
+
 export function createProviderRequestCaptureRecorder(
   input: ProviderRequestCaptureRecorderInput,
 ): (
@@ -192,7 +238,8 @@ export interface ProviderGenerateResult {
 
 interface StoredCapture {
   capture: ProviderRequestCaptureRecord;
-  ref: ProviderRequestCaptureRef;
+  /** Absent when no capture sink is wired: there is no artifact to point at. */
+  ref?: ProviderRequestCaptureRef;
 }
 
 const CANONICAL_USAGE_FIELDS = [
@@ -388,8 +435,9 @@ export class ProviderRequestTracker {
         turnId: this.input.turnId,
         step,
         attempt,
-        captureId: capture.ref.captureId,
-        captureArtifactId: capture.ref.artifactId,
+        ...(capture.ref
+          ? { captureId: capture.ref.captureId, captureArtifactId: capture.ref.artifactId }
+          : {}),
         providerId: input.providerId,
         modelId: input.modelId,
         ...(contextWindow !== undefined ? { contextWindow } : {}),
@@ -518,6 +566,7 @@ export class ProviderRequestTracker {
     const existing = this.captures.get(key);
     if (existing) return await existing;
 
+    const persistCapture = this.input.persistCapture;
     const pending = (async (): Promise<StoredCapture> => {
       const captureId = this.input.newId();
       const capture: ProviderRequestCaptureRecord = {
@@ -529,7 +578,11 @@ export class ProviderRequestTracker {
         providerId: input.providerId,
         modelId: input.modelId,
       };
-      const persisted = await this.input.persistCapture(capture);
+      // The request shape on `capture` is computed here and needs no sink. Only
+      // the artifact join keys depend on one, so without it the attempt still
+      // carries hash, bytes, and segments — it just points at nothing.
+      if (!persistCapture) return { capture };
+      const persisted = await persistCapture(capture);
       return { capture, ref: { captureId, artifactId: persisted.artifactId } };
     })();
     this.captures.set(key, pending);

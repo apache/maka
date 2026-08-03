@@ -21,7 +21,6 @@ import {
   comparePlanReminderBySort,
   createPlanReminderFormSeed,
   formatPlanRecurrence,
-  formatPlanReminderDeliveryTargetLabel,
   formatReminderCountdown,
   formatReminderTime,
   normalizePlanReminderSearchQuery,
@@ -34,13 +33,14 @@ import {
 } from './plan-reminder-helpers.js';
 import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
 import {
-  Badge,
   Button as UiButton,
   EmptyState,
   Selector,
+  StatusDot,
   Switch,
   Tab,
   TabList,
+  Toolbar,
 } from '@astryxdesign/core';
 import {
   DropdownMenu,
@@ -48,7 +48,6 @@ import {
   DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
-import type { BadgeProps } from '@astryxdesign/core/Badge';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
 import type { ModuleHubHeader } from './module-hub-selector.js';
@@ -59,16 +58,16 @@ import type {
 import { getPlanReminderCopy } from './plan-reminder-copy.js';
 import { useUiLocale } from './locale-context.js';
 
-// Run-history status Badge tone. triggered = it fired (info, informational,
-// not a health signal), blocked = intentionally skipped (warning), failed =
-// delivery error (destructive). Exception-only: no success green for a plain
-// "it ran" record.
-function planRunStatusBadgeVariant(
+// Run-history status tone. triggered = it fired (informational accent, not a
+// health signal), blocked = intentionally skipped (warning), failed =
+// delivery error. Exception-only: no success green for a plain "it ran"
+// record — and rows only surface the exceptional states at all.
+function planRunStatusDotVariant(
   status: NonNullable<PlanReminder['lastRun']>['status'],
-): BadgeProps['variant'] {
+): 'accent' | 'warning' | 'error' {
   if (status === 'blocked') return 'warning';
   if (status === 'failed') return 'error';
-  return 'info';
+  return 'accent';
 }
 
 export function PlanReminderPanel(props: {
@@ -277,7 +276,7 @@ export function PlanReminderPanel(props: {
   }
 
   return (
-    <div className="maka-plan-panel">
+    <div className="maka-plan-panel" data-form-open={formDialogOpen ? 'true' : undefined}>
       <div className="maka-plan-shell agents-inner-view-clamp">
         <PageHeader
           as_wrapper="div"
@@ -343,33 +342,39 @@ export function PlanReminderPanel(props: {
             </TabList>
             {planView === 'tasks' ? (
               showListControls ? (
-                <div className="maka-plan-toolbar" aria-label={copy.page.filtersAriaLabel}>
-                  <div className="maka-plan-compact-select maka-plan-sort-select">
-                    <Selector
-                      value={listSort}
-                      onChange={(value) => setListSort(value as typeof listSort)}
-                      label={copy.page.sort}
-                      width="100%"
-                      options={copy.page.sortOptions.map(([value, label]) => ({ value, label }))}
-                    />
-                  </div>
-                  <div className="maka-plan-search">
-                    <TextInput
-                      label={copy.page.searchLabel}
-                      isLabelHidden
-                      width="100%"
-                      value={listQuery}
-                      onChange={(value) => setListQuery(value.slice(0, 120))}
-                      placeholder={copy.page.searchPlaceholder}
-                    />
-                  </div>
-                  <div className="maka-plan-compact-select">
-                    <Selector
-                      value={listFilter}
-                      onChange={(value) => setListFilter(value as PlanReminderListFilter)}
-                      label={copy.page.state}
-                      width="100%"
-                      options={[
+                <Toolbar
+                  size="sm"
+                  label={copy.page.filtersAriaLabel}
+                  className="maka-plan-toolbar"
+                  startContent={(
+                    <>
+                      <TextInput
+                        label={copy.page.searchLabel}
+                        isLabelHidden
+                        width={260}
+                        value={listQuery}
+                        onChange={(value) => setListQuery(value.slice(0, 120))}
+                        placeholder={copy.page.searchPlaceholder}
+                      />
+                    </>
+                  )}
+                  endContent={(
+                    <>
+                      <Selector
+                        value={listSort}
+                        onChange={(value) => setListSort(value as typeof listSort)}
+                        label={copy.page.sort}
+                        isLabelHidden
+                        width={172}
+                        options={copy.page.sortOptions.map(([value, label]) => ({ value, label }))}
+                      />
+                      <Selector
+                        value={listFilter}
+                        onChange={(value) => setListFilter(value as PlanReminderListFilter)}
+                        label={copy.page.state}
+                        isLabelHidden
+                        width={148}
+                        options={[
                         { value: 'active', label: copy.page.filterOption(copy.page.active, filterCounts.active) },
                         { value: 'all', label: copy.page.filterOption(copy.page.all, filterCounts.all) },
                         {
@@ -381,23 +386,28 @@ export function PlanReminderPanel(props: {
                           value: 'completed',
                           label: copy.page.filterOption(copy.status.completed, filterCounts.completed),
                         },
-                      ]}
-                    />
-                  </div>
-                </div>
+                        ]}
+                      />
+                    </>
+                  )}
+                />
               ) : null
             ) : (
-              <div className="maka-plan-toolbar maka-plan-toolbar-compact" aria-label={copy.page.runsFilterAriaLabel}>
-                <div className="maka-plan-compact-select">
+              <Toolbar
+                size="sm"
+                label={copy.page.runsFilterAriaLabel}
+                className="maka-plan-toolbar"
+                endContent={(
                   <Selector
                     value={runRange}
                     onChange={(value) => setRunRange(value as typeof runRange)}
                     label={copy.page.range}
-                    width="100%"
+                    isLabelHidden
+                    width={148}
                     options={copy.page.rangeOptions.map(([value, label]) => ({ value, label }))}
                   />
-                </div>
-              </div>
+                )}
+              />
             )}
           </div>
 
@@ -414,7 +424,7 @@ export function PlanReminderPanel(props: {
                 icon={<Clock />}
                 title={copy.page.emptyTitle}
                 description={copy.page.emptyBody}
-                className="maka-plan-empty"
+                actions={<UiButton variant="primary" onClick={openCreateReminderDialog} label={copy.page.create} />}
               />
             ) : sortedReminders.length === 0 ? (
               <EmptyState
@@ -422,7 +432,6 @@ export function PlanReminderPanel(props: {
                 title={normalizedListQuery ? copy.page.noSearchTitle : copy.page.noFilterTitle}
                 description={normalizedListQuery ? copy.page.noSearchBody : copy.page.noFilterBody}
                 actions={<UiButton variant="ghost" label={copy.page.clearSearch} onClick={() => setListQuery('')} isDisabled={!normalizedListQuery} />}
-                className="maka-plan-empty"
               />
             ) : (
               <div className="maka-plan-list" aria-label={copy.page.listAriaLabel}>
@@ -430,64 +439,69 @@ export function PlanReminderPanel(props: {
                   const reminderActionPrefix = `${reminder.id}:`;
                   const reminderActionPending = Array.from(pendingActionKeys).some((key) => key.startsWith(reminderActionPrefix));
                   return (
+                    /* Premium-checklist row (rules 6/11/16): a two-line
+                       edge-to-edge row — leading switch, title + exception-only
+                       status dots, one supporting schedule line, a live
+                       relative Timestamp trailing. The per-row Badges
+                       (countdown pill, run status) and the note preview are
+                       gone: durations are supporting text, run details live in
+                       the 执行记录 tab. */
                     <article
                       key={reminder.id}
-                      className="maka-plan-card"
+                      className="maka-plan-list-row"
                       data-status={reminder.status}
                     >
-                      <div className="maka-plan-card-main">
-                        <div className="maka-plan-card-title-row">
-                          <h3 className="maka-plan-card-title">{reminder.title}</h3>
+                      {reminder.status !== 'completed' ? (
+                        <Switch
+                          value={reminder.enabled}
+                          isDisabled={reminderActionPending}
+                          label={`${reminder.enabled ? copy.page.pause : copy.page.enable}: ${reminder.title}`}
+                          isLabelHidden
+                          onChange={() => void runPlanReminderAction(`${reminder.id}:toggle`, () => props.onToggle?.(reminder.id, !reminder.enabled))}
+                        />
+                      ) : (
+                        <span className="maka-plan-list-row-switch-ghost" aria-hidden="true" />
+                      )}
+                      <div className="maka-plan-list-row-main">
+                        <div className="maka-plan-list-row-title">
+                          <h3>{reminder.title}</h3>
                           {reminder.status !== 'scheduled' && (
-                            <Badge
-                              variant={reminder.status === 'paused' ? 'warning' : 'neutral'}
-                              label={planReminderStatusLabel(reminder.status, locale)}
-                            />
+                            <span className="maka-plan-status">
+                              <StatusDot
+                                variant={reminder.status === 'paused' ? 'warning' : 'neutral'}
+                                label={planReminderStatusLabel(reminder.status, locale)}
+                              />
+                              <span>{planReminderStatusLabel(reminder.status, locale)}</span>
+                            </span>
+                          )}
+                          {reminder.lastRun && reminder.lastRun.status !== 'triggered' && (
+                            <span className="maka-plan-status">
+                              <StatusDot
+                                variant={planRunStatusDotVariant(reminder.lastRun.status)}
+                                label={runStatusLabel(reminder.lastRun.status, locale)}
+                              />
+                              <span>{runStatusLabel(reminder.lastRun.status, locale)}</span>
+                            </span>
                           )}
                         </div>
-                        <p className="maka-plan-card-note">
-                          {reminder.note || copy.delivery.fallback(formatPlanReminderDeliveryTargetLabel(reminder.delivery, locale))}
+                        <p className="maka-plan-list-row-meta">
+                          {formatPlanRecurrence(reminder, locale)}
+                          <span aria-hidden="true"> · </span>
+                          {reminder.nextRunAt
+                            ? copy.page.nextRun(formatReminderTime(reminder.nextRunAt, locale))
+                            : reminder.lastRun
+                              ? copy.page.recentRun(formatReminderTime(reminder.lastRun.at, locale))
+                              : copy.page.unscheduled}
                         </p>
                       </div>
-                      <div className="maka-plan-card-context">
-                        <div className="maka-plan-card-schedule">
-                          <span>{formatPlanRecurrence(reminder, locale)}</span>
-                          <span className="maka-plan-card-schedule-separator" aria-hidden="true">
-                            ·
-                          </span>
-                          <span>
-                            {reminder.nextRunAt ? (
-                              <>
-                                {copy.page.nextRun(formatReminderTime(reminder.nextRunAt, locale))}
-                                <Badge className="maka-plan-card-countdown" label={formatReminderCountdown(reminder.nextRunAt, locale)} />
-                              </>
-                            ) : reminder.lastRun ? (
-                              copy.page.recentRun(formatReminderTime(reminder.lastRun.at, locale))
-                            ) : (
-                              copy.page.unscheduled
-                            )}
-                          </span>
-                        </div>
-                        {reminder.lastRun && (
-                          <div className="maka-plan-card-run">
-                            <Badge
-                              variant={planRunStatusBadgeVariant(reminder.lastRun.status)}
-                              label={runStatusLabel(reminder.lastRun.status, locale)}
-                            />
-                            <span>{reminder.lastRun.message}</span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="maka-plan-card-controls">
-                        {reminder.status !== 'completed' && (
-                          <Switch
-                            value={reminder.enabled}
-                            isDisabled={reminderActionPending}
-                            label={`${reminder.enabled ? copy.page.pause : copy.page.enable}: ${reminder.title}`}
-                            isLabelHidden
-                            onChange={() => void runPlanReminderAction(`${reminder.id}:toggle`, () => props.onToggle?.(reminder.id, !reminder.enabled))}
-                          />
-                        )}
+                      {typeof reminder.nextRunAt === 'number' && (
+                        /* Duration as quiet supporting text (checklist rule 16)
+                           — the locale-aware formatter, not Astryx Timestamp,
+                           which renders Intl relative time in English only. */
+                        <span className="maka-plan-list-row-countdown">
+                          {formatReminderCountdown(reminder.nextRunAt, locale)}
+                        </span>
+                      )}
                         <DropdownMenu
                           isMenuOpen={openReminderMenuId === reminder.id}
                           onOpenChange={(open) =>
@@ -562,7 +576,6 @@ export function PlanReminderPanel(props: {
                               style={{ color: 'var(--destructive-text)' }}
                             />
                         </DropdownMenu>
-                      </div>
                     </article>
                   );
                 })}
@@ -578,18 +591,15 @@ export function PlanReminderPanel(props: {
                 icon={<Clock />}
                 title={copy.page.noRunsTitle}
                 description={copy.page.noRunsBody}
-                className="maka-plan-empty maka-plan-runs-empty"
               />
             ) : (
               <div className="maka-plan-run-list" aria-label={copy.page.runsAriaLabel}>
                 {visibleRunEntries.map(({ reminder, run }) => (
                   <article key={`${reminder.id}:${run.id}`} className="maka-plan-run-row">
-                    <Badge
-                      variant={planRunStatusBadgeVariant(run.status)}
-                      className="maka-plan-run-status"
-                      data-status={run.status}
-                      label={runStatusLabel(run.status, locale)}
-                    />
+                    <span className="maka-plan-status" data-status={run.status}>
+                      <StatusDot variant={planRunStatusDotVariant(run.status)} label={runStatusLabel(run.status, locale)} />
+                      <span>{runStatusLabel(run.status, locale)}</span>
+                    </span>
                     <div className="maka-plan-run-main">
                       <strong>{reminder.title}</strong>
                       <span>{run.message}</span>

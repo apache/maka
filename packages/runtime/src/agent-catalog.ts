@@ -4,6 +4,7 @@ import {
   type PolicyDecision,
   type ToolCategory,
 } from '@maka/core/permission';
+import { SUBAGENT_PROFILES, type SubagentPreset, type SubagentProfile } from '@maka/core';
 import type { MakaTool } from './tool-runtime.js';
 
 export const LOCAL_READ_AGENT_ID = 'local-read';
@@ -12,11 +13,7 @@ export const WEB_RESEARCH_AGENT_ID = 'web-research';
 export const WEB_RESEARCH_AGENT_PROFILE = 'web_research';
 export const IMPLEMENTATION_AGENT_ID = 'implementation';
 export const IMPLEMENTATION_AGENT_PROFILE = 'implementation';
-export const BUILTIN_AGENT_PROFILES = [
-  LOCAL_READ_AGENT_PROFILE,
-  WEB_RESEARCH_AGENT_PROFILE,
-  IMPLEMENTATION_AGENT_PROFILE,
-] as const;
+export const BUILTIN_AGENT_PROFILES = SUBAGENT_PROFILES;
 export const AGENT_INVOCATION_FOREGROUND = 'foreground';
 export const AGENT_CONTEXT_ISOLATED = 'isolated';
 export const AGENT_WORKSPACE_SAME_WORKSPACE = 'same_workspace';
@@ -24,7 +21,7 @@ export const AGENT_WORKSPACE_WORKTREE = 'worktree';
 export const AGENT_WRITE_BACK_SUMMARY = 'summary';
 export const AGENT_WRITE_BACK_PATCH = 'patch';
 
-export type AgentProfile = (typeof BUILTIN_AGENT_PROFILES)[number];
+export type AgentProfile = SubagentProfile;
 export type AgentCapability = AgentProfile;
 export type AgentInvocationMode = typeof AGENT_INVOCATION_FOREGROUND;
 export type AgentContextMode = typeof AGENT_CONTEXT_ISOLATED;
@@ -82,6 +79,17 @@ export interface AgentDefinitionListItem {
   availability: AgentDefinitionAvailability;
   permissionMode: PermissionMode;
   tools: string[];
+}
+
+export type SubagentPresetAvailability =
+  | { status: 'available' }
+  | {
+      status: 'unavailable';
+      reason: 'disabled' | 'missing_connection' | 'connection_disabled' | 'model_disabled';
+    };
+
+export interface SubagentPresetListItem extends SubagentPreset {
+  availability: SubagentPresetAvailability;
 }
 
 export interface AgentDefinitionListOptions {

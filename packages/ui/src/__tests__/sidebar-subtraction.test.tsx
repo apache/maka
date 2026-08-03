@@ -185,7 +185,7 @@ describe('sidebar subtraction', () => {
     assert.doesNotMatch(markup, /role="menuitemradio"/);
   });
 
-  it('keeps conversation view controls visible while an extension module is selected', () => {
+  it('renders persistent conversation controls without an empty-list status on extension routes', () => {
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="zh">
         <SessionListPanel
@@ -204,6 +204,7 @@ describe('sidebar subtraction', () => {
     assert.match(markup, /maka-session-heading-section/);
     assert.match(markup, />会话</);
     assert.match(markup, /aria-label="会话分组方式"/);
+    assert.doesNotMatch(markup, /role="status"/);
   });
 
   it('labels pinned and recent as two SideNav sections in the conversation list', () => {

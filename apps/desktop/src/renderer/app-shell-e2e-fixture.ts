@@ -170,10 +170,6 @@ export function createAppShellE2eFixtureActions(options: {
       composerRef.current?.setText(state.composerText);
       await nextVisualSmokeFrame();
     }
-    if (state.composerSkills !== undefined) {
-      composerRef.current?.setSkills(state.composerSkills);
-      await nextVisualSmokeFrame();
-    }
     // focusActiveRow: SideNavItem marks the selected control with
     // aria-current="page" on the primary button itself (not a ListItem
     // aria-current=true). Focus that control after paint.

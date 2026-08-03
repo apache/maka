@@ -42,7 +42,6 @@ describe('composer quiet chrome', () => {
     assert.doesNotMatch(markup, /maka-composer-header-actions/);
     assert.doesNotMatch(markup, /maka-composer-header-context/);
     assert.doesNotMatch(markup, /maka-composer-modes-menu/);
-    assert.doesNotMatch(markup, /maka-composer-skill-trigger/);
     assert.doesNotMatch(markup, /maka-composer-streaming-hint/);
 
     // Footer left: plus → permission → model (+ thinking when levels offered).

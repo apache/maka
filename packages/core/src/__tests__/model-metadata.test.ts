@@ -8,6 +8,78 @@ import {
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '../llm-connections.js';
 
 describe('model-metadata vision capability', () => {
+  it('treats a Claude newer than the generated snapshot as able to read images', () => {
+    // The generated table is a snapshot of models.dev, so a Claude released
+    // after it is absent from the table rather than listed as text-only.
+    // Resolving absent to "no vision" silently drops the user's attachment and
+    // turns an image tool result into a sentence about the model.
+    assert.deepEqual(lookupModelMetadata('anthropic', 'claude-opus-5'), {});
+    assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-5'), true);
+    assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-fable-1'), true);
+  });
+
+  it('treats a Claude older than the generated snapshot the same way', () => {
+    // Before Claude 4 the version came first and the family sat behind it.
+    // None of these is in the generated table, all of them read images, and
+    // this is the shape a person is most likely to pin by hand.
+    for (const id of [
+      'claude-3-5-sonnet-20241022',
+      'claude-3-7-sonnet-20250219',
+      'claude-3-opus-20240229',
+      'claude-3-5-haiku-20241022',
+    ]) {
+      assert.deepEqual(lookupModelMetadata('anthropic', id), {}, id);
+      assert.equal(resolveModelVisionSupport('anthropic', undefined, id), true, id);
+    }
+  });
+
+  it('still fails closed for the Claude generation that cannot read images', () => {
+    // claude-2.x and claude-instant carry no family segment, so widening the
+    // default to the pre-4 id shape must not reach them.
+    for (const id of ['claude-2.1', 'claude-2.0', 'claude-instant-1.2']) {
+      assert.equal(resolveModelVisionSupport('anthropic', undefined, id), false, id);
+    }
+  });
+
+  it('extends the default to the subscription path, which fetches the same models', () => {
+    // claude-subscription reaches Anthropic's own models over the same
+    // protocol and stores the same bare { id } entries, and it is usually
+    // where a new Claude becomes usable first.
+    assert.deepEqual(lookupModelMetadata('claude-subscription', 'claude-opus-5'), {});
+    assert.equal(
+      resolveModelVisionSupport('claude-subscription', undefined, 'claude-opus-5'),
+      true,
+    );
+    assert.equal(
+      resolveModelVisionSupport('claude-subscription', undefined, 'claude-3-opus-20240229'),
+      true,
+    );
+  });
+
+  it('confines the default to the providers that serve Anthropic their own models', () => {
+    // A claude-prefixed id on somebody else's provider says nothing about what
+    // is actually behind it, so the default must not travel with the id.
+    for (const providerType of [
+      'openrouter',
+      'anthropic-compatible',
+      'kimi-coding-plan',
+    ] satisfies ProviderType[]) {
+      assert.equal(
+        resolveModelVisionSupport(providerType, undefined, 'claude-opus-5'),
+        false,
+        providerType,
+      );
+    }
+    assert.equal(resolveModelVisionSupport('openai', undefined, 'some-unlisted-model'), false);
+  });
+
+  it('yields to what a connection reports, in both directions', () => {
+    const denied: ModelInfo[] = [{ id: 'claude-opus-5', capabilities: { vision: false } }];
+    assert.equal(resolveModelVisionSupport('anthropic', denied, 'claude-opus-5'), false);
+    const granted: ModelInfo[] = [{ id: 'some-unlisted-model', capabilities: { vision: true } }];
+    assert.equal(resolveModelVisionSupport('openai', granted, 'some-unlisted-model'), true);
+  });
+
   it('publishes the Kimi K3 Coding Plan limits and sole supported effort', () => {
     assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3'), {
       displayName: 'Kimi K3',

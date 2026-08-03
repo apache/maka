@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { ToolActivity } from '../src/tool-activity.js';
+import { ToolCallDetail, ToolTrow } from '../src/tool-activity.js';
 import type { ToolActivityItem } from '../src/materialize.js';
 import {
   denseMixedResultItems,
@@ -12,22 +12,33 @@ import {
 
 const meta = {
   title: 'Product/Tool Activity',
-  component: ToolActivity,
+  component: ToolTrow,
   parameters: {
     layout: 'fullscreen',
   },
-} satisfies Meta<typeof ToolActivity>;
+} satisfies Meta<typeof ToolTrow>;
 
 export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-function ToolActivityBoard(props: {
-  items: ToolActivityItem[];
-  width?: number;
-  expandAll?: boolean;
-  autoCopyLabel?: string;
-}) {
+/**
+ * One row per item. The product groups a contiguous run into a single
+ * `ToolTrow`, which collapses to its latest row; rendering one trow per item
+ * is how a state board shows every row at once.
+ */
+function ToolRowBoard(props: { items: ToolActivityItem[]; width?: number }) {
+  return (
+    <Board width={props.width}>
+      {props.items.map((item) => (
+        <ToolTrow key={item.toolUseId} items={[item]} />
+      ))}
+    </Board>
+  );
+}
+
+/** The expanded panels, which Astryx reveals per row on click. */
+function ToolDetailBoard(props: { items: ToolActivityItem[]; width?: number; autoCopyLabel?: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -75,8 +86,19 @@ function ToolActivityBoard(props: {
   }, [props.autoCopyLabel, props.items]);
 
   return (
+    <div ref={rootRef}>
+      <Board width={props.width}>
+        {props.items.map((item) => (
+          <ToolCallDetail key={item.toolUseId} item={item} />
+        ))}
+      </Board>
+    </div>
+  );
+}
+
+function Board(props: { children: React.ReactNode; width?: number }) {
+  return (
     <div
-      ref={rootRef}
       style={{
         display: 'grid',
         gap: 16,
@@ -85,7 +107,7 @@ function ToolActivityBoard(props: {
         width: '100%',
       }}
     >
-      <ToolActivity items={props.items} open={props.expandAll ? true : undefined} />
+      {props.children}
     </div>
   );
 }
@@ -94,12 +116,25 @@ function ToolActivityBoard(props: {
 // failed and denied rows.
 export const ErrorsAndPermissionDenied: Story = {
   args: { items: errorsAndPermissionDeniedItems },
-  render: (args) => <ToolActivityBoard items={args.items} width={860} />,
+  render: (args) => <ToolRowBoard items={args.items} width={860} />,
 };
 
 // Real path: a turn that mixes many tool kinds — the density case reviewers compare
 // spacing against.
 export const DenseMixedResults: Story = {
   args: { items: denseMixedResultItems },
-  render: (args) => <ToolActivityBoard items={args.items} expandAll />,
+  render: (args) => <ToolDetailBoard items={args.items} />,
+};
+
+// Real path: a contiguous run of tool calls in one turn — the grouped surface the
+// state boards above never show, since they render one row per trow. Astryx's
+// collapsed header projects the last call alone, so this is where to look at what a
+// mixed-outcome group costs in density.
+export const ContiguousGroup: Story = {
+  args: { items: errorsAndPermissionDeniedItems },
+  render: (args) => (
+    <Board width={860}>
+      <ToolTrow items={args.items} />
+    </Board>
+  ),
 };

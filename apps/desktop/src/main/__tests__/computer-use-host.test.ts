@@ -65,6 +65,47 @@ describe('Computer Use host health', () => {
     assert.equal(computerUseServiceHealth('none', undefined).state, 'not_available');
   });
 
+  it('reads the executor that is selected, not the role pair one of them happens to have', () => {
+    // maka-cu supervises one child (§11) and reports its own shape, so it has
+    // no `action`/`capture` pair to read. This function took only that pair,
+    // while the availability half of the same capability card had already been
+    // widened to "any selected executor" — executed against the built desktop
+    // module with a genuinely ready maka-cu backend, the card read:
+    //
+    //   executorState()      = {"state":"ready","generation":1}
+    //   serviceState (boot)  = undefined
+    //   health               = not_available, reason naming cua-driver
+    //   artifactAvailable    = true
+    //
+    // available, state not_available, and a reason naming an executor that is
+    // not the one running.
+    assert.deepEqual(
+      computerUseServiceHealth('maka-cu', { state: 'ready', generation: 1, restartAttempts: 0 }),
+      { state: 'healthy', reason: 'maka-cu 操作与截图服务已就绪。' },
+    );
+    assert.equal(
+      computerUseServiceHealth('maka-cu', {
+        state: 'backing_off',
+        generation: 1,
+        restartAttempts: 1,
+      }).state,
+      'degraded',
+    );
+    assert.deepEqual(
+      computerUseServiceHealth('maka-cu', {
+        state: 'unavailable',
+        generation: 1,
+        restartAttempts: 3,
+      }),
+      { state: 'not_available', reason: 'maka-cu service 启动失败或已退出。' },
+    );
+    assert.equal(
+      computerUseServiceHealth('maka-cu', { state: 'idle', generation: 0, restartAttempts: 0 })
+        .state,
+      'not_run',
+    );
+  });
+
   it('constructs a backend only when the local artifact matches the manifest hash', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-'));
     try {

@@ -94,6 +94,7 @@ describe('Runtime Host Interaction protocol', () => {
         requestId: 'answer-1',
         operation: 'interaction.answer',
         input: {
+          sessionId: 'session-1',
           interactionId: 'interaction-1',
           answer: { kind: 'question', answers: ['Yes'] },
         },
@@ -102,6 +103,7 @@ describe('Runtime Host Interaction protocol', () => {
         requestId: 'answer-1',
         operation: 'interaction.answer',
         input: {
+          sessionId: 'session-1',
           interactionId: 'interaction-1',
           answer: { kind: 'question', answers: ['Yes'] },
         },

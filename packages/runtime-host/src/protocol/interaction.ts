@@ -12,6 +12,8 @@ import {
   type InteractionQuestion,
   type InteractionQuestionOption,
   type InteractionRequest,
+  type InteractionSandboxBoundaryAnswer,
+  type InteractionSandboxBoundaryRequest,
 } from '@maka/core/interaction';
 import { assertExactKeys, requireEntityId, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -27,6 +29,8 @@ export type {
   InteractionQuestion,
   InteractionQuestionOption,
   InteractionRequest,
+  InteractionSandboxBoundaryAnswer,
+  InteractionSandboxBoundaryRequest,
 };
 
 export const INTERACTION_SCHEMA_VERSION = 1 as const;
@@ -78,6 +82,7 @@ export interface InteractionQueryInput {
 }
 
 export interface InteractionAnswerInput {
+  readonly sessionId: string;
   readonly interactionId: string;
   readonly answer: InteractionAnswer;
 }
@@ -230,8 +235,9 @@ function decodeInteractionQueryInput(value: unknown): InteractionQueryInput {
 
 function decodeInteractionAnswerInput(value: unknown): InteractionAnswerInput {
   const record = requireRecord(value, 'interaction.answer input');
-  assertExactKeys(record, 'interaction.answer input', ['interactionId', 'answer']);
+  assertExactKeys(record, 'interaction.answer input', ['sessionId', 'interactionId', 'answer']);
   return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
     interactionId: requireEntityId(record.interactionId, 'interactionId'),
     answer: decodeInteractionAnswer(record.answer),
   };

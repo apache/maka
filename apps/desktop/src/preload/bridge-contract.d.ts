@@ -66,7 +66,7 @@ import type {
   VoiceRealtimeClientSession,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
   WebSearchProvider,
   WebSearchResponse,
@@ -245,12 +245,16 @@ export interface MakaBridge {
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: import('@maka/core').QuoteRef[];
+            workspaceFileReferences?: Array<
+              Pick<import('@maka/core').InlineReference, 'value' | 'start'>
+            >;
           },
     ): Promise<
       | {
           ok: true;
           turnId: string;
           attachments: import('@maka/core').AttachmentRef[];
+          inlineReferences: import('@maka/core').InlineReference[];
           skillInvocation: import('@maka/runtime').SkillInvocationResult;
         }
       | {
@@ -618,7 +622,7 @@ export interface MakaBridge {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>>;
     getConfig?(): Promise<DailyReviewConfig>;
     setConfig?(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig>;
-    runOnce?(input: { mode: DailyReviewMode; day?: number; modelKey?: string }): Promise<{ archiveId: string }>;
+    runOnce?(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }>;
     list?(): Promise<DailyReviewArchiveSummary[]>;
     get?(archiveId: string): Promise<DailyReviewArchive | null>;
     delete?(archiveId: string): Promise<void>;

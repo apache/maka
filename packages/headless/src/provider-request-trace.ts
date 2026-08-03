@@ -271,8 +271,12 @@ export function assertProviderRequestTraceComplete(
     if (!identities.some((candidate) => candidate.turnId === attempt.turnId)) {
       fail(`attempt ${attempt.attemptId} has another turn id`);
     }
+    // Capture ids are optional on the record since #1679 — an attempt made in a
+    // deployment with capture switched off has none. This analysis reads a
+    // capture ledger, so an attempt that cannot name one is incomplete here;
+    // the decoder above already rejects such records as invalid_attempt.
     const capture =
-      captures.get(attempt.captureId) ??
+      (attempt.captureId !== undefined ? captures.get(attempt.captureId) : undefined) ??
       fail(`attempt ${attempt.attemptId} does not match its request capture`);
     if (!attemptMatchesCapture(attempt, capture)) {
       fail(`attempt ${attempt.attemptId} does not match its request capture`);

@@ -372,6 +372,11 @@ export async function verifyPackagedMacApp(
   await forbidPath(join(resources, 'licenses', 'officecli'));
   await forbidPath(join(resources, 'bin', 'cua-driver'));
   await forbidPath(join(resources, 'tools', 'cua-driver'));
+  // maka-cu is built from source locally and is not signed, so it may not be in
+  // a packaged build at all — an ad-hoc helper fails notarization for the whole
+  // app, and `distributionReady` is false for exactly this reason.
+  await forbidPath(join(resources, 'bin', 'maka-cu'));
+  await forbidPath(join(resources, 'tools', 'maka-cu'));
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable');

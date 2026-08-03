@@ -37,29 +37,6 @@
   padding-block: var(--space-1) 0;
 }
 
-/* Skill panel opened from the ＋ menu — containing block is left-controls
-   (starts at ＋), not the zero-width picker host at the end of the row. */
-.maka-composer-left-controls {
-  position: relative;
-}
-
-.maka-composer-skill-picker[data-anchored="footer"] {
-  /* Stay out of the positioning chain so the absolute panel uses left-controls. */
-  position: static;
-  width: 0;
-  height: 0;
-  overflow: visible;
-  margin: 0;
-  padding: 0;
-  border: none;
-  pointer-events: none;
-}
-
-.maka-composer-skill-picker[data-anchored="footer"] .maka-composer-skill-panel {
-  pointer-events: auto;
-  inset-inline-start: 0;
-}
-
 .maka-composer-context-drawer {
   display: flex;
   min-width: 0;
@@ -227,45 +204,6 @@
    background after the transcript viewport has already ended. */
 .mainColumn:not([data-home-surface="true"]) .composer {
   padding-top: 0;
-}
-
-/* The input owns no chrome (the card does). ChatComposerInput sizes itself from
-   `maxRows`, so only the resting minimum is ours. Type is the `body` role, one
-   token for the whole shorthand — not a local 14/22 magic pair, and not a
-   fallback chain, since the role is the only vocabulary left.
-
-   Kill the global `*:focus-visible` ring (maka-tokens) — Astryx ChatComposer
-   elevates the outer shell on focus-within; a second rectangle on the field
-   is the bug users describe as “输入后出现长方形边框”. */
-.composer .maka-composer-editor > [contenteditable] {
-  font: var(--maka-text-body);
-  width: 100%;
-  border: none;
-  outline: none;
-  box-shadow: none;
-  background: transparent;
-  color: var(--foreground);
-  min-height: var(--h-composer-min);
-}
-
-.composer .maka-composer-editor > [contenteditable]:focus,
-.composer .maka-composer-editor > [contenteditable]:focus-visible {
-  border: none;
-  outline: none;
-  box-shadow: none;
-}
-
-.composer .maka-composer-editor > [aria-hidden="true"] {
-  /* Astryx renders the placeholder as a sibling of the editable, not inside
-     it, so `font: inherit` would resolve against the card. Name the same role
-     the editable names. */
-  font: var(--maka-text-body);
-  color: var(--muted-foreground);
-  transition: opacity var(--duration-emphasized) var(--ease-out-strong);
-}
-
-.composer .maka-composer-editor:focus-within > [aria-hidden="true"] {
-  opacity: var(--opacity-disabled);
 }
 
 /* Composer send button — flat solid action fill. #546: dropped the gradient

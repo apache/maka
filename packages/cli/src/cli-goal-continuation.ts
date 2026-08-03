@@ -4,6 +4,7 @@ import {
   SessionActivityRegistry,
   drainGoalTurn,
   type GoalContinuationDeps,
+  type GoalControlStanding,
   type GoalState,
   type GoalObservedTurnStart,
   type GoalObservedTurnSettler,
@@ -61,6 +62,14 @@ export class CliGoalContinuation {
 
   mutateGoal(sessionId: string, turnId: string, mutate: () => GoalState): GoalState | undefined {
     return this.coordinator.mutateGoal(sessionId, turnId, mutate);
+  }
+
+  activationStanding(sessionId: string, turnId: string): GoalControlStanding {
+    return this.coordinator.activationStanding(sessionId, turnId);
+  }
+
+  mutationStanding(sessionId: string, turnId: string): GoalControlStanding {
+    return this.coordinator.mutationStanding(sessionId, turnId);
   }
 
   async runAutomationTurn(input: {

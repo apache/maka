@@ -221,6 +221,7 @@ export interface HostAiSdkBackendInput {
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
+  readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -451,6 +452,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     : input.clientCapabilities.snapshotForSession(input.context.sessionId);
   let modelComposition: HostExecutionModelComposition;
   try {
+    const rootTools =
+      input.resolveRootTools && !input.context.tools && !input.context.header.subagentParent
+        ? await readDuringBackendCreation(
+            () => input.resolveRootTools!(input.context.sessionId),
+            input.context.abortSignal,
+          )
+        : [];
+    const hostTools = [...(input.hostTools ?? []), ...rootTools];
     modelComposition = createHostExecutionModelComposition({
       policy: input.runtimePolicy.runtimePolicy,
       skills: input.skills,
@@ -460,7 +469,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.context.tools ? { boundTools: input.context.tools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
-      ...(input.hostTools ? { hostTools: input.hostTools } : {}),
+      ...(hostTools.length > 0 ? { hostTools } : {}),
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       ...(input.goalTools ? { goalTools: input.goalTools } : {}),
       ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
@@ -492,14 +501,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     }
   };
   const telemetry = {
-    insertLlmCall: (record: Parameters<typeof input.usage.telemetry.recordLlmCall>[0]) =>
-      persistTelemetry(() => input.usage.telemetry.recordLlmCall(record)),
     insertToolInvocation: (
       record: Parameters<typeof input.usage.telemetry.recordToolInvocation>[0],
     ) => persistTelemetry(() => input.usage.telemetry.recordToolInvocation(record)),
-  };
-  const recordLlmUsage = (event: Parameters<typeof recordLlmCall>[1]) => {
-    void recordLlmCall({ repo: telemetry, lookupPricing: pricing }, event);
   };
   /**
    * One canonical record, one commit point (#1679).
@@ -628,24 +632,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
               modelId: target.model,
             }),
           providerOptions,
-          ...(providerRequestCapture
-            ? {
-                providerRequestTracking: {
-                  now: Date.now,
-                  newId: randomUUID,
-                  persistCapture: providerRequestCapture,
-                  recordAttempt: recordProviderRequestAttempt,
-                },
-              }
-            : {}),
-          telemetry: {
-            connectionSlug: target.connection.slug,
-            providerId: target.connection.providerType,
-            modelId: target.model,
-            newId: randomUUID,
-            now: Date.now,
-            recordLlmCall: recordLlmUsage,
-          },
         }),
         recordHistoryCompactCheckpoint: input.context.recordHistoryCompactCheckpoint,
         loadTurnRuntimeEvents: input.context.loadTurnRuntimeEvents,
@@ -657,7 +643,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         turnTailPrompt: modelComposition.turnTailPrompt,
         shellRunContextSummary: input.context.shellRunContextSummary,
         lookupPricing: pricing,
-        recordLlmCall: recordLlmUsage,
         recordModelCallAttempt,
         assertModelCallAccountingReady,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),

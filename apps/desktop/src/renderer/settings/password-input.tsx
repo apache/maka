@@ -3,6 +3,7 @@ import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
   InputGroup,
+  InputGroupText,
   type InputGroupProps,
   TextInput,
   useMountedRef,
@@ -84,11 +85,12 @@ export function PasswordInput(props: {
     }
   }
   return (
+    // No isRequired on the group label: Astryx hardcodes an English "· Required"
+    // and our labels already carry 「（必填）」; the semantic lives on the inner input.
     <InputGroup
       label={props.label}
       description={props.description}
       isLabelHidden={props.isLabelHidden}
-      isRequired={props.isRequired}
       isDisabled={props.isDisabled}
       status={props.status}
     >
@@ -105,27 +107,30 @@ export function PasswordInput(props: {
         status={props.status ? { type: props.status.type } : undefined}
         hasAutoFocus={props.hasAutoFocus}
       />
-      {props.value && !props.isDisabled && (
+      {/* InputGroupText: the sanctioned addon segment — bare IconButtons break the group's caps. */}
+      <InputGroupText>
+        {props.value && !props.isDisabled && (
+          <IconButton
+            variant="ghost"
+            size="sm"
+            isDisabled={copying}
+            onClick={() => void copyValue()}
+            label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
+            icon={justCopied
+              ? <Check size={16} aria-hidden="true" />
+              : <Copy size={16} aria-hidden="true" />}
+          />
+        )}
         <IconButton
           variant="ghost"
           size="sm"
-          isDisabled={copying}
-          onClick={() => void copyValue()}
-          label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
-          icon={justCopied
-            ? <Check size={16} aria-hidden="true" />
-            : <Copy size={16} aria-hidden="true" />}
+          onClick={() => setVisible((current) => !current)}
+          isDisabled={props.isDisabled}
+          label={visible ? copy.hide : copy.show}
+          aria-pressed={visible}
+          icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
         />
-      )}
-      <IconButton
-        variant="ghost"
-        size="sm"
-        onClick={() => setVisible((current) => !current)}
-        isDisabled={props.isDisabled}
-        label={visible ? copy.hide : copy.show}
-        aria-pressed={visible}
-        icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
-      />
+      </InputGroupText>
     </InputGroup>
   );
 }

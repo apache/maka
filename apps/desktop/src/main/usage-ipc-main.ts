@@ -42,9 +42,11 @@ const USAGE_REPAIR_RUNS_PER_QUERY = 16;
 export function registerUsageIpc(deps: UsageIpcDeps): void {
   /**
    * Usage answers sum two sources (#1679): the canonical model-call ledger and
-   * the frozen `LlmCallRecord` table, which still receives the compaction calls
-   * that have not been routed through the canonical seam yet. Every merged
-   * result carries the provenance that qualifies it.
+   * the frozen `LlmCallRecord` table. Both compaction kinds now settle through
+   * the canonical seam; what still lands in the frozen table is historical rows
+   * and `goal_evaluation`, the one kind the seam cannot yet identify (it has no
+   * run or turn at the Host layer). Every merged result carries the provenance
+   * that qualifies it.
    */
   const canonicalUsage = async (query: UsageQuery, now: number): Promise<CanonicalUsageSource> => {
     // Fold in whatever the authority holds and this read model is behind on

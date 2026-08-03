@@ -137,3 +137,40 @@ describe('ChatView system notices', () => {
     assert.match(markup, /Context compacted to keep this session within the model window\./);
   });
 });
+
+describe('ChatView sent inline references', () => {
+  it('replays the frozen Composer labels with Astryx badges', () => {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <OwnedChatView
+          messages={[
+            {
+              type: 'user',
+              id: 'user-1',
+              turnId: 'turn-1',
+              ts: 1,
+              text: 'Use /skill:writer on @docs/chat turn.tsx',
+              inlineReferences: [
+                { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 4 },
+                {
+                  kind: 'workspace_file',
+                  value: '@docs/chat turn.tsx',
+                  label: 'chat turn.tsx',
+                  start: 21,
+                },
+              ],
+            },
+          ]}
+          activeSession={activeSession}
+          onNew={() => undefined}
+        />
+      </LocaleProvider>,
+    );
+
+    assert.match(markup, />Writer</);
+    assert.match(markup, />chat turn\.tsx</);
+    assert.doesNotMatch(markup, />\/skill:writer</);
+    assert.doesNotMatch(markup, />@docs\/chat turn\.tsx</);
+    assert.equal(markup.match(/astryx-badge/g)?.length, 2);
+  });
+});

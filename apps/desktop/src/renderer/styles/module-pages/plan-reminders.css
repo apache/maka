@@ -21,10 +21,9 @@
   width: min(100%, 900px);
   margin-inline: auto;
   display: grid;
-  /* Atlas §14.6 quick-win: section gap tightens 14 -> 8 (reference uses
-     `--agents-content-area-gap: 4px`; 8 keeps long-page readability while
-     pulling toward the dense reference cadence). */
-  gap: var(--space-2);
+  /* Premium checklist rule 10: two-tier rhythm — 24px between page tiers
+     (hero / tabs / panel), small steps only inside a unit. */
+  gap: var(--space-6);
   padding: 0;
 }
 
@@ -39,13 +38,6 @@
   display: grid;
   gap: var(--space-1);
   max-width: 560px;
-}
-
-.maka-plan-eyebrow {
-  font: var(--maka-text-heading-5);
-  margin: 0;
-  color: var(--muted-foreground);
-  letter-spacing: var(--tracking-normal);
 }
 
 .maka-plan-heading h2 {
@@ -88,57 +80,96 @@
   row-gap: var(--space-2-5);
 }
 
-.maka-plan-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
-.maka-plan-toolbar-compact {
-  display: flex;
-}
-
 .maka-plan-tab-panel {
   display: grid;
-  gap: var(--space-2-5);
+  gap: var(--space-3);
 }
 
+/* Premium checklist rules 6/11: edge-to-edge rows, zero gap, hairline
+   dividers owned by the list. */
 .maka-plan-list {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+}
+
+.maka-plan-list > * + * {
+  border-block-start: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-plan-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 52px;
+  padding: var(--space-2) 0;
+}
+
+.maka-plan-list-row[data-status="completed"] {
+  opacity: var(--opacity-muted);
+}
+
+/* Completed rows drop their dead switch; hold its track so titles align. */
+.maka-plan-list-row-switch-ghost {
+  flex: 0 0 40px;
+}
+
+.maka-plan-list-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: var(--space-0-5);
+}
+
+.maka-plan-list-row-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.maka-plan-list-row-title h3 {
+  font: var(--maka-text-body);
+  font-weight: 600;
+  margin: 0;
+  min-width: 0;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+.maka-plan-list-row-meta {
+  font: var(--maka-text-supporting);
+  margin: 0;
+  color: var(--foreground-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* StatusDot + text — the shared quiet status idiom (settings surface). */
+.maka-plan-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font: var(--maka-text-supporting);
+  color: var(--foreground-secondary);
+  white-space: nowrap;
+}
+
+.maka-plan-list-row-countdown {
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .maka-plan-form,
 .maka-plan-run-row {
   display: grid;
   gap: var(--space-2-5);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
   background: var(--background);
+}
+
+.maka-plan-form {
   padding: var(--space-4);
-}
-
-.maka-plan-card {
-  display: grid;
-  /* Switch (32px) + row menu (28px) + gap (4px). Keep the track stable
-     when a completed reminder intentionally omits its dead switch. */
-  grid-template-columns: minmax(0, 1.35fr) minmax(240px, 1fr) 64px;
-  align-items: center;
-  gap: var(--space-4);
-  position: relative;
-  border-bottom: var(--border-width-hairline) solid var(--border);
-  background: var(--background);
-  padding: var(--space-3) 0;
-}
-
-.maka-plan-card:first-child {
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.maka-plan-card[data-status="completed"] {
-  opacity: var(--opacity-muted);
 }
 
 .maka-plan-form-header,
@@ -149,37 +180,72 @@
   gap: var(--space-2-5);
 }
 
-.maka-plan-card-title-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.maka-plan-card-context {
-  display: grid;
-  gap: var(--space-1-5);
-  min-width: 0;
-}
-
-.maka-plan-card-controls {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-1);
-}
-
 .maka-plan-form {
   border: 0;
   border-radius: 0;
   background: var(--background);
-  padding: var(--space-3);
+  gap: var(--space-5);
+  padding: var(--space-2) var(--space-5) var(--space-4);
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 
+/* Split view (reference layout): with the form open the page becomes two
+   columns — the list keeps flowing in the first, the form panel sits FLUSH
+   against it in the second, separated by one hairline. No overlay, no dead
+   band between list and panel. */
+.maka-plan-panel[data-form-open="true"] {
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 460px);
+  align-items: start;
+}
+
+@keyframes maka-plan-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.maka-plan-form-aside {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: calc(100dvh - var(--h-titlebar));
+  border-inline-start: var(--border-width-hairline) solid var(--border);
+  background: var(--background);
+  animation: maka-plan-sheet-in var(--duration-base) var(--ease-out-strong);
+}
+
+/* The reference wraps each group's rows in an inset rounded container.
+   Deep-review: the fill makes it genuinely inset — a border on the same
+   surface color read as a bare outlined rectangle. */
+.maka-plan-rows {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--muted);
+  padding-inline: var(--space-3);
+  overflow: hidden;
+}
+
+.maka-plan-form-footer {
+  justify-content: flex-end;
+  width: 100%;
+  padding: var(--space-2) var(--space-5) var(--space-4);
+}
+
 .maka-plan-form-header {
-  align-items: flex-start;
-  padding-bottom: var(--space-0-5);
+  align-items: center;
+  width: 100%;
+  padding: var(--space-3) var(--space-5) var(--space-1);
 }
 
 .maka-plan-form-header-actions {
@@ -188,16 +254,75 @@
   gap: var(--space-1);
 }
 
-.maka-plan-form-title {
-  font: var(--maka-text-heading-4);
+.maka-plan-form-kicker {
+  font: var(--maka-text-supporting);
   margin: 0;
+  color: var(--muted-foreground);
+}
+
+/* The large borderless title — the form's one display element. A raw input
+   wrapped in Astryx Field (label + status stay accessible); chrome-free so
+   the dialog opens straight into naming the task, like the reference panel. */
+.maka-plan-title-input {
+  font: var(--maka-text-heading-2);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+}
+
+.maka-plan-title-input::placeholder {
+  color: var(--color-text-secondary, var(--foreground-secondary));
+}
+
+/* Deep-review: a chrome-free control still owes a focus cue (DESIGN §5).
+   Keyboard focus draws the ring; mouse focus stays quiet. */
+.maka-plan-title-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+  border-radius: var(--radius-control);
+}
+
+/* One labeled group: quiet label over hairline-divided label/control rows —
+   the settings open-row idiom, scoped to the dialog. */
+.maka-plan-group {
+  display: grid;
+  gap: var(--space-1-5);
+}
+
+.maka-plan-group-label {
+  font: var(--maka-text-label);
+  margin: 0;
+  color: var(--foreground-secondary);
+}
+
+.maka-plan-rows > * + * {
+  border-block-start: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-plan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  min-height: 44px;
+  padding-block: var(--space-1-5);
+}
+
+.maka-plan-row-label {
+  font: var(--maka-text-body);
   color: var(--foreground);
 }
 
 .maka-plan-presets {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-1);
+  padding-block: var(--space-1-5);
 }
 
 .maka-plan-preset {
@@ -213,27 +338,6 @@
   color: var(--foreground-secondary);
 }
 
-.maka-plan-search,
-.maka-plan-compact-select {
-  font: var(--maka-text-heading-5);
-  display: grid;
-  gap: var(--space-1);
-  color: var(--foreground-secondary);
-}
-
-.maka-plan-search {
-  width: min(200px, 28vw);
-}
-
-.maka-plan-compact-select {
-  width: 124px;
-  gap: 0;
-}
-
-.maka-plan-sort-select {
-  width: 168px;
-}
-
 .maka-plan-search-summary {
   font: var(--maka-text-heading-5);
   font-variant-numeric: tabular-nums;
@@ -245,116 +349,22 @@
   color: var(--muted-foreground);
 }
 
-.maka-plan-empty {
-  position: static;
-  width: auto;
-  transform: none;
-  padding: var(--space-4) var(--space-2-5);
-}
-
-.maka-plan-card-main {
-  display: grid;
-  gap: var(--space-1-5);
-  min-width: 0;
-}
-
-.maka-plan-card-title {
-  font: var(--maka-text-heading-3);
-  margin: 0;
-  min-width: 0;
-  color: var(--foreground);
-  overflow-wrap: anywhere;
-}
-
-/* #1879 measured this row and deliberately leaves its height unpinned, which
-   is the opposite of what that issue assumed (it read the row as already
-   pinned and offered it as the shape the other chips should take; it declares
-   no height at all — the 20px it measures at comes from the Badge beside the
-   message). It must stay unpinned: the message wraps by design
-   (`overflow-wrap: anywhere` below), and measured, replacing it with a long
-   string grows this row well past its one-line 20px. A pinned height would
-   clip all of that to one line. Multi-line capability is what disqualifies a
-   row from the single-line chip family — same call as
-   `.maka-plan-card-schedule` and `.settingsMemoryBackupCandidate`. */
-.maka-plan-card-run {
-  font: var(--maka-text-supporting);
-  display: flex;
-  min-width: 0;
-  gap: var(--space-1);
-  align-items: flex-start;
-  color: var(--foreground-secondary);
-}
-
-.maka-plan-card-run > :first-child {
-  flex: 0 0 auto;
-}
-
-.maka-plan-card-run > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* #1879: unpinned on purpose. `flex-wrap: wrap` is not decorative here —
-   measured, this row wraps to a second row at the 480px window floor. (The
-   pixel height is not recorded: a wrap threshold is a font metric, and CI
-   Linux reported a different one than macOS did, which is exactly why the e2e
-   for this asserts the relation and not a figure.) It is a wrapping meta row,
-   not a single-line chip; its height tracking its content is correct
-   behaviour, so there is nothing here for a box-height pin to fix. The chip
-   inside it (`.maka-plan-card-countdown`) is an Astryx Badge instead. */
-.maka-plan-card-schedule {
-  font: var(--maka-text-supporting);
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  align-items: baseline;
-  column-gap: var(--space-1);
-  row-gap: var(--space-0-5);
-  color: var(--foreground-secondary);
-}
-
-.maka-plan-card-schedule > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.maka-plan-card-schedule-separator {
-  color: var(--foreground-tertiary);
-}
-
-/* PR-PLAN-NEXT-RUN-COUNTDOWN-0: small pill next to the absolute next-run
-   time so user sees both wall-clock and distance-from-now in one glance.
-   #651 exception-only status color: a scheduled countdown is the expected
-   steady state, so the pill is neutral (foreground wash) rather than
-   accent-tinted — colour is reserved for genuinely exceptional states
-   (e.g. an overdue run), which would opt in via a data-attribute. */
-/* #1879: it had pill chrome and no height, so its own leading at 40px doubled
-   the box to 40px, measured. It is an Astryx `Badge` now — neutral is the
-   variant that keeps the exception-only rule above — so the box (20px off
-   `--spacing-5`), radius, padding, caption type and `nowrap` all come from the
-   component. Only the gap to the preceding text is product layout. */
-.maka-plan-card-countdown {
-  margin-left: var(--space-1);
-}
-
-.maka-plan-card-note {
-  font: var(--maka-text-body);
-  color: var(--foreground-secondary);
-  margin: 0;
-  padding: 0;
-  overflow-wrap: anywhere;
-}
-
 .maka-plan-run-list {
   display: grid;
   gap: var(--space-1);
 }
 
+/* Runs are the same edge-to-edge row idiom as the task list. */
 .maka-plan-run-row {
   grid-template-columns: max-content minmax(0, 1fr) max-content;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1-5) var(--space-2-5);
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.maka-plan-run-row time {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .maka-plan-run-main {
@@ -383,12 +393,6 @@
   white-space: nowrap;
 }
 
-.maka-plan-runs-empty {
-  border-style: dashed;
-  background: transparent;
-  box-shadow: none;
-}
-
 @media (max-width: 1100px) {
   .maka-plan-hero,
   .maka-plan-tabs-bar {
@@ -404,20 +408,6 @@
     gap: var(--space-2);
   }
 
-  .maka-plan-card-controls {
-    justify-content: flex-end;
-  }
-
-  .maka-plan-toolbar,
-  .maka-plan-toolbar-compact {
-    justify-content: flex-start;
-  }
-
-  .maka-plan-search,
-  .maka-plan-compact-select,
-  .maka-plan-sort-select {
-    width: min(100%, 260px);
-  }
 
   .maka-plan-run-row {
     grid-template-columns: minmax(0, 1fr);

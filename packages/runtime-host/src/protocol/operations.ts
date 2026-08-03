@@ -1,4 +1,5 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
+import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
 import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
@@ -65,6 +66,7 @@ export type {
 export {
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
+  TURN_RESUME_PARK_REASONS,
 } from './turn.js';
 export type {
   InFlightMessageSnapshot,
@@ -83,12 +85,18 @@ export type {
 } from './message.js';
 export type {
   TurnQueryInput,
+  TurnResumeParkReason,
+  TurnResumePlan,
+  TurnResumeQueryInput,
+  TurnResumeStartInput,
+  TurnResumeStartResult,
   TurnRunStatus,
   TurnSnapshot,
   TurnStartInput,
   TurnStopInput,
 } from './turn.js';
 export * from './connection-effects.js';
+export * from './agent-graph.js';
 export * from './execution-inspect.js';
 export * from './client-capability.js';
 export * from './goal.js';
@@ -104,6 +112,7 @@ export * from './usage-pricing.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_STATUS_OPERATION_SPECS,
+  AGENT_GRAPH_OPERATION_SPECS,
   GOAL_OPERATION_SPECS,
   TURN_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,

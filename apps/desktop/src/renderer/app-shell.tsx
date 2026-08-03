@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -53,6 +52,8 @@ import {
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
+import { LiveTurnReconciler } from './live-turn-reconciler';
+import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
 import { ChatWorkbar } from './chat-workbar';
@@ -72,7 +73,7 @@ import {
   usePlanModeState,
 } from './plan-mode-panel';
 import { McpPage } from './mcp-page';
-import { useOnboardingSnapshot } from './use-onboarding-snapshot';
+import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
@@ -107,7 +108,10 @@ import { useKeepSystemAwake } from './use-keep-system-awake';
 import { useAppShellProjectContext } from './use-project-context';
 import { createAppShellSessionEventHandlers } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
-import { createAppShellChatActions } from './app-shell-chat-actions';
+import {
+  createAppShellChatActions,
+  type WorkspaceFileReferencePosition,
+} from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
 import {
   createAppShellRevisionActions,
@@ -142,6 +146,22 @@ import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
+
+function rebaseWorkspaceFileReferences(
+  sourceText: string,
+  projectedText: string,
+  references: readonly WorkspaceFileReferencePosition[],
+): WorkspaceFileReferencePosition[] {
+  const offset = sourceText.lastIndexOf(projectedText);
+  if (offset < 0) return [];
+  return references
+    .filter(
+      (reference) =>
+        reference.start >= offset &&
+        reference.start + reference.value.length <= offset + projectedText.length,
+    )
+    .map((reference) => ({ ...reference, start: reference.start - offset }));
+}
 import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
@@ -157,11 +177,8 @@ type ComposerImportOwner = {
 };
 
 /**
- * Grace period before the committed-history fallback force-settles a draining
- * assistant stream slot. Comfortably past the smoother's completion drain
- * budget (600ms, smooth-stream.ts DEFAULT_COMPLETE_FLUSH_BUDGET_MS) so the
- * primary `onStreamingSettled` signal always wins in the healthy path and the
- * visible tail is never cut mid-typewriter.
+ * Grace period before the committed-history fallback force-settles an
+ * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -231,7 +248,6 @@ function AppShellContent({
     refreshSessions,
     seedSessions,
     upsertSessionSummary,
-    markSessionRunningOptimistic,
     markSessionReadLocally,
     activeId,
     activeIdRef,
@@ -245,13 +261,14 @@ function AppShellContent({
     setMessageLoadPending,
     messageRetryPendingRef,
     stopPendingRef,
-    sessionUiState,
+    sessionUiController,
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
     setStopPendingBySession,
     setLiveTurnBySession,
+    confirmLiveTurn,
     setShellRunUpdatesBySession,
     setInteractionBySession,
     setSessionEventHealthBySession,
@@ -293,16 +310,18 @@ function AppShellContent({
     ));
   }, []);
   const navSelectionRef = useRef<NavSelection>(navSelection);
+  // #1985: the shell's complete read of session UI state. See the hook for why
+  // the two token-rate maps are absent.
   const {
     messageLoadErrorBySession,
     messageRetryPendingBySession,
     stopPendingBySession,
-    liveTurnBySession,
-    shellRunUpdatesBySession,
     interactionBySession,
     pendingPermissionModeBySession,
     pendingSessionModelBySession,
-  } = sessionUiState;
+    streamingSessionIds,
+    activeLiveTurnSnapshot,
+  } = useAppShellSessionUiReads(sessionUiController, activeId);
   // PR-MEMORY-VISIBILITY-INDICATOR-0: session-context memory state (MEMORY.md
   // injected into the system prompt). State and the fire-and-forget refresh
   // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
@@ -317,6 +336,13 @@ function AppShellContent({
     refreshConnections,
     handleConnectionEvent,
   } = useShellConnections({ toastApi, uiLocale });
+  const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
+  const onboardingState = onboarding.snapshot?.state;
+  const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
+  const onboardingActivationCandidate = getOnboardingActivationCandidate(
+    onboarding.snapshot,
+    sessions.length > 0,
+  );
   const {
     settingsOpen,
     settingsRequestedSection,
@@ -341,6 +367,7 @@ function AppShellContent({
     setUserLabel,
     defaultPermissionMode,
     setDefaultPermissionMode,
+    voiceCaptureConfigured,
     refreshShellSettings,
   } = useShellAppearance({
     toastApi,
@@ -523,7 +550,6 @@ function AppShellContent({
   // Active autonomous goal for the current session drives the header
   // kill-switch pill (visible indicator + one-click clear).
   const activeGoal = useSessionGoal(activeId);
-  const activeLiveTurn = activeId ? liveTurnBySession[activeId] : undefined;
   // Set of session ids whose backend / connection is no longer usable —
   // drives the sidebar "已过期" pill (PR108g, paired with the PR108e chat
   // header banner). Derivation is pure (see `stale-sessions.ts`) so the
@@ -560,7 +586,7 @@ function AppShellContent({
   // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
   // Memoized so the panel's `useEffect` cleanup keys
   // off a stable reference instead of refetching on every render.
-  const dailyReviewBridge = useMemo(() => createAppShellDailyReviewBridge(connections, uiLocale), [connections, uiLocale]);
+  const dailyReviewBridge = useMemo(() => createAppShellDailyReviewBridge(uiLocale), [uiLocale]);
   const {
     appendDailyReviewMarkdown,
     copyDailyReviewMarkdown,
@@ -575,30 +601,19 @@ function AppShellContent({
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
-  // Live-turn projection of the active session: streaming/thinking slices, the
-  // sidebar pulse set, the in-flight tool signal, and the #646 turn-wait cues
-  // all live in useShellLiveTurn (pure derivation of the live projection).
-  // `activeLiveTurn` itself stays here — a source-slice contract pins its
-  // declaration to app-shell.tsx — and is passed in.
+  // The shell's reading of the active live turn: streaming/settled flags, the
+  // in-flight tool signal, and the #646 turn-wait cues, all derived from the
+  // semantic snapshot rather than the projection (#1985).
   const {
-    activeShellRunUpdates,
-    activeStreaming,
-    activeStreamingComplete,
     activeStreamingLive,
     activeStreamingMessageId,
-    activeThinking,
-    streamingSessionIds,
-    liveTools,
     hasInFlightLiveTools,
-    turnInFlight,
-    sessionAwaitingModel,
+    hasLiveTurnContent,
+    turnActive,
     showProcessingIndicator,
     showContinuingIndicator,
   } = useShellLiveTurn({
-    activeId,
-    activeLiveTurn,
-    liveTurnBySession,
-    shellRunUpdatesBySession,
+    liveTurn: activeLiveTurnSnapshot,
     activeSession,
   });
   // Surface a credential-lifecycle alert directly in the chat header when
@@ -622,7 +637,6 @@ function AppShellContent({
     newChatModelLabel,
     newChatThinkingLevels,
     newChatThinkingLevel,
-    validPendingNewChatModel,
     setPendingNewChatModel,
     pendingNewChatThinkingLevel,
     setPendingNewChatThinkingLevel,
@@ -632,6 +646,7 @@ function AppShellContent({
     connections,
     connectionsRevision,
     defaultConnection,
+    activationCandidate: onboardingActivationCandidate,
     activeSession,
     // Only trust the loaded transcript once the active session's
     // messages finished loading; during the load the list may still be
@@ -1076,12 +1091,9 @@ function AppShellContent({
   // `sessions:changed` + `connections:event`. The hero renders only
   // when sessions.length === 0; any session (including archived /
   // aborted) takes over with the existing chat surface.
-  const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   // Re-entrancy lock only — a ref, not state, because nothing renders
   // from it (#1433 removed its last reader with the first-run hero).
   const sessionStartPendingRef = useRef(false);
-  const onboardingState = onboarding.snapshot?.state;
-  const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
   // Seed sessions from the onboarding snapshot on first load — the snapshot
   // already fetches the session list + connections internally, so separate
   // `sessions:list` / `connections:list` / `getDefault` IPCs are redundant.
@@ -1101,7 +1113,7 @@ function AppShellContent({
     if (
       onboarding.error &&
       !initialOnboardingSnapshot &&
-      !onboarding.firstMountedSnapshot &&
+      !onboarding.mountedSnapshotHandoff &&
       !bootstrapFallbackStartedRef.current
     ) {
       bootstrapFallbackStartedRef.current = true;
@@ -1117,10 +1129,10 @@ function AppShellContent({
     } else if (
       !bootstrapFallbackStartedRef.current &&
       !mountedSnapshotSeededRef.current &&
-      onboarding.firstMountedSnapshot
+      onboarding.mountedSnapshotHandoff
     ) {
       mountedSnapshotSeededRef.current = true;
-      snapshot = onboarding.firstMountedSnapshot;
+      snapshot = onboarding.mountedSnapshotHandoff;
       releaseSelectionLease = true;
     }
     if (!snapshot) return;
@@ -1135,7 +1147,7 @@ function AppShellContent({
     setConnections(snapshot.connections);
     setDefaultConnection(snapshot.defaultSlug);
     if (releaseSelectionLease) bootstrapSelectionLease.release();
-  }, [initialOnboardingSnapshot, onboarding.firstMountedSnapshot, onboarding.error]);
+  }, [initialOnboardingSnapshot, onboarding.mountedSnapshotHandoff, onboarding.error]);
   // PR110c (@kenji review): suppress hero AND the fallback EmptyChatHero
   // while the initial snapshot is in flight. Otherwise sessions.length===0
   // + snapshot===null flashes the prompt-suggestion EmptyChatHero before
@@ -1217,7 +1229,6 @@ function AppShellContent({
     refreshSkills,
     refreshManagedSkillSources,
     refreshBundledSkillCatalog,
-    createSkillTemplate,
     importManagedSkillSource,
     installManagedSkill,
     installBundledSkill,
@@ -1354,7 +1365,6 @@ function AppShellContent({
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
     markSessionReadLocally,
-    markSessionRunningOptimistic,
     messageRetryPendingRef,
     refreshSessions,
     setActiveId,
@@ -1369,7 +1379,7 @@ function AppShellContent({
     showModelSetupToast,
     toastApi,
     upsertSessionSummary,
-    validPendingNewChatModel,
+    newChatModel: newChatModel ?? null,
     pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     newChatOrchestrationMode: newChatGraphModeActive
@@ -1505,37 +1515,6 @@ function AppShellContent({
     },
   });
 
-  // Quiet composer: show the single mic only when recognition is configured.
-  // Unconfigured voice is a dead control and must not occupy sendActions.
-  // Refresh on mount, external settings writes, and Settings close (same
-  // settings-only path as defaultPermissionMode — in-app settings:update does
-  // not emit externalChanged until the file watcher fires).
-  const [composerVoiceCaptureReady, setComposerVoiceCaptureReady] = useState(false);
-  const applyVoiceCaptureReady = useCallback((settings: {
-    voice?: { recognition?: { connectionSlug?: string; model?: string } | null } | null;
-  }) => {
-    const recognition = settings.voice?.recognition;
-    setComposerVoiceCaptureReady(
-      Boolean(recognition?.connectionSlug?.trim() && recognition?.model?.trim()),
-    );
-  }, []);
-  useEffect(() => {
-    let cancelled = false;
-    async function refreshVoiceCaptureReady() {
-      try {
-        const settings = await window.maka.settings.get();
-        if (cancelled) return;
-        applyVoiceCaptureReady(settings);
-      } catch {
-        if (!cancelled) setComposerVoiceCaptureReady(false);
-      }
-    }
-    void refreshVoiceCaptureReady();
-    return window.maka.settings.subscribeExternalChanged(() => {
-      void refreshVoiceCaptureReady();
-    });
-  }, [applyVoiceCaptureReady]);
-
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
     uiLocale,
     activeIdRef,
@@ -1572,7 +1551,7 @@ function AppShellContent({
 
   async function sendWithAttachments(
     text: string,
-    skillIds: readonly string[],
+    metadata?: { workspaceFileReferences?: readonly WorkspaceFileReferencePosition[] },
   ): Promise<boolean | void> {
     const revision = revisionDraftRef.current;
     const revisionSend = Boolean(
@@ -1583,7 +1562,6 @@ function AppShellContent({
     if (
       revisionSend &&
       revision &&
-      skillIds.length === 0 &&
       text.trim() === revision.originalText.trim() &&
       pendingAttachments.length === 0
     ) {
@@ -1597,13 +1575,13 @@ function AppShellContent({
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
-      if ((skillIds.length === 0 && text.trim() === '/compact') || swarmCommand || graphCommand) {
+      if (text.trim() === '/compact' || swarmCommand || graphCommand) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
         return false;
       }
       if (!(await prepareRevisionSend(text))) return false;
     }
-    if (skillIds.length === 0 && text.trim() === '/compact') {
+    if (text.trim() === '/compact') {
       const sessionId = activeIdRef.current;
       if (!sessionId) return true;
       try {
@@ -1648,9 +1626,17 @@ function AppShellContent({
       const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
       const ok = await send(swarmCommand.task, pending, {
-        ...(skillIds.length > 0 ? { skillIds } : {}),
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
+        ...(metadata?.workspaceFileReferences?.length
+          ? {
+              workspaceFileReferences: rebaseWorkspaceFileReferences(
+                text,
+                swarmCommand.task,
+                metadata.workspaceFileReferences,
+              ),
+            }
+          : {}),
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
       if (ok !== false && quotes) clearQuotes();
@@ -1682,9 +1668,17 @@ function AppShellContent({
       const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
       const ok = await send(graphCommand.task, pending, {
-        ...(skillIds.length > 0 ? { skillIds } : {}),
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
+        ...(metadata?.workspaceFileReferences?.length
+          ? {
+              workspaceFileReferences: rebaseWorkspaceFileReferences(
+                text,
+                graphCommand.task,
+                metadata.workspaceFileReferences,
+              ),
+            }
+          : {}),
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
       if (ok !== false && quotes) clearQuotes();
@@ -1696,8 +1690,10 @@ function AppShellContent({
       : undefined;
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
-      ...(skillIds.length > 0 ? { skillIds } : {}),
       ...(quotes ? { quotes } : {}),
+      ...(metadata?.workspaceFileReferences?.length
+        ? { workspaceFileReferences: metadata.workspaceFileReferences }
+        : {}),
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);
     if (ok !== false && quotes) clearQuotes();
@@ -1743,30 +1739,12 @@ function AppShellContent({
     },
   });
 
-  // Tool/thinking evidence may survive its event-triggered refresh, including
-  // between steps of one running turn. Reconcile from durable evidence whenever
-  // either side changes, so old output stays on its original tool instead of
-  // joining the next batch, without deleting text that the smoother still owns.
-  const reconcilePersistedMessagesEffect = useEffectEvent(reconcilePersistedMessages);
+  // Streaming-settle handoff, FALLBACK path only. The bubble's primary
+  // `onStreamingSettled` signal runs after Astryx commits the terminal text.
+  // Keep a delayed fallback because a stuck slot would otherwise hide the
+  // committed answer forever (`streamingMessageId` suppresses it while live).
   useEffect(() => {
-    if (!activeId) return;
-    reconcilePersistedMessagesEffect(activeId, messages);
-  }, [activeId, activeLiveTurn, messages]);
-
-  // Streaming-settle handoff, FALLBACK path only. The primary settle signal
-  // is the bubble's own `onStreamingSettled` (ChatView below): it fires once
-  // the smoother has DISPLAYED the final text (catchingUp === false), so the
-  // user watches the tail type out before the live section swaps for the
-  // committed turn. This effect used to settle immediately when the committed
-  // assistant message appeared in `messages` — which lands mid-drain and cut
-  // the visible tail, snapping the last characters in with the swap. It now
-  // waits out a grace period comfortably past the smoother's completion drain
-  // budget (600ms): in the normal path `onStreamingSettled` clears the slot
-  // first and the delayed settle no-ops on its phase guard. The fallback stays
-  // because a stuck slot would otherwise hide the committed answer forever
-  // (`streamingMessageId` suppresses it while draining).
-  useEffect(() => {
-    if (!activeId || !activeStreamingComplete || !activeStreamingMessageId) return;
+    if (!activeId || !activeStreamingMessageId) return;
     const committedAssistantArrived = messages.some(
       (message) => message.type === 'assistant' && message.id === activeStreamingMessageId,
     );
@@ -1775,7 +1753,7 @@ function AppShellContent({
       void settleAssistantStreaming(activeId, activeStreamingMessageId);
     }, SETTLE_FALLBACK_GRACE_MS);
     return () => window.clearTimeout(timer);
-  }, [activeId, activeStreamingComplete, activeStreamingMessageId, messages, settleAssistantStreaming]);
+  }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
   const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
 
@@ -1794,6 +1772,7 @@ function AppShellContent({
     applyE2eFixture,
     bootstrapSessions,
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
+    confirmLiveTurn,
     clearSessionRendererState,
     createSession,
     handleConnectionEvent,
@@ -1975,16 +1954,11 @@ function AppShellContent({
     // session-context memory state — user may have just flipped the
     // agentReadEnabled switch.
     void refreshMemoryActive();
-    // Settings-only writes (default permission, voice recognition, …) go
-    // through settings-surface.tsx and may not emit externalChanged until the
-    // file watcher fires. Re-read on close so shell chrome matches disk.
-    void window.maka.settings
-      .get()
-      .then((next) => {
-        setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
-        applyVoiceCaptureReady(next);
-      })
-      .catch(() => {});
+    // Settings pages own optimistic local drafts, so the shell does not see
+    // every write live. Refresh its display mirrors on close: permission mode
+    // and the independently configured voice routes must both update without
+    // requiring an app restart.
+    void refreshShellSettings();
   }
 
   function showModelSetupToast(description: string, reason?: string) {
@@ -2006,9 +1980,7 @@ function AppShellContent({
   const homeSurfaceActive =
     navSelection.section === 'sessions' &&
     messages.length === 0 &&
-    activeStreaming.length === 0 &&
-    activeThinking.length === 0 &&
-    liveTools.length === 0 &&
+    !hasLiveTurnContent &&
     !activeMessageLoadError;
   const commandOptions: AppShellCommandListOptions = {
     uiLocale,
@@ -2064,10 +2036,16 @@ function AppShellContent({
          for them to disagree. */
       data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
     >
+      <LiveTurnReconciler
+        controller={sessionUiController}
+        activeId={activeId}
+        messages={messages}
+        reconcile={reconcilePersistedMessages}
+      />
       {/* Window chrome is frame-level hit-test only (not AppShell topNav): a
           transparent drag overlay so column surfaces paint to the window top.
-          Must precede the shell in document order for Chromium app-region
-          subtraction (see e2e/window-titlebar.spec.ts). */}
+          It precedes the shell so Chromium applies app-region subtraction from
+          one frame-level hit-test surface. */}
       <header
         className="maka-window-titlebar"
         aria-hidden={hasModalOpen ? 'true' : undefined}
@@ -2076,6 +2054,7 @@ function AppShellContent({
         <AppShellTopbarActions
           sidebarCollapsed={sessionListCollapsed}
           sidebarHandleRef={sessionSideNavHandleRef}
+          sidebarToggleHidden={settingsOpen}
           onOpenSearchModal={() => setSearchModalOpen(true)}
         />
         {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
@@ -2155,7 +2134,6 @@ function AppShellContent({
                   planReminders={planReminders}
                   onRefreshSkills={() => refreshSkills()}
                   onRefreshManagedSkillSources={() => refreshManagedSkillSources()}
-                  onCreateSkillTemplate={() => createSkillTemplate()}
                   onOpenSkill={(skillId) => openSkill(skillId)}
                   onUseSkill={useSkillInChat}
                   onOpenSkillsFolder={() => openSkillsFolder()}
@@ -2246,31 +2224,27 @@ function AppShellContent({
                   // #646: Stop must be available for the WHOLE turn - the moment the
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
-                  // Drive Stop off `turnInFlight` (armed at send, cleared at the
-                  // terminal event), not the wait indicators, so it never blinks out
-                  // in a mid-turn gap. But `turnInFlight` alone goes STALE: the event
-                  // stream only follows `activeId`, so a session whose turn completes
-                  // while backgrounded never receives its terminal event and keeps its
-                  // arm. Gate on `sessionAwaitingModel` (status === 'running', kept
-                  // truthful for backgrounded sessions by sessions:changed and made
-                  // synchronous at send by markSessionRunningOptimistic) so returning
-                  // to such a session shows Send, not a stuck Stop that hides it.
-                  // `activeStreamingLive` is folded in defensively for the rare replay
-                  // where the arm was over-cleared.
-                  streaming={(sessionAwaitingModel && turnInFlight) || activeStreamingLive}
+                  // `turnActive` unions the send's zero-lag local arm with the
+                  // runtime's live `runningTurnIds` (turns this renderer did not
+                  // send), so neither witness can veto the other — see
+                  // `deriveTurnActive`. `activeStreamingLive` is folded in
+                  // defensively for the rare replay where the arm was over-cleared.
+                  streaming={turnActive || activeStreamingLive}
                   // #646: in the first-token wait (Stop up, nothing streams yet) the
                   // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
                   // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
                   processing={showProcessingIndicator && !activeStreamingLive}
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   voiceCaptureState={voiceInput.captureState}
+                  realtimeVoiceState={voiceInput.realtimeState}
                   voiceProviderLabel={voiceInput.providerLabel}
                   onToggleVoiceCapture={
-                    composerVoiceCaptureReady ? voiceInput.toggleCapture : undefined
+                    voiceCaptureConfigured ? voiceInput.toggleCapture : undefined
                   }
                   onCancelVoiceCapture={
-                    composerVoiceCaptureReady ? voiceInput.cancelCapture : undefined
+                    voiceCaptureConfigured ? voiceInput.cancelCapture : undefined
                   }
+                  onToggleRealtimeVoice={voiceInput.toggleRealtime}
                   onSend={sendWithAttachments}
                   onStop={stop}
                   revisionNotice={
@@ -2362,12 +2336,18 @@ function AppShellContent({
                   }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
+                  // Every "cannot change this mid-turn" gate reads `turnActive`,
+                  // the same witness Stop reads. Reading the persisted status
+                  // here instead left these toggles live through the whole
+                  // send→run-start window — long enough on a cold backend for a
+                  // mode change to land before the run registers and alter the
+                  // execution config of the turn already sent.
                   permissionModeDisabledReason={
                     activeId && pendingPermissionModeBySession[activeId] === true
                         ? shellCopy.permissionModeChanging
                       : activeStreamingLive
                           ? shellCopy.permissionModeStreaming
-                        : activeId && activeSessionForView?.status === 'running'
+                        : activeId && turnActive
                             ? shellCopy.permissionModeRunning
                           : activeId && activeSessionForView?.status === 'waiting_for_user'
                               ? shellCopy.permissionModeWaiting
@@ -2387,7 +2367,7 @@ function AppShellContent({
                       ? shellCopy.planModeChanging
                       : activeStreamingLive
                           ? shellCopy.planModeStreaming
-                        : activeId && activeSessionForView?.status === 'running'
+                        : activeId && turnActive
                             ? shellCopy.planModeRunning
                           : activeId && activeSessionForView?.status === 'waiting_for_user'
                               ? shellCopy.planModeWaiting
@@ -2403,7 +2383,7 @@ function AppShellContent({
                       ? shellCopy.swarmModeChanging
                       : activeStreamingLive
                           ? shellCopy.swarmModeStreaming
-                        : activeId && activeSessionForView?.status === 'running'
+                        : activeId && turnActive
                             ? shellCopy.swarmModeRunning
                           : activeId && activeSessionForView?.status === 'waiting_for_user'
                               ? shellCopy.swarmModeWaiting
@@ -2421,7 +2401,7 @@ function AppShellContent({
                       ? shellCopy.graphModeChanging
                       : activeStreamingLive
                           ? shellCopy.graphModeStreaming
-                        : activeId && activeSessionForView?.status === 'running'
+                        : activeId && turnActive
                             ? shellCopy.graphModeRunning
                           : activeId && activeSessionForView?.status === 'waiting_for_user'
                               ? shellCopy.graphModeWaiting
@@ -2436,9 +2416,9 @@ function AppShellContent({
               >
                 {navSelection.section === 'sessions' ? (
                   <ChatMessageSurface
+                sessionUiController={sessionUiController}
+                activeSessionId={activeId}
                 messages={messages}
-                liveTurn={activeLiveTurn}
-                shellRunUpdates={activeShellRunUpdates}
                 messageLoading={activeMessageLoading}
                 processingIndicator={showProcessingIndicator}
                 continuingIndicator={showContinuingIndicator}
@@ -2545,6 +2525,7 @@ function AppShellContent({
                   if (section) openSettingsSection(section);
                   else openSettings();
                 }}
+                onOpenConnectionDetail={openConnectionDetail}
                 onAddProvider={openProviderCreate}
                 onBrowseProviders={openProviderCatalog}
                 connections={connections}

@@ -2,24 +2,40 @@ import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
 } from '@maka/storage/root-authority';
-import { connectOrSpawnRuntimeHost } from '../../client/index.js';
+import { connectOrSpawnRuntimeHostWithDependencies } from '../../client/connect-or-spawn.js';
+import { launchDetachedRuntimeHostCandidate } from '../../client/launcher.js';
 import { readHostRegistration } from '../../control/registration.js';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '../../protocol/index.js';
 
-const [rootPath] = process.argv.slice(2);
+const [rootPath, mode] = process.argv.slice(2);
 if (!rootPath) throw new Error('usage: electron-connect-parent <root>');
 if (!process.versions.electron)
   throw new Error('electron-connect-parent requires Electron Node mode');
 
-const result = await connectOrSpawnRuntimeHost({
-  rootPath,
-  surface: 'desktop',
-  protocol: {
-    min: RUNTIME_HOST_PROTOCOL_VERSION,
-    max: RUNTIME_HOST_PROTOCOL_VERSION,
+const result = await connectOrSpawnRuntimeHostWithDependencies(
+  {
+    rootPath,
+    surface: 'desktop',
+    protocol: {
+      min: RUNTIME_HOST_PROTOCOL_VERSION,
+      max: RUNTIME_HOST_PROTOCOL_VERSION,
+    },
+    electionDeadlineMs: 5_000,
   },
-  electionDeadlineMs: 5_000,
-});
+  {
+    random: Math.random,
+    launchCandidate: (input) => {
+      const launch = launchDetachedRuntimeHostCandidate(input);
+      return {
+        spawned: launch.spawned.then(async (attempt) => {
+          await sendToParent({ type: 'electron-candidate-launched', pid: attempt.pid });
+          if (mode === 'exit-after-candidate-launch') process.exit(23);
+          return attempt;
+        }),
+      };
+    },
+  },
+);
 if (result.kind !== 'connected') {
   throw new Error(`Electron Client failed to connect: ${result.kind}`);
 }

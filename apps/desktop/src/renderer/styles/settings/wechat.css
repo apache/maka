@@ -9,8 +9,13 @@
 .settingsWechatQrBody {
   display: grid;
   place-items: center;
+  align-content: center;
   gap: var(--space-3);
   text-align: center;
+  /* Deep-review fix: the retired `.settingsWechatQrState` pane carried a
+     180px floor; without one the dialog collapses in the generating/expired/
+     error states and snaps taller when the QR (224px frame) arrives. */
+  min-height: 224px;
 }
 
 .settingsWechatQrFrame {
@@ -31,40 +36,6 @@
   image-rendering: pixelated;
 }
 
-.settingsWechatQrState {
-  font: var(--maka-text-body);
-  width: 100%;
-  min-height: 180px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: var(--space-2-5);
-  border: var(--border-width-hairline) dashed var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-3);
-  color: var(--foreground-secondary);
-  padding: var(--space-4);
-}
-
-.settingsWechatQrState strong {
-  font: var(--maka-text-heading-4);
-  color: inherit;
-}
-
-.settingsWechatQrState[data-tone="success"] {
-  border-color: oklch(from var(--success) l c h / 0.24);
-  background: oklch(from var(--success) l c h / 0.08);
-  color: var(--success-text);
-}
-
-.settingsWechatQrState[data-tone="warning"] {
-  border-color: oklch(from var(--info) l c h / 0.26);
-  background: oklch(from var(--info) l c h / 0.09);
-  color: var(--info-text);
-}
-
-.settingsWechatQrState[data-tone="error"] {
-  border-color: oklch(from var(--destructive) l c h / 0.24);
-  background: oklch(from var(--destructive) l c h / 0.08);
-  color: var(--destructive-text);
-}
+/* Astryx convergence (task #136): the `.settingsWechatQrState` placeholder
+   pane and its four hand-tinted `data-tone` variants are EmptyState / Spinner
+   now; only the QR frame plate and caption remain bespoke. */

@@ -453,7 +453,9 @@ reconcile_history_not_persisted
 
 因此 timeline 可以 replay、可以用于诊断，却不会冒充新的 authority。每个 event 都能指回真正拥有 underlying fact 的 store。
 
-## Desktop 产品接线
+## Client 访问与 Desktop 产品接线
+
+Runtime Host 通过有界的 `agent.graph.query` 与 `agent.graph.operator.query` operation 暴露持久化 Graph projection。Client 通过 `agent.graph.stop` 显式控制 Graph；关闭连接或 Session subscription 永远不会停止 Graph。需要一致 live view 的 client，应先为 root Session 建立 subscription，再执行首次 query。此后，`subscription.agent_graph_changed` 与 Session update 共用该 subscription 的有序 sequence，并通知 client 重新查询 projection。它只是 invalidation hint，不是 replay log，也不是第二套 source of truth。Query result 通过 omitted data 与 continuation cursor 表达边界，而不会无限增长。
 
 Desktop 组合了当前 host-managed Graph profile：
 
@@ -466,7 +468,7 @@ Desktop 组合了当前 host-managed Graph profile：
 - Stop Graph 会 abort reconciliation，并通过 Runtime 停止已知 child Session；
 - Startup 先 repair interrupted Runtime state，再恢复 wake 与 Graph schedule。
 
-Renderer invalidation 只是 hint。重新连接的 client 调用 `getSnapshot()` 读取持久 state，不把进程内 notification replay 成事实。
+Renderer invalidation 遵循同一契约。重新连接的 client 会重新查询持久化 projection，不把进程内 notification replay 成事实。
 
 当前 panel 是 operational view，不是 node-and-edge authoring canvas。主 Agent 仍通过 typed schedule update 编写 topology。
 

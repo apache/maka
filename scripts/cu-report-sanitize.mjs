@@ -171,17 +171,6 @@ export function sanitizeCuTrace(trace) {
   return Object.keys(sanitized).length > 0 ? sanitized : null;
 }
 
-export function sanitizeCuModelPlans(plans) {
-  return Array.isArray(plans)
-    ? plans.map((plan) => ({
-        turn: plan?.turn,
-        actionTypes: Array.isArray(plan?.actions)
-          ? plan.actions.map((action) => actionType(action))
-          : [],
-      }))
-    : [];
-}
-
 export function sanitizeCuDirectReport(report) {
   return sanitizeCuReport({
     ...report,

@@ -24,6 +24,8 @@ const TYPECHECK_ONLY_FILES = new Set([
   'tsconfig.lib.json',
 ]);
 
+const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host', 'packages/headless']);
+
 // Scripts the Electron e2e job runs. Editing one of these changes what that
 // job verifies, so it has to re-run — a unit test on the runner is not
 // evidence that the run it drives still works.
@@ -64,6 +66,19 @@ const EXTENDED_SCRIPT_FILES = new Set([
   'scripts/package-macos-arm64.mjs',
   'scripts/prepare-cua-driver.mjs',
   'scripts/verify-macos-arm64-dmg.mjs',
+]);
+
+const STORAGE_STRESS_FILES = new Set([
+  'packages/storage/src/agent-run-store.ts',
+  'packages/storage/src/git-workspace-service.ts',
+  'packages/storage/src/runtime-event-invariants.ts',
+  'packages/storage/src/root-authority.ts',
+  'packages/storage/src/__tests__/agent-run-store.test.ts',
+  'packages/storage/src/__tests__/git-workspace-service.test.ts',
+  'packages/storage/src/__tests__/root-authority.test.ts',
+  'packages/storage/src/__tests__/fixtures/git-workspace-service-crash-child.ts',
+  'packages/storage/src/__tests__/fixtures/root-lock-holder.ts',
+  'packages/storage/src/__tests__/fixtures/root-resolver.ts',
 ]);
 
 function normalizePath(path) {
@@ -114,22 +129,35 @@ export function reverseDependencyClosure(seedDirs, graph) {
   return graph.dirs.filter((dir) => selected.has(dir));
 }
 
+function workspaceLanes(workspaces) {
+  return {
+    headless: workspaces.includes('packages/headless'),
+    runtimeHost: workspaces.includes('packages/runtime-host'),
+    standardWorkspaces: workspaces.filter((dir) => !DEDICATED_WORKSPACE_LANES.has(dir)),
+  };
+}
+
 export function planTests(changedFiles, options = {}) {
   const graph = options.graph ?? loadWorkspaceGraph(options.repoRoot);
   const files = [...new Set(changedFiles.map(normalizePath).filter(Boolean))];
   const forceFull = options.forceFull ?? false;
   const full = forceFull || files.some((path) => FULL_SUITE_FILES.has(path));
   if (full) {
+    const workspaces = [...graph.dirs];
     return {
       code: true,
       e2e: true,
       full: true,
-      headless: graph.dirs.includes('packages/headless'),
       runtimeSandbox: graph.dirs.includes('packages/cli'),
       scriptMode: 'full',
-      storageStress: graph.dirs.includes('packages/storage'),
+      // A complete functional suite is still the default release/main gate.
+      // Stress multipliers and native child-process lock probes run only when
+      // their owning storage seam changes; making --full imply stress turned
+      // every unrelated merge into a 10K-chunk pressure run.
+      storageStress: false,
       storybook: true,
-      workspaces: [...graph.dirs],
+      workspaces,
+      ...workspaceLanes(workspaces),
     };
   }
 
@@ -172,12 +200,7 @@ export function planTests(changedFiles, options = {}) {
   }
 
   const workspaces = reverseDependencyClosure(directWorkspaces, graph);
-  const storageStress = files.some(
-    (path) =>
-      path === 'packages/storage/src/agent-run-store.ts' ||
-      path === 'packages/storage/src/runtime-event-invariants.ts' ||
-      path === 'packages/storage/src/__tests__/agent-run-store.test.ts',
-  );
+  const storageStress = files.some((path) => STORAGE_STRESS_FILES.has(path));
 
   return {
     code,
@@ -192,7 +215,6 @@ export function planTests(changedFiles, options = {}) {
       directWorkspaces.has('packages/ui') ||
       files.some((path) => E2E_DRIVING_SCRIPTS.has(path)),
     full: false,
-    headless: workspaces.includes('packages/headless'),
     // packages/cli/src/__tests__/runtime-bootstrap.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever
     // the cli workspace runs in the dependency closure, not only for direct
@@ -205,6 +227,7 @@ export function planTests(changedFiles, options = {}) {
     // isStorybookPath.
     storybook: files.some((path) => isStorybookPath(path)),
     workspaces,
+    ...workspaceLanes(workspaces),
   };
 }
 
@@ -214,11 +237,13 @@ export function formatGitHubOutputs(plan) {
     `e2e=${plan.e2e}`,
     `full=${plan.full}`,
     `headless=${plan.headless}`,
+    `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `script_mode=${plan.scriptMode}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `unit=${plan.workspaces.length > 0}`,
+    `standard_workspaces=${plan.standardWorkspaces.join(',')}`,
     `workspaces=${plan.workspaces.join(',')}`,
   ].join('\n');
 }

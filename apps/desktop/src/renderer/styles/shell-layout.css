@@ -68,36 +68,51 @@
   border-inline-end-color: transparent;
 }
 
+/* WAWQAQ msg `9f313715` (2026-08-03): the content column is a rounded floating
+   plate flush to the sidebar — its edge is the ONE boundary on that seam. The
+   theme's full-height sidenav hairline (`.astryx-app-shell-sidenav.elevated`
+   in the built maka.css) ran on the same seam, so beside the plate's top-left
+   corner radius both lines showed and read as a doubled border. The collapsed
+   rail already dropped this edge (rule above); drop it expanded too — column
+   separation is tonal (the plate's fill against the canvas), per DESIGN.md's
+   One Working Plane rule. Override lives here because maka.css is a generated
+   artifact (`npm run astryx:theme`), not a hand-edited file. */
+.maka-shell-astryx .astryx-app-shell-sidenav {
+  border-inline-end-color: transparent;
+}
+
+
 /* The column resize handle is the one control positioned against the column BOX
    rather than flowing inside it (Astryx gives it `position:absolute; top:0;
    inset-block-end:0`), so the columns' `padding-top` clearance does not move it
    and its top 36px lands under the chrome strip. The strip is the topmost hit
    surface across the whole band, so that part of the handle cannot be grabbed at
    all — pointer-down there reaches the OS as a window drag instead. Start the
-   handle below the strip; `inset-block-end: 0` still takes it to the bottom.
-   Locked by the offenders sweep in e2e/window-titlebar.spec.ts. */
+   handle below the strip; `inset-block-end: 0` still takes it to the bottom. */
 .maka-shell-astryx .astryx-resize-handle {
   top: var(--h-titlebar);
 }
 
-/* Layout only. The content column's MATERIAL belongs to AppShell, which paints
-   --color-background-surface onto its own `.astryx-layout-content` under
-   `variant="elevated"`; this panel is the product's content box inside it.
-   Declaring a background here too resolved to the same color and so looked
-   harmless, but it made the panel a second paint authority that would silently
-   win over any future theme change — and the column-material E2E sampled THIS
-   element, so it was reading the product's copy rather than the shell's paint. */
+/* The content column is a rounded floating plate over the shell canvas —
+   flush to the sidebar on the left, a small gap on the other three sides. */
+.maka-shell-astryx .astryx-layout-content {
+  background: var(--agents-layout-bg);
+}
+
 .maka-shell-astryx .maka-panel-detail {
-  width: 100%;
-  height: 100%;
+  width: calc(100% - var(--agents-content-area-gap));
+  height: calc(100% - 2 * var(--agents-content-area-gap));
+  margin: var(--agents-content-area-gap) var(--agents-content-area-gap) var(--agents-content-area-gap) 0;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* Clear the absolute chrome strip; AppShell's surface shows through the
-     padding, so the session color still extends under the transparent
+  border-radius: var(--radius-modal);
+  background: var(--agents-content-area-bg);
+  overflow: hidden;
+  /* Clear the absolute chrome strip so content starts below the transparent
      titleband. */
-  padding-top: var(--h-titlebar);
+  padding-top: calc(var(--h-titlebar) - var(--agents-content-area-gap));
   box-sizing: border-box;
 }
 
@@ -134,8 +149,7 @@
    the nav's sibling one level in), so plain `:has()` reads it.
 
    Separator focus is deliberately NOT part of the gate — it was, and it left
-   the ease dead for every collapse after the handle had once been touched.
-   `sidebar-geometry.spec.ts` holds that as an executable assertion. */
+   the ease dead for every collapse after the handle had once been touched. */
 .maka-shell-astryx .maka-sidenav-motion {
   display: flex;
   min-width: 0;

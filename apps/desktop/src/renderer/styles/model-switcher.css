@@ -7,13 +7,17 @@
   -webkit-app-region: no-drag;
 }
 
-.maka-model-switcher[data-disabled="true"] {
-  opacity: var(--opacity-disabled);
-}
+/* No disabled opacity here. The Astryx Selector inside already dims itself
+   when disabled, and this wrapper rule multiplied on top of it: two stacked
+   `opacity: 0.5` layers composite to 0.25, which took the model label from
+   17.9:1 down to roughly 1.4:1 — a control that reads as absent rather than
+   as disabled. State is Astryx's, per the layout-only note below. */
 
 /* Justified state-cursor exception: pending model change shows progress,
    not the product default. native-cursor owns default/pointer/text only. */
 .maka-model-switcher[data-pending="true"] {
+  /* Pending has no Astryx counterpart (it is a Maka concept: a model change is
+     in flight), so this one does not stack. */
   opacity: var(--opacity-pending);
   cursor: progress !important;
 }
@@ -29,6 +33,22 @@
   gap: var(--space-1);
   min-width: 0;
   max-width: 100%;
+
+  /* The Astryx neutral theme lives on the app Theme wrapper, closer to these
+     controls than Maka's palette tokens on <html>. Rebind the color tokens at
+     this product seam so both selector triggers and their popovers follow the
+     currently selected Maka palette instead of staying neutral white/gray. */
+  --color-background-surface: var(--background);
+  --color-background-popover: var(--background-elevated);
+  --color-text-primary: var(--foreground);
+  --color-text-secondary: var(--muted-foreground);
+  --color-text-disabled: var(--muted-foreground);
+  --color-icon-primary: var(--foreground);
+  --color-icon-secondary: var(--muted-foreground);
+  --color-border-emphasized: var(--border-strong);
+  --color-overlay-hover: var(--state-hover-bg);
+  --color-accent: var(--accent);
+  --color-accent-muted: oklch(from var(--accent) l c h / 0.12);
 }
 
 .maka-model-picker-root {

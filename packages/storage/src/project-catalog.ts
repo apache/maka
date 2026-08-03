@@ -38,7 +38,6 @@ export interface ProjectRelinkContext {
 export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
   register(path: string): Promise<ProjectRecord>;
-  importLegacyPath(path: string, usedAt?: number): Promise<ProjectRecord>;
   select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
   touch(projectId: string, path?: string): Promise<ProjectRecord>;
   relink(
@@ -110,29 +109,6 @@ class FileProjectCatalog implements ProjectCatalog {
   async register(path: string): Promise<ProjectRecord> {
     const resolved = await resolveProjectLocation({ path });
     return this.upsertResolvedProject(resolved, this.now());
-  }
-
-  async importLegacyPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
-    let resolved: ResolvedProjectLocation;
-    try {
-      resolved = await resolveProjectLocation({ path });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      let pathIsMissing = false;
-      try {
-        await stat(path);
-      } catch (pathError) {
-        pathIsMissing = (pathError as NodeJS.ErrnoException).code === 'ENOENT';
-      }
-      if (!pathIsMissing) throw error;
-      const canonicalPath = normalize(resolve(path));
-      resolved = {
-        canonicalPath,
-        identity: `folder:${canonicalPath}`,
-        kind: 'folder',
-      };
-    }
-    return this.upsertResolvedProject(resolved, usedAt);
   }
 
   private async upsertResolvedProject(

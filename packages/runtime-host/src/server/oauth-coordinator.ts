@@ -1,13 +1,16 @@
 import { randomBytes } from 'node:crypto';
-import { createServer, type Server } from 'node:http';
 import { constantTimeStringEqual, parsePastedAuthorization } from '@maka/core/oauth-subscription';
 import {
   buildOAuthLoginAuthorization,
   createProxiedFetchTransport,
+  exchangeCodexDeviceAuthorizationCode,
   exchangeOAuthAuthorizationCode,
+  OAuthDeviceAuthorizationExpiredError,
   OAuthTokenEndpointError,
+  pollCodexDeviceAuthorization,
   pollXaiDeviceAuthorization,
   serializeOAuthSubscriptionTokens,
+  startCodexDeviceAuthorization,
   startXaiDeviceAuthorization,
 } from '@maka/runtime';
 import {
@@ -35,14 +38,6 @@ import type { OAuthOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
-const CODEX_CALLBACK_HOST = '127.0.0.1';
-const CODEX_CALLBACK_PORT = 1455;
-const CODEX_CALLBACK_PATH = '/auth/callback';
-const CODEX_REDIRECT_URI = `http://localhost:${CODEX_CALLBACK_PORT}${CODEX_CALLBACK_PATH}`;
-const CALLBACK_CODE_MAX_CHARS = 8 * 1024;
-const CALLBACK_ERROR_MAX_CHARS = 1_024;
-const CALLBACK_ERROR_DESCRIPTION_MAX_CHARS = 8 * 1024;
-const CALLBACK_ERROR_URI_MAX_CHARS = 8 * 1024;
 const MAX_TERMINAL_ATTEMPTS = 256;
 const DEFAULT_AUTHORIZATION_TIMEOUT_MS = 10 * 60_000;
 const MAX_AUTHORIZATION_TIMEOUT_MS = 60 * 60_000;
@@ -70,7 +65,9 @@ export interface HostOAuthCoordinatorInput {
   readonly exchangeCode?: typeof exchangeOAuthAuthorizationCode;
   readonly startXaiAuthorization?: typeof startXaiDeviceAuthorization;
   readonly pollXaiAuthorization?: typeof pollXaiDeviceAuthorization;
-  readonly openCodexLoopback?: typeof openCodexLoopback;
+  readonly startCodexAuthorization?: typeof startCodexDeviceAuthorization;
+  readonly pollCodexAuthorization?: typeof pollCodexDeviceAuthorization;
+  readonly exchangeCodexCode?: typeof exchangeCodexDeviceAuthorizationCode;
   readonly authorizationTimeoutMs?: number;
 }
 
@@ -121,7 +118,9 @@ export class HostOAuthCoordinator {
   readonly #exchangeCode: typeof exchangeOAuthAuthorizationCode;
   readonly #startXaiAuthorization: typeof startXaiDeviceAuthorization;
   readonly #pollXaiAuthorization: typeof pollXaiDeviceAuthorization;
-  readonly #openCodexLoopback: typeof openCodexLoopback;
+  readonly #startCodexAuthorization: typeof startCodexDeviceAuthorization;
+  readonly #pollCodexAuthorization: typeof pollCodexDeviceAuthorization;
+  readonly #exchangeCodexCode: typeof exchangeCodexDeviceAuthorizationCode;
   readonly #authorizationTimeoutMs: number;
   readonly #attempts = new Map<string, LoginAttemptRecord>();
   #activeAttempt: ActiveLoginAttempt | undefined;
@@ -147,7 +146,9 @@ export class HostOAuthCoordinator {
     this.#exchangeCode = input.exchangeCode ?? exchangeOAuthAuthorizationCode;
     this.#startXaiAuthorization = input.startXaiAuthorization ?? startXaiDeviceAuthorization;
     this.#pollXaiAuthorization = input.pollXaiAuthorization ?? pollXaiDeviceAuthorization;
-    this.#openCodexLoopback = input.openCodexLoopback ?? openCodexLoopback;
+    this.#startCodexAuthorization = input.startCodexAuthorization ?? startCodexDeviceAuthorization;
+    this.#pollCodexAuthorization = input.pollCodexAuthorization ?? pollCodexDeviceAuthorization;
+    this.#exchangeCodexCode = input.exchangeCodexCode ?? exchangeCodexDeviceAuthorizationCode;
     this.#authorizationTimeoutMs = authorizationTimeout(input.authorizationTimeoutMs);
   }
 
@@ -287,7 +288,6 @@ export class HostOAuthCoordinator {
 
   async #runLogin(attempt: ActiveLoginAttempt): Promise<void> {
     let transport: ReturnType<typeof createProxiedFetchTransport> | undefined;
-    let loopback: LoopbackClaim | undefined;
     try {
       transport = createProxiedFetchTransport(
         toRuntimePolicyProxy(
@@ -298,9 +298,9 @@ export class HostOAuthCoordinator {
       const tokens =
         attempt.provider === 'xai-oauth'
           ? await this.#runXaiLogin(attempt, transport.fetch)
-          : await this.#runAuthorizationCodeLogin(attempt, transport.fetch, (claim) => {
-              loopback = claim;
-            });
+          : attempt.provider === 'openai-codex'
+            ? await this.#runCodexDeviceLogin(attempt, transport.fetch)
+            : await this.#runAuthorizationCodeLogin(attempt, transport.fetch);
       attempt.abort.signal.throwIfAborted();
       attempt.cancellationDeferred = true;
       attempt.phase = 'committing';
@@ -324,7 +324,6 @@ export class HostOAuthCoordinator {
         }
       }
     } finally {
-      await closeLoopback(loopback);
       if (transport) await transport.close().catch(() => undefined);
       if (this.#activeAttempt === attempt) this.#activeAttempt = undefined;
       attempt.residency.release();
@@ -335,57 +334,31 @@ export class HostOAuthCoordinator {
     }
   }
 
-  async #runAuthorizationCodeLogin(
-    attempt: ActiveLoginAttempt,
-    fetchFn: typeof fetch,
-    rememberLoopback: (claim: LoopbackClaim) => void,
-  ) {
+  async #runAuthorizationCodeLogin(attempt: ActiveLoginAttempt, fetchFn: typeof fetch) {
     const provider = attempt.provider;
-    if (provider === 'xai-oauth') throw new Error('xAI does not use authorization code login');
+    if (provider !== 'claude-subscription') {
+      throw new Error(`Unsupported authorization code provider: ${provider}`);
+    }
     const verifier = randomOpaqueValue();
     const state = randomOpaqueValue();
-    const authorization = buildOAuthLoginAuthorization({
-      provider,
-      verifier,
-      state,
-      ...(provider === 'openai-codex' ? { redirectUri: CODEX_REDIRECT_URI } : {}),
+    const authorization = buildOAuthLoginAuthorization({ provider, verifier, state });
+    const result = await this.#present(attempt, {
+      method: 'request_authorization_code',
+      url: authorization.authorizationUrl,
+      stateHint: state.slice(0, 8),
     });
-    let code: string;
-    if (authorization.presentation === 'paste-code') {
-      const result = await this.#present(attempt, {
-        method: 'request_authorization_code',
-        url: authorization.authorizationUrl,
-        stateHint: state.slice(0, 8),
-      });
-      const pasted = parsePastedAuthorization(result.authorizationCode);
-      if (!pasted || !constantTimeStringEqual(pasted.state, state)) {
-        throw new LoginFailure('authorization_failed');
-      }
-      code = pasted.code;
-    } else {
-      const loopback = await this.#openCodexLoopback(state, attempt.abort.signal);
-      rememberLoopback(loopback);
-      await this.#present(attempt, {
-        method: 'open_external',
-        url: authorization.authorizationUrl,
-      });
-      const callback = await withDeadline(
-        loopback.callback,
-        this.#authorizationTimeoutMs,
-        () => new OAuthAuthorizationTimeoutError(),
-      );
-      if (callback.kind === 'rejected') throw new LoginFailure('provider_rejected');
-      code = callback.code;
+    const pasted = parsePastedAuthorization(result.authorizationCode);
+    if (!pasted || !constantTimeStringEqual(pasted.state, state)) {
+      throw new LoginFailure('authorization_failed');
     }
     attempt.abort.signal.throwIfAborted();
     attempt.cancellationDeferred = true;
     attempt.phase = 'exchanging';
     const tokens = await this.#exchangeCode({
       provider,
-      code,
+      code: pasted.code,
       verifier,
       state,
-      ...(provider === 'openai-codex' ? { redirectUri: CODEX_REDIRECT_URI } : {}),
       signal: new AbortController().signal,
       fetchFn,
       now: this.#now,
@@ -394,6 +367,44 @@ export class HostOAuthCoordinator {
       throw new LoginFailure('authorization_failed');
     }
     return tokens;
+  }
+
+  async #runCodexDeviceLogin(attempt: ActiveLoginAttempt, fetchFn: typeof fetch) {
+    const authorization = await this.#startCodexAuthorization({
+      fetchFn,
+      signal: attempt.abort.signal,
+      now: this.#now,
+    });
+    await this.#present(attempt, {
+      method: 'open_external',
+      url: authorization.verificationUrl,
+      stateHint: authorization.userCode,
+    });
+    attempt.phase = 'exchanging';
+    const grant = await this.#pollCodexAuthorization({
+      authorization,
+      fetchFn,
+      signal: attempt.abort.signal,
+      now: this.#now,
+      onPollAdmission: () => {
+        attempt.cancellationDeferred = true;
+      },
+      onPollRetry: () => {
+        attempt.cancellationDeferred = false;
+        if (attempt.cancelRequested) {
+          this.#requestCancellation(
+            attempt,
+            new DOMException('OAuth login cancelled', 'AbortError'),
+          );
+        }
+      },
+    });
+    return this.#exchangeCodexCode({
+      grant,
+      fetchFn,
+      signal: attempt.abort.signal,
+      now: this.#now,
+    });
   }
 
   async #runXaiLogin(attempt: ActiveLoginAttempt, fetchFn: typeof fetch) {
@@ -502,112 +513,6 @@ class LoginFailure extends Error {
   }
 }
 
-class OAuthAuthorizationTimeoutError extends Error {
-  constructor() {
-    super('OAuth authorization timed out');
-    this.name = 'OAuthAuthorizationTimeoutError';
-  }
-}
-
-interface LoopbackClaim {
-  readonly callback: Promise<LoopbackCallback>;
-  close(): Promise<void>;
-}
-
-type LoopbackCallback =
-  | { readonly kind: 'authorized'; readonly code: string }
-  | { readonly kind: 'rejected' };
-
-async function openCodexLoopback(state: string, signal: AbortSignal): Promise<LoopbackClaim> {
-  let claimed = false;
-  let resolveCallback!: (result: LoopbackCallback) => void;
-  let rejectCallback!: (error: unknown) => void;
-  const callback = new Promise<LoopbackCallback>((resolve, reject) => {
-    resolveCallback = resolve;
-    rejectCallback = reject;
-  });
-  const server = createServer((request, response) => {
-    if (request.method !== 'GET') {
-      response.writeHead(405).end();
-      return;
-    }
-    let url: URL;
-    try {
-      url = new URL(request.url ?? '', `http://${CODEX_CALLBACK_HOST}:${CODEX_CALLBACK_PORT}`);
-    } catch {
-      response.writeHead(400).end();
-      return;
-    }
-    const callbackState = url.searchParams.get('state');
-    if (
-      claimed ||
-      url.pathname !== CODEX_CALLBACK_PATH ||
-      !callbackState ||
-      !constantTimeStringEqual(callbackState, state)
-    ) {
-      response.writeHead(400).end();
-      return;
-    }
-    const parameters = url.searchParams;
-    const keys = [...parameters.keys()];
-    const callbackCode = parameters.get('code');
-    const authorized =
-      keys.length === 2 &&
-      hasSingleParameter(parameters, 'code') &&
-      hasSingleParameter(parameters, 'state') &&
-      callbackCode !== null &&
-      callbackCode.length > 0 &&
-      callbackCode.length <= CALLBACK_CODE_MAX_CHARS;
-    const denialKeys = new Set(['error', 'state', 'error_description', 'error_uri']);
-    const callbackError = parameters.get('error');
-    const rejected =
-      keys.every((key) => denialKeys.has(key)) &&
-      hasSingleParameter(parameters, 'error') &&
-      hasSingleParameter(parameters, 'state') &&
-      callbackError !== null &&
-      callbackError.length > 0 &&
-      callbackError.length <= CALLBACK_ERROR_MAX_CHARS &&
-      optionalBoundedParameter(
-        parameters,
-        'error_description',
-        CALLBACK_ERROR_DESCRIPTION_MAX_CHARS,
-      ) &&
-      optionalBoundedParameter(parameters, 'error_uri', CALLBACK_ERROR_URI_MAX_CHARS);
-    if (!authorized && !rejected) {
-      response.writeHead(400).end();
-      return;
-    }
-    claimed = true;
-    response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    response.end(authorized ? 'Authorization received.' : 'Authorization rejected.');
-    resolveCallback(
-      authorized ? { kind: 'authorized', code: callbackCode ?? '' } : { kind: 'rejected' },
-    );
-  });
-  server.setTimeout(10_000, (socket) => socket.destroy());
-  let closeTask: Promise<void> | undefined;
-  const close = () => {
-    rejectCallback(new Error('OAuth loopback listener closed'));
-    closeTask ??= closeLoopbackServer(server);
-    return closeTask;
-  };
-  const onAbort = () => {
-    rejectCallback(signal.reason ?? new Error('OAuth login cancelled'));
-    observe(close());
-  };
-  signal.addEventListener('abort', onAbort, { once: true });
-  server.on('error', rejectCallback);
-  callback.finally(() => signal.removeEventListener('abort', onAbort)).catch(() => undefined);
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(CODEX_CALLBACK_PORT, CODEX_CALLBACK_HOST, () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
-  return { callback, close };
-}
-
 function projection(attempt: LoginAttemptRecord): OAuthLoginProjection {
   if (attempt.kind === 'terminal') return attempt.projection;
   return {
@@ -625,8 +530,10 @@ function terminalAttempt(attempt: ActiveLoginAttempt): TerminalLoginAttempt {
 
 function loginFailureCode(error: unknown): OAuthLoginFailureCode {
   if (error instanceof LoginFailure) return error.code;
-  if (error instanceof OAuthAuthorizationTimeoutError) return 'authorization_failed';
   if (error instanceof RuntimePolicyStoreError) return 'persistence_failed';
+  // A local device window that elapsed without approval is a timeout, not
+  // a provider rejection of the account.
+  if (error instanceof OAuthDeviceAuthorizationExpiredError) return 'authorization_failed';
   if (error instanceof OAuthTokenEndpointError) {
     return error.category === 'invalid_grant' || error.category === 'invalid_token'
       ? 'provider_rejected'
@@ -649,22 +556,6 @@ function authorizationTimeout(value: number | undefined): number {
     throw new Error('OAuth authorization timeout is invalid');
   }
   return timeoutMs;
-}
-
-async function withDeadline<T>(
-  task: Promise<T>,
-  timeoutMs: number,
-  timeoutError: () => Error,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(timeoutError()), timeoutMs);
-  });
-  try {
-    return await Promise.race([task, timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function isCommitOutcomeUnknown(error: unknown): error is RuntimePolicyStoreError {
@@ -702,29 +593,6 @@ function hostDraining(): OperationOutcome<'oauth.login.start'> {
     ok: false,
     error: { code: 'host_draining', message: 'Runtime Host is draining' },
   };
-}
-
-function hasSingleParameter(parameters: URLSearchParams, name: string): boolean {
-  return parameters.getAll(name).length === 1;
-}
-
-function optionalBoundedParameter(
-  parameters: URLSearchParams,
-  name: string,
-  maxChars: number,
-): boolean {
-  const values = parameters.getAll(name);
-  return values.length === 0 || (values.length === 1 && values[0]!.length <= maxChars);
-}
-
-async function closeLoopback(loopback: LoopbackClaim | undefined): Promise<void> {
-  if (loopback) await loopback.close();
-}
-
-async function closeLoopbackServer(server: Server): Promise<void> {
-  server.closeAllConnections?.();
-  if (!server.listening) return;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 function observe(task: Promise<unknown>): void {

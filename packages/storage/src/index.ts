@@ -1,14 +1,13 @@
 export {
-  SQLITE_SESSION_METADATA_DATABASE_NAME,
   SessionNotFoundError,
   SessionReadMarkerMessageNotFoundError,
   assertSafeSessionId,
   createSessionStore,
   createUserMessage,
-  decodeSessionHeader,
   isSafeSessionId,
   isSessionNotFoundError,
   normalizeSessionHeader,
+  projectSessionCatalogMessages,
 } from './session-store.js';
 export type {
   CreateStableSessionRequest,
@@ -23,10 +22,7 @@ export type {
   StableSessionCreateInput,
   UpdateSessionConfigurationRequest,
 } from './session-store.js';
-export * from './session-transcript.js';
 export * from './sqlite-session-metadata-store.js';
-export * from './session-metadata-transfer.js';
-export * from './session-metadata-maintenance.js';
 export {
   ROOT_TURN_ADMISSION_MAX_CONTENT_BYTES,
   ROOT_TURN_ADMISSION_MAX_RECORD_BYTES,
@@ -46,29 +42,14 @@ export type {
   RootTurnAdmissionStore,
   RootTurnSourceMessage,
   RootTurnSourceMessageReceipt,
-  SqliteAgentRunStoreOptions,
 } from './agent-run-store.js';
 export { createSqliteShellRunStore } from './shell-run-store.js';
-export type {
-  ClosableShellRunStore,
-  SqliteShellRunStoreOptions,
-} from './shell-run-store.js';
+export type { ClosableShellRunStore } from './shell-run-store.js';
 export * from './connection-store.js';
-// Narrow public surface: only the typed store + the one-time migration. The
-// file lock and atomic writer stay internal so callers can't bypass the
-// CredentialStore contract and drive the low-level lock directly.
-export {
-  CREDENTIAL_SCHEMA_VERSION,
-  createFileCredentialStore,
-  migrateLegacyCredentialFile,
-} from './credential-store.js';
-export type {
-  CredentialCasResult,
-  CredentialKind,
-  CredentialStore,
-  LegacyCredentialDecryptor,
-} from './credential-store.js';
+export { CREDENTIAL_SCHEMA_VERSION, createFileCredentialStore } from './credential-store.js';
+export type { CredentialCasResult, CredentialKind, CredentialStore } from './credential-store.js';
 export * from './settings-store.js';
+export { createSqliteArtifactMetadataRepository } from './sqlite-artifact-metadata.js';
 export {
   TelemetryQueryValidationError,
   TelemetryRepoClosedError,
@@ -105,7 +86,6 @@ export * from './artifact-attachments.js';
 export * from './provider-request-capture-artifact.js';
 export { createSqlitePlanReminderStore } from './plan-reminder-store.js';
 export type {
-  CreateSqlitePlanReminderStoreOptions,
   PlanReminderStore,
   SqlitePlanReminderStore,
 } from './plan-reminder-store.js';
@@ -118,7 +98,6 @@ export type {
 export { createSqliteTaskLedgerStore } from './task-ledger-store.js';
 export type {
   ConversationTaskLedgerCopyInput,
-  CreateSqliteTaskLedgerStoreOptions,
   SqliteTaskLedgerStore,
   TaskLedgerAuthorityStore,
   TaskLedgerStore,
@@ -135,7 +114,7 @@ export * from './config-transfer.js';
 export * from './automation-store.js';
 export * from './automation-authority.js';
 export * from './sqlite-runtime-store.js';
-export * from './runtime-event-transfer.js';
+export * from './runtime-event-persistence.js';
 export * from './operational-state-store.js';
 export * from './operational-state-backup.js';
 export * from './mcp-config-store.js';
@@ -145,7 +124,6 @@ export * from './long-term-memory-store.js';
 export * from './project-catalog.js';
 export * from './git-worktree-child-executor.js';
 export * from './git-workspace-service.js';
-export * from './project-session-migration.js';
 export * from './session-bundle-policy.js';
 export * from './session-bundle-contract.js';
 export * from './session-bundle-manifest.js';

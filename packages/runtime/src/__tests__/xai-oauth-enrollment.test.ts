@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { OAuthTokenEndpointError } from '../oauth-login.js';
+import { OAuthDeviceAuthorizationExpiredError } from '../oauth-provider-contracts.js';
 import {
   pollXaiDeviceAuthorization,
   startXaiDeviceAuthorization,
@@ -125,4 +126,53 @@ test('xAI token polling completes an admitted request after caller cancellation'
     refresh_token: 'refresh',
     expires_at: NOW + 3_600_000,
   });
+});
+
+test('xAI device polling classifies a local window expiry separately from a provider rejection', async () => {
+  await assert.rejects(
+    () =>
+      pollXaiDeviceAuthorization({
+        authorization: {
+          deviceCode: 'device-code',
+          userCode: 'USER-CODE',
+          verificationUrl: 'https://accounts.x.ai/device',
+          expiresAt: NOW - 1,
+          intervalMs: 1_000,
+        },
+        fetchFn: async () => {
+          throw new Error('must not be fetched');
+        },
+        signal: new AbortController().signal,
+        now: () => NOW,
+      }),
+    (error: unknown) => error instanceof OAuthDeviceAuthorizationExpiredError,
+  );
+});
+
+test('xAI device polling never issues a request after the window elapses mid-sleep', async () => {
+  let now = NOW;
+  let polls = 0;
+  await assert.rejects(
+    () =>
+      pollXaiDeviceAuthorization({
+        authorization: {
+          deviceCode: 'device-code',
+          userCode: 'USER-CODE',
+          verificationUrl: 'https://accounts.x.ai/device',
+          expiresAt: NOW + 1_000,
+          intervalMs: 5_000,
+        },
+        now: () => now,
+        signal: new AbortController().signal,
+        sleep: async () => {
+          now += 5_000;
+        },
+        fetchFn: async () => {
+          polls += 1;
+          return Response.json({ error: 'authorization_pending' }, { status: 400 });
+        },
+      }),
+    (error: unknown) => error instanceof OAuthDeviceAuthorizationExpiredError,
+  );
+  assert.equal(polls, 0);
 });

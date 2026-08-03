@@ -132,6 +132,7 @@ export interface InitialUserRuntimeEventInput {
   origin?: TurnOrigin;
   attachments?: InvocationRequest['attachments'];
   quotes?: InvocationRequest['quotes'];
+  inlineReferences?: InvocationRequest['inlineReferences'];
   toolBoundaryProtocol?: ToolBoundaryProtocol;
 }
 
@@ -329,6 +330,9 @@ export class RuntimeRunner {
           text: request.text,
           ...(request.attachments !== undefined ? { attachments: request.attachments } : {}),
           ...(request.quotes !== undefined ? { quotes: request.quotes } : {}),
+          ...(request.inlineReferences !== undefined
+            ? { inlineReferences: request.inlineReferences }
+            : {}),
           ...(this.toolBoundaryProtocol ? { toolBoundaryProtocol: this.toolBoundaryProtocol } : {}),
         });
       events.push(userEvent);
@@ -585,6 +589,9 @@ function snapshotInvocationRequest(
     ...(request.quotes !== undefined
       ? { quotes: cloneAndFreezeSnapshotValue(request.quotes) }
       : {}),
+    ...(request.inlineReferences !== undefined
+      ? { inlineReferences: cloneAndFreezeSnapshotValue(request.inlineReferences) }
+      : {}),
     ...(request.context !== undefined
       ? { context: cloneAndFreezeSnapshotValue(request.context) }
       : {}),
@@ -731,6 +738,7 @@ export function buildInitialUserRuntimeEvent(input: InitialUserRuntimeEventInput
         ? { attachments: input.attachments }
         : {}),
       ...(input.quotes !== undefined && input.quotes.length > 0 ? { quotes: input.quotes } : {}),
+      ...(input.inlineReferences !== undefined ? { inlineReferences: input.inlineReferences } : {}),
     },
     ...(input.toolBoundaryProtocol
       ? { actions: { runtimeProtocol: { toolBoundary: input.toolBoundaryProtocol } } }

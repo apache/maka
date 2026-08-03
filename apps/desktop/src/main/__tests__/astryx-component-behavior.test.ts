@@ -27,8 +27,14 @@ type RendererComponents = {
   OnboardingHero(props: {
     state: OnboardingState;
     onOpenSettings(): void;
+    onOpenConnectionDetail(connectionSlug: string): void;
     onAddProvider(): void;
     onBrowseProviders(): void;
+  }): ReactNode;
+  ProviderCatalogPage(props: {
+    filter: { query: string; category: 'recommended' };
+    onFilterChange(filter: { query: string; category: 'recommended' }): void;
+    onPick(): void;
   }): ReactNode;
   ToastProvider(props: { children: ReactNode }): ReactNode;
   UsageSettingsPage(props: {
@@ -94,14 +100,59 @@ describe('Astryx component behavior', () => {
     const markup = renderWithLocale(LocaleProvider, createElement(OnboardingHero, {
       state: { kind: 'needs_connection' },
       onOpenSettings: () => undefined,
+      onOpenConnectionDetail: () => undefined,
       onAddProvider: () => undefined,
       onBrowseProviders: () => undefined,
     }));
 
     assert.match(
       markup,
-      /maka-firstrun-row[^>]*>[\s\S]*?<button type="button"[^>]*>[\s\S]*?OpenCode Zen[\s\S]*?<\/button>/,
+      /data-provider="opencode-free"[^>]*>[\s\S]*?<button type="button"[^>]*>[\s\S]*?OpenCode Zen[\s\S]*?<\/button>/,
     );
+    assert.equal(markup.match(/<li[^>]*data-provider=/g)?.length, 4);
+  });
+
+  it('shows the product-recommended providers first during onboarding', async () => {
+    const { LocaleProvider, OnboardingHero } = await rendererComponents;
+    const markup = renderWithLocale(LocaleProvider, createElement(OnboardingHero, {
+      state: { kind: 'needs_connection' },
+      onOpenSettings: () => undefined,
+      onOpenConnectionDetail: () => undefined,
+      onAddProvider: () => undefined,
+      onBrowseProviders: () => undefined,
+    }));
+
+    const providerTypes = [...markup.matchAll(/<li[^>]*data-provider="([^"]+)"/g)].map(
+      (match) => match[1],
+    );
+    assert.deepEqual(providerTypes, ['opencode-free', 'opencode-go', 'openai', 'anthropic']);
+  });
+
+  it('shows the current connection recovery without a progress checklist', async () => {
+    const { LocaleProvider, OnboardingHero } = await rendererComponents;
+    const markup = renderWithLocale(LocaleProvider, createElement(OnboardingHero, {
+      state: { kind: 'needs_connection_credentials', connectionSlug: 'anthropic-live' },
+      onOpenSettings: () => undefined,
+      onOpenConnectionDetail: () => undefined,
+      onAddProvider: () => undefined,
+      onBrowseProviders: () => undefined,
+    }));
+
+    assert.match(markup, /data-maka-contract="onboarding-card"/);
+    assert.match(markup, /<button[^>]*data-connection-slug="anthropic-live"/);
+    assert.doesNotMatch(markup, /配置 AI 进度|当前步骤|待完成/);
+  });
+
+  it('keeps routine provider metadata out of badges', async () => {
+    const { LocaleProvider, ProviderCatalogPage } = await rendererComponents;
+    const markup = renderWithLocale(LocaleProvider, createElement(ProviderCatalogPage, {
+      filter: { query: '', category: 'recommended' },
+      onFilterChange: () => undefined,
+      onPick: () => undefined,
+    }));
+
+    assert.match(markup, /data-maka-contract="provider-catalog"/);
+    assert.doesNotMatch(markup, /astryx-badge/);
   });
 
   it('opens WeChat advanced settings only when advanced values already exist', async () => {
@@ -184,6 +235,7 @@ async function importRendererComponents(): Promise<RendererComponents> {
         "export { BotWeChatFields } from './apps/desktop/src/renderer/settings/bot-wechat-login.tsx';",
         "export { KeyboardHelpModal } from './apps/desktop/src/renderer/keyboard-help.tsx';",
         "export { OnboardingHero } from './apps/desktop/src/renderer/OnboardingHero.tsx';",
+        "export { ProviderCatalogPage } from './apps/desktop/src/renderer/settings/provider-catalog-page.tsx';",
         "export { UsageSettingsPage } from './apps/desktop/src/renderer/settings/usage-settings-page.tsx';",
         "export { LocaleProvider } from './packages/ui/dist/locale-context.js';",
         "export { ToastProvider } from './packages/ui/dist/toast.js';",

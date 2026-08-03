@@ -24,6 +24,19 @@ export class OAuthTokenEndpointError extends Error {
   }
 }
 
+/**
+ * The local device-authorization window (`expires_at`) elapsed before the
+ * user approved. Distinct from a provider rejection: the user simply did
+ * not complete authorization in time. Host surfaces map this to
+ * `authorization_failed`, never `provider_rejected`.
+ */
+export class OAuthDeviceAuthorizationExpiredError extends Error {
+  constructor() {
+    super('Device authorization expired');
+    this.name = 'OAuthDeviceAuthorizationExpiredError';
+  }
+}
+
 export const OAUTH_MAX_TOKEN_CHARS = 32 * 1024;
 
 export const OAUTH_PROVIDER_CONTRACTS = {
@@ -39,22 +52,25 @@ export const OAUTH_PROVIDER_CONTRACTS = {
   },
   'openai-codex': {
     clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
-    authorizationEndpoint: 'https://auth.openai.com/oauth/authorize',
     tokenEndpoint: 'https://auth.openai.com/oauth/token',
-    scope: 'openid profile email offline_access',
     tokenUserAgent: 'maka-desktop/0.1.0 (oauth-subscription)',
-    presentation: 'loopback',
-    authorizationExtras: [
-      ['codex_cli_simplified_flow', 'true'],
-      ['originator', 'codex_cli_rs'],
-    ] as ReadonlyArray<readonly [string, string]>,
+    // ChatGPT device-code flow (official codex CLI): request a one-time
+    // user code, verify at `deviceVerifyUrl`, poll `deviceauth/token`,
+    // then exchange the returned authorization code with this redirect URI.
+    deviceAuthBaseUrl: 'https://auth.openai.com/api/accounts',
+    deviceVerifyUrl: 'https://auth.openai.com/codex/device',
+    deviceRedirectUri: 'https://auth.openai.com/deviceauth/callback',
     experimentalEnvironmentVariable: 'MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL',
   },
   'xai-oauth': {
     clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
+    authorizationEndpoint: 'https://auth.x.ai/oauth2/authorize',
     deviceEndpoint: 'https://auth.x.ai/oauth2/device/code',
     tokenEndpoint: 'https://auth.x.ai/oauth2/token',
+    redirectUri: 'http://127.0.0.1:56121/callback',
     scope: 'openid profile email offline_access grok-cli:access api:access',
+    presentation: 'loopback',
+    authorizationExtras: [['plan', 'generic']] as ReadonlyArray<readonly [string, string]>,
     deviceGrant: 'urn:ietf:params:oauth:grant-type:device_code',
     defaultTokenLifetimeSeconds: 3_600,
   },

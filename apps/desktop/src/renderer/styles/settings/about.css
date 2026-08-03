@@ -1,12 +1,7 @@
 /* About and data-portability settings. */
-.settingsAboutPage {
-  display: grid;
-  align-content: start;
-  /* #1363: same explicit column as .settingsStructuredPage (#1362) — stop
-     intrinsic max-content propagation through the implicit `auto` track. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
-}
+/* Astryx convergence: the page container is the kit's SettingsPage now —
+   the About-only `.settingsAboutPage` grid (16px rhythm, breaking the shared
+   32px page rhythm) is retired. */
 
 .settingsAboutHero {
   display: grid;
@@ -60,31 +55,4 @@
   color: var(--foreground-secondary);
 }
 
-/* Detail audit / polish wave: the retired `.settingsAboutPrivacy` dialect
-   (uppercase brand-blue h3 + brand-deep tinted card) was a fourth section-
-   header voice used by 关于's privacy card AND 数据's 配置导入导出 header.
-   Both converged onto the sanctioned language — SectionHeader for the
-   heading, Astryx Banner for the 关于 callout, plain flow for
-   数据's form — so these blocks are now just neutral gap containers. */
-.settingsPrivacyBlock {
-  display: grid;
-  gap: var(--space-2);
-}
 
-.settingsPrivacyPoints {
-  margin: 0;
-  padding: 0 0 0 var(--space-4);
-  display: grid;
-  gap: var(--space-1-5);
-}
-
-.settingsConfigSection {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.settingsConfigCategoryList {
-  display: grid;
-  gap: var(--space-2);
-  margin-top: var(--space-1);
-}

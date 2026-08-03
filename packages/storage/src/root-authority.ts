@@ -1219,6 +1219,20 @@ function isMarkerRootIdentity(value: unknown): value is RootMarker['rootIdentity
   );
 }
 
+/**
+ * Whether the marker describes the directory that was just stat'd.
+ *
+ * Both fields, and no classification of how a mismatch came about. A moved
+ * `dev` with a matching `ino` reads like a remount — the kernel hands out a
+ * device number per mount, so an unmoved directory reports a new one after its
+ * volume is mounted again — but a workspace restored onto another volume
+ * presents the same pair, because inode numbers are unique only within one
+ * mounted filesystem. Naming that case a remount would let a second, unrelated
+ * directory inherit the original's rootId without anyone confirming it, and
+ * nothing in the marker can tell the two apart. It stays a question for the
+ * person; `adoptStorageRootOnImport` is the sanctioned way in for a copy,
+ * where the caller states the rootId it expects.
+ */
 function markerMatchesIdentity(marker: RootMarker, identity: RootIdentity): boolean {
   return (
     marker.rootIdentity.dev === identity.dev.toString() &&

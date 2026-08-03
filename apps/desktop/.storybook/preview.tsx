@@ -15,6 +15,11 @@ const withMakaRoot: Decorator = (Story, context) => {
   const root = document.documentElement;
   const colorScheme = context.globals.colorScheme === 'dark' ? 'dark' : 'light';
   const palette = typeof context.globals.palette === 'string' ? context.globals.palette : 'default';
+  // English is where settings layouts break first — its labels and helper
+  // lines are ~1.8× the width of the Chinese copy, so a row that fits in zh
+  // overflows, truncates, or clips in en. Stories were locked to `zh`, which
+  // is exactly why those breakages only ever showed up in the shipped app.
+  const locale = context.globals.locale === 'en' ? 'en' : 'zh';
 
   root.classList.toggle('dark', colorScheme === 'dark');
   root.style.colorScheme = colorScheme;
@@ -32,7 +37,7 @@ const withMakaRoot: Decorator = (Story, context) => {
   if (context.title.startsWith('Product/')) {
     return (
       <Theme theme={makaTheme} mode={colorScheme}>
-        <LocaleProvider locale="zh">
+        <LocaleProvider locale={locale}>
           <AstryxLocaleProvider>
             <Story />
           </AstryxLocaleProvider>
@@ -43,7 +48,7 @@ const withMakaRoot: Decorator = (Story, context) => {
 
   return (
     <Theme theme={makaTheme} mode={colorScheme}>
-      <LocaleProvider locale="zh">
+      <LocaleProvider locale={locale}>
         <AstryxLocaleProvider>
           <div className="h-screen w-screen overflow-y-auto bg-background p-6 text-foreground antialiased">
             <Story />
@@ -67,6 +72,16 @@ const preview: Preview = {
         ],
       },
     },
+    locale: {
+      description: 'Renderer UI locale',
+      toolbar: {
+        icon: 'globe',
+        items: [
+          { title: '中文', value: 'zh' },
+          { title: 'English', value: 'en' },
+        ],
+      },
+    },
     palette: {
       description: 'Maka palette token set',
       toolbar: {
@@ -80,6 +95,7 @@ const preview: Preview = {
   },
   initialGlobals: {
     colorScheme: 'light',
+    locale: 'zh',
     palette: 'default',
   },
   parameters: {

@@ -1,0 +1,472 @@
+h1. Maka Proposal 中文 Review 版
+
+{quote}
+Apache Incubator — New Podling Proposal · Draft v0.11
+
+本文件仅供中文 review；正式提交版本以英文原文为准。
+{quote}
+
+h2. 摘要（Abstract）
+
+Maka 是一个 local-first AI agent runtime 和 workspace。它使用 append-only log 记录 model message、tool call、tool result、permission decision 和 termination event。Session、model context、durable task 和 recovery 均从这些 log 中派生，因此，中断或长时间运行的 agent 工作可以被检查、replay、resume 和评估。
+
+h2. 项目说明（Proposal）
+
+Maka 提供一个统一的 execution runtime，供 desktop application、terminal TUI、non-interactive CLI 和 headless task runner 共同使用。其设计将持久化的 execution fact 与临时发送给 model 的 context 分离。
+
+Maka 提供以下能力：
+
+* *Append-only execution record。* Model message、tool call、tool result、permission decision 和 termination event 会先持久化，再被投影为面向用户的状态。
+* *可重建的状态。* Session、active context、UI state 和 recovery decision 均从 event log 派生，而不是分别维护为彼此独立的事实来源。
+* *不删除历史记录的 context management。* Tool-result pruning 和 LLM compaction 可以减少下一次 inference 使用的 context，同时完整保留原始 execution record。
+* *跨越单个 turn 的 durable work。* Headless runner 为每个 task 提供独立的 identity、event log、budget、permission pause、continuation 和 resume 行为。
+* *基于证据的完成判定。* Runtime 会将 model 声称“工作已完成”与经过验证的 process 和 tool outcome 分开记录。
+* *一个 runtime，多种使用界面。* Maka 提供 Electron desktop application、terminal TUI、non-interactive CLI 和 headless runner。
+
+Maka 主要使用 TypeScript 编写，运行于 Node.js。默认情况下，session、setting、credential 和 run record 都保留在用户本地设备上。
+
+h2. 背景（Background）
+
+AI agent 将 LLM 与 tool、permission、persistent state 和 control loop 组合在一起。随着 task 运行时间变长，外围 runtime 必须处理 tool 部分执行、context limit、process interruption、permission boundary 和 recovery。Maka 专注于这一 runtime layer。公开 GitHub 项目创建于 2026-05-27，此后一直通过公开 issue 和 pull request 进行开发。
+
+h2. 理由（Rationale）
+
+许多 agent application 只保存最终 conversation，却没有保存生成该结果的完整 execution process。这使得中断后的工作难以恢复，也使 tool behavior 难以 audit 或评估。Maka 将 execution history 视为持久化证据，并使用这些证据重建状态和恢复工作。
+
+ASF 能够提供中立所有权、公开决策、meritocratic community growth 和长期治理。对于一个希望支持由不同组织维护的 integration 和 product 的 agent runtime，这些特性十分重要。
+
+h2. 初始目标（Initial Goals）
+
+* 将 codebase 转移至 ASF，并完成项目名称、provenance、license 和 IP clearance。
+* 在公开 mailing list 上进行技术和治理决策。
+* 基于持续、可 review 的贡献，明确 contributor 成长为 committer 的路径。
+* 扩大 runtime、desktop、integration、documentation 和 release engineering 等领域的共同所有权。
+* 发布符合 Apache 要求的 source release，并建立可重复执行的 release process。
+* 在不绑定单一 model vendor 或 commercial sponsor 的前提下扩大项目采用。
+
+h2. 当前状态（Current Status）
+
+h3. Meritocracy
+
+开发通过公开 issue 和 pull request 进行。贡献根据技术价值接受 review，持续贡献者已经开始负责 runtime、desktop、computer-use、provider 和 documentation 等工作。在 incubation 期间，项目将通过书面的 committer 标准和公开讨论，使这一成长路径更加明确。
+
+h3. Community
+
+截至 2026-08-03，repository 拥有 1,104 个 GitHub stars、123 个 forks 和 40 位 contributors。在此前 30 天内，共有 34 位 authors 提交 commit。目前协作主要通过 GitHub issue 和 pull request 进行；进入 incubation 后，项目级决策将迁移至公开 development mailing list。
+
+h3. Core Developers
+
+* *Jie Wen（jackwener）* — 项目发起人，负责 runtime architecture 和 distributed-systems design。他是 Apache Arrow、Apache DataFusion 和 Apache Doris 的 PMC member 与 committer。
+* *Yuhan Lei（Astro-Han）* — 负责 runtime、evaluation、benchmarking 和 desktop development，同时也是 OpenCLI contributor。
+* *Kun Li（likun666661）* — 负责 runtime event-log architecture、headless task loop 和 completion verification。
+
+其他 module owners 和持续贡献者包括 Haoqing Wang（hqhq1025，computer-use）、Zhanghan Gao（YayoiNanoka）、sunheyi6、Nyvo-io、Yongtao Wang（M4n5ter）、Colafornia、GabrielDrapor、MicroGery、zhiiw 等。
+
+h3. Alignment
+
+Maka 旨在成为位于 model provider 与 end-user application 之间的 vendor-neutral runtime。ASF governance 可以确保其 interface、execution record 和 extension point 不受任何单一 vendor 控制。项目也与 ASF data 和 infrastructure 项目具有共同的工程关注点，包括 append-only log、projection、durable state 和 reproducible execution。
+
+h2. 已知风险（Known Risks）
+
+h3. 项目名称（Project Name）
+
+初步 web 和 repository 搜索发现了若干与“Maka”同名但无关的项目，包括一家中国设计营销服务商和几个小型 open-source project。目前未发现它们提供相同的面向开发者的 AI agent runtime，但初步搜索不能替代 ASF name review。Podling 将在 incubation 期间完成 {{PODLINGNAMESEARCH}}；如果 ASF policy 要求更名，项目将进行更名。
+
+h3. 项目被遗弃的风险（Orphan Products）
+
+项目仍然年轻，尚未证明长期持续性。当前已有多位活跃 maintainer 和 contributor 分别负责 runtime、desktop、headless 和 computer-use component，这在一定程度上降低了风险。Incubation 期间将重点记录这些 ownership boundary、增加 committer，并让 release knowledge 在社区内共享，而不是依赖某一个人。
+
+h3. Open Source 经验不足（Inexperience with Open Source）
+
+一位 initial committer 是 Apache Arrow、Apache DataFusion 和 Apache Doris 的 PMC member 与 committer，其他多位开发者也拥有 open-source contribution 经验。不过，大多数拟议社区成员尚未实际负责过 Apache release，也没有在 ASF mailing list 上开展过项目治理。Mentor 将帮助 podling 建立 release、voting、IP 和 community practice，并将这些实践文档化，避免它们依赖单个有经验的 committer。
+
+h3. Incubation 周期（Length of Incubation）
+
+项目没有固定的 graduation deadline。初步预计大约需要两年，但最终 graduation 将取决于是否形成可持续且多元的 committer base、公开治理、共享的 release ownership，以及是否完成多次符合 Apache 要求的 release。
+
+h3. 开发者同质化（Homogenous Developers）
+
+Initial committers 当前存在重叠的社交和职业关系网络，许多实时协作也使用中文。不过，他们来自多个 employer、一所大学和 independent contributor。项目将在公开 development mailing list 上使用英文进行决策和 voting，完善英文 documentation，并从现有关系网络之外招募 contributor。
+
+h3. 对受薪开发者的依赖（Reliance on Salaried Developers）
+
+Initial committers 来自多个 employer、一所大学和 individual contributor，并非全部由同一个组织付费。不过，受薪工作仍可能影响部分 contributor 的时间投入方向。Podling 将持续关注 affiliation diversity 并扩大 committer base，避免开发和 release 依赖某一个 employer 或少数成员。
+
+h3. 与其他 Apache 项目的关系（Relationships with Other Apache Products）
+
+Maka 不与现有 ASF product 重复。它工作在 AI agent runtime layer，同时与 Apache data 和 infrastructure 项目共享 append-only log、projection 和 durable state 等概念。未来的 integration 可以将 ASF storage、data-processing 和 observability system 暴露为 tool 或 backend，但 incubation 并不依赖这些 integration。
+
+h3. 对 Apache Brand 的过度迷恋（An Excessive Fascination with the Apache Brand）
+
+项目寻求的是中立治理、公开决策、meritocratic committer model 和长期维护。初始目标关注 community 和 release practice，而不是借助 Apache 名称进行推广。
+
+h2. 文档（Documentation）
+
+* Repository 和 README：[https://github.com/maka-agent/maka-agent]
+* Documentation index：[docs/README.md|https://github.com/maka-agent/maka-agent/blob/main/docs/README.md]
+* Architecture guide：[ARCHITECTURE.md|https://github.com/maka-agent/maka-agent/blob/main/ARCHITECTURE.md]，包含八章索引；[docs/architecture/|https://github.com/maka-agent/maka-agent/tree/main/docs/architecture] 下提供英文和中文章节。
+* 其他 design 和 verification document 覆盖 computer-use safety、execution evidence、durable workspace、permission、skill 和 evaluation。
+
+h2. 初始源代码（Initial Source）
+
+源代码目前托管在 [https://github.com/maka-agent/maka-agent]。公开 repository 创建于 2026-05-27，采用 Apache License, Version 2.0。Proposal 获批后，repository 将迁移至 [https://github.com/apache/incubator-maka]。未来项目网站将使用 [https://maka.apache.org]。
+
+h2. Source 与 Intellectual Property 提交计划（Source and Intellectual Property Submission Plan）
+
+现有源代码采用 Apache License, Version 2.0。在 code transfer 之前或过程中，podling 将：
+
+* 获取所有 initial committer 的 ICLA，并与 Incubator PMC 确认相关代码是否需要 Software Grant 或 CCLA。
+* 验证初始 codebase 的 provenance，并识别由 contributor 或其 employer 拥有的代码。
+* 按照 ASF policy 调整 source header、{{LICENSE}} 和 {{NOTICE}} 文件。
+* 删除、替换无法贡献给 ASF 的代码或 asset，或者重新获得适当 license。
+* 在第一个 Apache release 前，重新执行 dependency license audit 和 assembled-artifact license audit。
+
+h3. 外部依赖（External Dependencies）
+
+Maka 是一个 TypeScript monorepo。Runtime 的大部分功能由 Maka 自己的 workspace package 实现；repository 当前包含 *33 个直接 third-party production dependencies*。完整 transitive closure 更大，每次 release 都会根据 {{package-lock.json}} 自动生成，而不是在本 proposal 中手工维护。
+
+这些依赖分为五类：
+
+* *Runtime 和 user interface。* Node.js（当前要求 22.19 或更高版本）运行共享 runtime、CLI 和 headless surface。Electron/Chromium 承载 desktop application；React 和 Astryx 提供 desktop UI；{{@earendil-works/pi-tui}} 提供 terminal TUI。CLI 和 headless runner 不需要 Electron 或 React。
+* *Model access。* 采用 Apache-2.0 license 的 Vercel {{ai}} SDK，以及 Anthropic、Cohere、Google、OpenAI 和 OpenAI-compatible adapter，用于统一不同 model provider protocol。Maka 不依赖特定 commercial model service，也不需要 Maka 自己运营的 control plane。用户既可以配置 remote provider，也可以配置本地 compatible endpoint；credential 保存在本地，不属于 release 内容。
+* *Agent protocol 和本地执行。* {{@modelcontextprotocol/sdk}} 用于实现 MCP interoperability；{{node-pty}} 和 headless xterm package 提供 interactive shell session 与 terminal emulation；{{fs-native-extensions}} 提供跨 process file locking；{{@jackwener/opencli}} 通过 CDP 提供 browser automation。{{undici}}、{{ws}}、{{yaml}} 和 {{zod}} 等较小 library 用于 networking、configuration 和 validation。
+* *可选 integration。* Slack、Lark/Feishu 和 WeCom SDK 只在用户启用对应 bot channel 时使用。这些 service 是可选 integration，并不是 build 或启动 Maka 所必需的 infrastructure。
+* *Build 和 test tooling。* TypeScript、esbuild、Vite、Electron Builder、Playwright、Storybook 和 Tailwind CSS 用于 build 和 test；Biome 用于 linting 和 formatting。这些 tool 不会被 CLI 或 headless runtime 加载。进入 binary release 的 build output 将接受下文所述的 release audit。
+
+h4. License 和 Release 处理（License and Release Treatment）
+
+2026-08-03，我们在 clean checkout 中执行 {{npm ci}} 后重新生成并验证了 dependency inventory。结果与 checked-in 文件一致，共记录 *239 个 production npm packages*：180 个 MIT、21 个 Apache-2.0、19 个 ISC、15 个 BSD-3-Clause、2 个 BSD-2-Clause、1 个 Python-2.0 和 1 个 BlueOak-1.0.0。这些均为 ASF Category A license，该 inventory 中*没有发现 Category X dependency*。
+
+*生成的 npm inventory（精确到 {{package@version}}，按选定 license 分组）*
+
+以下列表由 {{scripts/generate-third-party-notices.mjs}} 根据 {{package-lock.json}} 中准确的 {{@maka/desktop}} production dependency closure 自动生成：
+* *Apache-2.0 (21)*
+** {{@ai-sdk/anthropic@4.0.16}}
+** {{@ai-sdk/cohere@4.0.11}}
+** {{@ai-sdk/gateway@4.0.23}}
+** {{@ai-sdk/google@4.0.18}}
+** {{@ai-sdk/openai-compatible@3.0.12}}
+** {{@ai-sdk/openai@4.0.16}}
+** {{@ai-sdk/provider-utils@5.0.11}}
+** {{@ai-sdk/provider@4.0.3}}
+** {{@jackwener/opencli@1.8.4}}
+** {{@mozilla/readability@0.6.0}}
+** {{@vercel/oidc@3.2.0}}
+** {{@workflow/serde@4.1.0}}
+** {{ai@7.0.31}}
+** {{bare-addon-resolve@1.10.1}}
+** {{bare-module-resolve@1.12.4}}
+** {{bare-semver@1.1.0}}
+** {{class-variance-authority@0.7.1}}
+** {{fs-native-extensions@1.5.0}}
+** {{long@5.3.2}}
+** {{require-addon@1.2.0}}
+** {{which-runtime@1.4.0}}
+
+* *BSD-2-Clause (2)*
+** {{@mixmark-io/domino@2.2.0}}
+** {{json-schema-typed@8.0.2}}
+
+* *BSD-3-Clause (15)*
+** {{@protobufjs/aspromise@1.1.2}}
+** {{@protobufjs/base64@1.1.2}}
+** {{@protobufjs/codegen@2.0.5}}
+** {{@protobufjs/eventemitter@1.1.1}}
+** {{@protobufjs/fetch@1.1.1}}
+** {{@protobufjs/float@1.0.2}}
+** {{@protobufjs/path@1.1.2}}
+** {{@protobufjs/pool@1.1.0}}
+** {{@protobufjs/utf8@1.1.2}}
+** {{css-mediaquery@0.1.2}}
+** {{fast-uri@3.1.4}}
+** {{intl-messageformat@11.2.12}}
+** {{json-schema@0.4.0}}
+** {{protobufjs@7.6.5}}
+** {{qs@6.15.3}}
+
+* *BlueOak-1.0.0 (1)*
+** {{sax@1.6.1}}
+
+* *ISC (19)*
+** {{cliui@6.0.0}}
+** {{get-caller-file@2.0.5}}
+** {{graceful-fs@4.2.11}}
+** {{inherits@2.0.4}}
+** {{isexe@2.0.0}}
+** {{lucide-react@0.577.0}}
+** {{lucide-react@1.28.0}}
+** {{once@1.4.0}}
+** {{require-main-filename@2.0.0}}
+** {{semver@7.7.4}}
+** {{set-blocking@2.0.0}}
+** {{setprototypeof@1.2.0}}
+** {{which-module@2.0.1}}
+** {{which@2.0.2}}
+** {{wrappy@1.0.2}}
+** {{y18n@4.0.3}}
+** {{yaml@2.9.0}}
+** {{yargs-parser@18.1.3}}
+** {{zod-to-json-schema@3.25.2}}
+
+* *MIT (180)*
+** {{@astryxdesign/core@0.2.0}}
+** {{@astryxdesign/theme-neutral@0.2.0}}
+** {{@colors/colors@1.5.0}}
+** {{@formatjs/fast-memoize@3.1.7}}
+** {{@formatjs/icu-messageformat-parser@3.5.15}}
+** {{@formatjs/icu-skeleton-parser@2.1.11}}
+** {{@hono/node-server@1.19.15}}
+** {{@larksuiteoapi/node-sdk@1.71.1}}
+** {{@modelcontextprotocol/sdk@1.29.0}}
+** {{@slack/logger@4.0.1}}
+** {{@slack/socket-mode@2.0.7}}
+** {{@slack/types@2.22.0}}
+** {{@slack/web-api@7.19.0}}
+** {{@standard-schema/spec@1.1.0}}
+** {{@stylexjs/stylex@0.19.0}}
+** {{@types/node@25.9.0}}
+** {{@types/retry@0.12.0}}
+** {{@types/ws@8.18.1}}
+** {{@wecom/aibot-node-sdk@1.0.7}}
+** {{@xterm/addon-unicode11@0.9.0}}
+** {{@xterm/headless@6.0.0}}
+** {{accepts@2.0.0}}
+** {{agent-base@6.0.2}}
+** {{ajv-formats@3.0.1}}
+** {{ajv@8.20.0}}
+** {{ansi-regex@5.0.1}}
+** {{ansi-styles@4.3.0}}
+** {{asynckit@0.4.0}}
+** {{axios@1.18.1}}
+** {{body-parser@2.3.0}}
+** {{builder-util-runtime@9.7.0}}
+** {{bytes@3.1.2}}
+** {{call-bind-apply-helpers@1.0.2}}
+** {{call-bound@1.0.4}}
+** {{camelcase@5.3.1}}
+** {{cli-table3@0.6.5}}
+** {{clsx@2.1.1}}
+** {{color-convert@2.0.1}}
+** {{color-name@1.1.4}}
+** {{combined-stream@1.0.8}}
+** {{commander@14.0.3}}
+** {{content-disposition@1.1.0}}
+** {{content-type@1.0.5}}
+** {{content-type@2.0.0}}
+** {{cookie-signature@1.2.2}}
+** {{cookie@0.7.2}}
+** {{cors@2.8.6}}
+** {{cross-spawn@7.0.6}}
+** {{debug@4.4.3}}
+** {{decamelize@1.2.0}}
+** {{delayed-stream@1.0.0}}
+** {{depd@2.0.0}}
+** {{dijkstrajs@1.0.3}}
+** {{dunder-proto@1.0.1}}
+** {{ee-first@1.1.1}}
+** {{electron-updater@6.8.9}}
+** {{emoji-regex@8.0.0}}
+** {{encodeurl@2.0.0}}
+** {{es-define-property@1.0.1}}
+** {{es-errors@1.3.0}}
+** {{es-object-atoms@1.1.2}}
+** {{es-set-tostringtag@2.1.0}}
+** {{escape-html@1.0.3}}
+** {{etag@1.8.1}}
+** {{eventemitter3@4.0.7}}
+** {{eventemitter3@5.0.4}}
+** {{eventsource-parser@3.0.8}}
+** {{eventsource@3.0.7}}
+** {{express-rate-limit@8.6.0}}
+** {{express@5.2.1}}
+** {{fast-deep-equal@3.1.3}}
+** {{finalhandler@2.1.1}}
+** {{find-up@4.1.0}}
+** {{follow-redirects@1.16.0}}
+** {{form-data@4.0.6}}
+** {{forwarded@0.2.0}}
+** {{fresh@2.0.0}}
+** {{fs-extra@10.1.0}}
+** {{function-bind@1.1.2}}
+** {{get-intrinsic@1.3.0}}
+** {{get-proto@1.0.1}}
+** {{gopd@1.2.0}}
+** {{has-symbols@1.1.0}}
+** {{has-tostringtag@1.0.2}}
+** {{hasown@2.0.4}}
+** {{hono@4.12.30}}
+** {{http-errors@2.0.1}}
+** {{https-proxy-agent@5.0.1}}
+** {{iconv-lite@0.7.3}}
+** {{image-dimensions@2.5.1}}
+** {{invariant@2.2.4}}
+** {{ip-address@10.2.0}}
+** {{ipaddr.js@1.9.1}}
+** {{is-electron@2.2.2}}
+** {{is-fullwidth-code-point@3.0.0}}
+** {{is-promise@4.0.0}}
+** {{is-stream@2.0.1}}
+** {{jose@6.2.3}}
+** {{js-tokens@4.0.0}}
+** {{js-yaml@4.3.0}}
+** {{json-schema-traverse@1.0.0}}
+** {{jsonfile@6.2.1}}
+** {{lazy-val@1.0.5}}
+** {{locate-path@5.0.0}}
+** {{lodash.escaperegexp@4.1.2}}
+** {{lodash.identity@3.0.0}}
+** {{lodash.isequal@4.5.0}}
+** {{lodash.merge@4.6.2}}
+** {{lodash.pickby@4.6.0}}
+** {{loose-envify@1.4.0}}
+** {{math-intrinsics@1.1.0}}
+** {{media-typer@1.1.0}}
+** {{merge-descriptors@2.0.0}}
+** {{mime-db@1.52.0}}
+** {{mime-db@1.54.0}}
+** {{mime-types@2.1.35}}
+** {{mime-types@3.0.2}}
+** {{ms@2.1.3}}
+** {{negotiator@1.0.0}}
+** {{node-addon-api@7.1.1}}
+** {{node-pty@1.2.0-beta.14}}
+** {{object-assign@4.1.1}}
+** {{object-inspect@1.13.4}}
+** {{on-finished@2.4.1}}
+** {{p-finally@1.0.0}}
+** {{p-limit@2.3.0}}
+** {{p-locate@4.1.0}}
+** {{p-queue@6.6.2}}
+** {{p-retry@4.6.2}}
+** {{p-timeout@3.2.0}}
+** {{p-try@2.2.0}}
+** {{parseurl@1.3.3}}
+** {{path-exists@4.0.0}}
+** {{path-key@3.1.1}}
+** {{path-to-regexp@8.4.2}}
+** {{pkce-challenge@5.0.1}}
+** {{pngjs@5.0.0}}
+** {{proxy-addr@2.0.7}}
+** {{proxy-from-env@2.1.0}}
+** {{qrcode@1.5.4}}
+** {{range-parser@1.3.0}}
+** {{raw-body@3.0.2}}
+** {{react-dom@19.2.6}}
+** {{react@19.2.6}}
+** {{require-directory@2.1.1}}
+** {{require-from-string@2.0.2}}
+** {{retry@0.13.1}}
+** {{router@2.2.0}}
+** {{safer-buffer@2.1.2}}
+** {{scheduler@0.27.0}}
+** {{send@1.2.1}}
+** {{serve-static@2.2.1}}
+** {{shebang-command@2.0.0}}
+** {{shebang-regex@3.0.0}}
+** {{side-channel-list@1.0.1}}
+** {{side-channel-map@1.0.1}}
+** {{side-channel-weakmap@1.0.2}}
+** {{side-channel@1.1.1}}
+** {{smart-buffer@4.2.0}}
+** {{socks@2.8.9}}
+** {{statuses@2.0.2}}
+** {{string-width@4.2.3}}
+** {{strip-ansi@6.0.1}}
+** {{styleq@0.2.1}}
+** {{tailwind-merge@3.6.0}}
+** {{tiny-typed-emitter@2.1.0}}
+** {{toidentifier@1.0.1}}
+** {{turndown-plugin-gfm@1.0.2}}
+** {{turndown@7.2.4}}
+** {{type-is@2.1.0}}
+** {{undici-types@7.24.6}}
+** {{undici@6.28.0}}
+** {{undici@8.7.0}}
+** {{universalify@2.0.1}}
+** {{unpipe@1.0.0}}
+** {{vary@1.1.2}}
+** {{wrap-ansi@6.2.0}}
+** {{ws@8.21.0}}
+** {{yargs@15.4.1}}
+** {{zod@4.4.3}}
+
+* *Python-2.0 (1)*
+** {{argparse@2.0.1}}
+
+{{scripts/generate-third-party-notices.mjs}} 负责强制执行这套 inventory。该脚本遍历准确的 desktop production closure，拒绝缺失或未批准的 license metadata，为 dual-licensed package 记录选定 license，并生成随 {{THIRD_PARTY_NOTICES.txt}} 一起发布的完整 license text。Source distribution 不会 vendor {{node_modules}}。Binary distribution 会分别为 npm closure、Electron/Chromium、font 和 icon asset 携带 notice。
+
+*仅用于构建的依赖*
+
+{{lightningcss}}（MPL-2.0）和 {{caniuse-lite}}（CC-BY-4.0）只用于构建 desktop application，不会作为 Maka 的组成部分重新分发。
+
+*macOS 可选依赖*
+
+macOS 的 computer-use 可选功能使用 {{cua-driver}}，它基于采用 MIT license 的 {{trycua/cua}} 项目。{{cua-driver}} executable 及其 Rust crates 均不包含在 Maka 的 source distribution 或 binary distribution 中。Apache release 固定关闭这个 backend，因此 {{cua-driver}} 不属于上面的 release dependency inventory。
+
+h3. Cryptography
+
+Maka 并不是以 cryptography 为主要功能的产品；它使用标准 TLS/HTTPS library 与 model provider 通信，并使用标准 hashing 处理 content-addressed artifact。如果任何 bundled cryptographic functionality 触发 ASF export-notification（ECCN）要求，我们会通知 ASF 并完成所需手续。
+
+h2. 所需资源（Required Resources）
+
+h3. Mailing Lists
+
+* private@maka.apache.org
+* dev@maka.apache.org
+* commits@maka.apache.org
+* issues@maka.apache.org
+
+h3. Subversion Directory
+
+不申请。
+
+h3. Git Repositories
+
+* [https://gitbox.apache.org/repos/asf/incubator-maka.git]
+* Mirror 至 [https://github.com/apache/incubator-maka]
+
+h3. Issue Tracking
+
+社区希望继续使用 [https://github.com/apache/incubator-maka/issues] 上的 GitHub Issues。
+
+h3. 其他资源（Other Resources）
+
+社区希望继续使用 GitHub Actions 进行 continuous integration。目前不需要其他 infrastructure。
+
+h2. Initial Committers
+
+{quote}
+Proposal 提交前，必须确认每个人的 ICLA status。
+{quote}
+
+* Jie Wen (jackwener) — jakevingoo@gmail.com
+* Yuhan Lei (Astro-Han) — lei.yuhan@outlook.com
+* Kun Li (likun666661) — likun666661@outlook.com
+* Haoqing Wang (hqhq1025) — hqeric1025@qq.com
+* Zhanghan Gao (YayoiNanoka) — yayoinanoka37@gmail.com
+* Yongtao Wang (M4n5ter) — m4n5terrr@gmail.com
+* Yuhang Chang (MicroGery) — changyuhang@outlook.com
+
+h2. Affiliations
+
+* jackwener / Jie Wen — jakevingoo@gmail.com — Botiverse, Inc.
+* Astro-Han / Yuhan Lei — lei.yuhan@outlook.com — Shanghai CENO New Material Technology Co., Ltd.
+* likun666661 / Kun Li — likun666661@outlook.com — Shanghai Geshu Zhizhi Technology Co., Ltd.
+* YayoiNanoka / Zhanghan Gao — yayoinanoka37@gmail.com — South China University of Technology
+* hqhq1025 / Haoqing Wang — hqeric1025@qq.com — Beijing University of Posts and Telecommunications
+* MicroGery / Yuhang Chang — changyuhang@outlook.com — Shenzhen Morphi Intelligence Technology Co., Ltd.
+* M4n5ter / Yongtao Wang — m4n5terrr@gmail.com — Individual
+
+h2. Sponsors
+
+h3. Champion
+
+* TODO：一位 ASF Member
+
+h3. Nominated Mentors
+
+* TODO：至少三位 ASF Members
+
+h3. Sponsor Entity
+
+* The Incubator

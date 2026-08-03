@@ -115,6 +115,20 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('seeds an empty pricing authority for a fresh workspace', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      try {
+        assert.deepEqual(await stores.pricing.snapshot(), { revision: 0, overrides: [] });
+      } finally {
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('classifies a renamed or replaced live root as a draining persistence failure', async () => {
     for (const replacement of [false, true]) {
       await withInteractiveRoot(async ({ root, capability }) => {
@@ -190,112 +204,6 @@ describe('InteractiveUsageStores', () => {
         }
       });
     }
-  });
-
-  test('migrates legacy usage, tools, and pricing idempotently', async () => {
-    await withInteractiveRoot(async ({ root, capability }) => {
-      const legacy = {
-        usageRecords: [llmRecord({ cachedInputTokens: 3, cacheHitInputTokens: undefined })],
-        toolInvocations: [toolRecord()],
-        pricingOverrides: [pricing('openai:gpt-5')],
-      };
-      const legacyBytes = JSON.stringify(legacy, null, 2) + '\n';
-      await writeFile(join(root, 'telemetry.json'), legacyBytes);
-
-      const owner = await tryAcquireInteractiveRootOwner(capability);
-      assert(owner);
-      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
-      assert.equal((await stores.telemetry.logs({ range: 'all' })).total, 1);
-      assert.deepEqual(await stores.pricing.snapshot(), {
-        revision: 0,
-        overrides: [pricing('openai:gpt-5')],
-      });
-      await stores.close();
-      await owner.close();
-
-      assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), legacyBytes);
-      await assert.rejects(
-        () => readFile(join(root, 'pricing.json'), 'utf8'),
-        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
-      );
-
-      const successor = await tryAcquireInteractiveRootOwner(capability);
-      assert(successor);
-      const reopened = await openInteractiveUsageStoresForWrite(successor.lease);
-      assert.equal((await reopened.telemetry.buckets({ range: 'all' }, 'tool'))[0]?.requests, 1);
-      assert.deepEqual(await reopened.pricing.snapshot(), {
-        revision: 0,
-        overrides: [pricing('openai:gpt-5')],
-      });
-      await reopened.close();
-      await successor.close();
-      assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), legacyBytes);
-      await assert.rejects(
-        () => readFile(join(root, 'pricing.json'), 'utf8'),
-        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
-      );
-    });
-  });
-
-  test('an existing pricing authority wins over stale embedded overrides', async () => {
-    await withInteractiveRoot(async ({ root, capability }) => {
-      await writeFile(
-        join(root, 'telemetry.json'),
-        JSON.stringify({
-          usageRecords: [],
-          toolInvocations: [],
-          pricingOverrides: [{ modelKey: '', inputUsdPer1M: -1 }],
-        }),
-      );
-      await writeFile(
-        join(root, 'pricing.json'),
-        JSON.stringify({
-          version: 1,
-          revision: 7,
-          overrides: [pricing('current:model')],
-        }),
-      );
-      const owner = await tryAcquireInteractiveRootOwner(capability);
-      assert(owner);
-      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
-      assert.deepEqual(await stores.pricing.snapshot(), {
-        revision: 7,
-        overrides: [pricing('current:model')],
-      });
-      await stores.close();
-      await owner.close();
-    });
-  });
-
-  test('migrates and reopens more than 128 legacy pricing overrides without loss', async () => {
-    await withInteractiveRoot(async ({ root, capability }) => {
-      const overrides = Array.from({ length: 140 }, (_, index) =>
-        pricing(`provider:model-${String(139 - index).padStart(3, '0')}`),
-      );
-      await writeFile(
-        join(root, 'telemetry.json'),
-        JSON.stringify({ usageRecords: [], toolInvocations: [], pricingOverrides: overrides }),
-      );
-
-      const owner = await tryAcquireInteractiveRootOwner(capability);
-      assert(owner);
-      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
-      const migrated = await stores.pricing.snapshot();
-      assert.equal(migrated.overrides.length, 140);
-      assert.deepEqual(
-        migrated.overrides.map((item) => item.modelKey),
-        overrides.map((item) => item.modelKey).sort(),
-      );
-      await stores.close();
-      await owner.close();
-
-      const successor = await tryAcquireInteractiveRootOwner(capability);
-      assert(successor);
-      const reopened = await openInteractiveUsageStoresForWrite(successor.lease);
-      assert.deepEqual(await reopened.pricing.snapshot(), migrated);
-      await reopened.close();
-      await successor.close();
-    });
   });
 
   test('drain waits accepted writes and rejects new admission', async () => {
@@ -427,8 +335,4 @@ function toolRecord() {
       ReturnType<typeof openInteractiveUsageStoresForWrite>
     >['telemetry']['recordToolInvocation']
   >[0];
-}
-
-function pricing(modelKey: string) {
-  return { modelKey, inputUsdPer1M: 1.25, outputUsdPer1M: 10 };
 }

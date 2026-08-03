@@ -13,6 +13,12 @@ export default {
       to: 'bundled-tools.json',
     },
     {
+      // Menu bar status item art. Without this the packaged app resolves an
+      // empty NativeImage and Electron silently shows no icon at all.
+      from: 'resources/status',
+      to: 'status',
+    },
+    {
       from: 'resources/workers/filesystem-worker.js',
       to: 'workers/filesystem-worker.js',
     },
@@ -93,7 +99,11 @@ export default {
     },
   },
   dmg: {
-    writeUpdateInfo: true,
+    sign: true,
+    // Stapling the notarization ticket after electron-builder exits changes the
+    // DMG bytes. macOS updates use the ZIP, so do not publish a stale DMG hash
+    // in latest-mac.yml.
+    writeUpdateInfo: false,
   },
   publish: [
     {

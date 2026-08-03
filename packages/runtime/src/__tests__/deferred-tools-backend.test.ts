@@ -419,6 +419,12 @@ describe('AiSdkBackend deferred agent tools', () => {
         parameters: z.object({}),
         impl: () => ({ ok: true }),
       },
+      {
+        name: 'yield_agent_graph',
+        description: 'Yield graph',
+        parameters: z.object({}),
+        impl: () => ({ ok: true }),
+      },
     ];
     const model = new MockLanguageModelV4({
       doStream: async ({ tools: stepTools, prompt }) => {
@@ -455,6 +461,7 @@ describe('AiSdkBackend deferred agent tools', () => {
 
     assert.ok(capturedTools[0]?.includes('view_agent_graph'));
     assert.ok(capturedTools[0]?.includes('update_agent_graph'));
+    assert.ok(capturedTools[0]?.includes('yield_agent_graph'));
     assert.ok(capturedTools[0]?.includes(AGENT_OUTPUT_TOOL_NAME));
     assert.match(capturedPrompts[0] ?? '', /Orchestration Mode: Graph/);
     assert.match(capturedPrompts[0] ?? '', /supervisor beside the data path/);

@@ -1,28 +1,13 @@
-/* Codex/Cursor-style quote side panel.
+/* Text-selection quote side panel.
    -------------------------------------------------------------------------
-   The floating "引用" / "在侧栏追问" pills reuse `.maka-quote-action` from
-   quote-chip.css (shipped with the composer quote-chip feature). This file
-   adds the side-panel surfaces: the shared pill wrapper, the workbar "追问引用"
-   tab, and the in-tab companion — which reuses the real ChatView + Composer so
-   the follow-up thread looks and streams exactly like the main conversation. */
+   Astryx Layer and ButtonGroup own the floating "引用" / "在侧栏追问"
+   control. This file adds only the native window hit-test opt-out plus the
+   workbar "追问引用" tab and in-tab companion. */
 
-/* `.maka-quote-actions`: the shared positioned wrapper that holds one or both
-   floating pills above a text selection. Positioned via inline top/left
-   (viewport coords of the selection) and centered on the selection midpoint
-   with translateX(-50%); the pills inside flow horizontally. */
+/* Selection coordinates and top-layer behavior belong to Astryx useLayer. */
 .maka-quote-actions {
-  position: fixed;
-  transform: translateX(-50%);
-  z-index: var(--z-panel-action);
   display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
   -webkit-app-region: no-drag;
-}
-
-.maka-quote-actions .maka-quote-action {
-  position: static;
-  transform: none;
 }
 
 /* The quote lives as a transient tab inside the session workbar (not a second

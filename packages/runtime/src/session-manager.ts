@@ -2,7 +2,7 @@
  * SessionManager — the public Runtime API.
  *
  * Ties together:
- *   SessionStore (storage)           — JSONL persistence
+ *   SessionStore (storage)           — SQLite persistence
  *   AgentBackend (AiSdkBackend etc) — SDK adapter
  *   ExecutionBoundary                — session sandbox authority
  *
@@ -102,6 +102,7 @@ import type {
   ToolBoundaryProtocol,
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
+  SubagentPreset,
 } from '@maka/core';
 import { AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION } from '@maka/core';
 import {
@@ -168,6 +169,7 @@ import {
   type BackendActivationBoundary,
   type RuntimeExecutionClaim,
   type RuntimeKernelLike,
+  type ResumeContinuationOptions,
   type TurnStartOptions,
 } from './runtime-kernel.js';
 import { fallbackSessionTitle, sessionTitleSource } from './session-title.js';
@@ -191,6 +193,7 @@ import {
   type AgentProfile,
   type AgentDefinition,
   type AgentDefinitionListItem,
+  type SubagentPresetListItem,
 } from './agent-catalog.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import { stableHash } from './request-shape.js';
@@ -257,6 +260,8 @@ export interface SpawnChildAgentInput {
 export interface SpawnChildSessionInput {
   spawnedBy: SubagentSessionParent['spawnedBy'];
   agentProfile: AgentProfile;
+  /** User-approved catalog selector. The runtime resolves its frozen model target. */
+  subagentId?: string;
   prompt: string;
   name?: string;
   turnId?: string;
@@ -273,6 +278,10 @@ export interface SpawnChildSessionInput {
   /** Presentation-only observer for projecting child activity into a parent surface. */
   onEvent?: (event: SessionEvent) => void;
 }
+
+type ResolvedSpawnChildSessionInput = SpawnChildSessionInput & {
+  resolvedPreset?: SubagentPreset;
+};
 
 export interface SpawnChildSessionResult extends SpawnChildAgentResult {
   childSessionId: string;
@@ -438,6 +447,8 @@ export interface SubagentExecutionListItem {
 
 export interface AgentListResult {
   definitions: AgentDefinitionListItem[];
+  /** User-configured, host-validated routes the main agent may select by id. */
+  presets: SubagentPresetListItem[];
   /** Canonical mixed projection for new child Sessions and legacy same-session child AgentRuns. */
   executions: SubagentExecutionListItem[];
   /** Legacy projection retained while callers migrate to executions. */
@@ -733,6 +744,11 @@ interface SessionManagerBaseDeps {
   newId: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
+  /** Host-owned user catalog. Runtime receives ids from models, never raw model targets. */
+  subagentCatalog?: {
+    list(): Promise<SubagentPresetListItem[]>;
+    resolve(id: string): Promise<SubagentPreset>;
+  };
   /** Host-owned filesystem isolation for worktree-backed child Sessions. */
   worktreeChildExecutor?: SubagentWorktreeExecutor;
   listArtifactsForTurn?: (sessionId: string, turnId: string) => Promise<ArtifactRecord[]>;
@@ -862,8 +878,31 @@ export class SessionManager {
     return headerToSummary(header);
   }
 
+  /**
+   * Sessions plus the turn each one is running right now. The persisted status
+   * cannot carry that: it is written only at the END of `AgentRun.begin`, it
+   * reads the same before a turn starts and after it ends, and a crash between
+   * a turn's end and its status write leaves `running` behind for good. The
+   * live run is the fact, so a client can name what is running and — because
+   * nothing survives the process — a restart reports the truth by itself.
+   */
+  /**
+   * The turns this session is running right now. Same live fact `listSessions`
+   * projects, for callers that need it about one session — notably to name the
+   * turns a change is about.
+   */
+  runningTurnIds(sessionId: string): string[] {
+    return this.runtimeKernel.runningTurnIds?.(sessionId) ?? [];
+  }
+
   async listSessions(filter?: SessionListFilter): Promise<SessionSummary[]> {
-    return this.deps.store.list(filter);
+    const sessions = await this.deps.store.list(filter);
+    const runningTurnIds = this.runtimeKernel.runningTurnIds?.bind(this.runtimeKernel);
+    if (!runningTurnIds) return sessions;
+    return sessions.map((session) => {
+      const turnIds = runningTurnIds(session.id);
+      return turnIds.length === 0 ? session : { ...session, runningTurnIds: turnIds };
+    });
   }
 
   async listChildSessions(parentSessionId: string): Promise<SessionSummary[]> {
@@ -1174,6 +1213,7 @@ export class SessionManager {
       // recovery below reads those settled rows back — it never depends on what
       // this pass happened to close (#1612).
       if (
+        !this.deps.interactionAuthority &&
         this.deps.store.listPendingSandboxBoundaryRequests &&
         this.deps.store.settleSandboxBoundaryRequest
       ) {
@@ -1938,10 +1978,24 @@ export class SessionManager {
       this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
       return plan;
     }
-    const [header, observation] = await Promise.all([
-      this.deps.store.readHeader(sessionId),
-      this.deps.inspectContinuationSafety(sessionId),
-    ]);
+    const header = await this.deps.store.readHeader(sessionId);
+    let observation: RuntimeContinuationSafetyObservation;
+    try {
+      observation = await this.deps.inspectContinuationSafety(sessionId);
+    } catch {
+      const plan: SafeBoundaryContinuationPlan = {
+        disposition: 'park',
+        rejectionReasons: ['safety_observation_unavailable'],
+        diagnostics: [
+          {
+            code: 'safety_observation_unavailable',
+            message: 'authoritative continuation safety inspection failed',
+          },
+        ],
+      };
+      this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
+      return plan;
+    }
     return this.planSafeBoundaryContinuation(sessionId, {
       sourceRunId: input.sourceRunId,
       currentCwd: header.cwd,
@@ -2008,6 +2062,7 @@ export class SessionManager {
 
   async *resumeSafeBoundaryContinuation(
     continuation: RuntimeContinuation,
+    options: ResumeContinuationOptions = {},
   ): AsyncIterable<SessionEvent> {
     const resume = this.runtimeKernel.resumeContinuation;
     if (!resume) throw new Error('RuntimeKernel does not support safe-boundary continuation');
@@ -2018,7 +2073,7 @@ export class SessionManager {
       targetRunId: continuation.runId,
     });
     try {
-      yield* resume.call(this.runtimeKernel, continuation);
+      yield* resume.call(this.runtimeKernel, continuation, options);
       this.recordContinuationLifecycleEvent({
         type: 'execution_completed',
         sessionId: continuation.sessionId,
@@ -2113,8 +2168,9 @@ export class SessionManager {
     parentSessionId: string,
     input: SpawnChildSessionInput,
   ): Promise<SpawnChildSessionResult> {
-    const spawnKey = childSessionSpawnKey(parentSessionId, input);
-    const requestFingerprint = childSessionRequestFingerprint(parentSessionId, input);
+    const resolvedInput = await this.resolveChildSessionSelector(input);
+    const spawnKey = childSessionSpawnKey(parentSessionId, resolvedInput);
+    const requestFingerprint = childSessionRequestFingerprint(parentSessionId, resolvedInput);
     const inFlight = this.childSessionSpawns.get(spawnKey);
     if (inFlight) {
       if (inFlight.requestFingerprint !== requestFingerprint) {
@@ -2127,7 +2183,7 @@ export class SessionManager {
     };
     const promise = this.spawnChildSessionOnce(
       parentSessionId,
-      input,
+      resolvedInput,
       requestFingerprint,
       runtimeOwner,
     ).finally(() => runtimeOwner.execution.release());
@@ -2139,6 +2195,20 @@ export class SessionManager {
         this.childSessionSpawns.delete(spawnKey);
       }
     }
+  }
+
+  private async resolveChildSessionSelector(
+    input: SpawnChildSessionInput,
+  ): Promise<ResolvedSpawnChildSessionInput> {
+    if (!input.subagentId) return { ...input };
+    if (!this.deps.subagentCatalog) {
+      throw new Error('Configured subagent catalog is unavailable in this runtime');
+    }
+    const resolvedPreset = await this.deps.subagentCatalog.resolve(input.subagentId);
+    if (resolvedPreset.profile !== input.agentProfile) {
+      throw new Error(`Subagent preset "${input.subagentId}" profile changed during spawn`);
+    }
+    return { ...input, resolvedPreset };
   }
 
   /**
@@ -2736,7 +2806,7 @@ export class SessionManager {
 
   private async spawnChildSessionOnce(
     parentSessionId: string,
-    input: SpawnChildSessionInput,
+    input: ResolvedSpawnChildSessionInput,
     requestFingerprint: string,
     runtimeOwner: { execution: RuntimeExecutionClaim },
   ): Promise<SpawnChildSessionResult> {
@@ -2772,13 +2842,17 @@ export class SessionManager {
       {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
-        name: input.name ?? definition.name,
+        name: input.name ?? input.resolvedPreset?.name ?? definition.name,
         backend: parentHeader.backend,
-        llmConnectionSlug: parentHeader.llmConnectionSlug,
-        model: parentHeader.model,
-        ...(parentHeader.thinkingLevel !== undefined
-          ? { thinkingLevel: parentHeader.thinkingLevel }
-          : {}),
+        llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
+        model: input.resolvedPreset?.model ?? parentHeader.model,
+        ...(input.resolvedPreset
+          ? input.resolvedPreset.thinkingLevel !== undefined
+            ? { thinkingLevel: input.resolvedPreset.thinkingLevel }
+            : {}
+          : parentHeader.thinkingLevel !== undefined
+            ? { thinkingLevel: parentHeader.thinkingLevel }
+            : {}),
         permissionMode: definition.permissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
@@ -2793,8 +2867,9 @@ export class SessionManager {
           schemaVersion: SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
           definitionVersion: definition.definitionVersion,
           agentId: definition.id,
-          agentName: definition.name,
+          agentName: input.resolvedPreset?.name ?? definition.name,
           profile: definition.profile,
+          ...(input.resolvedPreset ? { presetId: input.resolvedPreset.id } : {}),
           systemPrompt: definition.systemPrompt,
           toolNames: [...definition.tools],
           categoryPolicy: {},
@@ -4067,7 +4142,8 @@ export class SessionManager {
       tools: this.deps.childTools ?? [],
       worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
     });
-    if (!this.deps.runStore) return { definitions, executions: [], runs: [] };
+    const presets = this.deps.subagentCatalog ? await this.deps.subagentCatalog.list() : [];
+    if (!this.deps.runStore) return { definitions, presets, executions: [], runs: [] };
     const runs = await this.deps.runStore.listSessionRuns(sessionId);
     const childRuns = await Promise.all(
       runs
@@ -4142,6 +4218,7 @@ export class SessionManager {
     );
     return {
       definitions,
+      presets,
       executions: [
         ...childSessionExecutions,
         ...childRuns.map(
@@ -4337,7 +4414,7 @@ export class SessionManager {
     admittedAt: number;
     execution: Exclude<
       RootExecutionDescriptor,
-      { kind: 'external_message' } | { kind: 'automation' }
+      { kind: 'external_message' } | { kind: 'automation' } | { kind: 'safe_boundary_continuation' }
     >;
   }): Promise<void> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
@@ -4354,6 +4431,19 @@ export class SessionManager {
       diagnostic = {
         executionKind: input.execution.kind,
         goalId: input.execution.goalId,
+      };
+    } else if (input.execution.kind === 'agent_graph_supervisor_wake') {
+      headerExtras.agentGraphWakeId = input.execution.wakeId;
+      headerExtras.agentGraphWakeAttemptId = input.execution.attemptId;
+      headerExtras.orchestrationMode = 'graph';
+      headerExtras.orchestrationSource = 'turn_override';
+      headerExtras.agentSwarmAuthorization = 'none';
+      recoveryReason = 'agent_graph_supervisor_internal_admission_without_run';
+      diagnostic = {
+        executionKind: input.execution.kind,
+        graphId: input.execution.graphId,
+        wakeId: input.execution.wakeId,
+        attemptId: input.execution.attemptId,
       };
     } else {
       if (
@@ -4574,6 +4664,7 @@ export class SessionManager {
           ...(user.displayText !== undefined ? { displayText: user.displayText } : {}),
           ...(user.attachments ? { attachments: user.attachments } : {}),
           ...(user.quotes ? { quotes: user.quotes } : {}),
+          ...(user.inlineReferences ? { inlineReferences: user.inlineReferences } : {}),
           parentTurnId: source.turnId,
           regeneratedFromTurnId: source.turnId,
         },
@@ -5836,11 +5927,25 @@ function childSessionSpawnKey(
 
 function childSessionRequestFingerprint(
   parentSessionId: string,
-  input: Pick<SpawnChildSessionInput, 'spawnedBy' | 'agentProfile' | 'prompt' | 'swarm'>,
+  input: Pick<
+    ResolvedSpawnChildSessionInput,
+    'spawnedBy' | 'agentProfile' | 'prompt' | 'swarm' | 'resolvedPreset'
+  >,
 ): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
+  const payload = input.resolvedPreset
+    ? [
+        2,
+        parentSessionId,
+        input.spawnedBy.parentRunId,
+        input.spawnedBy.parentTurnId,
+        input.spawnedBy.toolCallId,
+        input.agentProfile,
+        input.resolvedPreset,
+        input.prompt,
+        input.swarm?.swarmId ?? null,
+        input.swarm?.itemId ?? null,
+      ]
+    : [
         1,
         parentSessionId,
         input.spawnedBy.parentRunId,
@@ -5850,9 +5955,8 @@ function childSessionRequestFingerprint(
         input.prompt,
         input.swarm?.swarmId ?? null,
         input.swarm?.itemId ?? null,
-      ]),
-    )
-    .digest('hex');
+      ];
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
 function claimedAgentGraphIntentRequestFingerprint(

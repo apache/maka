@@ -30,6 +30,10 @@ import {
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type TurnQueryInput,
+  type TurnResumePlan,
+  type TurnResumeQueryInput,
+  type TurnResumeStartInput,
+  type TurnResumeStartResult,
   type TurnSnapshot,
   type TurnStartInput,
   type TurnStopInput,
@@ -121,6 +125,8 @@ export interface RuntimeHostConnection {
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
+  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
@@ -294,6 +300,14 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.request('turn.stop', input, timeoutMs);
   }
 
+  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
+    return this.request('turn.resume.query', input, timeoutMs);
+  }
+
+  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult> {
+    return this.request('turn.resume.start', input, timeoutMs);
+  }
+
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
@@ -358,6 +372,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
             case 'subscription.session_projection':
             case 'subscription.session_delta':
             case 'subscription.session_event':
+            case 'subscription.agent_graph_changed':
             case 'subscription.closed':
               this.#acceptSubscriptionFrame(frame);
               continue;
@@ -722,9 +737,10 @@ function requireTimeout(value: number, label: string): number {
 
 function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number | undefined {
   switch (operation) {
+    case 'agent.graph.stop':
     case 'connection.models.fetch':
     case 'connection.test.run':
-      // Completion effects own provider deadlines and may wait behind same-connection FIFO work.
+      // Completion effects own their deadlines and may wait for admitted work to settle.
       return undefined;
     default:
       return DEFAULT_REQUEST_TIMEOUT_MS;

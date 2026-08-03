@@ -3,11 +3,11 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { buildAbRunManifest, buildRunManifestFingerprint } from './ab-manifest.js';
 import type { AbRunManifest } from './ab-types.js';
 import type { HarnessOracleAnnotation } from './harness-oracle-registry.js';
+import type { HarnessAgentId } from './harness-agent-registry.js';
 
-export type HarnessAbArmId = 'maka' | 'opencode' | 'kimi-code' | 'codex';
+export type HarnessAbArmId = HarnessAgentId;
 
 export const HARNESS_AB_PAIR_CONCURRENCY = 2;
-export const HARNESS_AB_MAX_CONCURRENT_ATTEMPTS = HARNESS_AB_PAIR_CONCURRENCY * 2;
 export const HARNESS_MAKA_CONTEXT_BUDGET = {
   activeToolResultPrune: {
     enabled: true,
@@ -400,7 +400,7 @@ export interface HarnessAbRunManifestInput {
     output: number;
     source: string;
   };
-  arms: readonly [HarnessAbArmInput, HarnessAbArmInput];
+  arms: readonly HarnessAbArmInput[];
   taskBudgetSec: null;
   harborTimeoutMs: null;
   subjectFingerprint: string;
@@ -457,6 +457,7 @@ export function deterministicHarnessTaskOrder(taskIds: readonly string[], seed: 
 }
 
 export function buildHarnessAbRunManifest(input: HarnessAbRunManifestInput): HarnessAbRunManifest {
+  if (input.arms.length < 2) throw new Error('harness manifest requires at least two arms');
   const evaluationTaskIds = deterministicHarnessTaskOrder(input.taskIds, input.orderSeed);
   const pairConcurrency = input.pairConcurrency ?? HARNESS_AB_PAIR_CONCURRENCY;
   const armExecution = input.armExecution ?? 'parallel';
@@ -498,7 +499,7 @@ export function buildHarnessAbRunManifest(input: HarnessAbRunManifestInput): Har
       kind: 'harness' as const,
       fingerprint: buildRunManifestFingerprint({ version: arm.version, config: arm.config }),
       metadata: { version: arm.version, config: arm.config },
-    })) as unknown as [HarnessAbRunManifest['arms'][number], HarnessAbRunManifest['arms'][number]],
+    })),
     metadata,
     taskBudgetSec: input.taskBudgetSec,
     harborTimeoutMs: input.harborTimeoutMs,
@@ -510,7 +511,7 @@ export function buildHarnessAbRunManifest(input: HarnessAbRunManifestInput): Har
     reps: 1,
     candidateLimit: null,
     maxConcurrency: pairConcurrency,
-    maxConcurrentAttempts: pairConcurrency * (armExecution === 'parallel' ? 2 : 1),
+    maxConcurrentAttempts: pairConcurrency * (armExecution === 'parallel' ? input.arms.length : 1),
     selectionMode: 'explicit',
   });
   return manifest as HarnessAbRunManifest;

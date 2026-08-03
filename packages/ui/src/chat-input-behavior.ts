@@ -85,21 +85,6 @@ export interface ComposerTextPort {
 }
 
 /**
- * True when the caret is collapsed at the very start of `root`'s content, i.e.
- * the position where Backspace should eat the last staged Skill instead of a
- * character. The textarea equivalent was `selectionStart === selectionEnd === 0`.
- */
-export function isCaretAtContentStart(root: Node, selection: Selection | null): boolean {
-  if (!selection || !selection.isCollapsed || selection.rangeCount === 0) return false;
-  const range = selection.getRangeAt(0);
-  if (!root.contains(range.startContainer)) return false;
-  const probe = range.cloneRange();
-  probe.selectNodeContents(root);
-  probe.setEnd(range.startContainer, range.startOffset);
-  return probe.toString().length === 0;
-}
-
-/**
  * Case-insensitive AND-of-substring matcher shared by the file re-filter and
  * the skill filter: every whitespace-separated token in `query` must appear
  * somewhere in `text`. An empty query matches everything (shows the full list).

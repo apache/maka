@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Card } from '@astryxdesign/core';
 import type { ConfigCategory } from '@maka/storage';
 import {
   Button,
-  SectionHeader,
   Selector,
   Switch,
   clearGlobalInputHistory,
@@ -13,10 +11,12 @@ import {
   Banner,
 } from '@maka/ui';
 import { openPathFailureCopy, openPathActionLabel } from '../open-path';
+import { SettingsActions, SettingsField, SettingsPage, SettingsSection } from './settings-section';
 import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard } from './use-action-guard';
 import { getDataSettingsCopy, type DataSettingsCopy } from '../locales/settings-data-copy';
+import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 
 const CONFIG_CATEGORY_IDS: readonly ConfigCategory[] = ['connections', 'settings', 'memory', 'credentials'];
 
@@ -38,6 +38,7 @@ function summarizeImportResult(result: ConfigImportResult, copy: DataSettingsCop
 export function DataSettingsPage() {
   const locale = useUiLocale();
   const copy = getDataSettingsCopy(locale);
+  const sharedCopy = getSettingsSharedCopy(locale);
   const [info, setInfo] = useState<Awaited<ReturnType<typeof window.maka.app.info>> | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [pendingDataAction, setPendingDataAction] = useState<string | null>(null);
@@ -182,8 +183,11 @@ export function DataSettingsPage() {
   }
 
   return (
-    <div className="settingsStructuredPage">
-      <Card padding={0} className="settingsRows">
+    <SettingsPage>
+      <SettingsSection
+        title={sharedCopy.groups.dataLocation}
+        description={sharedCopy.groups.dataLocationHelp}
+      >
         <SettingRow
           title={copy.rows.workspace}
           detail={copy.rows.workspaceDetail}
@@ -200,13 +204,12 @@ export function DataSettingsPage() {
           detail={copy.rows.historyDetail}
           value={copy.rows.localStorage}
         />
-      </Card>
-      {/* Detail audit: was two wrapped rows with 打开文件夹 wearing primary
-          (a utility action) and destructive 清空输入历史 dressed neutral.
-          One row; utilities are secondary; the destructive action reads
-          destructive (red outline family, same recipe as the permission
-          dialog confirm). */}
-      <div className="settingsActionRow" role="group" aria-label={copy.actionsAria}>
+        {/* Detail audit: was two wrapped rows with 打开文件夹 wearing primary
+            (a utility action) and destructive 清空输入历史 dressed neutral.
+            One row; utilities are secondary; the destructive action reads
+            destructive. Lives in the card它作用于的数据 — it was a loose
+            cluster floating on the page background before. */}
+        <SettingsActions role="group" aria-label={copy.actionsAria}>
         <Button
           variant="secondary"
           onClick={() => void openWorkspace()}
@@ -225,53 +228,77 @@ export function DataSettingsPage() {
           isDisabled={dataActionDisabled}
           label={isDataActionPending('input-history:clear') ? copy.clearing : copy.clearHistory}
         />
+        </SettingsActions>
+      </SettingsSection>
+      {/* Banner requires a title, and renders it semibold in the status color.
+          The three-line advisory is body copy, so it moves to `description`
+          and the title states what the advisory is about — previously the
+          whole paragraph printed as bold blue with no heading. */}
+      {/* Guidance, not an alert — a full blue Banner between sections was
+          color as texture. Quiet titled prose keeps the same content. */}
+      <div className="settingsQuietCallout">
+        <strong>{copy.backupTitle}</strong>
+        <p>{copy.backupNotice}</p>
       </div>
-      <Banner status="info" title={copy.backupNotice} />
       {infoError && (
         <Banner status="info" role="alert" title={copy.pathLoadFailed(infoError)} />
       )}
-      <section className="settingsConfigSection" aria-label={copy.configAria}>
-        <SectionHeader as="h3" title={copy.configTitle} subtitle={copy.configHelp} />
-        <div role="group" aria-label={copy.categoryAria} className="settingsConfigCategoryList">
+      {/* Was variant="bare": four Switch rows, a Selector, and a button row
+          floating directly on the page background — the only group on the
+          settings surface without a card. Same rows vocabulary as every
+          other group now; the Switch's own label/description layout IS the
+          row, so each one is a SettingsField (padded, divided) rather than
+          a re-labeled SettingsRow. */}
+      <SettingsSection
+        title={copy.configTitle}
+        description={copy.configHelp}
+      >
+        <div role="group" aria-label={copy.categoryAria} className="settingsRowsGroup">
           {CONFIG_CATEGORY_IDS.map((id) => {
             const option = copy.categories[id];
             const checked = selectedCategories.has(id);
             return (
-              <Switch
-                key={id}
-                label={option.label}
-                description={option.detail}
-                value={checked}
-                width="100%"
-                labelPosition="start"
-                labelSpacing="spread"
-                status={
-                  option.sensitive && checked
-                    ? { type: 'warning', message: copy.sensitiveWarning }
-                    : undefined
-                }
-                onChange={() => toggleCategory(id)}
-              />
+              <SettingsField key={id}>
+                <Switch
+                  label={option.label}
+                  description={option.detail}
+                  value={checked}
+                  width="100%"
+                  labelPosition="start"
+                  labelSpacing="spread"
+                  status={
+                    option.sensitive && checked
+                      ? { type: 'warning', message: copy.sensitiveWarning }
+                      : undefined
+                  }
+                  onChange={() => toggleCategory(id)}
+                />
+              </SettingsField>
             );
           })}
         </div>
-        <Selector
-          value={importStrategy}
-          label={copy.conflictAria}
-          options={
-            [
-              { value: 'skip', label: copy.skip },
-              { value: 'overwrite', label: copy.overwrite },
-            ]
-          }
-          width="100%"
-          onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
-        />
-        <div className="settingsActionRow">
+        <SettingsField>
+          <Selector
+            value={importStrategy}
+            label={copy.conflictAria}
+            options={
+              [
+                { value: 'skip', label: copy.skip },
+                { value: 'overwrite', label: copy.overwrite },
+              ]
+            }
+            width="100%"
+            onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
+          />
+        </SettingsField>
+        <SettingsActions>
           <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void exportConfig()} label={configBusy === 'export' ? copy.exporting : copy.exportConfig} />
-          <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void importConfig()} label={configBusy === 'import' ? copy.importing : copy.importConfig} />
-        </div>
-      </section>
-    </div>
+          {/* One primary per action row: export is the action this section
+              is titled after; import is the inverse operation and reads
+              secondary. Two filled buttons recommended neither. */}
+          <Button variant="secondary" isDisabled={configBusy !== null} onClick={() => void importConfig()} label={configBusy === 'import' ? copy.importing : copy.importConfig} />
+        </SettingsActions>
+      </SettingsSection>
+    </SettingsPage>
   );
 }

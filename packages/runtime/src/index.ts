@@ -165,10 +165,12 @@ export type {
 export {
   AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,
+  recoverAgentGraphSupervisorContextOverflow,
 } from './agent-graph-supervisor-wake.js';
 export type {
   AgentGraphSupervisorContextRecoveryDiagnostic,
   AgentGraphSupervisorPartialResult,
+  AgentGraphSupervisorTurnOutcome,
   AgentGraphSupervisorWakeDiagnostic,
   AgentGraphSupervisorWakeInput,
 } from './agent-graph-supervisor-wake.js';
@@ -234,11 +236,13 @@ export type {
   BuildAgentGraphClientReadModelInput,
 } from './stream-graph-read-model.js';
 export {
+  AgentGraphClientOperationError,
   AgentGraphCoordinator,
   agentGraphIdForRootSession,
   topologyFromProvisions,
 } from './stream-graph-coordinator.js';
 export type {
+  AgentGraphClientOperationErrorCode,
   AgentGraphClientChangedEvent,
   AgentGraphClientChangedListener,
   AgentGraphClientChangedReason,
@@ -276,6 +280,7 @@ export type {
 } from './message-authority.js';
 export { isRuntimeHostedRootAuthority } from './message-authority.js';
 export {
+  bindRuntimeInteractionRun,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
   RuntimeInteractionFailStopError,
@@ -294,6 +299,8 @@ export type {
   RuntimeInteractionRunFacet,
   RuntimeInteractionRunIdentity,
   RuntimeInteractionRunOwner,
+  RuntimeSandboxBoundaryContinuation,
+  RuntimeSandboxBoundaryOutcome,
   RuntimeUserQuestionAnswer,
   RuntimeUserQuestionClosureReason,
   RuntimeUserQuestionContinuation,
@@ -715,9 +722,13 @@ export type {
   AgentInvocationMode,
   AgentProfile,
   AgentProfileContract,
+  SubagentPresetAvailability,
+  SubagentPresetListItem,
   AgentWorkspaceMode,
   AgentWriteBackMode,
 } from './agent-catalog.js';
+export { createConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
+export type { ConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
 export {
   AGENT_SWARM_DEFAULT_CONCURRENCY,
   AGENT_SWARM_MAX_CONCURRENCY,
@@ -841,7 +852,10 @@ export {
   requestOAuthEndpointJson,
   requestOAuthTokenEndpointJson,
 } from './oauth-login.js';
-export { isOAuthEnrollmentProviderEnabled } from './oauth-provider-contracts.js';
+export {
+  isOAuthEnrollmentProviderEnabled,
+  OAuthDeviceAuthorizationExpiredError,
+} from './oauth-provider-contracts.js';
 export type { OAuthEnrollmentProvider } from './oauth-provider-contracts.js';
 export {
   pollXaiDeviceAuthorization,
@@ -852,6 +866,18 @@ export type {
   StartXaiDeviceAuthorizationInput,
   XaiDeviceAuthorization,
 } from './xai-oauth-enrollment.js';
+export {
+  exchangeCodexDeviceAuthorizationCode,
+  pollCodexDeviceAuthorization,
+  startCodexDeviceAuthorization,
+} from './codex-oauth-enrollment.js';
+export type {
+  CodexDeviceAuthorization,
+  CodexDeviceAuthorizationGrant,
+  ExchangeCodexDeviceAuthorizationCodeInput,
+  PollCodexDeviceAuthorizationInput,
+  StartCodexDeviceAuthorizationInput,
+} from './codex-oauth-enrollment.js';
 export type {
   ExchangeOAuthAuthorizationCodeInput,
   OAuthLoginAuthorization,
@@ -865,7 +891,12 @@ export type {
 } from './oauth-login.js';
 export { buildSubscriptionModelFetch } from './subscription-model-fetch.js';
 export type { SubscriptionModelFetchInput } from './subscription-model-fetch.js';
-export { extractCodexAccountId, openAiCodexHeaders } from './subscription-auth.js';
+export {
+  extractCodexAccountClaims,
+  extractCodexAccountId,
+  openAiCodexHeaders,
+} from './subscription-auth.js';
+export type { CodexAccountClaims } from './subscription-auth.js';
 export {
   compactionDecisionDiagnosticPatch,
   compactionDecisionToDiagnostic,
@@ -1109,6 +1140,9 @@ export type { ToolActivityItem, ChatItem, SessionViewModel } from './materialize
 export { AsyncEventQueue } from './async-queue.js';
 export {
   FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_MERMAID_HOSTILE_PROMPT,
+  FAKE_MERMAID_PROMPT,
+  FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
   FakeBackend,
 } from './fake-backend.js';
@@ -1203,6 +1237,10 @@ export type {
   StoredMessageEventContext,
   RuntimeEventToDraftOptions,
 } from './runtime-event-adapters.js';
+
+// session-trace-projection.ts — per-session causal trace for the Inspector (#1625).
+export { projectSessionTrace, attributeTurnFailure } from './session-trace-projection.js';
+export type { SessionTraceInput } from './session-trace-projection.js';
 
 // runtime-event-read-model.ts — side-by-side RuntimeEvent read projection.
 export {
@@ -1529,6 +1567,8 @@ export {
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
+  GoalControlDecline,
+  GoalControlStanding,
   GoalObservedTurnStart,
   GoalObservedTurnSettler,
   GoalSessionCloseOperation,
@@ -1636,6 +1676,7 @@ export type {
   SkillInvocationMode,
   SkillInvocationReceipt,
 } from './skill-invocation-receipt.js';
+export { skillInvocationInlineReferences } from './skill-invocation-receipt.js';
 export { isPathInside, isSafeSkillId, toRelative } from './path-containment.js';
 export type { PathInsideApi } from './path-containment.js';
 export type {

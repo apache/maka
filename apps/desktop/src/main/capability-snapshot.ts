@@ -17,6 +17,7 @@ import {
   type OsPermissionSnapshot,
   type PermissionSnapshot,
 } from '@maka/core';
+import type { CuBackendId } from '@maka/computer-use';
 import type { BotStatus } from '@maka/runtime';
 import type { computerUseServiceHealth } from './computer-use-host.js';
 import {
@@ -46,7 +47,7 @@ export function buildCapabilitySnapshotCollection(input: {
   permissions: PermissionSnapshot;
   botStatuses: Record<BotProvider, BotStatus>;
   computerUse?: {
-    backendId: 'cua-driver' | 'none';
+    backendId: CuBackendId | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
   };
   now?: number;
@@ -123,13 +124,16 @@ export function buildCapabilitySnapshotCollection(input: {
 
 function computerUseCapability(
   input: {
-    backendId: 'cua-driver' | 'none';
+    backendId: CuBackendId | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
   } | undefined,
   permissions: PermissionSnapshot['permissions'],
   now: number,
 ): CapabilitySnapshot {
-  const artifactAvailable = input?.backendId === 'cua-driver';
+  // Any selected executor is an executor. Naming one here made the capability
+  // read `not_available` for a machine that had a working backend, merely a
+  // different one.
+  const artifactAvailable = input !== undefined && input.backendId !== 'none';
   return staticCapability({
     id: 'computer_use',
     label: 'Computer Use',
@@ -152,23 +156,23 @@ function computerUseCapability(
       state: input?.health.state ?? 'not_available',
       source: 'runtime_probe',
       lastCheckedAt: now,
-      reason: input?.health.reason ?? 'cua-driver 后端当前不可用。',
+      reason: input?.health.reason ?? 'Computer Use 后端当前不可用。',
     },
   });
 }
 
 function computerUseCapabilityReason(
   input: {
-    backendId: 'cua-driver' | 'none';
+    backendId: CuBackendId | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
   } | undefined,
   permissions: PermissionSnapshot['permissions'],
 ): string {
-  if (input?.backendId !== 'cua-driver') {
-    return '未找到通过完整性检查的 cua-driver artifact。';
+  if (input === undefined || input.backendId === 'none') {
+    return '未找到通过完整性检查的 Computer Use 执行器 artifact。';
   }
 
-  const reasons = ['cua-driver artifact 已通过本地完整性检查。'];
+  const reasons = [`${input.backendId} artifact 已通过本地完整性检查。`];
   const missingPermissions = [
     ['辅助功能', permissions.accessibility.status],
     ['屏幕录制', permissions.screen_recording.status],
@@ -178,10 +182,10 @@ function computerUseCapabilityReason(
   }
   switch (input.health.state) {
     case 'not_available':
-      reasons.push('cua-driver service 启动失败、已退出或已停止。');
+      reasons.push(`${input.backendId} service 启动失败、已退出或已停止。`);
       break;
     case 'degraded':
-      reasons.push('cua-driver service 正在启动或恢复。');
+      reasons.push(`${input.backendId} service 正在启动或恢复。`);
       break;
     case 'healthy':
       reasons.push('操作与截图 service 已就绪；按目标与动作类别授权后可操作本机应用。');

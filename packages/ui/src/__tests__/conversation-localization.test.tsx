@@ -14,7 +14,6 @@ import { LocaleProvider } from '../locale-context.js';
 import { SessionHistoryList } from '../session-history-list.js';
 import { SandboxBoundaryPrompt } from '../sandbox-boundary-prompt.js';
 import { ToolTrow } from '../tool-activity.js';
-import { summarizeTrowTools } from '../tool-activity/trow-summary.js';
 import { UserQuestionPrompt } from '../user-question-prompt.js';
 import { ModelProviderRetryIndicator, TurnView } from '../chat-turn.js';
 
@@ -196,12 +195,23 @@ describe('localized conversation journey', () => {
     assert.match(markup, /maka-composer-plus-menu/);
     assert.match(markup, /aria-label="添加上下文"/);
     assert.doesNotMatch(markup, /maka-composer-upload-button/);
-    assert.doesNotMatch(markup, /maka-composer-skill-trigger/);
     assert.doesNotMatch(markup, /maka-composer-modes-menu/);
     // Menu contents are in the SSR tree for the open popover host.
     // Modes are single menuitemcheckbox rows (not nested Switch controls).
     assert.match(markup, /添加文件或目录/);
     assert.match(markup, /选择技能/);
+
+    // The Skills entry writes `/` into the draft, so with nothing to write it is
+    // disabled — and answered on screen. A grey row with no reason tells the
+    // user nothing, and a reason only assistive tech can read does not reach
+    // them. It used to be reachable: choosing it left a stray `/` behind and
+    // opened an empty menu whose light dismiss then ate the next footer click.
+    const noSkills = render(
+      'zh',
+      <Composer onSend={() => {}} onStop={() => {}} mentionSkills={[]} />,
+    );
+    assert.match(noSkills, /当前没有可用技能/);
+    assert.match(noSkills, /aria-disabled="true"[^>]*role="menuitem"/);
     assert.match(markup, /role="menuitemcheckbox"/);
     assert.match(markup, /aria-checked="false"/);
     assert.doesNotMatch(markup, /role="switch"/);
@@ -401,12 +411,6 @@ describe('localized conversation journey', () => {
     const zh = render('zh', <ToolTrow items={[tool]} />);
     const en = render('en', <ToolTrow items={[tool]} />);
 
-    const summaryItems = [
-      { toolUseId: 'read-1', toolName: 'Read', status: 'running' as const, args: {} },
-      { toolUseId: 'read-2', toolName: 'Read', status: 'completed' as const, args: {} },
-    ];
-    assert.match(summarizeTrowTools(summaryItems, { live: true, locale: 'zh' }), /^正在/);
-    assert.match(summarizeTrowTools(summaryItems, { live: true, locale: 'en' }), /^Working:/);
     assert.match(zh, /RAW_INTENT_中文/);
     assert.match(en, /RAW_INTENT_中文/);
   });

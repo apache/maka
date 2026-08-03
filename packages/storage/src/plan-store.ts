@@ -1,6 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   PlanConflictError,
@@ -22,14 +21,10 @@ import {
   type SubmitPlanProposalInput,
   type UpdatePlanExecutionInput,
 } from '@maka/core/plan';
-import { appendJsonl } from './jsonl-append.js';
-import { classifyJsonRecord } from './json-prefix.js';
 import { chainWrite } from './write-queue.js';
 import {
   acquireOperationalStateDatabase,
-  completeOperationalStoreCutover,
   type OperationalStateDatabaseLease,
-  type OperationalStoreCutoverFailpoint,
 } from './operational-state-store.js';
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -39,21 +34,12 @@ export interface CreatePlanStoreOptions {
   now?: () => number;
 }
 
-export function createPlanStore(
-  workspaceRoot: string,
-  options: CreatePlanStoreOptions = {},
-): PlanStore {
-  return new FilePlanStore(workspaceRoot, options);
-}
-
 export interface SqlitePlanStore extends PlanStore {
   ready(): Promise<void>;
   close(): void;
 }
 
-export interface CreateSqlitePlanStoreOptions extends CreatePlanStoreOptions {
-  failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
-}
+export type CreateSqlitePlanStoreOptions = CreatePlanStoreOptions;
 
 export function createSqlitePlanStore(
   workspaceRoot: string,
@@ -62,18 +48,24 @@ export function createSqlitePlanStore(
   return new SqlitePlanStoreImpl(workspaceRoot, options);
 }
 
-class FilePlanStore implements PlanStore {
-  private readonly durabilityRoot: string;
-  private readonly sessionsRoot: string;
+class SqlitePlanStoreImpl implements SqlitePlanStore {
+  readonly #lease: OperationalStateDatabaseLease;
   private readonly queues = new Map<string, Promise<void>>();
   private readonly newId: () => string;
   private readonly now: () => number;
 
   constructor(workspaceRoot: string, options: CreatePlanStoreOptions) {
-    this.durabilityRoot = resolve(workspaceRoot);
-    this.sessionsRoot = join(this.durabilityRoot, 'sessions');
+    this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
     this.newId = options.newId ?? randomUUID;
     this.now = options.now ?? Date.now;
+  }
+
+  ready(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  close(): void {
+    this.#lease.close();
   }
 
   async readState(sessionId: string): Promise<PlanSessionState> {
@@ -357,216 +349,19 @@ class FilePlanStore implements PlanStore {
     sessionId: string,
   ): Promise<{ events: PlanEvent[]; state: PlanSessionState }> {
     assertSafeId(sessionId);
-    const canonical = await this.readCanonicalLedger(sessionId);
-    if (canonical) return canonical;
-    let text: string;
-    try {
-      text = await readFile(this.eventsPath(sessionId), 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { events: [], state: emptyPlanSessionState(sessionId) };
-      }
-      throw error;
-    }
-    const rawLines = text.split('\n');
-    const events: PlanEvent[] = [];
-    for (let index = 0; index < rawLines.length; index += 1) {
-      const line = rawLines[index]!;
-      if (!line.trim()) continue;
-      try {
-        events.push(decodePlanEvent(JSON.parse(line), sessionId));
-      } catch (error) {
-        const isLast = index === rawLines.length - 1;
-        if (isLast && !text.endsWith('\n') && classifyJsonRecord(line) === 'incomplete-prefix') {
-          continue;
-        }
-        throw new Error(`Invalid Plan event at line ${index + 1}`, { cause: error });
-      }
-    }
-    let state = emptyPlanSessionState(sessionId);
-    for (const event of events) state = applyPlanEvent(state, event);
-    return { events, state };
+    return readSqlitePlanLedger(this.#lease.database, sessionId);
   }
 
-  protected async readCanonicalLedger(
-    _sessionId: string,
-  ): Promise<{ events: PlanEvent[]; state: PlanSessionState } | undefined> {
-    return undefined;
-  }
-
-  protected async appendCanonicalEvent(
+  private async appendCanonicalEvent(
     sessionId: string,
     event: PlanEvent,
     state: PlanSessionState,
   ): Promise<void> {
-    await mkdir(this.sessionDir(sessionId), { recursive: true });
-    await appendJsonl(this.eventsPath(sessionId), `${JSON.stringify(event)}\n`, {
-      durable: true,
-      durabilityRoot: this.durabilityRoot,
-    });
-    await this.writeProjection(sessionId, state).catch(() => {
-      // Derived cache only. The append-only event ledger remains authoritative.
-    });
-  }
-
-  private async writeProjection(sessionId: string, state: PlanSessionState): Promise<void> {
-    const path = this.projectionPath(sessionId);
-    await mkdir(dirname(path), { recursive: true });
-    const temp = `${path}.${process.pid}.${this.newId()}.tmp`;
-    await writeFile(temp, `${JSON.stringify(state)}\n`, { encoding: 'utf8', mode: 0o600 });
-    try {
-      await rename(temp, path);
-    } finally {
-      await rm(temp, { force: true }).catch(() => {});
-    }
-  }
-
-  private sessionDir(sessionId: string): string {
-    return join(this.sessionsRoot, sessionId);
-  }
-
-  private eventsPath(sessionId: string): string {
-    return join(this.sessionDir(sessionId), 'plan-events.jsonl');
-  }
-
-  private projectionPath(sessionId: string): string {
-    return join(this.sessionDir(sessionId), 'plans.json');
-  }
-}
-
-class SqlitePlanStoreImpl extends FilePlanStore implements SqlitePlanStore {
-  readonly #root: string;
-  readonly #lease: OperationalStateDatabaseLease;
-  readonly #ready: Promise<void>;
-
-  constructor(workspaceRoot: string, options: CreateSqlitePlanStoreOptions) {
-    super(workspaceRoot, options);
-    this.#root = resolve(workspaceRoot);
-    this.#lease = acquireOperationalStateDatabase(this.#root);
-    this.#ready = importLegacyPlanState(this.#root, this.#lease, options.failpoint);
-  }
-
-  ready(): Promise<void> {
-    return this.#ready;
-  }
-
-  close(): void {
-    this.#lease.close();
-  }
-
-  protected override async appendCanonicalEvent(
-    sessionId: string,
-    event: PlanEvent,
-    state: PlanSessionState,
-  ): Promise<void> {
-    await this.#ready;
     this.#lease.transaction('write', () => {
       insertPlanEvent(this.#lease.database, event);
       writePlanProjection(this.#lease.database, sessionId, state);
     });
   }
-
-  protected override async readCanonicalLedger(
-    sessionId: string,
-  ): Promise<{ events: PlanEvent[]; state: PlanSessionState } | undefined> {
-    await this.#ready;
-    return readSqlitePlanLedger(this.#lease.database, sessionId);
-  }
-}
-
-interface LegacyPlanLedger {
-  sessionId: string;
-  events: PlanEvent[];
-  state: PlanSessionState;
-}
-
-async function importLegacyPlanState(
-  root: string,
-  lease: OperationalStateDatabaseLease,
-  failpoint?: (point: OperationalStoreCutoverFailpoint) => void,
-): Promise<void> {
-  const ledgers = await readLegacyPlanLedgers(root);
-  const fingerprint = `sha256:${createHash('sha256')
-    .update(JSON.stringify(ledgers))
-    .digest('hex')}`;
-  completeOperationalStoreCutover(lease, {
-    storeName: 'workflow_plan',
-    sourcePath: join(root, 'sessions'),
-    sourceFingerprint: fingerprint,
-    failpoint,
-    importAndValidate: (database) => {
-      let eventCount = 0;
-      for (const ledger of ledgers) {
-        for (const event of ledger.events) {
-          insertOrValidatePlanEvent(database, event);
-          eventCount += 1;
-        }
-        writePlanProjection(database, ledger.sessionId, ledger.state);
-      }
-      const persisted = database
-        .prepare('SELECT COUNT(*) AS count FROM workflow_plan_events')
-        .get() as { count?: unknown };
-      if (persisted.count !== eventCount) {
-        throw new Error('Plan cutover row-count validation failed');
-      }
-      return { sessions: ledgers.length, events: eventCount };
-    },
-  });
-}
-
-async function readLegacyPlanLedgers(root: string): Promise<LegacyPlanLedger[]> {
-  const sessionsRoot = join(root, 'sessions');
-  let entries;
-  try {
-    entries = await readdir(sessionsRoot, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw error;
-  }
-  const result: LegacyPlanLedger[] = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isDirectory() || !SAFE_ID_PATTERN.test(entry.name)) continue;
-    const eventsPath = join(sessionsRoot, entry.name, 'plan-events.jsonl');
-    let text: string | undefined;
-    try {
-      text = await readFile(eventsPath, 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    const events = text === undefined ? [] : decodeLegacyPlanEventText(text, entry.name);
-    let state = emptyPlanSessionState(entry.name);
-    for (const event of events) state = applyPlanEvent(state, event);
-    const projectionPath = join(sessionsRoot, entry.name, 'plans.json');
-    try {
-      const projection = JSON.parse(await readFile(projectionPath, 'utf8')) as PlanSessionState;
-      if (JSON.stringify(projection) !== JSON.stringify(state)) {
-        throw new Error(`Plan projection does not match its event ledger for ${entry.name}`);
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    if (events.length > 0) result.push({ sessionId: entry.name, events, state });
-  }
-  return result;
-}
-
-function decodeLegacyPlanEventText(text: string, sessionId: string): PlanEvent[] {
-  const lines = text.split('\n');
-  const events: PlanEvent[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (!line.trim()) continue;
-    try {
-      events.push(decodePlanEvent(JSON.parse(line), sessionId));
-    } catch (error) {
-      const isLast = index === lines.length - 1;
-      if (isLast && !text.endsWith('\n') && classifyJsonRecord(line) === 'incomplete-prefix') {
-        continue;
-      }
-      throw new Error(`Invalid Plan event at line ${index + 1}`, { cause: error });
-    }
-  }
-  return events;
 }
 
 function readSqlitePlanLedger(
@@ -611,23 +406,6 @@ function insertPlanEvent(database: DatabaseSync, event: PlanEvent): void {
       ) VALUES (?, ?, ?, ?, ?)
     `)
     .run(event.sessionId, row.sequence, event.id, event.storeVersion, JSON.stringify(event));
-}
-
-function insertOrValidatePlanEvent(database: DatabaseSync, event: PlanEvent): void {
-  const existing = database
-    .prepare(`
-      SELECT record_json
-      FROM workflow_plan_events
-      WHERE session_id = ? AND store_version = ?
-    `)
-    .get(event.sessionId, event.storeVersion) as { record_json?: unknown } | undefined;
-  if (existing) {
-    if (existing.record_json !== JSON.stringify(event)) {
-      throw new Error(`Plan cutover conflict: ${event.sessionId}:${event.storeVersion}`);
-    }
-    return;
-  }
-  insertPlanEvent(database, event);
 }
 
 function writePlanProjection(

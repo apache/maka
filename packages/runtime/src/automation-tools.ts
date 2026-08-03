@@ -17,6 +17,7 @@ import {
   AUTOMATION_PROMPT_MAX_CODE_UNITS,
   isAutomationTextWithinLimit,
 } from '@maka/core/automation';
+import type { AutomationStatus } from '@maka/core/automation';
 import type { MakaTool } from './tool-runtime.js';
 import type { AutomationManager, AutomationDefinition } from './automation-state.js';
 
@@ -222,7 +223,7 @@ export function buildAutomationAuthorityTool(
             const r = await deps.authority.pause(id, ctx.sessionId);
             return r
               ? `Automation "${r.name}" paused. Use mode "resume" to reactivate.`
-              : `Cannot pause "${id}": not found, not owned, or not active.`;
+              : await explainManageFailure(deps.authority, id, ctx.sessionId, 'pause');
           });
           break;
         }
@@ -243,7 +244,7 @@ export function buildAutomationAuthorityTool(
                 return `Cannot resume "${id}": its fire budget is exhausted (fired ${existing.fireCount}${existing.maxFires != null ? `/${existing.maxFires}` : ''} time(s)). Create a new automation instead.`;
               }
             }
-            return `Cannot resume "${id}": not found, not owned, or not paused.`;
+            return await explainManageFailure(deps.authority, id, ctx.sessionId, 'resume');
           });
           break;
         }
@@ -259,6 +260,69 @@ async function handleById(
 ): Promise<string> {
   if (!input.id) return 'Error: "id" is required for delete/pause/resume.';
   return await run(input.id);
+}
+
+/**
+ * What each status means for pause/resume, in one place.
+ *
+ * The two facts the refusal text needs — which verb the status admits, and
+ * whether the automation is past reviving — used to be hand-rolled literal
+ * comparisons, so a fifth AutomationStatus would have compiled clean and
+ * quietly told the model that a live automation was beyond repair. A total
+ * Record makes the compiler ask for the answer instead.
+ */
+const AUTOMATION_STATUS_FACTS: Record<
+  AutomationStatus,
+  { readonly admits: 'pause' | 'resume' | null; readonly terminal: boolean }
+> = {
+  active: { admits: 'pause', terminal: false },
+  paused: { admits: 'resume', terminal: false },
+  completed: { admits: null, terminal: true },
+  expired: { admits: null, terminal: true },
+};
+
+/**
+ * Say what actually blocked pause/resume, and what to do about it.
+ *
+ * "not found, not owned, or not active" folds three independent causes into one
+ * sentence and names a next action for none of them. Two of the three are
+ * answered by mode "list"; the third is a status the model can neither see nor
+ * change by sending the same call again, so it has to be said out loud.
+ *
+ * The authority only exposes automations this session may manage, so a missing
+ * id and another session's id are genuinely indistinguishable here and share
+ * one message — but that message points at mode "list", which settles both.
+ *
+ * Status is the only cause this function can actually read. An authority may
+ * refuse for reasons that live outside the automation — the host coordinator
+ * turns a retiring or archived session into the same empty result as a
+ * wrong-status automation — and in that case the status on record still admits
+ * the verb. Saying "it is active, so it cannot be paused" there would be a
+ * verdict on something never checked, so that case says the cause was not
+ * reported rather than inventing one. Every branch lands on mode "list", which
+ * reads state and so survives the session conditions that refuse mutations.
+ */
+async function explainManageFailure(
+  authority: AutomationToolAuthority,
+  id: string,
+  sessionId: string,
+  verb: 'pause' | 'resume',
+): Promise<string> {
+  const listHint = 'Use mode "list" to see the automations you can manage and their ids.';
+  const existing = await authority.get(id, sessionId);
+  if (!existing) {
+    return `Cannot ${verb} "${id}": this session has no automation with that id. ${listHint}`;
+  }
+  const facts = AUTOMATION_STATUS_FACTS[existing.status];
+  if (facts.admits === verb) {
+    return `Cannot ${verb} "${id}": it is ${existing.status}, which is the status ${verb} needs, so its status is not what refused. The reason was not reported here. Use mode "list" to re-read its current state.`;
+  }
+  if (verb === 'pause') {
+    return `Cannot pause "${id}": it is ${existing.status}, and only an active automation can be paused.`;
+  }
+  return `Cannot resume "${id}": it is ${existing.status}, and only a paused automation can be resumed.${
+    facts.terminal ? ' Create a new automation instead.' : ''
+  }`;
 }
 
 async function handleCreate(

@@ -2,12 +2,49 @@
 
 ## Unreleased
 
-### Open Gateway removal
+## 0.1.3 - 2026-08-03
 
-Removed the desktop Open Gateway HTTP/SSE server, its Settings and IPC surfaces,
-and its dedicated credential/capability types. Model providers, OpenAI-compatible
-connections, Vercel AI Gateway, and bot event gateways are unchanged. Persisted
-settings from older builds are accepted with the retired section ignored.
+### Highlights
+
+- Expanded Runtime Host ownership across hosted child agents, Agent Graph
+  execution, Web Research, Goals, Automation, OAuth enrollment, session
+  lifecycle, runtime resources, and live execution inspection.
+- Strengthened Graph and Swarm coordination with structured operator handoffs,
+  non-blocking supervisor turns, durable child summaries, and session-bound
+  graph retirement.
+- Migrated the Desktop shell, Settings, Composer, conversation surfaces,
+  typography, navigation, resizing, and common controls to Astryx 0.2.0.
+- Added SQLite-backed local memory, managed Git workspaces, verified operational
+  backups, canonical model-call metering, and confirmed agent
+  self-configuration tools.
+- Added `opencode-free` as a zero-credential default provider and improved
+  Runtime Host OAuth-backed execution.
+
+### Reliability and developer experience
+
+- Fixed Electron development and packaged startup failures, onboarding snapshot
+  handoff, Runtime lifecycle races, PTY backpressure, clipboard writes, and
+  several Graph, Headless, and UI regressions.
+- Reduced low-signal, duplicate, source-shape, and happy-path tests; routed CI
+  suites by affected surface; and kept build, typecheck, Storybook, and E2E
+  gates intact.
+
+### Removed
+
+- Removed the desktop Open Gateway HTTP/SSE server and its Settings and IPC
+  surfaces. Model providers, OpenAI-compatible connections, Vercel AI Gateway,
+  and bot event gateways are unchanged.
+- Removed the superseded Expert Team mode and its Notes-era architecture
+  artifacts now that Graph and Swarm own multi-agent coordination.
+- Retired legacy storage writer exports and Astryx compatibility adapters that
+  no longer had active callers.
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP.
+- Computer Use remains excluded from this release.
+
+## 0.1.2 - 2026-07-31
 
 ### Runtime kernel extraction
 

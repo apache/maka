@@ -45,6 +45,9 @@ describe('Runtime Host bootstrap protocol', () => {
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
+      'agent.graph.operator.query',
+      'agent.graph.query',
+      'agent.graph.stop',
       'artifact.delete',
       'artifact.query',
       'automation.mutate',
@@ -101,6 +104,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'turn.interrupt',
       'turn.message.submit',
       'turn.query',
+      'turn.resume.query',
+      'turn.resume.start',
       'turn.start',
       'turn.stop',
       'usage.query',
@@ -511,6 +516,50 @@ describe('Runtime Host bootstrap protocol', () => {
     }
   });
 
+  test('encodes a legal large sandbox boundary Interaction without disconnecting the client', () => {
+    const identity = 'i'.repeat(128);
+    const frame = {
+      requestId: 'q'.repeat(128),
+      operation: 'interaction.query' as const,
+      ok: true as const,
+      result: {
+        schemaVersion: 1 as const,
+        interactionId: identity,
+        sessionId: identity,
+        turnId: identity,
+        runId: identity,
+        revision: 2 as const,
+        request: {
+          kind: 'sandbox_boundary' as const,
+          expansion: {
+            filesystem: {
+              entries: Array.from({ length: 32 }, (_, index) => ({
+                path: `/opt/service-${index}/${'x'.repeat(1_980)}`,
+                access: 'read' as const,
+                scope: 'exact' as const,
+              })),
+            },
+          },
+          justification: '\u0001'.repeat(2_000),
+        },
+        status: 'answered' as const,
+        outcome: {
+          kind: 'sandbox_boundary_decision' as const,
+          decision: 'allow' as const,
+          status: 'approved' as const,
+          committedAt: Number.MAX_SAFE_INTEGER,
+        },
+      },
+    };
+
+    const canonical = decodeHostFrame(frame);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(canonical)}\n`, 'utf8') > 64 * 1024);
+    const encoded = encodeProtocolFrame(canonical);
+    assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES);
+    const [decoded] = new ProtocolFrameDecoder().push(encoded);
+    assert.deepEqual(decodeHostFrame(decoded), canonical);
+  });
+
   test('decodes split UTF-8 and multiple newline-delimited frames without an unbounded tail', () => {
     const decoder = new ProtocolFrameDecoder();
     const wire = Buffer.from(
@@ -613,6 +662,120 @@ describe('Runtime Host bootstrap protocol', () => {
           ok: false,
           error: { code: 'host_draining', message: 'draining' },
           trace: 'private',
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('keeps safe-boundary continuation plans closed and bounded', () => {
+    const query = {
+      requestId: 'resume-query-1',
+      operation: 'turn.resume.query' as const,
+      input: {
+        sessionId: 'session-1',
+        sourceRunId: 'run-source-1',
+        expectedRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeClientFrame(query), query);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...query,
+          input: { sessionId: 'session-1', expectedRuntimeEventHighWater: 2 },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...query,
+          input: { ...query.input, expectedRuntimeEventHighWater: 0 },
+        }),
+      isInvalidFrame,
+    );
+
+    const ready = {
+      requestId: query.requestId,
+      operation: query.operation,
+      ok: true as const,
+      result: {
+        sessionId: 'session-1',
+        disposition: 'ready' as const,
+        sourceRunId: 'run-source-1',
+        sourceTurnId: 'turn-source-1',
+        sourceRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(ready), ready);
+    assert.throws(
+      () =>
+        HOST_OPERATION_SPECS['turn.resume.query'].assertOutputForInput?.(query.input, {
+          ...ready.result,
+          sourceRuntimeEventHighWater: 3,
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...ready,
+          result: { ...ready.result, diagnostics: ['private runtime detail'] },
+        }),
+      isInvalidFrame,
+    );
+
+    const parked = {
+      requestId: query.requestId,
+      operation: query.operation,
+      ok: true as const,
+      result: {
+        sessionId: 'session-1',
+        disposition: 'parked' as const,
+        reason: 'safety_check_failed' as const,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(parked), parked);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...parked,
+          result: { ...parked.result, reason: 'workspace_identity_mismatch' },
+        }),
+      isInvalidFrame,
+    );
+
+    const start = {
+      requestId: 'resume-start-1',
+      operation: 'turn.resume.start' as const,
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-resume-1',
+        sourceRunId: 'run-source-1',
+        sourceRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeClientFrame(start), start);
+    const started = {
+      requestId: start.requestId,
+      operation: start.operation,
+      ok: true as const,
+      result: {
+        kind: 'started' as const,
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'turn-resume-1',
+          runId: 'run-resume-1',
+          status: 'running' as const,
+        },
+      },
+    };
+    assert.deepEqual(decodeHostFrame(started), started);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...started,
+          result: { kind: 'parked', plan: ready.result },
         }),
       isInvalidFrame,
     );

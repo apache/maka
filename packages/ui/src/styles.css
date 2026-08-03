@@ -1,23 +1,7 @@
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
-.maka-attachment-file-card { display: flex; width: 200px; max-width: 100%; align-items: center; gap: 10px; padding: 8px; border-radius: var(--radius-surface); background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
-.maka-attachment-file-icon { display: grid; width: 36px; height: 36px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-control); color: var(--foreground-secondary); background: var(--foreground-alpha-10); }
-.maka-attachment-file-icon > svg { width: 20px; height: 20px; }
-.maka-attachment-file-content { min-width: 0; flex: 1; }
-.maka-attachment-file-name,
-.maka-attachment-file-size { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-attachment-file-name {
-  font: var(--maka-text-label);
- color: var(--foreground); }
-.maka-attachment-file-size {
-  font: var(--maka-text-supporting);
- margin-top: 2px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
-.maka-attachment-file-remove,
 .maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick), background var(--duration-quick); }
-.maka-attachment-file-remove { width: 24px; height: 24px; margin-left: 4px; border-radius: var(--radius-control); }
-.maka-attachment-file-remove > svg { width: 14px; height: 14px; }
-.maka-attachment-file-remove:hover,
 .maka-quote-chip-remove:hover { color: var(--foreground); background: var(--foreground-alpha-10); }
 
 .maka-page-header-title,
@@ -95,18 +79,10 @@
   font: var(--maka-text-body);
  margin: 0; color: var(--muted-foreground); }
 
-.maka-user-attachment-thumb-pending { display: grid; width: 128px; height: 128px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-surface); color: var(--muted-foreground); background: var(--foreground-alpha-6); }
-.maka-user-attachment-thumb-pending > svg { width: 20px; height: 20px; animation: maka-spin 1s linear infinite; }
-.maka-user-attachment-thumb { position: relative; display: inline-flex; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-surface); transition: opacity var(--duration-quick); }
-.maka-user-attachment-thumb:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.maka-user-attachment-thumb-image { width: 128px; height: 128px; object-fit: cover; transition: opacity var(--duration-quick); }
-.maka-user-attachment-thumb:hover .maka-user-attachment-thumb-image { opacity: 0.9; }
-.maka-user-attachment-lightbox-image { max-width: 90vw; max-height: 90vh; border-radius: var(--radius-surface); object-fit: contain; box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25); }
 .maka-message-meta { opacity: 0; transition: opacity var(--duration-quick) var(--ease-out-strong); }
 .maka-user-message:hover .maka-message-meta,
 .maka-user-message:focus-within .maka-message-meta { opacity: 1; }
-.maka-user-quotes { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; margin-top: 4px; }
-.maka-user-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,
@@ -125,9 +101,122 @@
    bubble, so it needs its own line and the gap above it. */
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
 .maka-deep-thinking { min-width: 0; }
+/* The reasoning body inside the Astryx ChatReasoning disclosure. The official
+   atoms own no white-space (the shell assumes children are pre-rendered), so
+   the inherited `white-space: normal` collapses every newline in thinking
+   text. Restore the pre-wrap reading contract the pre-Astryx disclosure had
+   (dropped in the #1748 migration). `word-break` keeps long tokens from
+   overflowing the box, as the old body did. */
+.maka-chat-reasoning-content { white-space: pre-wrap; word-break: break-word; }
 
 @keyframes maka-spin { to { transform: rotate(360deg); } }
 .maka-spin { animation: maka-spin 1s linear infinite; }
+
+/* Markdown code renderers are custom components so Mermaid can be loaded only
+   for settled Mermaid fences. Preserve Astryx's document/compact rhythm here. */
+.maka-markdown-code { min-width: 0; }
+.maka-markdown-code-default { margin-block: var(--space-3) var(--space-4); }
+.maka-markdown-code-compact { margin-block: var(--space-1) var(--space-2); }
+[role="document"] > .maka-markdown-code:first-child { margin-block-start: 0; }
+[role="document"] > .maka-markdown-code:last-child { margin-block-end: 0; }
+.maka-mermaid-diagram {
+  display: flex;
+  max-width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  container-type: inline-size;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--background);
+}
+.maka-mermaid-toolbar {
+  min-height: 40px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--foreground-3);
+}
+.maka-mermaid-title { font: var(--maka-text-supporting); color: var(--muted-foreground); }
+.maka-mermaid-actions { display: flex; align-items: center; gap: 2px; }
+.maka-mermaid-zoom-actions { display: flex; align-items: center; gap: 2px; }
+.maka-mermaid-zoom-level {
+  font: var(--maka-text-code);
+  min-width: 4.5ch;
+  color: var(--muted-foreground);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.maka-mermaid-viewport {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  overflow: auto;
+  padding: var(--space-3);
+  cursor: default;
+  outline: none;
+  overscroll-behavior: auto;
+  touch-action: pan-y;
+}
+.maka-mermaid-viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--focus-ring); }
+.maka-mermaid-viewport[data-maka-mermaid-pannable="horizontal"] { cursor: grab; overscroll-behavior-x: contain; }
+.maka-mermaid-viewport[data-maka-mermaid-pannable="vertical"],
+.maka-mermaid-viewport[data-maka-mermaid-pannable="both"] {
+  cursor: grab;
+  overscroll-behavior: contain;
+  touch-action: none;
+}
+.maka-mermaid-viewport[data-maka-mermaid-panning="true"] { cursor: grabbing; user-select: none; }
+.maka-mermaid-canvas { min-width: 0; margin-inline: auto; }
+.maka-mermaid-svg { display: flex; width: 100%; height: 100%; min-width: 0; justify-content: center; }
+.maka-mermaid-svg > svg {
+  display: block;
+  width: 100%;
+  max-width: none !important;
+  height: 100%;
+  overflow: visible;
+}
+.maka-mermaid-diagram-expanded {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  margin: 0 !important;
+  border: 0;
+  border-radius: 0;
+}
+.maka-mermaid-diagram-expanded .maka-mermaid-toolbar {
+  padding-left: max(var(--space-3), var(--maka-titlebar-area-x, 0px));
+  padding-right: calc(var(--space-1) + var(--maka-titlebar-overlay-right-width, 0px));
+}
+.maka-mermaid-diagram-expanded .maka-mermaid-actions { -webkit-app-region: no-drag; }
+.maka-mermaid-diagram-expanded .maka-mermaid-viewport { min-height: 0; flex: 1 1 auto; }
+.maka-mermaid-dialog { -webkit-app-region: no-drag; }
+.maka-mermaid-source {
+  max-height: min(40%, 320px);
+  flex: 0 1 auto;
+  overflow: auto;
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.maka-mermaid-fallback { display: grid; gap: var(--space-1-5); }
+.maka-mermaid-fallback-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.maka-mermaid-status {
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+}
+
+@container (max-width: 520px) {
+  .maka-mermaid-title { display: none; }
+}
+
+@container (max-width: 360px) {
+  .maka-mermaid-diagram:not(.maka-mermaid-diagram-expanded) .maka-mermaid-zoom-actions { display: none; }
+}
 
 .maka-tool-output-panel { display: grid; gap: 8px; margin-top: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-surface); background: var(--foreground-3); }
 .maka-tool-output-command {
@@ -180,22 +269,7 @@
  margin: 0; }
 .maka-web-result-error-message { color: var(--destructive); }
 .maka-web-result-repair { color: var(--muted-foreground); }
-.maka-tool-header-full { width: 100%; }
-.maka-tool-card-body { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
-.maka-tool-settle-fade { animation: maka-stream-fade-in var(--duration-emphasized) var(--ease-out-strong) both; }
-.maka-tool-tone-destructive { color: var(--destructive); }
-.maka-tool-tone-warning { color: var(--warning-text, var(--info-text)); }
-.maka-tool-tone-muted { color: var(--muted-foreground); }
-.maka-tool-trow { display: flex; flex-direction: column; }
-.maka-tool-trow-trigger { display: flex; min-width: 0; align-items: center; gap: var(--spacing-1-5, 6px); padding-block: 2px; }
-.maka-tool-trow-icon { flex: 0 0 auto; }
-.maka-tool-trow-summary {
-  font: var(--maka-text-supporting);
- min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-tool-trow-children { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; margin-left: 8px; padding-left: 10px; border-left: 1px solid var(--border); }
-.maka-tool-trow-duration {
-  font: var(--maka-text-supporting);
- flex: 0 0 auto; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.maka-tool-call-detail { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
@@ -215,8 +289,6 @@
 .maka-daily-review-save { min-width: 64px; }
 .maka-daily-review-append { min-width: 80px; }
 .maka-daily-review-quick-run { min-width: 96px; }
-.maka-composer-mention-panel,
-.maka-composer-skill-panel { z-index: var(--z-overlay); border-radius: var(--radius-surface); color: var(--popover-foreground); background: var(--popover); box-shadow: var(--shadow-maka-panel); }
 .maka-agent-preview-failure { color: var(--destructive); }
 .maka-automation-result-icon { display: inline; margin-right: 4px; vertical-align: text-bottom; }
 .maka-turn-status-icon { flex: 0 0 auto; }
@@ -347,112 +419,10 @@
   -webkit-text-fill-color: transparent;
   animation: maka-text-shimmer 1.8s linear infinite;
 }
-.maka-text-shimmer-sweep[data-delayed="true"] {
-  animation-delay: var(--duration-emphasized);
-}
 @media (prefers-reduced-motion: reduce) {
   .maka-text-shimmer-sweep { opacity: 0; animation: none; }
 }
 
-.maka-tool-container {
-  width: min(680px, 100%);
-  margin: var(--space-0-5) auto 0;
-  padding-inline: var(--space-4);
-}
-.maka-tool-container-header {
-  font: var(--maka-text-supporting);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-0-5);
-  color: var(--muted-foreground);
-}
-.maka-tool-count {
-  font: var(--maka-text-supporting);
-  display: inline-flex;
-  min-width: 22px;
-  /* #1879: was a bare 18px, below the 20px line box it renders. */
-  height: var(--h-control-xs);
-  align-items: center;
-  white-space: nowrap;
-  justify-content: center;
-  padding-inline: var(--space-1-5);
-  border-radius: var(--radius-pill);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-  font-variant-numeric: tabular-nums;
-}
-.maka-tool-item {
-  font: var(--maka-text-supporting);
-  margin-top: var(--space-2);
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-2);
-  box-shadow: var(--shadow-minimal-flat);
-  color: var(--foreground-secondary);
-}
-.maka-tool-item[data-status="waiting_permission"] { border-color: oklch(from var(--info) l c h / 0.4); }
-.maka-tool-item[data-status="running"] { border-color: oklch(from var(--status-running) l c h / 0.4); }
-.maka-tool-item[data-status="completed"] { border-color: var(--border); }
-.maka-tool-item[data-status="blocked"] {
-  border-color: oklch(from var(--warning) l c h / 0.4);
-  background: oklch(from var(--warning) l c h / 0.04);
-}
-.maka-tool-item[data-status="errored"] {
-  border-color: oklch(from var(--destructive) l c h / 0.4);
-  background: oklch(from var(--destructive) l c h / 0.04);
-}
-.maka-tool-item[data-status="interrupted"] {
-  border-color: var(--border);
-  background: var(--foreground-3);
-  opacity: 0.7;
-}
-.maka-tool-header {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2-5);
-  padding: var(--space-2) var(--space-3);
-  color: var(--foreground-secondary);
-  list-style: none;
-}
-.maka-tool-status-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border-radius: var(--radius-pill);
-  background: var(--muted-foreground);
-}
-.maka-tool-status-dot[data-status="waiting_permission"] { background: var(--info); }
-.maka-tool-status-dot[data-status="running"] {
-  background: var(--status-running);
-  box-shadow: 0 0 0 3px oklch(from var(--status-running) l c h / 0.15);
-  animation: maka-tool-pulse 1.5s ease-in-out infinite;
-}
-.maka-tool-status-dot[data-status="completed"] { background: var(--success); }
-.maka-tool-status-dot[data-status="blocked"] { background: var(--warning); }
-.maka-tool-status-dot[data-status="errored"] { background: var(--destructive); }
-.maka-tool-status-dot[data-status="interrupted"] { background: var(--muted-foreground); }
-.maka-tool-name {
-  font: var(--maka-text-heading-3);
-  min-width: 0;
-  overflow: hidden;
-  color: var(--foreground);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.maka-tool-meta {
-  font: var(--maka-text-heading-5);
- display: inline-flex; align-items: center; gap: var(--space-2); color: var(--muted-foreground); }
-.maka-tool-duration { font-variant-numeric: tabular-nums; }
-.maka-tool-status-label { color: var(--foreground-secondary); }
-.maka-tool-body { padding: var(--space-2-5) var(--space-3) var(--space-3); }
-.maka-tool-intent {
-  font: var(--maka-text-supporting);
- margin: 0 0 var(--space-2); color: var(--foreground-secondary); }
-.maka-tool-args { max-height: 110px; margin: 0; overflow: auto; }
 
 .maka-overlay-preview {
   font: var(--maka-text-supporting);

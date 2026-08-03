@@ -157,6 +157,14 @@ export class ClientSessionSubscription
         'correlation_changed',
         'Session subscription frame identity changed',
       );
+    } else if (
+      frame.kind === 'subscription.agent_graph_changed' &&
+      frame.rootSessionId !== this.#expectedSessionId
+    ) {
+      throw new RuntimeHostSubscriptionError(
+        'correlation_changed',
+        'Session subscription Agent graph identity changed',
+      );
     }
 
     this.#offer(frame);

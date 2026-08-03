@@ -1,6 +1,7 @@
 import type { ProviderRetryEvent, SessionEvent, StoredMessage, UiLocale } from '@maka/core';
 import { applyAssistantComplete, applyAssistantDelta } from './assistant-stream.js';
 import { projectToolActivityArgs, toolResultActivityStatus } from '@maka/core';
+import { isInFlightToolStatus } from '@maka/core';
 import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';
@@ -33,6 +34,18 @@ export interface LiveTurnProjection {
   turnId: string;
   phase: 'waiting' | 'streamed';
   terminal?: true;
+  /**
+   * Set by `armLiveTurn` and cleared by the first word the authority says about
+   * this turn (`confirmLiveTurn`, or any event carrying the same turnId).
+   *
+   * A client that just sent cannot tell "the authority has not reached my turn
+   * yet" from "my turn is over" by reading session status: it reads the same
+   * before a turn starts and after it ends. So a snapshot taken before the send
+   * landed would retire the arm the send just placed. This bit says the arm is
+   * still waiting for its answer, which is what keeps such a snapshot from
+   * settling it. Dropped for good once the answer arrives.
+   */
+  unconfirmed?: true;
   providerRetry?: ProviderRetryEvent;
   steps: LiveTurnStepProjection[];
 }
@@ -43,9 +56,7 @@ function terminalizeLiveSteps(steps: readonly LiveTurnStepProjection[]): LiveTur
     ...(step.thinking ? { thinking: { ...step.thinking, complete: true } } : {}),
     ...(step.text ? { text: { ...step.text, complete: true } } : {}),
     tools: step.tools.map((tool) => (
-      tool.status === 'pending' || tool.status === 'running' || tool.status === 'waiting_permission'
-        ? { ...tool, status: 'interrupted' as const }
-        : tool
+      isInFlightToolStatus(tool.status) ? { ...tool, status: 'interrupted' as const } : tool
     )),
   }));
 }
@@ -67,7 +78,27 @@ function appendContentKind(
 }
 
 export function armLiveTurn(turnId: string): LiveTurnProjection {
-  return { turnId, phase: 'waiting', steps: [] };
+  return { turnId, phase: 'waiting', steps: [], unconfirmed: true };
+}
+
+/** Drop the `unconfirmed` claim; identity-preserving when there is none. */
+function confirmed(projection: LiveTurnProjection): LiveTurnProjection {
+  if (!projection.unconfirmed) return projection;
+  const { unconfirmed: _unconfirmed, ...rest } = projection;
+  return rest;
+}
+
+/**
+ * The authority answered about `turnId`: clear the arm's pending claim so a
+ * later snapshot may retire it. A different turn's answer says nothing about
+ * this one, so the projection is returned unchanged (same reference).
+ */
+export function confirmLiveTurn(
+  current: LiveTurnProjection | undefined,
+  turnId: string,
+): LiveTurnProjection | undefined {
+  if (!current || current.turnId !== turnId) return current;
+  return confirmed(current);
 }
 
 export function applyLiveTurnEvent(
@@ -89,19 +120,19 @@ export function applyLiveTurnEvent(
     const prior = current?.turnId === event.turnId
       ? current
       : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
-    return { ...prior, providerRetry: event };
+    return { ...confirmed(prior), providerRetry: event };
   }
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
     const steps = terminalizeLiveSteps(current.steps);
     if (steps.length === 0) return undefined;
-    const { providerRetry: _providerRetry, ...withoutRetry } = current;
+    const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
     return { ...withoutRetry, terminal: true, steps };
   }
   if (event.type === 'complete') {
     if (!current || current.turnId !== event.turnId) return current;
     if (current.steps.length === 0) return undefined;
-    const { providerRetry: _providerRetry, ...withoutRetry } = current;
+    const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
     return {
       ...withoutRetry,
       terminal: true,
@@ -122,7 +153,7 @@ export function applyLiveTurnEvent(
   const prior = current?.turnId === event.turnId
     ? current
     : { turnId: event.turnId, phase: 'streamed' as const, steps: [] };
-  const { providerRetry: _providerRetry, ...priorWithoutRetry } = prior;
+  const { providerRetry: _providerRetry, ...priorWithoutRetry } = confirmed(prior);
   const messageEvent = event.type === 'thinking_delta'
     || event.type === 'thinking_complete'
     || event.type === 'text_delta'
@@ -284,7 +315,7 @@ export function applyLiveTurnEvent(
 }
 
 /**
- * Text smoother handoff: drop the committed text/thinking slots for `stepId`.
+ * Streaming display handoff: drop the committed text/thinking slots for `stepId`.
  * Tools that still carry live stream evidence (outputChunks) stay — empty
  * shell_run durable results do not cover them, and co-located Bash+answer
  * steps must not lose pre-handoff output when the answer settles.
@@ -346,7 +377,7 @@ function durableStreamEvidence(
 /**
  * Removes evidence-only steps once the persisted transcript can render the
  * same durable output, including while a later step is still running. Text
- * steps remain owned by the smoother, whose completion callback performs
+ * steps remain owned by the streaming renderer, whose completion callback performs
  * their handoff after the tail is visible.
  */
 export function reconcileTerminalLiveTurn(

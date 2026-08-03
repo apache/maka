@@ -75,6 +75,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
         stoppedFailure = rejectionOf(stopped);
         return {
           ...identity,
+          acceptSandboxBoundaryRequest: async () => {},
           acceptUserQuestionRequest: async () => {},
           close: async () => {
             closeCalls += 1;
@@ -468,6 +469,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
   const interactionAuthority: RuntimeInteractionAuthority = {
     bindRun: (identity) => ({
       ...identity,
+      acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
       close: async () => {
         markCloseStarted();

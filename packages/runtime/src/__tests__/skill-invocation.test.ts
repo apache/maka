@@ -16,8 +16,56 @@ import {
   type HostCapabilities,
   type LoadedSkillInstructions,
 } from '../skills.js';
+import { skillInvocationInlineReferences } from '../skill-invocation-receipt.js';
 
 describe('skill invocation', () => {
+  it('projects successful receipt occurrences by request or canonical Skill id', () => {
+    const displayText = 'Use /skill:writer-id, not /skill:missing';
+    assert.deepEqual(
+      skillInvocationInlineReferences(
+        [
+          {
+            invocation: 'explicit',
+            request: 'workspace:skills:writer-id',
+            success: true,
+            ref: 'workspace:skills:writer-id',
+            id: 'writer-id',
+            name: 'Writer',
+            scope: 'workspace',
+            source: 'maka',
+            truncated: false,
+          },
+          {
+            invocation: 'explicit',
+            request: 'missing',
+            success: false,
+            reason: 'not_found',
+          },
+          {
+            invocation: 'model_tool',
+            request: 'researcher',
+            success: true,
+            ref: 'workspace:skills:researcher',
+            id: 'researcher',
+            name: 'Researcher',
+            scope: 'workspace',
+            source: 'maka',
+            truncated: false,
+          },
+        ],
+        displayText,
+      ),
+      [
+        {
+          kind: 'skill',
+          value: '/skill:writer-id',
+          label: 'Writer',
+          start: displayText.indexOf('/skill:writer-id'),
+        },
+      ],
+    );
+  });
+
   it('lists only enabled, host-eligible skills as slim entries', async () => {
     await withWorkspace(async (workspaceRoot, homeDir) => {
       await writeSkill(

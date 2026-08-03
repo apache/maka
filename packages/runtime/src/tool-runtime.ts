@@ -27,6 +27,7 @@ import type {
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 import type {
   HostedInteractionBridge,
+  HostedSandboxBoundarySettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
@@ -38,7 +39,7 @@ import type {
   UserQuestionResponse,
   UserQuestionResult,
 } from '@maka/core/user-question';
-import { computerUseApprovalSummary } from '@maka/core';
+import { computerUseModelCallArgs } from '@maka/core';
 import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
@@ -65,6 +66,7 @@ import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
 import { normalizeSandboxBoundaryExpansion } from './sandbox-boundary-path.js';
+import { SANDBOX_BOUNDARY_UNAVAILABLE } from './sandbox-boundary-tool.js';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
@@ -167,6 +169,7 @@ export interface MakaToolContext {
   }) => Promise<unknown>;
   spawnChildSession?: (input: {
     agentProfile: AgentProfile;
+    subagentId?: string;
     prompt: string;
     /** Optional swarm identity, scoped to the owning tool call. */
     swarm?: {
@@ -253,7 +256,7 @@ export interface ToolGating {
 
 export const TOOL_ERROR_RESULT_MAX_CHARS = 4000;
 export const MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN = 5;
-export const MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN = 5;
+export const MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN = 32;
 export const DEFAULT_PERMISSION_TIMEOUT_MS = 300_000;
 
 /**
@@ -321,6 +324,7 @@ export interface ToolRuntimeInput {
     parentTurnId: string;
     toolCallId: string;
     agentProfile: AgentProfile;
+    subagentId?: string;
     prompt: string;
     swarm?: {
       swarmId: string;
@@ -383,7 +387,7 @@ export interface ToolRuntimeInput {
   getRunTrace?: () => RunTraceLike | null;
   recordToolInvocation?: ToolTelemetryRecorder;
   recordToolArtifacts?: ToolArtifactRecorder;
-  /** Optional Phase 2 T1/T2 commit boundary. Omitted on legacy JSONL hosts. */
+  /** Optional Phase 2 T1/T2 commit boundary for hosts that persist RuntimeEvents. */
   runtimeCommitSink?: RuntimeCommitSink;
 }
 
@@ -411,13 +415,14 @@ class RuntimeCommitBoundaryError extends Error {
 export class ToolRuntime {
   private readonly sandboxBoundaryRequests = new TurnScopedAwaitRegistry<
     SandboxBoundarySettlement,
-    { toolUseId: string; creation: Promise<SandboxBoundaryRequest> }
+    { toolUseId: string; creation?: Promise<SandboxBoundaryRequest>; hosted: boolean }
   >();
   private readonly userQuestions = new TurnScopedAwaitRegistry<
     UserQuestionResponse,
     { toolUseId: string; questions: UserQuestion[]; hosted: boolean }
   >();
   private readonly hostedInteractions = new Map<string, HostedInteractionBridge>();
+  private readonly deferredSandboxBoundaryTurnClosures = new Set<string>();
   private readonly deferredQuestionTurnClosures = new Set<string>();
   private activeSubagentToolCount = 0;
   private childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
@@ -469,15 +474,17 @@ export class ToolRuntime {
 
   async endTurn(turnId: string, reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
     const boundaryRequests = this.sandboxBoundaryRequests.entries(turnId);
+    const hasHostedBoundaryPending = boundaryRequests.some(([, request]) => request.hosted);
     const boundarySettlementErrors: unknown[] = [];
-    if (boundaryRequests.length > 0) {
+    const embeddedBoundaryRequests = boundaryRequests.filter(([, request]) => !request.hosted);
+    if (embeddedBoundaryRequests.length > 0) {
       if (!this.input.settleSandboxBoundaryRequest) {
         boundarySettlementErrors.push(
           new Error('Sandbox boundary settlement is unavailable on this surface'),
         );
       } else {
         const results = await Promise.allSettled(
-          boundaryRequests.map(async ([requestId, metadata]) => {
+          embeddedBoundaryRequests.map(async ([requestId, metadata]) => {
             try {
               await metadata.creation;
             } catch {
@@ -500,11 +507,17 @@ export class ToolRuntime {
       .entries(turnId)
       .some(([, question]) => question.hosted);
     this.hostedInteractions.delete(turnId);
-    this.sandboxBoundaryRequests.endTurn(
-      turnId,
-      (requestId) =>
-        new Error(`Turn ${turnId} ${reason} before sandbox boundary ${requestId} was settled`),
-    );
+    if (hasHostedBoundaryPending) {
+      this.deferredSandboxBoundaryTurnClosures.add(turnId);
+      this.finishDeferredSandboxBoundaryTurnClosure(turnId);
+    } else {
+      this.sandboxBoundaryRequests.endTurn(
+        turnId,
+        (requestId) =>
+          new Error(`Turn ${turnId} ${reason} before sandbox boundary ${requestId} was settled`),
+      );
+      this.deferredSandboxBoundaryTurnClosures.delete(turnId);
+    }
     if (hasHostedPending) {
       this.deferredQuestionTurnClosures.add(turnId);
       this.finishDeferredQuestionTurnClosure(turnId);
@@ -557,6 +570,11 @@ export class ToolRuntime {
       .entries(turnId)
       .find(([requestId]) => requestId === response.requestId);
     if (!pending) return false;
+    if (pending[1].hosted) {
+      throw new RuntimeInteractionInvariantError(
+        `Hosted sandbox boundary ${response.requestId} must settle through its captured continuation`,
+      );
+    }
     if (!this.input.settleSandboxBoundaryRequest) {
       throw new Error('Sandbox boundary settlement is unavailable on this surface');
     }
@@ -772,9 +790,29 @@ export class ToolRuntime {
     } catch (error) {
       permissionArgsError = error;
     }
+    // The args written into the `tool_start` event, the persisted `tool_call`
+    // message and the durable ledger — that is, the record of the call the
+    // model reads back on its next turn (`model-history.ts` replays
+    // `event.content.args`).
+    //
+    // Computer Use used the host's approval summary here. That projection
+    // exists to decide and display a permission: it renames `window_id` to
+    // `windowId`, adds `approvalClass` and `rememberForTurnAllowed`, and drops
+    // every argument it does not need. On the real ToolRuntime a model that
+    // sent {action:'press_key', app, window_id, observation_id, element_id,
+    // text:'cmd+s'} read back {action, approvalClass, rememberForTurnAllowed,
+    // app, windowId, observationId} — a key the tool rejects, two fields it
+    // never sent, no element, and a press_key with no key. It then went on
+    // calling it that way.
+    //
+    // The permission prompt still reads `permissionArgs`, and the approval
+    // scope key is still computed from the raw call, so this only changes what
+    // is written down. `computerUseModelCallArgs` keeps the same privacy rule
+    // — screen-derived and user-typed values are reduced to a shape — and
+    // speaks the tool's own argument names.
     const persistedArgs =
       tool.categoryHint === 'computer_use'
-        ? snapshotToolArgs(computerUseApprovalSummary(permissionArgs))
+        ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
         : permissionArgs;
     const now = this.input.now();
     const toolIntent = describeToolIntent(tool, persistedArgs);
@@ -1688,6 +1726,7 @@ export class ToolRuntime {
                     parentTurnId: input.turnId,
                     toolCallId: input.toolUseId,
                     agentProfile: spawnInput.agentProfile,
+                    ...(spawnInput.subagentId ? { subagentId: spawnInput.subagentId } : {}),
                     prompt: spawnInput.prompt,
                     ...(spawnInput.swarm ? { swarm: spawnInput.swarm } : {}),
                     abortSignal,
@@ -1828,42 +1867,28 @@ export class ToolRuntime {
     justification: string,
     queue: DurableSessionEventSink,
   ): Promise<SandboxBoundarySettlement> {
-    if (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest) {
-      throw new Error('Sandbox boundary expansion is unavailable on this surface');
+    const hostedRun = this.interactionRun(turnId);
+    if (
+      !hostedRun &&
+      (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest)
+    ) {
+      // This is the sentence a model actually reads. `sandbox-boundary-tool.ts`
+      // guards the same condition, but ToolRuntime injects the callback
+      // unconditionally a few lines above, so that guard answers only an
+      // embedder that builds its own context — never a production tool call.
+      //
+      // This one does fire in production. The desktop app supplies both store
+      // callbacks unconditionally (`session-stream.ts`), but the CLI supplies
+      // them only on the `tui` surface (`runtime-bootstrap.ts`), so every
+      // non-TUI CLI surface reaches here for any call that is not a hosted run.
+      throw new Error(SANDBOX_BOUNDARY_UNAVAILABLE);
     }
     const normalized = await normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd);
-    if (typeof justification !== 'string' || justification.trim().length === 0) {
+    const normalizedJustification = justification.trim();
+    if (typeof justification !== 'string' || normalizedJustification.length === 0) {
       throw new Error('Sandbox boundary justification must not be empty');
     }
     const requestId = this.input.newId();
-    // Provenance travels with the row, not with the RuntimeEvent published
-    // below: the event append is fail-open, so a crash between the two would
-    // otherwise leave the request unattributable to the work it blocked.
-    const runId = this.input.getCurrentRunId?.();
-    const creation = this.input.createSandboxBoundaryRequest({
-      sessionId: this.input.sessionId,
-      requestId,
-      turnId,
-      ...(runId ? { runId } : {}),
-      expansion: normalized,
-      justification,
-    });
-    const parked = this.sandboxBoundaryRequests.park(turnId, requestId, {
-      toolUseId,
-      creation,
-    });
-    void parked.catch(() => undefined);
-    let request: SandboxBoundaryRequest;
-    try {
-      request = await creation;
-    } catch (error) {
-      this.sandboxBoundaryRequests.reject(
-        turnId,
-        requestId,
-        error instanceof Error ? error : new Error(String(error)),
-      );
-      throw error;
-    }
     const requestEvent: SandboxBoundaryRequestEvent = {
       type: 'sandbox_boundary_request',
       id: this.input.newId(),
@@ -1871,9 +1896,68 @@ export class ToolRuntime {
       ts: this.input.now(),
       requestId,
       toolUseId,
-      justification: request.justification,
-      expansion: request.expansion,
+      justification: normalizedJustification,
+      expansion: normalized,
     };
+    let creation: Promise<SandboxBoundaryRequest> | undefined;
+    if (!hostedRun) {
+      // Embedded execution publishes the canonical row directly. Hosted
+      // execution delegates both preflight and publication to the Host so a
+      // rejected admission cannot leave an ownerless pending row behind.
+      const runId = this.input.getCurrentRunId?.();
+      creation = this.input.createSandboxBoundaryRequest!({
+        sessionId: this.input.sessionId,
+        requestId,
+        turnId,
+        ...(runId ? { runId } : {}),
+        expansion: normalized,
+        justification: normalizedJustification,
+      });
+    }
+    const parked = this.sandboxBoundaryRequests.park(turnId, requestId, {
+      toolUseId,
+      ...(creation ? { creation } : {}),
+      hosted: hostedRun !== undefined,
+    });
+    void parked.catch(() => undefined);
+    if (creation) {
+      try {
+        await creation;
+      } catch (error) {
+        this.sandboxBoundaryRequests.reject(
+          turnId,
+          requestId,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        throw error;
+      }
+    }
+    if (hostedRun) {
+      const settlement = this.createSandboxBoundarySettlement(turnId, requestId);
+      try {
+        await hostedRun.admitSandboxBoundaryRequest({
+          request: requestEvent,
+          settlement,
+        });
+      } catch (error) {
+        this.sandboxBoundaryRequests.reject(
+          turnId,
+          requestId,
+          error instanceof Error
+            ? error
+            : new RuntimeInteractionFailStopError(
+                `Could not confirm admission for sandbox boundary ${requestId}`,
+                error,
+              ),
+        );
+        this.finishDeferredSandboxBoundaryTurnClosure(turnId);
+        await parked.catch(() => undefined);
+        throw interactionAuthorityError(
+          `Could not confirm admission for sandbox boundary ${requestId}`,
+          error,
+        );
+      }
+    }
     queue.push(requestEvent);
     const settlement = await parked;
     const decisionAck: SandboxBoundaryDecisionAckEvent = {
@@ -1892,7 +1976,8 @@ export class ToolRuntime {
           : settlement.request.status,
       revision: settlement.boundary.revision,
     };
-    queue.push(decisionAck);
+    if (hostedRun) await this.publishHostedSettlementAck(queue, decisionAck);
+    else queue.push(decisionAck);
     return settlement;
   }
 
@@ -1929,6 +2014,61 @@ export class ToolRuntime {
           `Hosted question ${requestId} escaped exact Run closure`,
         ),
     );
+  }
+
+  private finishDeferredSandboxBoundaryTurnClosure(turnId: string): void {
+    if (
+      !this.deferredSandboxBoundaryTurnClosures.has(turnId) ||
+      this.sandboxBoundaryRequests.pendingCount(turnId) !== 0
+    ) {
+      return;
+    }
+    this.deferredSandboxBoundaryTurnClosures.delete(turnId);
+    this.sandboxBoundaryRequests.endTurn(
+      turnId,
+      (requestId) =>
+        new RuntimeInteractionInvariantError(
+          `Hosted sandbox boundary ${requestId} escaped exact Run closure`,
+        ),
+    );
+  }
+
+  private createSandboxBoundarySettlement(
+    turnId: string,
+    requestId: string,
+  ): HostedSandboxBoundarySettlement {
+    return Object.freeze({
+      applyDecision: async (settlement: SandboxBoundarySettlement): Promise<void> => {
+        if (
+          settlement.request.sessionId !== this.input.sessionId ||
+          settlement.request.requestId !== requestId
+        ) {
+          throw new RuntimeInteractionInvariantError(
+            `Sandbox boundary settlement ${requestId} changed identity`,
+          );
+        }
+        if (this.sandboxBoundaryRequests.resolve(turnId, requestId, settlement) === null) {
+          throw new RuntimeInteractionInvariantError(
+            `Sandbox boundary settlement did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+        this.finishDeferredSandboxBoundaryTurnClosure(turnId);
+      },
+      applyClosure: async (reason: RuntimeUserQuestionClosureReason): Promise<void> => {
+        if (
+          this.sandboxBoundaryRequests.reject(
+            turnId,
+            requestId,
+            new RuntimeInteractionClosedError(requestId, reason),
+          ) === null
+        ) {
+          throw new RuntimeInteractionInvariantError(
+            `Sandbox boundary closure did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+        this.finishDeferredSandboxBoundaryTurnClosure(turnId);
+      },
+    });
   }
 
   private createUserQuestionSettlement(

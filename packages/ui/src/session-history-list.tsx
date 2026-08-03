@@ -18,7 +18,6 @@ import {
   Bot,
   FolderGit2,
   FolderOpen,
-  MessageSquare,
   Pencil,
   Pin,
   PinOff,
@@ -28,7 +27,6 @@ import {
 } from './icons.js';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
   SideNavItem,
@@ -102,42 +100,33 @@ export function SessionHistoryList(props: {
     }
   }
 
-  const body =
-    props.sessions.length === 0 &&
-    !(props.groupVariant === 'project' && (props.groups?.length ?? 0) > 0) ? (
-      <EmptyState
-        icon={<MessageSquare />}
-        title={copy.emptyTitle}
-        description={copy.emptyBody}
-        className="maka-session-empty-state"
-      />
-    ) : (
-      <SessionListGroups
-        groups={
-          props.groups
-            ? props.groups.map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-                project: g.project,
-              }))
-            : groupSessionsForHistory(props.sessions, locale).map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-              }))
-        }
-        groupVariant={props.groupVariant ?? 'conversation'}
-        activeId={props.activeId}
-        streamingSessionIds={props.streamingSessionIds}
-        staleSessionIds={props.staleSessionIds}
-        childSessionsByParentId={props.childSessionsByParentId}
-        worktreeSessionIds={props.worktreeSessionIds}
-        onSelectSession={props.onSelectSession}
-        rowActions={props.rowActions}
-        projectActions={props.projectActions}
-      />
-    );
+  const body = (
+    <SessionListGroups
+      groups={
+        props.groups
+          ? props.groups.map((g) => ({
+              key: g.id,
+              label: g.label,
+              sessions: g.sessions,
+              project: g.project,
+            }))
+          : groupSessionsForHistory(props.sessions, locale).map((g) => ({
+              key: g.id,
+              label: g.label,
+              sessions: g.sessions,
+            }))
+      }
+      groupVariant={props.groupVariant ?? 'conversation'}
+      activeId={props.activeId}
+      streamingSessionIds={props.streamingSessionIds}
+      staleSessionIds={props.staleSessionIds}
+      childSessionsByParentId={props.childSessionsByParentId}
+      worktreeSessionIds={props.worktreeSessionIds}
+      onSelectSession={props.onSelectSession}
+      rowActions={props.rowActions}
+      projectActions={props.projectActions}
+    />
+  );
 
   // Outer SideNav is the sole navigation landmark; this is scroll content only.
   return (

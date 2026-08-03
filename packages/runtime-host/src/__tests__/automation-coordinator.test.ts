@@ -43,6 +43,17 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 const ASYNC_STATE_TIMEOUT_MS = 5_000;
 const ASYNC_STATE_POLL_MS = 5;
 
+function modelToolContext(sessionId = 'creator-session'): MakaToolContext {
+  return {
+    sessionId,
+    turnId: 'turn-model',
+    cwd: '/workspace',
+    toolCallId: 'tool-model',
+    abortSignal: new AbortController().signal,
+    emitOutput: () => {},
+  };
+}
+
 describe('Host Automation coordinator', () => {
   test('atomically admits one heartbeat fire and settles the same durable Run identity', async () => {
     await withHarness(async (harness) => {
@@ -463,6 +474,75 @@ describe('Host Automation coordinator', () => {
         'durable fire to settle',
         async () => (await harness.store.read()).pendingFires.length === 0,
       );
+    });
+  });
+
+  test('a Session that can no longer mutate is not reported to the model as a wrong status', async () => {
+    await withHarness(async (harness) => {
+      await harness.coordinator.prepareRecovery();
+      await harness.coordinator.recover();
+      harness.coordinator.start();
+      const durables: AutomationDefinition[] = [];
+      for (const name of ['nightly digest', 'weekly digest']) {
+        const created = await harness.coordinator.create({
+          kind: 'cron',
+          name,
+          prompt: 'Summarize the workspace.',
+          sessionId: 'creator-session',
+          schedule: { type: 'interval', seconds: 60 },
+          durable: true,
+        });
+        assert.ok(!('error' in created));
+        if ('error' in created) return;
+        durables.push(created);
+      }
+      const [toPause, toResume] = durables;
+      assert.ok(toPause && toResume);
+      // Its fire budget is untouched, so nothing about it is spent.
+      assert.ok(await harness.coordinator.pause(toResume.id, 'creator-session'));
+
+      // Retirement fences mutations only. Both automations keep the status the
+      // verb they are about to be asked for requires, and both stay visible.
+      const retirement = await harness.coordinator.beginSessionRetirement(['creator-session']);
+      try {
+        assert.equal(
+          (await harness.coordinator.get(toPause.id, 'creator-session'))?.status,
+          'active',
+        );
+        assert.equal(
+          (await harness.coordinator.get(toResume.id, 'creator-session'))?.status,
+          'paused',
+        );
+
+        const refusedPause = (await harness.coordinator.modelTool.impl(
+          { mode: 'pause', id: toPause.id },
+          modelToolContext(),
+        )) as string;
+        assert.match(refusedPause, /it is active/);
+        // The status admits pause, so the status is not what refused.
+        assert.doesNotMatch(refusedPause, /only an active automation can be paused/);
+        assert.match(refusedPause, /mode "list"/);
+
+        const refusedResume = (await harness.coordinator.modelTool.impl(
+          { mode: 'resume', id: toResume.id },
+          modelToolContext(),
+        )) as string;
+        assert.match(refusedResume, /it is paused/);
+        // The old wording called an automation with an intact budget spent, and
+        // sent the model to create — which passes through this same gate.
+        assert.doesNotMatch(refusedResume, /can no longer fire/);
+        assert.doesNotMatch(refusedResume, /Create a new automation instead/);
+        assert.match(refusedResume, /mode "list"/);
+
+        // mode "list" reads state, so it is a next step this gate still allows.
+        const listed = (await harness.coordinator.modelTool.impl(
+          { mode: 'list' },
+          modelToolContext(),
+        )) as string;
+        assert.match(listed, /nightly digest/);
+      } finally {
+        retirement.rollback();
+      }
     });
   });
 

@@ -1,5 +1,8 @@
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import {
+  reconcileConnectionAfterEnabledModelsChange,
+  type LlmConnection,
+} from '@maka/core/llm-connections';
 import {
   type ConfigBundle,
   type ConfigCategory,
@@ -113,7 +116,15 @@ export async function applyConfigImport(
     const existing = await deps.connectionStore.list();
     const plan = planConnectionMerge(existing, incoming, strategy);
     for (const connection of [...plan.create, ...plan.overwrite]) {
-      await deps.connectionStore.save(connection);
+      // A backup states its selection, so restoring it restores that selection.
+      // `save()` is a snapshot boundary and cannot tell a stated selection from
+      // an echoed one, so the caller that knows applies the rule — otherwise
+      // the read-time shim merged the default back in and the import quietly
+      // re-enabled a model the backup had disabled.
+      const selection = connection.enabledModelIds
+        ? reconcileConnectionAfterEnabledModelsChange(connection, connection.enabledModelIds)
+        : null;
+      await deps.connectionStore.save(selection ? { ...connection, ...selection } : connection);
       appliedConnectionSlugs.add(connection.slug);
     }
     result.connections = {

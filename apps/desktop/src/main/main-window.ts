@@ -32,6 +32,23 @@ export interface MainWindowController {
   disposeBrowserViews(): Promise<void>;
   hasOpenWindows(): boolean;
   focus(): void;
+  /**
+   * The app window's screen rect, for surfaces that position themselves
+   * against it (the Computer Use mirror anchors to it and follows it, the way
+   * Codex's PiP tiles anchor to the Codex window). Undefined when there is no
+   * window.
+   */
+  windowBounds(): Electron.Rectangle | undefined;
+  /**
+   * The window itself, for surfaces that must become its child window rather
+   * than merely position against it. macOS carries a child window with its
+   * parent in one window-server transaction and orders it against the parent
+   * instead of against the whole desktop, which is what the Computer Use mirror
+   * needs and what no amount of repositioning from this side can imitate.
+   */
+  browserWindow(): BrowserWindow | undefined;
+  /** Subscribe to app-window moves and resizes; returns an unsubscribe. */
+  onWindowGeometryChanged(cb: () => void): () => void;
   /** Whether the main window currently holds OS focus. False when the
    * window is gone, minimized to the point of losing focus, or another
    * app is in front — used to gate "notify only while unfocused". */
@@ -461,6 +478,36 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     disposeBrowserViews,
     hasOpenWindows() {
       return mainWindow !== null && !mainWindow.isDestroyed();
+    },
+    windowBounds() {
+      return mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : undefined;
+    },
+    browserWindow() {
+      return mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    },
+    onWindowGeometryChanged(cb: () => void) {
+      const listeners: Array<() => void> = [];
+      const attach = (): void => {
+        const w = mainWindow;
+        if (!w || w.isDestroyed()) return;
+        // 'move' and 'resize' both fire continuously during a drag. Consumers
+        // are expected to ignore the ones the window server already handled for
+        // them — the Computer Use mirror is a child window, so it is carried
+        // along by a move and only has to react to a resize.
+        w.on('move', cb);
+        w.on('resize', cb);
+        listeners.push(() => {
+          if (!w.isDestroyed()) {
+            w.off('move', cb);
+            w.off('resize', cb);
+          }
+        });
+      };
+      attach();
+      return () => {
+        for (const off of listeners) off();
+        listeners.length = 0;
+      };
     },
     focus() {
       // ChatGPT Pro review P2: second-instance / activate must not show() the

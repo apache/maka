@@ -11,7 +11,7 @@ import {
   type ExecutionSessionWriter,
   type SessionHeaderSnapshot,
 } from '@maka/storage/execution-stores';
-import type { SessionManager } from '@maka/runtime';
+import { agentGraphIdForRootSession, type SessionManager } from '@maka/runtime';
 import type { InteractiveTaskLedgerWriter } from '@maka/storage/task-ledger-authority';
 import {
   type OperationOutcome,
@@ -44,8 +44,8 @@ type RetirementStores = Pick<
   | 'probeSessionRemoval'
   | 'readCatalogRecord'
   | 'readHeaderRecordSnapshot'
+  | 'reconcileOrphanedAgentGraphRetirements'
   | 'listPendingSessionRetirementCleanupIds'
-  | 'purgeRemovedSessionTranscript'
   | 'completeSessionRetirementCleanup'
   | 'removeSessionsVersioned'
   | 'setSessionsLifecycleVersioned'
@@ -59,6 +59,13 @@ type RetirementGoals = Pick<
   'beginSessionRetirement' | 'hasLiveGoal' | 'unarchiveSessions'
 >;
 type RetirementResources = Pick<HostRuntimeResourceCoordinator, 'hasLiveSessionResources'>;
+type RetirementGraph = {
+  hasLiveSessionState(sessionId: string): Promise<boolean>;
+};
+type RetirementGraphWake = {
+  hasLiveSessionState(sessionId: string): boolean;
+  retireSessions(sessionIds: readonly string[]): Promise<number>;
+};
 type RetirementManager = Pick<
   SessionManager,
   'disposeSessionBackend' | 'finalizeChildWorkspacePatches'
@@ -80,12 +87,15 @@ export interface HostSessionRetirementCoordinatorOptions {
     beginSessionRetirement(sessionIds: readonly string[]): Promise<HostAutomationSessionRetirement>;
   };
   readonly resources: RetirementResources;
+  readonly graph: RetirementGraph;
+  readonly graphWake: RetirementGraphWake;
   readonly manager: RetirementManager;
   readonly capabilities: RetirementCapabilities;
   readonly continuity: RetirementContinuity;
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
   readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
+  readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
   readonly requestDrain: () => void;
 }
@@ -128,12 +138,15 @@ export class HostSessionRetirementCoordinator {
   readonly #goals: RetirementGoals;
   readonly #automation: HostSessionRetirementCoordinatorOptions['automation'];
   readonly #resources: RetirementResources;
+  readonly #graph: RetirementGraph;
+  readonly #graphWake: RetirementGraphWake;
   readonly #manager: RetirementManager;
   readonly #capabilities: RetirementCapabilities;
   readonly #continuity: RetirementContinuity;
   readonly #artifacts: HostSessionRetirementCoordinatorOptions['artifacts'];
   readonly #taskLedger: HostSessionRetirementCoordinatorOptions['taskLedger'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
+  readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
   readonly #requestDrain: () => void;
   readonly #cleanupQueue = new Set<string>();
@@ -150,17 +163,21 @@ export class HostSessionRetirementCoordinator {
     this.#goals = options.goals;
     this.#automation = options.automation;
     this.#resources = options.resources;
+    this.#graph = options.graph;
+    this.#graphWake = options.graphWake;
     this.#manager = options.manager;
     this.#capabilities = options.capabilities;
     this.#continuity = options.continuity;
     this.#artifacts = options.artifacts;
     this.#taskLedger = options.taskLedger;
     this.#purgeOperationalState = options.purgeOperationalState;
+    this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
     this.#requestDrain = options.requestDrain;
   }
 
   async recover(): Promise<void> {
+    await this.#stores.reconcileOrphanedAgentGraphRetirements();
     this.#scheduleCleanup(await this.#stores.listPendingSessionRetirementCleanupIds());
   }
 
@@ -217,6 +234,7 @@ export class HostSessionRetirementCoordinator {
           committed = true;
           handles.goal.commit();
           handles.automation.commit();
+          await this.#graphWake.retireSessions(family.sessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);
           await this.#refreshFamily(family);
@@ -243,7 +261,13 @@ export class HostSessionRetirementCoordinator {
       return removeFailure('persistence_failed', 'Session removal state is unavailable');
     }
     if (probe.kind === 'removed') {
-      this.#scheduleCleanup([input.sessionId]);
+      try {
+        this.#scheduleCleanup(
+          await this.#stores.listPendingSessionRetirementCleanupIds(input.sessionId),
+        );
+      } catch {
+        this.#requestDrain();
+      }
       return removeSuccess(input.sessionId);
     }
     if (probe.kind === 'absent') return removeFailure('not_found', 'Session does not exist');
@@ -272,6 +296,7 @@ export class HostSessionRetirementCoordinator {
           committed = true;
           handles.goal.commit();
           handles.automation.commit();
+          await this.#graphWake.retireSessions(family.sessionIds);
           this.#rememberRetiredWorktrees(committable, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
@@ -324,14 +349,32 @@ export class HostSessionRetirementCoordinator {
     if (target.kind !== 'present') {
       throw new SessionRetirementMissingSessionError(target.kind);
     }
+    if (target.record.header.subagentParent?.graph) {
+      throw new SessionMetadataConflictError(
+        'Agent Graph operator Sessions retire with their root Session',
+      );
+    }
     const familyId = sessionRevisionFamilyId(target.record.header);
     const headers = await this.#stores.listHeaders();
+    const roots = headers.filter(
+      (header) =>
+        header.conversationCopy?.state !== 'preparing' &&
+        !header.subagentParent &&
+        sessionRevisionFamilyId(header) === familyId,
+    );
+    const graphRoots = new Map(
+      roots.map((header) => [header.id, agentGraphIdForRootSession(header.id)]),
+    );
     const members = headers
-      .filter(
-        (header) =>
-          header.conversationCopy?.state !== 'preparing' &&
-          sessionRevisionFamilyId(header) === familyId,
-      )
+      .filter((header) => {
+        if (header.conversationCopy?.state === 'preparing') return false;
+        if (sessionRevisionFamilyId(header) === familyId) return true;
+        const parent = header.subagentParent;
+        return (
+          parent?.graph !== undefined &&
+          parent.graph.graphId === graphRoots.get(parent.parentSessionId)
+        );
+      })
       .map((header) => header.id);
     if (!members.includes(sessionId)) members.push(sessionId);
     return [...new Set(members)].sort();
@@ -356,6 +399,13 @@ export class HostSessionRetirementCoordinator {
       }
       if (await this.#resources.hasLiveSessionResources(sessionId)) {
         throw new SessionRetirementBusyError('Session has a live Runtime Resource');
+      }
+      const header = requireFamilyRecord(family, sessionId).header;
+      if (!header.subagentParent && (await this.#graph.hasLiveSessionState(sessionId))) {
+        throw new SessionRetirementBusyError('Session has a live Agent Graph');
+      }
+      if (!header.subagentParent && this.#graphWake.hasLiveSessionState(sessionId)) {
+        throw new SessionRetirementBusyError('Session has an active Agent Graph supervisor wake');
       }
     }
 
@@ -410,7 +460,6 @@ export class HostSessionRetirementCoordinator {
   async #cleanupRetiredSession(sessionId: string): Promise<void> {
     const worktree = this.#retiredWorktrees.get(sessionId);
     const outcomes = await Promise.allSettled([
-      this.#stores.purgeRemovedSessionTranscript(sessionId),
       purgeSessionSidecars(
         {
           artifacts: this.#artifacts,
@@ -419,6 +468,7 @@ export class HostSessionRetirementCoordinator {
         },
         sessionId,
       ),
+      this.#purgeAgentGraphState(sessionId),
       ...(worktree && this.#worktrees ? [this.#worktrees.retire(worktree)] : []),
     ]);
     const failures = outcomes.flatMap((outcome) =>

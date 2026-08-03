@@ -1,8 +1,7 @@
 /**
  * Production interaction-store surface.
  *
- * Legacy file-backed open functions intentionally remain in the implementation
- * module for import and compatibility tests, but are not package exports.
+ * The facade is backed by the canonical operational SQLite database.
  */
 export {
   STORED_INTERACTION_OUTCOME_MAX_BYTES,
@@ -11,7 +10,6 @@ export {
   authenticateInteractionStoreReader,
   authenticateInteractionStoreWriter,
   closeSqliteInteractionStoreFacade,
-  interactionLocator,
   openSqliteInteractiveInteractionStoreForRead,
   openSqliteInteractiveInteractionStoreForWrite,
 } from './interaction-store.js';
@@ -27,7 +25,6 @@ export type {
   InteractiveInteractionStoreReaderFacade,
   InteractiveInteractionStoreWriterFacade,
   PendingInteractionFilter,
-  SqliteInteractionStoreOptions,
   StoredInteractionOutcome,
   StoredInteractionRequest,
 } from './interaction-store.js';

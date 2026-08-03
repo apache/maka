@@ -1,6 +1,18 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 18;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 20;
+
+export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
+  'agent_graph_intent_claims',
+  'agent_graph_schedule_updates',
+  'agent_graph_operator_provisions',
+  'agent_graph_client_projections',
+  'agent_graph_client_operator_projections',
+  'agent_graph_client_terminal_activity',
+  'agent_graph_client_applied_records',
+  'agent_graph_supervisor_wakes',
+  'agent_graph_supervisor_wake_attempts',
+] as const;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -54,13 +66,6 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     CREATE INDEX session_metadata_labels_by_label
       ON session_metadata_labels(label, session_id);
 
-    CREATE TABLE session_metadata_import_sources (
-      source_path TEXT PRIMARY KEY,
-      fingerprint TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      imported_at INTEGER NOT NULL,
-      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
-    );
   `,
   ],
   [
@@ -697,6 +702,100 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     CREATE INDEX session_metadata_tombstones_by_retirement_unit
       ON session_metadata_tombstones(retirement_unit_id, cleanup_pending, session_id);
+  `,
+  ],
+  [
+    19,
+    `
+    DROP INDEX agent_graph_supervisor_wakes_by_status;
+
+    CREATE TABLE agent_graph_supervisor_wakes_v19 (
+      graph_id TEXT NOT NULL,
+      wake_id TEXT NOT NULL,
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      snapshot_version TEXT NOT NULL,
+      root_session_id TEXT NOT NULL,
+      status TEXT NOT NULL
+        CHECK (
+          status IN (
+            'pending',
+            'running',
+            'waiting_permission',
+            'delivered',
+            'superseded',
+            'retryable_failed'
+          )
+        ),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      current_attempt_id TEXT,
+      current_turn_id TEXT,
+      failure_reason TEXT,
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+      PRIMARY KEY(graph_id, wake_id)
+    );
+
+    CREATE TABLE agent_graph_supervisor_wake_attempts_v19 (
+      graph_id TEXT NOT NULL,
+      wake_id TEXT NOT NULL,
+      attempt_id TEXT NOT NULL UNIQUE,
+      turn_id TEXT NOT NULL,
+      status TEXT NOT NULL
+        CHECK (
+          status IN (
+            'running',
+            'waiting_permission',
+            'delivered',
+            'superseded',
+            'retryable_failed'
+          )
+        ),
+      failure_reason TEXT,
+      started_at INTEGER NOT NULL CHECK (started_at >= 0),
+      completed_at INTEGER,
+      PRIMARY KEY(graph_id, wake_id, attempt_id),
+      FOREIGN KEY(graph_id, wake_id)
+        REFERENCES agent_graph_supervisor_wakes_v19(graph_id, wake_id)
+        ON DELETE CASCADE
+    );
+
+    INSERT INTO agent_graph_supervisor_wakes_v19
+    SELECT * FROM agent_graph_supervisor_wakes;
+
+    INSERT INTO agent_graph_supervisor_wake_attempts_v19
+    SELECT * FROM agent_graph_supervisor_wake_attempts;
+
+    DROP TABLE agent_graph_supervisor_wake_attempts;
+    DROP TABLE agent_graph_supervisor_wakes;
+
+    ALTER TABLE agent_graph_supervisor_wakes_v19
+      RENAME TO agent_graph_supervisor_wakes;
+    ALTER TABLE agent_graph_supervisor_wake_attempts_v19
+      RENAME TO agent_graph_supervisor_wake_attempts;
+
+    CREATE INDEX agent_graph_supervisor_wakes_by_status
+      ON agent_graph_supervisor_wakes(status, updated_at, graph_id, wake_id);
+  `,
+  ],
+  [
+    20,
+    `
+    CREATE TABLE session_messages (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      message_id TEXT NOT NULL,
+      message_type TEXT NOT NULL,
+      message_ts INTEGER NOT NULL CHECK (message_ts >= 0),
+      record_json TEXT NOT NULL,
+      PRIMARY KEY(session_id, sequence),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX session_messages_by_identity
+      ON session_messages(session_id, message_id);
+
+    CREATE INDEX session_messages_by_time
+      ON session_messages(session_id, message_ts, sequence);
   `,
   ],
 ]);

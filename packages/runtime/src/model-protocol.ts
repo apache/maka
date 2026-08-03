@@ -32,16 +32,15 @@ export type JSONObject = { [key: string]: JSONValue | undefined };
 export type JSONArray = JSONValue[];
 
 // ---------------------------------------------------------------------------
-// Provider metadata / options contract
+// Provider options contract
 // ---------------------------------------------------------------------------
 
 /**
- * Provider-specific metadata/option bag, keyed by provider name. Mirrors the
- * AI SDK `SharedV4ProviderOptions` / `SharedV4ProviderMetadata` shape so
- * pass-through values stay structurally compatible across the lowering cast.
+ * Provider-specific option bag, keyed by provider name. Mirrors the AI SDK
+ * `SharedV4ProviderOptions` shape so pass-through values stay structurally
+ * compatible across the lowering cast.
  */
 export type ProviderOptions = Record<string, JSONObject>;
-export type ProviderMetadata = Record<string, JSONObject>;
 
 /**
  * A mapping of provider names to provider-specific file identifiers. A

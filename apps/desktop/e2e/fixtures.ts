@@ -16,7 +16,8 @@ const DESKTOP_ROOT = process.cwd();
  * `toHaveText` and type with `fill` / `pressSequentially`.
  *
  * `toHaveText` reads an inline token's rendered label, not the value it
- * serializes to on send. Assert a mention's wire form on the sent message.
+ * serializes to on send. Assert a mention's wire form through the fake
+ * backend echo and its display form on the sent message.
  */
 export const COMPOSER_INPUT = '.maka-composer-editor [contenteditable="true"]';
 
@@ -227,6 +228,7 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
+  firstRunWindow: Page;
   modelPickerLongWindow: Page;
   longTranscriptWindow: Page;
   sidebarLongSessionsWindow: Page;
@@ -236,8 +238,6 @@ export const test = base.extend<{
   staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
   botSettingsWindow: Page;
-  /** #1361: Permissions page with the typed OS-permission snapshot fixture. */
-  permissionSettingsWindow: Page;
   localeSwitchWindow: Page;
   invocableSkillsWindow: Page;
   planRemindersWindow: Page;
@@ -247,6 +247,19 @@ export const test = base.extend<{
   // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
+  },
+  // No connection: the real main process derives `needs_connection`, and the
+  // renderer replaces the empty chat with the first-task activation card.
+  firstRunWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-maka-contract="onboarding-card"]',
+        e2eFixtureScenario: 'first-run',
+        locale: 'zh',
+      },
+      use,
+    );
   },
   modelPickerLongWindow: async ({}, use) => {
     await withE2eWindow(
@@ -343,9 +356,8 @@ export const test = base.extend<{
     );
   },
   // Stale sessions: boots the e2e-fixture `stale-sessions` fixture — one
-  // healthy session (zai-live, secret seeded), one unlocked fake session
-  // (opened active), and one locked legacy session whose connection is
-  // gone. Exercises the #1038 health-notice authority against real IPC
+  // healthy session (zai-live, secret seeded) and one locked fake-backend session
+  // (opened active). Exercises the #1038 health-notice authority against real IPC
   // (connection list, hasSecret probe, connectionLocked summaries).
   // Readiness = turns on screen: the fake session is open.
   staleSessionsWindow: async ({}, use) => {
@@ -371,20 +383,6 @@ export const test = base.extend<{
       use,
     );
   },
-  // One live window-floor smoke: permission rows with the three-button guided
-  // screen-recording shape. CSS contracts pin declarations; this measures
-  // scrollWidth containment at SAFE_MIN_WIDTH (480).
-  permissionSettingsWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.settingsOsPermissionRow',
-        e2eFixtureScenario: 'settings-permissions',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
   // Keep this fixture unpinned so the Follow system assertion observes the
   // actual host language while the legacy fixtures remain deterministic.
   localeSwitchWindow: async ({}, use) => {
@@ -404,7 +402,7 @@ export const test = base.extend<{
     await withE2eWindow(
       {
         seed: false,
-        readinessSelector: '.maka-plan-card',
+        readinessSelector: '.maka-plan-list-row',
         e2eFixtureScenario: 'plan-reminders',
         locale: 'zh',
       },
@@ -415,7 +413,9 @@ export const test = base.extend<{
     await withE2eWindow(
       {
         seed: false,
-        readinessSelector: 'dialog[open]',
+        // The connection detail is a page now, not a dialog; waiting on
+        // `dialog[open]` waited for markup this redesign deleted.
+        readinessSelector: '[data-maka-contract="connection-detail"]',
         e2eFixtureScenario: 'oauth-relogin',
         locale: 'zh',
       },

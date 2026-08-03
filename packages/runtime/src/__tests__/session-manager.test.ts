@@ -77,6 +77,8 @@ import {
   buildHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
 } from '../history-compact-checkpoint.js';
+import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
+import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import {
   AGENT_WORKSPACE_WORKTREE,
   IMPLEMENTATION_AGENT_DEFINITION,
@@ -105,6 +107,66 @@ import {
   fingerprintAgentGraphRunnableIntent,
 } from '../stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
+
+/**
+ * "A turn is running" is a fact about the live process, so the read model takes
+ * it from the run rather than from the persisted status. The status cannot
+ * serve: it is written only at the END of `AgentRun.begin`, it reads the same
+ * before a turn starts and after it ends, and a crash between a turn's end and
+ * its status write leaves `running` in storage forever.
+ */
+describe('SessionManager running-turn projection', () => {
+  test('names the turn a session is running, without persisting it', async () => {
+    const store = new MemorySessionStore();
+    const runningTurnBySession = new Map<string, string[]>();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(1),
+      runtimeKernel: {
+        runningTurnIds: (sessionId: string) => runningTurnBySession.get(sessionId) ?? [],
+      } as never,
+    });
+    const idle = await manager.createSession(makeInput({ name: 'Idle' }));
+    const busy = await manager.createSession(makeInput({ name: 'Busy' }));
+    runningTurnBySession.set(busy.id, ['turn-live']);
+
+    const listed = await manager.listSessions();
+    const byId = new Map(listed.map((session) => [session.id, session]));
+
+    expect(byId.get(busy.id)?.runningTurnIds).toEqual(['turn-live']);
+    expect(byId.get(idle.id)?.runningTurnIds).toEqual(undefined);
+
+    // Nothing about it reached storage, which is what makes a restart honest.
+    expect(
+      ((await store.readHeader(busy.id)) as unknown as Record<string, unknown>).runningTurnId,
+    ).toEqual(undefined);
+
+    // The run ends; the very next list stops naming it, with no status write
+    // and no crash-recovery pass in between.
+    runningTurnBySession.delete(busy.id);
+    const after = await manager.listSessions();
+    expect(after.find((session) => session.id === busy.id)?.runningTurnIds).toEqual(undefined);
+  });
+
+  test('lists sessions unchanged when the kernel cannot report runs', async () => {
+    const store = new MemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(1),
+      runtimeKernel: {} as never,
+    });
+    const session = await manager.createSession(makeInput({ name: 'Only' }));
+
+    const listed = await manager.listSessions();
+
+    expect(listed.map((entry) => entry.id)).toEqual([session.id]);
+    expect(listed[0]?.runningTurnIds).toEqual(undefined);
+  });
+});
 
 describe('SessionManager child-session read model', () => {
   test('lists typed child sessions without treating branches as children', async () => {
@@ -2120,6 +2182,91 @@ describe('SessionManager child-session runtime primitive', () => {
     while (!(await parentTurn.next()).done) {}
   });
 
+  test('freezes a configured subagent model target independently from the parent', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register(
+      'fake',
+      (ctx) => new TestBackend(ctx, ctx.header.subagentRuntime ? undefined : parentGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      subagentCatalog: {
+        list: async () => [
+          {
+            id: 'fast-reader',
+            name: 'Fast reader',
+            description: 'Cheap scans',
+            profile: 'local_read',
+            connectionSlug: 'worker-connection',
+            model: 'worker-model',
+            thinkingLevel: 'low',
+            enabled: true,
+            availability: { status: 'available' },
+          },
+        ],
+        resolve: async (id) => {
+          if (id !== 'fast-reader') throw new Error('unknown preset');
+          return {
+            id,
+            name: 'Fast reader',
+            description: 'Cheap scans',
+            profile: 'local_read',
+            connectionSlug: 'worker-connection',
+            model: 'worker-model',
+            thinkingLevel: 'low',
+            enabled: true,
+          };
+        },
+      },
+      newId: nextId(),
+      now: nextNow(150),
+      runtimeSource: 'test',
+    });
+    const parent = await manager.createSession(
+      makeInput({
+        llmConnectionSlug: 'parent-connection',
+        model: 'parent-model',
+        thinkingLevel: 'high',
+      }),
+    );
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn-preset', text: 'delegate' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const result = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-preset',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      subagentId: 'fast-reader',
+      prompt: 'inspect cheaply',
+    });
+    const child = await store.readHeader(result.childSessionId);
+
+    expect(child.llmConnectionSlug).toBe('worker-connection');
+    expect(child.model).toBe('worker-model');
+    expect(child.thinkingLevel).toBe('low');
+    expect(child.subagentRuntime?.presetId).toBe('fast-reader');
+    expect(child.subagentRuntime?.agentName).toBe('Fast reader');
+    expect(child.connectionLocked).toBe(true);
+    expect((await manager.listChildAgents(parent.id)).presets[0]?.id).toBe('fast-reader');
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
   test('child sessions preserve an explicit no-project association', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -3758,6 +3905,115 @@ describe('SessionManager manual compaction', () => {
     await manager.stopSession(session.id, { source: 'stop_button' });
   });
 
+  test('manual compaction settles one canonical record for the run the kernel opened', async () => {
+    // `sessions:compact` and CLI `/compact` both land here. The call has no
+    // send to inherit a run from, so the kernel states the run it opened and
+    // the record must carry it — otherwise a real, billed summarization is
+    // silently unmetered (#1679).
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const modelCalls: ModelCallAttempt[] = [];
+    const summarizerModel = new MockLanguageModelV4({
+      doGenerate: {
+        content: [{ type: 'text', text: 'MANUAL_COMPACT_SUMMARY' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 41, noCache: 41, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 9, text: 9, reasoning: 0 },
+          raw: { input_tokens: 41, output_tokens: 9 },
+        },
+        warnings: [],
+      },
+    });
+    backends.register('fake', (ctx) =>
+      createTestAiSdkBackend({
+        sessionId: ctx.sessionId,
+        header: ctx.header,
+        appendMessage: async () => {},
+        connection: {
+          slug: 'mock-main',
+          providerType: 'anthropic',
+          defaultModel: 'mock-model-id',
+        },
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () =>
+          new MockLanguageModelV4({
+            doStream: async () => ({
+              stream: simulateReadableStream({
+                chunks: [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'text-1' },
+                  { type: 'text-delta', id: 'text-1', delta: 'ok '.repeat(80) },
+                  { type: 'text-end', id: 'text-1' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: {
+                      inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 10, text: 10, reasoning: 0 },
+                    },
+                  },
+                ] as LanguageModelV4StreamPart[],
+                initialDelayInMs: null,
+                chunkDelayInMs: null,
+              }),
+            }),
+          }),
+        tools: [],
+        newId: nextId(),
+        now: nextNow(1),
+        contextBudget: {
+          name: 'manual-compact-accounting',
+          maxHistoryEstimatedTokens: 10_000,
+          minRecentTurns: 1,
+          charsPerToken: 1,
+        },
+        summarizeHistoryCompact: buildLlmHistorySummarizer({
+          resolveModel: () => summarizerModel,
+        }),
+        recordHistoryCompactCheckpoint: () => {},
+        recordModelCallAttempt: (attempt) => {
+          modelCalls.push(attempt);
+        },
+      }),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(13_000),
+    });
+    const session = await manager.createSession(
+      makeInput({ backend: 'fake', permissionMode: 'bypass' }),
+    );
+
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'first '.repeat(400) }));
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-2', text: 'second' }));
+    await drain(manager.compactSession(session.id, { turnId: 'turn-compact' }));
+
+    const compactRun = (await runStore.listSessionRuns(session.id)).find(
+      (run) => run.turnId === 'turn-compact',
+    );
+    assert.ok(compactRun, 'the kernel opens a run for a manual compaction');
+    const compactions = modelCalls
+      .map((attempt) => decodeModelCallAttempt(attempt))
+      .filter((attempt) => attempt.callKind === 'history_compact');
+    assert.equal(compactions.length, 1, 'one manual compaction is one record');
+    assert.equal(
+      compactions[0]?.runId,
+      compactRun.runId,
+      'attributed to the run the kernel opened, not to whatever ran last',
+    );
+    assert.equal(compactions[0]?.turnId, 'turn-compact');
+    assert.equal(compactions[0]?.inputTokens, 41);
+    assert.equal(compactions[0]?.usageBasis, 'reported');
+    await manager.stopSession(session.id, { source: 'stop_button' });
+  });
+
   test('persists one visible warning when manual compaction fails open', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -5361,6 +5617,45 @@ describe('SessionManager permission mode updates', () => {
       backgroundOperationsSettled: true,
       availableToolNames: [],
     });
+  });
+
+  test('parks when authoritative continuation safety inspection fails', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      safeBoundaryResumeEnabled: true,
+      inspectContinuationSafety: async () => {
+        throw new Error('safety authority unavailable');
+      },
+      newId: nextId(),
+      now: nextNow(6_535),
+    });
+    const session = await manager.createSession(makeInput());
+    const header = await store.readHeader(session.id);
+    await runStore.createRun(
+      makeRunHeader({
+        runId: 'source-run-safety-failure',
+        sessionId: session.id,
+        turnId: 'source-turn-safety-failure',
+        status: 'failed',
+        cwd: header.cwd,
+        workspaceIdentity: 'workspace-safety-failure',
+        completedAt: 2,
+        failureClass: 'app_restarted',
+      }),
+    );
+
+    const plan = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
+      sourceRunId: 'source-run-safety-failure',
+    });
+
+    expect(plan.disposition).toBe('park');
+    expect(plan.rejectionReasons).toEqual(['safety_observation_unavailable']);
   });
 
   test('keeps the authoritative continuation entry disabled unless the host enables it', async () => {
@@ -7086,6 +7381,115 @@ describe('SessionManager permission mode updates', () => {
     }
   });
 
+  test('revalidates continuation safety inside the backend activation barrier', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let backendCalls = 0;
+    let availableToolNames: readonly string[] = ['Write'];
+    backends.register(
+      'fake',
+      (ctx) =>
+        new CountingFinalTextBackend(ctx, () => {
+          backendCalls += 1;
+        }),
+    );
+    const newId = nextId();
+    const now = nextNow(6_599);
+    const runtimeKernel = new RuntimeKernel({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames,
+      }),
+      runBackendActivation: async (operation) => {
+        availableToolNames = ['Read', 'Write'];
+        return operation();
+      },
+      newId,
+      now,
+      runtimeSource: 'test',
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      runtimeKernel,
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames,
+      }),
+      newId,
+      now,
+      runtimeSource: 'test',
+    });
+    const session = await manager.createSession(makeInput());
+    const header = await store.readHeader(session.id);
+    const sourceRunId = 'source-run-activation-safety-race';
+    const sourceTurnId = 'source-turn-activation-safety-race';
+    const sourceInvocationId = 'source-invocation-activation-safety-race';
+    await seedRuntimeRun(
+      runStore,
+      makeRunHeader({
+        runId: sourceRunId,
+        sessionId: session.id,
+        turnId: sourceTurnId,
+        status: 'failed',
+        cwd: header.cwd,
+        createdAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        failureClass: 'app_restarted',
+      }),
+      [
+        runtimeEvent({
+          id: 'source-user-activation-safety-race',
+          invocationId: sourceInvocationId,
+          runId: sourceRunId,
+          sessionId: session.id,
+          turnId: sourceTurnId,
+          ts: 1,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue under one activation snapshot' },
+        }),
+        runtimeEvent({
+          id: 'source-terminal-activation-safety-race',
+          invocationId: sourceInvocationId,
+          runId: sourceRunId,
+          sessionId: session.id,
+          turnId: sourceTurnId,
+          ts: 2,
+          status: 'failed',
+          actions: { endInvocation: true, stateDelta: { failureClass: 'app_restarted' } },
+        }),
+      ],
+    );
+    const plan = await manager.planSafeBoundaryContinuation(session.id, {
+      sourceRunId,
+      currentCwd: header.cwd,
+      sourceWorkspaceIdentity: 'workspace-1',
+      currentWorkspaceIdentity: 'workspace-1',
+      backgroundOperationsSettled: true,
+      availableToolNames,
+    });
+    if (!plan.continuation) throw new Error('expected continuation');
+
+    await expectRejects(
+      collectSessionEvents(manager.resumeSafeBoundaryContinuation(plan.continuation)),
+      /tool catalog changed/i,
+    );
+
+    expect(backendCalls).toBe(0);
+    await expectRejects(runStore.readRun(session.id, plan.continuation.runId), /Unknown run/);
+  });
+
   test('fails closed when continuation execution has no authoritative safety inspector', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -7912,7 +8316,12 @@ describe('SessionManager permission mode updates', () => {
 
     expect(view.messages).toEqual(seeded.projectedMessages);
     expect(view.turns).toEqual([
-      { turnId: 'turn-1', status: 'completed', partialOutputRetained: true },
+      {
+        turnId: 'turn-1',
+        status: 'completed',
+        statusSource: 'recorded',
+        partialOutputRetained: true,
+      },
     ]);
     expect(view.terminalFacts.map((fact) => fact.runStatus)).toEqual(['completed']);
     expect(view.replayPlan.textMessages.map((message) => message.content)).toEqual([
@@ -10043,8 +10452,18 @@ describe('SessionManager permission mode updates', () => {
     const messages = await manager.getMessages(session.id);
     expect(messages).toEqual([...completed.projectedMessages, ...activeMessages]);
     expect(await manager.listTurns(session.id)).toEqual([
-      { turnId: 'turn-1', status: 'completed', partialOutputRetained: true },
-      { turnId: 'turn-2', status: 'running', partialOutputRetained: true },
+      {
+        turnId: 'turn-1',
+        status: 'completed',
+        statusSource: 'recorded',
+        partialOutputRetained: true,
+      },
+      {
+        turnId: 'turn-2',
+        status: 'running',
+        statusSource: 'recorded',
+        partialOutputRetained: true,
+      },
     ]);
 
     const view = await new RuntimeReadModel({
@@ -10350,6 +10769,7 @@ describe('SessionManager permission mode updates', () => {
       {
         turnId: 'turn-1',
         status: 'completed',
+        statusSource: 'recorded',
         partialOutputRetained: true,
       },
     ]);
@@ -16494,6 +16914,22 @@ describe('SessionManager permission mode updates', () => {
     ]);
   });
 
+  test('hosted startup recovery leaves boundary settlement to the Host authority', async () => {
+    const { store, manager, session } = await seedBoundaryRestartSession({
+      now: 12_875,
+      requestId: 'boundary-host-owned',
+      interactionAuthority: testInteractionAuthority(),
+    });
+
+    await manager.recoverInterruptedSessions();
+
+    expect(
+      (await store.listPendingSandboxBoundaryRequests(session.id)).map(
+        (request) => request.requestId,
+      ),
+    ).toEqual(['boundary-host-owned']);
+  });
+
   test('startup recovery re-reads a closure it settled before an earlier crash', async () => {
     // Stands in for a first recovery that settled the request and then died
     // before committing the run's terminal fact: the row is no longer pending,
@@ -17879,6 +18315,7 @@ describe('SessionManager steering and followup queues', () => {
           identities.push(identity);
           return {
             ...identity,
+            acceptSandboxBoundaryRequest: async () => {},
             acceptUserQuestionRequest: async () => {},
             close: async (reason) => {
               lifecycle.push(`close:${reason}`);
@@ -17920,6 +18357,7 @@ describe('SessionManager steering and followup queues', () => {
       interactionAuthority: {
         bindRun: (identity) => ({
           ...identity,
+          acceptSandboxBoundaryRequest: async () => {},
           acceptUserQuestionRequest: async ({ continuation }) => {
             question = continuation;
           },
@@ -17972,6 +18410,7 @@ describe('SessionManager steering and followup queues', () => {
       interactionAuthority: {
         bindRun: (identity) => ({
           ...identity,
+          acceptSandboxBoundaryRequest: async () => {},
           acceptUserQuestionRequest: async () => {},
           close: async () => {},
           release: () => {
@@ -22241,6 +22680,7 @@ function testInteractionAuthority(): RuntimeInteractionAuthority {
   return {
     bindRun: (identity) => ({
       ...identity,
+      acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
       close: async () => {},
       release: () => {},
@@ -22259,6 +22699,7 @@ async function seedBoundaryRestartSession(input: {
   requestId: string;
   requestTurnId?: string;
   requestRunId?: string;
+  interactionAuthority?: RuntimeInteractionAuthority;
 }): Promise<{
   store: MemorySessionStore;
   runStore: MemoryAgentRunStore;
@@ -22269,14 +22710,21 @@ async function seedBoundaryRestartSession(input: {
   const runStore = new MemoryAgentRunStore();
   const backends = new BackendRegistry();
   backends.register('fake', (ctx) => new TestBackend(ctx));
-  const manager = new SessionManager({
+  const managerDeps = {
     store,
     runStore,
     runtimeEventStore: runStore,
     backends,
     newId: nextId(),
     now: nextNow(input.now),
-  });
+  };
+  const manager = input.interactionAuthority
+    ? new SessionManager({
+        ...managerDeps,
+        interactionAuthority: input.interactionAuthority,
+        canonicalPermissionOutcomes: noCanonicalPermissionOutcomes,
+      })
+    : new SessionManager(managerDeps);
   const session = await manager.createSession(makeInput({ status: 'waiting_for_user' }));
   await store.createSandboxBoundaryRequest({
     sessionId: session.id,

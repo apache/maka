@@ -4,7 +4,7 @@
  * Provides one `streamText` API across Anthropic / OpenAI / Google / DeepSeek /
  * OpenAI-compatible endpoints, while keeping all of our home-grown
  * machinery: session sandbox boundaries, materializer, AsyncEventQueue,
- * SessionStore JSONL persistence.
+ * SessionStore SQLite persistence.
  *
  * Maka owns the agent loop. Each ModelAdapter call performs exactly one
  * provider request; returned tool calls settle through ToolRuntime, become
@@ -71,6 +71,7 @@ import type { AttachmentByteReader } from '@maka/core/attachments';
 import {
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
+  stripUndefinedDeep,
 } from '@maka/core';
 import type {
   LlmCallRecord,
@@ -92,7 +93,6 @@ import type {
   UserContent,
 } from './model-protocol.js';
 import { z } from 'zod';
-import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
 
 import { AsyncEventQueue } from './async-queue.js';
 import { StreamWatchdog, formatStreamWatchdogError } from './stream-watchdog.js';
@@ -160,9 +160,10 @@ import {
   toolSchemaCharsForDiagnostics,
   type RequestShapeDiagnostic,
 } from './request-shape.js';
-import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
+import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
 import {
   ProviderRequestTracker,
+  type ModelCallAccountingInput,
   type ProviderRequestAttemptRecord,
   type ProviderRequestCaptureRecord,
   type ProviderRequestUsage,
@@ -266,7 +267,6 @@ export type {
   HistoryCompactWriter,
   HistoryCompactWriteInput,
   HistoryCompactWriteResult,
-  LlmTelemetryRecorder,
   SemanticCompactBlockRecorder,
   SynthesisCacheLoader,
   SynthesisCacheLoadInput,
@@ -573,7 +573,8 @@ export class AiSdkBackend implements AgentBackend {
       sessionId: this.sessionId,
       now: this.now,
       modelAdapter: this.modelAdapter,
-      computeCostUsd: (usage) => this.computeTokenUsageCostUsd(usage),
+      createProviderRequestTracker: (trackerInput) =>
+        this.createProviderRequestTracker(trackerInput),
       materializeRuntimeReplayPlan: (plan) => this.materializeRuntimeReplayPlan(plan),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
       appendTurnTailPrompt: (content, turnTailPrompt) =>
@@ -719,6 +720,12 @@ export class AiSdkBackend implements AgentBackend {
             messageId: stepId,
             text: part.text,
             ...(part.signature !== undefined ? { signature: part.signature } : {}),
+            // No sanitiser here, unlike the tool call below: these options are
+            // not the provider's object. `translateChunk` rebuilds reasoning
+            // metadata from two named string fields, so an omitted provider
+            // field cannot arrive as an explicit `undefined` and break the
+            // canonical encoding. Passing the provider's object through
+            // instead would need the same `stripUndefinedDeep` a tool call has.
             ...(part.providerOptions !== undefined
               ? { providerOptions: part.providerOptions }
               : {}),
@@ -797,38 +804,12 @@ export class AiSdkBackend implements AgentBackend {
         toSandboxRunTraceProjection(this.input.sandboxDiagnosticsSnapshot),
       );
     }
-    const recordProviderRequestCapture = this.input.recordProviderRequestCapture;
-    const providerRequestTraceId = recordProviderRequestCapture ? this.newId() : undefined;
-    const providerRequestTracker = providerRequestTraceId
-      ? new ProviderRequestTracker({
-          traceId: providerRequestTraceId,
-          turnId,
-          contextWindow: resolveSelectedModelContextWindow(
-            this.input.connection,
-            this.input.modelId,
-          ),
-          now: this.now,
-          newId: this.newId,
-          persistCapture: recordProviderRequestCapture!,
-          recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
-          ...(this.input.recordModelCallAttempt
-            ? {
-                accounting: {
-                  sessionId: this.sessionId,
-                  resolveRunId: () => this.currentRunId ?? undefined,
-                  connectionSlug: this.input.connection.slug,
-                  providerId: this.input.connection.providerType,
-                  callKind: 'main' as const,
-                  record: this.input.recordModelCallAttempt,
-                  resolveCost: (usage: ProviderRequestUsage) => this.resolveModelCallCost(usage),
-                  ...(this.input.assertModelCallAccountingReady
-                    ? { assertReady: this.input.assertModelCallAccountingReady }
-                    : {}),
-                },
-              }
-            : {}),
-        })
-      : undefined;
+    const providerRequestTracker = this.createProviderRequestTracker({
+      turnId,
+      callKind: 'main',
+      modelId: this.input.modelId,
+    });
+    const providerRequestTraceId = providerRequestTracker?.traceId;
 
     // --- Resolve model (API key already attached at construct time) ---
     let model: unknown;
@@ -861,7 +842,7 @@ export class AiSdkBackend implements AgentBackend {
       this.currentOrchestration.mode === 'swarm'
         ? new Set(['agent_swarm'])
         : this.currentOrchestration.mode === 'graph'
-          ? new Set(['view_agent_graph', 'update_agent_graph', 'agent_output'])
+          ? new Set(['view_agent_graph', 'update_agent_graph', 'yield_agent_graph', 'agent_output'])
           : new Set<string>();
     const plan = this.toolAvailabilityRuntime.prepare(
       (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
@@ -1587,8 +1568,14 @@ export class AiSdkBackend implements AgentBackend {
                   turnId,
                   stepId: providerStepId,
                   toolCallId: toolCall.toolCallId,
+                  // Provider metadata is persisted verbatim into an immutable
+                  // RuntimeEvent, and a field the response did not carry
+                  // arrives as an explicit `undefined` — which JSON drops, so
+                  // the event no longer reads back as it was written and the
+                  // store refuses it. One refusal took every tool-calling turn
+                  // with it.
                   ...(toolCall.providerOptions !== undefined
-                    ? { providerOptions: toolCall.providerOptions }
+                    ? { providerOptions: stripUndefinedDeep(toolCall.providerOptions) }
                     : {}),
                   input:
                     requestedTool !== undefined
@@ -2064,6 +2051,83 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   /**
+   * One tracker for one physical provider call kind (#1679).
+   *
+   * Auxiliary calls get the same capture, attempt, and accounting plumbing the
+   * main send uses, built here because the sinks and the current run live on
+   * this backend. Callers receive a ready tracker rather than the ingredients:
+   * a half-wired tracker is what produces records nothing can attribute.
+   *
+   * Absent only when there is nothing to feed: no capture sink *and* no
+   * canonical sink. Metering deliberately does not depend on capture — capture
+   * is a diagnostic, and a deployment that turns it off must still be billed.
+   */
+  private createProviderRequestTracker(input: {
+    turnId: string;
+    callKind: ModelCallKind;
+    modelId: string;
+    runId?: string;
+  }): ProviderRequestTracker | undefined {
+    const persistCapture = this.input.recordProviderRequestCapture;
+    const accounting = this.modelCallAccounting(input.callKind, {
+      modelId: input.modelId,
+      ...(input.runId ? { runId: input.runId } : {}),
+    });
+    if (!persistCapture && !accounting) return undefined;
+    return new ProviderRequestTracker({
+      traceId: this.newId(),
+      turnId: input.turnId,
+      contextWindow: resolveSelectedModelContextWindow(this.input.connection, input.modelId),
+      now: this.now,
+      newId: this.newId,
+      ...(persistCapture ? { persistCapture } : {}),
+      recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+      ...(accounting ? { accounting } : {}),
+    });
+  }
+
+  /**
+   * Accounting identity for one call kind (#1679).
+   *
+   * Owned here rather than by the host that wires the summarizers, because the
+   * only field a host cannot supply is the one that changes per turn: `runId`
+   * lives on this backend. A host configures the capture and attempt plumbing
+   * once; the run a record belongs to is resolved at the moment the call is
+   * actually made.
+   *
+   * Absent when there is no canonical sink, which leaves the corresponding
+   * tracker purely diagnostic.
+   */
+  modelCallAccounting(
+    callKind: ModelCallKind,
+    identity?: {
+      /**
+       * States the run explicitly for a call made outside `send()`, where there
+       * is no live turn to resolve it from — a manual history compaction is one.
+       */
+      runId?: string;
+      /** The model this call actually runs against; priced as that model. */
+      modelId?: string;
+    },
+  ): ModelCallAccountingInput | undefined {
+    const record = this.input.recordModelCallAttempt;
+    if (!record) return undefined;
+    const modelId = identity?.modelId ?? this.input.modelId;
+    return {
+      sessionId: this.sessionId,
+      resolveRunId: () => identity?.runId ?? this.currentRunId ?? undefined,
+      connectionSlug: this.input.connection.slug,
+      providerId: this.input.connection.providerType,
+      callKind,
+      record,
+      resolveCost: (usage: ProviderRequestUsage) => this.resolveModelCallCost(usage, modelId),
+      ...(this.input.assertModelCallAccountingReady
+        ? { assertReady: this.input.assertModelCallAccountingReady }
+        : {}),
+    };
+  }
+
+  /**
    * Resolves cost for a canonical accounting record at settlement time, together
    * with the rates it was computed against.
    *
@@ -2072,11 +2136,20 @@ export class AiSdkBackend implements AgentBackend {
    * cost. An unresolvable price returns `undefined` rather than zero — the
    * record then carries `costBasis: 'unpriced'`, which is not the same claim as
    * a call that was free.
+   *
+   * Priced against the model that actually served the request, which is not
+   * always the session's model: a configured semantic-compact summarizer runs
+   * on its own. Recording one model's id beside another model's rates would
+   * make the stored amount unauditable in exactly the way `pricingRates` exists
+   * to prevent.
    */
-  private resolveModelCallCost(usage: ProviderRequestUsage): ResolvedModelCallCost | undefined {
+  private resolveModelCallCost(
+    usage: ProviderRequestUsage,
+    modelId: string,
+  ): ResolvedModelCallCost | undefined {
     try {
       const pricing = (this.input.lookupPricing ?? getBuiltinPricing)(
-        `${this.input.connection.providerType}:${this.input.modelId}`,
+        `${this.input.connection.providerType}:${modelId}`,
       );
       if (pricing === null) return undefined;
       const costUsd = computeCost(

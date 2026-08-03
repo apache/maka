@@ -26,7 +26,6 @@
   max-width: 100%;
   width: 100%;
   box-sizing: border-box;
-  position: relative;
 }
 
 /*
@@ -52,7 +51,7 @@
  *
  * Both halves of the tier move together. Size alone would leave the supporting
  * leading multiplier on a larger font and land the line box at 23.33px, off the
- * 4px grid e2e/type-scale.spec.ts holds the whole app to.
+ * theme's 4px grid.
  */
 .maka-session-panel .astryx-side-nav-section > :first-child {
   --text-supporting-size: var(--text-label-size);
@@ -74,8 +73,7 @@
  * Astryx 0.2.0 has no seam for this — SideNav's five zone wrappers carry no
  * border and no `hasDivider`, and they are the only elements in its tree that
  * `themeProps()` never labels, so the product both draws the line and reaches
- * the zone by structure. `sidebar-geometry.spec.ts` is what turns an upgrade
- * that reshapes those wrappers into a loud failure instead of a silent one.
+ * the zone by structure.
  *
  * The top one used to be an Astryx <Divider> placed as the last child of
  * `topContent`, which made it a different line in every respect: --color-border
@@ -126,8 +124,7 @@
 /* Both nav groups are SideNavSections, so both bring the section's own
  * paddingBlock; the sticky zone shells above already own the rail's clearance,
  * and leaving the section copy in place makes the two hairlines sit at
- * different distances from the rows they separate (measured 9px vs 13px, which
- * `sidebar-geometry.spec.ts` fails on).
+ * different distances from the rows they separate (measured 9px vs 13px).
  * !important: SideNavSection paddingBlock is StyleX/unlayered. */
 .maka-session-panel-top,
 .maka-session-panel-footer {

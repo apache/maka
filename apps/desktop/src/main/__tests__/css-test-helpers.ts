@@ -486,10 +486,9 @@ export type CssBlock = {
  * worse — dropped the body of any at-rule outright. That second hole made
  * `.p { font: var(--maka-text-body); @media (pointer: coarse) { font-size: 16px } }`
  * invisible to every scan built on it, which is not a hypothetical shape: it
- * is the one Astryx itself uses for coarse pointers (see the note in
- * e2e/type-scale.spec.ts). Keeping half a CSS parser in a test helper is a
- * second authority on what CSS means; postcss is already what Vite parses this
- * same CSS with.
+ * is the one Astryx itself uses for coarse pointers. Keeping a second CSS
+ * parser in test code would create another authority on what CSS means;
+ * postcss is already what Vite parses this same CSS with.
  *
  * A nested at-rule is emitted as its own block because it is its own cascade
  * context: a role declared in `@media` legitimately replaces the base one, and

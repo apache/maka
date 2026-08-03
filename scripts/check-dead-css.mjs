@@ -36,6 +36,20 @@ const BASELINE_PATH = resolve(REPO_ROOT, 'scripts', 'check-dead-css-baseline.jso
 const RENDERER_ROOT = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer');
 const STYLES_DIR = resolve(RENDERER_ROOT, 'styles');
 const EXTRA_STYLE_FILES = [resolve(RENDERER_ROOT, 'reference-shell.css')];
+/**
+ * The Astryx accent bridge in maka-tokens.css re-declares Astryx theme tokens
+ * (--color-accent and friends) whose var() reads live in the library's own
+ * stylesheet under node_modules, not in this repo. That stylesheet is a real
+ * consumer of the token sheet, so it joins the token sweep — and only the
+ * token sweep: it owns no product classes.
+ */
+const EXTRA_TOKEN_CONSUMER_FILES = [
+  resolve(REPO_ROOT, 'node_modules', '@astryxdesign', 'core', 'dist', 'astryx.css'),
+  // Astryx components read theme tokens through StyleX, so some var() reads
+  // (e.g. --color-icon-accent) only exist in the compiled token map, not in
+  // astryx.css.
+  resolve(REPO_ROOT, 'node_modules', '@astryxdesign', 'core', 'dist', 'theme', 'tokens.stylex.js'),
+];
 const TOKEN_FILE = resolve(RENDERER_ROOT, 'maka-tokens.css');
 const SOURCE_ROOTS = [
   resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer'),
@@ -80,6 +94,9 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // AppShell's sidenav slot (AppShell.tsx themeProps); shell-layout.css clears
   // its top so the column runs under the transparent titlebar.
   'astryx-app-shell-sidenav',
+  // AppShell's content column (Layout themeProps); shell-layout.css paints the
+  // canvas behind the floating content plate on it.
+  'astryx-layout-content',
   // SideNav shell + items + section titles (sidebar.css product overrides).
   'astryx-side-nav',
   'astryx-side-nav-item',
@@ -92,6 +109,10 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // Rendered by Astryx's own Collapsible; chat-message.css targets it to give
   // reasoning/tool disclosures one trigger dialect inside the turn body (#1768).
   'astryx-collapsible-trigger',
+  // Rendered by `useTriggerMenu` for the composer's `@` / `/` menus.
+  // composer-mention.css caps its width: upstream sets a 180px floor and no
+  // ceiling, and our rows carry a non-wrapping second line.
+  'astryx-trigger-menu',
   // Appearance palette swatches — composed at runtime via
   // `settingsPaletteSwatch-${palette}` in settings/appearance-settings-page.tsx
   // (#308), so the per-palette variants never appear as string literals in
@@ -241,7 +262,7 @@ async function main() {
   const tokenCss = await readFile(TOKEN_FILE, 'utf8');
   const definedTokens = collectTokenDefinitions(tokenCss);
   const referenced = collectTokenReferences(tokenCss);
-  const tokenCssFiles = [...EXTRA_STYLE_FILES];
+  const tokenCssFiles = [...EXTRA_STYLE_FILES, ...EXTRA_TOKEN_CONSUMER_FILES];
   for (const root of TOKEN_CONSUMER_ROOTS) {
     tokenCssFiles.push(...(await readCssFiles(root)));
   }

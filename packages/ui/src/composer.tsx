@@ -37,15 +37,10 @@ import { appendPromptContextDraft, isReferenceSizedPaste } from './composer-help
 import { useComposerDraft } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
 import {
-  useComposerSkillDraft,
-  type ComposerSkillSelection,
-} from './use-composer-skill-draft.js';
-import {
   composerWireText,
   createChatInputActionOwner,
   createTriggerSearchSource,
   fileTransferContainsFiles,
-  isCaretAtContentStart,
   isChatInputComposing,
   mentionQueryMatches,
   skillMentionQuery,
@@ -53,6 +48,7 @@ import {
   type ComposerTextPort,
 } from './chat-input-behavior.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import {
   Button as UiButton,
@@ -74,7 +70,45 @@ import {
   DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { PermissionModeSelect } from './permission-mode-menu.js';
-import { ComposerSkillPicker, type ComposerSkillOption } from './composer-skill-picker.js';
+import {
+  inlineReferenceFileBasename,
+  inlineReferenceToken,
+  workspaceFileInlineReference,
+  workspaceFileReferencePositions,
+  type WorkspaceFileReferencePosition,
+} from './inline-reference.js';
+
+/** A Skill as the composer offers it: what the `/` menu lists and what a
+ * chosen entry writes into the draft. */
+export interface ComposerSkillOption {
+  /** The id the `/skill:<id>` token carries, and what Runtime resolves. */
+  id: string;
+  name: string;
+  description?: string;
+}
+
+/**
+ * The draft text a chosen Skill becomes. This is the product-wide invocation
+ * grammar (`SKILL_INVOCATION_TOKEN_SOURCE` in `@maka/core`), the same one
+ * the TUI submits and the same one a user can type by hand — the chip is a
+ * rendering of it, not a second channel beside it.
+ *
+ * By id, not by the scope-aware ref: the ref cannot be spelled in this grammar
+ * (`project:.maka/skills:writer` would parse as `project`), and ids are unique
+ * within a scan — `scanSkills` drops shadowed duplicates before the picker ever
+ * sees them. What the structured channel bought was pinning the exact file
+ * across the gap between choosing and sending; in that gap a ref is no less
+ * stale than an id, it is only differently stale, and resolving at send time is
+ * what `/skill:` means everywhere else in the product.
+ *
+ * A controlled `value` set rebuilds the editor from this string and drops the
+ * chip spans with it; `redrawSkillTokens` puts them back, so a draft restored
+ * by session switch, prompt history or revision rollback reads the same as the
+ * one that was staged.
+ */
+function skillTokenValue(id: string): string {
+  return `/skill:${id}`;
+}
 
 /**
  * Rows the input grows to before it scrolls. `ChatComposerInput` prices this in
@@ -84,12 +118,6 @@ import { ComposerSkillPicker, type ComposerSkillOption } from './composer-skill-
  * rows before it scrolls; rows, not pixels, is the knob upstream exposes.
  */
 const COMPOSER_MAX_ROWS = 10;
-
-/** Last path segment of a POSIX-style relative path — the mention row's primary label. */
-function fileBasename(relativePath: string): string {
-  const segments = relativePath.split('/').filter(Boolean);
-  return segments[segments.length - 1] ?? relativePath;
-}
 
 /**
  * PR-UI-15 (@yuejing 2026-05-22): Composer copy is locale-aware.
@@ -106,23 +134,18 @@ export interface ComposerHandle {
   appendText(text: string): void;
   /** Read the current input text (inline tokens serialized to their values). */
   getText(): string;
-  /** Snapshot the structured Skills owned by the active draft. */
-  getSkills(): ComposerSkillSelection[];
-  /** Clear one persisted text and Skill draft without affecting another session. */
+  /** Clear one persisted draft without affecting another session's. */
   clearDraft(draftKey: string): void;
   /** Write a specific session draft before navigation changes the active key. */
   setDraft(draftKey: string, text: string): void;
   /** Append to a specific session draft without replacing newer text. */
   appendDraft?(draftKey: string, text: string): void;
-  /** Replace structured Skills under an explicit session draft key. */
-  setSkillDraft(
-    draftKey: string,
-    skills: readonly ComposerSkillSelection[],
-  ): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
-  /** Fixture/integration seam for the same structured selection state used by `/`. */
-  setSkills(skills: ReadonlyArray<{ ref?: string; id: string; name: string }>): void;
+}
+
+export interface ComposerSendMetadata {
+  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -154,7 +177,7 @@ export const Composer = forwardRef<
     draftKey?: string;
     onSend(
       text: string,
-      skillIds: readonly string[],
+      metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
@@ -279,12 +302,14 @@ export const Composer = forwardRef<
     /**
      * Composer mention popups. Both are optional and the whole feature no-ops
      * when absent (SSR contracts render Composer with minimal props):
-     *   - `mentionSkills` powers the `/` popup AND the ＋ menu Skills entry —
-     *     pass only ENABLED skills; the composer filters them client-side and
-     *     creates structured Skill tokens (human-in-the-loop, never auto-send).
+     *   - `mentionSkills` powers the `/` popup, which the ＋ menu's Skills entry
+     *     opens by typing the trigger — one menu, one entry point in code. Pass
+     *     only ENABLED skills; the composer filters them client-side and writes
+     *     the chosen one into the draft as a `/skill:<id>` chip (human-in-the-
+     *     loop, never auto-send).
      *   - `onSearchMentionFiles` powers the `@` popup.
      */
-    mentionSkills?: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
+    mentionSkills?: ReadonlyArray<ComposerSkillOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   }
 >(function Composer(props, ref) {
@@ -296,11 +321,8 @@ export const Composer = forwardRef<
   function editableNode(): HTMLElement | null {
     return inputRootRef.current?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
   }
-  /** Focus target when the hideTrigger skill panel dismisses (＋ opener). */
-  const plusMenuButtonRef = useRef<HTMLButtonElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
-  const [skillPanelOpen, setSkillPanelOpen] = useState(false);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -317,6 +339,15 @@ export const Composer = forwardRef<
   const [text, setText] = useState('');
   const textRef = useRef('');
   function applyText(next: string) {
+    // Every value passes through here, which makes this the one place an
+    // external write can be defined against: whatever the last write owed, a
+    // newer value cancels. `textPort.setValue` re-arms both flags right after.
+    // Without the clear, a `setValue` React bails out of (the new draft equals
+    // the old one, so no commit and no effect) leaves them armed until some
+    // unrelated later render — where the caret jumps to the end mid-word, and a
+    // half-typed `/skill:` seizes into a chip under it.
+    caretToEndRef.current = false;
+    redrawPendingRef.current = false;
     textRef.current = next;
     setText(next);
   }
@@ -325,6 +356,7 @@ export const Composer = forwardRef<
    * identity so neither hook re-runs an effect when the draft changes.
    */
   const caretToEndRef = useRef(false);
+  const redrawPendingRef = useRef(false);
   const textPortRef = useRef<ComposerTextPort>(null);
   if (!textPortRef.current) {
     textPortRef.current = {
@@ -332,6 +364,7 @@ export const Composer = forwardRef<
       setValue: (value: string) => {
         applyText(value);
         caretToEndRef.current = true;
+        redrawPendingRef.current = true;
       },
     };
   }
@@ -366,17 +399,145 @@ export const Composer = forwardRef<
     caretToContentEnd();
   }
   /**
+   * The ＋ menu's Skills entry opens the same `/` menu the keyboard opens: it
+   * types the trigger for the user. There is no second Skill surface to keep in
+   * step with this one, because there is no second surface.
+   *
+   * `useTriggerMenu` only recognizes a trigger at a line start or after a space
+   * or newline (`findActiveTrigger`), so a draft ending in a word — or in a chip,
+   * which `insertToken` anchors with U+00A0 — needs a space in front of the
+   * slash or the menu silently never opens. One `insertText` carries both, so
+   * the editor sees a single input event and a single undo step.
+   *
+   * Deferred a frame: the DropdownMenu returns focus to ＋ as it closes, and a
+   * focus call racing that lands the caret nowhere.
+   *
+   * `caretToContentEnd` unconditionally, not `focusInput`: the latter keeps a
+   * selection the editor already owns, and the menu round trip leaves a stale
+   * one collapsed at offset 0 — measured, the slash landed in front of the
+   * draft rather than after it. Appending from ＋ is the predictable read
+   * anyway. With the caret at the end, the character before it is the last
+   * character of the content, chips included (U+00A0, which is not a space, so
+   * it takes the space too).
+   */
+  function openSkillMenu() {
+    window.requestAnimationFrame(() => {
+      inputHandleRef.current?.focus();
+      caretToContentEnd();
+      const previous = (editableNode()?.textContent ?? '').at(-1);
+      const needsSpace = previous !== undefined && previous !== ' ' && previous !== '\n';
+      document.execCommand('insertText', false, needsSpace ? ' /' : '/');
+    });
+  }
+  /**
+   * Redraw the chips a controlled write flattened.
+   *
+   * `ChatComposerInput` rebuilds the editor from the string on every external
+   * value change (`editable.textContent = controlledValue`), which is correct
+   * for text and lossy for tokens: the chip spans go, and the draft comes back
+   * as the `/skill:<id>` text they serialize to. Upstream declares a
+   * `deserialize` hook for exactly this and never calls it (facebook/astryx
+   * #4655), so until it does, we re-insert the chips ourselves.
+   *
+   * Nothing is recovered here that was not already in the string — the draft
+   * stays the single source of truth, and this only restores its rendering.
+   * That is what keeps it deletable in one piece: when upstream deserializes,
+   * this function and its one call site go, and no state goes with them.
+   *
+   * Three preconditions, all cheap, all necessary:
+   *
+   * - Only for an external write. `redrawPendingRef` is set by `textPort.setValue`
+   *   — the sole funnel for draft swap, history recall and the imperative handle
+   *   — and cleared by `applyText`, so a user who has taken the draft back never
+   *   watches a half-typed `/skill:` seize into a chip under the caret.
+   * - Only on the DOM shape that write produces: exactly one text node equal to
+   *   the draft. Anything else means upstream skipped the rewrite (the chips are
+   *   still there) or the editor is in a shape whose offsets we cannot trust.
+   * - Never mid-composition. The rewrite already broke the IME's composition;
+   *   moving the selection on top of that makes it worse.
+   *
+   * A pending redraw survives a failed attempt, and that is the whole reason it
+   * is a flag rather than a call at the write. The two inputs do not arrive
+   * together: switching sessions swaps the draft on the spot while the Skill
+   * catalog for the newly active session lands a render or two later, still
+   * holding the previous session's Skills. Clearing on the first attempt would
+   * read that stale catalog as proof the token is unresolvable and give up for
+   * good. Retrying costs one regex over a short draft on renders where a write
+   * is outstanding, and every other precondition — mid-composition, an
+   * unexpected DOM — gets the same second chance for free.
+   *
+   * Back to front, because `Range.deleteContents` inside a text node leaves the
+   * original node holding the text before the range: earlier offsets stay valid,
+   * later ones would not. The token's own matched text becomes the chip value,
+   * not a value rebuilt from the catalog id, so a differently-cased token comes
+   * back spelled the way the draft spells it.
+   *
+   * `insertToken` anchors each chip with a U+00A0, so we take the following
+   * space into the replaced range to keep one separator rather than two. The
+   * draft therefore serializes with U+00A0 where it had a space, and with one
+   * extra U+00A0 when a token ends the draft. That is the same text a chip
+   * picked from the `/` menu produces, `composerWireText` normalizes it on send,
+   * and upstream's sync effect is keyed on the controlled value rather than on
+   * the serialization, so the difference cannot loop back as a rewrite.
+   *
+   * A token whose id is not in the live catalog stays text: no chip should claim
+   * a Skill that will not resolve.
+   */
+  function redrawSkillTokens(): boolean {
+    if (compositionActiveRef.current) return false;
+    const skills = props.mentionSkills;
+    if (!skills?.length) return false;
+    const draft = textRef.current;
+    if (!draft.includes('/skill:')) return false;
+    const editable = editableNode();
+    const node = editable?.firstChild;
+    if (!editable || editable.childNodes.length !== 1) return false;
+    if (!(node instanceof Text) || node.data !== draft) return false;
+    const byId = new Map(skills.map((skill) => [skill.id.toLowerCase(), skill]));
+    const matches = [...draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))];
+    const selection = document.getSelection();
+    if (!selection) return false;
+    let redrew = false;
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const match = matches[i];
+      const skill = byId.get(match[1].toLowerCase());
+      if (!skill) continue;
+      const start = match.index;
+      let end = start + match[0].length;
+      const next = draft[end];
+      if (next === ' ' || next === '\u00A0') end += 1;
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, end);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      inputHandleRef.current?.insertToken(
+        inlineReferenceToken({ kind: 'skill', value: match[0], label: skill.name }),
+      );
+      redrew = true;
+    }
+    return redrew;
+  }
+  /**
    * Every port write lands the caret at the end, which is what the textarea's
    * `setSelectionRange(end, end)` did unconditionally on the same two paths
    * (draft swap, prompt-history recall). Upstream only restores the caret when
    * the update hits a *focused* editor, so without this a draft restored while
    * the composer was blurred — switching sessions from the sidebar — left the
    * caret at offset 0 and the next keystroke prepended to the draft.
+   *
+   * The redraw gets the same treatment for the same reason, and can land a
+   * render later than the write that owed it: `insertToken` parks the selection
+   * after the last chip it wrote, so the caret has to be collected again.
    */
   useEffect(() => {
-    if (!caretToEndRef.current) return;
+    let restoreCaret = caretToEndRef.current;
     caretToEndRef.current = false;
-    caretToContentEnd();
+    if (redrawPendingRef.current && redrawSkillTokens()) {
+      redrawPendingRef.current = false;
+      restoreCaret = true;
+    }
+    if (restoreCaret) caretToContentEnd();
   });
   // Draft persistence + prompt-history navigation live in dedicated hooks
   // (issue #1044). `resetPromptHistoryNavigation` is a hoisted wrapper so the
@@ -397,7 +558,6 @@ export const Composer = forwardRef<
     text: textPort,
     saveCurrentDraft,
   });
-  const skillDraft = useComposerSkillDraft(props.draftKey);
   // PR-UI-15: locale-aware copy for placeholder + toolbar states.
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).composer;
@@ -484,13 +644,11 @@ export const Composer = forwardRef<
   const mentionSourceRef = useRef({
     mentionSkills: props.mentionSkills,
     onSearchMentionFiles: props.onSearchMentionFiles,
-    addSkill: (skill: ComposerSkillSelection) => skillDraft.add(skill),
   });
   useEffect(() => {
     mentionSourceRef.current = {
       mentionSkills: props.mentionSkills,
       onSearchMentionFiles: props.onSearchMentionFiles,
-      addSkill: (skill: ComposerSkillSelection) => skillDraft.add(skill),
     };
   });
 
@@ -514,11 +672,7 @@ export const Composer = forwardRef<
           mentionQueryMatches(query, `${skill.id} ${skill.name} ${skill.description ?? ''}`),
         )
         .slice(0, 50)
-        .map((skill) => ({
-          id: skill.ref ?? skill.id,
-          label: skill.name,
-          auxiliaryData: skill,
-        }));
+        .map((skill) => ({ id: skill.id, label: skill.name, auxiliaryData: skill }));
     };
     // `bootstrap` is required by SearchSource but never called by
     // `useTriggerMenu`; the menu opens straight into `search`.
@@ -544,7 +698,7 @@ export const Composer = forwardRef<
           <>
             <FileText size={14} aria-hidden="true" className="maka-composer-mention-icon" />
             <span className="maka-composer-mention-text">
-              <span className="maka-composer-mention-name">{fileBasename(item.id)}</span>
+              <span className="maka-composer-mention-name">{inlineReferenceFileBasename(item.id)}</span>
               <span className="maka-composer-mention-secondary">{item.id}</span>
             </span>
           </>
@@ -560,7 +714,8 @@ export const Composer = forwardRef<
         // '\n' as a trigger boundary, so typing `@` directly after a chip
         // opens no menu until the user types a space. That boundary set is
         // internal to `useTriggerMenu`; the fix belongs upstream.
-        onSelect: (item): ChatComposerToken => ({ value: `@${item.id}`, label: fileBasename(item.id) }),
+        onSelect: (item): ChatComposerToken =>
+          inlineReferenceToken(workspaceFileInlineReference(item.id)),
       });
     }
     if (props.mentionSkills !== undefined) {
@@ -570,6 +725,17 @@ export const Composer = forwardRef<
         menuLabel: mentionCopy.skillsAriaLabel,
         emptySearchResultsText: mentionCopy.noSkills,
         loadingText: mentionCopy.loading,
+        // Name over description, and no id: the second line is one line wide,
+        // and the id spent a dozen characters of it on a string nobody types
+        // here — the menu is how you avoid typing it. It stays searchable
+        // (`listSkills` matches against it) and it is still what the chip
+        // serializes to; it just no longer crowds out the sentence that tells
+        // two Skills apart.
+        //
+        // Visible, not a tooltip: every menu item in Astryx — dropdown, radio,
+        // checkbox, submenu — carries its explanation as a `description` line,
+        // and none carries one on hover. A `/` menu is driven with ↑↓, so a
+        // hover-only description would be invisible to the way it is used.
         renderItem: (item) => {
           const skill = item.auxiliaryData as ComposerSkillOption;
           return (
@@ -577,20 +743,32 @@ export const Composer = forwardRef<
               <Sparkles size={14} aria-hidden="true" className="maka-composer-mention-icon" />
               <span className="maka-composer-mention-text">
                 <span className="maka-composer-mention-name">{skill.name}</span>
-                <span className="maka-composer-mention-secondary">
-                  {skill.id}
-                  {skill.description ? ` · ${skill.description}` : ''}
-                </span>
+                <span className="maka-composer-mention-secondary">{skill.description}</span>
               </span>
             </>
           );
         },
-        // A Skill is structured selection, not text: it lands in the drawer as
-        // a chip and contributes nothing to the draft, exactly as before.
-        onSelect: (item) => {
-          mentionSourceRef.current.addSkill(item.auxiliaryData as ComposerSkillSelection);
-          return '';
-        },
+        // A chosen Skill is an inline chip in the draft — Astryx's own
+        // `onSelect → ChatComposerToken` contract, the same one `@` uses.
+        //
+        // It used to be a selection held beside the draft and shown in the
+        // context drawer. That made the staged Skill a second source of truth
+        // for one fact, and every draft operation had to carry it separately:
+        // per-session persistence, prompt history, blocked-send recovery and
+        // revision rollback each had their own Skill-shaped twin. In the text
+        // there is one draft, and `/skill:<id>` is already the invocation
+        // grammar Runtime parses — so the chip a user picks and the token a
+        // user types are the same thing, and both survive every path the text
+        // survives.
+        //
+        // No colour: Maka blue is the single product accent, and a staged
+        // Skill is identified by its sparkle and its label.
+        onSelect: (item): ChatComposerToken =>
+          inlineReferenceToken({
+            kind: 'skill',
+            value: skillTokenValue(item.id),
+            label: (item.auxiliaryData as ComposerSkillOption).name,
+          }),
       });
     }
     return list;
@@ -679,12 +857,8 @@ export const Composer = forwardRef<
       getText() {
         return textPort.getValue();
       },
-      getSkills() {
-        return skillDraft.get(skillDraft.activeDraftKey());
-      },
       clearDraft(draftKey: string) {
         clearDraft(draftKey);
-        skillDraft.clear(draftKey);
         if (activeDraftKey() !== draftKey) return;
         textPort.setValue('');
         saveCurrentDraft('');
@@ -703,17 +877,8 @@ export const Composer = forwardRef<
         focusInput();
         textPort.setValue(next);
       },
-      setSkillDraft(
-        draftKey: string,
-        skills: readonly ComposerSkillSelection[],
-      ) {
-        skillDraft.replace(draftKey, skills);
-      },
       focus() {
         focusInput();
-      },
-      setSkills(skills) {
-        skillDraft.replace(skillDraft.activeDraftKey(), skills);
       },
     }),
     [],
@@ -721,19 +886,22 @@ export const Composer = forwardRef<
 
   async function sendCurrent() {
     if (props.disabled || sendPendingRef.current || importActionOwnerRef.current?.pending) return;
+    // There is one authoritative draft: staged Skills and files serialize into
+    // `text`. The optional metadata below is a send-time rendering snapshot of
+    // file chips that still exist in the editor, not a second draft state.
     const text = composerWireText(textPort.getValue());
-    // `skillIds` is the legacy wire field name. New selections submit the
-    // stable scope-aware ref so send-time re-resolution cannot drift to a
-    // same-id skill discovered at a different precedence.
-    const skillIds = skillDraft.skills.map((skill) => skill.ref ?? skill.id);
-    if (!text && skillIds.length === 0) return;
+    if (!text) return;
+    const editable = editableNode();
+    const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
-    const submittedSkillDraftKey = skillDraft.activeDraftKey();
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
     try {
-      sent = await props.onSend(text, skillIds);
+      sent = await props.onSend(
+        text,
+        workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
+      );
     } finally {
       sendPendingRef.current = false;
       if (composerMountedRef.current) setSendPending(false);
@@ -742,15 +910,13 @@ export const Composer = forwardRef<
     if (sent === false) return;
     // Save to both local ref and global persistence so the history
     // survives page reloads and is shared across all input surfaces.
-    if (text) rememberSentEntry(text);
+    rememberSentEntry(text);
     clearDraft(submittedDraftKey);
-    skillDraft.clear(submittedSkillDraftKey);
     // The owner may have changed while onSend awaited (new-session creation,
     // revision branch, or user navigation). Never erase a foreign draft.
     if (activeDraftKey() !== submittedDraftKey) return;
     textPort.setValue('');
     saveCurrentDraft('');
-    skillDraft.clear(skillDraft.activeDraftKey());
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -794,14 +960,6 @@ export const Composer = forwardRef<
     ) {
       event.preventDefault();
       props.onCancelVoiceCapture?.();
-      return;
-    }
-    if (
-      event.key === 'Backspace' &&
-      isCaretAtContentStart(event.currentTarget, window.getSelection()) &&
-      skillDraft.removeLast()
-    ) {
-      event.preventDefault();
       return;
     }
     // Esc while a drag-active highlight is showing should clear it
@@ -909,7 +1067,7 @@ export const Composer = forwardRef<
     props.disabled ||
     sendPending ||
     importActionBusy ||
-    (!text.trim() && skillDraft.skills.length === 0) ||
+    !text.trim() ||
     noModelConnection;
   // The disabled Send is explanatory only in the no-model dead-end; other
   // disabled reasons (empty draft, in-flight import) keep the neutral label.
@@ -924,17 +1082,16 @@ export const Composer = forwardRef<
         : undefined;
 
   /**
-   * The drawer's contract is context staged for the *next send*: quotes,
-   * attachments and Skills are consumed when the message goes out, and this
-   * count tells the user how many such items are pending. Plan / Swarm / Graph
-   * are session-scoped modes that survive the send, so they are not counted
-   * here and no longer render inside the drawer (#1897) — they read as mode
-   * state on the footer toolbar instead.
+   * The drawer's contract is context staged for the *next send*: quotes and
+   * attachments are consumed when the message goes out, and this count tells
+   * the user how many such items are pending. Plan / Swarm / Graph are
+   * session-scoped modes that survive the send, so they are not counted here
+   * and no longer render inside the drawer (#1897) — they read as mode state
+   * on the footer toolbar instead. Skills are not counted either: a staged
+   * Skill is a chip in the draft itself, visible where it will be sent from.
    */
   const drawerTokenCount =
-    (props.pendingQuotes?.length ?? 0)
-    + (props.pendingAttachments?.length ?? 0)
-    + skillDraft.skills.length;
+    (props.pendingQuotes?.length ?? 0) + (props.pendingAttachments?.length ?? 0);
   /**
    * The session modes that are currently on, in the order the ＋ menu lists
    * them. The menu stays the switch — it turns each mode on *and* off; these
@@ -1091,19 +1248,6 @@ export const Composer = forwardRef<
                     onRemove={props.onRemoveAttachment ? () => props.onRemoveAttachment?.(index) : undefined}
                   />
                 ))}
-                {skillDraft.skills.map((skill) => (
-                  <Token
-                    key={skill.ref ?? skill.id}
-                    size="sm"
-                    color="purple"
-                    className="maka-composer-skill-token"
-                    label={skill.name}
-                    onRemove={() => {
-                      skillDraft.remove(skill.ref ?? skill.id);
-                      window.requestAnimationFrame(() => focusInput());
-                    }}
-                  />
-                ))}
               </div>
             </ChatComposerDrawer>
           ) : undefined}
@@ -1162,7 +1306,6 @@ export const Composer = forwardRef<
                     hasChevron={false}
                     className="maka-composer-quiet-menu"
                     button={{
-                      ref: plusMenuButtonRef,
                       label: copy.addContext,
                       icon: <Plus size={15} aria-hidden="true" />,
                       isIconOnly: true,
@@ -1184,12 +1327,19 @@ export const Composer = forwardRef<
                     ) : null}
                     {props.mentionSkills ? (
                       <DropdownMenuItem
-                        label={copy.skillPicker.title}
+                        label={copy.chooseSkill}
                         icon={<Sparkles size={15} aria-hidden="true" />}
-                        isDisabled={props.disabled}
-                        onClick={() => {
-                          setSkillPanelOpen(true);
-                        }}
+                        // Nothing to choose from means nothing to open. The
+                        // entry types `/` into the draft, so an enabled item
+                        // with an empty catalog spends the user's click writing
+                        // a stray slash and popping an empty menu. Say why it is
+                        // unavailable: the panel this replaced showed "no skills
+                        // available", and a silent grey row answers nothing.
+                        isDisabled={props.disabled || props.mentionSkills.length === 0}
+                        description={
+                          props.mentionSkills.length === 0 ? copy.noSkillsAvailable : undefined
+                        }
+                        onClick={openSkillMenu}
                       />
                     ) : null}
                     {props.onPlanModeChange ? (
@@ -1338,29 +1488,6 @@ export const Composer = forwardRef<
                   icon={mode.icon}
                 />
               ))}
-              {props.mentionSkills ? (
-                <ComposerSkillPicker
-                  hideTrigger
-                  open={skillPanelOpen}
-                  onOpenChange={setSkillPanelOpen}
-                  onDismissFocus={() => {
-                    const plus = plusMenuButtonRef.current;
-                    if (plus) plus.focus();
-                    else focusInput();
-                  }}
-                  skills={props.mentionSkills}
-                  selected={skillDraft.skills}
-                  disabled={props.disabled}
-                  onToggle={(skill, selected) => {
-                    if (selected) skillDraft.add(skill);
-                    else skillDraft.remove(skill.ref ?? skill.id);
-                  }}
-                  onSelectAll={(skills: readonly ComposerSkillOption[]) => {
-                    for (const skill of skills) skillDraft.add(skill);
-                  }}
-                  onClearAll={() => skillDraft.clear(skillDraft.activeDraftKey())}
-                />
-              ) : null}
             </div>
           )}
           sendActions={(

@@ -13,8 +13,7 @@ import {
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSectionContent,
-  DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
   DailyReviewTrigger,
   SessionSummary,
@@ -35,8 +34,8 @@ type ModelCallLedger = ReturnType<typeof createSqliteModelCallLedger>;
 export interface DailyReviewMainService {
   buildSummaryForRange(offsetDays: number, daySpan: number): Promise<DailyReviewSummary>;
   run(input: {
-    mode: DailyReviewMode;
-    day?: number;
+    range: DailyReviewRange;
+    offsetDays?: number;
     trigger: DailyReviewTrigger;
     modelKeyOverride?: string;
   }): Promise<{ archiveId: string }>;
@@ -62,6 +61,7 @@ interface DailyReviewMainServiceDeps {
 export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): DailyReviewMainService {
   let schedulerTimer: NodeJS.Timeout | null = null;
   let schedulerLastMinuteKey: string | null = null;
+  const inFlightRuns = new Map<string, Promise<{ archiveId: string }>>();
 
   async function buildSummaryForRange(offsetDays: number, daySpan: number): Promise<DailyReviewSummary> {
     await deps.ensureUsageReady();
@@ -116,23 +116,58 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
   }
 
   async function run(input: {
-    mode: DailyReviewMode;
-    day?: number;
+    range: DailyReviewRange;
+    offsetDays?: number;
     trigger: DailyReviewTrigger;
     modelKeyOverride?: string;
   }): Promise<{ archiveId: string }> {
     const config = await deps.archiveStore.getConfig();
-    const mode = input.mode === 'deep' ? 'deep' : 'daily';
+    const range = input.range;
     const modelKeyOverride = input.modelKeyOverride?.trim();
     const effectiveModelKey = modelKeyOverride ? modelKeyOverride : config.modelKey;
-    const summary = await buildSummaryForRange(input.day ?? 0, mode === 'deep' ? 7 : 1);
-    const archiveId = dailyReviewArchiveId(summary.day, mode);
+    const summary = await buildSummaryForRange(input.offsetDays ?? 0, range);
+    const archiveId = dailyReviewArchiveId(summary.day, range);
+    const existingArchive = await deps.archiveStore.getArchive(archiveId);
+    if (
+      existingArchive?.status === 'ok'
+      && existingArchive.range === range
+      && existingArchive.day.fromMs === summary.day.fromMs
+      && existingArchive.day.toMs === summary.day.toMs
+    ) {
+      return { archiveId };
+    }
+
+    const inFlight = inFlightRuns.get(archiveId);
+    if (inFlight) return inFlight;
+    const pending = generateArchive({
+      archiveId,
+      effectiveModelKey,
+      range,
+      summary,
+      trigger: input.trigger,
+    });
+    inFlightRuns.set(archiveId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (inFlightRuns.get(archiveId) === pending) inFlightRuns.delete(archiveId);
+    }
+  }
+
+  async function generateArchive(input: {
+    archiveId: string;
+    effectiveModelKey: string;
+    range: DailyReviewRange;
+    summary: DailyReviewSummary;
+    trigger: DailyReviewTrigger;
+  }): Promise<{ archiveId: string }> {
+    const { archiveId, effectiveModelKey, range, summary, trigger } = input;
     const baseArchive: Omit<DailyReviewArchive, 'status' | 'sections' | 'errorMessage'> = {
       id: archiveId,
       day: summary.day,
-      mode,
+      range,
       generatedAt: Date.now(),
-      trigger: input.trigger,
+      trigger,
       modelKey: effectiveModelKey,
       totals: summary.totals,
     };
@@ -141,7 +176,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
       await deps.archiveStore.putArchive({
         ...baseArchive,
         status: 'no_data',
-        sections: buildRuleBasedDailyReviewSections(summary, config, mode),
+        sections: buildRuleBasedDailyReviewSections(summary, range),
         errorMessage: '没有可用于生成回顾的本地活动数据。',
       });
       await deps.archiveStore.prune(DAILY_REVIEW_ARCHIVE_LIMIT);
@@ -154,7 +189,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
         await deps.archiveStore.putArchive({
           ...baseArchive,
           status: 'no_model',
-          sections: buildRuleBasedDailyReviewSections(summary, config, mode),
+          sections: buildRuleBasedDailyReviewSections(summary, range),
           errorMessage: '未配置可用的分析模型。',
         });
         await deps.archiveStore.prune(DAILY_REVIEW_ARCHIVE_LIMIT);
@@ -163,8 +198,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
 
       const sections = await generateSections({
         summary,
-        config,
-        mode,
+        range,
         connection: modelContext.connection,
         apiKey: modelContext.apiKey,
         modelId: modelContext.modelId,
@@ -179,7 +213,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
       await deps.archiveStore.putArchive({
         ...baseArchive,
         status: 'failed',
-        sections: buildRuleBasedDailyReviewSections(summary, config, mode),
+        sections: buildRuleBasedDailyReviewSections(summary, range),
         errorMessage: generalizedErrorMessageChinese(error, '每日回顾生成失败'),
       });
     }
@@ -206,8 +240,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
 
   async function generateSections(input: {
     summary: DailyReviewSummary;
-    config: DailyReviewConfig;
-    mode: DailyReviewMode;
+    range: DailyReviewRange;
     connection: LlmConnection;
     apiKey: string | null;
     modelId: string;
@@ -223,11 +256,11 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
         modelId: input.modelId,
         fetch: modelFetch,
       }),
-      instructions: dailyReviewSystemPrompt(input.config),
-      prompt: dailyReviewUserPrompt(input.summary, input.config, input.mode),
+      instructions: dailyReviewSystemPrompt(),
+      prompt: dailyReviewUserPrompt(input.summary, input.range),
       providerOptions: buildProviderOptions(input.connection, input.modelId),
     });
-    return parseDailyReviewSections(result.text, input.config);
+    return parseDailyReviewSections(result.text);
   }
 
   function startScheduler(): void {
@@ -259,15 +292,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
     const mm = String(now.getMinutes()).padStart(2, '0');
     if (`${hh}:${mm}` !== config.executeTime) return;
 
-    await runIfMissing('daily');
-    if (config.deepEnabled) await runIfMissing('deep');
-  }
-
-  async function runIfMissing(mode: DailyReviewMode): Promise<void> {
-    const summary = await buildSummaryForRange(0, mode === 'deep' ? 7 : 1);
-    const id = dailyReviewArchiveId(summary.day, mode);
-    if (await deps.archiveStore.getArchive(id)) return;
-    await run({ mode, trigger: 'cron' });
+    await run({ range: 1, offsetDays: -1, trigger: 'cron' });
   }
 
   return {
@@ -289,26 +314,20 @@ function parseModelKey(modelKey: string): { slug: string; modelId: string } | nu
   };
 }
 
-function dailyReviewSystemPrompt(config: DailyReviewConfig): string {
-  const enabled = Object.entries(config.sections)
-    .filter(([, value]) => value)
-    .map(([key]) => key)
-    .join(', ');
+function dailyReviewSystemPrompt(): string {
   return [
     '你是 Maka 的每日回顾分析器。只基于输入的本地统计和会话预览生成回顾，不编造未出现的事实。',
     '输出 JSON，不要 Markdown fence。JSON 顶层字段只允许 summary、gaps、usage、code，值为中文字符串。',
-    `启用栏目：${enabled || 'summary'}。未启用栏目可以省略。`,
+    '生成适用的栏目；没有可靠内容的栏目省略。',
   ].join('\n');
 }
 
 function dailyReviewUserPrompt(
   summary: DailyReviewSummary,
-  config: DailyReviewConfig,
-  mode: DailyReviewMode,
+  range: DailyReviewRange,
 ): string {
   return JSON.stringify({
-    mode,
-    includeClaudeCode: config.includeClaudeCode,
+    rangeDays: range,
     day: summary.day,
     totals: summary.totals,
     sessions: summary.sessions.map((session) => ({
@@ -318,31 +337,35 @@ function dailyReviewUserPrompt(
     })),
     topModels: summary.topModels,
     topTools: summary.topTools,
-    instruction: mode === 'deep'
-      ? '生成更深入的多日工作复盘：趋势、遗漏、风险、下一步。'
-      : '生成当天工作回顾：发生了什么、遗漏什么、用量洞察、代码建议。',
+    instruction: range === 1
+      ? '生成当天工作分析：发生了什么、遗漏什么、用量洞察、代码建议。'
+      : `生成最近 ${range} 天的工作分析：趋势、遗漏、风险、下一步。`,
   });
 }
 
-function parseDailyReviewSections(text: string, config: DailyReviewConfig): DailyReviewArchiveSectionContent {
+export function parseDailyReviewSections(text: string): DailyReviewArchiveSectionContent {
   const trimmed = text.trim();
+  let sections: DailyReviewArchiveSectionContent;
   try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    return {
-      ...(config.sections.summary && typeof parsed.summary === 'string' ? { summary: parsed.summary.trim() } : {}),
-      ...(config.sections.gaps && typeof parsed.gaps === 'string' ? { gaps: parsed.gaps.trim() } : {}),
-      ...(config.sections.usage && typeof parsed.usage === 'string' ? { usage: parsed.usage.trim() } : {}),
-      ...(config.sections.code && typeof parsed.code === 'string' ? { code: parsed.code.trim() } : {}),
-    };
+    const parsed: unknown = JSON.parse(trimmed);
+    sections = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? {
+          ...('summary' in parsed && typeof parsed.summary === 'string' ? { summary: parsed.summary.trim() } : {}),
+          ...('gaps' in parsed && typeof parsed.gaps === 'string' ? { gaps: parsed.gaps.trim() } : {}),
+          ...('usage' in parsed && typeof parsed.usage === 'string' ? { usage: parsed.usage.trim() } : {}),
+          ...('code' in parsed && typeof parsed.code === 'string' ? { code: parsed.code.trim() } : {}),
+        }
+      : {};
   } catch {
-    return { summary: trimmed };
+    sections = { summary: trimmed };
   }
+  if (Object.values(sections).some((content) => content.length > 0)) return sections;
+  throw new Error('Daily Review model returned no usable sections');
 }
 
 function buildRuleBasedDailyReviewSections(
   summary: DailyReviewSummary,
-  config: DailyReviewConfig,
-  mode: DailyReviewMode,
+  range: DailyReviewRange,
 ): DailyReviewArchiveSectionContent {
   const sections: {
     summary?: string;
@@ -350,25 +373,13 @@ function buildRuleBasedDailyReviewSections(
     usage?: string;
     code?: string;
   } = {};
-  if (config.sections.summary) {
-    sections.summary = `${mode === 'deep' ? '深度分析' : '每日回顾'}覆盖 ${summary.totals.sessionCount} 个对话、${summary.totals.requestCount} 次请求、${summary.totals.totalTokens} tokens。`;
-  }
-  if (config.sections.gaps) {
-    sections.gaps = summary.totals.errorCount > 0
-      ? `发现 ${summary.totals.errorCount} 次错误请求，建议回看失败上下文。`
-      : '未从本地统计中发现明确失败请求。';
-  }
-  if (config.sections.usage) {
-    const topModel = summary.topModels[0];
-    sections.usage = topModel
-      ? `使用最多的模型是 ${topModel.label}，共 ${topModel.requests} 次请求。`
-      : '暂无模型使用统计。';
-  }
-  if (config.sections.code) {
-    const topTool = summary.topTools[0];
-    sections.code = topTool
-      ? `高频工具：${topTool.label}（${topTool.requests} 次）。建议优先复盘相关改动产物。`
-      : '暂无工具调用统计可形成代码建议。';
-  }
+  sections.summary = `${range} 天范围覆盖 ${summary.totals.sessionCount} 个对话、${summary.totals.requestCount} 次请求、${summary.totals.totalTokens} tokens。`;
+  sections.gaps = summary.totals.errorCount > 0
+    ? `发现 ${summary.totals.errorCount} 次错误请求，建议回看失败上下文。`
+    : '未从本地统计中发现明确失败请求。';
+  const topModel = summary.topModels[0];
+  if (topModel) sections.usage = `使用最多的模型是 ${topModel.label}，共 ${topModel.requests} 次请求。`;
+  const topTool = summary.topTools[0];
+  if (topTool) sections.code = `高频工具：${topTool.label}（${topTool.requests} 次）。建议优先复盘相关改动产物。`;
   return sections;
 }

@@ -407,7 +407,7 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     await assert.rejects(stat(join(userDataDir, '.claude_subscription_token')), { code: 'ENOENT' });
   });
 
-  it('Codex login writes the loopback exchange result to its shared credential', async () => {
+  it('Codex login writes the device-auth exchange result to its shared credential', async () => {
     const credentials = createMemoryCredentialStore();
     const userDataDir = await makeUserDataDir();
     let openedUrl: string | undefined;
@@ -417,15 +417,36 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
         openedUrl = url;
       },
       now: () => NOW,
-      fetchFn: async () =>
-        Response.json({
-          access_token: jwt({
-            sub: 'codex-login-subject',
-            'https://api.openai.com/auth': { chatgpt_account_id: 'codex-login-account' },
-          }),
-          refresh_token: 'codex-login-refresh',
-          expires_in: 3600,
-        }),
+      sleep: async () => {},
+      fetchFn: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/deviceauth/usercode')) {
+          return Response.json({
+            device_auth_id: 'deviceauth-codex-login',
+            user_code: 'CODE-1234',
+            interval: '5',
+            expires_at: new Date(NOW + 600_000).toISOString(),
+          });
+        }
+        if (url.endsWith('/deviceauth/token')) {
+          return Response.json({
+            authorization_code: 'codex-login-code',
+            code_challenge: 'challenge',
+            code_verifier: 'codex-login-verifier',
+          });
+        }
+        if (url.endsWith('/oauth/token')) {
+          return Response.json({
+            access_token: jwt({
+              sub: 'codex-login-subject',
+              'https://api.openai.com/auth': { chatgpt_account_id: 'codex-login-account' },
+            }),
+            refresh_token: 'codex-login-refresh',
+            expires_in: 3600,
+          });
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      },
       credentialStore: credentials.store,
     });
 
@@ -434,15 +455,9 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     const authRequestId = authorization.authRequestId;
     try {
       assert.deepEqual(await service.openAuthorizationUrl(authRequestId), { ok: true });
-      assert.ok(openedUrl);
-      const state = new URL(openedUrl).searchParams.get('state');
-      assert.ok(state);
-      const callback = new URL('http://127.0.0.1:1455/auth/callback');
-      callback.searchParams.set('code', 'codex-login-code');
-      callback.searchParams.set('state', state);
-      const callbackResponse = await fetch(callback);
-      assert.equal(callbackResponse.status, 200);
-      await callbackResponse.text();
+      // The verification page is the fixed server-owned device URL; no
+      // local loopback callback is involved.
+      assert.equal(openedUrl, 'https://auth.openai.com/codex/device');
 
       assert.deepEqual(await service.completeAuthorization(authRequestId), { ok: true });
       const stored = JSON.parse(
@@ -454,6 +469,45 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     } finally {
       service.cancelAuthorization(authRequestId);
     }
+  });
+
+  it('Codex login does not revive an authorization cancelled while the browser opens', async () => {
+    let finishOpening!: () => void;
+    const opening = new Promise<void>((resolve) => {
+      finishOpening = resolve;
+    });
+    const service = new OpenAiCodexService({
+      userDataDir: await makeUserDataDir(),
+      openExternal: async () => opening,
+      credentialStore: createMemoryCredentialStore().store,
+      fetchFn: async (url) => {
+        if (String(url).endsWith('/deviceauth/usercode')) {
+          return Response.json({
+            device_auth_id: 'deviceauth-cancel-open',
+            user_code: 'CODE-CANCEL',
+            interval: '5',
+            expires_at: new Date(NOW + 600_000).toISOString(),
+          });
+        }
+        assert.fail(`unexpected fetch ${String(url)}`);
+      },
+    });
+    const authorization = await service.getAuthorizationUrl();
+    assert.ok('authRequestId' in authorization);
+
+    const opened = service.openAuthorizationUrl(authorization.authRequestId);
+    service.cancelAuthorization(authorization.authRequestId);
+    finishOpening();
+
+    assert.deepEqual(await opened, {
+      ok: false,
+      reason: 'authorization_cancelled',
+      message: 'Codex 授权已取消。',
+    });
+    assert.deepEqual(await service.getAccountState(), {
+      provider: 'openai-codex',
+      runtimeState: 'not_logged_in',
+    });
   });
 
   it('Cursor login writes the successful poll result to its shared credential', async () => {

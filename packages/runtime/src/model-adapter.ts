@@ -38,7 +38,10 @@ import {
   errorPresentationFromClass,
   providerRetryMetadata,
 } from './provider-error-classification.js';
-import type { ProviderRequestTracker } from './provider-request-telemetry.js';
+import {
+  withProviderGenerateTracking,
+  type ProviderRequestTracker,
+} from './provider-request-telemetry.js';
 import {
   createKimiOpenAiTransportState,
   kimiReasoningFieldProviderOptions,
@@ -86,6 +89,12 @@ export interface CompactSummaryRequest {
   messages: readonly ModelMessage[];
   maxOutputTokens: number;
   abortSignal?: AbortSignal;
+  /**
+   * Physical provider-call tracking for this summarization. Attaching it here
+   * rather than at the call site keeps "wrap a model with a tracker" in the one
+   * place that already owns it for streams.
+   */
+  providerRequestTracker?: ProviderRequestTracker;
 }
 
 export interface CompactSummaryResult {
@@ -106,7 +115,7 @@ export interface ModelAdapterStreamInput {
     toolCall: RepairableAiSdkToolCall;
     error: unknown;
   }) => RepairableAiSdkToolCall | null | Promise<RepairableAiSdkToolCall | null>;
-  /** Main-agent provider-call tracker. Auxiliary model calls intentionally omit it. */
+  /** Main-agent provider-call tracker. Auxiliary calls track their own generates. */
   providerRequestTracker?: ProviderRequestTracker;
 }
 
@@ -194,6 +203,13 @@ export class ModelAdapter {
       messages: lowerNativeAudioMessages(input.messages),
       tools: schemaOnlyTools,
       activeTools: input.activeTools,
+      // An empty active set is an authoritative tool-free request (not merely
+      // an empty provider schema).  Some OpenAI-compatible models, including
+      // DeepSeek, otherwise keep emitting their native tool-call envelope as
+      // ordinary text when the SDK leaves toolChoice at its `auto` default.
+      // The child-agent finalization step relies on this boundary to spend its
+      // last budgeted request on a summary instead of one more unusable call.
+      ...(input.activeTools.length === 0 ? { toolChoice: 'none' } : {}),
       repairToolCall: input.repairToolCall,
       ...(input.system ? { instructions: input.system } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
@@ -257,7 +273,7 @@ export class ModelAdapter {
         `Failed to load 'ai' package. Run \`npm install ai\`. Inner: ${(err as Error).message}`,
       );
     });
-    const { generateText } = ai as unknown as {
+    const { generateText, wrapLanguageModel } = ai as unknown as {
       generateText: (opts: Record<string, unknown>) => Promise<{
         text?: string;
         usage?: AiSdkUsageLike;
@@ -265,10 +281,20 @@ export class ModelAdapter {
         providerMetadata?: unknown;
         finalStep?: { response?: { id?: string } };
       }>;
+      wrapLanguageModel: (input: Record<string, unknown>) => unknown;
     };
 
+    const trackedModel = input.providerRequestTracker
+      ? withProviderGenerateTracking({
+          model: input.model,
+          wrapLanguageModel,
+          tracker: input.providerRequestTracker,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+        })
+      : input.model;
+
     const result = await generateText({
-      model: input.model,
+      model: trackedModel,
       instructions: input.system,
       messages: input.messages,
       maxOutputTokens: input.maxOutputTokens,

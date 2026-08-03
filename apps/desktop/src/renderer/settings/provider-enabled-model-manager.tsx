@@ -1,68 +1,71 @@
+import { MultiSelector } from '@astryxdesign/core';
 import type { ModelCatalogEntry } from '@maka/core';
-import {
-  CheckboxList,
-  CheckboxListItem,
-  useUiLocale,
-} from '@maka/ui';
+import { useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 /**
- * Adapts Maka's model catalog data to Astryx's canonical checkbox field.
- * `enabledModelIds` remains the only product state; Astryx owns labels,
- * checkbox semantics, disabled state, and focus.
+ * Adapts Maka's model catalog to Astryx's multi-select field.
+ *
+ * A CheckboxList was the wrong shape here: Astryx scopes it to 3–7 options and
+ * says to use MultiSelector past that, and a provider like OpenAI lists dozens —
+ * the settings page turned into a wall of checkboxes taller than everything else
+ * on it combined. MultiSelector keeps the same one-line field weight as the
+ * selectors around it, and brings the search that a list that long needs.
+ *
+ * `enabledModelIds` remains the only product state.
  */
 export function EnabledModelManager(props: {
   modelChoices: ModelCatalogEntry[];
   enabledModelIds: string[];
-  defaultModel: string;
   disabled: boolean;
   onChange(ids: string[]): void;
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
-  const rows = (() => {
+  const options = (() => {
     const byId = new Map(props.modelChoices.map((model) => [model.id, model] as const));
     const seen = new Set<string>();
-    const list: Array<{ id: string; label: string }> = [];
+    const list: Array<{ value: string; label: string; disabled?: boolean }> = [];
+    const push = (id: string, label: string) => {
+      seen.add(id);
+      list.push({ value: id, label });
+    };
     for (const model of props.modelChoices) {
       if (!model.canUseAsChatDefault) continue;
-      seen.add(model.id);
-      list.push({ id: model.id, label: modelDisplayLabel(model) });
+      push(model.id, modelDisplayLabel(model));
     }
     // Always surface an already-enabled model even if it is not a current
     // chat-default candidate (a stale id, or a model dropped from the latest
     // catalog), so the user can still toggle it off.
     for (const id of props.enabledModelIds) {
       if (seen.has(id)) continue;
-      seen.add(id);
       const model = byId.get(id);
-      list.push({ id, label: model ? modelDisplayLabel(model) : id });
+      push(id, model ? modelDisplayLabel(model) : id);
     }
     return list;
   })();
 
   return (
-    <CheckboxList
-      label={copy.enabledModelsTitle(props.enabledModelIds.length)}
-      description={copy.enabledModelsHelp}
+    <MultiSelector
+      label={copy.enabledModels}
+      // The section is already headed 模型 and says what the list is for; a
+      // visible field label repeated it in a third type style. Kept as the
+      // accessible name so the trigger still announces what it selects.
+      isLabelHidden
+      options={options}
       value={props.enabledModelIds}
       onChange={props.onChange}
-      isDisabled={props.disabled}
+      isDisabled={props.disabled || options.length === 0}
+      disabledMessage={options.length === 0 ? copy.noModels : undefined}
+      placeholder={copy.noModels}
+      // Names, not "N selected": Astryx hard-codes the English word into the
+      // count display, and the labels answer "which ones" in the same width.
+      triggerDisplay="labels"
+      hasSearch
+      searchPlaceholder={copy.searchModels}
+      hasSelectAll
+      selectAllLabel={copy.selectAllModels}
       width="100%"
-      density="compact"
-    >
-      {rows.map((row) => (
-        <CheckboxListItem
-          key={row.id}
-          value={row.id}
-          label={
-            row.id === props.defaultModel
-              ? `${row.label} · ${copy.defaultModel}`
-              : row.label
-          }
-          isDisabled={row.id === props.defaultModel}
-        />
-      ))}
-    </CheckboxList>
+    />
   );
 }
 

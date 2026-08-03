@@ -74,9 +74,7 @@ export interface CredentialStore {
   /**
    * Optional compare-and-set write. Persist `value` for `(slug, kind)` only
    * while the stored entry still equals `expected` — the basis the caller read
-   * before deciding to write. `expected: null` asserts the entry is absent, for
-   * a write-if-not-present (e.g. the one-shot legacy import deciding "store
-   * already has a token" and writing inside one serialized step).
+   * before deciding to write. `expected: null` asserts the entry is absent.
    *
    * The basis check and the write run together under the same cross-process
    * lock as `setSecret`, so no concurrent writer can slip in between them; the
@@ -98,120 +96,6 @@ export interface CredentialStore {
 
 export function createFileCredentialStore(workspaceRoot: string): CredentialStore {
   return new FileCredentialStore(join(workspaceRoot, 'credentials.json'));
-}
-
-/**
- * Injected decryptor for the one-time legacy migration. The legacy
- * credentials.json stored each secret as an opaque, externally-encrypted string
- * (Electron `safeStorage`, base64-wrapped); only the desktop main process can
- * decrypt it. The migration lives here so it shares the live store's lock and
- * atomic writer, but the crypto stays the caller's: desktop passes a decryptor
- * backed by `safeStorage`, while a headless caller has none and never runs it.
- */
-export interface LegacyCredentialDecryptor {
-  /** Whether decryption is currently possible. If false, the migration aborts
-   *  and leaves the encrypted file untouched (never destroy unrecoverable
-   *  secrets). */
-  isAvailable(): boolean;
-  /** Decrypt one legacy stored value to plaintext. */
-  decrypt(storedValue: string): string;
-}
-
-/**
- * One-time migration of a legacy (pre-version, externally-encrypted)
- * credentials.json to the shared v1 plaintext-0600 shape, in place.
- *
- * Idempotent: a no-op when the file is missing or already v1. Missing and
- * current-v1 files return before locking so stale legacy locks do not block
- * startup. The legacy migration path still runs under the SAME cross-process
- * lock as the live store and re-reads inside it, so a racing process that
- * already migrated (and a live writer that added a newer secret) is never
- * clobbered by a stale snapshot. Fails closed: an unexpected version, a
- * malformed `values`, or a decryptor that is unavailable while there are values
- * to decrypt throws and leaves the file untouched rather than risk tombstoning
- * unrecoverable secrets.
- *
- * Tombstone, not dual-active: a successful run rewrites every value as
- * plaintext, so no decryptable copy survives.
- */
-export async function migrateLegacyCredentialFile(
-  path: string,
-  decryptor: LegacyCredentialDecryptor,
-): Promise<void> {
-  let snapshot: string;
-  try {
-    snapshot = await readFile(path, 'utf8');
-  } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return; // nothing to migrate
-    throw error;
-  }
-
-  try {
-    const parsed = JSON.parse(snapshot) as { version?: number };
-    if (parsed.version === CREDENTIAL_SCHEMA_VERSION) return; // already migrated; do not wait on stale legacy locks
-  } catch {
-    // Preserve the fail-closed lock path below for malformed files.
-  }
-
-  await withCredentialFileLock(path, async () => {
-    let raw: string;
-    try {
-      raw = await readFile(path, 'utf8');
-    } catch (error) {
-      if ((error as { code?: string }).code === 'ENOENT') return; // nothing to migrate
-      throw error;
-    }
-
-    const parsed = JSON.parse(raw) as { version?: number; values?: Record<string, string> };
-    if (parsed.version === CREDENTIAL_SCHEMA_VERSION) return; // already migrated (possibly by a racing process)
-    if (parsed.version !== undefined) {
-      throw new Error(
-        `Cannot migrate credentials.json: unexpected schema version ${parsed.version}.`,
-      );
-    }
-
-    const legacy = parsed.values;
-    if (legacy === null || typeof legacy !== 'object' || Array.isArray(legacy)) {
-      throw new Error(
-        'Cannot migrate credentials.json: missing or malformed `values`. Leaving it untouched.',
-      );
-    }
-    const entries = Object.entries(legacy);
-    // Every legacy value must be a string we can hand to the decryptor. A
-    // non-string entry means a corrupt or foreign file, so fail closed and
-    // leave it untouched rather than feed garbage to decrypt — the same
-    // per-value guarantee the v1 reader enforces.
-    for (const [key, storedValue] of entries) {
-      if (typeof storedValue !== 'string') {
-        throw new Error(
-          `Cannot migrate credentials.json: value for "${key}" is not a string. Leaving it untouched.`,
-        );
-      }
-    }
-    // Only the actual decryption needs the decryptor. An empty legacy file has
-    // nothing to decrypt, so it must still migrate to the v1 empty shape even
-    // when the decryptor is unavailable — otherwise a user who deleted their
-    // last secret under the old store, on a box where safeStorage is now
-    // unavailable, would be stuck: the v1 store refuses the unversioned file and
-    // the migration would refuse to stamp it.
-    if (entries.length > 0 && !decryptor.isAvailable()) {
-      throw new Error(
-        'Cannot migrate credentials.json: the legacy decryptor is unavailable. Leaving the encrypted file untouched.',
-      );
-    }
-
-    // Decrypt EVERY legacy value to plaintext. Keys are preserved verbatim
-    // (slugs can contain ':', so we never parse them apart).
-    const migrated: Record<string, string> = {};
-    for (const [key, storedValue] of entries) {
-      migrated[key] = decryptor.decrypt(storedValue);
-    }
-
-    await writeSecretFileAtomic(
-      path,
-      JSON.stringify({ version: CREDENTIAL_SCHEMA_VERSION, values: migrated }, null, 2) + '\n',
-    );
-  });
 }
 
 class FileCredentialStore implements CredentialStore {
@@ -304,16 +188,11 @@ class FileCredentialStore implements CredentialStore {
       throw error;
     }
     const parsed = JSON.parse(raw) as Partial<CredentialFile>;
-    // Fail closed on an unknown / pre-migration schema. A legacy file
-    // (safeStorage-encrypted, no `version`) lands here as `undefined`
-    // and must be migrated by the desktop importer before use — we do
-    // not silently start a parallel plaintext store next to it.
+    // Fail closed on an unknown schema rather than inventing defaults.
     if (parsed.version !== CREDENTIAL_SCHEMA_VERSION) {
       throw new Error(
         `Unsupported credentials.json schema version: ${String(parsed.version)} ` +
-          `(expected ${CREDENTIAL_SCHEMA_VERSION}). Open the desktop app once to migrate, ` +
-          `or re-authenticate. If migration keeps failing, a stale lock may be blocking it — ` +
-          `remove ${this.path}.lock and retry.`,
+          `(expected ${CREDENTIAL_SCHEMA_VERSION}). Remove the file and re-authenticate.`,
       );
     }
     // A v1 file must carry a well-formed `values` map. Treat a missing or
@@ -353,8 +232,7 @@ async function ensureSecretDir(dir: string): Promise<void> {
  * Owner-only atomic write for a credentials file: a 0700 dir, an exclusive
  * 0600 temp ('wx'/O_EXCL so we never follow a pre-planted symlink at a
  * predictable path), 0600 re-enforced, an atomic rename, and temp cleanup on
- * failure. Shared by the live store and the one-time migration so the hardening
- * can't drift between the two write paths.
+ * failure.
  */
 async function writeSecretFileAtomic(path: string, contents: string): Promise<void> {
   await ensureSecretDir(dirname(path));
@@ -408,13 +286,12 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * directory behind, and the next writer fails loud until it is removed — an
  * explicit, one-command recovery, never a silent lost update. A clean exit or a
  * completed write releases it via the finally. credentials.json is written
- * rarely and is local, so this is the right trade for credential data. Used by
- * both the live store and the one-time migration so they serialize on one lock.
+ * rarely and is local, so this is the right trade for credential data.
  *
  * `timeoutMs` defaults to LOCK_TIMEOUT_MS; it is a parameter only so a test can
  * drive the fail-loud path with a small value. Exported for that test — it is
  * deliberately NOT re-exported from index.ts, so the package's public surface
- * stays the typed store + migration and callers can't drive the lock directly.
+ * stays the typed store and callers can't drive the lock directly.
  */
 export async function withCredentialFileLock<T>(
   targetPath: string,

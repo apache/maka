@@ -130,6 +130,30 @@ describe('config-transfer-service', () => {
     assert.deepEqual(writtenMemory, ['# imported memory']);
   });
 
+  it('restores the selection a backup states instead of re-enabling its default', async () => {
+    // A backup can hold a connection whose default model the user had disabled.
+    // `save()` cannot tell a stated selection from one a sync echoed back, so it
+    // applies the read-time shim and merges the default in — the import would
+    // otherwise quietly re-enable a model the backup had turned off.
+    const { deps, saved } = makeDeps();
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          { ...conn('brand-new'), defaultModel: 'disabled-by-user', enabledModelIds: ['kept'] },
+        ],
+      },
+    };
+
+    await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(saved[0]?.enabledModelIds, ['kept']);
+    assert.equal(saved[0]?.defaultModel, '');
+  });
+
   it('does NOT write credentials for a connection the user skipped', async () => {
     // `deepseek-main` already exists on the target; with strategy=skip the
     // connection is not written, so its stored secret must stay untouched.

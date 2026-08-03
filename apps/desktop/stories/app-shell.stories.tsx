@@ -192,9 +192,9 @@ const baseComposerProps: ComposerProps = {
   activeThinkingLevel: 'medium',
   onThinkingLevelChange: noop,
   mentionSkills: [
-    { ref: 'user:pdf', id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
-    { ref: 'user:commit', id: 'commit', name: 'Commit', description: '生成提交信息' },
-    { ref: 'project:review', id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
+    { id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
+    { id: 'commit', name: 'Commit', description: '生成提交信息' },
+    { id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
   ],
   workspacePicker: {
     label: 'maka-agent',
@@ -512,35 +512,35 @@ const longConversation: StoredMessage[] = [
   ),
 ];
 
-// Multi-step reasoning turn (streaming UI rework): two think->say->call steps
+// Multi-step reasoning turn: two think->say->call steps
 // in a single turn. Each step persists an assistant row (thinking + text) plus
 // tool_calls tagged with that row's id as `stepId`, so the turn timeline
 // reconstructs the real order — 深度思考 → answer text → tool row — per step,
 // instead of lumping every tool into one trailing group.
 const multiStepConversation: StoredMessage[] = [
-  user('msg-user-multistep', 'turn-multistep', 12, '看一下 stream-fade 的环逻辑有没有边界问题，然后跑一下单测。'),
+  user('msg-user-multistep', 'turn-multistep', 12, '看一下 assistant-stream 的投影逻辑有没有边界问题，然后跑一下单测。'),
   {
     type: 'tool_call',
-    id: 'tool-read-stream-fade',
+    id: 'tool-read-assistant-stream',
     turnId: 'turn-multistep',
     ts: NOW - 11 * 60_000,
     toolName: 'Read',
-    displayName: '读取 stream-fade.ts',
-    intent: '读取淡入环的实现，确认窗口滑动与上限',
+    displayName: '读取 assistant-stream.ts',
+    intent: '读取 assistant delta 的脱敏与截断边界',
     stepId: 'msg-assistant-step-1',
-    args: { file_path: 'packages/ui/src/stream-fade.ts' },
+    args: { file_path: 'packages/ui/src/assistant-stream.ts' },
   },
   {
     type: 'tool_result',
-    id: 'tool-read-stream-fade-result',
+    id: 'tool-read-assistant-stream-result',
     turnId: 'turn-multistep',
     ts: NOW - 11 * 60_000 + 900,
-    toolUseId: 'tool-read-stream-fade',
+    toolUseId: 'tool-read-assistant-stream',
     isError: false,
     durationMs: 640,
     content: {
       kind: 'text',
-      text: 'export function updateFadeRing(...) { /* prune + cap */ }',
+      text: 'export function applyAssistantDelta(...) { /* redact + cap */ }',
     },
   },
   {
@@ -548,9 +548,9 @@ const multiStepConversation: StoredMessage[] = [
     id: 'msg-assistant-step-1',
     turnId: 'turn-multistep',
     ts: NOW - 10 * 60_000,
-    text: '环逻辑没问题：增长记录批次、超窗剪枝、再按上限截断，收缩时整体重置。接下来我跑一下单测确认。',
+    text: '状态边界顺序正确：delta 先脱敏，append 后覆盖跨 delta 密钥，再执行总量截断。接下来我跑一下单测确认。',
     thinking: {
-      text: '先读实现，确认 boundary 取的是最老存活批次的 start，age 用 now 减去覆盖该 offset 的批次时间。看起来窗口滑动和上限都覆盖了，值得跑一遍测试坐实。',
+      text: '重点确认原始 delta 不会先进入状态，跨 delta 拼接后会再次脱敏，并且总量上限保留用户正在阅读的前缀。',
     },
     modelId: 'claude-sonnet-4-5',
   },
@@ -560,10 +560,10 @@ const multiStepConversation: StoredMessage[] = [
     turnId: 'turn-multistep',
     ts: NOW - 10 * 60_000 + 500,
     toolName: 'Bash',
-    displayName: '运行 stream-fade 单测',
-    intent: '执行 node --test 跑淡入环与 tokenizer 的单测',
+    displayName: '运行 assistant-stream 单测',
+    intent: '执行 assistant stream 脱敏与截断单测',
     stepId: 'msg-assistant-step-2',
-    args: { cmd: 'node --test dist/main/__tests__/stream-fade.test.js' },
+    args: { cmd: 'node --test dist/main/__tests__/assistant-stream.test.js' },
   },
   {
     type: 'tool_result',
@@ -576,12 +576,12 @@ const multiStepConversation: StoredMessage[] = [
     content: {
       kind: 'terminal',
       cwd: '/workspace/maka-agent/apps/desktop',
-      cmd: 'node --test dist/main/__tests__/stream-fade.test.js',
+      cmd: 'node --test dist/main/__tests__/assistant-stream.test.js',
       status: 'completed',
       exitCode: 0,
       output: {
         mode: 'pipes',
-        stdout: 'tests 13\npass 13\nfail 0\n',
+        stdout: 'tests 8\npass 8\nfail 0\n',
         stderr: '',
         stdoutTruncated: false,
         stderrTruncated: false,

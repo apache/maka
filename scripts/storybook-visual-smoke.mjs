@@ -20,9 +20,14 @@ const REQUIRED_PRODUCT_SURFACES = Object.freeze([
   'planReminders',
   'dailyReview',
   'sessionContext',
+  'composer',
 ]);
 
-const PRODUCT_CHECKS = new Set(['plan-reminder-row', 'session-context-layer']);
+const PRODUCT_CHECKS = new Set([
+  'composer-focus-ownership',
+  'plan-reminder-row',
+  'session-context-layer',
+]);
 
 function fail(message) {
   throw new Error(`Product Storybook manifest: ${message}`);
@@ -221,7 +226,7 @@ async function smokeStory(page, baseUrl, job, options = {}) {
 
     if (job.checks?.includes('plan-reminder-row')) {
       try {
-        await page.waitForSelector('.maka-plan-card', { state: 'visible', timeout: 5_000 });
+        await page.waitForSelector('.maka-plan-list-row', { state: 'visible', timeout: 5_000 });
       } catch {
         browserFailures.push('plan reminder rows did not finish rendering');
       }
@@ -293,11 +298,87 @@ async function smokeStory(page, baseUrl, job, options = {}) {
             }
           }
         }
+        if (checks.includes('composer-focus-ownership')) {
+          const editor = document.querySelector('.maka-composer-editor > [contenteditable="true"]');
+          const composer = editor?.closest('[data-maka-contract="composer-inner"]');
+          if (!(editor instanceof HTMLElement) || !(composer instanceof HTMLElement)) {
+            failures.push('composer editor or Astryx focus surface is missing');
+          } else {
+            const focusAncestors = [];
+            for (let element = editor.parentElement; element; element = element.parentElement) {
+              focusAncestors.push(element);
+              if (element === composer) break;
+            }
+            const visibleFocusChrome = (element) => {
+              const style = getComputedStyle(element);
+              const border = ['Top', 'Right', 'Bottom', 'Left'].flatMap((side) => {
+                const width = Number.parseFloat(style[`border${side}Width`]);
+                return width > 0
+                  ? [
+                      `${side}:${style[`border${side}Style`]} ${width}px ${style[`border${side}Color`]}`,
+                    ]
+                  : [];
+              });
+              return {
+                border,
+                boxShadow: style.boxShadow === 'none' ? null : style.boxShadow,
+                outline:
+                  style.outlineStyle === 'none' || Number.parseFloat(style.outlineWidth) === 0
+                    ? null
+                    : `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
+              };
+            };
+            const restingChrome = focusAncestors.map(visibleFocusChrome);
+            editor.focus();
+            // Resolve Astryx's focus transition to its final state before
+            // comparing computed presentation. The contract is the visible
+            // owner, not an intermediate animation frame.
+            for (const element of focusAncestors) {
+              void getComputedStyle(element).boxShadow;
+              for (const animation of element.getAnimations()) animation.finish();
+            }
+            const focusedChrome = focusAncestors.map(visibleFocusChrome);
+            const style = getComputedStyle(editor);
+            const actual = {
+              backgroundColor: style.backgroundColor,
+              borderWidth: style.borderWidth,
+              boxShadow: style.boxShadow,
+              outlineStyle: style.outlineStyle,
+            };
+            const expected = {
+              backgroundColor: 'rgba(0, 0, 0, 0)',
+              borderWidth: '0px',
+              boxShadow: 'none',
+              outlineStyle: 'none',
+            };
+            for (const [property, expectedValue] of Object.entries(expected)) {
+              if (actual[property] !== expectedValue) {
+                failures.push(
+                  `composer editor ${property} must be ${expectedValue}, got ${actual[property]}`,
+                );
+              }
+            }
+            if (document.activeElement !== editor) {
+              failures.push('composer editor did not retain focus');
+            }
+            const visibleOwner = focusedChrome.some((focused, index) => {
+              const changed = JSON.stringify(focused) !== JSON.stringify(restingChrome[index]);
+              const visible =
+                focused.border.length > 0 || focused.boxShadow !== null || focused.outline !== null;
+              return changed && visible;
+            });
+            if (!visibleOwner) {
+              failures.push(
+                'no Astryx composer ancestor produced visible border, shadow, or outline focus feedback',
+              );
+            }
+          }
+        }
         if (checks.includes('plan-reminder-row')) {
           if (document.documentElement.scrollWidth > document.documentElement.clientWidth) {
             failures.push('document has horizontal overflow');
           }
-          const rows = [...document.querySelectorAll('.maka-plan-card')];
+          const rows = [...document.querySelectorAll('.maka-plan-list-row')];
           if (rows.length === 0) failures.push('plan reminder rows are missing');
           const checkElement = (element, label) => {
             const rect = element?.getBoundingClientRect();
@@ -318,65 +399,56 @@ async function smokeStory(page, baseUrl, job, options = {}) {
           for (const row of rows) {
             if (row.scrollWidth > row.clientWidth)
               failures.push('plan reminder row has horizontal overflow');
+            /* Premium-row redesign: completed rows show their lifecycle as a
+               StatusDot cluster; run messages live in the runs tab. */
             if (
               row.getAttribute('data-status') === 'completed' &&
-              !row.querySelector('.maka-plan-card-run')
+              !row.querySelector('.maka-plan-status')
             ) {
-              failures.push('completed plan reminder row is missing its last-run context');
+              failures.push('completed plan reminder row is missing its lifecycle state');
             }
-            for (const selector of [
-              '.maka-plan-card-title-row',
-              '.maka-plan-card-schedule',
-              '.maka-plan-card-controls',
-            ]) {
+            for (const selector of ['.maka-plan-list-row-title', '.maka-plan-list-row-meta']) {
               checkElement(row.querySelector(selector), selector);
             }
-            for (const selector of [
-              '.maka-plan-card-title-row [data-slot="badge"]',
-              '.maka-plan-card-run',
-              '.maka-plan-card-run [data-slot="chip"]',
-            ]) {
+            for (const selector of ['.maka-plan-status', '.maka-plan-list-row-countdown']) {
               const element = row.querySelector(selector);
               if (element) checkElement(element, selector);
-            }
-            for (const countdown of row.querySelectorAll('.maka-plan-card-countdown')) {
-              const marginLeft = Number.parseFloat(getComputedStyle(countdown).marginLeft);
-              if (!Number.isFinite(marginLeft) || marginLeft < 4) {
-                failures.push(
-                  `plan reminder countdown must keep at least 4px from its wall-clock time, got ${marginLeft || 0}px`,
-                );
-              }
             }
           }
           // The margin loop above runs zero times if countdowns stop rendering,
           // which would make the spacing contract pass by vacancy. Rows with a
           // scheduled next run are exactly the ones that must show one.
-          const scheduledRows = rows.filter((row) => row.querySelector('.maka-plan-card-schedule'));
+          const scheduledRows = rows.filter(
+            (row) => row.getAttribute('data-status') === 'scheduled',
+          );
           if (
             scheduledRows.length > 0 &&
-            !rows.some((row) => row.querySelector('.maka-plan-card-countdown'))
+            !rows.some((row) => row.querySelector('.maka-plan-list-row-countdown'))
           ) {
             failures.push(
               'no plan reminder row rendered a countdown, so its spacing went unchecked',
             );
           }
           if (document.documentElement.clientWidth >= 1100 && rows[0]) {
-            const columns = getComputedStyle(rows[0])
-              .gridTemplateColumns.split(' ')
-              .filter(Boolean);
-            if (columns.length !== 3) {
-              failures.push(
-                `plan reminder wide row must have 3 hierarchy columns, got ${columns.length}`,
-              );
+            /* Premium-row contract: a single flex row — leading switch, main
+               column, trailing countdown/menu. Countdown right edges must
+               align across rows so the trailing column reads as a column. */
+            if (getComputedStyle(rows[0]).display !== 'flex') {
+              failures.push('plan reminder wide row must lay out as a flex row');
             }
-            const contextLefts = rows.map((row) =>
-              Math.round(
-                row.querySelector('.maka-plan-card-context')?.getBoundingClientRect().left ?? -1,
-              ),
-            );
-            if (contextLefts.some((left) => Math.abs(left - contextLefts[0]) > 1)) {
+            const countdownRights = rows
+              .map(
+                (row) =>
+                  row.querySelector('.maka-plan-list-row-countdown')?.getBoundingClientRect().right,
+              )
+              .filter((right) => typeof right === 'number')
+              .map((right) => Math.round(right));
+            if (
+              countdownRights.length > 1 &&
+              countdownRights.some((right) => Math.abs(right - countdownRights[0]) > 1)
+            ) {
               failures.push(
-                `plan reminder wide context columns must align, got ${contextLefts.join(', ')}`,
+                `plan reminder countdowns must right-align, got ${countdownRights.join(', ')}`,
               );
             }
           }

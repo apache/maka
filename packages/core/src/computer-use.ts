@@ -37,6 +37,16 @@ export const COMPUTER_USE_ERROR_CODES = [
   'service_unavailable',
   'service_mismatch',
   'outcome_unknown',
+  /**
+   * The action reached the target and the target declined to perform it.
+   *
+   * Its own member, because `capture_failed` names the wrong subsystem and
+   * `unsupported_action` is where "the element does not offer this" already
+   * lands. The difference between "it does not offer this" and "it offered it,
+   * we tried, the OS said no" is the difference between try something else and
+   * try again, so a model that reads one code for both loses its next move.
+   */
+  'dispatch_refused',
 ] as const;
 
 export type ComputerUseErrorCode = (typeof COMPUTER_USE_ERROR_CODES)[number];
@@ -251,6 +261,194 @@ export interface ComputerUseApprovalSummary {
   observationId?: string;
 }
 
+/**
+ * The call as the model should read it back: its own arguments, in the names
+ * the tool accepts.
+ *
+ * The approval summary above is the host's projection for deciding and
+ * displaying a permission. It was also being written into the model-facing
+ * record of the call, and that had a cost nobody was watching for: the model's
+ * transcript said it had called `maka_computer` with `approvalClass`,
+ * `rememberForTurnAllowed` and `windowId` — two host-only fields and a key in a
+ * dialect the tool rejects — so it went on calling it that way. A real desktop
+ * run failed six of eleven calls on shapes copied from its own history, and the
+ * telemetry file on this machine holds 29 such rejections.
+ *
+ * Same privacy boundary as the summary: typed text and written values are what
+ * a person asked for or what a window held, and they stay out. Element ids do
+ * not — an element id is an index into one observation, and withholding it is
+ * what left the model unable to see which control it had just acted on.
+ *
+ * Nor do coordinates. A coordinate is not read off the screen: it is the
+ * model's own output, four digits it chose and sent. Reduced to `<point>` it
+ * left a model that clicked [412, 88] and missed unable to tell whether it had
+ * already tried that point — the repeated-and-thrash shape this projection
+ * exists to make visible, reintroduced by the projection itself.
+ *
+ * Accepts either dialect on input, so it can project raw arguments or an
+ * approval summary recovered from storage.
+ */
+export interface ComputerUseModelCallArgs {
+  action: string;
+  app?: string;
+  window_id?: number;
+  observation_id?: string;
+  element_id?: string;
+  /** Every other argument the call carried, values reduced to their shape. */
+  [key: string]: string | number | boolean | readonly number[] | undefined;
+}
+
+/**
+ * Fields the host adds, which the model never sent and must never be shown as
+ * though it had.
+ *
+ * `approvalClass` and `rememberForTurnAllowed` come from the approval summary.
+ * `element_identity` is added by the Computer Use tool's own `permissionArgs`,
+ * which resolves the model's `element_id` against the live observation — and
+ * `permissionArgs` is what this projection is applied to on the ToolRuntime
+ * path, so without this the model would read back a call carrying a key it has
+ * no way to send and whose value came off the accessibility tree.
+ */
+const HOST_ONLY_ARGS = new Set(['approvalClass', 'rememberForTurnAllowed', 'element_identity']);
+
+/** The keys projected by name above, so the sweep below does not repeat them. */
+const MODEL_CALL_NAMED_ARGS = new Set([
+  'action',
+  'app',
+  'window_id',
+  'windowId',
+  'observation_id',
+  'observationId',
+  'element_id',
+  'elementId',
+]);
+
+/**
+ * Arguments whose value is the model's own choice from a fixed set, a number,
+ * or a word it wrote itself — nothing here comes off the screen.
+ *
+ * Keyed by action, not by argument name, because `text` is six arguments
+ * wearing one name. It carries the key for `press_key`, `key` and `hold_key`,
+ * the element action name for `secondary_action`, the substring to select for
+ * `select_text`, and whatever a person asked to be typed for `type`. Two of
+ * those come off the screen or out of a person's head; four are a name the
+ * model picked from a set the executor publishes.
+ *
+ * Keying on the name meant excluding all six, which is right for `type` and
+ * wrong for the rest — and the wrong half is the one that motivated this
+ * projection: the model read back `press_key ... text: <text>` and could not
+ * see which key it had pressed.
+ */
+const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['observe', new Set(['include_screenshot'])],
+  ['screenshot', new Set(['include_screenshot'])],
+  ['scroll', new Set(['scroll_direction', 'scroll_amount'])],
+  ['wait', new Set(['duration'])],
+  // The key name, from the set of key names the executor accepts.
+  ['press_key', new Set(['text'])],
+  ['key', new Set(['text'])],
+  ['hold_key', new Set(['text', 'duration'])],
+  // The element action name, from the closed set the observation lists.
+  ['secondary_action', new Set(['text'])],
+]);
+
+/**
+ * Geometry the model itself chose, projected verbatim.
+ *
+ * Independent of action, because these three names mean the same thing
+ * wherever they appear and none of them ever holds screen content: a
+ * coordinate, the drag origin, and the zoom rectangle are numbers the model
+ * wrote into the call. A model that clicked a point and missed has to be able
+ * to see which point, or its next call is the same call.
+ */
+const MODEL_CALL_GEOMETRY_ARGS = new Set(['coordinate', 'start_coordinate', 'region']);
+
+/** Integers only, so a mistyped `coordinate` still degrades to a shape. */
+function integerTuple(value: unknown): readonly number[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4) return undefined;
+  return value.every((entry) => typeof entry === 'number' && Number.isInteger(entry))
+    ? [...(value as number[])]
+    : undefined;
+}
+
+/**
+ * A screen-derived or typed argument, kept as a shape.
+ *
+ * The value is what a person typed or what a window showed, so it stays out.
+ * The key does not: without it the model reads its own history as a call it
+ * never made.
+ */
+function shapeOf(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.length === 2 && value.every((v) => typeof v === 'number')
+      ? '<point>'
+      : `<${value.length} ${value.length === 1 ? 'item' : 'items'}>`;
+  }
+  if (typeof value === 'string') return '<text>';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '<value>';
+}
+
+export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArgs {
+  const record = asRecord(args);
+  const rawAction = ownDataProperty(record, 'action');
+  // The action the model sent, whatever it was. Collapsing an unrecognised name
+  // to `unknown` is the approval summary's job — there `knownAction` decides
+  // what a person is asked to allow. Here it erases the one thing the record is
+  // for: a model whose call was rejected for naming an action the schema does
+  // not carry reads its own history as `action: 'unknown'` and cannot connect
+  // the rejection to what it sent.
+  const action =
+    typeof rawAction === 'string' && rawAction.length > 0
+      ? boundedDisplay(redactSecrets(rawAction), 64)
+      : 'unknown';
+  const app = ownDataProperty(record, 'app');
+  const windowId = ownDataProperty(record, 'window_id') ?? ownDataProperty(record, 'windowId');
+  const observationId =
+    ownDataProperty(record, 'observation_id') ?? ownDataProperty(record, 'observationId');
+  const elementId = ownDataProperty(record, 'element_id') ?? ownDataProperty(record, 'elementId');
+  // Every remaining argument the model sent, as a shape. The approval summary
+  // this replaces names five keys and drops the rest, so `press_key` came back
+  // to the model as a call with no key, `set_value` as one with no value,
+  // `scroll` as one with no direction. The model reads that as the shape that
+  // worked and sends it again — and a real session refused eighteen calls for
+  // missing exactly the fields the projection had removed. The privacy boundary
+  // is about values, and only values are withheld.
+  const rest: Record<string, string | number | boolean | readonly number[]> = {};
+  const plain = MODEL_CALL_PLAIN_VALUES.get(action);
+  for (const [key, value] of Object.entries(record ?? {})) {
+    if (MODEL_CALL_NAMED_ARGS.has(key) || HOST_ONLY_ARGS.has(key)) continue;
+    if (MODEL_CALL_GEOMETRY_ARGS.has(key)) {
+      rest[key] = integerTuple(value) ?? shapeOf(value);
+      continue;
+    }
+    if (plain?.has(key)) {
+      rest[key] =
+        typeof value === 'string'
+          ? boundedDisplay(redactSecrets(value), 256)
+          : typeof value === 'number' || typeof value === 'boolean'
+            ? value
+            : shapeOf(value);
+      continue;
+    }
+    rest[key] = shapeOf(value);
+  }
+  return {
+    action,
+    ...(typeof app === 'string' && app.length > 0
+      ? { app: boundedDisplay(redactSecrets(app), 256) }
+      : {}),
+    ...(typeof windowId === 'number' && Number.isInteger(windowId) ? { window_id: windowId } : {}),
+    ...(typeof observationId === 'string' && stableIdentifier(observationId)
+      ? { observation_id: stableIdentifier(observationId) }
+      : {}),
+    ...(typeof elementId === 'string' && elementId.length > 0
+      ? { element_id: boundedDisplay(redactSecrets(elementId), 256) }
+      : {}),
+    ...rest,
+  };
+}
+
 const POINTER_ACTIONS = new Set([
   'mouse_move',
   'left_click',
@@ -268,7 +466,25 @@ const POINTER_ACTIONS = new Set([
 const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
 const SEMANTIC_ACTIONS = new Set(['click_element', 'set_value', 'select_text', 'secondary_action']);
 
-const APPROVAL_ACTIONS = new Set([
+/**
+ * Every action name the tool schema spells out itself, as it spells them —
+ * that is, every name that is not one of the `CU_ACTION_TYPES` coordinate
+ * actions folded in below.
+ *
+ * Hand-written beside a schema that already lists them, and it drifted:
+ * `window_action` was added to the strict union and not here, so had it also
+ * reached the wire, every window move, resize and minimise would have been
+ * summarised as `unknown` — in the approval a person reads before allowing it,
+ * and in the record the model reads back of its own call.
+ *
+ * Drift in the other direction costs just as much and is quieter. A name listed
+ * here that the schema does not accept makes `computerUseApprovalSummary`
+ * report an action the tool will reject as though it were one that had been
+ * taken, and makes `rememberForTurnAllowed` true for it. So the guard in
+ * `computer-use-schema-parity.test.ts` (@maka/runtime, which can import the
+ * schema; this package cannot) compares the two lists in both directions.
+ */
+export const COMPUTER_USE_SEMANTIC_ACTIONS = [
   'list_apps',
   'observe',
   'click_element',
@@ -276,8 +492,9 @@ const APPROVAL_ACTIONS = new Set([
   'select_text',
   'secondary_action',
   'press_key',
-  ...CU_ACTION_TYPES,
-]);
+] as const;
+
+const APPROVAL_ACTIONS = new Set<string>([...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES]);
 
 export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSummary {
   const record = asRecord(args);

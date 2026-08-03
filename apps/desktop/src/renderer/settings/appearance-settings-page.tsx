@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { Card, Item, SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
+import {
+  Grid,
+  HStack,
+  SegmentedControl,
+  SegmentedControlItem,
+  SelectableCard,
+  Text,
+  VStack,
+} from '@astryxdesign/core';
+import { SettingsField, SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import type {
   AppSettings,
   PersonalizationSettings,
@@ -9,9 +18,6 @@ import type {
   UpdateAppSettingsResult,
 } from '@maka/core';
 import {
-  RadioList,
-  RadioListItem,
-  FormLayout,
   TextArea,
   TextInput,
   useMountedRef,
@@ -30,7 +36,7 @@ export function AppearanceSettingsPage(props: {
   onThemePaletteChange(palette: ThemePalette): void;
 }) {
   return (
-    <div className="settingsStructuredPage">
+    <SettingsPage>
       {/* Designer audit P2-13: 显示名称/界面语言/语气偏好 are identity, not
           appearance — PersonalizationSettingsPage now renders on the 通用
           page. The duplicated 主题 section heading is gone too: the page IS
@@ -43,7 +49,7 @@ export function AppearanceSettingsPage(props: {
         onThemeChange={props.onThemeChange}
         onThemePaletteChange={props.onThemePaletteChange}
       />
-    </div>
+    </SettingsPage>
   );
 }
 
@@ -62,6 +68,7 @@ export function PersonalizationSettingsPage(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).personalization;
+  const sections = getSettingsPreferencesCopy(locale).sections;
   // Persist the tone textarea this long after the user stops typing; blur
   // flushes immediately regardless.
   const TONE_AUTOSAVE_DEBOUNCE_MS = 800;
@@ -165,12 +172,12 @@ export function PersonalizationSettingsPage(props: {
   }
 
   return (
-    <div className="settingsStructuredPage">
+    <SettingsPage>
       {/* These editable values stay in the same grouped Settings card as the
           neighboring preferences; the full-width tone field uses the vertical
           row variant. */}
-      <Card padding={0} className="settingsRows">
-        <FormLayout className="settingsFormLayout">
+      <SettingsSection title={sections.identity} description={sections.identityHelp}>
+        <SettingsField>
           <TextInput
             type="text"
             value={displayName}
@@ -181,6 +188,7 @@ export function PersonalizationSettingsPage(props: {
             description={copy.displayNameHelp}
             width="100%"
           />
+        </SettingsField>
 
         {/*
           PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
@@ -188,10 +196,10 @@ export function PersonalizationSettingsPage(props: {
           choice wins over the temporary auto -> zh fallback;
           e2e-fixture override wins over both (deterministic baselines).
         */}
-        <Item
+        <SettingsRow
           label={copy.interfaceLanguage}
           description={copy.interfaceLanguageHelp}
-          endContent={<SegmentedControl
+          end={<SegmentedControl
             value={uiLocale}
             onChange={(next) => persistLocale(next as UiLocalePreference)}
             label={copy.interfaceLanguage}
@@ -202,6 +210,7 @@ export function PersonalizationSettingsPage(props: {
           </SegmentedControl>}
         />
 
+        <SettingsField>
           <TextArea
             value={assistantTone}
             onChange={(value) => {
@@ -221,9 +230,9 @@ export function PersonalizationSettingsPage(props: {
               height: 'calc(var(--space-16) + var(--space-5))',
             }}
           />
-        </FormLayout>
-      </Card>
-    </div>
+        </SettingsField>
+      </SettingsSection>
+    </SettingsPage>
   );
 }
 
@@ -293,6 +302,7 @@ function ThemeSettingsPage(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).appearance;
+  const sections = getSettingsPreferencesCopy(locale).sections;
   const toast = useToast();
   const themePageMountedRef = useMountedRef();
   const themePersistTicketRef = useRef(0);
@@ -336,58 +346,79 @@ function ThemeSettingsPage(props: {
   }
 
   return (
-    <div className="settingsStructuredPage">
-      <RadioList
-        label={copy.theme}
-        value={props.themePref}
-        onChange={(value) => void setTheme(value as ThemePreference)}
-        width="100%"
-      >
-        <div className="settingsThemeOptions">
-          {(Object.entries(copy.themeOptions) as Array<[ThemePreference, { label: string; help: string }]>).map(([value, option]) => (
-            <RadioListItem
-              key={value}
-              value={value}
-              label={option.label}
-              description={option.help}
-              startContent={<ThemePreviewMock variant={value} />}
-            />
-          ))}
-        </div>
-      </RadioList>
+    <SettingsPage>
+      {/* Both option grids are Astryx `Grid` + `SelectableCard`. SelectableCard
+          is documented for exactly this ("plan pickers, filter chips, or option
+          grids") and already owns the surface, the hover / pressed / focus
+          states, and the inset accent selection ring — which reads Maka's
+          palette through the --color-accent bridge in maka-tokens.css. It also
+          carries a visually-hidden checkbox for the accessible name and state,
+          so the group needs no RadioList wrapper.
 
-      <RadioList
-        label={copy.palette}
-        value={currentPalette}
-        onChange={(value) => void setPalette(value as ThemePalette)}
-        width="100%"
+          This replaces a RadioList whose items were re-skinned into cards by
+          hand-written CSS: a border/radius/background recipe, a hover rule, a
+          `:has(input:checked)` selected rule, and a stretched `label::after`
+          overlay to make the tile clickable. All four are the library's job. */}
+      <SettingsSection variant="bare" title={sections.theme} description={sections.themeHelp}>
+        <Grid columns={{ minWidth: 180 }} gap={2}>
+          {(Object.entries(copy.themeOptions) as Array<[ThemePreference, { label: string; help: string }]>).map(([value, option]) => (
+            <SelectableCard
+              key={value}
+              label={option.label}
+              isSelected={props.themePref === value}
+              onChange={() => void setTheme(value)}
+              padding={2}
+            >
+              <VStack gap={2}>
+                <ThemePreviewMock variant={value} />
+                <VStack gap={0}>
+                  <Text type="label" size="sm">{option.label}</Text>
+                  <Text type="supporting" size="sm" color="secondary">{option.help}</Text>
+                </VStack>
+              </VStack>
+            </SelectableCard>
+          ))}
+        </Grid>
+      </SettingsSection>
+
+      {/* persistenceHelp used to trail the page as a loose <p> with no owner.
+          It describes when a palette change lands, so it is the palette
+          group's description. */}
+      <SettingsSection
+        variant="bare"
+        title={sections.palette}
+        description={copy.persistenceHelp}
       >
         {PALETTE_GROUPS.map((group) => (
-          <div key={group.id} className="settingsPaletteGroup">
-            <h4 className="settingsPaletteGroupHeading">{copy.paletteGroups[group.id]}</h4>
-            <div className="settingsThemeOptions">
+          <VStack key={group.id} gap={1.5}>
+            <Text type="supporting" size="sm" color="secondary" weight="medium">
+              {copy.paletteGroups[group.id]}
+            </Text>
+            <Grid columns={{ minWidth: 180 }} gap={2}>
               {group.palettes.map((palette) => (
-                <RadioListItem
+                <SelectableCard
                   key={palette}
-                  value={palette}
                   label={copy.paletteLabels[palette]}
-                  description={copy.paletteHelp[palette]}
-                  startContent={(
+                  isSelected={currentPalette === palette}
+                  onChange={() => void setPalette(palette)}
+                  padding={2}
+                >
+                  <HStack gap={2} align="center">
                     <span
                       className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`}
                       aria-hidden="true"
                     />
-                  )}
-                />
+                    <VStack gap={0}>
+                      <Text type="label" size="sm">{copy.paletteLabels[palette]}</Text>
+                      <Text type="supporting" size="sm" color="secondary">{copy.paletteHelp[palette]}</Text>
+                    </VStack>
+                  </HStack>
+                </SelectableCard>
               ))}
-            </div>
-          </div>
+            </Grid>
+          </VStack>
         ))}
-      </RadioList>
-
-      <p className="settingsHelpText">
-        {copy.persistenceHelp}
-      </p>
-    </div>
+      </SettingsSection>
+    </SettingsPage>
   );
 }

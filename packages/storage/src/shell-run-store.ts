@@ -1,9 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
-  isValidLegacyShellRunState,
   isShellOutput,
   isShellRunId,
   isShellRunSourceToolCallId,
@@ -15,13 +11,9 @@ import {
   type ShellRunPatch,
   type ShellRunStore,
 } from '@maka/core';
-import { syncDirectoryChain, syncFile } from './stable-storage.js';
-import { chainWrite } from './write-queue.js';
 import {
   acquireOperationalStateDatabase,
-  completeOperationalStoreCutover,
   type OperationalStateDatabaseLease,
-  type OperationalStoreCutoverFailpoint,
 } from './operational-state-store.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -55,71 +47,30 @@ const SHELL_RUN_RECORD_KEYS = new Set([
   'observedAt',
   'output',
 ]);
-const LEGACY_SHELL_RUN_RECORD_KEYS = new Set([
-  'shellRunId',
-  'sessionId',
-  'sourceRunId',
-  'sourceTurnId',
-  'sourceToolCallId',
-  'cwd',
-  'command',
-  'status',
-  'startedAt',
-  'updatedAt',
-  'completedAt',
-  'timeoutMs',
-  'exitCode',
-  'failureMessage',
-  'stdoutTail',
-  'stderrTail',
-  'latestOutputStream',
-  'stdoutTruncated',
-  'stderrTruncated',
-  'observedAt',
-  'orphanedReason',
-  'pid',
-]);
-
-export function createShellRunStore(workspaceRoot: string): ShellRunStore {
-  return new FileShellRunStore(workspaceRoot);
-}
-
-export interface SqliteShellRunStoreOptions {
-  readonly failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
-}
-
 export interface ClosableShellRunStore extends ShellRunStore {
   ready(): Promise<void>;
   close(): void;
 }
 
-export function createSqliteShellRunStore(
-  workspaceRoot: string,
-  options: SqliteShellRunStoreOptions = {},
-): ClosableShellRunStore {
-  return new SqliteShellRunStore(workspaceRoot, options);
+export function createSqliteShellRunStore(workspaceRoot: string): ClosableShellRunStore {
+  return new SqliteShellRunStore(workspaceRoot);
 }
 
 class SqliteShellRunStore implements ClosableShellRunStore {
-  readonly #root: string;
   readonly #lease: OperationalStateDatabaseLease;
-  readonly #ready: Promise<void>;
 
-  constructor(workspaceRoot: string, options: SqliteShellRunStoreOptions) {
-    this.#root = workspaceRoot;
+  constructor(workspaceRoot: string) {
     this.#lease = acquireOperationalStateDatabase(workspaceRoot);
-    this.#ready = importLegacyShellRuns(workspaceRoot, this.#lease, options);
   }
 
   ready(): Promise<void> {
-    return this.#ready;
+    return Promise.resolve();
   }
 
   async createShellRun(record: ShellRunRecord): Promise<ShellRunRecord> {
     assertSessionId(record.sessionId);
     assertShellRunId(record.shellRunId);
     const normalized = normalizeShellRunRecord(record, record.sessionId, record.shellRunId);
-    await this.#ready;
     this.#lease.transaction('write', () => {
       const result = this.#lease.database
         .prepare(`
@@ -148,7 +99,6 @@ class SqliteShellRunStore implements ClosableShellRunStore {
     assertSessionId(sessionId);
     assertShellRunId(shellRunId);
     assertShellRunPatch(patch);
-    await this.#ready;
     return this.#lease.transaction('write', () => {
       const current = readSqliteShellRun(this.#lease.database, sessionId, shellRunId);
       if (patch.output && patch.output.mode !== current.output.mode) {
@@ -185,13 +135,11 @@ class SqliteShellRunStore implements ClosableShellRunStore {
   async readShellRun(sessionId: string, shellRunId: string): Promise<ShellRunRecord> {
     assertSessionId(sessionId);
     assertShellRunId(shellRunId);
-    await this.#ready;
     return readSqliteShellRun(this.#lease.database, sessionId, shellRunId);
   }
 
   async listSessionShellRuns(sessionId: string): Promise<ShellRunRecord[]> {
     assertSessionId(sessionId);
-    await this.#ready;
     const rows = this.#lease.database
       .prepare(`
         SELECT shell_run_id, record_json
@@ -213,218 +161,6 @@ class SqliteShellRunStore implements ClosableShellRunStore {
   }
 }
 
-class FileShellRunStore implements ShellRunStore {
-  private readonly durabilityRoot: string;
-  private readonly sessionsRoot: string;
-  private readonly writeQueues = new Map<string, Promise<void>>();
-
-  constructor(workspaceRoot: string) {
-    this.durabilityRoot = workspaceRoot;
-    this.sessionsRoot = join(workspaceRoot, 'sessions');
-  }
-
-  async createShellRun(record: ShellRunRecord): Promise<ShellRunRecord> {
-    assertSessionId(record.sessionId);
-    assertShellRunId(record.shellRunId);
-    const normalized = normalizeShellRunRecord(record, record.sessionId, record.shellRunId);
-    await this.withQueue(record.sessionId, record.shellRunId, async () => {
-      if (await pathExists(this.shellRunPath(record.sessionId, record.shellRunId))) {
-        throw new Error(`ShellRun already exists: ${record.shellRunId}`);
-      }
-      await mkdir(this.shellRunDir(record.sessionId, record.shellRunId), { recursive: true });
-      await writeAtomic(
-        this.shellRunPath(record.sessionId, record.shellRunId),
-        JSON.stringify(normalized, sanitizeJson) + '\n',
-        this.durabilityRoot,
-        true,
-      );
-    });
-    return normalized;
-  }
-
-  async updateShellRun(
-    sessionId: string,
-    shellRunId: string,
-    patch: ShellRunPatch,
-  ): Promise<ShellRunRecord> {
-    let next: ShellRunRecord | undefined;
-    await this.withQueue(sessionId, shellRunId, async () => {
-      assertShellRunPatch(patch);
-      const hasDurableIntent = Object.hasOwn(patch, 'status') || Object.hasOwn(patch, 'observedAt');
-      const current = await this.readShellRunUnlocked(sessionId, shellRunId);
-      if (patch.output && patch.output.mode !== current.output.mode) {
-        throw new Error(`ShellRun output mode is immutable: ${current.output.mode}`);
-      }
-      const effectivePatch =
-        current.observedAt !== undefined && Object.hasOwn(patch, 'observedAt')
-          ? { ...patch, observedAt: current.observedAt }
-          : patch;
-      const candidate = normalizeShellRunRecord(
-        { ...current, ...effectivePatch, sessionId, shellRunId, revision: current.revision },
-        sessionId,
-        shellRunId,
-      );
-      assertShellRunTransition(current, candidate);
-      if (isDeepStrictEqual(candidate, current)) {
-        if (hasDurableIntent) {
-          const path = this.shellRunPath(sessionId, shellRunId);
-          await syncFile(path);
-          await syncDirectoryChain(dirname(path), this.durabilityRoot);
-        }
-        next = current;
-        return;
-      }
-      next = normalizeShellRunRecord(
-        { ...candidate, revision: current.revision + 1 },
-        sessionId,
-        shellRunId,
-      );
-      await writeAtomic(
-        this.shellRunPath(sessionId, shellRunId),
-        JSON.stringify(next, sanitizeJson) + '\n',
-        this.durabilityRoot,
-        hasDurableIntent,
-      );
-    });
-    if (!next) throw new Error(`Failed to update shell run ${shellRunId}`);
-    return next;
-  }
-
-  async readShellRun(sessionId: string, shellRunId: string): Promise<ShellRunRecord> {
-    return this.readShellRunUnlocked(sessionId, shellRunId);
-  }
-
-  async listSessionShellRuns(sessionId: string): Promise<ShellRunRecord[]> {
-    assertSessionId(sessionId);
-    let entries;
-    try {
-      entries = await readdir(this.shellRunsRoot(sessionId), { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-    const records: ShellRunRecord[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !isShellRunId(entry.name)) continue;
-      try {
-        records.push(await this.readShellRunUnlocked(sessionId, entry.name));
-      } catch {
-        // Malformed shell run folders should not hide healthy runs.
-      }
-    }
-    return records.sort(
-      (a, b) => a.startedAt - b.startedAt || a.shellRunId.localeCompare(b.shellRunId),
-    );
-  }
-
-  private async readShellRunUnlocked(
-    sessionId: string,
-    shellRunId: string,
-  ): Promise<ShellRunRecord> {
-    assertSessionId(sessionId);
-    assertShellRunId(shellRunId);
-    return normalizeShellRunRecord(
-      JSON.parse(await readFile(this.shellRunPath(sessionId, shellRunId), 'utf8')),
-      sessionId,
-      shellRunId,
-    );
-  }
-
-  private shellRunsRoot(sessionId: string): string {
-    assertSessionId(sessionId);
-    return join(this.sessionsRoot, sessionId, 'shell-runs');
-  }
-
-  private shellRunDir(sessionId: string, shellRunId: string): string {
-    assertShellRunId(shellRunId);
-    return join(this.shellRunsRoot(sessionId), shellRunId);
-  }
-
-  private shellRunPath(sessionId: string, shellRunId: string): string {
-    return join(this.shellRunDir(sessionId, shellRunId), 'shell-run.json');
-  }
-
-  private withQueue(
-    sessionId: string,
-    shellRunId: string,
-    operation: () => Promise<void>,
-  ): Promise<void> {
-    assertSessionId(sessionId);
-    assertShellRunId(shellRunId);
-    const key = `${sessionId}:${shellRunId}`;
-    return chainWrite(this.writeQueues, key, operation);
-  }
-}
-
-async function importLegacyShellRuns(
-  root: string,
-  lease: OperationalStateDatabaseLease,
-  options: SqliteShellRunStoreOptions,
-): Promise<void> {
-  const records = await readLegacyShellRuns(root);
-  const fingerprint = createHash('sha256').update(JSON.stringify(records)).digest('hex');
-  completeOperationalStoreCutover(lease, {
-    storeName: 'shell_runs',
-    sourcePath: join(root, 'sessions'),
-    sourceFingerprint: `sha256:${fingerprint}`,
-    failpoint: options.failpoint,
-    importAndValidate: (db) => {
-      for (const record of records) insertOrValidateShellRun(db, record);
-      return { shell_runs: records.length };
-    },
-  });
-}
-
-async function readLegacyShellRuns(root: string): Promise<ShellRunRecord[]> {
-  const sessionsRoot = join(root, 'sessions');
-  let sessions;
-  try {
-    sessions = await readdir(sessionsRoot, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw error;
-  }
-  const legacy = new FileShellRunStore(root);
-  const records: ShellRunRecord[] = [];
-  for (const session of sessions.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!session.isDirectory() || !SESSION_ID_PATTERN.test(session.name)) continue;
-    const shellRunsRoot = join(sessionsRoot, session.name, 'shell-runs');
-    let entries;
-    try {
-      entries = await readdir(shellRunsRoot, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw error;
-    }
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!entry.isDirectory() || !isShellRunId(entry.name)) {
-        throw new Error(`Invalid ShellRun entry for session ${session.name}: ${entry.name}`);
-      }
-      records.push(await legacy.readShellRun(session.name, entry.name));
-    }
-  }
-  return records;
-}
-
-function insertOrValidateShellRun(
-  db: import('node:sqlite').DatabaseSync,
-  record: ShellRunRecord,
-): void {
-  const encoded = JSON.stringify(record, sanitizeJson);
-  const result = db
-    .prepare(`
-      INSERT OR IGNORE INTO core_shell_runs(
-        session_id, shell_run_id, started_at, record_json
-      ) VALUES (?, ?, ?, ?)
-    `)
-    .run(record.sessionId, record.shellRunId, record.startedAt, encoded);
-  if (result.changes !== 0) return;
-  const existing = readSqliteShellRun(db, record.sessionId, record.shellRunId);
-  if (!isDeepStrictEqual(existing, record)) {
-    throw new Error(`ShellRun cutover conflict: ${record.shellRunId}`);
-  }
-}
-
 function readSqliteShellRun(
   db: import('node:sqlite').DatabaseSync,
   sessionId: string,
@@ -437,38 +173,13 @@ function readSqliteShellRun(
       WHERE session_id = ? AND shell_run_id = ?
     `)
     .get(sessionId, shellRunId) as { record_json?: unknown } | undefined;
-  if (!row) throw new Error(`ShellRun does not exist: ${shellRunId}`);
+  if (!row) {
+    const error = new Error(`ShellRun does not exist: ${shellRunId}`) as Error & { code?: string };
+    error.code = 'ENOENT';
+    throw error;
+  }
   if (typeof row.record_json !== 'string') throw new Error('Invalid SQLite ShellRun row');
   return normalizeShellRunRecord(JSON.parse(row.record_json), sessionId, shellRunId);
-}
-
-async function writeAtomic(
-  path: string,
-  content: string,
-  durabilityRoot: string,
-  durable: boolean,
-): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(tempPath, content, 'utf8');
-    if (durable) await syncFile(tempPath);
-    await rename(tempPath, path);
-    if (durable) await syncDirectoryChain(dirname(path), durabilityRoot);
-  } catch (error) {
-    await rm(tempPath, { force: true }).catch(() => undefined);
-    throw error;
-  }
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
 }
 
 function normalizeShellRunRecord(
@@ -479,8 +190,7 @@ function normalizeShellRunRecord(
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`Invalid ShellRun record for ${shellRunId}: expected an object`);
   }
-  const record = (normalizeLegacyShellRunRecord(value, sessionId, shellRunId) ??
-    value) as Partial<ShellRunRecord>;
+  const record = value as Partial<ShellRunRecord>;
   const requiredStrings = [
     record.shellRunId,
     record.sessionId,
@@ -515,81 +225,6 @@ function normalizeShellRunRecord(
     throw new Error(`Invalid ShellRun record for ${shellRunId}: inconsistent state fields`);
   }
   return canonicalShellRunRecord(record as ShellRunRecord);
-}
-
-function normalizeLegacyShellRunRecord(
-  value: object,
-  sessionId: string,
-  shellRunId: string,
-): ShellRunRecord | undefined {
-  if (!hasOnlyKeys(value, LEGACY_SHELL_RUN_RECORD_KEYS)) return undefined;
-  const record = value as Record<string, unknown>;
-  if (
-    record.output !== undefined ||
-    record.revision !== undefined ||
-    record.shellRunId !== shellRunId ||
-    record.sessionId !== sessionId ||
-    typeof record.sourceTurnId !== 'string' ||
-    !isShellRunSourceToolCallId(record.sourceToolCallId) ||
-    typeof record.cwd !== 'string' ||
-    typeof record.command !== 'string' ||
-    !isShellRunStatus(record.status) ||
-    !isFiniteNumber(record.startedAt) ||
-    !isFiniteNumber(record.updatedAt) ||
-    typeof record.stdoutTail !== 'string' ||
-    typeof record.stderrTail !== 'string' ||
-    typeof record.stdoutTruncated !== 'boolean' ||
-    typeof record.stderrTruncated !== 'boolean' ||
-    (record.sourceRunId !== undefined && typeof record.sourceRunId !== 'string') ||
-    (record.completedAt !== undefined && !isFiniteNumber(record.completedAt)) ||
-    (record.timeoutMs !== undefined && !isFiniteNumber(record.timeoutMs)) ||
-    (record.exitCode !== undefined && !isFiniteNumber(record.exitCode)) ||
-    (record.failureMessage !== undefined && typeof record.failureMessage !== 'string') ||
-    (record.observedAt !== undefined && !isFiniteNumber(record.observedAt)) ||
-    (record.orphanedReason !== undefined && typeof record.orphanedReason !== 'string') ||
-    (record.pid !== undefined && !isFiniteNumber(record.pid)) ||
-    (record.latestOutputStream !== undefined &&
-      record.latestOutputStream !== 'stdout' &&
-      record.latestOutputStream !== 'stderr') ||
-    !isValidLegacyShellRunState(record)
-  )
-    return undefined;
-
-  const failureMessage =
-    typeof record.failureMessage === 'string'
-      ? record.failureMessage
-      : record.status === 'orphaned'
-        ? (record.orphanedReason as string)
-        : undefined;
-  return {
-    shellRunId,
-    sessionId,
-    ...(typeof record.sourceRunId === 'string' ? { sourceRunId: record.sourceRunId } : {}),
-    sourceTurnId: record.sourceTurnId,
-    sourceToolCallId: record.sourceToolCallId,
-    cwd: record.cwd,
-    command: record.command,
-    status: record.status,
-    startedAt: record.startedAt,
-    updatedAt: record.updatedAt,
-    ...(isFiniteNumber(record.completedAt) ? { completedAt: record.completedAt } : {}),
-    ...(isFiniteNumber(record.timeoutMs) ? { timeoutMs: record.timeoutMs } : {}),
-    ...(isFiniteNumber(record.exitCode) ? { exitCode: record.exitCode } : {}),
-    ...(failureMessage !== undefined ? { failureMessage } : {}),
-    revision: 1,
-    ...(isFiniteNumber(record.observedAt) ? { observedAt: record.observedAt } : {}),
-    output: {
-      mode: 'pipes',
-      stdout: record.stdoutTail,
-      stderr: record.stderrTail,
-      ...(record.latestOutputStream === 'stdout' || record.latestOutputStream === 'stderr'
-        ? { latestStream: record.latestOutputStream }
-        : {}),
-      stdoutTruncated: record.stdoutTruncated,
-      stderrTruncated: record.stderrTruncated,
-      redacted: false,
-    },
-  };
 }
 
 function assertSessionId(value: string): void {

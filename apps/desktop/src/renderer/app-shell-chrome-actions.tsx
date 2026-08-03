@@ -39,6 +39,9 @@ function ChromeIcon(props: { icon: typeof Search }) {
 export function AppShellTopbarActions(props: {
   sidebarCollapsed: boolean;
   sidebarHandleRef: RefObject<SideNavImperativeCollapseHandle | null>;
+  /* Settings has its own navigation column; the session-sidebar toggle is
+     meaningless there. */
+  sidebarToggleHidden?: boolean;
   onOpenSearchModal(): void;
 }) {
   const locale = useUiLocale();
@@ -56,6 +59,7 @@ export function AppShellTopbarActions(props: {
           onClick={props.onOpenSearchModal}
         />
       </Tooltip>
+      {!props.sidebarToggleHidden && (
       <Tooltip content={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}>
         <SideNavCollapseButton
           handleRef={props.sidebarHandleRef}
@@ -70,6 +74,7 @@ export function AppShellTopbarActions(props: {
           )}
         </SideNavCollapseButton>
       </Tooltip>
+      )}
       {/* Collapsed "new task" lives on the SideNav rail (SessionSidebarNav),
           not here — a third titlebar button duplicated the rail icon and made
           left-cluster width state-dependent for drag-region math. */}

@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import type {
   PricingConfig,
   UsageBucket,
@@ -17,7 +16,6 @@ import {
 } from '@maka/core/usage-stats/pricing';
 import { usageBucketKey } from '@maka/core/usage-stats/bucket-key';
 import {
-  createPricingStore,
   PricingRevisionConflictError,
   PricingStoreClosedError,
   PricingStoreNotLoadedError,
@@ -30,18 +28,13 @@ import {
 } from './pricing-store.js';
 import {
   acquireOperationalStateDatabase,
-  completeOperationalStoreCutover,
   type OperationalStateDatabaseLease,
-  type OperationalStoreCutoverFailpoint,
 } from './operational-state-store.js';
 import {
   decodePersistedLlmCallRecord,
   decodePersistedToolInvocationRecord,
-  decodeTelemetryFile,
-  emptyTelemetryFile,
   type PersistedLlmCallRecord,
   type PersistedToolInvocationRecord,
-  type TelemetryFile,
 } from './telemetry-file-schema.js';
 import {
   resolveRange,
@@ -54,9 +47,7 @@ import {
   type ToolUsageQuery,
 } from './telemetry-repo.js';
 
-export interface CreateSqliteUsageStoreOptions {
-  readonly failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
-}
+export interface CreateSqliteUsageStoreOptions {}
 
 export function createSqliteTelemetryRepo(
   workspaceRoot: string,
@@ -66,7 +57,6 @@ export function createSqliteTelemetryRepo(
     workspaceRoot,
     options.createIfMissing ?? true,
     options.managePricing ?? true,
-    options.failpoint,
   );
 }
 
@@ -74,36 +64,24 @@ export function createSqlitePricingStore(
   workspaceRoot: string,
   options: CreatePricingStoreOptions & CreateSqliteUsageStoreOptions = {},
 ): PricingStore {
-  return new SqlitePricingStore(
-    workspaceRoot,
-    options.createIfMissing ?? true,
-    options.initialOverrides ?? [],
-    options.failpoint,
-  );
+  return new SqlitePricingStore(workspaceRoot, options.createIfMissing ?? true);
 }
 
 class SqliteTelemetryRepo implements TelemetryRepo {
   readonly #root: string;
   readonly #lease: OperationalStateDatabaseLease;
   readonly #pricingStore: PricingStore | undefined;
-  readonly #failpoint: ((point: OperationalStoreCutoverFailpoint) => void) | undefined;
   #loaded = false;
   #state: 'open' | 'draining' | 'closed' = 'open';
   #queue: Promise<void> = Promise.resolve();
   #loadPromise: Promise<void> | undefined;
   #closePromise: Promise<void> | undefined;
 
-  constructor(
-    workspaceRoot: string,
-    createIfMissing: boolean,
-    managePricing: boolean,
-    failpoint?: (point: OperationalStoreCutoverFailpoint) => void,
-  ) {
+  constructor(workspaceRoot: string, createIfMissing: boolean, managePricing: boolean) {
     this.#root = resolve(workspaceRoot);
     this.#lease = acquireOperationalStateDatabase(this.#root);
-    this.#failpoint = failpoint;
     this.#pricingStore = managePricing
-      ? createSqlitePricingStore(this.#root, { createIfMissing, failpoint })
+      ? createSqlitePricingStore(this.#root, { createIfMissing })
       : undefined;
   }
 
@@ -111,12 +89,10 @@ class SqliteTelemetryRepo implements TelemetryRepo {
     if (this.#loaded) return Promise.resolve();
     this.assertOpen();
     if (this.#loadPromise) return this.#loadPromise;
-    const operation = importLegacyUsageState(this.#root, this.#lease, this.#failpoint).then(
-      async () => {
-        if (this.#pricingStore) await this.#pricingStore.load();
-        this.#loaded = true;
-      },
-    );
+    const operation = (async () => {
+      if (this.#pricingStore) await this.#pricingStore.load();
+      this.#loaded = true;
+    })();
     this.#loadPromise = operation;
     void operation.catch(() => {
       if (this.#state === 'open' && this.#loadPromise === operation) {
@@ -257,15 +233,6 @@ class SqliteTelemetryRepo implements TelemetryRepo {
     await store.delete(store.snapshot().revision, modelKey);
   }
 
-  legacyPricingOverrides(): readonly unknown[] {
-    this.assertReady();
-    return [];
-  }
-
-  publishCanonical(): Promise<void> {
-    return this.flush();
-  }
-
   async flush(): Promise<void> {
     this.assertLoaded();
     await this.#queue;
@@ -342,7 +309,7 @@ class SqliteTelemetryRepo implements TelemetryRepo {
   private requireManagedPricing(): PricingStore {
     this.assertReady();
     if (!this.#pricingStore) {
-      throw new Error('Telemetry repository does not own the compatibility pricing facade');
+      throw new Error('Telemetry repository does not own the managed pricing store');
     }
     return this.#pricingStore;
   }
@@ -364,36 +331,22 @@ class SqliteTelemetryRepo implements TelemetryRepo {
 class SqlitePricingStore implements PricingStore {
   readonly #root: string;
   readonly #lease: OperationalStateDatabaseLease;
-  readonly #initialOverrides: readonly unknown[];
-  readonly #failpoint: ((point: OperationalStoreCutoverFailpoint) => void) | undefined;
   #loaded = false;
   #state: 'open' | 'draining' | 'closed' = 'open';
   #queue: Promise<void> = Promise.resolve();
   #loadPromise: Promise<void> | undefined;
   #closePromise: Promise<void> | undefined;
 
-  constructor(
-    workspaceRoot: string,
-    createIfMissing: boolean,
-    initialOverrides: readonly unknown[],
-    failpoint?: (point: OperationalStoreCutoverFailpoint) => void,
-  ) {
+  constructor(workspaceRoot: string, createIfMissing: boolean) {
     this.#root = resolve(workspaceRoot);
     this.#lease = acquireOperationalStateDatabase(this.#root);
-    this.#initialOverrides = initialOverrides;
-    this.#failpoint = failpoint;
   }
 
   load(): Promise<void> {
     if (this.#loaded) return Promise.resolve();
     this.assertOpen();
     if (this.#loadPromise) return this.#loadPromise;
-    const operation = importLegacyUsageState(
-      this.#root,
-      this.#lease,
-      this.#failpoint,
-      this.#initialOverrides,
-    ).then(() => {
+    const operation = Promise.resolve().then(() => {
       this.#loaded = true;
     });
     this.#loadPromise = operation;
@@ -527,115 +480,6 @@ class SqlitePricingStore implements PricingStore {
   private assertReady(): void {
     this.assertOpen();
     this.assertLoaded();
-  }
-}
-
-interface LegacyUsageState {
-  readonly telemetry: TelemetryFile;
-  readonly pricing: PricingSnapshot;
-  readonly fingerprint: string;
-}
-
-async function importLegacyUsageState(
-  root: string,
-  lease: OperationalStateDatabaseLease,
-  failpoint?: (point: OperationalStoreCutoverFailpoint) => void,
-  fallbackPricing: readonly unknown[] = [],
-): Promise<void> {
-  const legacy = await readLegacyUsageState(root, fallbackPricing);
-  completeOperationalStoreCutover(lease, {
-    storeName: 'usage_pricing',
-    sourcePath: root,
-    sourceFingerprint: legacy.fingerprint,
-    failpoint,
-    importAndValidate: (database) => {
-      const insertLlm = database.prepare(`
-        INSERT INTO usage_llm_calls(storage_key, id, ts, record_json)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(storage_key) DO UPDATE SET
-          id = excluded.id,
-          ts = excluded.ts,
-          record_json = excluded.record_json
-      `);
-      for (const record of legacy.telemetry.usageRecords) {
-        insertLlm.run(usageIdentityKey(record.id), record.id, record.ts, JSON.stringify(record));
-      }
-      const insertTool = database.prepare(`
-        INSERT INTO usage_tool_invocations(storage_key, id, ts, record_json)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(storage_key) DO UPDATE SET
-          id = excluded.id,
-          ts = excluded.ts,
-          record_json = excluded.record_json
-      `);
-      for (const record of legacy.telemetry.toolInvocations) {
-        insertTool.run(usageIdentityKey(record.id), record.id, record.ts, JSON.stringify(record));
-      }
-      database
-        .prepare(`
-          INSERT INTO usage_pricing_authority(singleton, revision)
-          VALUES (1, ?)
-          ON CONFLICT(singleton) DO UPDATE SET revision = excluded.revision
-        `)
-        .run(legacy.pricing.revision);
-      const insertPricing = database.prepare(`
-        INSERT INTO usage_pricing_overrides(model_key, record_json)
-        VALUES (?, ?)
-        ON CONFLICT(model_key) DO UPDATE SET record_json = excluded.record_json
-      `);
-      for (const override of legacy.pricing.overrides) {
-        insertPricing.run(override.modelKey, JSON.stringify(override));
-      }
-      const counts = {
-        llm: countRows(database, 'usage_llm_calls'),
-        tools: countRows(database, 'usage_tool_invocations'),
-        pricing: countRows(database, 'usage_pricing_overrides'),
-      };
-      if (
-        counts.llm !== legacy.telemetry.usageRecords.length ||
-        counts.tools !== legacy.telemetry.toolInvocations.length ||
-        counts.pricing !== legacy.pricing.overrides.length
-      ) {
-        throw new Error('Usage/pricing cutover row-count validation failed');
-      }
-      return counts;
-    },
-  });
-}
-
-async function readLegacyUsageState(
-  root: string,
-  fallbackPricing: readonly unknown[],
-): Promise<LegacyUsageState> {
-  const telemetryPath = join(root, 'telemetry.json');
-  const telemetryText = await readOptionalText(telemetryPath);
-  const decoded =
-    telemetryText === undefined
-      ? { file: emptyTelemetryFile(), legacyPricingOverrides: fallbackPricing }
-      : decodeTelemetryFile(JSON.parse(telemetryText));
-  const pricingPath = join(root, 'pricing.json');
-  const pricingText = await readOptionalText(pricingPath);
-  const pricingStore = createPricingStore(root, {
-    createIfMissing: false,
-    initialOverrides: decoded.legacyPricingOverrides,
-  });
-  await pricingStore.load();
-  const pricing = pricingStore.snapshot();
-  await pricingStore.close();
-  const fingerprint = `sha256:${createHash('sha256')
-    .update(telemetryText === undefined ? 'telemetry:missing' : `telemetry:${telemetryText}`)
-    .update('\0')
-    .update(pricingText === undefined ? 'pricing:missing' : `pricing:${pricingText}`)
-    .digest('hex')}`;
-  return { telemetry: decoded.file, pricing, fingerprint };
-}
-
-async function readOptionalText(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw error;
   }
 }
 
