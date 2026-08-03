@@ -370,9 +370,9 @@ test('carries keyboard focus down and back up every level', async ({ window: pag
   // Every level takes focus to its own first control, so arriving anywhere
   // leaves the ring somewhere usable instead of on document.body.
   await expect(search).toBeFocused();
-  await search.fill('SiliconFlow');
+  await search.fill('OpenAI');
 
-  await page.getByRole('button', { name: /添加模型供应商：SiliconFlow/ }).focus();
+  await page.getByRole('button', { name: /添加模型供应商：OpenAI/ }).focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('textbox', { name: /API Key/ })).toBeFocused();
 
@@ -380,7 +380,7 @@ test('carries keyboard focus down and back up every level', async ({ window: pag
   // it: the filter is browsing state held by the panel, so unmounting the
   // catalog does not throw it away.
   await page.getByRole('button', { name: '返回服务商列表', exact: true }).click();
-  await expect(search).toHaveValue('SiliconFlow');
+  await expect(search).toHaveValue('OpenAI');
   await expect(search).toBeFocused();
 
   await page.getByRole('button', { name: '返回模型连接', exact: true }).click();
