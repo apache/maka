@@ -104,23 +104,59 @@ describe('cron expression authority', () => {
     assert.equal(automation.nextAfter(after), new Date(2026, 0, 5, 0, 15, 0, 0).getTime());
   });
 
-  it('rejects malformed tokens instead of keeping the old validator/matcher split', () => {
-    for (const expression of [
-      '1x * * * *',
-      '1.9 * * * *',
-      '+1 * * * *',
-      '1-2-3 * * * *',
-      '*/2/3 * * * *',
-      '1,,2 * * * *',
-      '*/0 * * * *',
-    ]) {
+  it('preserves legacy Automation token coercion without broadening Plan Reminder', () => {
+    const after = new Date(2026, 0, 5, 0, 0, 0, 0).getTime();
+    const cases = [
+      ['1x * * * *', 1],
+      ['1.9 * * * *', 1],
+      ['+1 * * * *', 1],
+      ['1-2-3 * * * *', 1],
+      ['1/2/3 * * * *', 1],
+      ['1x/2y * * * *', 1],
+      ['*/2/3 * * * *', 2],
+      ['1.5-5.5 * * * *', 2],
+    ] as const;
+
+    for (const [expression, expectedMinute] of cases) {
+      const automation = assertCompiled(expression, 'automation-v1');
+      assert.equal(new Date(automation.nextAfter(after)!).getMinutes(), expectedMinute, expression);
       assert.equal(
-        compileCronExpression(expression, { profile: 'automation-v1' }).ok,
+        compileCronExpression(expression, { profile: 'plan-reminder-v1' }).ok,
         false,
         expression,
       );
+    }
+  });
+
+  it('compiles the legacy validator/matcher split into one effective match set', () => {
+    const after = new Date(2026, 0, 1, 0, 0, 0, 0).getTime();
+    const mixed = assertCompiled('1x-5y,10 * * * *', 'automation-v1');
+    assert.equal(mixed.nextAfter(after), new Date(2026, 0, 1, 0, 10, 0, 0).getTime());
+
+    const emptyMinute = assertCompiled('1x-5y * * * *', 'automation-v1');
+    const startedAt = Date.now();
+    assert.equal(emptyMinute.nextAfter(after), null);
+    assert.ok(Date.now() - startedAt < 100, 'an empty effective set must not scan eight years');
+
+    assert.equal(assertCompiled('* 1x-5y * * *', 'automation-v1').nextAfter(after), null);
+    assert.equal(assertCompiled('* * * 1x-5y *', 'automation-v1').nextAfter(after), null);
+    assert.equal(assertCompiled('* * 1x-5y * *', 'automation-v1').nextAfter(after), null);
+    assert.equal(assertCompiled('* * * * 1x-5y', 'automation-v1').nextAfter(after), null);
+    assert.equal(assertCompiled('* * 1x-5y * 1x-5y', 'automation-v1').nextAfter(after), null);
+
+    // The invalid DOM range contributed no matches in the old matcher, but its
+    // restricted DOW sibling could still fire through Vixie OR semantics.
+    const fridayOnly = assertCompiled('0 0 1x-5y * 5', 'automation-v1');
+    assert.equal(fridayOnly.nextAfter(after), new Date(2026, 0, 2, 0, 0, 0, 0).getTime());
+
+    const secondOfMonthOnly = assertCompiled('0 0 2 * 1x-5y', 'automation-v1');
+    assert.equal(secondOfMonthOnly.nextAfter(after), new Date(2026, 0, 2, 0, 0, 0, 0).getTime());
+  });
+
+  it('still rejects fields that legacy Automation validation rejected', () => {
+    for (const expression of ['1,,2 * * * *', '*/0 * * * *', 'BADTOKEN * * * *', '60 * * * *']) {
       assert.equal(
-        compileCronExpression(expression, { profile: 'plan-reminder-v1' }).ok,
+        compileCronExpression(expression, { profile: 'automation-v1' }).ok,
         false,
         expression,
       );
@@ -185,6 +221,14 @@ describe('cron expression authority', () => {
     assert.equal(impossibleAutomation.ok, false);
     if (!impossibleAutomation.ok) assert.equal(impossibleAutomation.error.code, 'unsatisfiable');
 
+    // Legacy impossible-date validation used its parseInt view (month 2 only),
+    // not the matcher's Number view (2..20). Keep that validation authority.
+    const coercedImpossible = compileCronExpression('0 0 30 2e0-2e1 *', {
+      profile: 'automation-v1',
+    });
+    assert.equal(coercedImpossible.ok, false);
+    if (!coercedImpossible.ok) assert.equal(coercedImpossible.error.code, 'unsatisfiable');
+
     const after = new Date(2026, 0, 1, 0, 0, 0, 0).getTime();
     const impossiblePlan = assertCompiled('0 0 30 2 *', 'plan-reminder-v1');
     assert.equal(
@@ -196,6 +240,10 @@ describe('cron expression authority', () => {
     assert.ok(fridayInFebruary);
     assert.equal(new Date(fridayInFebruary).getMonth(), 1);
     assert.equal(new Date(fridayInFebruary).getDay(), 5);
+
+    const coercedFriday = assertCompiled('0 0 30 2e0-2e1 5', 'automation-v1').nextAfter(after);
+    assert.ok(coercedFriday);
+    assert.equal(new Date(coercedFriday).getDay(), 5);
 
     const leapDay = assertCompiled('0 0 29 2 *', 'automation-v1').nextAfter(after);
     assert.ok(leapDay);
@@ -216,14 +264,25 @@ describe('cron expression authority', () => {
     assert.equal(cron.nextAfter(atNine, { notAfter: atNineOne }), atNineOne);
     assert.equal(cron.nextAfter(Number.NaN), null);
     assert.equal(cron.nextAfter(atNine, { notBefore: Number.POSITIVE_INFINITY }), null);
+
+    assert.equal(cron.nextAfter(-1), 60_000);
+    assert.equal(assertCompiled('* * * * *', 'plan-reminder-v1').nextAfter(-1), 0);
   });
 
-  it('keeps the legacy valid-field matcher export on the shared parser', () => {
+  it('keeps the legacy field matcher export on the shared parser', () => {
     assert.equal(matchesCronField('5-15/3', 5, 0, 59), true);
     assert.equal(matchesCronField('5-15/3', 14, 0, 59), true);
     assert.equal(matchesCronField('5-15/3', 15, 0, 59), false);
     assert.equal(matchesCronField('5-15/3', 18, 0, 59), false);
-    assert.equal(matchesCronField('1x', 1, 0, 59), false);
+    assert.equal(matchesCronField('1x', 1, 0, 59), true);
+    assert.equal(matchesCronField('1x-5y,10', 10, 0, 59), true);
+    assert.equal(matchesCronField('1x-5y,10', 2, 0, 59), false);
+    assert.equal(matchesCronField('bad,10', 10, 0, 59), true);
+    assert.equal(matchesCronField('*/0,10', 10, 0, 59), true);
+    assert.equal(matchesCronField('60,10', 10, 0, 59), true);
+    assert.equal(matchesCronField(',10', 10, 0, 59), true);
+    assert.equal(matchesCronField('1-2', 1.5, 0, 59), true);
+    assert.equal(matchesCronField('1', 1, 10, 0), true);
   });
 
   it('moves forward by epoch minutes across local DST folds and gaps', () => {

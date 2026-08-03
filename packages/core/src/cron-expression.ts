@@ -59,16 +59,29 @@ interface CronFieldSpec {
 interface CronCompatibilityPolicy {
   readonly fieldSeparator: 'single-space' | 'ascii-whitespace';
   readonly allowAliases: boolean;
+  readonly legacyTokenCoercion: boolean;
   readonly singleValueStepExtendsToMax: boolean;
   readonly limitStepToFieldWidth: boolean;
   readonly wildcardMode: 'any-star-base' | 'literal-star';
   readonly ignoreBareStarInList: boolean;
+  readonly allowEmptyMatchSet: boolean;
   readonly rejectImpossibleDates: boolean;
+  readonly nextMinuteRounding: 'floor' | 'truncate';
 }
 
 interface ParsedCronField {
   readonly wildcard: boolean;
   readonly values: ReadonlySet<number>;
+  /** Values admitted by the legacy validator before matcher coercion. */
+  readonly validationValues: ReadonlySet<number>;
+  readonly validationWildcard: boolean;
+}
+
+interface ParseCronFieldOptions {
+  /** Preserve the retired standalone matcher's skip-invalid, no-validation contract. */
+  readonly matcherOnly?: boolean;
+  /** Candidate values to project instead of the field's normal integer domain. */
+  readonly candidates?: readonly number[];
 }
 
 interface ParsedCronExpression {
@@ -137,15 +150,21 @@ const PROFILE_POLICIES: Readonly<Record<CronCompatibilityProfile, CronCompatibil
     'plan-reminder-v1': {
       fieldSeparator: 'single-space',
       allowAliases: false,
+      legacyTokenCoercion: false,
       singleValueStepExtendsToMax: false,
       limitStepToFieldWidth: true,
       wildcardMode: 'any-star-base',
       ignoreBareStarInList: false,
+      allowEmptyMatchSet: false,
       rejectImpossibleDates: false,
+      nextMinuteRounding: 'floor',
     },
     'automation-v1': {
       fieldSeparator: 'ascii-whitespace',
       allowAliases: true,
+      // Existing persisted Automation schedules inherit parseInt-prefix
+      // coercion and ignored extra slash/range segments from the retired parser.
+      legacyTokenCoercion: true,
       singleValueStepExtendsToMax: true,
       limitStepToFieldWidth: false,
       wildcardMode: 'literal-star',
@@ -153,7 +172,12 @@ const PROFILE_POLICIES: Readonly<Record<CronCompatibilityProfile, CronCompatibil
       // one item in a list (`*,15` matched only 15). Keep that persisted-input
       // behavior while removing the second parser that caused it.
       ignoreBareStarInList: true,
+      // A legacy range could pass validation but contribute no matches because
+      // the old matcher used Number where validation used parseInt. Preserve
+      // that effective empty set, especially for Vixie DOM/DOW OR schedules.
+      allowEmptyMatchSet: true,
       rejectImpossibleDates: true,
+      nextMinuteRounding: 'truncate',
     },
   });
 
@@ -197,7 +221,7 @@ export function compileCronExpression(
     ok: true,
     value: Object.freeze({
       nextAfter(after: number, bounds?: CronSearchBounds): number | null {
-        return nextCronOccurrence(parsed, after, bounds);
+        return nextCronOccurrence(parsed, after, bounds, policy.nextMinuteRounding);
       },
     }),
   };
@@ -206,19 +230,17 @@ export function compileCronExpression(
 /**
  * Compatibility entry for the existing `@maka/runtime` export.
  *
- * It uses the Automation field dialect but, unlike the retired matcher, fails
- * the whole field closed when any token is malformed.
+ * Fields admitted by the full-expression compiler use the same Automation
+ * parser and effective match set. Malformed standalone calls additionally keep
+ * the retired matcher's fail-soft contract by skipping invalid list items.
  */
 export function matchesCronField(field: string, value: number, min: number, max: number): boolean {
   if (field === '*') return true;
-  if (!Number.isFinite(value) || !Number.isSafeInteger(min) || !Number.isSafeInteger(max)) {
-    return false;
-  }
-  if (min > max) return false;
   const parsed = parseCronField(
     field,
     { name: 'minute', min, max },
     PROFILE_POLICIES['automation-v1'],
+    { matcherOnly: true, candidates: [value] },
   );
   return parsed.ok && parsed.value.values.has(value);
 }
@@ -227,63 +249,143 @@ function parseCronField(
   input: string,
   spec: CronFieldSpec,
   policy: CronCompatibilityPolicy,
+  options?: ParseCronFieldOptions,
 ): CronParseResult<ParsedCronField> {
   if (!policy.allowAliases && !/^[\d*,/\-]+$/.test(input)) {
     return parseError('unsupported_syntax', spec.name);
   }
 
-  const rawParts = input.split(',');
+  const matcherOnly = options?.matcherOnly === true;
+  const normalizedInput =
+    policy.allowAliases && spec.aliases ? translateCronAliases(input, spec.aliases) : input;
+  const rawParts = normalizedInput.split(',');
   const values = new Set<number>();
+  const validationValues = new Set<number>();
   let hasWildcardBase = false;
 
   for (const rawPart of rawParts) {
-    if (rawPart.length === 0) return parseError('empty_list_item', spec.name);
+    if (rawPart.length === 0) {
+      if (matcherOnly) continue;
+      return parseError('empty_list_item', spec.name);
+    }
     const stepParts = rawPart.split('/');
-    if (stepParts.length > 2) return parseError('invalid_step', spec.name);
+    if (stepParts.length > 2 && !policy.legacyTokenCoercion) {
+      return parseError('invalid_step', spec.name);
+    }
     const base = stepParts[0] ?? '';
     const hasStep = stepParts[1] !== undefined;
-    const stepMax = policy.limitStepToFieldWidth
-      ? spec.max - spec.min + 1
-      : Number.MAX_SAFE_INTEGER;
-    const step = hasStep
-      ? parseCronInteger(stepParts[1] ?? '', 1, stepMax, spec)
-      : ({ ok: true, value: 1 } as const);
-    if (!step.ok) return step;
+    let step = 1;
+    if (hasStep) {
+      if (matcherOnly) {
+        step = Number.parseInt(stepParts[1] ?? '', 10);
+        if (Number.isNaN(step) || step <= 0) continue;
+      } else {
+        const stepMax = policy.limitStepToFieldWidth
+          ? spec.max - spec.min + 1
+          : Number.POSITIVE_INFINITY;
+        const parsedStep = parseCronInteger(stepParts[1] ?? '', 1, stepMax, spec, policy);
+        if (!parsedStep.ok) return parsedStep;
+        step = parsedStep.value;
+      }
+    }
 
     const bareStar = base === '*' && !hasStep;
-    if (bareStar && rawParts.length > 1 && policy.ignoreBareStarInList) continue;
+    if (matcherOnly && bareStar) continue;
+    const ignoreEffectivePart = bareStar && rawParts.length > 1 && policy.ignoreBareStarInList;
 
-    let start: number;
-    let end: number;
+    let start = 0;
+    let end = -1;
+    let validationStart = 0;
+    let validationEnd = -1;
+    let contributesEffectiveMatches = true;
     if (base === '*') {
       hasWildcardBase = true;
       start = spec.min;
       end = spec.max;
+      validationStart = spec.min;
+      validationEnd = spec.max;
     } else if (base.includes('-')) {
       const range = base.split('-');
-      if (range.length !== 2) return parseError('invalid_range', spec.name);
-      const parsedStart = parseCronInteger(range[0] ?? '', spec.min, spec.max, spec, policy);
-      if (!parsedStart.ok) return parsedStart;
-      const parsedEnd = parseCronInteger(range[1] ?? '', spec.min, spec.max, spec, policy);
-      if (!parsedEnd.ok) return parsedEnd;
-      start = parsedStart.value;
-      end = parsedEnd.value;
-      if (start > end) return parseError('reversed_range', spec.name);
+      if (matcherOnly) {
+        start = Number(range[0] ?? '');
+        end = Number(range[1] ?? '');
+        if (Number.isNaN(start) || Number.isNaN(end)) continue;
+      } else if (range.length !== 2 && !policy.legacyTokenCoercion) {
+        return parseError('invalid_range', spec.name);
+      } else {
+        const parsedStart = parseCronInteger(range[0] ?? '', spec.min, spec.max, spec, policy);
+        if (!parsedStart.ok) return parsedStart;
+        const parsedEnd = parseCronInteger(range[1] ?? '', spec.min, spec.max, spec, policy);
+        if (!parsedEnd.ok) return parsedEnd;
+        if (parsedStart.value > parsedEnd.value) {
+          return parseError('reversed_range', spec.name);
+        }
+        validationStart = parsedStart.value;
+        validationEnd = parsedEnd.value;
+
+        if (policy.legacyTokenCoercion) {
+          // The old Automation validator used parseInt for ranges while its
+          // matcher used Number. Validate once above, then compile the matcher's
+          // effective values so callers never interpret the source again.
+          start = Number(range[0] ?? '');
+          end = Number(range[1] ?? '');
+          contributesEffectiveMatches = !Number.isNaN(start) && !Number.isNaN(end);
+        } else {
+          start = parsedStart.value;
+          end = parsedEnd.value;
+        }
+      }
     } else {
-      const parsed = parseCronInteger(base, spec.min, spec.max, spec, policy);
-      if (!parsed.ok) return parsed;
-      start = parsed.value;
-      end = hasStep && policy.singleValueStepExtendsToMax ? spec.max : start;
+      if (matcherOnly) {
+        start = Number.parseInt(base, 10);
+        if (Number.isNaN(start)) continue;
+      } else {
+        const parsed = parseCronInteger(base, spec.min, spec.max, spec, policy);
+        if (!parsed.ok) return parsed;
+        start = parsed.value;
+        validationStart = parsed.value;
+      }
+      end = hasStep && (matcherOnly || policy.singleValueStepExtendsToMax) ? spec.max : start;
+      validationEnd = end;
     }
 
-    for (let candidate = start; candidate <= end; candidate += step.value) {
+    if (!matcherOnly) {
+      for (let candidate = validationStart; candidate <= validationEnd; candidate += step) {
+        validationValues.add(spec.normalizeSunday === true && candidate === 7 ? 0 : candidate);
+      }
+    }
+    if (ignoreEffectivePart || !contributesEffectiveMatches) continue;
+
+    // Enumerating the field's tiny integer domain also reproduces legacy range
+    // coercions such as `1.5-5.5` without leaking raw-token logic into matching.
+    const addCandidate = (candidate: number): void => {
+      if (!(candidate >= start && candidate <= end)) return;
+      if (hasStep && (candidate - start) % step !== 0) return;
       values.add(spec.normalizeSunday === true && candidate === 7 ? 0 : candidate);
+    };
+    if (options?.candidates) {
+      for (const candidate of options.candidates) addCandidate(candidate);
+    } else {
+      for (let candidate = spec.min; candidate <= spec.max; candidate += 1) {
+        addCandidate(candidate);
+      }
     }
   }
 
-  if (values.size === 0) return parseError('empty_field', spec.name);
-  const wildcard = policy.wildcardMode === 'any-star-base' ? hasWildcardBase : input === '*';
-  return { ok: true, value: { wildcard, values } };
+  if (values.size === 0 && !matcherOnly && !policy.allowEmptyMatchSet) {
+    return parseError('empty_field', spec.name);
+  }
+  const wildcard =
+    policy.wildcardMode === 'any-star-base' ? hasWildcardBase : normalizedInput === '*';
+  return {
+    ok: true,
+    value: {
+      wildcard,
+      values,
+      validationValues,
+      validationWildcard: normalizedInput === '*',
+    },
+  };
 }
 
 function parseCronInteger(
@@ -291,45 +393,63 @@ function parseCronInteger(
   min: number,
   max: number,
   spec: CronFieldSpec,
-  policy?: CronCompatibilityPolicy,
+  policy: CronCompatibilityPolicy,
 ): CronParseResult<number> {
-  const alias = policy?.allowAliases ? spec.aliases?.[input.toLowerCase()] : undefined;
-  if (alias !== undefined) return { ok: true, value: alias };
-  if (!/^\d+$/.test(input)) return parseError('invalid_integer', spec.name, min, max);
-  const value = Number(input);
-  if (!Number.isSafeInteger(value) || value < min || value > max) {
+  const value = policy.legacyTokenCoercion ? Number.parseInt(input, 10) : Number(input);
+  const validSyntax = policy.legacyTokenCoercion || /^\d+$/.test(input);
+  const validInteger = policy.legacyTokenCoercion
+    ? Number.isInteger(value)
+    : Number.isSafeInteger(value);
+  if (!validSyntax || !validInteger) {
+    return parseError('invalid_integer', spec.name, min, max);
+  }
+  if (value < min || value > max) {
     return parseError('out_of_range', spec.name, min, max);
   }
   return { ok: true, value };
 }
 
+function translateCronAliases(input: string, aliases: Readonly<Record<string, number>>): string {
+  return input.replace(/[a-zA-Z]+/g, (token) => {
+    const alias = aliases[token.toLowerCase()];
+    return alias === undefined ? token : String(alias);
+  });
+}
+
 function hasImpossibleCalendarDate(expression: ParsedCronExpression): boolean {
   if (
-    expression.dayOfMonth.wildcard ||
-    expression.month.wildcard ||
-    !expression.dayOfWeek.wildcard
+    expression.dayOfMonth.validationWildcard ||
+    expression.month.validationWildcard ||
+    !expression.dayOfWeek.validationWildcard
   ) {
     return false;
   }
   const maxDays = Math.max(
-    ...[...expression.month.values].map((month) => MAX_DAYS_IN_MONTH[month - 1] ?? 0),
+    ...[...expression.month.validationValues].map((month) => MAX_DAYS_IN_MONTH[month - 1] ?? 0),
   );
-  return Math.min(...expression.dayOfMonth.values) > maxDays;
+  return Math.min(...expression.dayOfMonth.validationValues) > maxDays;
 }
 
 function nextCronOccurrence(
   expression: ParsedCronExpression,
   after: number,
   bounds: CronSearchBounds | undefined,
+  nextMinuteRounding: CronCompatibilityPolicy['nextMinuteRounding'],
 ): number | null {
   if (!Number.isFinite(after)) return null;
   if (bounds?.notBefore !== undefined && !Number.isFinite(bounds.notBefore)) return null;
   if (bounds?.notAfter !== undefined && !Number.isFinite(bounds.notAfter)) return null;
+  if (!hasPotentialEffectiveMatch(expression)) return null;
 
   // Advance in epoch minutes. Mutating local Date fields during a DST fold can
   // re-encode the repeated wall-clock time with the earlier offset and produce
-  // a candidate at or before `after`, causing a scheduler re-fire loop.
-  const firstMinuteAfter = (Math.floor(after / MINUTE_MS) + 1) * MINUTE_MS;
+  // a candidate at or before `after`, causing a scheduler re-fire loop. The
+  // truncation branch retains Automation's pre-epoch behavior; both profiles
+  // are identical for every normal positive timestamp.
+  const firstMinuteAfter =
+    nextMinuteRounding === 'truncate'
+      ? after - (after % MINUTE_MS) + MINUTE_MS
+      : (Math.floor(after / MINUTE_MS) + 1) * MINUTE_MS;
   const notBefore = bounds?.notBefore;
   const boundedStart =
     notBefore === undefined
@@ -351,6 +471,28 @@ function nextCronOccurrence(
     if (cronExpressionMatches(expression, date)) return candidate;
   }
   return null;
+}
+
+/**
+ * Detect effective empty sets before the bounded minute scan. DOM and DOW use
+ * Vixie OR only when both are restricted, so one restricted side may remain
+ * empty when the other can still match.
+ */
+function hasPotentialEffectiveMatch(expression: ParsedCronExpression): boolean {
+  if (
+    expression.minute.values.size === 0 ||
+    expression.hour.values.size === 0 ||
+    expression.month.values.size === 0
+  ) {
+    return false;
+  }
+
+  const hasDayOfMonth = expression.dayOfMonth.values.size > 0;
+  const hasDayOfWeek = expression.dayOfWeek.values.size > 0;
+  if (!expression.dayOfMonth.wildcard && !expression.dayOfWeek.wildcard) {
+    return hasDayOfMonth || hasDayOfWeek;
+  }
+  return hasDayOfMonth && hasDayOfWeek;
 }
 
 function cronExpressionMatches(expression: ParsedCronExpression, date: Date): boolean {
