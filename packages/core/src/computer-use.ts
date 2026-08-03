@@ -299,10 +299,17 @@ export interface ComputerUseModelCallArgs {
 }
 
 /**
- * Fields the host adds for its own approval projection, which the model never
- * sent and must never be shown as though it had.
+ * Fields the host adds, which the model never sent and must never be shown as
+ * though it had.
+ *
+ * `approvalClass` and `rememberForTurnAllowed` come from the approval summary.
+ * `element_identity` is added by the Computer Use tool's own `permissionArgs`,
+ * which resolves the model's `element_id` against the live observation — and
+ * `permissionArgs` is what this projection is applied to on the ToolRuntime
+ * path, so without this the model would read back a call carrying a key it has
+ * no way to send and whose value came off the accessibility tree.
  */
-const HOST_ONLY_ARGS = new Set(['approvalClass', 'rememberForTurnAllowed']);
+const HOST_ONLY_ARGS = new Set(['approvalClass', 'rememberForTurnAllowed', 'element_identity']);
 
 /** The keys projected by name above, so the sweep below does not repeat them. */
 const MODEL_CALL_NAMED_ARGS = new Set([
