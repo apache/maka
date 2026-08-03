@@ -35,6 +35,8 @@ _TOOLCHAIN_NODE = _TOOLCHAIN_BIN / "node"
 _TOOLCHAIN_MANIFEST = _TOOLCHAIN_ROOT / "manifest.json"
 _TOOLCHAIN_CHECKSUMS = _TOOLCHAIN_ROOT / "checksums.sha256"
 _DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+_REQUIREMENTS_PATH = Path("/etc/codex/requirements.toml")
+_WEB_SEARCH_REQUIREMENTS = 'allowed_web_search_modes = ["disabled"]'
 _OUTPUT_FILENAME = "codex.txt"
 _REMOTE_OUTPUT_PATH = Path("/logs/agent") / _OUTPUT_FILENAME
 _REMOTE_SESSIONS_DIR = Path("/logs/agent/sessions")
@@ -108,6 +110,22 @@ class MakaCodexAgent(Codex):
         await self.exec_as_root(
             environment,
             command=f"ln -sf -- {shlex.quote(str(_TOOLCHAIN_CODEX))} /usr/local/bin/codex",
+        )
+        await self._write_web_search_requirements(environment)
+
+    async def _write_web_search_requirements(self, environment: BaseEnvironment) -> None:
+        # config.toml only pins the user layer, which a task-directory config, a
+        # profile, or a `-c web_search=live` override still outranks (config/src/
+        # loader/mod.rs layer order). The system requirements layer constrains which
+        # modes are settable at all, so every higher layer resolves back to disabled
+        # (config/src/config_requirements.rs allowed_web_search_modes).
+        await self.exec_as_root(
+            environment,
+            command=(
+                f"mkdir -p {shlex.quote(str(_REQUIREMENTS_PATH.parent))}; "
+                f"printf '%s\\n' {shlex.quote(_WEB_SEARCH_REQUIREMENTS)} > "
+                f"{shlex.quote(str(_REQUIREMENTS_PATH))}"
+            ),
         )
 
     def _get_env(self, key: str) -> str | None:
@@ -204,14 +222,15 @@ class MakaCodexAgent(Codex):
         config = "\n".join(
             (
                 'model_provider = "maka-http"',
-                # Codex 0.144's WebSearchMode defaults to "cached", so the hosted
-                # web_search tool ships unless the mode is pinned off. Terminal-Bench
-                # task instructions, tests, and reference solutions are public, so a
-                # search tool turns benchmark scoring into retrieval of the answer.
-                # The top-level key wins over the deprecated [tools].web_search
-                # toggle and over feature flags (core/src/config/mod.rs
-                # resolve_web_search_mode), and "disabled" drops the tool from the
-                # spec entirely (core/src/tools/hosted_spec.rs).
+                # Terminal-Bench instructions, tests, and reference solutions are
+                # public, so a search tool turns scoring into retrieval of the answer.
+                # Codex 0.144's WebSearchMode defaults to "cached", and a full-access
+                # sandbox upgrades that to "live" (core/src/config/mod.rs
+                # resolve_web_search_mode_for_turn), so the mode has to be pinned off.
+                # The top-level key wins over the deprecated [tools].web_search toggle
+                # and over feature flags (resolve_web_search_mode), and "disabled"
+                # drops the tool from the spec (core/src/tools/hosted_spec.rs). Keep
+                # this key above the first table header or TOML nests it in that table.
                 'web_search = "disabled"',
                 *(
                     (f'model_catalog_json = "{_DEEPSEEK_MODELS_PATH.as_posix()}"',)

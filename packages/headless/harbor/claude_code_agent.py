@@ -77,13 +77,11 @@ class MakaClaudeCodeAgent(ClaudeCode):
         await self._write_managed_settings(environment)
 
     async def _write_managed_settings(self, environment: BaseEnvironment) -> None:
-        # Claude Code enables WebSearch and WebFetch by default. Terminal-Bench task
-        # instructions, tests, and reference solutions are public, so a search tool
-        # turns benchmark scoring into retrieval of the answer, and WebSearch runs
-        # server-side behind the provider proxy where the task container's network
-        # allowlist cannot stop it. Managed settings are the only scope the agent
-        # session cannot override (settings precedence: managed > CLI args > local
-        # > project > user).
+        # Claude Code enables WebSearch and WebFetch by default, and WebSearch runs
+        # server-side behind the provider proxy, where the task container's network
+        # policy cannot stop it. Managed settings bind nested `claude` invocations
+        # too; --disallowedTools would only bind the one process the harness starts.
+        # bypassPermissions still honors explicit deny rules.
         settings = json.dumps(_MANAGED_SETTINGS, sort_keys=True)
         await self.exec_as_root(
             environment,

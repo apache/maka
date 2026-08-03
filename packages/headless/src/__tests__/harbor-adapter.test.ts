@@ -3767,6 +3767,7 @@ function pythonClaudeCodeAdapterSmokeScript(root: string): string {
 import asyncio
 import json
 import os
+import shlex
 import sys
 import tempfile
 import types
@@ -3778,6 +3779,25 @@ def module(name):
     mod = types.ModuleType(name)
     sys.modules[name] = mod
     return mod
+
+def written_payload(command, marker):
+    """Return the file payload a write command sends, keyed by content.
+
+    A process-scope wrapper re-quotes the whole script for bash -lc, so
+    unquote layer by layer until nothing but the written payload is left.
+    """
+    payload = command
+    while "printf" in payload:
+        payload = min((token for token in shlex.split(payload) if marker in token), key=len)
+    return payload
+
+class RecordingEnvironment:
+    def __init__(self):
+        self.calls = []
+
+    async def exec(self, command, env=None, as_root=False, **kwargs):
+        self.calls.append((command, env or {}, as_root))
+        return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
 module("harbor")
 module("harbor.agents")
@@ -3934,23 +3954,21 @@ with tempfile.TemporaryDirectory() as tmp:
     assert pipeline_cell["status"] == "failed", pipeline_cell
     assert pipeline_cell["errorClass"] == "infra_failed", pipeline_cell
 
-    class RecordingEnvironment:
-        def __init__(self):
-            self.root_commands = []
-            self.agent_commands = []
-
-        async def exec(self, command, env=None, as_root=False, **kwargs):
-            (self.root_commands if as_root else self.agent_commands).append(command)
-            return types.SimpleNamespace(return_code=0, stdout="", stderr="")
-
     install_environment = RecordingEnvironment()
     install_agent = agent(logs)
     install_agent._extra_env["MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT"] = "fingerprint"
     asyncio.run(install_agent.install(install_environment))
-    managed_command = install_environment.root_commands[-1]
-    assert "/etc/claude-code/managed-settings.json" in managed_command, managed_command
-    assert '"WebSearch"' in managed_command, managed_command
-    assert '"WebFetch"' in managed_command, managed_command
+    managed_calls = [
+        call for call in install_environment.calls if "/etc/claude-code/managed-settings.json" in call[0]
+    ]
+    # Exactly one writer: a second command could append settings that re-enable the tools.
+    assert len(managed_calls) == 1, install_environment.calls
+    managed_command, _, managed_as_root = managed_calls[0]
+    # Only the root-owned managed scope binds a session that cannot be overridden.
+    assert managed_as_root is True, managed_calls
+    assert json.loads(written_payload(managed_command, "permissions")) == {
+        "permissions": {"deny": ["WebSearch", "WebFetch"]}
+    }, managed_command
 
 print("claude-code adapter ok")
 `;
@@ -3961,10 +3979,12 @@ function pythonCodexAdapterSmokeScript(root: string): string {
 import asyncio
 import json
 import os
+import shlex
 import signal
 import sys
 import tempfile
 import time
+import tomllib
 import types
 from pathlib import Path
 
@@ -3974,6 +3994,17 @@ def module(name):
     mod = types.ModuleType(name)
     sys.modules[name] = mod
     return mod
+
+def written_payload(command, marker):
+    """Return the file payload a write command sends, keyed by content.
+
+    A process-scope wrapper re-quotes the whole script for bash -lc, so
+    unquote layer by layer until nothing but the written payload is left.
+    """
+    payload = command
+    while "printf" in payload:
+        payload = min((token for token in shlex.split(payload) if marker in token), key=len)
+    return payload
 
 module("harbor")
 module("harbor.agents")
@@ -4177,8 +4208,19 @@ with tempfile.TemporaryDirectory() as tmp:
     assert 'model_provider = "maka-http"' in http_provider_command, http_provider_command
     assert 'base_url = "http://host.docker.internal:43210"' in http_provider_command, http_provider_command
     assert 'wire_api = "responses"' in http_provider_command, http_provider_command
-    assert 'web_search = "disabled"' in http_provider_command, http_provider_command
     assert "ephemeral-token" not in http_provider_command, http_provider_command
+    # Parse rather than substring-match: the same line under a table header would
+    # become model_providers.maka-http.web_search, which Codex never reads.
+    written_config = tomllib.loads(written_payload(http_provider_command, "model_provider"))
+    assert written_config["web_search"] == "disabled", written_config
+    assert "web_search" not in written_config["model_providers"]["maka-http"], written_config
+    requirements_commands = [
+        command for command, _env in commands if "/etc/codex/requirements.toml" in command
+    ]
+    assert len(requirements_commands) == 1, commands
+    assert tomllib.loads(written_payload(requirements_commands[0], "allowed_web_search_modes")) == {
+        "allowed_web_search_modes": ["disabled"]
+    }, requirements_commands
     deepseek_agent = MakaCodexAgent(
         logs,
         version="0.144.6",
