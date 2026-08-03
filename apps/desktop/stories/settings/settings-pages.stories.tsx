@@ -642,6 +642,54 @@ const withUsagePopulatedBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
+const subagentStorySettings = mergeSettings(createDefaultSettings(), {
+  subagents: {
+    presets: [
+      {
+        id: 'fast-reader',
+        name: '快速代码阅读',
+        description: '适合快速、低成本地搜索并理解大型仓库。',
+        profile: 'local_read',
+        connectionSlug: 'zai-live',
+        model: 'glm-4.7',
+        enabled: true,
+      },
+      {
+        id: 'implementation-review',
+        name: '实现与验证',
+        description: '需要修改代码、运行测试并产出可合并补丁时使用。',
+        profile: 'implementation',
+        connectionSlug: 'openai-review',
+        model: 'gpt-5',
+        thinkingLevel: 'high',
+        enabled: true,
+      },
+      {
+        id: 'retired-researcher',
+        name: '旧研究配置',
+        description: '保留用于展示已停用配置。',
+        profile: 'web_research',
+        connectionSlug: 'removed-connection',
+        model: 'legacy-search-model',
+        enabled: false,
+      },
+    ],
+  },
+});
+
+const withSubagentSettingsBridge = withScopedMakaBridge({
+  ...makaBridge,
+  settings: {
+    ...makaBridge.settings,
+    get: async () => subagentStorySettings,
+    update: async (
+      patch: Parameters<typeof window.maka.settings.update>[0],
+    ): Promise<UpdateAppSettingsResult> => ({
+      settings: mergeSettings(subagentStorySettings, patch),
+    }),
+  },
+} satisfies Record<string, unknown>);
+
 type StoryBotStatuses = Awaited<ReturnType<typeof window.maka.settings.bots.listStatuses>>;
 
 const botAttentionError =
@@ -852,6 +900,30 @@ function assertDailyReviewSettingsBounds(
 export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
+};
+// Real path: sidebar footer 设置 → 子 Agent, with multiple approved model routes.
+export const Subagents: Story = {
+  decorators: [withSubagentSettingsBridge],
+  render: () => <SettingsStory section="subagents" />,
+};
+
+// Real path: Settings → Subagents at the minimum supported window width.
+export const SubagentsNarrow: Story = {
+  ...Subagents,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
+// Real path: 设置 → 子 Agent → 添加子 Agent.
+export const SubagentEditorOpen: Story = {
+  decorators: [withSubagentSettingsBridge],
+  render: () => <SettingsStory section="subagents" />,
+  play: async ({ canvasElement }) => {
+    const button = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '添加子 Agent',
+    );
+    await userEvent.click(button);
+  },
 };
 // Real path: 设置 → 通用.
 export const General: Story = {

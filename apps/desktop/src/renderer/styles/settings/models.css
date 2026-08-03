@@ -93,12 +93,28 @@
 .subagentPresetActions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
-.subagentPresetForm {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border-top: var(--border-width-hairline) solid var(--border);
+.subagentPresetWarning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.28);
+  border-radius: var(--radius-control);
+  background: oklch(from var(--warning) l c h / 0.08);
+}
+
+.subagentPresetWarning svg {
+  flex: 0 0 auto;
+  color: var(--warning-text, var(--foreground-secondary));
+}
+
+.subagentPresetEditorActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
 }

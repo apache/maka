@@ -66,6 +66,7 @@ export const SETTINGS_SECTIONS = [
   'memory',
   'daily-review',
   'models',
+  'subagents',
   'usage',
   'voice',
   'bot-chat',
