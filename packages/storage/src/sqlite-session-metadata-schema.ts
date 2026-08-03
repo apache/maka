@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 19;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 20;
 
 export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
   'agent_graph_intent_claims',
@@ -66,13 +66,6 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     CREATE INDEX session_metadata_labels_by_label
       ON session_metadata_labels(label, session_id);
 
-    CREATE TABLE session_metadata_import_sources (
-      source_path TEXT PRIMARY KEY,
-      fingerprint TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      imported_at INTEGER NOT NULL,
-      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
-    );
   `,
   ],
   [
@@ -782,6 +775,27 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     CREATE INDEX agent_graph_supervisor_wakes_by_status
       ON agent_graph_supervisor_wakes(status, updated_at, graph_id, wake_id);
+  `,
+  ],
+  [
+    20,
+    `
+    CREATE TABLE session_messages (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      message_id TEXT NOT NULL,
+      message_type TEXT NOT NULL,
+      message_ts INTEGER NOT NULL CHECK (message_ts >= 0),
+      record_json TEXT NOT NULL,
+      PRIMARY KEY(session_id, sequence),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX session_messages_by_identity
+      ON session_messages(session_id, message_id);
+
+    CREATE INDEX session_messages_by_time
+      ON session_messages(session_id, message_ts, sequence);
   `,
   ],
 ]);

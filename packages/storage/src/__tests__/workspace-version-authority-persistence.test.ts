@@ -12,7 +12,6 @@ import {
   type RuntimeEvent,
   type WorkspaceBaselineAuthorityInput,
 } from '@maka/core';
-import { createRuntimeEventStore } from '../agent-run-store.js';
 import { createConversationOperationalStateStore } from '../conversation-operational-state.js';
 import {
   createSqliteRuntimeStore,
@@ -229,7 +228,7 @@ describe('workspace version persistence authority', () => {
     });
   });
 
-  it('rejects workspace facts through SQLite and JSONL generic writers', async () => {
+  it('rejects workspace facts through generic RuntimeEvent writers', async () => {
     await withDatabase(async ({ store, root }) => {
       const { epochOpenedEvent } = buildWorkspaceBaselineAuthorityEvents(baselineInput());
       await assert.rejects(
@@ -337,30 +336,6 @@ describe('workspace version persistence authority', () => {
             id: 'workspace-bypass-decision',
           },
         }),
-        /workspace version authority writer/i,
-      );
-
-      const jsonl = createRuntimeEventStore(join(root, 'jsonl'));
-      await assert.rejects(
-        jsonl.appendRuntimeEvent(
-          epochOpenedEvent.sessionId,
-          epochOpenedEvent.runId,
-          epochOpenedEvent,
-        ),
-        /workspace version authority writer/i,
-      );
-      await assert.rejects(
-        jsonl.ensureTerminalRuntimeEventDurable(
-          epochOpenedEvent.sessionId,
-          epochOpenedEvent.runId,
-          epochOpenedEvent,
-        ),
-        /workspace version authority writer/i,
-      );
-      await assert.rejects(
-        jsonl.importConversationCopyRuntimeEvents(epochOpenedEvent.sessionId, [
-          { runId: epochOpenedEvent.runId, events: [epochOpenedEvent] },
-        ]),
         /workspace version authority writer/i,
       );
     });

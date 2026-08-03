@@ -8,7 +8,7 @@ import {
   type RootTurnAdmissionStore,
   type RootTurnSourceMessage,
 } from '@maka/storage';
-import { createLegacyAgentRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore } from '@maka/storage';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
@@ -379,11 +379,11 @@ function mutableAdmission(): RootTurnAdmission {
 }
 
 async function withStore(
-  run: (store: ReturnType<typeof createLegacyAgentRunStoreForTest>) => Promise<void>,
+  run: (store: ReturnType<typeof createSqliteAgentRunStore>) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-root-admission-owner-'));
   try {
-    await run(createLegacyAgentRunStoreForTest(root));
+    await run(createSqliteAgentRunStore(root));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

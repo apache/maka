@@ -1088,8 +1088,8 @@ describe('Maka CLI runtime bootstrap', () => {
           name: 'isolated',
         });
 
-        await access(join(stateRoot, 'sessions', session.id, 'session.jsonl'));
-        await assert.rejects(access(join(configRoot, 'sessions', session.id, 'session.jsonl')));
+        await access(join(stateRoot, 'runtime.sqlite'));
+        await assert.rejects(access(join(configRoot, 'runtime.sqlite')));
         await access(join(configRoot, 'llm-connections.json'));
         await access(join(configRoot, 'credentials.json'));
         await assert.rejects(access(join(stateRoot, 'credentials.json')));

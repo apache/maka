@@ -58,8 +58,11 @@ import {
   type SettleSandboxBoundaryRequest,
   type SessionHeader,
   type SessionListFilter,
+  type StoredMessage,
   type SubagentSessionParent,
   type SupersedeAgentGraphSupervisorWakesRequest,
+  decodeStoredMessageForRead,
+  decodeStoredMessageForRecovery,
 } from '@maka/core';
 import {
   assertSafeSessionId,
@@ -109,7 +112,6 @@ function loadSqliteModule(): typeof import('node:sqlite') {
 export type SqliteSessionMetadataStoreFailpoint =
   | 'after_session_row_write'
   | 'after_session_labels_write'
-  | 'after_session_import_marker_write'
   | 'after_agent_graph_intent_claim_write'
   | 'after_agent_graph_schedule_update_write'
   | 'after_agent_graph_operator_provision_write'
@@ -226,21 +228,6 @@ export interface SessionConfigurationMetadataUpdate {
 export interface IdempotentAgentGraphOperatorMetadataResult
   extends AgentGraphOperatorProvisionResult {
   record: SessionMetadataRecord;
-}
-
-export interface SessionMetadataImportEntry {
-  header: SessionHeader;
-  initialBoundary?: ExecutionBoundary;
-  source: {
-    path: string;
-    fingerprint: string;
-  };
-}
-
-export interface SessionMetadataImportResult {
-  created: boolean[];
-  sourcesAlreadyImported: number;
-  sourcesTombstoned: number;
 }
 
 export class SessionMetadataConflictError extends Error {
@@ -1208,6 +1195,84 @@ export class SqliteSessionMetadataStore {
   async readCatalogRevision(): Promise<SessionCatalogRevisionState> {
     this.assertOpen();
     return this.readCatalogRevisionSync();
+  }
+
+  async appendMessages(
+    sessionId: string,
+    messages: readonly StoredMessage[],
+    projection: SessionCatalogMessageProjection,
+  ): Promise<void> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertCatalogMessageProjection(projection);
+    if (messages.length === 0) return;
+    const encoded = messages.map((message) => {
+      const json = JSON.stringify(message);
+      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      return { message: canonical, json };
+    });
+    this.transaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const row = this.db
+        .prepare(
+          'SELECT COALESCE(MAX(sequence), -1) AS last_sequence FROM session_messages WHERE session_id = ?',
+        )
+        .get(sessionId) as { last_sequence?: unknown };
+      if (
+        typeof row.last_sequence !== 'number' ||
+        !Number.isSafeInteger(row.last_sequence) ||
+        row.last_sequence < -1
+      ) {
+        throw new Error(`Invalid Session message sequence for ${sessionId}`);
+      }
+      const insert = this.db.prepare(`
+        INSERT INTO session_messages(
+          session_id, sequence, message_id, message_type, message_ts, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      let sequence = row.last_sequence + 1;
+      for (const entry of encoded) {
+        insert.run(
+          sessionId,
+          sequence,
+          entry.message.id,
+          entry.message.type,
+          entry.message.ts,
+          entry.json,
+        );
+        sequence += 1;
+      }
+      this.updateCatalogProjectionSync(sessionId, projection, false);
+    });
+  }
+
+  async readMessages(sessionId: string): Promise<StoredMessage[]> {
+    return this.readMessagesWith(sessionId, decodeStoredMessageForRead);
+  }
+
+  async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
+    return this.readMessagesWith(sessionId, decodeStoredMessageForRecovery);
+  }
+
+  async readPreviewMessages(sessionId: string, limit = 10): Promise<StoredMessage[]> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128) {
+      throw new Error('Session message preview limit must be between 1 and 128');
+    }
+    if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+    const rows = this.db
+      .prepare(`
+        SELECT record_json
+        FROM session_messages
+        WHERE session_id = ?
+        ORDER BY sequence DESC
+        LIMIT ?
+      `)
+      .all(sessionId, limit) as Array<{ record_json?: unknown }>;
+    return rows
+      .reverse()
+      .map((row, index) => decodeStoredMessageRow(row.record_json, sessionId, index, false));
   }
 
   async beginCatalogProjectionWrite(): Promise<void> {
@@ -2468,112 +2533,6 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async importEntries(
-    entries: readonly SessionMetadataImportEntry[],
-  ): Promise<SessionMetadataImportResult> {
-    this.assertOpen();
-    const sourcePaths = new Set<string>();
-    const normalized = entries.map((entry) => {
-      const header = normalizeSessionHeader(entry.header);
-      assertSafeSessionId(header.id);
-      if (!entry.source.path || !entry.source.fingerprint) {
-        throw new Error(`Invalid session metadata import source for ${header.id}`);
-      }
-      if (sourcePaths.has(entry.source.path)) {
-        throw new Error(`Duplicate session metadata import source: ${entry.source.path}`);
-      }
-      sourcePaths.add(entry.source.path);
-      return {
-        header,
-        ...(entry.initialBoundary
-          ? {
-              initialBoundary: {
-                ...decodeExecutionBoundary(entry.initialBoundary),
-                revision: 0,
-              },
-            }
-          : {}),
-        source: entry.source,
-      };
-    });
-    return this.transaction(() => {
-      const created: boolean[] = [];
-      let sourcesAlreadyImported = 0;
-      let sourcesTombstoned = 0;
-      for (const entry of normalized) {
-        if (this.hasTombstone(entry.header.id)) {
-          sourcesTombstoned += 1;
-          continue;
-        }
-        const source = this.db
-          .prepare(`
-            SELECT fingerprint
-            FROM session_metadata_import_sources
-            WHERE source_path = ?
-          `)
-          .get(entry.source.path) as { fingerprint: string } | undefined;
-        if (source?.fingerprint === entry.source.fingerprint) {
-          const existing = this.readRecordSync(entry.header.id);
-          if (!existing) {
-            throw new SessionMetadataConflictError(
-              `Imported session metadata is missing: ${entry.header.id}`,
-            );
-          }
-          sourcesAlreadyImported += 1;
-          continue;
-        }
-        const existing = this.readRecordSync(entry.header.id);
-        if (existing) {
-          if (!isDeepStrictEqual(existing.header, entry.header)) {
-            throw new SessionMetadataConflictError(
-              `Session metadata import conflict for ${entry.header.id}`,
-            );
-          }
-          if (
-            entry.initialBoundary &&
-            !isDeepStrictEqual(
-              this.readCurrentExecutionBoundarySync(entry.header.id),
-              entry.initialBoundary,
-            )
-          ) {
-            throw new SessionMetadataConflictError(
-              `Session execution boundary import conflict for ${entry.header.id}`,
-            );
-          }
-          if (entry.header.subagentSpawn) {
-            this.assertMatchingSubagentSpawnClaim(entry.header);
-          }
-          created.push(false);
-        } else {
-          if (entry.header.subagentSpawn) {
-            const claim = this.tryClaimSubagentSpawn(entry.header, this.now());
-            if (!claim.created && claim.childSessionId !== entry.header.id) {
-              throw new SessionMetadataConflictError(
-                `Child-session spawn identity already belongs to ${claim.childSessionId}`,
-              );
-            }
-            this.assertMatchingSubagentSpawnClaim(entry.header);
-          }
-          this.insertHeader(entry.header, 1, this.now(), entry.initialBoundary);
-          created.push(true);
-        }
-        this.db
-          .prepare(`
-            INSERT INTO session_metadata_import_sources(
-              source_path, fingerprint, session_id, imported_at
-            ) VALUES (?, ?, ?, ?)
-            ON CONFLICT(source_path) DO UPDATE SET
-              fingerprint = excluded.fingerprint,
-              session_id = excluded.session_id,
-              imported_at = excluded.imported_at
-          `)
-          .run(entry.source.path, entry.source.fingerprint, entry.header.id, this.now());
-        this.options.failpoint?.('after_session_import_marker_write');
-      }
-      return { created, sourcesAlreadyImported, sourcesTombstoned };
-    });
-  }
-
   private insertHeader(
     header: SessionHeader,
     metadataVersion: number,
@@ -2961,7 +2920,7 @@ export class SqliteSessionMetadataStore {
           ? 'ask'
           : record.header.permissionMode);
     if ((projectedMode === 'bypass') !== (kind === 'bypass')) {
-      throw new Error('Execution boundary kind and legacy permission mode disagree');
+      throw new Error('Execution boundary kind and projected permission mode disagree');
     }
 
     let boundary: ExecutionBoundary = current;
@@ -3048,6 +3007,33 @@ export class SqliteSessionMetadataStore {
       `)
       .get(sessionId) as SessionMetadataRow | undefined;
     return row ? decodeRecord(row) : undefined;
+  }
+
+  private readMessagesWith(
+    sessionId: string,
+    decode: (value: unknown) => StoredMessage,
+  ): StoredMessage[] {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+    const rows = this.db
+      .prepare(`
+        SELECT record_json
+        FROM session_messages
+        WHERE session_id = ?
+        ORDER BY sequence
+      `)
+      .all(sessionId) as Array<{ record_json?: unknown }>;
+    return rows.map((row, index) => {
+      if (typeof row.record_json !== 'string') {
+        throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
+      }
+      try {
+        return decode(JSON.parse(row.record_json) as unknown);
+      } catch (error) {
+        throw new Error(`Invalid Session message row ${index} for ${sessionId}`, { cause: error });
+      }
+    });
   }
 
   private readCatalogPreviewSync(sessionId: string): string | undefined {
@@ -4306,5 +4292,22 @@ function assertGraphEventTime(value: number): void {
 function assertGraphIntentId(value: string): void {
   if (!/^graph_intent_[a-f0-9]{32}$/.test(value)) {
     throw new Error('Invalid agent graph intent id');
+  }
+}
+
+function decodeStoredMessageRow(
+  value: unknown,
+  sessionId: string,
+  index: number,
+  recovery: boolean,
+): StoredMessage {
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid Session message row ${index} for ${sessionId}`);
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return recovery ? decodeStoredMessageForRecovery(parsed) : decodeStoredMessageForRead(parsed);
+  } catch (error) {
+    throw new Error(`Invalid Session message row ${index} for ${sessionId}`, { cause: error });
   }
 }

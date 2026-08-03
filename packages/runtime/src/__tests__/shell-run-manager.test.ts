@@ -15,7 +15,7 @@ import {
   type ShellRunUpdate,
   type ToolResultContent,
 } from '@maka/core';
-import { createLegacyShellRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
+import { createSqliteShellRunStore } from '@maka/storage';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import { ShellRunPtyControlClosedError } from '../shell-run-contract.js';
@@ -34,7 +34,7 @@ after(async () => {
 describe('ShellRunProcessManager', () => {
   test('rejects unprojectable provider tool-call identities before durable admission', async () => {
     const cwd = await workspace();
-    const store = createLegacyShellRunStoreForTest(cwd);
+    const store = createSqliteShellRunStore(cwd);
     const manager = createManager(store);
     const completions: boolean[] = [];
     const maximumMultibyteId = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
@@ -62,7 +62,7 @@ describe('ShellRunProcessManager', () => {
 
   test('keeps the default pipe path separated, durable, redacted, and observed', async () => {
     const cwd = await workspace();
-    const store = createLegacyShellRunStoreForTest(cwd);
+    const store = createSqliteShellRunStore(cwd);
     const manager = createManager(store);
     const result = await manager.runForegroundBash(
       shellInput({
@@ -133,7 +133,7 @@ describe('ShellRunProcessManager', () => {
 
   test('keeps foreground execution bounded and rejects PTY promotion', async () => {
     const cwd = await workspace();
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     const manager = createManager(store);
     const abort = new AbortController();
     const running = manager.runForegroundBash(
@@ -167,7 +167,7 @@ describe('ShellRunProcessManager', () => {
 
   test('hands off a long pipe command without output and publishes monotonic revisions', async () => {
     const updates: ShellRunUpdate[] = [];
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     const manager = createManager(store, (update) => updates.push(update));
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -210,7 +210,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('notifies resource owners when foreground and background commands reach terminal state', async () => {
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     const manager = createManager(store);
     const completions: boolean[] = [];
     await manager.runForegroundBash(
@@ -288,7 +288,7 @@ describe('ShellRunProcessManager', () => {
   test('commits a durable starting identity before the native pipe process spawns', async () => {
     const cwd = await workspace();
     const marker = join(cwd, 'spawned');
-    const backingStore = createLegacyShellRunStoreForTest(cwd);
+    const backingStore = createSqliteShellRunStore(cwd);
     const createCommitted = deferred<void>();
     const releaseCreate = deferred<void>();
     const store: ShellRunStore = {
@@ -341,7 +341,7 @@ describe('ShellRunProcessManager', () => {
     for (const lifecycle of ['session', 'runtime'] as const) {
       const cwd = await workspace();
       const marker = join(cwd, `${lifecycle}-spawned`);
-      const backingStore = createLegacyShellRunStoreForTest(cwd);
+      const backingStore = createSqliteShellRunStore(cwd);
       const createCommitted = deferred<void>();
       const releaseCreate = deferred<void>();
       const store: ShellRunStore = {
@@ -402,7 +402,7 @@ describe('ShellRunProcessManager', () => {
 
   test('rechecks the session fence after the durable running commit', async () => {
     const cwd = await workspace();
-    const backingStore = createLegacyShellRunStoreForTest(cwd);
+    const backingStore = createSqliteShellRunStore(cwd);
     const runningCommitted = deferred<void>();
     const releaseRunning = deferred<void>();
     const store: ShellRunStore = {
@@ -527,7 +527,7 @@ describe('ShellRunProcessManager', () => {
   }, async (context) => {
     const processDiscovery = delayPosixProcessDiscovery(context);
     const abort = new AbortController();
-    const backingStore = createLegacyShellRunStoreForTest(await workspace());
+    const backingStore = createSqliteShellRunStore(await workspace());
     const runningCommitted = deferred<void>();
     const releaseRunning = deferred<void>();
     const store: ShellRunStore = {
@@ -1009,7 +1009,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('recovers durable starting and running records without live handles as orphaned', async () => {
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     await store.createShellRun(record({ shellRunId: 'orphan-starting', status: 'starting' }));
     await store.createShellRun(record({ shellRunId: 'orphan-running', status: 'running' }));
     await store.createShellRun({
@@ -1036,7 +1036,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('concurrent orphan observers converge on the same durable terminal record', async () => {
-    const backingStore = createLegacyShellRunStoreForTest(await workspace());
+    const backingStore = createSqliteShellRunStore(await workspace());
     await backingStore.createShellRun(
       record({ shellRunId: 'concurrent-orphan', status: 'running' }),
     );
@@ -1076,7 +1076,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('keeps unauthorized refs non-disclosing and rejects malformed selectors before storage', async () => {
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     await store.createShellRun({
       ...record({ shellRunId: 'owned-by-another-session', status: 'running' }),
       sessionId: 'session-2',
@@ -1379,7 +1379,7 @@ describe('ShellRunProcessManager', () => {
 
   test('keeps concurrent PTY control and Read persistence in parser-cut order', async () => {
     const updates: ShellRunUpdate[] = [];
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     const manager = createManager(store, (update) => updates.push(update));
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1452,7 +1452,7 @@ describe('ShellRunProcessManager', () => {
     const dsrSeen = join(cwd, 'dsr-seen');
     const exitGate = join(cwd, 'exit-gate');
     const sizeBeforeExit = join(cwd, 'size-before-exit');
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     const manager = createManager(store);
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1599,7 +1599,7 @@ describe('ShellRunProcessManager', () => {
   test('restores the trailing PTY flush after a queued control aborts before commit', async () => {
     const cwd = await workspace();
     const dirtyWritten = join(cwd, 'dirty-written');
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     const manager = createManager(store, undefined, { flushIntervalMs: 1_000 });
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -2097,7 +2097,7 @@ describe('ShellRunProcessManager', () => {
     const storageRoot = await workspace();
     const sessionsPath = join(storageRoot, 'sessions');
     await writeFile(sessionsPath, 'blocks durable ShellRun creation', 'utf8');
-    const store = createLegacyShellRunStoreForTest(storageRoot);
+    const store = createSqliteShellRunStore(storageRoot);
     const manager = createManager(store, undefined, { maxLiveShellRuns: 2, maxLivePtyRuns: 1 });
     try {
       await assert.rejects(() =>
@@ -2245,11 +2245,7 @@ async function createTestManager(
     pipeOutputDrainMs?: number;
   },
 ): Promise<ShellRunProcessManager> {
-  return createManager(
-    createLegacyShellRunStoreForTest(await workspace()),
-    onShellRunUpdate,
-    options,
-  );
+  return createManager(createSqliteShellRunStore(await workspace()), onShellRunUpdate, options);
 }
 
 function shellInput(input: {

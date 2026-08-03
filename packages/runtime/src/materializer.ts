@@ -1,7 +1,7 @@
 /**
- * Materializer — converts the raw JSONL message stream into the view-model
- * shape the UI renders. Lives in `runtime` (not `storage`) because correlation
- * is a semantic operation, not a disk concern.
+ * Materializer — converts durable messages into the view-model shape the UI
+ * renders. Lives in `runtime` (not `storage`) because correlation is a semantic
+ * operation, not a disk concern.
  *
  * Runtime/UI materializer for rebuilding chat and tool activity state from
  * append-only stored messages.
@@ -58,7 +58,7 @@ export interface SessionViewModel {
 // ============================================================================
 
 /**
- * Convert StoredMessage[] (raw JSONL) into a ChatItem[] for rendering.
+ * Convert StoredMessage[] into a ChatItem[] for rendering.
  *
  * A ToolCallMessage with no matching ToolResultMessage is read against its
  * turn: still `running` means the call is in flight, anything else makes it

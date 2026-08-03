@@ -1,14 +1,5 @@
-import { mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
-import {
-  decodeStoredMessageForRead,
-  decodeStoredMessageForRecovery,
-} from './execution-record-codec.js';
-import { appendJsonl } from './jsonl-append.js';
-import { classifyJsonRecord } from './json-prefix.js';
-import { importLegacySessionMetadataTree } from './session-metadata-transfer.js';
 import {
   createSqliteSessionMetadataStore,
   type SessionConfigurationMetadataUpdate,
@@ -20,23 +11,13 @@ import {
   type StableSessionCreateProbe,
   type VersionedSessionIdentity,
 } from './sqlite-session-metadata-store.js';
-import {
-  isDiscardableConversationCopy,
-  isValidConversationCopyTransition,
-} from './session-conversation-copy.js';
-import {
-  createSessionTranscriptMarker,
-  decodeSessionTranscriptMarker,
-  isSessionTranscriptMarker,
-} from './session-transcript.js';
-import { chainWrite } from './write-queue.js';
+import { isDiscardableConversationCopy } from './session-conversation-copy.js';
 import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
 import {
   DEFAULT_SESSION_NAME,
-  DurableStoreWriteError,
   deriveTurnRecords,
   isCollaborationMode,
   isOrchestrationMode,
@@ -52,7 +33,6 @@ import {
   subagentSessionRuntimeSummary,
   WORKSPACE_AUTHORITY_SESSION_ID,
 } from '@maka/core';
-import { syncDirectoryChain, syncFile } from './stable-storage.js';
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
@@ -72,9 +52,14 @@ import type {
 } from '@maka/core';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-/** @deprecated Session metadata is canonical in the operational runtime.sqlite database. */
-export const SQLITE_SESSION_METADATA_DATABASE_NAME = OPERATIONAL_STATE_DATABASE_NAME;
 
+export function isSafeSessionId(sessionId: string): boolean {
+  return SESSION_ID_PATTERN.test(sessionId);
+}
+
+export function assertSafeSessionId(sessionId: string): void {
+  if (!isSafeSessionId(sessionId)) throw new Error(`Invalid Session id: ${sessionId}`);
+}
 export class SessionNotFoundError extends Error {
   readonly name = 'SessionNotFoundError';
   readonly code = 'session_not_found';
@@ -171,7 +156,7 @@ export interface SessionStore {
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
   /** Read durable messages without triggering connection-lock self-healing. */
   readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]>;
-  /** Read messages for startup recovery, rejecting durable JSONL corruption. */
+  /** Read durable messages for startup recovery. */
   readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
   /** Derive durable turns without triggering connection-lock self-healing. */
   listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]>;
@@ -262,7 +247,6 @@ export interface SessionAuthorityStore extends SessionStore {
   removeSessionsVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]>;
   reconcileOrphanedAgentGraphRetirements(): Promise<string[]>;
   listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]>;
-  purgeRemovedSessionTranscript(sessionId: string): Promise<void>;
   completeSessionRetirementCleanup(sessionId: string): Promise<void>;
 }
 
@@ -282,44 +266,18 @@ export function createSessionStoreWithTestDependencies(
   return new SqliteSessionStore(workspaceRoot, dependencies);
 }
 
-/** Legacy JSONL-header store retained only for migration and compatibility tests. */
-export function createLegacyFileSessionStore(workspaceRoot: string): SessionStore {
-  return new FileSessionStore(workspaceRoot);
-}
-
 class SqliteSessionStore implements SessionAuthorityStore {
-  private readonly files: FileSessionStore;
   private readonly metadata: SqliteSessionMetadataStore;
-  private readonly ready: Promise<void>;
+  private readonly workspaceRoot: string;
   private closePromise: Promise<void> | null = null;
-  private activeCatalogProjectionWrites = 0;
-  private catalogProjectionWritesIdle: Promise<void> = Promise.resolve();
-  private resolveCatalogProjectionWritesIdle: (() => void) | undefined;
-  private catalogProjectionRecovery: Promise<void> | null = null;
-  private catalogProjectionFailure: unknown;
-  private readonly removeTranscript: (sessionId: string) => Promise<void>;
 
-  constructor(workspaceRoot: string, dependencies: SessionAuthorityStoreTestDependencies) {
-    this.files = new FileSessionStore(workspaceRoot, true);
-    this.removeTranscript = async (sessionId) => {
-      await dependencies.beforeTranscriptRemoval?.(sessionId);
-      await this.files.remove(sessionId);
-    };
+  constructor(workspaceRoot: string, _dependencies: SessionAuthorityStoreTestDependencies) {
+    this.workspaceRoot = workspaceRoot;
     const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
     this.metadata = createSqliteSessionMetadataStore(
       join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
       { databaseLease },
     );
-    this.ready = importLegacySessionMetadataTree({
-      workspaceRoot,
-      destination: this.metadata,
-    }).then(async (report) => {
-      if (report.headersImported > 0) {
-        await this.metadata.requireCatalogProjectionRecovery();
-      }
-      await this.recoverCatalogProjections();
-    });
-    void this.ready.catch(() => {});
   }
 
   async create(
@@ -331,13 +289,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
     if (input.subagentSpawn) {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
-    const staged = await this.files.createTranscript(input);
-    try {
-      return (await this.metadata.create(staged, initialBoundary)).header;
-    } catch (error) {
-      await this.files.remove(staged.id).catch(() => {});
-      throw error;
-    }
+    return (
+      await this.metadata.create(buildSessionHeader(this.workspaceRoot, input), initialBoundary)
+    ).header;
   }
 
   async probeStableSessionCreate(
@@ -373,9 +327,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
     }
     if (probe.kind === 'conflict') return probe;
 
-    const staged = await this.files.ensureStableTranscript(request.input, request.sessionId);
     const result = await this.metadata.createStableSession(
-      staged,
+      buildSessionHeader(
+        this.workspaceRoot,
+        request.input,
+        request.sessionId,
+        request.input.conversationCopy,
+      ),
       request.requestFingerprint,
       initialBoundary,
     );
@@ -405,7 +363,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
         throw new Error('Only a matching incomplete conversation copy can be discarded');
       }
     }
-    await this.files.remove(sessionId);
     return this.metadata.discardStableSessionCreate(sessionId, requestFingerprint);
   }
 
@@ -415,15 +372,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<{ header: SessionHeader; created: boolean }> {
     await this.ensureReady();
     assertNoConversationCopyMetadata(input);
-    const staged = await this.files.createTranscript(input);
-    try {
-      const result = await this.metadata.createSubagent(staged, initialBoundary);
-      if (!result.created) await this.files.remove(staged.id);
-      return { header: result.record.header, created: result.created };
-    } catch (error) {
-      await this.files.remove(staged.id).catch(() => {});
-      throw error;
-    }
+    const result = await this.metadata.createSubagent(
+      buildSessionHeader(this.workspaceRoot, input),
+      initialBoundary,
+    );
+    return { header: result.record.header, created: result.created };
   }
 
   async createAgentGraphOperator(
@@ -434,24 +387,17 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
     await this.ensureReady();
     assertNoConversationCopyMetadata(input);
-    const staged = await this.files.createTranscript(input);
-    try {
-      const result = await this.metadata.createAgentGraphOperator(
-        staged,
-        request,
-        expectedRevision,
-        initialBoundary,
-      );
-      if (!result.created) await this.files.remove(staged.id);
-      return {
-        header: result.record.header,
-        provision: result.provision,
-        created: result.created,
-      };
-    } catch (error) {
-      await this.files.remove(staged.id).catch(() => {});
-      throw error;
-    }
+    const result = await this.metadata.createAgentGraphOperator(
+      buildSessionHeader(this.workspaceRoot, input),
+      request,
+      expectedRevision,
+      initialBoundary,
+    );
+    return {
+      header: result.record.header,
+      provision: result.provision,
+      created: result.created,
+    };
   }
 
   async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
@@ -513,9 +459,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       previewMessages: StoredMessage[];
     }> = [];
     for (const record of records) {
-      const previewMessages = await this.files
-        .readPreviewMessages(record.header.id)
-        .catch(() => []);
+      const previewMessages = await this.metadata.readPreviewMessages(record.header.id);
       withPreviews.push({ record, previewMessages });
     }
     withPreviews.sort((a, b) => {
@@ -537,9 +481,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       const { header } = record;
       let messages = previewMessages.slice(-10);
       if (index < 3) {
-        messages = (
-          await this.files.readTranscriptMessagesSnapshot(header.id, header).catch(() => messages)
-        ).slice(-10);
+        messages = (await this.metadata.readMessages(header.id)).slice(-10);
       }
       summaries.push(toSummary(header, messages));
     }
@@ -577,7 +519,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async listForRecovery(): Promise<SessionHeader[]> {
     const headers = await this.listHeaders();
     for (const header of headers) {
-      await this.files.readTranscriptMessagesForRecovery(header.id, header);
+      await this.metadata.readMessagesForRecovery(header.id);
     }
     return headers;
   }
@@ -609,14 +551,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]> {
     await this.ensureReady();
-    const header = (await this.metadata.read(sessionId)).header;
-    return this.files.readTranscriptMessagesSnapshot(sessionId, header);
+    return this.metadata.readMessages(sessionId);
   }
 
   async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
     await this.ensureReady();
-    const header = (await this.metadata.read(sessionId)).header;
-    return this.files.readTranscriptMessagesForRecovery(sessionId, header);
+    return this.metadata.readMessagesForRecovery(sessionId);
   }
 
   async listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]> {
@@ -645,26 +585,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void> {
     if (messages.length === 0) return;
-    const release = await this.acquireCatalogProjectionWrite();
-    try {
-      await this.metadata.beginCatalogProjectionWrite();
-      await this.files.appendMessages(sessionId, messages);
-      await this.metadata.commitCatalogProjectionWrite(
-        sessionId,
-        catalogMessageProjection(messages),
-      );
-    } catch (error) {
-      const recovery = this.scheduleCatalogProjectionRecovery();
-      release();
-      try {
-        await recovery;
-      } catch {
-        throw error;
-      }
-      throw error;
-    } finally {
-      release();
-    }
+    await this.metadata.appendMessages(
+      sessionId,
+      messages,
+      projectSessionCatalogMessages(messages),
+    );
   }
 
   async updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader> {
@@ -750,25 +675,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]> {
     await this.ensureReady();
-    const [pending, existing] = await Promise.all([
-      this.metadata.listPendingSessionRetirementCleanupIds(sessionId),
-      this.files.listSessionDirectoryIds(),
-    ]);
-    const resurrected = await this.metadata.listTombstonedSessionIdsAmong(existing);
-    const relevantResurrected =
-      sessionId === undefined
-        ? resurrected
-        : resurrected.filter((candidate) => candidate === sessionId);
-    return [...new Set([...pending, ...relevantResurrected])].sort();
-  }
-
-  async purgeRemovedSessionTranscript(sessionId: string): Promise<void> {
-    await this.ensureReady();
-    const probe = await this.metadata.probeRemoval(sessionId);
-    if (probe.kind !== 'removed') {
-      throw new Error(`Cannot purge transcript for a Session that is ${probe.kind}`);
-    }
-    await this.removeTranscript(sessionId);
+    return this.metadata.listPendingSessionRetirementCleanupIds(sessionId);
   }
 
   async completeSessionRetirementCleanup(sessionId: string): Promise<void> {
@@ -843,7 +750,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async remove(sessionId: string): Promise<void> {
     await this.ensureReady();
     await this.metadata.remove(sessionId);
-    await this.removeTranscript(sessionId);
   }
 
   close(): Promise<void> {
@@ -852,8 +758,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 
   private async closeAfterReady(): Promise<void> {
-    await this.ready.catch(() => {});
-    await this.catalogProjectionRecovery?.catch(() => {});
     this.metadata.close();
   }
 
@@ -862,980 +766,83 @@ class SqliteSessionStore implements SessionAuthorityStore {
     knownMessages?: StoredMessage[],
   ): Promise<SessionHeader> {
     if (header.connectionLocked) return header;
-    const messages =
-      knownMessages ?? (await this.files.readTranscriptMessagesSnapshot(header.id, header));
+    const messages = knownMessages ?? (await this.metadata.readMessages(header.id));
     if (!messages.some((message) => message.type === 'user')) return header;
     return this.updateHeader(header.id, { connectionLocked: true });
   }
 
-  private async recoverCatalogProjections(): Promise<void> {
-    if (!(await this.metadata.hasPendingCatalogProjectionWrites())) return;
-    const projections = new Map<string, ReturnType<typeof catalogMessageProjection>>();
-    for (const record of await this.metadata.list()) {
-      try {
-        const messages = await this.files.readTranscriptMessagesForRecovery(
-          record.header.id,
-          record.header,
-        );
-        projections.set(record.header.id, catalogMessageProjection(messages));
-      } catch (error) {
-        if (!isDiscardableConversationCopy(record.header)) throw error;
-      }
-    }
-    await this.metadata.recoverCatalogProjections(projections);
-  }
-
-  private async ensureReady(): Promise<void> {
-    await this.ready;
-    if (this.catalogProjectionRecovery) await this.catalogProjectionRecovery;
-    if (this.catalogProjectionFailure) throw this.catalogProjectionFailure;
-  }
+  private async ensureReady(): Promise<void> {}
 
   private async ensureCatalogProjectionReadable(): Promise<void> {
     await this.ensureReady();
-    if (
-      this.activeCatalogProjectionWrites === 0 &&
-      (await this.metadata.hasPendingCatalogProjectionWrites())
-    ) {
-      await this.scheduleCatalogProjectionRecovery();
-    }
-  }
-
-  private async acquireCatalogProjectionWrite(): Promise<() => void> {
-    while (true) {
-      await this.ensureReady();
-      if (!this.catalogProjectionRecovery) break;
-    }
-    if (this.activeCatalogProjectionWrites === 0) {
-      this.catalogProjectionWritesIdle = new Promise<void>((resolve) => {
-        this.resolveCatalogProjectionWritesIdle = resolve;
-      });
-    }
-    this.activeCatalogProjectionWrites += 1;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.activeCatalogProjectionWrites -= 1;
-      if (this.activeCatalogProjectionWrites === 0) {
-        this.resolveCatalogProjectionWritesIdle?.();
-        this.resolveCatalogProjectionWritesIdle = undefined;
-      }
-    };
-  }
-
-  private scheduleCatalogProjectionRecovery(): Promise<void> {
-    if (this.catalogProjectionRecovery) return this.catalogProjectionRecovery;
-    const recovery = (async () => {
-      await this.catalogProjectionWritesIdle;
-      if (await this.metadata.hasPendingCatalogProjectionWrites()) {
-        await this.recoverCatalogProjections();
-      }
-    })();
-    this.catalogProjectionRecovery = recovery;
-    void recovery.then(
-      () => {
-        if (this.catalogProjectionRecovery === recovery) {
-          this.catalogProjectionRecovery = null;
-        }
-      },
-      (error: unknown) => {
-        this.catalogProjectionFailure = error;
-        if (this.catalogProjectionRecovery === recovery) {
-          this.catalogProjectionRecovery = null;
-        }
-      },
-    );
-    return recovery;
   }
 }
 
-class FileSessionStore implements SessionStore {
-  private static readonly HEADER_BUDGET = 8192;
-  private static readonly MAX_HEADER_BYTES = 1024 * 1024;
-  private static readonly TAIL_PREVIEW_BUDGET = 64 * 1024;
-  private readonly sessionsRoot: string;
-  private readonly writeQueues = new Map<string, Promise<void>>();
-
-  constructor(
-    private readonly workspaceRoot: string,
-    private readonly durableTranscripts = false,
-  ) {
-    this.sessionsRoot = join(workspaceRoot, 'sessions');
-  }
-
-  async create(input: CreateSessionInput): Promise<SessionHeader> {
-    assertNoConversationCopyMetadata(input);
-    if (input.subagentSpawn) {
-      throw new Error('Child-session idempotency requires the SQLite metadata control plane');
-    }
-    return this.createWithInitialRecord(input, 'legacy-header');
-  }
-
-  async createTranscript(input: CreateSessionInput, sessionId?: string): Promise<SessionHeader> {
-    assertNoConversationCopyMetadata(input);
-    return this.createWithInitialRecord(input, 'transcript-marker', sessionId);
-  }
-
-  async ensureStableTranscript(
-    input: StableSessionCreateInput,
-    sessionId: string,
-  ): Promise<SessionHeader> {
-    return this.createWithInitialRecord(
-      input,
-      'transcript-marker',
-      sessionId,
-      true,
-      input.conversationCopy,
-    );
-  }
-
-  private async createWithInitialRecord(
-    input: CreateSessionInput,
-    initialRecord: 'legacy-header' | 'transcript-marker',
-    sessionId?: string,
-    reuseStableTranscript = false,
-    conversationCopy?: SessionConversationCopy,
-  ): Promise<SessionHeader> {
-    if (
-      input.projectId !== undefined &&
-      input.projectId !== null &&
-      (typeof input.projectId !== 'string' || input.projectId.length === 0)
-    ) {
-      throw new Error('Invalid project id');
-    }
-    const now = Date.now();
-    const id = sessionId ?? randomUUID();
-    assertSafeSessionId(id);
-    // PR-UI-IPC-2 (@kenji msg 0474c3fe + @xuan msg 88d96a87):
-    // session name write contract. If caller passed undefined,
-    // use the canonical default; otherwise normalize the
-    // user-supplied name through the same `normalizeUserSessionName`
-    // gate that `rename` and `branchFromTurn` use. Empty-after-
-    // sanitize on an explicit input is a REJECT — we do NOT
-    // silently fall back to default, that would swallow the
-    // user's intent (per @xuan caller-semantics lock).
-    let resolvedName: string;
-    if (input.name === undefined) {
-      resolvedName = DEFAULT_SESSION_NAME;
-    } else {
-      const normalized = normalizeUserSessionName(input.name);
-      if (!normalized.ok) {
-        throw new Error(normalized.error);
-      }
-      resolvedName = normalized.value;
-    }
-    const header: SessionHeader = {
-      id,
-      workspaceRoot: this.workspaceRoot,
-      cwd: input.cwd,
-      ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
-      createdAt: now,
-      lastUsedAt: now,
-      name: resolvedName,
-      titleIsManual: false,
-      isFlagged: false,
-      labels: input.labels ?? [],
-      isArchived: false,
-      status: input.status ?? 'active',
-      ...(input.blockedReason ? { blockedReason: input.blockedReason } : {}),
-      statusUpdatedAt: now,
-      ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
-      ...(input.branchOfTurnId ? { branchOfTurnId: input.branchOfTurnId } : {}),
-      ...(input.subagentParent ? { subagentParent: input.subagentParent } : {}),
-      ...(input.subagentRuntime ? { subagentRuntime: input.subagentRuntime } : {}),
-      ...(input.subagentSpawn ? { subagentSpawn: input.subagentSpawn } : {}),
-      ...(input.subagentWorkspace ? { subagentWorkspace: input.subagentWorkspace } : {}),
-      ...(conversationCopy ? { conversationCopy } : {}),
-      ...(input.revisionRootSessionId
-        ? { revisionRootSessionId: input.revisionRootSessionId }
-        : {}),
-      ...(input.revisionParentSessionId
-        ? { revisionParentSessionId: input.revisionParentSessionId }
-        : {}),
-      ...(input.revisionOfTurnId ? { revisionOfTurnId: input.revisionOfTurnId } : {}),
-      ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
-      ...(input.revisionState ? { revisionState: input.revisionState } : {}),
-      hasUnread: false,
-      backend: input.backend,
-      llmConnectionSlug: input.llmConnectionSlug,
-      connectionLocked: false,
-      model: input.model ?? 'default',
-      permissionMode: input.permissionMode,
-      collaborationMode: input.collaborationMode ?? 'agent',
-      orchestrationMode: input.orchestrationMode ?? 'default',
-      ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
-      schemaVersion: 1,
-    };
-
-    assertValidSessionLineage(header);
-
-    await this.withQueue(id, async () => {
-      await mkdir(this.sessionsRoot, { recursive: true });
-      if (reuseStableTranscript) {
-        try {
-          await mkdir(this.sessionDir(id));
-        } catch (error) {
-          if (!hasErrorCode(error, 'EEXIST')) throw error;
-        }
-        await this.ensureMarkerOnlyTranscript(id);
-        return;
-      }
-      await mkdir(this.sessionDir(id));
-      const firstRecord =
-        initialRecord === 'legacy-header' ? header : createSessionTranscriptMarker(header.id);
-      try {
-        await writeNewTranscript(
-          this.sessionPath(id),
-          JSON.stringify(firstRecord) + '\n',
-          this.durableTranscripts ? this.workspaceRoot : undefined,
-        );
-      } catch (error) {
-        await rm(this.sessionDir(id), { recursive: true, force: true }).catch(() => {});
-        throw error;
-      }
-    });
-
-    return header;
-  }
-
-  private async ensureMarkerOnlyTranscript(sessionId: string): Promise<void> {
-    const path = this.sessionPath(sessionId);
-    const marker = JSON.stringify(createSessionTranscriptMarker(sessionId)) + '\n';
-    const entries = await readdir(this.sessionDir(sessionId));
-    if (entries.length === 0) {
-      try {
-        await writeNewTranscript(
-          path,
-          marker,
-          this.durableTranscripts ? this.workspaceRoot : undefined,
-        );
-        return;
-      } catch (error) {
-        if (!hasErrorCode(error, 'EEXIST')) throw error;
-      }
-    } else if (entries.length !== 1 || entries[0] !== 'session.jsonl') {
-      throw new Error(`Session ${sessionId}: stable transcript path is not recoverable`);
-    }
-
-    const text = await readFile(path, 'utf8');
-    if (text === marker) {
-      if (this.durableTranscripts) {
-        await stabilizeTranscript(path, this.workspaceRoot);
-      }
-      return;
-    }
-    if (marker.startsWith(text)) {
-      await this.writeAtomic(path, marker);
-      if (this.durableTranscripts) {
-        await stabilizeTranscript(path, this.workspaceRoot);
-      }
-      return;
-    }
-    const records = text.split('\n').filter((line) => line.trim().length > 0);
-    if (records.length !== 1 || !records[0]) {
-      throw new Error(`Session ${sessionId}: stable transcript is not marker-only`);
-    }
-    decodeSessionTranscriptMarker(JSON.parse(records[0]), sessionId);
-    await this.writeAtomic(path, marker);
-    if (this.durableTranscripts) {
-      await stabilizeTranscript(path, this.workspaceRoot);
-    }
-  }
-
-  async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
-    if (filter?.subagentParentSessionId !== undefined) {
-      throw new Error('Subagent session relation queries require SQLite session metadata');
-    }
-    let entries;
-    try {
-      entries = await readdir(this.sessionsRoot, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-
-    // Phase 1: read each header plus a bounded tail preview. That keeps
-    // list() proportional to the number of sessions rather than full
-    // transcript size, while preserving sidebar previews and timestamp
-    // fallback for sessions outside the top few.
-    const withHeaders: Array<{
-      id: string;
-      header: SessionHeader;
-      previewMessages: StoredMessage[];
-    }> = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      if (!isSafeSessionId(entry.name)) continue;
-      try {
-        const header = await this.readHeaderOnly(entry.name);
-        if (filter?.isArchived !== undefined && header.isArchived !== filter.isArchived) continue;
-        if (filter?.isFlagged !== undefined && header.isFlagged !== filter.isFlagged) continue;
-        if (filter?.labelSlug && !header.labels.includes(filter.labelSlug)) continue;
-        const previewMessages = await this.readTailPreviewMessages(entry.name).catch(() => []);
-        withHeaders.push({ id: entry.name, header, previewMessages });
-      } catch {
-        // Ignore malformed session folders in the sidebar.
-      }
-    }
-
-    // Secondary key on id (lexicographic) so sessions with identical
-    // lastMessageAt always sort in the same order - fixtures with
-    // multiple sessions seeded at the same frozen timestamp would
-    // otherwise drift across runs based on filesystem readdir order
-    // (PR108k-yj per @kenji e2e-fixture determinism). Negligible cost
-    // for real users; identical lastMessageAt is rare in production.
-    withHeaders.sort((a, b) => {
-      const aLastMessageAt = maxTimestamp(
-        a.header.lastMessageAt,
-        latestVisibleMessageAt(a.previewMessages),
-      );
-      const bLastMessageAt = maxTimestamp(
-        b.header.lastMessageAt,
-        latestVisibleMessageAt(b.previewMessages),
-      );
-      const tsDelta = (bLastMessageAt ?? 0) - (aLastMessageAt ?? 0);
-      if (tsDelta !== 0) return tsDelta;
-      return a.header.id.localeCompare(b.header.id);
-    });
-
-    // Phase 2: full detail read only for the most recent 3 sessions.
-    // For those, keep only the last 10 messages as preview. Remaining
-    // sessions use the bounded tail preview from phase 1.
-    const TOP_N = 3;
-    const summaries: SessionSummary[] = [];
-    for (let i = 0; i < withHeaders.length; i++) {
-      const { header, previewMessages } = withHeaders[i];
-      let messages: StoredMessage[] = previewMessages.slice(-10);
-      if (i < TOP_N) {
-        try {
-          const result = await this.readFilePartsUnlocked(header.id);
-          messages = result.messages.slice(-10);
-        } catch {
-          // Fall through to the bounded tail preview from phase 1.
-        }
-      }
-      summaries.push(toSummary(header, messages));
-    }
-    return summaries;
-  }
-
-  async listSessionDirectoryIds(): Promise<string[]> {
-    let entries;
-    try {
-      entries = await readdir(this.sessionsRoot, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-    return entries
-      .filter((entry) => entry.isDirectory() && SESSION_ID_PATTERN.test(entry.name))
-      .map((entry) => entry.name)
-      .sort();
-  }
-
-  async listForRecovery(): Promise<SessionHeader[]> {
-    return this.listHeaders();
-  }
-
-  async listHeaders(): Promise<SessionHeader[]> {
-    let entries;
-    try {
-      entries = await readdir(this.sessionsRoot, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-    const headers: SessionHeader[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !isSafeSessionId(entry.name)) {
-        throw new Error(`Invalid Session entry: ${entry.name}`);
-      }
-      headers.push(await this.readHeaderOnly(entry.name));
-    }
-    return headers.sort((a, b) => a.id.localeCompare(b.id));
-  }
-
-  async readHeader(sessionId: string): Promise<SessionHeader> {
-    const { header, messages } = await this.readFileParts(sessionId);
-    if (!header.connectionLocked && messages.some((message) => message.type === 'user')) {
-      return this.updateHeader(sessionId, { connectionLocked: true });
-    }
-    return header;
-  }
-
-  async readHeaderSnapshot(sessionId: string): Promise<SessionHeader> {
-    try {
-      return await this.readHeaderOnly(sessionId);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
-        throw new SessionNotFoundError(sessionId);
-      }
-      throw error;
-    }
-  }
-
-  async readMessages(sessionId: string): Promise<StoredMessage[]> {
-    const { header, messages } = await this.readFileParts(sessionId);
-    if (!header.connectionLocked && messages.some((message) => message.type === 'user')) {
-      await this.updateHeader(sessionId, { connectionLocked: true });
-    }
-    return messages;
-  }
-
-  async readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]> {
-    return (await this.readFileParts(sessionId)).messages;
-  }
-
-  async readPreviewMessages(sessionId: string): Promise<StoredMessage[]> {
-    return this.readTailPreviewMessages(sessionId);
-  }
-
-  async readTranscriptMessagesSnapshot(
-    sessionId: string,
-    header: SessionHeader,
-  ): Promise<StoredMessage[]> {
-    return this.readTranscriptMessagesUnlocked(sessionId, header);
-  }
-
-  async readTranscriptMessagesForRecovery(
-    sessionId: string,
-    header: SessionHeader,
-  ): Promise<StoredMessage[]> {
-    return this.readTranscriptMessagesUnlocked(sessionId, header, true);
-  }
-
-  async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
-    return (await this.readFilePartsUnlocked(sessionId, true)).messages;
-  }
-
-  async listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]> {
-    return deriveTurnRecords(await this.readMessagesSnapshot(sessionId));
-  }
-
-  async listTurns(sessionId: string): Promise<TurnRecord[]> {
-    return deriveTurnRecords(await this.readMessages(sessionId));
-  }
-
-  async appendMessage(sessionId: string, message: StoredMessage): Promise<void> {
-    await this.appendMessages(sessionId, [message]);
-  }
-
-  async appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void> {
-    if (messages.length === 0) return;
-    await this.withQueue(sessionId, async () => {
-      const payload = messages.map((message) => JSON.stringify(message)).join('\n') + '\n';
-      await appendJsonl(this.sessionPath(sessionId), payload, {
-        durable: this.durableTranscripts,
-        ...(this.durableTranscripts ? { durabilityRoot: this.workspaceRoot } : {}),
-        requireExistingRecord: true,
-      });
-    });
-  }
-
-  async updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader> {
-    if (Object.prototype.hasOwnProperty.call(patch, 'subagentParent')) {
-      throw new Error('Subagent session parent relation is immutable');
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, 'subagentRuntime')) {
-      throw new Error('Subagent session runtime snapshot is immutable');
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, 'subagentSpawn')) {
-      throw new Error('Subagent session spawn identity is immutable');
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, 'subagentWorkspace')) {
-      throw new Error('Subagent session workspace binding is immutable');
-    }
-    let nextHeader: SessionHeader | undefined;
-    await this.withQueue(sessionId, async () => {
-      const { header, messages } = await this.readFilePartsUnlocked(sessionId);
-      assertConversationCopyTransition(header, patch);
-      nextHeader = { ...header, ...patch };
-      assertValidSessionLineage(nextHeader);
-      const lines = [
-        JSON.stringify(nextHeader),
-        ...messages.map((message) => JSON.stringify(message)),
-      ];
-      await this.writeAtomic(this.sessionPath(sessionId), lines.join('\n') + '\n');
-    });
-    if (!nextHeader) throw new Error(`Failed to update session ${sessionId}`);
-    return nextHeader;
-  }
-
-  async markSessionReadThrough(sessionId: string, readThroughTs: number): Promise<SessionHeader> {
-    let nextHeader: SessionHeader | undefined;
-    await this.withQueue(sessionId, async () => {
-      const { header, messages } = await this.readFilePartsUnlocked(sessionId);
-      const effectiveLastMessageAt = maxTimestamp(
-        header.lastMessageAt,
-        latestVisibleMessageAt(messages),
-      );
-      if (
-        !Number.isFinite(readThroughTs) ||
-        !header.hasUnread ||
-        (effectiveLastMessageAt !== undefined && effectiveLastMessageAt > readThroughTs)
-      ) {
-        nextHeader = header;
-        return;
-      }
-      nextHeader = { ...header, hasUnread: false };
-      const lines = [
-        JSON.stringify(nextHeader),
-        ...messages.map((message) => JSON.stringify(message)),
-      ];
-      await this.writeAtomic(this.sessionPath(sessionId), lines.join('\n') + '\n');
-    });
-    if (!nextHeader) throw new Error(`Failed to update session ${sessionId}`);
-    return nextHeader;
-  }
-
-  async archive(sessionId: string): Promise<void> {
-    const now = Date.now();
-    await this.updateHeader(sessionId, {
-      isArchived: true,
-      archivedAt: now,
-      status: 'archived',
-      statusUpdatedAt: now,
-    });
-  }
-
-  async unarchive(sessionId: string): Promise<void> {
-    await this.updateHeader(sessionId, {
-      isArchived: false,
-      archivedAt: undefined,
-      status: 'active',
-      blockedReason: undefined,
-      statusUpdatedAt: Date.now(),
-    });
-  }
-
-  async setFlagged(sessionId: string, isFlagged: boolean): Promise<void> {
-    await this.updateHeader(sessionId, { isFlagged });
-  }
-
-  async rename(sessionId: string, name: string): Promise<void> {
-    // PR-UI-IPC-2: same `normalizeUserSessionName` chokepoint as
-    // create + branch. Replaces the older inline trim + length-80
-    // cap with the shared helper so all three write paths go
-    // through a single contract (control char strip, bidi/zero-
-    // width defense, NFC, code-point cap, typed reject).
-    const normalized = normalizeUserSessionName(name);
-    if (!normalized.ok) {
-      throw new Error(normalized.error);
-    }
-    await this.updateHeader(sessionId, { name: normalized.value, titleIsManual: true });
-  }
-
-  async setGeneratedTitleIfAbsent(sessionId: string, title: string): Promise<SessionHeader | null> {
-    const normalized = normalizeUserSessionName(title);
-    if (!normalized.ok) return null;
-    let nextHeader: SessionHeader | null = null;
-    await this.withQueue(sessionId, async () => {
-      const { header, messages } = await this.readFilePartsUnlocked(sessionId);
-      if (header.titleIsManual || header.name !== DEFAULT_SESSION_NAME) return;
-      if (normalized.value === header.name) return;
-      nextHeader = { ...header, name: normalized.value };
-      const lines = [
-        JSON.stringify(nextHeader),
-        ...messages.map((message) => JSON.stringify(message)),
-      ];
-      await this.writeAtomic(this.sessionPath(sessionId), lines.join('\n') + '\n');
-    });
-    return nextHeader;
-  }
-
-  async remove(sessionId: string): Promise<void> {
-    await this.withQueue(sessionId, async () => {
-      await rm(this.sessionDir(sessionId), { recursive: true, force: true });
-    });
-  }
-
-  private sessionDir(sessionId: string): string {
-    assertSafeSessionId(sessionId);
-    return join(this.sessionsRoot, sessionId);
-  }
-
-  private sessionPath(sessionId: string): string {
-    return join(this.sessionDir(sessionId), 'session.jsonl');
-  }
-
-  private async readHeaderOnly(sessionId: string): Promise<SessionHeader> {
-    // Fast path: read only the first JSON line (the header) without
-    // parsing any message payload. Used by list() to quickly scan
-    // all sessions before deciding which ones need detail reads.
-    const path = this.sessionPath(sessionId);
-    const handle = await open(path, 'r');
-    try {
-      const chunks: Buffer[] = [];
-      let offset = 0;
-      while (offset < FileSessionStore.MAX_HEADER_BYTES) {
-        const buf = Buffer.alloc(
-          Math.min(FileSessionStore.HEADER_BUDGET, FileSessionStore.MAX_HEADER_BYTES - offset),
-        );
-        const { bytesRead } = await handle.read(buf, 0, buf.length, offset);
-        if (bytesRead === 0) break;
-        chunks.push(buf.subarray(0, bytesRead));
-        const region = Buffer.concat(chunks).toString('utf8');
-        const firstNl = region.indexOf('\n');
-        if (firstNl !== -1) {
-          return decodeSessionHeader(JSON.parse(region.slice(0, firstNl)), sessionId);
-        }
-        offset += bytesRead;
-      }
-      throw new Error(`Session ${sessionId}: cannot find header line`);
-    } finally {
-      await handle.close();
-    }
-  }
-
-  private async readTailPreviewMessages(sessionId: string): Promise<StoredMessage[]> {
-    const path = this.sessionPath(sessionId);
-    const handle = await open(path, 'r');
-    try {
-      const { size } = await handle.stat();
-      const start = Math.max(0, size - FileSessionStore.TAIL_PREVIEW_BUDGET);
-      const length = size - start;
-      if (length <= 0) return [];
-      const buf = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buf, 0, length, start);
-      const text = buf.toString('utf8', 0, bytesRead);
-      const rawLines = text.split('\n');
-      // The first tail line is either the header (start === 0) or a partial JSONL line.
-      const lines = rawLines.slice(1);
-      const completeLines = text.endsWith('\n') ? lines : lines.slice(0, -1);
-      const messages: StoredMessage[] = [];
-      for (const line of completeLines) {
-        if (line.trim().length === 0) continue;
-        try {
-          messages.push(decodeStoredMessageForRead(JSON.parse(line)));
-        } catch {
-          // Tail previews are best-effort; full reads still surface durable corruption notes.
-        }
-      }
-      return messages;
-    } finally {
-      await handle.close();
-    }
-  }
-
-  private async readFileParts(
-    sessionId: string,
-  ): Promise<{ header: SessionHeader; messages: StoredMessage[] }> {
-    return this.readFilePartsUnlocked(sessionId);
-  }
-
-  private async readFilePartsUnlocked(
-    sessionId: string,
-    strict = false,
-  ): Promise<{ header: SessionHeader; messages: StoredMessage[] }> {
-    const text = await readFile(this.sessionPath(sessionId), 'utf8');
-    const rawLines = text.split('\n');
-    const endsWithNewline = text.endsWith('\n');
-    const lines = rawLines
-      .map((line, index) => ({ line, lineNumber: index + 1 }))
-      .filter((entry) => entry.line.trim().length > 0);
-    if (lines.length === 0 || !lines[0]) throw new Error(`Session ${sessionId} is empty`);
-    const header = decodeSessionHeader(JSON.parse(lines[0].line), sessionId);
-    const messages: StoredMessage[] = [];
-    const lastLineNumber = lines.at(-1)?.lineNumber;
-    for (const entry of lines.slice(1)) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(entry.line);
-      } catch (error) {
-        if (
-          !endsWithNewline &&
-          entry.lineNumber === lastLineNumber &&
-          classifyJsonRecord(entry.line) === 'incomplete-prefix'
-        )
-          continue;
-        if (strict) {
-          const detail = error instanceof Error ? error.message : String(error);
-          throw new Error(
-            `Session ${sessionId} has a corrupt JSONL record at line ${entry.lineNumber}: ${detail}`,
-          );
-        }
-        messages.push(createJsonlCorruptionNote(header, entry.lineNumber, error));
-        continue;
-      }
-      try {
-        messages.push(
-          strict ? decodeStoredMessageForRecovery(parsed) : decodeStoredMessageForRead(parsed),
-        );
-      } catch (error) {
-        if (strict) {
-          const detail = error instanceof Error ? error.message : String(error);
-          throw new Error(
-            `Session ${sessionId} has a corrupt JSONL record at line ${entry.lineNumber}: ${detail}`,
-          );
-        }
-        messages.push(createJsonlCorruptionNote(header, entry.lineNumber, error));
-      }
-    }
-    return { header, messages };
-  }
-
-  private async readTranscriptMessagesUnlocked(
-    sessionId: string,
-    header: SessionHeader,
-    strict = false,
-  ): Promise<StoredMessage[]> {
-    const text = await readFile(this.sessionPath(sessionId), 'utf8');
-    const rawLines = text.split('\n');
-    const endsWithNewline = text.endsWith('\n');
-    const lines = rawLines
-      .map((line, index) => ({ line, lineNumber: index + 1 }))
-      .filter((entry) => entry.line.trim().length > 0);
-    if (lines.length === 0 || !lines[0]) throw new Error(`Session ${sessionId} is empty`);
-
-    let firstRecord: unknown;
-    try {
-      firstRecord = JSON.parse(lines[0].line) as unknown;
-      if (isSessionTranscriptMarker(firstRecord)) {
-        decodeSessionTranscriptMarker(firstRecord, sessionId);
-      } else {
-        decodeSessionHeader(firstRecord, sessionId);
-      }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Session ${sessionId} has an invalid first JSONL record: ${detail}`);
-    }
-
-    const messages: StoredMessage[] = [];
-    const lastLineNumber = lines.at(-1)?.lineNumber;
-    for (const entry of lines.slice(1)) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(entry.line);
-      } catch (error) {
-        if (
-          !endsWithNewline &&
-          entry.lineNumber === lastLineNumber &&
-          classifyJsonRecord(entry.line) === 'incomplete-prefix'
-        ) {
-          continue;
-        }
-        if (strict) {
-          const detail = error instanceof Error ? error.message : String(error);
-          throw new Error(
-            `Session ${sessionId} has a corrupt JSONL record at line ${entry.lineNumber}: ${detail}`,
-          );
-        }
-        messages.push(createJsonlCorruptionNote(header, entry.lineNumber, error));
-        continue;
-      }
-      try {
-        messages.push(
-          strict ? decodeStoredMessageForRecovery(parsed) : decodeStoredMessageForRead(parsed),
-        );
-      } catch (error) {
-        if (strict) {
-          const detail = error instanceof Error ? error.message : String(error);
-          throw new Error(
-            `Session ${sessionId} has a corrupt JSONL record at line ${entry.lineNumber}: ${detail}`,
-          );
-        }
-        messages.push(createJsonlCorruptionNote(header, entry.lineNumber, error));
-      }
-    }
-    return messages;
-  }
-
-  private async writeAtomic(path: string, content: string): Promise<void> {
-    await mkdir(dirname(path), { recursive: true });
-    const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-    await writeFile(tempPath, content, { encoding: 'utf8', mode: 0o600 });
-    try {
-      await replaceFileWithWindowsReaderRetry(tempPath, path);
-    } finally {
-      await rm(tempPath, { force: true }).catch(() => {});
-    }
-  }
-
-  private withQueue(sessionId: string, operation: () => Promise<void>): Promise<void> {
-    assertSafeSessionId(sessionId);
-    return chainWrite(this.writeQueues, sessionId, operation);
-  }
-}
-
-async function replaceFileWithWindowsReaderRetry(tempPath: string, path: string): Promise<void> {
-  const attempts = process.platform === 'win32' ? 6 : 1;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      await rename(tempPath, path);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      const retryable = process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES');
-      if (!retryable || attempt === attempts) throw error;
-      await delay(attempt * 10);
-    }
-  }
-}
-
-/** Shared guard for stores that derive filesystem paths from a session id. */
-export function assertSafeSessionId(sessionId: string): void {
-  if (!isSafeSessionId(sessionId)) {
-    throw new Error('Invalid session id');
-  }
-}
-
-export function isSafeSessionId(sessionId: string): boolean {
-  return SESSION_ID_PATTERN.test(sessionId) && sessionId !== WORKSPACE_AUTHORITY_SESSION_ID;
-}
-
-type StoredSessionHeader = Omit<
-  SessionHeader,
-  | 'backend'
-  | 'model'
-  | 'permissionMode'
-  | 'collaborationMode'
-  | 'orchestrationMode'
-  | 'status'
-  | 'blockedReason'
-  | 'titleIsManual'
-> & {
-  backend: string;
-  model?: unknown;
-  permissionMode?: unknown;
-  collaborationMode?: unknown;
-  orchestrationMode?: unknown;
-  status?: unknown;
-  blockedReason?: unknown;
-  titleIsManual?: unknown;
-  /** Accepted only while decoding old session headers and dropped on normalization. */
-  pendingCwdReminder?: unknown;
-};
-
-function createJsonlCorruptionNote(
-  header: SessionHeader,
-  lineNumber: number,
-  error: unknown,
-): StoredMessage {
-  return {
-    type: 'system_note',
-    id: `jsonl-corrupt-${lineNumber}`,
-    ts: header.lastUsedAt ?? header.createdAt,
-    kind: 'error',
-    data: {
-      code: 'jsonl_parse_error',
-      lineNumber,
-      message: error instanceof Error ? error.message : 'Invalid JSONL message line',
-    },
-  };
-}
-
-/**
- * Decode the legacy line-1 JSONL header into the current canonical shape.
- *
- * Kept public for one-way importers so file and SQLite storage apply exactly
- * the same compatibility defaults and validation rules.
- */
-export function decodeSessionHeader(value: unknown, sessionId: string): SessionHeader {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`Invalid session header for session ${sessionId}: expected an object`);
-  }
-  const header = value as StoredSessionHeader;
-  const permissionMode = isPermissionMode(header.permissionMode) ? header.permissionMode : 'ask';
-  const collaborationMode = isCollaborationMode(header.collaborationMode)
-    ? header.collaborationMode
-    : 'agent';
-  const orchestrationMode = isOrchestrationMode(header.orchestrationMode)
-    ? header.orchestrationMode
-    : 'default';
-  const model =
-    typeof header.model === 'string' && header.model.length > 0 ? header.model : 'default';
-  const status = resolveMigratedStatus(header);
-  const blockedReason =
-    status === 'blocked' && isSessionBlockedReason(header.blockedReason)
-      ? header.blockedReason
-      : undefined;
-  const statusFields = {
-    status,
-    blockedReason,
-    statusUpdatedAt:
-      header.statusUpdatedAt ??
-      header.archivedAt ??
-      header.lastMessageAt ??
-      header.lastUsedAt ??
-      header.createdAt,
-  };
-  const titleIsManual =
-    typeof header.titleIsManual === 'boolean'
-      ? header.titleIsManual
-      : normalizeSessionName(header.name) !== DEFAULT_SESSION_NAME;
-  if (header.backend === 'claude') {
-    return normalizeMigratedHeader(
-      {
-        ...header,
-        ...statusFields,
-        titleIsManual,
-        backend: 'ai-sdk',
-        model,
-        permissionMode,
-        collaborationMode,
-        orchestrationMode,
-      },
-      sessionId,
-    );
-  }
-  if (header.backend === 'pi-agent') {
-    return normalizeMigratedHeader(
-      {
-        ...header,
-        ...statusFields,
-        titleIsManual,
-        backend: 'pi-agent',
-        model,
-        permissionMode,
-        collaborationMode,
-        orchestrationMode,
-      },
-      sessionId,
-    );
-  }
-  if (header.backend === 'pi') {
-    return normalizeMigratedHeader(
-      {
-        ...header,
-        ...statusFields,
-        titleIsManual,
-        backend: 'pi-agent',
-        model,
-        permissionMode,
-        collaborationMode,
-        orchestrationMode,
-      },
-      sessionId,
-    );
-  }
-  return normalizeMigratedHeader(
-    {
-      ...header,
-      ...statusFields,
-      titleIsManual,
-      backend: header.backend === 'ai-sdk' ? 'ai-sdk' : 'fake',
-      model,
-      permissionMode,
-      collaborationMode,
-      orchestrationMode,
-    },
-    sessionId,
-  );
-}
-
-function resolveMigratedStatus(header: StoredSessionHeader): SessionHeader['status'] {
-  if (header.isArchived) return 'archived';
-  if (isSessionStatus(header.status) && header.status !== 'archived') return header.status;
-  return 'active';
-}
-
-function normalizeMigratedHeader(
-  header: SessionHeader & { pendingCwdReminder?: unknown },
-  sessionId: string,
+function buildSessionHeader(
+  workspaceRoot: string,
+  input: CreateSessionInput,
+  sessionId: string = randomUUID(),
+  conversationCopy?: SessionConversationCopy,
 ): SessionHeader {
-  const { pendingCwdReminder: _legacyPendingCwdReminder, ...normalizedHeader } = header;
-  return normalizeSessionHeader(normalizedHeader, sessionId);
+  if (
+    input.projectId !== undefined &&
+    input.projectId !== null &&
+    (typeof input.projectId !== 'string' || input.projectId.length === 0)
+  ) {
+    throw new Error('Invalid project id');
+  }
+  const now = Date.now();
+  assertSafeSessionId(sessionId);
+  const name =
+    input.name === undefined ? DEFAULT_SESSION_NAME : normalizeRequiredSessionName(input.name);
+  const header: SessionHeader = {
+    id: sessionId,
+    workspaceRoot,
+    cwd: input.cwd,
+    ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+    createdAt: now,
+    lastUsedAt: now,
+    name,
+    titleIsManual: false,
+    isFlagged: false,
+    labels: input.labels ?? [],
+    isArchived: false,
+    status: input.status ?? 'active',
+    ...(input.blockedReason ? { blockedReason: input.blockedReason } : {}),
+    statusUpdatedAt: now,
+    ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+    ...(input.branchOfTurnId ? { branchOfTurnId: input.branchOfTurnId } : {}),
+    ...(input.subagentParent ? { subagentParent: input.subagentParent } : {}),
+    ...(input.subagentRuntime ? { subagentRuntime: input.subagentRuntime } : {}),
+    ...(input.subagentSpawn ? { subagentSpawn: input.subagentSpawn } : {}),
+    ...(input.subagentWorkspace ? { subagentWorkspace: input.subagentWorkspace } : {}),
+    ...(conversationCopy ? { conversationCopy } : {}),
+    ...(input.revisionRootSessionId ? { revisionRootSessionId: input.revisionRootSessionId } : {}),
+    ...(input.revisionParentSessionId
+      ? { revisionParentSessionId: input.revisionParentSessionId }
+      : {}),
+    ...(input.revisionOfTurnId ? { revisionOfTurnId: input.revisionOfTurnId } : {}),
+    ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
+    ...(input.revisionState ? { revisionState: input.revisionState } : {}),
+    hasUnread: false,
+    backend: input.backend,
+    llmConnectionSlug: input.llmConnectionSlug,
+    connectionLocked: false,
+    model: input.model ?? 'default',
+    permissionMode: input.permissionMode,
+    collaborationMode: input.collaborationMode ?? 'agent',
+    orchestrationMode: input.orchestrationMode ?? 'default',
+    ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
+    schemaVersion: 1,
+  };
+  assertValidSessionLineage(header);
+  return header;
+}
+
+function normalizeRequiredSessionName(name: string): string {
+  const normalized = normalizeUserSessionName(name);
+  if (!normalized.ok) throw new Error(normalized.error);
+  return normalized.value;
 }
 
 /** Validate and normalize a current SessionHeader before canonical persistence. */
@@ -1952,16 +959,6 @@ function isValidConversationCopyLineage(header: SessionHeader): boolean {
   );
 }
 
-function assertConversationCopyTransition(
-  current: SessionHeader,
-  patch: Partial<SessionHeader>,
-): void {
-  if (!Object.prototype.hasOwnProperty.call(patch, 'conversationCopy')) return;
-  if (!isValidConversationCopyTransition(current, patch.conversationCopy)) {
-    throw new Error('Session conversation-copy identity is immutable');
-  }
-}
-
 function isValidSubagentSessionLineage(header: SessionHeader): boolean {
   if (header.subagentParent === undefined) {
     return (
@@ -2000,10 +997,6 @@ function isBackendKind(value: unknown): value is SessionHeader['backend'] {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
-}
-
-function hasErrorCode(error: unknown, code: string): boolean {
-  return (error as NodeJS.ErrnoException | undefined)?.code === code;
 }
 
 function assertNoConversationCopyMetadata(input: CreateSessionInput): void {
@@ -2095,7 +1088,7 @@ function toCatalogSummary(
   };
 }
 
-function catalogMessageProjection(messages: StoredMessage[]): {
+export function projectSessionCatalogMessages(messages: readonly StoredMessage[]): {
   readonly lastMessageAt?: number;
   readonly lastMessagePreview?: string;
 } {
@@ -2107,7 +1100,7 @@ function catalogMessageProjection(messages: StoredMessage[]): {
   };
 }
 
-function latestVisibleMessageAt(messages: StoredMessage[]): number | undefined {
+function latestVisibleMessageAt(messages: readonly StoredMessage[]): number | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
     if (isVisibleSessionMessage(message)) return message.ts;
@@ -2131,7 +1124,7 @@ function normalizeSessionName(name: string): string {
   return name === 'New Session' ? DEFAULT_SESSION_NAME : name;
 }
 
-function lastMessagePreviewForMessages(messages: StoredMessage[]): string | undefined {
+function lastMessagePreviewForMessages(messages: readonly StoredMessage[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
     if (message.type === 'user') {
@@ -2157,44 +1150,6 @@ function truncatePreview(text: string, maxLength = 96): string {
   const chars = Array.from(text);
   if (chars.length <= maxLength) return text;
   return `${chars.slice(0, maxLength - 1).join('')}…`;
-}
-
-async function writeNewTranscript(
-  path: string,
-  payload: string,
-  durabilityRoot?: string,
-): Promise<void> {
-  try {
-    const handle = await open(path, 'wx', 0o600);
-    try {
-      await handle.writeFile(payload, 'utf8');
-      if (durabilityRoot) await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    if (durabilityRoot) {
-      await syncDirectoryChain(dirname(path), durabilityRoot);
-    }
-  } catch (error) {
-    if (!durabilityRoot || error instanceof DurableStoreWriteError) throw error;
-    throw new DurableStoreWriteError(
-      `Durable Session transcript did not reach stable storage: ${path}`,
-      error,
-    );
-  }
-}
-
-async function stabilizeTranscript(path: string, durabilityRoot: string): Promise<void> {
-  try {
-    await syncFile(path);
-    await syncDirectoryChain(dirname(path), durabilityRoot);
-  } catch (error) {
-    if (error instanceof DurableStoreWriteError) throw error;
-    throw new DurableStoreWriteError(
-      `Session transcript durability could not be re-established: ${path}`,
-      error,
-    );
-  }
 }
 
 export function createUserMessage(input: {

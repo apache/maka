@@ -1,8 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { tmpdir } from 'node:os';
+import type { SessionHeader, StoredMessage } from '@maka/core';
 import { discoverMarkedStorageRoot } from '@maka/storage/root-authority';
 import {
   getE2eFixtureState,
@@ -11,6 +13,19 @@ import {
   retireE2eFixtureSandboxBoundaryRequest,
   seedE2eFixture,
 } from '../e2e-fixture.js';
+
+function readArtifactMetadata(workspaceRoot: string): string[] {
+  const database = new DatabaseSync(join(workspaceRoot, 'runtime.sqlite'), { readOnly: true });
+  try {
+    return (
+      database
+        .prepare('SELECT record_json FROM artifact_records ORDER BY created_at, storage_key')
+        .all() as Array<{ record_json: string }>
+    ).map((row) => row.record_json);
+  } finally {
+    database.close();
+  }
+}
 
 describe('e2e-fixture mode', () => {
   it('stays fully disabled when MAKA_E2E_FIXTURE is unset', () => {
@@ -348,13 +363,29 @@ describe('e2e-fixture mode', () => {
       });
       assert.equal((await discoverMarkedStorageRoot({ path: workspaceRoot })).kind, 'interactive');
       assert.equal(getE2eFixtureState(fixture)?.activeSessionId, 'e2e-fixture-turn');
-      const tasks = JSON.parse(await readFile(
-        join(workspaceRoot, 'sessions', 'e2e-fixture-turn', 'tasks.json'),
-        'utf8',
-      )) as Array<{ key: string; parentId?: string; status: string; owner?: { actor: string } }>;
+      const tasks = withRuntimeDatabase(workspaceRoot, (database) => {
+        const row = database
+          .prepare(`
+            SELECT record_json AS recordJson
+            FROM workflow_task_ledger_projections
+            WHERE session_id = ?
+          `)
+          .get('e2e-fixture-turn') as { recordJson?: unknown } | undefined;
+        if (typeof row?.recordJson !== 'string') throw new Error('Task projection not found');
+        return JSON.parse(row.recordJson) as Array<{
+          id: string;
+          key: string;
+          parentId?: string;
+          status: string;
+          owner?: { actor: string };
+        }>;
+      });
       assert.deepEqual(tasks.map((task) => task.key), ['T1', 'T1.1', 'T1.2', 'T1.2.1', 'T2', 'T3']);
       assert.equal(tasks.find((task) => task.key === 'T1.2')?.owner?.actor, 'child_agent');
-      assert.equal(tasks.find((task) => task.key === 'T1.2.1')?.parentId, 'task-child-ui');
+      assert.equal(
+        tasks.find((task) => task.key === 'T1.2.1')?.parentId,
+        tasks.find((task) => task.key === 'T1.2')?.id,
+      );
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
@@ -372,20 +403,20 @@ describe('e2e-fixture mode', () => {
         now: 1_700_000_000_000,
       });
       assert.equal(getE2eFixtureState(fixture)?.activeSessionId, 'e2e-fixture-deep-research');
-      const ledger = await readFile(
-        join(
-          workspaceRoot,
-          'sessions',
-          'e2e-fixture-deep-research',
-          'deep-research',
-          'events.jsonl',
+      const events = withRuntimeDatabase(workspaceRoot, (database) =>
+        (
+          database
+            .prepare(`
+              SELECT record_json AS recordJson
+              FROM workflow_deep_research_events
+              WHERE session_id = ?
+              ORDER BY sequence
+            `)
+            .all('e2e-fixture-deep-research') as Array<{ recordJson: string }>
+        ).map((row) =>
+          JSON.parse(row.recordJson) as { type: string; artifact?: { role?: string } },
         ),
-        'utf8',
       );
-      const events = ledger.trim().split('\n').map((line) => JSON.parse(line) as {
-        type: string;
-        artifact?: { role?: string };
-      });
       assert.equal(events.at(-1)?.type, 'research_completed');
       assert.equal(
         events.filter((event) => event.artifact?.role === 'report_section').length,
@@ -509,33 +540,20 @@ describe('e2e-fixture mode', () => {
       // the "active + stale → pill still visible" invariant is exercised.
       assert.equal(state?.activeSessionId, 'e2e-fixture-stale-fake');
 
-      // Connection list MUST NOT contain `fake` / `fake-claude` slugs —
-      // those are what makes the seeded sessions stale.
+      // The missing `fake` connection makes the active Session unavailable.
       const connections = JSON.parse(
         await readFile(join(workspaceRoot, 'llm-connections.json'), 'utf8'),
       ) as { defaultSlug: string; connections: Array<{ slug: string }> };
       const slugs = new Set(connections.connections.map((c) => c.slug));
       assert.equal(slugs.has('fake'), false, 'fake slug must not be a real connection');
-      assert.equal(slugs.has('fake-claude'), false, 'fake-claude slug must not be a real connection');
       assert.equal(slugs.has('zai-live'), true, 'zai-live must be in the connection list (healthy session uses it)');
 
-      // Three session.jsonl files: one for each session.
-      const sessionDirs = await Promise.all(
-        ['e2e-fixture-stale-fake', 'e2e-fixture-stale-legacy', 'e2e-fixture-healthy'].map(async (id) => {
-          const file = await readFile(join(workspaceRoot, 'sessions', id, 'session.jsonl'), 'utf8');
-          return JSON.parse(file.split('\n')[0]!) as {
-            backend: string;
-            llmConnectionSlug: string;
-            model: string;
-          };
-        }),
-      );
-      assert.equal(sessionDirs[0]?.backend, 'fake');
-      assert.equal(sessionDirs[0]?.llmConnectionSlug, 'fake');
-      assert.equal(sessionDirs[1]?.backend, 'claude');
-      assert.equal(sessionDirs[1]?.llmConnectionSlug, 'fake-claude');
-      assert.equal(sessionDirs[2]?.backend, 'ai-sdk');
-      assert.equal(sessionDirs[2]?.llmConnectionSlug, 'zai-live');
+      const stale = await readSessionHeader(workspaceRoot, 'e2e-fixture-stale-fake');
+      const healthy = await readSessionHeader(workspaceRoot, 'e2e-fixture-healthy');
+      assert.equal(stale.backend, 'fake');
+      assert.equal(stale.llmConnectionSlug, 'fake');
+      assert.equal(healthy.backend, 'ai-sdk');
+      assert.equal(healthy.llmConnectionSlug, 'zai-live');
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
@@ -571,12 +589,7 @@ describe('e2e-fixture mode', () => {
       ];
 
       for (const expected of expectedSessions) {
-        const file = await readFile(join(workspaceRoot, 'sessions', expected.id, 'session.jsonl'), 'utf8');
-        const header = JSON.parse(file.split('\n')[0]!) as {
-          status: string;
-          blockedReason?: string;
-          isArchived: boolean;
-        };
+        const header = await readSessionHeader(workspaceRoot, expected.id);
         assert.equal(header.status, expected.status, `${expected.id} should be ${expected.status}`);
         if ('blockedReason' in expected && expected.blockedReason !== undefined) {
           assert.equal(
@@ -618,14 +631,13 @@ describe('e2e-fixture mode', () => {
         credentialStore: fakeCredentialStore(),
         now: 1_700_000_000_000,
       });
-      // The on-disk status is `running` so the status gate self-heals like the
+      // The durable status is `running` so the status gate self-heals like the
       // real backgrounded-session path; the lone user message is the tail turn
       // the indicator anchors to.
-      const file = await readFile(join(workspaceRoot, 'sessions', 'e2e-fixture-processing', 'session.jsonl'), 'utf8');
-      const lines = file.split('\n').filter(Boolean);
-      const header = JSON.parse(lines[0]!) as { status: string };
+      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-processing');
       assert.equal(header.status, 'running');
-      const userMessages = lines.slice(1).map((l) => JSON.parse(l) as { type: string }).filter((m) => m.type === 'user');
+      const userMessages = (await readSessionMessages(workspaceRoot, 'e2e-fixture-processing'))
+        .filter((message) => message.type === 'user');
       assert.equal(userMessages.length, 1, 'a lone user prompt anchors the tail turn');
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
@@ -649,32 +661,35 @@ describe('e2e-fixture mode', () => {
       assert.equal(state?.sidebarCollapsed, false);
       assert.equal(state?.activeSessionId, 'e2e-fixture-turn');
 
-      const reminders = JSON.parse(
-        await readFile(join(workspaceRoot, 'plan-reminders.json'), 'utf8'),
-      ) as Array<{
+      const reminders = withRuntimeDatabase(workspaceRoot, (database) =>
+        (
+          database
+            .prepare('SELECT record_json AS recordJson FROM workflow_plan_reminders')
+            .all() as Array<{ recordJson: string }>
+        ).map((row) => JSON.parse(row.recordJson)) as Array<{
         id: string;
         title: string;
         status: string;
         enabled: boolean;
         nextRunAt?: number;
         lastRun?: { status: string; message: string };
-      }>;
-      assert.deepEqual(reminders.map((reminder) => reminder.id), [
-        'visual-plan-reminder-standup',
-        'visual-plan-reminder-paused',
-        'visual-plan-reminder-weekly-review',
-        'visual-plan-reminder-completed',
-      ]);
-      assert.equal(reminders[0]?.status, 'scheduled');
-      assert.equal(reminders[0]?.enabled, true);
-      assert.equal(typeof reminders[0]?.nextRunAt, 'number');
-      assert.equal(reminders[1]?.status, 'paused');
-      assert.equal(reminders[1]?.enabled, false);
-      assert.equal(reminders[2]?.status, 'scheduled');
-      assert.equal(reminders[2]?.enabled, true);
-      assert.equal(reminders[3]?.status, 'completed');
-      assert.equal(reminders[3]?.lastRun?.status, 'triggered');
-      assert.match(reminders[3]?.lastRun?.message ?? '', /计划提醒/);
+      }>,
+      );
+      assert.equal(reminders.length, 4);
+      const scheduled = reminders.find((reminder) => reminder.title === '同步项目风险');
+      const paused = reminders.find((reminder) => reminder.title === '暂停的发布检查');
+      const weekly = reminders.find((reminder) => reminder.title === '每周竞品动态追踪');
+      const completed = reminders.find((reminder) => reminder.title === '已触发的本地提醒');
+      assert.equal(scheduled?.status, 'scheduled');
+      assert.equal(scheduled?.enabled, true);
+      assert.equal(typeof scheduled?.nextRunAt, 'number');
+      assert.equal(paused?.status, 'paused');
+      assert.equal(paused?.enabled, false);
+      assert.equal(weekly?.status, 'scheduled');
+      assert.equal(weekly?.enabled, true);
+      assert.equal(completed?.status, 'completed');
+      assert.equal(completed?.lastRun?.status, 'triggered');
+      assert.match(completed?.lastRun?.message ?? '', /计划提醒/);
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
@@ -821,13 +836,9 @@ describe('e2e-fixture mode', () => {
       assert.equal(state?.sidebarCollapsed, false, 'sidebar row action screenshots must expand the seeded sidebar');
       assert.equal(state?.activeSessionId, 'e2e-fixture-sidebar-long-00');
 
-      // Same 60-session seed actually lands on disk so the sidebar
+      // Same 60-session seed is durable so the sidebar
       // is fully populated for the actions-visible capture.
-      const file = await readFile(
-        join(workspaceRoot, 'sessions', 'e2e-fixture-sidebar-long-00', 'session.jsonl'),
-        'utf8',
-      );
-      const header = JSON.parse(file.split('\n')[0]!) as { id: string; status: string };
+      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-sidebar-long-00');
       assert.equal(header.id, 'e2e-fixture-sidebar-long-00');
       assert.equal(header.status, 'active');
     } finally {
@@ -862,13 +873,9 @@ describe('e2e-fixture mode', () => {
       // sidebar behind the modal looks identical to that baseline.
       assert.equal(state?.activeSessionId, 'e2e-fixture-sidebar-long-00');
 
-      // Same 60-session seed actually lands on disk so the sidebar
+      // Same 60-session seed is durable so the sidebar
       // is fully populated behind the modal.
-      const file = await readFile(
-        join(workspaceRoot, 'sessions', 'e2e-fixture-sidebar-long-00', 'session.jsonl'),
-        'utf8',
-      );
-      const header = JSON.parse(file.split('\n')[0]!) as { id: string; status: string };
+      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-sidebar-long-00');
       assert.equal(header.id, 'e2e-fixture-sidebar-long-00');
       assert.equal(header.status, 'active');
     } finally {
@@ -892,11 +899,7 @@ describe('e2e-fixture mode', () => {
       assert.equal(state?.paletteOpen, true, 'paletteOpen must be true so the renderer auto-opens CommandPalette');
       assert.equal(state?.activeSessionId, 'e2e-fixture-sidebar-long-00');
 
-      const file = await readFile(
-        join(workspaceRoot, 'sessions', 'e2e-fixture-sidebar-long-00', 'session.jsonl'),
-        'utf8',
-      );
-      const header = JSON.parse(file.split('\n')[0]!) as { id: string; status: string };
+      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-sidebar-long-00');
       assert.equal(header.id, 'e2e-fixture-sidebar-long-00');
       assert.equal(header.status, 'active');
     } finally {
@@ -926,22 +929,18 @@ describe('e2e-fixture mode', () => {
       assert.equal(state?.activeSessionId, 'e2e-fixture-sidebar-long-00');
       assert.equal(state?.sidebarCollapsed, false, 'sidebar scroll screenshots must expand the seeded sidebar');
 
-      // Verify all 60 sessions exist on disk with deterministic IDs +
+      // Verify all 60 Sessions exist in SQLite with deterministic IDs +
       // monotonically decreasing lastMessageAt (newest first).
       let previousLastMessageAt = Infinity;
       for (let i = 0; i < 60; i++) {
         const idSuffix = String(i).padStart(2, '0');
         const sessionId = 'e2e-fixture-sidebar-long-' + idSuffix;
-        const file = await readFile(join(workspaceRoot, 'sessions', sessionId, 'session.jsonl'), 'utf8');
-        const header = JSON.parse(file.split('\n')[0]!) as {
-          id: string;
-          name: string;
-          status: string;
-          lastMessageAt: number;
-        };
+        const header = await readSessionHeader(workspaceRoot, sessionId);
         assert.equal(header.id, sessionId);
         assert.equal(header.name, '会话 ' + idSuffix);
         assert.equal(header.status, 'active');
+        assert.equal(typeof header.lastMessageAt, 'number');
+        if (header.lastMessageAt === undefined) throw new Error('Session activity missing');
         assert.ok(
           header.lastMessageAt < previousLastMessageAt,
           'sessions must be in descending lastMessageAt order so the newest sorts to the top of the sidebar',
@@ -987,9 +986,7 @@ describe('e2e-fixture mode', () => {
         const state = getE2eFixtureState(fixture);
         assert.equal(state?.activeSessionId, 'e2e-fixture-artifact');
 
-        const lines = (await readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl'), 'utf8'))
-          .split('\n')
-          .filter(Boolean);
+        const lines = readArtifactMetadata(workspaceRoot);
         assert.equal(lines.length, 1, 'preview-image fixture must seed exactly one artifact');
         for (const line of lines) assertNoAbsolutePathInMetadata(line);
 
@@ -1037,9 +1034,7 @@ describe('e2e-fixture mode', () => {
           now: 1_700_000_000_000,
         });
 
-        const lines = (await readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl'), 'utf8'))
-          .split('\n')
-          .filter(Boolean);
+        const lines = readArtifactMetadata(workspaceRoot);
         assert.equal(lines.length, 1);
         for (const line of lines) assertNoAbsolutePathInMetadata(line);
 
@@ -1071,9 +1066,7 @@ describe('e2e-fixture mode', () => {
           now: 1_700_000_000_000,
         });
 
-        const lines = (await readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl'), 'utf8'))
-          .split('\n')
-          .filter(Boolean);
+        const lines = readArtifactMetadata(workspaceRoot);
         assert.equal(lines.length, 1);
         for (const line of lines) assertNoAbsolutePathInMetadata(line);
 
@@ -1140,9 +1133,7 @@ describe('e2e-fixture mode', () => {
       const state = getE2eFixtureState(fixture);
       assert.equal(state?.activeSessionId, 'e2e-fixture-artifact');
 
-      const metadata = (await readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl'), 'utf8'))
-        .split('\n')
-        .filter(Boolean)
+      const metadata = readArtifactMetadata(workspaceRoot)
         .map((line) => JSON.parse(line) as { name: string; relativePath: string; kind: string; status: string });
       assert.deepEqual(metadata.map((record) => record.name), ['report.html', 'patch.diff', 'notes.md']);
       assert.deepEqual(metadata.map((record) => record.kind), ['html', 'diff', 'file']);
@@ -1189,13 +1180,10 @@ describe('e2e-fixture mode', () => {
           'orphan branch points to NON-existent parent',
         );
 
-        // Negative case: the orphan parent must NOT be written to disk.
+        // Negative case: the orphan parent must not exist in SQLite.
         await assert.rejects(
-          readFile(
-            join(workspaceRoot, 'sessions', 'e2e-fixture-turn-control-deleted-parent', 'session.jsonl'),
-            'utf8',
-          ),
-          /ENOENT/,
+          readSessionHeader(workspaceRoot, 'e2e-fixture-turn-control-deleted-parent'),
+          /Session not found/,
         );
       } finally {
         await rm(workspaceRoot, { recursive: true, force: true });
@@ -1261,7 +1249,7 @@ describe('e2e-fixture mode', () => {
       assert.equal(state?.activeSessionId, 'e2e-fixture-turn-control-branch-orphan');
     });
 
-    it('all three turn-control-* scenarios write the same on-disk session set', async () => {
+    it('all three turn-control-* scenarios write the same durable Session set', async () => {
       // Locks the @kenji review note: the three scenarios are a single
       // state family that only differs in active-session selection. A
       // future change that diverges their on-disk seed must update
@@ -1284,18 +1272,15 @@ describe('e2e-fixture mode', () => {
             now: 1_700_000_000_000,
           });
 
-          // Every fixture must seed exactly the three turn-control
-          // sessions (the orphan parent stays unseeded by design).
+          // Every fixture must seed the three turn-control Sessions while the
+          // orphan parent stays absent by design.
           for (const id of expected) {
             const header = await readSessionHeader(workspaceRoot, id);
             assert.equal(header.id, id, `${scenario} should seed ${id}`);
           }
           await assert.rejects(
-            readFile(
-              join(workspaceRoot, 'sessions', 'e2e-fixture-turn-control-deleted-parent', 'session.jsonl'),
-              'utf8',
-            ),
-            /ENOENT/,
+            readSessionHeader(workspaceRoot, 'e2e-fixture-turn-control-deleted-parent'),
+            /Session not found/,
             `${scenario} must not seed the orphan parent`,
           );
         } finally {
@@ -1319,9 +1304,7 @@ describe('e2e-fixture mode', () => {
       const state = getE2eFixtureState(fixture);
       assert.equal(state?.activeSessionId, 'e2e-fixture-artifact');
 
-      const metadata = (await readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl'), 'utf8'))
-        .split('\n')
-        .filter(Boolean)
+      const metadata = readArtifactMetadata(workspaceRoot)
         .map((line) => JSON.parse(line) as { id: string; name: string; relativePath: string; kind: string; status: string });
       assert.deepEqual(metadata.map((record) => record.id), [
         'artifact-report',
@@ -1357,7 +1340,7 @@ describe('settings-bots-onboarding fixture (#1233 deferral)', () => {
     assert.equal(state?.activeSessionId, 'e2e-fixture-turn');
   });
 
-  it('reuses the standard turn seed so no bot-specific on-disk seed is needed', async () => {
+  it('reuses the standard turn seed so no bot-specific durable seed is needed', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-bots-onboarding-'));
     try {
       const fixture = resolveE2eFixture('settings-bots-onboarding', false);
@@ -1368,8 +1351,7 @@ describe('settings-bots-onboarding fixture (#1233 deferral)', () => {
         credentialStore: fakeCredentialStore(),
         now: 1_700_000_000_000,
       });
-      const file = await readFile(join(workspaceRoot, 'sessions', 'e2e-fixture-turn', 'session.jsonl'), 'utf8');
-      const header = JSON.parse(file.split('\n')[0]!) as { id: string };
+      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-turn');
       assert.equal(header.id, 'e2e-fixture-turn');
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
@@ -1394,7 +1376,7 @@ describe('browser-empty chrome fixture (#819)', () => {
     assert.deepEqual(state?.liveBrowserSessionIds, ['e2e-fixture-turn']);
   });
 
-  it('reuses the always-seeded turn session so no browser-specific on-disk seed is needed', async () => {
+  it('reuses the always-seeded turn Session so no browser-specific durable seed is needed', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-browser-empty-'));
     try {
       const fixture = resolveE2eFixture('browser-empty', false);
@@ -1405,11 +1387,10 @@ describe('browser-empty chrome fixture (#819)', () => {
         credentialStore: fakeCredentialStore(),
         now: 1_700_000_000_000,
       });
-      // The turn session is part of the standard seed (always written),
-      // so the active browser session has a real on-disk chat behind the
+      // The turn Session is part of the standard seed, so the active browser
+      // Session has a real durable chat behind the
       // panel without a browser-specific seed branch.
-      const file = await readFile(join(workspaceRoot, 'sessions', 'e2e-fixture-turn', 'session.jsonl'), 'utf8');
-      const header = JSON.parse(file.split('\n')[0]!) as { id: string };
+      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-turn');
       assert.equal(header.id, 'e2e-fixture-turn');
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
@@ -1425,29 +1406,42 @@ function fakeCredentialStore(secrets: string[] = []) {
   };
 }
 
-async function readSessionHeader(workspaceRoot: string, sessionId: string): Promise<{
-  id: string;
-  parentSessionId?: string;
-  branchOfTurnId?: string;
-  status: string;
-}> {
-  const file = await readFile(join(workspaceRoot, 'sessions', sessionId, 'session.jsonl'), 'utf8');
-  const firstLine = file.split('\n')[0];
-  if (!firstLine) throw new Error(`session.jsonl for ${sessionId} is empty`);
-  return JSON.parse(firstLine) as {
-    id: string;
-    parentSessionId?: string;
-    branchOfTurnId?: string;
-    status: string;
-  };
+async function readSessionHeader(workspaceRoot: string, sessionId: string): Promise<SessionHeader> {
+  return withRuntimeDatabase(workspaceRoot, (database) => {
+    const row = database
+      .prepare('SELECT payload_json AS payloadJson FROM session_metadata WHERE session_id = ?')
+      .get(sessionId) as { payloadJson?: unknown } | undefined;
+    if (typeof row?.payloadJson !== 'string') throw new Error(`Session not found: ${sessionId}`);
+    return JSON.parse(row.payloadJson) as SessionHeader;
+  });
 }
 
-async function readSessionMessages(workspaceRoot: string, sessionId: string): Promise<unknown[]> {
-  const file = await readFile(join(workspaceRoot, 'sessions', sessionId, 'session.jsonl'), 'utf8');
-  // Skip the first line (the SessionHeader); the rest are StoredMessages.
-  return file
-    .split('\n')
-    .slice(1)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as unknown);
+async function readSessionMessages(
+  workspaceRoot: string,
+  sessionId: string,
+): Promise<StoredMessage[]> {
+  return withRuntimeDatabase(workspaceRoot, (database) =>
+    (
+      database
+        .prepare(`
+          SELECT record_json AS recordJson
+          FROM session_messages
+          WHERE session_id = ?
+          ORDER BY sequence
+        `)
+        .all(sessionId) as Array<{ recordJson: string }>
+    ).map((row) => JSON.parse(row.recordJson) as StoredMessage),
+  );
+}
+
+function withRuntimeDatabase<T>(
+  workspaceRoot: string,
+  read: (database: DatabaseSync) => T,
+): T {
+  const database = new DatabaseSync(join(workspaceRoot, 'runtime.sqlite'), { readOnly: true });
+  try {
+    return read(database);
+  } finally {
+    database.close();
+  }
 }

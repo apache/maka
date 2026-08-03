@@ -115,7 +115,7 @@ export class FakeBackend implements AgentBackend {
               '  click A "javascript:alert(1)"',
               '```',
             ].join('\n')
-          : `Fake backend received: ${input.text}${attLine}\n\nThis proves the session stream, JSONL storage, and renderer loop are connected.`;
+          : `Fake backend received: ${input.text}${attLine}\n\nThis proves the session stream, SQLite storage, and renderer loop are connected.`;
     // Every delta must concatenate to text_complete; `.` would silently drop
     // line terminators and make structured Markdown reflow only at completion.
     const chunks = text.match(/[\s\S]{1,9}/g) ?? [text];

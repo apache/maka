@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -46,65 +46,6 @@ describe('interactive task ledger authority', () => {
         assert.notEqual(reopened, first);
         assert.equal((await reopened.list(SESSION_ID)).length, 1);
         reopened.close();
-      } finally {
-        if (!owner.closed) await owner.close();
-      }
-    });
-  });
-
-  test('reads a current legacy tasks.json as canonical when no event ledger exists', async () => {
-    await withInteractiveOwner(
-      async ({ writer }) => {
-        const listed = await writer.list(SESSION_ID);
-        assert.equal(listed.length, 1);
-        assert.equal(listed[0]?.id, 'legacy-task');
-        assert.equal(listed[0]?.key, 'T1');
-        assert.equal((await writer.get(SESSION_ID, 'T1'))?.subject, 'legacy canonical task');
-      },
-      async (root) => {
-        await mkdir(join(root, 'sessions', SESSION_ID), { recursive: true });
-        await writeFile(
-          tasksPath(root),
-          JSON.stringify([
-            {
-              id: 'legacy-task',
-              subject: 'legacy canonical task',
-              status: 'pending',
-              createdAt: 1,
-              updatedAt: 1,
-            },
-          ]),
-          'utf8',
-        );
-      },
-    );
-  });
-
-  test('fails closed on a corrupt event ledger even when a legacy cache exists', async () => {
-    await withInteractiveRoot(async ({ root, capability }) => {
-      await mkdir(join(root, 'sessions', SESSION_ID), { recursive: true });
-      await writeFile(
-        tasksPath(root),
-        JSON.stringify([
-          {
-            id: 'cached-task',
-            subject: 'must not become canonical',
-            status: 'pending',
-            createdAt: 1,
-            updatedAt: 1,
-          },
-        ]),
-        'utf8',
-      );
-      await writeFile(eventsPath(root), '{"not":"a task event"}\n', 'utf8');
-      const owner = await tryAcquireInteractiveRootOwner(capability);
-      assert.ok(owner);
-      if (!owner) return;
-      try {
-        await assert.rejects(
-          () => openInteractiveTaskLedgerStoreForWrite(owner.lease),
-          /Invalid task event JSONL line/,
-        );
       } finally {
         if (!owner.closed) await owner.close();
       }
@@ -161,10 +102,8 @@ describe('interactive task ledger authority', () => {
 
 async function withInteractiveOwner(
   run: (input: { root: string; writer: InteractiveTaskLedgerWriter }) => Promise<void>,
-  prepare?: (root: string) => Promise<void>,
 ): Promise<void> {
   await withInteractiveRoot(async ({ root, capability }) => {
-    await prepare?.(root);
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     if (!owner) return;
@@ -202,14 +141,6 @@ async function withTempDir(run: (base: string) => Promise<void>): Promise<void> 
   } finally {
     await rm(base, { recursive: true, force: true });
   }
-}
-
-function tasksPath(root: string): string {
-  return join(root, 'sessions', SESSION_ID, 'tasks.json');
-}
-
-function eventsPath(root: string): string {
-  return join(root, 'sessions', SESSION_ID, 'task-events.jsonl');
 }
 
 function isInvalidLease(error: unknown): boolean {

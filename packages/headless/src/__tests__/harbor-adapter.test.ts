@@ -2764,15 +2764,6 @@ def write_artifact_database(store_root, records, artifact_schema_version=1):
             version INTEGER NOT NULL,
             applied_at INTEGER NOT NULL
         );
-        CREATE TABLE cutover_journal (
-            store_name TEXT PRIMARY KEY,
-            source_path TEXT NOT NULL,
-            source_fingerprint TEXT NOT NULL,
-            state TEXT NOT NULL,
-            started_at INTEGER NOT NULL,
-            completed_at INTEGER,
-            validation_json TEXT
-        );
         CREATE TABLE artifact_records (
             storage_key TEXT PRIMARY KEY,
             artifact_id TEXT NOT NULL,
@@ -2786,9 +2777,6 @@ def write_artifact_database(store_root, records, artifact_schema_version=1):
     connection.execute(
         "INSERT INTO operational_schema_migrations(scope, version, applied_at) VALUES ('artifact', ?, 1)",
         (artifact_schema_version,),
-    )
-    connection.execute(
-        "INSERT INTO cutover_journal(store_name, source_path, source_fingerprint, state, started_at, completed_at, validation_json) VALUES ('artifact_metadata', 'artifacts/metadata.jsonl', 'none', 'completed', 1, 1, '{}')"
     )
     for record in records:
         connection.execute(
@@ -2885,19 +2873,6 @@ with tempfile.TemporaryDirectory() as tmp:
     assert image_content[0].source.path.startswith("trajectory-assets/"), image_content
     assert image_content[0].source.path.endswith(".png"), image_content
     assert (logs_dir / image_content[0].source.path).is_file(), image_content
-
-    database_path.unlink()
-    metadata_path = artifact_root / "metadata.jsonl"
-    metadata_path.write_text(json.dumps(image_record) + "\n", encoding="utf-8")
-    agent._apply_cell_output(context, {
-        "status": "completed",
-        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
-        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
-    })
-    legacy_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
-    assert legacy_payload["extra"]["maka_artifact_kind"] == "summary", legacy_payload
-    assert legacy_payload["extra"]["maka_summary_reason"] == "image_artifact_metadata_missing", legacy_payload
-    metadata_path.unlink()
 
     write_artifact_database(artifact_root.parent, [image_record], artifact_schema_version=2)
     agent._apply_cell_output(context, {

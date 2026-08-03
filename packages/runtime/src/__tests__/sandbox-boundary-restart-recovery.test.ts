@@ -16,18 +16,14 @@ import {
   type DurableRuntimeEventStore,
   type SessionAuthorityStore,
 } from '@maka/storage';
-import {
-  createLegacyAgentRunStoreForTest,
-  createLegacyRuntimeEventStoreForTest,
-} from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 
 /**
- * Restart behaviour against the retired JSONL execution stores retained for
- * compatibility coverage. Memory stores can model the shapes but not the
- * ordering that makes this bug reachable — the request row commits before its
- * RuntimeEvent, and a recovery pass can die between settling the row and
- * committing the run's terminal fact.
+ * Restart behaviour against the canonical SQLite stores. Memory stores can
+ * model the shapes but not the ordering that makes this bug reachable — the
+ * request row commits before its RuntimeEvent, and a recovery pass can die
+ * between settling the row and committing the run's terminal fact.
  */
 describe('sandbox boundary restart recovery on durable stores', () => {
   it('attributes a closure whose RuntimeEvent never reached the ledger', async () => {
@@ -164,8 +160,8 @@ async function withStores<T>(
   body: (stores: DurableStores) => Promise<T>,
 ): Promise<T> {
   const sessions = createSessionStore(root);
-  const runs = createLegacyAgentRunStoreForTest(root);
-  const runtimeEvents = createLegacyRuntimeEventStoreForTest(root);
+  const runs = createSqliteAgentRunStore(root);
+  const runtimeEvents = createWorkspaceRuntimeStore(root);
   try {
     return await body({ sessions, runs, runtimeEvents });
   } finally {

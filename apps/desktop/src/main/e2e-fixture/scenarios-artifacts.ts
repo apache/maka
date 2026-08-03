@@ -1,6 +1,7 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ArtifactRecord, SessionHeader, StoredMessage, E2eFixtureScenario } from '@maka/core';
+import { createSqliteArtifactMetadataRepository } from '@maka/storage';
 import { ARTIFACT_SESSION_ID, header } from './seed-helpers.js';
 
 export function artifactSession(now: number): SessionHeader {
@@ -220,8 +221,8 @@ export async function writeArtifacts(workspaceRoot: string, now: number, scenari
 /**
  * Shared writer for an arbitrary artifact spec list. Writes each
  * spec to disk (unless `skipFile`), captures the real `sizeBytes`
- * via `stat` (unless `sizeBytesOverride`), and emits the
- * `metadata.jsonl` index. Used by both the canonical
+ * via `stat` (unless `sizeBytesOverride`), and persists metadata in
+ * runtime.sqlite. Used by both the canonical
  * `artifact-pane` / `artifact-errors` scenarios and the
  * PR-UI-RENDER-3a-smoke preview scenarios.
  */
@@ -271,10 +272,10 @@ async function writeArtifactSpecs(
     });
   }
 
-  await mkdir(root, { recursive: true });
-  await writeFile(
-    join(root, 'metadata.jsonl'),
-    records.map((record) => JSON.stringify(record)).join('\n') + '\n',
-    'utf8',
-  );
+  const metadata = createSqliteArtifactMetadataRepository(dirname(root));
+  try {
+    metadata.replaceAll(records);
+  } finally {
+    metadata.close();
+  }
 }

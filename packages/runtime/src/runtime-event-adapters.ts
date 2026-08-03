@@ -1,6 +1,6 @@
 /**
- * RuntimeEvent adapters — narrow bridges between the legacy StoredMessage
- * JSONL format and the canonical RuntimeEvent fact model.
+ * RuntimeEvent adapters — narrow bridges between the durable StoredMessage
+ * model and the canonical RuntimeEvent fact model.
  *
  * Architecture: docs/architecture/runtime-core-architecture-draft.md
  *
@@ -13,7 +13,7 @@
  * The reverse direction (RuntimeEvent → StoredMessage draft) is provided
  * only for the straightforward user/model text cases. Tool, permission,
  * token-usage, and lifecycle events are deliberately NOT forced back into
- * legacy storage shapes — those projections are owned by later nodes and
+ * StoredMessage shapes — those projections are owned by later nodes and
  * the materializer already covers the UI path.
  *
  * NOTE: imports the new `@maka/core/runtime-event` subpath. The steward

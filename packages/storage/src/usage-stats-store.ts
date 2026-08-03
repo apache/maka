@@ -1,4 +1,3 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { UsageRange, UsageStats } from '@maka/core';
 import type { SessionHeader } from '@maka/core/session';
@@ -120,67 +119,28 @@ export async function readUsageStats(
 async function readStoredSessions(
   workspaceRoot: string,
 ): Promise<Array<{ header: UsageSessionHeader; messages: UsageMessage[] }>> {
-  const sessionsRoot = join(workspaceRoot, 'sessions');
+  const metadata = createSqliteSessionMetadataStore(
+    join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+  );
   try {
-    const canonicalHeaders = await readCanonicalUsageHeaders(workspaceRoot);
-    const entries = await readdir(sessionsRoot, { withFileTypes: true });
     const sessions: Array<{ header: UsageSessionHeader; messages: UsageMessage[] }> = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      try {
-        const text = await readFile(join(sessionsRoot, entry.name, 'session.jsonl'), 'utf8');
-        const lines = text.split('\n').filter((line) => line.trim());
-        if (!lines[0]) continue;
-        const header =
-          canonicalHeaders === null
-            ? normalizeUsageSessionHeader(JSON.parse(lines[0]), entry.name)
-            : canonicalHeaders.get(entry.name);
-        if (!header) continue;
-        const messages: UsageMessage[] = [];
-        for (const line of lines.slice(1)) {
-          try {
-            const message = normalizeUsageMessage(JSON.parse(line));
-            if (message) messages.push(message);
-          } catch {
-            // A partially-written/corrupt message line must not hide valid usage rows from the same session.
-          }
-        }
-        sessions.push({
-          header,
-          messages,
-        });
-      } catch {
-        // Ignore partially-written or legacy session folders.
-      }
-    }
-    return sessions;
-  } catch {
-    return [];
-  }
-}
-
-async function readCanonicalUsageHeaders(
-  workspaceRoot: string,
-): Promise<Map<string, UsageSessionHeader> | null> {
-  const path = join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME);
-  try {
-    await stat(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  }
-  const metadata = createSqliteSessionMetadataStore(path);
-  try {
-    return new Map(
-      (await metadata.list()).map(({ header }) => [
-        header.id,
-        {
+    for (const { header } of await metadata.list()) {
+      const messages = (await metadata.readMessages(header.id)).flatMap((value) => {
+        const message = normalizeUsageMessage(value);
+        return message ? [message] : [];
+      });
+      sessions.push({
+        header: {
           id: header.id,
           llmConnectionSlug: header.llmConnectionSlug,
           model: header.model,
         },
-      ]),
-    );
+        messages,
+      });
+    }
+    return sessions;
+  } catch {
+    return [];
   } finally {
     metadata.close();
   }

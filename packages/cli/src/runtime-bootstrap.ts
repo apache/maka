@@ -354,20 +354,12 @@ export async function createMakaCliRuntimeContext(
     generateId: () => randomUUID(),
     now: () => Date.now(),
   });
-  // Durable persistence is tied to cron capability. A cron-disabled host is
-  // heartbeat-only, and heartbeats are never durable — so it has NO durable
-  // automations of its own. Critically, the CLI shares the desktop's workspace
-  // (resolveMakaWorkspaceRoot reconstructs the Electron userData path), so its
-  // automations.json IS the desktop's. store.sync() is a full-file overwrite,
-  // so a heartbeat-only CLI writing its (empty) durable list would erase the
-  // desktop's crons, and loading+reconciling crons it can't run would mutate
-  // them. It therefore does neither — it leaves durable state entirely to the
-  // host that owns it. (Two cron-enabled hosts sharing a store is the separate,
-  // still-deferred leader-lock concern.)
+  // A heartbeat-only CLI owns no durable Automations and must not reconcile the
+  // shared authority. A cron-enabled host persists through the same operational
+  // SQLite authority as Desktop.
   const cronEnabled = input.automationCreateFreshRun !== undefined;
-  const automationStore = createAutomationStore<AutomationDefinition>(configRoot);
-  // If the durable store fails to READ, we must not WRITE over it (a full sync
-  // would erase unread crons). Disable persistence loudly until restart.
+  const automationStore = createAutomationStore(stateRoot);
+  // If the authority cannot be read, do not attempt a later replacement write.
   let durableStoreReadable = true;
   const syncAutomations = cronEnabled
     ? (): void => {

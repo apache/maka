@@ -147,7 +147,6 @@ export interface ToolCommitResult {
 
 export interface RuntimeEventBatchImportResult {
   created: boolean[];
-  sourceAlreadyImported: boolean;
 }
 
 export interface ToolProjectionRebuildResult {
@@ -346,7 +345,6 @@ export class SqliteRuntimeStore
     sessionId: string;
     runId: string;
     events: readonly RuntimeEvent[];
-    source?: { path: string; fingerprint: string };
   }): Promise<RuntimeEventBatchImportResult> {
     const events = input.events.map(canonicalizeRuntimeEventForStorage);
     for (const event of events) {
@@ -356,32 +354,11 @@ export class SqliteRuntimeStore
       }
     }
     return this.transaction(() => {
-      if (input.source) {
-        const existing = this.db
-          .prepare(`
-          SELECT fingerprint FROM runtime_import_sources WHERE source_path = ?
-        `)
-          .get(input.source.path) as { fingerprint: string } | undefined;
-        if (existing?.fingerprint === input.source.fingerprint) {
-          return { created: [], sourceAlreadyImported: true };
-        }
-      }
       if (events.some(isToolLedgerBearingEvent)) {
         this.assertToolLedgerTransition(events, 'generic_append');
       }
       const created = events.map((event) => this.importRuntimeEventSync(event));
-      if (input.source) {
-        this.db
-          .prepare(`
-          INSERT INTO runtime_import_sources (source_path, fingerprint, imported_at)
-          VALUES (?, ?, ?)
-          ON CONFLICT(source_path) DO UPDATE SET
-            fingerprint = excluded.fingerprint,
-            imported_at = excluded.imported_at
-        `)
-          .run(input.source.path, input.source.fingerprint, Date.now());
-      }
-      return { created, sourceAlreadyImported: false };
+      return { created };
     });
   }
 
@@ -443,15 +420,6 @@ export class SqliteRuntimeStore
         this.rebuildToolProjectionsFromRuntimeEventsSync(sessionId);
       }
     });
-  }
-
-  async isRuntimeImportSourceCurrent(path: string, fingerprint: string): Promise<boolean> {
-    const existing = this.db
-      .prepare(`
-      SELECT fingerprint FROM runtime_import_sources WHERE source_path = ?
-    `)
-      .get(path) as { fingerprint: string } | undefined;
-    return existing?.fingerprint === fingerprint;
   }
 
   async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {

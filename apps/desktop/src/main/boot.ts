@@ -481,7 +481,7 @@ const automationWiring = createMainAutomationWiring({
   },
 });
 
-// Load durable automations from disk on startup (fire-and-forget; errors are logged inside).
+// Load durable Automations from operational storage on startup.
 void automationWiring.loadDurableAutomations();
 
 // Goal execution — autonomous turn-boundary continuation with an external

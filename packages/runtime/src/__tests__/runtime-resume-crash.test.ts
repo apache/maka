@@ -8,10 +8,7 @@ import { spawn } from 'node:child_process';
 import { describe, test } from 'node:test';
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import {
-  createLegacyAgentRunStoreForTest,
-  createLegacyRuntimeEventStoreForTest,
-} from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 
 import {
   RUNTIME_RESUME_FAILPOINTS,
@@ -44,7 +41,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           // Production creates the run header before any RuntimeEvent append. Keep the
           // crash boundary focused on the child event writer while preserving the
           // storage identity contract used when the ledger is reopened.
-          await createLegacyAgentRunStoreForTest(workspaceRoot).createRun({
+          await createSqliteAgentRunStore(workspaceRoot).createRun({
             runId,
             invocationId: `invocation-${runId}`,
             sessionId,
@@ -72,7 +69,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
             false,
             `${failpoint.id} unexpectedly ran finally`,
           );
-          const reopened = createLegacyRuntimeEventStoreForTest(workspaceRoot);
+          const reopened = createWorkspaceRuntimeStore(workspaceRoot);
           const recoveredEvents = await reopened.readRuntimeEvents(sessionId, runId);
           assert.deepEqual(
             recoveredEvents.map((event) => event.id),
@@ -105,7 +102,7 @@ async function runCrashChild(): Promise<void> {
   const events = JSON.parse(
     Buffer.from(requiredEnv('MAKA_RUNTIME_RESUME_EVENTS'), 'base64').toString('utf8'),
   ) as RuntimeEvent[];
-  const store = createLegacyRuntimeEventStoreForTest(workspaceRoot);
+  const store = createWorkspaceRuntimeStore(workspaceRoot);
 
   try {
     for (const event of events) {

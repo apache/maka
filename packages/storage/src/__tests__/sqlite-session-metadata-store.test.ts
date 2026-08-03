@@ -606,16 +606,11 @@ describe('SqliteSessionMetadataStore', () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(212) });
     const { name: _name, ...unnamedProfile } = createWorkspaceWritePermissionProfile();
     try {
-      await store.importEntries([
-        {
-          header: fullHeader(),
-          initialBoundary: { kind: 'managed', profile: unnamedProfile, revision: 0 },
-          source: {
-            path: '/workspace/sessions/session-1/session.jsonl',
-            fingerprint: 'unnamed-profile',
-          },
-        },
-      ]);
+      await store.create(fullHeader(), {
+        kind: 'managed',
+        profile: unnamedProfile,
+        revision: 0,
+      });
 
       await store.setExecutionBoundaryKind('session-1', 'bypass');
       const restored = await store.setExecutionBoundaryKind('session-1', 'managed');
@@ -652,20 +647,11 @@ describe('SqliteSessionMetadataStore', () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(220) });
     const { name: _name, ...unnamedReadOnlyProfile } = createReadOnlyPermissionProfile();
     try {
-      await store.importEntries([
-        {
-          header: fullHeader({ permissionMode: 'explore' }),
-          initialBoundary: {
-            kind: 'managed',
-            profile: unnamedReadOnlyProfile,
-            revision: 0,
-          },
-          source: {
-            path: '/workspace/sessions/session-1/session.jsonl',
-            fingerprint: 'unnamed-read-only-profile',
-          },
-        },
-      ]);
+      await store.create(fullHeader({ permissionMode: 'explore' }), {
+        kind: 'managed',
+        profile: unnamedReadOnlyProfile,
+        revision: 0,
+      });
 
       const restored = await store.setExecutionBoundaryKind('session-1', 'managed', {
         permissionMode: 'ask',
@@ -1830,70 +1816,6 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('imports source-marked metadata idempotently and rejects identity drift', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    const entry = {
-      header: fullHeader(),
-      source: { path: '/workspace/sessions/session-1/session.jsonl', fingerprint: '1:1' },
-    };
-    try {
-      assert.deepEqual(await store.importEntries([entry]), {
-        created: [true],
-        sourcesAlreadyImported: 0,
-        sourcesTombstoned: 0,
-      });
-      assert.deepEqual(await store.importEntries([entry]), {
-        created: [],
-        sourcesAlreadyImported: 1,
-        sourcesTombstoned: 0,
-      });
-      await assert.rejects(
-        () =>
-          store.importEntries([
-            {
-              ...entry,
-              header: fullHeader({ name: 'Changed outside SQLite' }),
-              source: { ...entry.source, fingerprint: '2:2' },
-            },
-          ]),
-        SessionMetadataConflictError,
-      );
-      assert.equal((await store.read('session-1')).header.name, 'Session');
-    } finally {
-      store.close();
-    }
-  });
-
-  test('rolls back the whole import batch when a later source marker fails', async () => {
-    let markers = 0;
-    const store = createSqliteSessionMetadataStore(':memory:', {
-      failpoint: (point) => {
-        if (point === 'after_session_import_marker_write' && ++markers === 2) {
-          throw new Error('second marker failed');
-        }
-      },
-    });
-    try {
-      await assert.rejects(
-        () =>
-          store.importEntries([
-            {
-              header: fullHeader({ id: 'session-1' }),
-              source: { path: '/session-1.jsonl', fingerprint: '1:1' },
-            },
-            {
-              header: fullHeader({ id: 'session-2' }),
-              source: { path: '/session-2.jsonl', fingerprint: '2:2' },
-            },
-          ]),
-        /second marker failed/,
-      );
-      assert.deepEqual(await store.list(), []);
-    } finally {
-      store.close();
-    }
-  });
-
   test('deletes metadata and its label projection atomically', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
@@ -1903,15 +1825,6 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(await store.has('session-1'), false);
       assert.equal(await store.isTombstoned('session-1'), true);
       assert.deepEqual(await store.list({ labelSlug: 'alpha' }), []);
-      assert.deepEqual(
-        await store.importEntries([
-          {
-            header: fullHeader(),
-            source: { path: '/session-1.jsonl', fingerprint: '1:1' },
-          },
-        ]),
-        { created: [], sourcesAlreadyImported: 0, sourcesTombstoned: 1 },
-      );
       await assert.rejects(() => store.create(fullHeader()), /tombstoned/);
     } finally {
       store.close();

@@ -2007,11 +2007,6 @@ def _read_artifact_records(artifact_store_root: Path) -> dict[str, dict[str, Any
         ).fetchone()
         if schema != (1,):
             raise ValueError
-        cutover = connection.execute(
-            "SELECT state FROM cutover_journal WHERE store_name = 'artifact_metadata'"
-        ).fetchone()
-        if cutover != ("completed",):
-            raise ValueError
         rows = connection.execute(
             """
             SELECT artifact_id, session_id, created_at, status, relative_path, record_json

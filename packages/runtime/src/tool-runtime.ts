@@ -386,7 +386,7 @@ export interface ToolRuntimeInput {
   getRunTrace?: () => RunTraceLike | null;
   recordToolInvocation?: ToolTelemetryRecorder;
   recordToolArtifacts?: ToolArtifactRecorder;
-  /** Optional Phase 2 T1/T2 commit boundary. Omitted on legacy JSONL hosts. */
+  /** Optional Phase 2 T1/T2 commit boundary for hosts that persist RuntimeEvents. */
   runtimeCommitSink?: RuntimeCommitSink;
 }
 

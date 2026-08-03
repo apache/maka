@@ -4,7 +4,7 @@
  * Provides one `streamText` API across Anthropic / OpenAI / Google / DeepSeek /
  * OpenAI-compatible endpoints, while keeping all of our home-grown
  * machinery: session sandbox boundaries, materializer, AsyncEventQueue,
- * SessionStore JSONL persistence.
+ * SessionStore SQLite persistence.
  *
  * Maka owns the agent loop. Each ModelAdapter call performs exactly one
  * provider request; returned tool calls settle through ToolRuntime, become

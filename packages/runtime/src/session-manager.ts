@@ -2,7 +2,7 @@
  * SessionManager — the public Runtime API.
  *
  * Ties together:
- *   SessionStore (storage)           — JSONL persistence
+ *   SessionStore (storage)           — SQLite persistence
  *   AgentBackend (AiSdkBackend etc) — SDK adapter
  *   ExecutionBoundary                — session sandbox authority
  *

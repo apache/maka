@@ -1,13 +1,13 @@
-import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   DailyReviewArchive,
   LlmConnection,
-  PlanReminder,
   E2eFixtureScenario,
 } from '@maka/core';
 import { createDefaultSettings } from '@maka/core/settings';
+import { createSqlitePlanReminderStore } from '@maka/storage';
 import { writeJson } from './seed-helpers.js';
+import { createDailyReviewArchiveStore } from '../daily-review-archive-store.js';
 
 export async function writeSettings(
   workspaceRoot: string,
@@ -183,92 +183,46 @@ function model(
   return { id, capabilities, contextWindow };
 }
 
-export async function writePlanReminders(workspaceRoot: string, now: number): Promise<void> {
+export async function writePlanReminders(workspaceRoot: string, _now: number): Promise<void> {
   const scheduledRunAt = Date.UTC(2026, 11, 18, 3, 0, 0);
   const pausedRunAt = Date.UTC(2026, 11, 20, 3, 0, 0);
-  const reminders: PlanReminder[] = [
-    {
-      id: 'visual-plan-reminder-standup',
+  const store = createSqlitePlanReminderStore(workspaceRoot);
+  try {
+    await store.create({
       title: '同步项目风险',
       note: '提醒我整理 Sidebar gate、搜索接入和计划任务剩余风险。',
-      schedule: { kind: 'once', runAt: scheduledRunAt },
-      delivery: { channel: 'local' },
-      status: 'scheduled',
-      enabled: true,
-      createdAt: now - 2 * 60 * 60_000,
-      updatedAt: now - 2 * 60 * 60_000,
-      nextRunAt: scheduledRunAt,
-      runs: [],
-      runCount: 0,
-    },
-    {
-      id: 'visual-plan-reminder-paused',
+      runAt: scheduledRunAt,
+    });
+    const paused = await store.create({
       title: '暂停的发布检查',
       note: '用户可以先暂停提醒，恢复后继续按原时间触发。',
-      schedule: { kind: 'once', runAt: pausedRunAt },
-      delivery: { channel: 'local' },
-      status: 'paused',
-      enabled: false,
-      createdAt: now - 3 * 60 * 60_000,
-      updatedAt: now - 30 * 60_000,
-      runs: [],
-      runCount: 0,
-    },
-    {
-      id: 'visual-plan-reminder-weekly-review',
+      runAt: pausedRunAt,
+    });
+    await store.setEnabled(paused.id, false);
+    const weekly = await store.create({
       title: '每周竞品动态追踪',
       note: '汇总同类 AI 工具的近期产品变化，提醒我复盘可对标的交互。',
-      schedule: { kind: 'cron', expression: '0 10 * * 1', startAt: now - 3.5 * 60 * 60_000 },
-      delivery: { channel: 'local' },
-      status: 'scheduled',
-      enabled: true,
-      createdAt: now - 3.5 * 60 * 60_000,
-      updatedAt: now - 35 * 60_000,
-      nextRunAt: Date.UTC(2026, 11, 21, 2, 0, 0),
-      lastRun: {
-        id: 'visual-plan-run-weekly-review',
-        at: now - 35 * 60_000,
-        status: 'triggered',
-        message: '已生成本周竞品动态摘要',
-      },
-      runs: [
-        {
-          id: 'visual-plan-run-weekly-review',
-          at: now - 35 * 60_000,
-          status: 'triggered',
-          message: '已生成本周竞品动态摘要',
-        },
-      ],
-      runCount: 1,
-    },
-    {
-      id: 'visual-plan-reminder-completed',
+      runAt: scheduledRunAt,
+      recurrence: 'cron',
+      cronExpression: '0 10 * * 1',
+    });
+    await store.markTriggered(weekly.id, {
+      at: scheduledRunAt,
+      status: 'triggered',
+      message: '已生成本周竞品动态摘要',
+    });
+    const completed = await store.create({
       title: '已触发的本地提醒',
-      note: '',
-      schedule: { kind: 'once', runAt: now - 45 * 60_000 },
-      delivery: { channel: 'local' },
-      status: 'completed',
-      enabled: false,
-      createdAt: now - 4 * 60 * 60_000,
-      updatedAt: now - 45 * 60_000,
-      lastRun: {
-        id: 'visual-plan-run-completed',
-        at: now - 45 * 60_000,
-        status: 'triggered',
-        message: '计划提醒已触发',
-      },
-      runs: [
-        {
-          id: 'visual-plan-run-completed',
-          at: now - 45 * 60_000,
-          status: 'triggered',
-          message: '计划提醒已触发',
-        },
-      ],
-      runCount: 1,
-    },
-  ];
-  await writeJson(join(workspaceRoot, 'plan-reminders.json'), reminders);
+      runAt: scheduledRunAt,
+    });
+    await store.markTriggered(completed.id, {
+      at: scheduledRunAt,
+      status: 'triggered',
+      message: '计划提醒已触发',
+    });
+  } finally {
+    store.close();
+  }
 }
 
 export async function writeDailyReviewArchives(workspaceRoot: string, now: number): Promise<void> {
@@ -318,8 +272,7 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
       code: '下一步优先建立模块页 PageShell、SettingsActionRow 和 StatusPill primitives，再迁移 Daily Review、权限中心、计划任务和技能页。',
     },
   };
-  const archiveDir = join(workspaceRoot, 'daily-reviews', 'archive');
-  await mkdir(archiveDir, { recursive: true });
-  await writeJson(join(archiveDir, `${daily.id}.json`), daily);
-  await writeJson(join(archiveDir, `${deep.id}.json`), deep);
+  const store = createDailyReviewArchiveStore(workspaceRoot);
+  await store.putArchive(daily);
+  await store.putArchive(deep);
 }

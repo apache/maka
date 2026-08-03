@@ -39,7 +39,7 @@ test('a Git probe failure cannot persistently downgrade a repository to a folder
     await mkdir(repository);
     await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
 
-    await assert.rejects(() => importLegacyProjectWithoutGit(repository, storage));
+    await assert.rejects(() => registerProjectWithoutGit(repository, storage));
     await assert.rejects(() => readFile(join(storage, 'projects.json')), { code: 'ENOENT' });
   } finally {
     await rm(base, { recursive: true, force: true });
@@ -75,9 +75,9 @@ async function resolveProjectLocationWithoutGit(path: string): Promise<ResolvedP
   return JSON.parse(stdout) as ResolvedProjectLocation;
 }
 
-async function importLegacyProjectWithoutGit(path: string, storage: string): Promise<void> {
+async function registerProjectWithoutGit(path: string, storage: string): Promise<void> {
   await runProjectCatalogWithoutGit(
-    'const [moduleUrl, path, storage] = process.argv.slice(1); const { createProjectCatalog } = await import(moduleUrl); await createProjectCatalog(storage).importLegacyPath(path);',
+    'const [moduleUrl, path, storage] = process.argv.slice(1); const { createProjectCatalog } = await import(moduleUrl); await createProjectCatalog(storage).register(path);',
     path,
     storage,
   );
@@ -227,34 +227,6 @@ test('a missing project directory remains in the catalog as unavailable', async 
   }
 });
 
-test('importing a missing legacy path preserves it as an unavailable project', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-legacy-missing-'));
-  try {
-    const missingPath = join(base, 'moved-project');
-    const catalog = createProjectCatalog(join(base, 'storage'), {
-      now: () => 1_000,
-      createId: () => 'project-1',
-    });
-
-    const project = await catalog.importLegacyPath(missingPath);
-
-    assert.equal(project.id, 'project-1');
-    assert.equal(project.name, 'moved-project');
-    assert.equal(project.available, false);
-    assert.equal(project.preferredPath, undefined);
-    assert.deepEqual(project.locations, [
-      {
-        path: missingPath,
-        isWorktree: false,
-      },
-    ]);
-    assert.equal((await catalog.importLegacyPath(missingPath)).id, project.id);
-    assert.equal((await catalog.list()).length, 1);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
 test('relinking an unavailable project preserves its id and adopts the new directory', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-'));
   try {
@@ -295,7 +267,10 @@ test('conflicting relink waits for a retryable merge before removing the duplica
       now: () => 1_000,
       createId: () => `project-${++id}`,
     });
-    const original = await catalog.importLegacyPath(join(base, 'missing-original'));
+    const originalPath = join(base, 'original');
+    await mkdir(originalPath);
+    const original = await catalog.register(originalPath);
+    await rm(originalPath, { recursive: true, force: true });
     const duplicate = await catalog.register(relocated);
     const interrupted = new Error('session reassignment interrupted');
 
@@ -340,7 +315,10 @@ test('conflicting relink preserves every available worktree location from the me
       now: () => 1_000,
       createId: () => `project-${++id}`,
     });
-    const original = await catalog.importLegacyPath(join(base, 'missing-original'));
+    const originalPath = join(base, 'original');
+    await mkdir(originalPath);
+    const original = await catalog.register(originalPath);
+    await rm(originalPath, { recursive: true, force: true });
     await catalog.register(repository);
     await catalog.register(linkedWorktree);
 
@@ -423,7 +401,9 @@ test('selecting a project returns its most recent available location and rejects
       createId: () => `project-${++id}`,
     });
     const available = await catalog.register(availablePath);
-    const missing = await catalog.importLegacyPath(missingPath);
+    await mkdir(missingPath);
+    const missing = await catalog.register(missingPath);
+    await rm(missingPath, { recursive: true, force: true });
 
     now = 2_000;
     const selected = await catalog.select(available.id);
