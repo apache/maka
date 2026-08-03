@@ -130,11 +130,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       ref: refField,
     })
     .strict();
-  // Models that fill every optional field legitimately send `ref: ""` on a
-  // normal file read. An empty ref means "no ref provided", so drop the key
-  // before the strict union judges it: `{path, ref: ""}` must read the file,
-  // not be rejected as a conflicting key (and a lone `{ref: ""}` must still
-  // fail — the model gave us no readable target). See #1943.
+  // Some providers serialize unused optional fields as empty strings, so a
+  // model may send `ref: ""` on an ordinary file read. A blank ref means "no
+  // ref provided": drop the key before the strict union judges it, keeping the
+  // canonical input a pure file-or-ref union — `{path, ref: ""}` reads the
+  // file, while a lone `{ref: ""}` fails validation (no readable target).
   const dropEmptyRef = (value: unknown): unknown => {
     if (typeof value !== 'object' || value === null || !('ref' in value)) return value;
     const ref = (value as { ref?: unknown }).ref;
@@ -230,10 +230,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       executionFacts,
       impl: async (input, ctx) => {
         const { cwd, sessionId, abortSignal } = ctx;
-        // An empty ref is "no ref" — fall through to the file read below (#1943).
-        // The provider-facing validate hook already drops empty refs, so this
-        // guard is a defense-in-depth seam for direct callers and other surfaces.
-        if ('ref' in input && typeof input.ref === 'string' && input.ref.trim() !== '') {
+        if ('ref' in input) {
           const { ref } = input;
           if (classifyRuntimeResourceRef(ref) !== 'runtime') {
             throw new Error(`Unsupported runtime resource ref: ${ref}`);
@@ -244,9 +241,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         }
 
         const { path, offset, limit } = input;
-        if (typeof path !== 'string' || path.trim() === '') {
-          throw new Error('Read requires a file path or a non-empty runtime resource ref');
-        }
         const runtimeRef = classifyRuntimeResourceRef(path);
         if (runtimeRef === 'unsupported')
           throw new Error(`Unsupported runtime resource ref: ${path}`);
