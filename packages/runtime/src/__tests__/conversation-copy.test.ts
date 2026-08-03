@@ -62,6 +62,47 @@ test('archived tool-result copy preflight detects conversation-owned references'
     ),
     true,
   );
+  const linkedChildReferences = new Map([
+    [
+      'child-session',
+      {
+        runIds: new Set(['child-run']),
+        artifactIds: new Set(['child-artifact']),
+      },
+    ],
+  ]);
+  const linkedResult = serialized({
+    kind: 'subagent',
+    childSessionId: 'child-session',
+    agentName: 'Researcher',
+    turnId: 'child-turn',
+    runId: 'child-run',
+    status: 'completed',
+    permissionMode: 'ask',
+    summary: 'done',
+    artifactIds: ['child-artifact'],
+  });
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      linkedResult,
+      'session-source',
+      linkedChildReferences,
+    ),
+    false,
+  );
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      linkedResult,
+      'session-source',
+      new Map([
+        [
+          'child-session',
+          { runIds: new Set(['other-run']), artifactIds: new Set(['child-artifact']) },
+        ],
+      ]),
+    ),
+    true,
+  );
   assert.equal(
     archivedToolResultContainsConversationOwnedReferences(
       serialized({
@@ -341,6 +382,60 @@ test('conversation copy rewrites owned references without changing opaque tool p
         runIds: new Map(),
       }),
     /missing AgentRun run-source/,
+  );
+
+  const linked = rewriteConversationCopyMessage(
+    {
+      type: 'tool_result',
+      id: 'linked-result',
+      turnId: 'turn-1',
+      ts: 6,
+      toolUseId: 'linked-call',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-session',
+        agentName: 'Researcher',
+        turnId: 'child-turn',
+        runId: 'child-run',
+        status: 'completed',
+        permissionMode: 'ask',
+        summary: 'done',
+        artifactIds: ['child-artifact'],
+      },
+    },
+    {
+      ...references,
+      externalChildReferences: new Map([
+        [
+          'child-session',
+          {
+            runIds: new Set(['child-run']),
+            artifactIds: new Set(['child-artifact']),
+          },
+        ],
+      ]),
+    },
+  );
+  assert.equal(
+    linked.type === 'tool_result' && linked.content.kind === 'subagent'
+      ? linked.content.runId
+      : undefined,
+    'child-run',
+  );
+  assert.deepEqual(
+    linked.type === 'tool_result' && linked.content.kind === 'subagent'
+      ? linked.content.artifactIds
+      : undefined,
+    ['child-artifact'],
+  );
+  assert.throws(
+    () =>
+      rewriteConversationCopyMessage(linked, {
+        ...references,
+        externalChildReferences: new Map(),
+      }),
+    /missing linked child Session child-session/,
   );
 });
 

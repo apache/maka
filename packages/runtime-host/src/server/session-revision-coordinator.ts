@@ -41,6 +41,7 @@ import type {
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import { projectSessionCatalogRecord } from './session-catalog-coordinator.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import { prepareAgentGraphRevisionReferences } from './session-revision-graph-references.js';
 import { purgeSessionSidecars } from './session-sidecar-purge.js';
 
 type ConversationCopyKind = 'branch' | 'revision';
@@ -56,6 +57,7 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuityCoordinator;
+  readonly graph: Pick<import('@maka/runtime').AgentGraphCoordinator, 'readSessionState'>;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly requestDrain: () => void;
 }
@@ -244,22 +246,48 @@ export class HostSessionRevisionCoordinator {
       );
     }
     const copyTurnIds = plan.copyTurnIds;
-    if (
-      hasLinkedChildSessionReference(slice.messages) ||
-      hasLinkedChildSessionMetadata(sessionHeaders, input.sourceSessionId, copyTurnIds)
-    ) {
-      return copyFailure(
-        'operation_unavailable',
-        'Session conversation copy does not yet support linked child Session graphs',
-      );
-    }
-    const archivePreflight = await this.#preflightArchivedToolResults(
+    const archivePreflight = await this.#readArchivedToolResults(
       input.sourceSessionId,
       plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
       slice.messages,
       copyTurnIds,
     );
-    if (archivePreflight) return archivePreflight;
+    if (!archivePreflight.ok) return archivePreflight.outcome;
+    const linkedReferences = await prepareAgentGraphRevisionReferences(
+      {
+        kind,
+        sourceSessionId: input.sourceSessionId,
+        sourceHeader,
+        sessionHeaders,
+        copyTurnIds,
+        messages: slice.messages,
+        runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+        archivedResults: archivePreflight.serializedResults,
+      },
+      {
+        agentRunStore: this.#stores.agentRunStore,
+        artifacts: this.#artifacts,
+        graph: this.options.graph,
+        isSessionActive: this.options.isSessionActive,
+      },
+    );
+    if (!linkedReferences.ok) {
+      return copyFailure(linkedReferences.code, linkedReferences.message);
+    }
+    if (
+      archivePreflight.serializedResults.some((serializedResult) =>
+        archivedToolResultContainsConversationOwnedReferences(
+          serializedResult,
+          input.sourceSessionId,
+          linkedReferences.references,
+        ),
+      )
+    ) {
+      return copyFailure(
+        'operation_unavailable',
+        'Session conversation copy cannot preserve owned references inside archived tool results',
+      );
+    }
 
     let createInput: ConversationCopyCreateInput;
     try {
@@ -317,6 +345,9 @@ export class HostSessionRevisionCoordinator {
         targetSessionId: input.targetSessionId,
         artifactIds: artifactCopy.artifactIds,
         relativePaths: artifactCopy.relativePaths,
+        ...(linkedReferences.references.size > 0
+          ? { externalChildReferences: linkedReferences.references }
+          : {}),
       };
       const runtimeCopy = await cloneConversationRuntimeLedger({
         plan,
@@ -369,20 +400,27 @@ export class HostSessionRevisionCoordinator {
     }
   }
 
-  async #preflightArchivedToolResults(
+  async #readArchivedToolResults(
     sourceSessionId: string,
     sourceEvents: readonly RuntimeEvent[],
     copiedMessages: readonly StoredMessage[],
     copyTurnIds: readonly string[],
-  ): Promise<ConversationCopyOutcome | null> {
+  ): Promise<
+    | { readonly ok: true; readonly serializedResults: readonly string[] }
+    | { readonly ok: false; readonly outcome: ConversationCopyOutcome }
+  > {
     const archives = collectArchivedToolResultPlaceholders(
       sourceEvents,
       copiedMessages,
       copyTurnIds,
     );
     if (!archives) {
-      return copyFailure('persistence_failed', 'Archived tool result metadata is invalid');
+      return {
+        ok: false,
+        outcome: copyFailure('persistence_failed', 'Archived tool result metadata is invalid'),
+      };
     }
+    const serializedResults: string[] = [];
     for (const archive of archives) {
       const read = await this.#artifacts
         .readTextInSession(sourceSessionId, archive.artifactId, {
@@ -394,16 +432,17 @@ export class HostSessionRevisionCoordinator {
         Buffer.byteLength(read.text, 'utf8') !== archive.originalBytes ||
         createHash('sha256').update(read.text).digest('hex') !== archive.bodySha256
       ) {
-        return copyFailure('persistence_failed', 'Archived tool result is unavailable or corrupt');
+        return {
+          ok: false,
+          outcome: copyFailure(
+            'persistence_failed',
+            'Archived tool result is unavailable or corrupt',
+          ),
+        };
       }
-      if (archivedToolResultContainsConversationOwnedReferences(read.text, sourceSessionId)) {
-        return copyFailure(
-          'operation_unavailable',
-          'Session conversation copy cannot preserve owned references inside archived tool results',
-        );
-      }
+      serializedResults.push(read.text);
     }
-    return null;
+    return { ok: true, serializedResults };
   }
 
   async #createInput(
@@ -649,32 +688,6 @@ function isRevisionStartData(value: unknown): boolean {
     typeof value === 'object' &&
     !Array.isArray(value) &&
     'revisionRootSessionId' in value
-  );
-}
-
-function hasLinkedChildSessionReference(messages: readonly StoredMessage[]): boolean {
-  return messages.some((message) => {
-    if (message.type !== 'tool_result') return false;
-    if (message.content.kind === 'subagent') {
-      return message.content.childSessionId !== undefined;
-    }
-    return (
-      message.content.kind === 'agent_swarm' &&
-      message.content.items.some((item) => item.childSessionId !== undefined)
-    );
-  });
-}
-
-function hasLinkedChildSessionMetadata(
-  headers: readonly SessionHeader[],
-  sourceSessionId: string,
-  copyTurnIds: readonly string[],
-): boolean {
-  const retainedTurnIds = new Set(copyTurnIds);
-  return headers.some(
-    (header) =>
-      header.subagentParent?.parentSessionId === sourceSessionId &&
-      retainedTurnIds.has(header.subagentParent.spawnedBy.parentTurnId),
   );
 }
 

@@ -303,9 +303,14 @@ export class AgentGraphCoordinator {
     return snapshot;
   }
 
-  async hasLiveSessionState(rootSessionId: string): Promise<boolean> {
+  async readSessionState(rootSessionId: string): Promise<'absent' | 'live' | 'terminal'> {
     const snapshot = buildAgentGraphClientSnapshot(await this.#readClientModelInput(rootSessionId));
-    return snapshot.scheduleRevision > 0 && (!snapshot.closed || snapshot.status === 'closing');
+    if (snapshot.scheduleRevision === 0) return 'absent';
+    return !snapshot.closed || snapshot.status === 'closing' ? 'live' : 'terminal';
+  }
+
+  async hasLiveSessionState(rootSessionId: string): Promise<boolean> {
+    return (await this.readSessionState(rootSessionId)) === 'live';
   }
 
   /**

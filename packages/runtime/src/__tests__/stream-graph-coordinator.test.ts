@@ -691,13 +691,16 @@ describe('host-managed agent graph coordinator', () => {
     } as unknown as AgentGraphCoordinatorInput);
     try {
       assert.equal((await coordinator.getSnapshot(rootSessionId)).scheduleRevision, 0);
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'absent');
 
       scheduleUpdates = [addUpdate];
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
 
       scheduleUpdates = [addUpdate, finishUpdate];
       provisions = [provision];
       claims = [claim];
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
 
       runs = [{ ...runningRun, status: 'completed', completedAt: 14, updatedAt: 14 }];
@@ -717,6 +720,7 @@ describe('host-managed agent graph coordinator', () => {
           actions: { endInvocation: true },
         },
       ];
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'terminal');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), false);
     } finally {
       await coordinator.close();

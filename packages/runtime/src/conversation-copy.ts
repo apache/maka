@@ -45,6 +45,21 @@ export interface ConversationCopySlice {
 interface ConversationCopyIdentityMap {
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
+  readonly externalChildReferences?: ReadonlyMap<string, ConversationCopyExternalChildReferences>;
+}
+
+export interface ConversationCopyExternalChildReferences {
+  readonly runIds: ReadonlySet<string>;
+  readonly artifactIds: ReadonlySet<string>;
+}
+
+export interface ConversationCopyLinkedChildReference {
+  readonly childSessionId: string;
+  readonly runId?: string;
+  readonly resumedFromRunId?: string;
+  readonly turnId?: string;
+  readonly artifactIds: readonly string[];
+  readonly status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_for_user';
 }
 
 export type ConversationCopyArtifactReferenceMap =
@@ -433,6 +448,7 @@ async function loadConversationCopyRunEvents(
 export function archivedToolResultContainsConversationOwnedReferences(
   serializedResult: string,
   sourceSessionId: string,
+  externalChildReferences?: ReadonlyMap<string, ConversationCopyExternalChildReferences>,
 ): boolean {
   const value = deserializeToolResultArchive(serializedResult);
   if (isArchivedToolResultPlaceholder(value)) return true;
@@ -449,22 +465,61 @@ export function archivedToolResultContainsConversationOwnedReferences(
     return content.ref.kind === 'session_file' && content.ref.sessionId === sourceSessionId;
   }
   if (content.kind === 'subagent') {
-    return (
-      content.childSessionId !== undefined ||
-      content.runId !== undefined ||
-      content.artifactIds.length > 0
-    );
+    const [linked] = conversationCopyLinkedChildReferences(content);
+    if (linked) {
+      return !linkedChildReferencesAreExternal(linked, externalChildReferences);
+    }
+    return content.runId !== undefined || content.artifactIds.length > 0;
   }
   if (content.kind === 'agent_swarm') {
-    return content.items.some(
-      (item) =>
-        item.childSessionId !== undefined ||
-        item.runId !== undefined ||
-        item.resumedFromRunId !== undefined ||
-        item.artifactIds.length > 0,
+    if (
+      content.items.some(
+        (item) =>
+          !item.childSessionId &&
+          (item.runId !== undefined ||
+            item.resumedFromRunId !== undefined ||
+            item.artifactIds.length > 0),
+      )
+    ) {
+      return true;
+    }
+    return conversationCopyLinkedChildReferences(content).some(
+      (linked) => !linkedChildReferencesAreExternal(linked, externalChildReferences),
     );
   }
   return false;
+}
+
+export function conversationCopyLinkedChildReferences(
+  content: ToolResultContent,
+): readonly ConversationCopyLinkedChildReference[] {
+  if (content.kind === 'subagent') {
+    if (!content.childSessionId) return [];
+    return [
+      {
+        childSessionId: content.childSessionId,
+        ...(content.runId ? { runId: content.runId } : {}),
+        turnId: content.turnId,
+        artifactIds: content.artifactIds,
+        status: content.status,
+      },
+    ];
+  }
+  if (content.kind !== 'agent_swarm') return [];
+  return content.items.flatMap((item) =>
+    item.childSessionId
+      ? [
+          {
+            childSessionId: item.childSessionId,
+            ...(item.runId ? { runId: item.runId } : {}),
+            ...(item.resumedFromRunId ? { resumedFromRunId: item.resumedFromRunId } : {}),
+            ...(item.turnId ? { turnId: item.turnId } : {}),
+            artifactIds: item.artifactIds,
+            status: item.status,
+          },
+        ]
+      : [],
+  );
 }
 
 function cloneAgentRunEvent(
@@ -985,31 +1040,51 @@ function rewriteToolResultContent(
     };
   }
   if (content.kind === 'subagent') {
+    const external = content.childSessionId
+      ? requireExternalChildReferences(content.childSessionId, references)
+      : undefined;
     return {
       ...content,
       ...(content.runId
-        ? { runId: rewriteOwnedId(content.runId, references.runIds, 'AgentRun') }
+        ? {
+            runId: external
+              ? preserveExternalId(content.runId, external.runIds, 'AgentRun')
+              : rewriteOwnedId(content.runId, references.runIds, 'AgentRun'),
+          }
         : {}),
-      artifactIds: rewriteArtifactIds(content.artifactIds, references),
+      artifactIds: external
+        ? preserveExternalIds(content.artifactIds, external.artifactIds, 'Artifact')
+        : rewriteArtifactIds(content.artifactIds, references),
     };
   }
   if (content.kind === 'agent_swarm') {
     return {
       ...content,
-      items: content.items.map((item) => ({
-        ...item,
-        ...(item.runId ? { runId: rewriteOwnedId(item.runId, references.runIds, 'AgentRun') } : {}),
-        ...(item.resumedFromRunId
-          ? {
-              resumedFromRunId: rewriteOwnedId(
-                item.resumedFromRunId,
-                references.runIds,
-                'AgentRun',
-              ),
-            }
-          : {}),
-        artifactIds: rewriteArtifactIds(item.artifactIds, references),
-      })),
+      items: content.items.map((item) => {
+        const external = item.childSessionId
+          ? requireExternalChildReferences(item.childSessionId, references)
+          : undefined;
+        return {
+          ...item,
+          ...(item.runId
+            ? {
+                runId: external
+                  ? preserveExternalId(item.runId, external.runIds, 'AgentRun')
+                  : rewriteOwnedId(item.runId, references.runIds, 'AgentRun'),
+              }
+            : {}),
+          ...(item.resumedFromRunId
+            ? {
+                resumedFromRunId: external
+                  ? preserveExternalId(item.resumedFromRunId, external.runIds, 'resumed AgentRun')
+                  : rewriteOwnedId(item.resumedFromRunId, references.runIds, 'AgentRun'),
+              }
+            : {}),
+          artifactIds: external
+            ? preserveExternalIds(item.artifactIds, external.artifactIds, 'Artifact')
+            : rewriteArtifactIds(item.artifactIds, references),
+        };
+      }),
     };
   }
   return content;
@@ -1036,6 +1111,50 @@ function rewriteArtifactIds(
   references: ConversationCopyArtifactReferenceMap,
 ): readonly string[] {
   return artifactIds.map((artifactId) => rewriteOwnedArtifactId(artifactId, references));
+}
+
+function requireExternalChildReferences(
+  childSessionId: string,
+  references: ConversationCopyMessageReferenceMap,
+): ConversationCopyExternalChildReferences {
+  const external = references.externalChildReferences?.get(childSessionId);
+  if (!external) {
+    throw new Error(`Conversation copy is missing linked child Session ${childSessionId}`);
+  }
+  return external;
+}
+
+function preserveExternalIds(
+  sourceIds: readonly string[],
+  externalIds: ReadonlySet<string>,
+  kind: string,
+): readonly string[] {
+  return sourceIds.map((sourceId) => preserveExternalId(sourceId, externalIds, kind));
+}
+
+function preserveExternalId(
+  sourceId: string,
+  externalIds: ReadonlySet<string>,
+  kind: string,
+): string {
+  if (!externalIds.has(sourceId)) {
+    throw new Error(`Conversation copy is missing external ${kind} ${sourceId}`);
+  }
+  return sourceId;
+}
+
+function linkedChildReferencesAreExternal(
+  linked: ConversationCopyLinkedChildReference,
+  externalChildReferences?: ReadonlyMap<string, ConversationCopyExternalChildReferences>,
+): boolean {
+  const external = externalChildReferences?.get(linked.childSessionId);
+  return (
+    external !== undefined &&
+    [linked.runId, linked.resumedFromRunId]
+      .filter((id): id is string => !!id)
+      .every((runId) => external.runIds.has(runId)) &&
+    linked.artifactIds.every((artifactId) => external.artifactIds.has(artifactId))
+  );
 }
 
 function rewriteStorageRef(
