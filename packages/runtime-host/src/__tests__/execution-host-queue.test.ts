@@ -325,6 +325,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     await assert.rejects(
       () =>
         second.request('interaction.answer', {
+          sessionId: fixture.sessionId,
           interactionId: pending.interactionId,
           answer: {
             kind: 'question',

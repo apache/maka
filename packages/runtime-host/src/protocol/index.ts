@@ -39,7 +39,11 @@ export * from './task-ledger.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
-export const RUNTIME_HOST_MAX_FRAME_BYTES = 64 * 1024;
+// A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
+// envelope and independently bounded justification are added. Keep transport
+// capacity large enough to represent that domain value; narrower surfaces such
+// as Session continuity retain their own limits.
+export const RUNTIME_HOST_MAX_FRAME_BYTES = 96 * 1024;
 
 export type ClientSurface = 'desktop' | 'tui' | 'run' | 'bot' | 'inspect';
 

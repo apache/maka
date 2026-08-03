@@ -16605,6 +16605,22 @@ describe('SessionManager permission mode updates', () => {
     ]);
   });
 
+  test('hosted startup recovery leaves boundary settlement to the Host authority', async () => {
+    const { store, manager, session } = await seedBoundaryRestartSession({
+      now: 12_875,
+      requestId: 'boundary-host-owned',
+      interactionAuthority: testInteractionAuthority(),
+    });
+
+    await manager.recoverInterruptedSessions();
+
+    expect(
+      (await store.listPendingSandboxBoundaryRequests(session.id)).map(
+        (request) => request.requestId,
+      ),
+    ).toEqual(['boundary-host-owned']);
+  });
+
   test('startup recovery re-reads a closure it settled before an earlier crash', async () => {
     // Stands in for a first recovery that settled the request and then died
     // before committing the run's terminal fact: the row is no longer pending,
@@ -22374,6 +22390,7 @@ async function seedBoundaryRestartSession(input: {
   requestId: string;
   requestTurnId?: string;
   requestRunId?: string;
+  interactionAuthority?: RuntimeInteractionAuthority;
 }): Promise<{
   store: MemorySessionStore;
   runStore: MemoryAgentRunStore;
@@ -22384,14 +22401,21 @@ async function seedBoundaryRestartSession(input: {
   const runStore = new MemoryAgentRunStore();
   const backends = new BackendRegistry();
   backends.register('fake', (ctx) => new TestBackend(ctx));
-  const manager = new SessionManager({
+  const managerDeps = {
     store,
     runStore,
     runtimeEventStore: runStore,
     backends,
     newId: nextId(),
     now: nextNow(input.now),
-  });
+  };
+  const manager = input.interactionAuthority
+    ? new SessionManager({
+        ...managerDeps,
+        interactionAuthority: input.interactionAuthority,
+        canonicalPermissionOutcomes: noCanonicalPermissionOutcomes,
+      })
+    : new SessionManager(managerDeps);
   const session = await manager.createSession(makeInput({ status: 'waiting_for_user' }));
   await store.createSandboxBoundaryRequest({
     sessionId: session.id,

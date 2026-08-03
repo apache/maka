@@ -583,6 +583,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     onPoison: () => {
       requestedDrain = true;
     },
+    onSandboxBoundarySettled: async () => {},
   });
   const backends = new BackendRegistry();
   backends.register('fake', (context) => new FakeBackend(context));

@@ -514,6 +514,50 @@ describe('Runtime Host bootstrap protocol', () => {
     }
   });
 
+  test('encodes a legal large sandbox boundary Interaction without disconnecting the client', () => {
+    const identity = 'i'.repeat(128);
+    const frame = {
+      requestId: 'q'.repeat(128),
+      operation: 'interaction.query' as const,
+      ok: true as const,
+      result: {
+        schemaVersion: 1 as const,
+        interactionId: identity,
+        sessionId: identity,
+        turnId: identity,
+        runId: identity,
+        revision: 2 as const,
+        request: {
+          kind: 'sandbox_boundary' as const,
+          expansion: {
+            filesystem: {
+              entries: Array.from({ length: 32 }, (_, index) => ({
+                path: `/opt/service-${index}/${'x'.repeat(1_980)}`,
+                access: 'read' as const,
+                scope: 'exact' as const,
+              })),
+            },
+          },
+          justification: '\u0001'.repeat(2_000),
+        },
+        status: 'answered' as const,
+        outcome: {
+          kind: 'sandbox_boundary_decision' as const,
+          decision: 'allow' as const,
+          status: 'approved' as const,
+          committedAt: Number.MAX_SAFE_INTEGER,
+        },
+      },
+    };
+
+    const canonical = decodeHostFrame(frame);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(canonical)}\n`, 'utf8') > 64 * 1024);
+    const encoded = encodeProtocolFrame(canonical);
+    assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES);
+    const [decoded] = new ProtocolFrameDecoder().push(encoded);
+    assert.deepEqual(decodeHostFrame(decoded), canonical);
+  });
+
   test('decodes split UTF-8 and multiple newline-delimited frames without an unbounded tail', () => {
     const decoder = new ProtocolFrameDecoder();
     const wire = Buffer.from(

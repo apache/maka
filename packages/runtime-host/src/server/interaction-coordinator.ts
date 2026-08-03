@@ -73,7 +73,7 @@ export interface HostInteractionCoordinatorOptions {
     admission: SessionAdmissionLease,
   ) => Promise<void>;
   readonly onPoison: (error: RuntimeInteractionFailStopError) => void;
-  readonly onSandboxBoundarySettled?: (sessionId: string) => Promise<void> | void;
+  readonly onSandboxBoundarySettled: (sessionId: string) => Promise<void> | void;
 }
 
 interface RunClosure {
@@ -92,12 +92,12 @@ interface BoundRun extends RuntimeInteractionRunIdentity {
 
 interface LiveEntryBase {
   readonly run: BoundRun;
-  readonly request: StoredInteractionRequest;
   phase: 'admitting' | 'live';
 }
 
 interface LiveQuestionEntry extends LiveEntryBase {
   readonly kind: 'question';
+  readonly request: StoredInteractionRequest;
   readonly continuation: RuntimeUserQuestionContinuation;
 }
 
@@ -134,9 +134,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   readonly #preflightSessionSnapshot: HostInteractionCoordinatorOptions['preflightSessionSnapshot'];
   readonly #refreshCanonicalContinuity: HostInteractionCoordinatorOptions['refreshCanonicalContinuity'];
   readonly #onPoison: HostInteractionCoordinatorOptions['onPoison'];
-  readonly #onSandboxBoundarySettled: NonNullable<
-    HostInteractionCoordinatorOptions['onSandboxBoundarySettled']
-  >;
+  readonly #onSandboxBoundarySettled: HostInteractionCoordinatorOptions['onSandboxBoundarySettled'];
   readonly #runs = new Map<string, BoundRun>();
   readonly #live = new Map<string, LiveEntry>();
   #accepting = true;
@@ -151,7 +149,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
     this.#refreshCanonicalContinuity = options.refreshCanonicalContinuity;
     this.#onPoison = options.onPoison;
-    this.#onSandboxBoundarySettled = options.onSandboxBoundarySettled ?? (() => undefined);
+    this.#onSandboxBoundarySettled = options.onSandboxBoundarySettled;
   }
 
   bindRun(identity: RuntimeInteractionRunIdentity): RuntimeInteractionRunOwner {
@@ -206,7 +204,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   async hasPendingSession(sessionId: string): Promise<boolean> {
     this.#throwIfPoisoned();
     for (const entry of this.#live.values()) {
-      if (entry.request.sessionId === sessionId) return true;
+      if (entry.run.sessionId === sessionId) return true;
     }
     return (
       (await this.#readPending({ sessionId })).length > 0 ||
@@ -230,7 +228,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
           );
         }
         for (const entry of this.#live.values()) {
-          if (!sameRun(entry.request, identity)) continue;
+          if (runKey(entry.run) !== runKey(identity)) continue;
           throw this.#poison(
             new RuntimeInteractionInvariantError(
               `Interaction Run ${identity.runId} reached its terminal fence with a live continuation`,
@@ -570,16 +568,14 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         ),
       );
     }
-    const request = sandboxBoundaryStoredInteractionRequest(boundaryRequest);
     const entry: LiveSandboxBoundaryEntry = {
       kind: 'sandbox_boundary',
       run,
-      request,
       boundaryRequest,
       continuation: input.continuation,
       phase: 'live',
     };
-    this.#live.set(request.requestId, entry);
+    this.#live.set(boundaryRequest.requestId, entry);
     await this.#refreshCanonicalContinuity(run.sessionId, admission);
     this.#throwIfPoisoned();
   }
@@ -655,14 +651,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     if (!isInteractionAnswerValidForRequest(record.request.request, answer)) {
       return operationConflict('Interaction answer does not match the pending request');
     }
-    const entry = this.#requireLiveEntry(record.request);
-    if (entry.kind !== 'question') {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Question Interaction ${record.request.requestId} has the wrong live continuation`,
-        ),
-      );
-    }
+    const entry = this.#requireLiveQuestion(record.request);
     const outcome = await this.#commitAnswer(
       entry,
       questionCanonicalOutcome(answer, this.#now()),
@@ -691,15 +680,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     if (answer.kind !== 'sandbox_boundary') {
       return operationConflict('Interaction answer does not match the pending request');
     }
-    const stored = sandboxBoundaryStoredInteractionRequest(request);
-    const entry = this.#requireLiveEntry(stored);
-    if (entry.kind !== 'sandbox_boundary') {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Sandbox boundary Interaction ${request.requestId} has the wrong live continuation`,
-        ),
-      );
-    }
+    const entry = this.#requireLiveSandboxBoundary(request);
     const settlement = await this.#settleSandboxBoundary({
       sessionId: request.sessionId,
       requestId: request.requestId,
@@ -792,6 +773,12 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     closure.phase = 'running';
     try {
       this.#throwIfPoisoned();
+      await Promise.all(
+        [...this.#live.values()]
+          .filter((entry) => entry.run === run && entry.phase === 'live')
+          .map((entry) => entry.continuation.waitForPublication()),
+      );
+      this.#throwIfPoisoned();
       for (const entry of [...this.#live.values()]) {
         if (entry.kind === 'question' && entry.run === run && entry.phase === 'admitting') {
           this.#discardAdmitting(entry);
@@ -800,14 +787,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       const pending = await this.#readPending(runIdentity(run));
       const committed: CommittedEntry[] = [];
       for (const request of pending.sort(compareStoredInteractionRequests)) {
-        const entry = this.#requireLiveEntry(request);
-        if (entry.kind !== 'question') {
-          throw this.#poison(
-            new RuntimeInteractionInvariantError(
-              `Question Interaction ${request.requestId} has the wrong live continuation`,
-            ),
-          );
-        }
+        const entry = this.#requireLiveQuestion(request);
         committed.push({
           entry,
           outcome: await this.#commitOutcome(request, {
@@ -822,14 +802,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         await this.#readPendingSandboxBoundaries(run.sessionId)
       ).filter((request) => sameSandboxBoundaryRun(request, run));
       for (const request of pendingSandboxBoundaries) {
-        const entry = this.#requireLiveEntry(sandboxBoundaryStoredInteractionRequest(request));
-        if (entry.kind !== 'sandbox_boundary') {
-          throw this.#poison(
-            new RuntimeInteractionInvariantError(
-              `Sandbox boundary Interaction ${request.requestId} has the wrong live continuation`,
-            ),
-          );
-        }
+        const entry = this.#requireLiveSandboxBoundary(request);
         settledSandboxBoundaries.push({
           entry,
           settlement: await this.#settleSandboxBoundary({
@@ -911,25 +884,48 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       );
     }
     try {
-      const pending = await this.#readPending();
-      const sessions = new Map<string, StoredInteractionRequest[]>();
-      for (const request of pending) {
+      const sessions = new Map<
+        string,
+        {
+          questions: StoredInteractionRequest[];
+          sandboxBoundaries: SandboxBoundaryRequest[];
+        }
+      >();
+      const pendingQuestions = await this.#readPending();
+      const pendingSandboxBoundaries = await this.#readAllPendingSandboxBoundaries();
+      for (const request of pendingQuestions) {
         const requests = sessions.get(request.sessionId);
-        if (requests) requests.push(request);
-        else sessions.set(request.sessionId, [request]);
+        if (requests) requests.questions.push(request);
+        else sessions.set(request.sessionId, { questions: [request], sandboxBoundaries: [] });
+      }
+      for (const request of pendingSandboxBoundaries) {
+        const requests = sessions.get(request.sessionId);
+        if (requests) requests.sandboxBoundaries.push(request);
+        else sessions.set(request.sessionId, { questions: [], sandboxBoundaries: [request] });
       }
       for (const [sessionId, requests] of sessions) {
-        if (requests.length > INTERACTION_MAX_PENDING_PER_SESSION) {
+        if (
+          requests.questions.length + requests.sandboxBoundaries.length >
+          INTERACTION_MAX_PENDING_PER_SESSION
+        ) {
           throw new RuntimeInteractionInvariantError(
             `Session ${sessionId} exceeds the pending Interaction limit`,
           );
         }
         await this.#sessionAdmission.run(sessionId, async (admission) => {
-          for (const request of requests.sort(compareStoredInteractionRequests)) {
+          for (const request of requests.questions.sort(compareStoredInteractionRequests)) {
             await this.#commitOutcome(request, {
               kind: 'closure',
               reason: 'host_restarted',
               committedAt: this.#now(),
+            });
+          }
+          for (const request of requests.sandboxBoundaries) {
+            await this.#settleSandboxBoundary({
+              sessionId,
+              requestId: request.requestId,
+              decision: 'deny',
+              closureReason: 'host_restarted',
             });
           }
           await this.#refreshCanonicalContinuity(sessionId, admission);
@@ -1105,7 +1101,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     } catch (error) {
       throw this.#poison(error);
     }
-    this.#live.delete(entry.request.requestId);
+    this.#live.delete(entry.boundaryRequest.requestId);
   }
 
   async #applySandboxBoundaryClosureAndDelete(
@@ -1117,7 +1113,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     if (settlement.request.status !== 'denied' || settlement.request.outcomeReason !== reason) {
       throw this.#poison(
         new RuntimeInteractionInvariantError(
-          `Sandbox boundary closure ${entry.request.requestId} did not commit exact closure`,
+          `Sandbox boundary closure ${entry.boundaryRequest.requestId} did not commit exact closure`,
         ),
       );
     }
@@ -1126,7 +1122,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     } catch (error) {
       throw this.#poison(error);
     }
-    this.#live.delete(entry.request.requestId);
+    this.#live.delete(entry.boundaryRequest.requestId);
   }
 
   #assertLiveSandboxBoundarySettlement(
@@ -1134,25 +1130,47 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     settlement: SandboxBoundarySettlement,
   ): void {
     if (
-      this.#live.get(entry.request.requestId) !== entry ||
+      this.#live.get(entry.boundaryRequest.requestId) !== entry ||
       entry.phase !== 'live' ||
       settlement.request.status === 'pending' ||
       !sameSandboxBoundaryIdentity(entry.boundaryRequest, settlement.request)
     ) {
       throw this.#poison(
         new RuntimeInteractionInvariantError(
-          `Live sandbox boundary identity changed for ${entry.request.requestId}`,
+          `Live sandbox boundary identity changed for ${entry.boundaryRequest.requestId}`,
         ),
       );
     }
   }
 
-  #requireLiveEntry(request: StoredInteractionRequest): LiveEntry {
+  #requireLiveQuestion(request: StoredInteractionRequest): LiveQuestionEntry {
     const entry = this.#live.get(request.requestId);
-    if (!entry || entry.phase !== 'live' || !isDeepStrictEqual(entry.request, request)) {
+    if (
+      !entry ||
+      entry.kind !== 'question' ||
+      entry.phase !== 'live' ||
+      !isDeepStrictEqual(entry.request, request)
+    ) {
       throw this.#poison(
         new RuntimeInteractionInvariantError(
-          `Pending Interaction ${request.requestId} has no exact live continuation`,
+          `Pending question Interaction ${request.requestId} has no exact live continuation`,
+        ),
+      );
+    }
+    return entry;
+  }
+
+  #requireLiveSandboxBoundary(request: SandboxBoundaryRequest): LiveSandboxBoundaryEntry {
+    const entry = this.#live.get(request.requestId);
+    if (
+      !entry ||
+      entry.kind !== 'sandbox_boundary' ||
+      entry.phase !== 'live' ||
+      !sameSandboxBoundaryIdentity(entry.boundaryRequest, request)
+    ) {
+      throw this.#poison(
+        new RuntimeInteractionInvariantError(
+          `Pending sandbox boundary ${request.requestId} has no exact live continuation`,
         ),
       );
     }
@@ -1350,37 +1368,6 @@ function sameSandboxBoundaryIdentity(
     expected.createdAt === actual.createdAt &&
     expected.justification === actual.justification &&
     isDeepStrictEqual(expected.expansion, actual.expansion)
-  );
-}
-
-function sandboxBoundaryStoredInteractionRequest(
-  request: SandboxBoundaryRequest,
-): StoredInteractionRequest {
-  if (!request.turnId || !request.runId) {
-    throw new RuntimeInteractionInvariantError(
-      `Sandbox boundary ${request.requestId} has no hosted Run provenance`,
-    );
-  }
-  return {
-    sessionId: request.sessionId,
-    turnId: request.turnId,
-    runId: request.runId,
-    requestId: request.requestId,
-    createdAt: request.createdAt,
-    request: projectInteractionSandboxBoundaryRequest(request),
-  };
-}
-
-function continuationMatches(
-  request: StoredInteractionRequest,
-  run: RuntimeInteractionRunIdentity,
-  continuation: RuntimeInteractionContinuationIdentity,
-): boolean {
-  return (
-    sameRun(request, run) &&
-    request.requestId === continuation.requestId &&
-    continuation.turnId === run.turnId &&
-    continuation.runId === run.runId
   );
 }
 

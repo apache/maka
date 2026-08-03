@@ -56,11 +56,15 @@ export type RuntimeInteractionFatalError =
 
 export interface RuntimeUserQuestionContinuation
   extends RuntimeInteractionContinuationIdentity,
-    HostedUserQuestionSettlement {}
+    HostedUserQuestionSettlement {
+  waitForPublication(): Promise<void>;
+}
 
 export interface RuntimeSandboxBoundaryContinuation
   extends RuntimeInteractionContinuationIdentity,
-    HostedSandboxBoundarySettlement {}
+    HostedSandboxBoundarySettlement {
+  waitForPublication(): Promise<void>;
+}
 
 export interface RuntimeInteractionContinuationAuthority {
   acceptUserQuestionRequest(input: {
@@ -432,10 +436,12 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   ): TrackedQuestionContinuation {
     this.assertNewContinuation(request);
     let tracked!: TrackedQuestionContinuation;
+    const publication = createInteractionPublicationBarrier();
     const continuation: RuntimeUserQuestionContinuation = Object.freeze({
       requestId: request.requestId,
       turnId: this.turnId,
       runId: this.runId,
+      waitForPublication: () => publication.publicationBarrier,
       applyAnswer: (answer: RuntimeUserQuestionAnswer) =>
         this.settleTracked(
           tracked,
@@ -455,7 +461,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       requestId: request.requestId,
       request,
       continuation,
-      ...createInteractionPublicationBarrier(),
+      ...publication,
       admissionState: undefined,
       published: false,
       settlementStarted: false,
@@ -471,10 +477,12 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   ): TrackedSandboxBoundaryContinuation {
     this.assertNewContinuation(request);
     let tracked!: TrackedSandboxBoundaryContinuation;
+    const publication = createInteractionPublicationBarrier();
     const continuation: RuntimeSandboxBoundaryContinuation = Object.freeze({
       requestId: request.requestId,
       turnId: this.turnId,
       runId: this.runId,
+      waitForPublication: () => publication.publicationBarrier,
       applyDecision: (settlement: SandboxBoundarySettlement) =>
         this.settleTracked(
           tracked,
@@ -494,7 +502,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       requestId: request.requestId,
       request,
       continuation,
-      ...createInteractionPublicationBarrier(),
+      ...publication,
       admissionState: undefined,
       published: false,
       settlementStarted: false,

@@ -1174,6 +1174,7 @@ export class SessionManager {
       // recovery below reads those settled rows back — it never depends on what
       // this pass happened to close (#1612).
       if (
+        !this.deps.interactionAuthority &&
         this.deps.store.listPendingSandboxBoundaryRequests &&
         this.deps.store.settleSandboxBoundaryRequest
       ) {

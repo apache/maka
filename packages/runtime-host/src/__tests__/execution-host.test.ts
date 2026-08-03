@@ -557,6 +557,7 @@ test('two Clients share one execution after the starting Client disconnects', as
     await assert.rejects(
       () =>
         second.request('interaction.answer', {
+          sessionId: fixture.sessionId,
           interactionId: pending.interactionId,
           answer: {
             kind: 'question',
@@ -660,6 +661,7 @@ test('a disconnected Client leaves a durable Interaction that another Client can
       answers: questionRequest.questions.map((question) => question.options[0]?.label ?? null),
     };
     const winner = await second.request('interaction.answer', {
+      sessionId: fixture.sessionId,
       interactionId: pending.interactionId,
       answer,
     });
@@ -678,6 +680,7 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     );
     assert.deepEqual(
       await second.request('interaction.answer', {
+        sessionId: fixture.sessionId,
         interactionId: pending.interactionId,
         answer,
       }),
@@ -712,6 +715,7 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     );
     assert.deepEqual(
       await observer.request('interaction.answer', {
+        sessionId: fixture.sessionId,
         interactionId: pending.interactionId,
         answer,
       }),

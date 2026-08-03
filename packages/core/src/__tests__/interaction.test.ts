@@ -6,6 +6,7 @@ import {
   INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS,
   INTERACTION_GENERIC_TOOL_ARGUMENTS_MAX_BYTES,
   INTERACTION_MAX_QUESTIONS,
+  INTERACTION_REQUEST_MAX_BYTES,
   InteractionPermissionProjectionError,
   decodeInteractionAnswer,
   decodeInteractionCanonicalOutcome,
@@ -703,6 +704,25 @@ describe('Interaction projection', () => {
 });
 
 describe('Interaction decoding and validity', () => {
+  test('accepts independently bounded sandbox fields without an invented combined cap', () => {
+    const request = projectInteractionSandboxBoundaryRequest({
+      expansion: {
+        filesystem: {
+          entries: Array.from({ length: 32 }, (_, index) => ({
+            path: `/opt/service-${index}/${'x'.repeat(1_980)}`,
+            access: 'read' as const,
+            scope: 'exact' as const,
+          })),
+        },
+      },
+      justification: '\u0001'.repeat(2_000),
+    });
+
+    assert.ok(Buffer.byteLength(JSON.stringify(request), 'utf8') > 64 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify(request), 'utf8') > INTERACTION_REQUEST_MAX_BYTES);
+    assert.deepEqual(decodeInteractionRequest(request), request);
+  });
+
   test('keeps sandbox boundary answers tied to exact boundary outcome semantics', () => {
     const request = projectInteractionSandboxBoundaryRequest({
       expansion: {

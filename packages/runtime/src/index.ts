@@ -280,6 +280,7 @@ export type {
 } from './message-authority.js';
 export { isRuntimeHostedRootAuthority } from './message-authority.js';
 export {
+  bindRuntimeInteractionRun,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
   RuntimeInteractionFailStopError,

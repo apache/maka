@@ -32,10 +32,10 @@ export const INTERACTION_OPTION_LABEL_MAX_BYTES = 256;
 export const INTERACTION_OPTION_DESCRIPTION_MAX_BYTES = 512;
 export const INTERACTION_ANSWER_MAX_BYTES = 2048;
 export const INTERACTION_REQUEST_MAX_BYTES = 16 * 1024;
+export const INTERACTION_SANDBOX_BOUNDARY_JUSTIFICATION_MAX_CHARS = 2_000;
 export const INTERACTION_ANSWER_SERIALIZED_MAX_BYTES = 8 * 1024;
 export const INTERACTION_OUTCOME_SERIALIZED_MAX_BYTES = 8 * 1024;
 export const INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS = 1_000;
-export const INTERACTION_SANDBOX_BOUNDARY_JUSTIFICATION_MAX_CHARS = 2_000;
 
 export const INTERACTION_CLOSURE_REASONS = [
   'turn_stopped',
@@ -224,7 +224,9 @@ export function decodeInteractionRequest(value: unknown): InteractionRequest {
   } else {
     throw new Error('Invalid Interaction request kind');
   }
-  serializedLimit(request, INTERACTION_REQUEST_MAX_BYTES, 'Interaction request');
+  if (request.kind !== 'sandbox_boundary') {
+    serializedLimit(request, INTERACTION_REQUEST_MAX_BYTES, 'Interaction request');
+  }
   return deepFreeze(request);
 }
 

@@ -1,6 +1,10 @@
 import type { SessionHeader } from '@maka/core/session';
 import { agentGraphIdForRootSession } from '@maka/runtime';
 
+export interface SandboxBoundaryGraphWakeHeaderReader {
+  readHeaderSnapshot(sessionId: string): Promise<Pick<SessionHeader, 'id' | 'subagentParent'>>;
+}
+
 /** Resolve the root Session whose parked graph wake a boundary answer can release. */
 export function sandboxBoundaryGraphWakeRoot(
   header: Pick<SessionHeader, 'id' | 'subagentParent'>,
@@ -14,4 +18,15 @@ export function sandboxBoundaryGraphWakeRoot(
     );
   }
   return parent.parentSessionId;
+}
+
+/** Resolve durable lineage before notifying the root graph supervisor. */
+export async function notifySandboxBoundaryGraphWake(
+  sessionId: string,
+  sessions: SandboxBoundaryGraphWakeHeaderReader,
+  notifyPermissionResponse: (rootSessionId: string) => Promise<void> | void,
+): Promise<void> {
+  const header = await sessions.readHeaderSnapshot(sessionId);
+  const rootSessionId = sandboxBoundaryGraphWakeRoot(header);
+  if (rootSessionId) await notifyPermissionResponse(rootSessionId);
 }
