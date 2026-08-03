@@ -198,53 +198,6 @@ describe('storage root authority', () => {
     });
   });
 
-  test('names a remount, and refuses to name anything else one', async () => {
-    // The kernel hands out a device number per mount, so an unmoved directory
-    // reports a different `dev` after its volume is mounted again while keeping
-    // the inode it always had. That is the one drift a person cannot answer a
-    // question about.
-    //
-    // A different inode is not that, and must not be reported as one: inode
-    // numbers are unique only within a mounted filesystem, so a workspace
-    // copied to another volume can carry the same root-directory inode. Saying
-    // "remounted" there would adopt a foreign root with nobody asked.
-    await withRoots(async ({ root }) => {
-      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
-      const edit = async (change: (identity: { dev: string; ino: string }) => void) => {
-        const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
-          rootIdentity: { dev: string; ino: string };
-        };
-        change(marker.rootIdentity);
-        await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
-      };
-
-      await resolveStorageRoot({ path: root, kind: 'interactive' });
-      await edit((identity) => {
-        identity.dev = (BigInt(identity.dev) + 1n).toString();
-      });
-      const remounted = await prepareStorageRootIdentityRepair({
-        path: root,
-        kind: 'interactive',
-      });
-      assert.equal(remounted?.drift, 'remounted');
-
-      await repairStorageRootIdentity(remounted!);
-      await edit((identity) => {
-        identity.ino = (BigInt(identity.ino) + 1n).toString();
-      });
-      const copied = await prepareStorageRootIdentityRepair({ path: root, kind: 'interactive' });
-      assert.equal(copied?.drift, 'unknown', 'a foreign inode is a question, not a remount');
-
-      await repairStorageRootIdentity(copied!);
-      await edit((identity) => {
-        identity.dev = (BigInt(identity.dev) + 1n).toString();
-        identity.ino = (BigInt(identity.ino) + 1n).toString();
-      });
-      const both = await prepareStorageRootIdentityRepair({ path: root, kind: 'interactive' });
-      assert.equal(both?.drift, 'unknown', 'both fields moved, so the inode proves nothing');
-    });
-  });
-
   test('rejects a prepared repair when its marker changes before commit', async () => {
     await withRoots(async ({ root }) => {
       await resolveStorageRoot({ path: root, kind: 'interactive' });
