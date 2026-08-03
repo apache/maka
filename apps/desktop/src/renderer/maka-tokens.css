@@ -460,8 +460,8 @@
      A consequence worth stating, because it limits what this convergence
      bought: a unitless leading still inherits as a ratio. An element that
      inherits a role's leading and then overrides its own font-size lands off
-     the grid again — measured, that is what `.maka-attachment-file-content`
-     did, holding 1.25 for a 14px name and a 12px size at once. The rule that
+     the grid again — measured, that is what the old file card did, holding
+     1.25 for a 14px name and a 12px size at once. The rule that
      follows from it is that leading belongs on the element that sets the size,
      never on a container above it. */
 

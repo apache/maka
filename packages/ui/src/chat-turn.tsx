@@ -12,19 +12,27 @@ import {
   ChatMessageBubble,
   ChatMessageMetadata,
   ChatSystemMessage,
+  ChatTokenizedText,
   IconButton as UiIconButton,
+  Token,
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Dialog } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
+import {
+  SKILL_INVOCATION_TOKEN_SOURCE,
+  type AttachmentRef,
+  type ProviderRetryEvent,
+  type QuoteRef,
+} from '@maka/core';
 import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
-import { AttachmentFileCard } from './attachment-file-card.js';
+import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants, TextShimmer } from './primitives/chat.js';
 import { ToolTrow } from './tool-activity.js';
+import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
@@ -58,6 +66,13 @@ export type ReadAttachmentBytes = (
   sessionId: string,
   relativePath: string,
 ) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
+
+function sentSkillTokens(text: string) {
+  const values = new Set(
+    [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
+  );
+  return [...values].map((value) => ({ value, label: value, variant: 'neutral' as const }));
+}
 
 /**
  * One chat message body: user verbatim; assistant/system via Markdown.
@@ -138,6 +153,8 @@ const MessageBody = memo(function MessageBody(props: {
   const locale = useUiLocale();
   const copyText = getConversationCopy(locale).messages;
   if (props.role === 'user') {
+    const nonImageAttachments = props.attachments?.filter((attachment) => attachment.kind !== 'image') ?? [];
+    const imageAttachments = props.attachments?.filter((attachment) => attachment.kind === 'image') ?? [];
     const editActionLabel = props.editDisabled
       ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
       : copyText.editMessage;
@@ -180,35 +197,49 @@ const MessageBody = memo(function MessageBody(props: {
       />
     );
     return (
-      <ChatMessageBubble
-        className="maka-chat-message-bubble maka-chat-message-bubble-user"
-        metadata={userMetadata}
-      >
-        <span>{props.text}</span>
-        {props.quotes && props.quotes.length > 0 ? (
-          <div className="maka-user-quotes">
-            {props.quotes.map((quote, index) => (
-              <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
+      <>
+        {nonImageAttachments.length > 0 ? (
+          <div className="maka-user-attachment-tokens">
+            {nonImageAttachments.map((attachment, index) => (
+              <Token
+                key={`${attachment.name}-${index}`}
+                size="sm"
+                label={attachment.name}
+                icon={<AttachmentKindIcon kind={attachment.kind} />}
+                endContent={
+                  attachment.bytes !== undefined ? (
+                    <span className="maka-attachment-token-size">{formatBytes(attachment.bytes)}</span>
+                  ) : undefined
+                }
+              />
             ))}
           </div>
         ) : null}
-        {props.attachments && props.attachments.length > 0 ? (
-          <div className="maka-user-attachments">
-            {props.attachments.map((attachment, index) => (
-              attachment.kind === 'image' ? (
-                <AttachmentImage key={`${attachment.name}-${index}`} attachment={attachment} onReadAttachmentBytes={props.onReadAttachmentBytes} />
-              ) : (
-                <AttachmentFileCard
+        <ChatMessageBubble
+          className="maka-chat-message-bubble maka-chat-message-bubble-user"
+          metadata={userMetadata}
+        >
+          <ChatTokenizedText tokens={sentSkillTokens(props.text)}>{props.text}</ChatTokenizedText>
+          {props.quotes && props.quotes.length > 0 ? (
+            <div className="maka-user-quotes">
+              {props.quotes.map((quote, index) => (
+                <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
+              ))}
+            </div>
+          ) : null}
+          {imageAttachments.length > 0 ? (
+            <div className="maka-user-attachments">
+              {imageAttachments.map((attachment, index) => (
+                <AttachmentImage
                   key={`${attachment.name}-${index}`}
-                  name={attachment.name}
-                  kind={attachment.kind}
-                  size={attachment.bytes}
+                  attachment={attachment}
+                  onReadAttachmentBytes={props.onReadAttachmentBytes}
                 />
-              )
-            ))}
-          </div>
-        ) : null}
-      </ChatMessageBubble>
+              ))}
+            </div>
+          ) : null}
+        </ChatMessageBubble>
+      </>
     );
   }
   return (

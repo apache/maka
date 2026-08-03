@@ -1,23 +1,7 @@
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
-.maka-attachment-file-card { display: flex; width: 200px; max-width: 100%; align-items: center; gap: 10px; padding: 8px; border-radius: var(--radius-surface); background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
-.maka-attachment-file-icon { display: grid; width: 36px; height: 36px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-control); color: var(--foreground-secondary); background: var(--foreground-alpha-10); }
-.maka-attachment-file-icon > svg { width: 20px; height: 20px; }
-.maka-attachment-file-content { min-width: 0; flex: 1; }
-.maka-attachment-file-name,
-.maka-attachment-file-size { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-attachment-file-name {
-  font: var(--maka-text-label);
- color: var(--foreground); }
-.maka-attachment-file-size {
-  font: var(--maka-text-supporting);
- margin-top: 2px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
-.maka-attachment-file-remove,
 .maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick), background var(--duration-quick); }
-.maka-attachment-file-remove { width: 24px; height: 24px; margin-left: 4px; border-radius: var(--radius-control); }
-.maka-attachment-file-remove > svg { width: 14px; height: 14px; }
-.maka-attachment-file-remove:hover,
 .maka-quote-chip-remove:hover { color: var(--foreground); background: var(--foreground-alpha-10); }
 
 .maka-page-header-title,
@@ -107,6 +91,8 @@
 .maka-user-message:focus-within .maka-message-meta { opacity: 1; }
 .maka-user-quotes { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; margin-top: 4px; }
 .maka-user-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.maka-user-attachment-tokens { display: flex; max-width: 100%; flex-wrap: wrap; gap: 4px; }
+.maka-attachment-token-size { color: var(--foreground-secondary); font-variant-numeric: tabular-nums; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,
