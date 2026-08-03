@@ -129,12 +129,17 @@ export type GoalObservedTurnStart =
  * turn that no later call within it can change, which is the distinction a
  * refusal has to carry: telling a caller to look again and retry is only honest
  * when looking again can produce a different answer.
+ *
+ * `goal_already_armed` is named for the common case, not the only one. A turn
+ * holds a control lease either because it armed a goal or because
+ * `beginObservedTurn` bound it to a goal that was already active — the second
+ * turn armed nothing, so the refusal built from this must not say it did.
  */
 export type GoalControlDecline =
   | /** This turn was never registered under a Goal boundary, or its registration is gone. */
   'turn_not_registered'
   | /** Goal continuation is shutting down. */ 'coordinator_disposed'
-  | /** This turn already armed a goal. */ 'goal_already_armed'
+  | /** This turn already holds a goal control lease. */ 'goal_already_armed'
   | /** This turn started before the goal it is trying to change existed. */ 'goal_not_observed'
   | /** The goal generation this turn observed is no longer the current one. */ 'goal_changed';
 
@@ -214,12 +219,21 @@ export class GoalContinuationCoordinator {
    * and told the caller to look and try again. For the other causes there is
    * nothing to look at: the turn is not registered, or a later turn owns the
    * lane, and no amount of re-reading changes that within this turn.
+   *
+   * Shutdown has to be asked about before the lane lookup, not after it.
+   * `dispose()` sets the flag and clears `lanes` in the same synchronous step,
+   * so a shut-down coordinator answers every `lanes.get` with `undefined`; an
+   * `isCurrent` check placed below that lookup can only ever see a lane that is
+   * still in the map, which makes its second clause trivially true and its
+   * first one unreachable. The refusal built from the earlier answer then told
+   * a turn that really had been registered under the Goal boundary that it
+   * never was.
    */
   activationStanding(sessionId: string, turnId: string): GoalControlStanding {
+    if (this.disposed) return declined('coordinator_disposed');
     const lane = this.lanes.get(sessionId);
     const registration = lane?.turns.get(turnId);
     if (!lane || !registration) return declined('turn_not_registered');
-    if (!this.isCurrent(lane)) return declined('coordinator_disposed');
     if (registration.controlLease !== undefined) return declined('goal_already_armed');
     if (this.deps.goalManager.getControlLease(sessionId) !== registration.observedControlLease) {
       return declined('goal_changed');
@@ -229,10 +243,10 @@ export class GoalContinuationCoordinator {
 
   /** The same question for a mutation of the generation this turn observed. */
   mutationStanding(sessionId: string, turnId: string): GoalControlStanding {
+    if (this.disposed) return declined('coordinator_disposed');
     const lane = this.lanes.get(sessionId);
     const registration = lane?.turns.get(turnId);
     if (!lane || !registration) return declined('turn_not_registered');
-    if (!this.isCurrent(lane)) return declined('coordinator_disposed');
     const controlLease = registration.controlLease ?? registration.observedControlLease;
     if (!controlLease) return declined('goal_not_observed');
     if (!this.deps.goalManager.matchesControlLease(sessionId, controlLease)) {

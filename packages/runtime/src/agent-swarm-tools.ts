@@ -246,7 +246,15 @@ export function buildAgentSwarmTool(
                     onEvent: (event) => progressProjectors[index]!.observe(event),
                   })) as SpawnChildAgentResult)
                 : (() => {
-                    throw new Error('retryChildAgent capability is unavailable');
+                    // Defensive: the scheduler only asks for a retry when the
+                    // retry capability is present (see the `rate_limited`
+                    // branch below), so this cannot fire from a swarm run
+                    // today. It still has to be a sentence a model can act on
+                    // rather than the name of a missing host callback.
+                    throw new Error(
+                      'agent_swarm cannot retry a failed child run in this session. ' +
+                        'The item was not retried; send it again as a new item instead.',
+                    );
                   })()
               : item.mode === 'resume'
                 ? ((await ctx.resumeChildAgent!({

@@ -1104,7 +1104,12 @@ describe('ShellRunProcessManager', () => {
           'maka://runtime/background-tasks/%2Funsafe',
           NO_ABORT,
         ),
-      /Unsupported runtime resource ref/,
+      // Same reply as the other two ref-parse sites: the canonical form and
+      // where to get it, and no echo of the rejected string.
+      (error: unknown) =>
+        error instanceof Error &&
+        /maka:\/\/runtime\/background-tasks\/<id>/.test(error.message) &&
+        !error.message.includes('%2Funsafe'),
     );
   });
 

@@ -66,6 +66,7 @@ import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
 import { normalizeSandboxBoundaryExpansion } from './sandbox-boundary-path.js';
+import { SANDBOX_BOUNDARY_UNAVAILABLE } from './sandbox-boundary-tool.js';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
@@ -1851,7 +1852,11 @@ export class ToolRuntime {
       !hostedRun &&
       (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest)
     ) {
-      throw new Error('Sandbox boundary expansion is unavailable on this surface');
+      // This is the sentence a model actually reads. `sandbox-boundary-tool.ts`
+      // guards the same condition, but ToolRuntime injects the callback
+      // unconditionally a few lines above, so that guard answers only an
+      // embedder that builds its own context — never a production tool call.
+      throw new Error(SANDBOX_BOUNDARY_UNAVAILABLE);
     }
     const normalized = await normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd);
     const normalizedJustification = justification.trim();

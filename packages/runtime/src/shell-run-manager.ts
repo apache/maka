@@ -76,6 +76,12 @@ type LifecycleCause = 'timeout' | 'cancel' | 'shutdown';
  * back taught the model nothing (and could carry command text back into the
  * transcript); the canonical shape and where to obtain it are the only useful
  * reply. Keep this in sync with the `ref` description in shell-tools.ts.
+ *
+ * `Read({ ref })` reaches this through `resourceDetail`, not through
+ * `stopBackgroundTask`: `classifyRuntimeResourceRef` waves through anything
+ * shaped `maka://runtime/<something>`, so a mistyped path segment gets all the
+ * way here. That is the likeliest place to mistype a ref, and it was the one
+ * still echoing.
  */
 const BACKGROUND_TASK_REF_HELP =
   'That is not a runtime background task ref. Use the ref exactly as it was returned when the ' +
@@ -1479,7 +1485,7 @@ export class ShellRunProcessManager
     abortSignal: AbortSignal,
   ): Promise<ShellRunToolResult> {
     const target = parseShellRunResourceRef(ref);
-    if (!target) throw new Error(`Unsupported runtime resource ref: ${ref}`);
+    if (!target) throw new Error(BACKGROUND_TASK_REF_HELP);
     const live = this.liveResource(sessionId, target.shellRunId);
     let record: ShellRunRecord;
     if (live) {

@@ -94,12 +94,29 @@ const GREP_TIMEOUT_MS = 120_000;
  * So a read says no result came back, and says what that does not mean. A write
  * says Maka cannot tell what happened to the file, and sends the model to look
  * rather than to retry a call that may have already taken effect.
+ *
+ * Neither may name Bash. Read, Glob and Grep are the entire tool set of a
+ * `local_read` child (`agent-catalog.ts`), and `buildToolsForAgentDefinition`
+ * hands that child those three tools and nothing else. "Use Bash to do the same
+ * work" is, for the caller most likely to be running a bare Grep, an
+ * instruction it cannot carry out — a dead end dressed as a way out. The
+ * fallback is therefore offered on a condition the model can check for itself,
+ * and the sentence ends on a move that is available to every caller.
+ *
+ * The worker-protocol violation itself still has to reach an operator, so it
+ * travels as the `cause`: out of the model's sight, in every log and stack.
  */
+function mismatchedWorkerResult(tool: string): Error {
+  return new Error(`Filesystem worker returned a mismatched ${tool} result.`);
+}
+
 function internalFilesystemReadFailure(tool: string, missing: string, notMeaning: string): Error {
   return new Error(
     `${tool} could not be completed inside Maka, so ${missing}. ` +
       `This is an internal failure, not a problem with your arguments, and it does not mean ${notMeaning}. ` +
-      `Retry the same ${tool} call once; if it fails again, use Bash to do the same work.`,
+      `Retry the same ${tool} call once. If it fails again, stop calling ${tool}: do the same ` +
+      `work with a shell tool if you have one, and otherwise report that ${tool} is failing inside Maka.`,
+    { cause: mismatchedWorkerResult(tool) },
   );
 }
 
@@ -109,6 +126,7 @@ function internalFilesystemWriteFailure(tool: string, subject: string, extra?: s
       `so treat the file as being in an unknown state. ` +
       `This is an internal failure, not a problem with your arguments${extra ? ` — ${extra}` : ''}. ` +
       `Read the file to find out what it now contains before writing to it again.`,
+    { cause: mismatchedWorkerResult(tool) },
   );
 }
 
