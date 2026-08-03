@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const signingEnvironment = {
@@ -10,6 +11,9 @@ const signingEnvironment = {
 };
 
 test('release tooling fails closed on unsupported hosts, signing, and architecture', async () => {
+  const desktopManifest = JSON.parse(
+    await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'),
+  );
   const { packageMacosArm64 } = await import(new URL('package-macos-arm64.mjs', import.meta.url));
   const { verifyPackagedMacApp } = await import(
     new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
@@ -29,7 +33,9 @@ test('release tooling fails closed on unsupported hosts, signing, and architectu
       run: async (command, args) => {
         if (command === 'plutil') {
           if (args[1] === 'CFBundleIdentifier') return { stdout: 'com.maka.desktop\n' };
-          if (args[1] === 'CFBundleShortVersionString') return { stdout: '0.1.2\n' };
+          if (args[1] === 'CFBundleShortVersionString') {
+            return { stdout: `${desktopManifest.version}\n` };
+          }
           return { stdout: 'Maka\n' };
         }
         if (command === 'lipo') return { stdout: 'x86_64\n', stderr: '' };
