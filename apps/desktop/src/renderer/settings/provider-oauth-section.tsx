@@ -202,7 +202,7 @@ function SubscriptionLoginPanel(props: {
   const display: SubscriptionDisplay = isXai
     ? { name: 'xAI Grok', shortName: 'SuperGrok / X Premium', detail: copy.xaiDetail }
     : { name: 'OpenAI Codex', shortName: 'Codex', detail: copy.codexDetail };
-  // The whole browser-loopback login/logout controller (getAuthUrl ->
+  // The whole browser-assisted login/logout controller (getAuthUrl ->
   // openAuthUrl -> refresh -> completeAuthorization, one authRequestId
   // lifecycle, synchronous pending-action guard, cancellation on unmount,
   // localized toast copy) lives in useOAuthLoginFlow so the connection detail
@@ -216,7 +216,7 @@ function SubscriptionLoginPanel(props: {
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
       <Text type="body">{presentSnapshotDetail(flow.state, display, locale)}</Text>
-      {flow.stateHint && (
+      {!isXai && flow.stateHint && (
         <Text type="supporting" color="secondary">
           {copy.deviceCode} {flow.stateHint}
         </Text>
@@ -250,7 +250,7 @@ function GitHubCopilotLoginPanel() {
   // The shared login-flow controller owns the snapshot refresh, the
   // synchronous one-shot pending guard, and the unmount safety; Copilot
   // rides it through the direct account flow (one bridge call per action,
-  // no browser loopback, no logout confirm) instead of owning a separate
+  // no browser handoff, no logout confirm) instead of owning a separate
   // pending-action state machine here (#1042).
   const flow = useOAuthLoginFlow({
     bridge: window.maka.githubCopilotSubscription as unknown as OAuthLoginFlowBridge,

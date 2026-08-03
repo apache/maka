@@ -884,7 +884,12 @@ export type {
 } from './oauth-login.js';
 export { buildSubscriptionModelFetch } from './subscription-model-fetch.js';
 export type { SubscriptionModelFetchInput } from './subscription-model-fetch.js';
-export { extractCodexAccountId, openAiCodexHeaders } from './subscription-auth.js';
+export {
+  extractCodexAccountClaims,
+  extractCodexAccountId,
+  openAiCodexHeaders,
+} from './subscription-auth.js';
+export type { CodexAccountClaims } from './subscription-auth.js';
 export {
   compactionDecisionDiagnosticPatch,
   compactionDecisionToDiagnostic,

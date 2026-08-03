@@ -148,3 +148,31 @@ test('xAI device polling classifies a local window expiry separately from a prov
     (error: unknown) => error instanceof OAuthDeviceAuthorizationExpiredError,
   );
 });
+
+test('xAI device polling never issues a request after the window elapses mid-sleep', async () => {
+  let now = NOW;
+  let polls = 0;
+  await assert.rejects(
+    () =>
+      pollXaiDeviceAuthorization({
+        authorization: {
+          deviceCode: 'device-code',
+          userCode: 'USER-CODE',
+          verificationUrl: 'https://accounts.x.ai/device',
+          expiresAt: NOW + 1_000,
+          intervalMs: 5_000,
+        },
+        now: () => now,
+        signal: new AbortController().signal,
+        sleep: async () => {
+          now += 5_000;
+        },
+        fetchFn: async () => {
+          polls += 1;
+          return Response.json({ error: 'authorization_pending' }, { status: 400 });
+        },
+      }),
+    (error: unknown) => error instanceof OAuthDeviceAuthorizationExpiredError,
+  );
+  assert.equal(polls, 0);
+});

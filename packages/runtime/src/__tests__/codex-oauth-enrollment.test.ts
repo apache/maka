@@ -251,3 +251,18 @@ test('Codex device authorization code exchange maps a rejected grant to provider
       error instanceof OAuthTokenEndpointError && error.category === 'provider_rejected',
   );
 });
+
+test('Codex device enrollment accepts the usercode alias', async () => {
+  const authorization = await startCodexDeviceAuthorization({
+    fetchFn: async () =>
+      Response.json({
+        device_auth_id: 'deviceauth-alias',
+        usercode: 'ALIAS-CODE',
+        interval: '5',
+        expires_at: new Date(NOW + 600_000).toISOString(),
+      }),
+    signal: new AbortController().signal,
+    now: () => NOW,
+  });
+  assert.equal(authorization.userCode, 'ALIAS-CODE');
+});

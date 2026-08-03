@@ -27,7 +27,7 @@ import {
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
 
-// Maps an OAuth model-connection provider type to the browser-loopback login
+// Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
 // the loopback / polling services (Codex, Antigravity) are one-button-drivable
 // here; Claude's paste-code flow and plain API-key providers return null so the

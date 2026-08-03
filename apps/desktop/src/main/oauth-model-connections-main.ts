@@ -10,7 +10,7 @@ import type { ConnectionStore, CredentialStore } from '@maka/storage';
 import type { ClaudeSubscriptionService } from './oauth/claude-subscription-service.js';
 import { isSubscriptionExperimentalEnabled } from './oauth/claude-subscription-helpers.js';
 import type { OpenAiCodexService } from './oauth/openai-codex-service.js';
-import { isOpenAiCodexExperimentalEnabled } from './oauth/openai-codex-helpers.js';
+import { isOpenAiCodexExperimentalEnabled } from './oauth/openai-codex-service.js';
 import {
   fetchProviderModels,
   OpenAiCodexDiscoveryError,

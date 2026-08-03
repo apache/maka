@@ -38,6 +38,8 @@ import {
 } from '@maka/core';
 import {
   exchangeCodexDeviceAuthorizationCode,
+  extractCodexAccountClaims,
+  isOAuthEnrollmentProviderEnabled,
   OAuthDeviceAuthorizationExpiredError,
   OAuthTokenEndpointError,
   pollCodexDeviceAuthorization,
@@ -57,21 +59,12 @@ import {
   saveSharedOAuthTokens,
   type SharedOAuthCredentialStore,
 } from './shared-credential-bridge.js';
-import { extractAccountClaims, safeExtractAccountClaims } from './openai-codex-helpers.js';
 
 // =============================================================
-// Persisted tokens — INTERNAL TO THIS MODULE. Never crosses IPC.
-// Snake_case field names match auth.openai.com's response body.
+// Persisted tokens — the runtime `OAuthSubscriptionTokens` shape is the
+// single token authority; this module decorates it with `account_id`.
+// Never crosses IPC.
 // =============================================================
-interface PersistedTokens {
-  /* eslint-disable @typescript-eslint/naming-convention -- OAuth protocol field names */
-  access_token: string;
-  refresh_token: string;
-  id_token?: string;
-  expires_at: number;
-  account_id: string;
-  /* eslint-enable */
-}
 
 interface PendingAuthorization {
   /** Server-issued device authorization (user code, verify URL, window). */
@@ -210,7 +203,11 @@ export class OpenAiCodexService {
     }
     try {
       const grant = await pending.pollPromise;
-      const tokens = await this.exchangeGrantForTokens(grant, pending.controller.signal);
+      // The poll has already consumed the one-time device authorization
+      // code: the exchange + persistence must complete even if the user
+      // cancelled while the poll was in flight, otherwise the code is
+      // burned and the login is lost. Use an independent signal.
+      const tokens = await this.exchangeGrantForTokens(grant, new AbortController().signal);
       // Storage failures are not exchange failures: the authorization
       // code was consumed successfully, so tell the user to fix the
       // store instead of implying the code was bad.
@@ -272,7 +269,7 @@ export class OpenAiCodexService {
     // Claims are always derived from the CURRENT tokens rather than
     // cached: another surface may have re-logged in with a different
     // account since this process last saw a login or refresh.
-    const claims = safeExtractAccountClaims(tokens.access_token, tokens.id_token);
+    const claims = extractCodexAccountClaims(tokens.access_token, tokens.id_token);
     const runtimeState = this.deriveRuntimeState();
     return {
       provider: 'openai-codex',
@@ -393,8 +390,8 @@ export class OpenAiCodexService {
       fetchFn: this.fetchFn,
       signal,
     });
-    const claims = extractAccountClaims(next.access_token, next.id_token);
-    return { ...next, account_id: claims.accountId || tokens.account_id };
+    const claims = extractCodexAccountClaims(next.access_token, next.id_token);
+    return { ...next, account_id: claims?.accountId || tokens.account_id };
   }
 
   private applyRefreshOutcome(result: OAuthSubscriptionRefreshAndPersistOutcome): SubscriptionActionResult {
@@ -474,24 +471,18 @@ export class OpenAiCodexService {
   private async exchangeGrantForTokens(
     grant: CodexDeviceAuthorizationGrant,
     signal: AbortSignal,
-  ): Promise<PersistedTokens> {
+  ): Promise<OAuthSubscriptionTokens> {
     const tokens = await exchangeCodexDeviceAuthorizationCode({
       grant,
       fetchFn: this.fetchFn,
       signal,
       now: this.now,
     });
-    const claims = extractAccountClaims(tokens.access_token, tokens.id_token);
-    return {
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      id_token: tokens.id_token,
-      expires_at: tokens.expires_at,
-      account_id: claims.accountId || tokens.account_id || '',
-    };
+    const claims = extractCodexAccountClaims(tokens.access_token, tokens.id_token);
+    return { ...tokens, account_id: claims?.accountId || tokens.account_id || '' };
   }
 
-  private async saveTokens(tokens: PersistedTokens): Promise<void> {
+  private async saveTokens(tokens: OAuthSubscriptionTokens): Promise<void> {
     try {
       await saveSharedOAuthTokens(this.credentialStore, 'codex-subscription', tokens);
     } catch (err) {
@@ -508,7 +499,7 @@ export class OpenAiCodexService {
    * surfaces refresh and rewrite the same entry, so caching here could
    * hold a rotated-out refresh token.
    */
-  private async loadTokens(): Promise<PersistedTokens | null> {
+  private async loadTokens(): Promise<OAuthSubscriptionTokens | null> {
     let result: Awaited<ReturnType<typeof loadSharedOAuthTokens>>;
     try {
       result = await loadSharedOAuthTokens(this.credentialStore, 'codex-subscription');
@@ -524,14 +515,7 @@ export class OpenAiCodexService {
     }
     if (result.status === 'missing') return null;
     this.lastStorageFailedMessage = null;
-    const tokens = result.tokens;
-    return {
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      id_token: tokens.id_token,
-      expires_at: tokens.expires_at,
-      account_id: tokens.account_id ?? '',
-    };
+    return result.tokens;
   }
 
   private failureFromError(
@@ -572,7 +556,14 @@ export interface CodexAccountStateSnapshot {
 // =============================================================
 // Re-exports for the IPC handler + focused protocol tests.
 // =============================================================
-export { isOpenAiCodexExperimentalEnabled } from './openai-codex-helpers.js';
+/**
+ * Whether the Codex subscription card is enabled at all in this build.
+ * Same opt-out shape as the Claude service, driven by the runtime
+ * enrollment gate.
+ */
+export function isOpenAiCodexExperimentalEnabled(): boolean {
+  return isOAuthEnrollmentProviderEnabled('openai-codex');
+}
 
 class CodexAuthorizationCancelledError extends Error {}
 

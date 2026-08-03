@@ -47,25 +47,6 @@ describe('OAuth login authorization', () => {
     assert.match(url.searchParams.get('code_challenge') ?? '', /^[A-Za-z0-9_-]{43}$/);
   });
 
-  it('uses the caller-owned Codex loopback redirect in authorization URL', () => {
-    const redirectUri = 'http://127.0.0.1:49152/oauth/callback';
-    const result = buildOAuthLoginAuthorization({
-      provider: 'openai-codex',
-      verifier: VERIFIER,
-      state: STATE,
-      redirectUri,
-    });
-    const url = new URL(result.authorizationUrl);
-    assert.equal(result.presentation, 'loopback');
-    assert.equal(url.searchParams.get('redirect_uri'), redirectUri);
-    assert.equal(url.searchParams.get('originator'), 'codex_cli_rs');
-    assert.equal(url.searchParams.get('id_token_add_organizations'), 'true');
-    assert.equal(
-      url.searchParams.get('scope'),
-      'openid profile email offline_access api.connectors.read api.connectors.invoke',
-    );
-  });
-
   it('pins xAI PKCE authorization to the allowlisted Grok CLI redirect', () => {
     const redirectUri = 'http://127.0.0.1:56121/callback';
     const result = buildOAuthLoginAuthorization({
@@ -95,23 +76,13 @@ describe('OAuth login authorization', () => {
     );
   });
 
-  it('rejects low-entropy state and non-loopback Codex redirects', () => {
+  it('rejects low-entropy state and non-loopback redirects', () => {
     assert.throws(
       () =>
         buildOAuthLoginAuthorization({
           provider: 'claude-subscription',
           verifier: VERIFIER,
           state: 'short',
-        }),
-      (error) => assertEndpointError(error, 'invalid_response'),
-    );
-    assert.throws(
-      () =>
-        buildOAuthLoginAuthorization({
-          provider: 'openai-codex',
-          verifier: VERIFIER,
-          state: STATE,
-          redirectUri: 'https://example.test/callback',
         }),
       (error) => assertEndpointError(error, 'invalid_response'),
     );
@@ -187,38 +158,6 @@ describe('OAuth enrollment policy', () => {
 });
 
 describe('OAuth initial code exchange', () => {
-  it('exchanges Codex code through a real Response and preserves the supplied redirect', async () => {
-    let request: { url: string; init?: RequestInit } | undefined;
-    const fetchFn: typeof fetch = async (url, init) => {
-      request = { url: String(url), init };
-      return new Response(
-        JSON.stringify({
-          access_token: 'access',
-          refresh_token: 'refresh',
-          id_token: 'id-token',
-          expires_in: 120,
-        }),
-        { headers: { 'Content-Type': 'application/json' } },
-      );
-    };
-    const redirectUri = 'http://localhost:43123/auth/callback';
-    const tokens = await exchangeOAuthAuthorizationCode({
-      provider: 'openai-codex',
-      code: 'authorization-code',
-      verifier: VERIFIER,
-      state: STATE,
-      redirectUri,
-      signal: new AbortController().signal,
-      fetchFn,
-      now: () => NOW,
-    });
-    assert.equal(tokens.expires_at, NOW + 120_000);
-    assert.equal(request?.url, OAUTH_LOGIN_PROVIDER_CONFIG['openai-codex'].tokenEndpoint);
-    const body = new URLSearchParams(String(request?.init?.body));
-    assert.equal(body.get('redirect_uri'), redirectUri);
-    assert.equal(body.get('code_verifier'), VERIFIER);
-  });
-
   it('bounds a streamed response even without content-length', async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -341,11 +280,10 @@ describe('OAuth initial code exchange', () => {
   it('marks reply loss after dispatch as outcome unknown', async () => {
     await assert.rejects(
       exchangeOAuthAuthorizationCode({
-        provider: 'openai-codex',
+        provider: 'claude-subscription',
         code: 'authorization-code',
         verifier: VERIFIER,
         state: STATE,
-        redirectUri: 'http://localhost:43123/auth/callback',
         signal: new AbortController().signal,
         fetchFn: async () => {
           throw new TypeError('socket closed after write');

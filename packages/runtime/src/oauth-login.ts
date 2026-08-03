@@ -15,13 +15,8 @@ import {
 export { OAuthTokenEndpointError } from './oauth-provider-contracts.js';
 export type { OAuthTokenEndpointErrorCategory } from './oauth-provider-contracts.js';
 
-// LEGACY: the openai-codex loopback presentation is retained only for
-// external consumers of this public library API. Maka's own login paths
-// (desktop service + runtime-host coordinator) use the device-code flow
-// in codex-oauth-enrollment.ts. Remove the codex loopback branch when a
-// public-API break is acceptable.
-export type OAuthLoginProvider = 'claude-subscription' | 'openai-codex' | 'xai-oauth';
-export type OAuthInitialTokenProvider = OAuthLoginProvider;
+export type OAuthLoginProvider = 'claude-subscription' | 'xai-oauth';
+export type OAuthInitialTokenProvider = 'claude-subscription' | 'xai-oauth' | 'openai-codex';
 export type OAuthLoginPresentationKind = 'paste-code' | 'loopback';
 
 export const OAUTH_LOGIN_MAX_RESPONSE_BYTES = 64 * 1024;
@@ -29,7 +24,6 @@ export const OAUTH_LOGIN_MAX_TOKEN_CHARS = OAUTH_MAX_TOKEN_CHARS;
 export const OAUTH_LOGIN_DEFAULT_TIMEOUT_MS = 15_000;
 
 const CLAUDE = OAUTH_PROVIDER_CONTRACTS['claude-subscription'];
-const CODEX = OAUTH_PROVIDER_CONTRACTS['openai-codex'];
 const XAI = OAUTH_PROVIDER_CONTRACTS['xai-oauth'];
 
 export const OAUTH_LOGIN_PROVIDER_CONFIG = {
@@ -41,15 +35,6 @@ export const OAUTH_LOGIN_PROVIDER_CONFIG = {
     scope: CLAUDE.scope,
     tokenUserAgent: CLAUDE.tokenUserAgent,
     presentation: CLAUDE.presentation,
-  },
-  'openai-codex': {
-    clientId: CODEX.clientId,
-    authorizationEndpoint: CODEX.authorizationEndpoint,
-    tokenEndpoint: CODEX.tokenEndpoint,
-    scope: CODEX.scope,
-    tokenUserAgent: CODEX.tokenUserAgent,
-    presentation: CODEX.presentation,
-    authorizationExtras: CODEX.authorizationExtras,
   },
   'xai-oauth': {
     clientId: XAI.clientId,
@@ -66,7 +51,7 @@ export interface OAuthLoginAuthorizationInput {
   provider: OAuthLoginProvider;
   verifier: string;
   state: string;
-  /** Required for Codex because the Host owns the loopback listener. */
+  /** Loopback providers must supply the exact redirect URI bound to the listener. */
   redirectUri?: string;
 }
 
@@ -86,17 +71,18 @@ export function pkceChallengeFromVerifier(verifier: string): string {
   return base64urlEncode(new Uint8Array(createHash('sha256').update(verifier, 'utf8').digest()));
 }
 
-export interface CodexAuthorizationConfig {
+interface LoopbackAuthorizationConfig {
   clientId: string;
   authorizeEndpoint: string;
   redirectUri: string;
   scope: string;
   state: string;
   challenge: string;
-  extras: ReadonlyArray<readonly [string, string]>;
+  extras: ReadonlyArray<readonly [string, string]> | undefined;
 }
 
-export function buildCodexAuthorizationUrl(config: CodexAuthorizationConfig): string {
+/** Build a loopback (authorization-code) authorize URL with PKCE S256. */
+function buildLoopbackAuthorizationUrl(config: LoopbackAuthorizationConfig): string {
   const url = new URL(config.authorizeEndpoint);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', config.clientId);
@@ -105,7 +91,7 @@ export function buildCodexAuthorizationUrl(config: CodexAuthorizationConfig): st
   url.searchParams.set('code_challenge', config.challenge);
   url.searchParams.set('code_challenge_method', 'S256');
   url.searchParams.set('state', config.state);
-  for (const [key, value] of config.extras) url.searchParams.set(key, value);
+  for (const [key, value] of config.extras ?? []) url.searchParams.set(key, value);
   return url.toString();
 }
 
@@ -119,7 +105,7 @@ export function buildOAuthLoginAuthorization(
   if (input.provider !== 'claude-subscription') {
     const loopbackConfig = OAUTH_LOGIN_PROVIDER_CONFIG[input.provider];
     return {
-      authorizationUrl: buildCodexAuthorizationUrl({
+      authorizationUrl: buildLoopbackAuthorizationUrl({
         clientId: loopbackConfig.clientId,
         authorizeEndpoint: loopbackConfig.authorizationEndpoint,
         redirectUri,
@@ -148,7 +134,7 @@ export interface ExchangeOAuthAuthorizationCodeInput {
   code: string;
   verifier: string;
   state: string;
-  /** Required for Codex and must equal the URI used to build its authorization URL. */
+  /** Loopback providers must pass the URI used to build the authorization URL. */
   redirectUri?: string;
   signal: AbortSignal;
   fetchFn: typeof fetch;

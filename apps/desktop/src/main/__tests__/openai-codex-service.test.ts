@@ -12,7 +12,6 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { extractAccountClaims } from '../oauth/openai-codex-helpers.js';
 import { base64urlEncode } from '@maka/core';
 import { OpenAiCodexService } from '../oauth/openai-codex-service.js';
 
@@ -21,55 +20,6 @@ function makeJwt(payload: Record<string, unknown>): string {
   const body = base64urlEncode(new TextEncoder().encode(JSON.stringify(payload)));
   return `${header}.${body}.signature`;
 }
-
-describe('Codex JWT account-id extraction', () => {
-  it('reads the OpenAI-specific chatgpt_account_id claim from the access token', () => {
-    const token = makeJwt({
-      sub: 'fallback-sub',
-      'https://api.openai.com/auth': { chatgpt_account_id: 'acct_pinned' },
-    });
-    const claims = extractAccountClaims(token);
-    assert.equal(claims.accountId, 'acct_pinned');
-  });
-
-  it('falls back to sub when the chatgpt_account_id claim is missing', () => {
-    const token = makeJwt({ sub: 'fallback-sub-only' });
-    const claims = extractAccountClaims(token);
-    assert.equal(claims.accountId, 'fallback-sub-only');
-  });
-
-  it('extracts email + plan from the access token when present', () => {
-    const token = makeJwt({
-      sub: 'sub-1',
-      email: 'user@example.test',
-      'https://api.openai.com/auth': {
-        chatgpt_account_id: 'acct_x',
-        chatgpt_plan_type: 'plus',
-      },
-    });
-    const claims = extractAccountClaims(token);
-    assert.equal(claims.email, 'user@example.test');
-    assert.equal(claims.plan, 'plus');
-    assert.equal(claims.accountId, 'acct_x');
-  });
-
-  it('fills picture + email from id_token when access token does not carry them', () => {
-    const access = makeJwt({ sub: 'sub-2' });
-    const id = makeJwt({
-      picture: 'https://example.test/avatar.png',
-      email: 'fill@example.test',
-    });
-    const claims = extractAccountClaims(access, id);
-    assert.equal(claims.picture, 'https://example.test/avatar.png');
-    assert.equal(claims.email, 'fill@example.test');
-    assert.equal(claims.accountId, 'sub-2');
-  });
-
-  it('throws when neither token contains an account id', () => {
-    const access = makeJwt({});
-    assert.throws(() => extractAccountClaims(access), /account ID/i);
-  });
-});
 
 // ---------------------------------------------------------------
 // Behavior tests against a mocked fetch.
@@ -298,20 +248,13 @@ describe('Codex device-auth login flow', () => {
     const complete = await h.service.completeAuthorization(authRequestId);
     assert.deepEqual(complete, { ok: true });
 
-    // Poll hit 403 (pending) then 200.
+    // The device-auth protocol (poll body, exchange form, redirect URI) is
+    // pinned by codex-oauth-enrollment.test.ts; here we only verify the
+    // desktop lifecycle: pending retry then exchange happened and the
+    // credential landed.
     const polls = h.requests.filter((r) => r.url.endsWith('/deviceauth/token'));
     assert.equal(polls.length, 2);
-    assert.deepEqual(polls[0]!.body, { device_auth_id: 'deviceauth_abc123', user_code: 'ABCD-1234' });
-
-    // Authorization-code exchange uses the deviceauth redirect URI + PKCE verifier.
-    const exchange = h.requests.find((r) => r.url.endsWith('/oauth/token'));
-    assert.ok(exchange);
-    const form = new URLSearchParams(exchange.body as string);
-    assert.equal(form.get('grant_type'), 'authorization_code');
-    assert.equal(form.get('client_id'), 'app_EMoamEEZ73f0CkXaXp7hrann');
-    assert.equal(form.get('code'), 'authcode_xyz');
-    assert.equal(form.get('code_verifier'), 'verifier_123');
-    assert.equal(form.get('redirect_uri'), 'https://auth.openai.com/deviceauth/callback');
+    assert.ok(h.requests.some((r) => r.url.endsWith('/oauth/token')));
 
     // Tokens persisted; account state reflects the claims.
     const state = await h.service.getAccountState();
@@ -399,7 +342,7 @@ describe('Codex device-auth login flow', () => {
     assert.equal(h.store.dump('codex-subscription', 'oauth_token'), null);
   });
 
-  it('stops polling once the device window elapses mid-sleep', async () => {
+  it('maps a device window expiry to the authorization_expired UI reason', async () => {
     const h = createHarness({
       usercode: {
         device_auth_id: 'deviceauth_expiremid',
@@ -410,15 +353,15 @@ describe('Codex device-auth login flow', () => {
       tokenPoll: [{ status: 403, body: { error: { code: 'deviceauth_authorization_pending' } } }],
       tokenExchange: { status: 200, body: {} },
       // The first (and only) poll returns pending; the sleep then advances
-      // the clock past expiry. No further poll may be issued.
+      // the clock past expiry. The no-fetch-after-expiry behavior itself is
+      // pinned by codex-oauth-enrollment.test.ts; here we only assert the
+      // desktop surfaces it as a user-facing expiry, not a rejection.
       onSleep: () => h.advance(10_000),
     });
     const { authRequestId } = await startLogin(h);
     const complete = await h.service.completeAuthorization(authRequestId);
     assert.ok('ok' in complete && complete.ok === false);
     assert.equal(complete.reason, 'authorization_expired');
-    const polls = h.requests.filter((r) => r.url.endsWith('/deviceauth/token'));
-    assert.equal(polls.length, 1);
   });
 
   it('reports a credential write failure as storage_failed without reporting success', async () => {
@@ -444,5 +387,67 @@ describe('Codex device-auth login flow', () => {
     const complete = await h.service.completeAuthorization(authRequestId);
     assert.ok('ok' in complete && complete.ok === false);
     assert.equal(complete.reason, 'storage_failed');
+  });
+
+  it('exchanges and persists a grant even when cancelled after the poll consumed it', async () => {
+    const store = new FakeCredentialStore();
+    let releasePoll!: (response: Response) => void;
+    const pollResponse = new Promise<Response>((resolve) => {
+      releasePoll = resolve;
+    });
+    let exchanges = 0;
+    const service = new OpenAiCodexService({
+      userDataDir: '/tmp/maka-codex-deferred',
+      openExternal: async () => undefined,
+      credentialStore: store,
+      now: () => CLOCK_START,
+      sleep: async () => undefined,
+      fetchFn: async (url) => {
+        if (String(url).endsWith('/deviceauth/usercode')) {
+          return jsonResponse({
+            device_auth_id: 'deviceauth-deferred',
+            user_code: 'CODE-DEF',
+            interval: '5',
+            expires_at: new Date(CLOCK_START + 600_000).toISOString(),
+          });
+        }
+        if (String(url).endsWith('/deviceauth/token')) {
+          return pollResponse;
+        }
+        if (String(url).endsWith('/oauth/token')) {
+          exchanges += 1;
+          return jsonResponse({
+            access_token: makeJwt({
+              sub: 'sub-def',
+              'https://api.openai.com/auth': { chatgpt_account_id: 'acct-def' },
+            }),
+            refresh_token: 'refresh-def',
+            expires_in: 3600,
+          });
+        }
+        throw new Error(`Unexpected fetch ${String(url)}`);
+      },
+    });
+    const payload = await service.getAuthorizationUrl();
+    if (!('authRequestId' in payload)) {
+      assert.fail('expected authRequestId payload');
+      return;
+    }
+    const opened = await service.openAuthorizationUrl(payload.authRequestId);
+    assert.deepEqual(opened, { ok: true });
+    const completion = service.completeAuthorization(payload.authRequestId);
+    // The poll is in flight (admitted). Cancelling must not discard the
+    // one-time authorization code once the poll has consumed it.
+    service.cancelAuthorization(payload.authRequestId);
+    releasePoll(
+      jsonResponse({
+        authorization_code: 'one-time-code',
+        code_challenge: 'c',
+        code_verifier: 'server-verifier',
+      }),
+    );
+    assert.deepEqual(await completion, { ok: true });
+    assert.equal(exchanges, 1);
+    assert.ok(store.dump('codex-subscription', 'oauth_token') !== null);
   });
 });

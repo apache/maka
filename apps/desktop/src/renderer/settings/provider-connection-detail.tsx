@@ -432,7 +432,7 @@ function GitHubCopilotReloginNotice(props: {
 }
 
 // The OAuth notice for a re-loginable connection. The 重新登录 button drives
-// the SAME shared browser-loopback flow the OAuth catalog cards use, so an
+// the SAME shared browser-assisted OAuth flow the catalog cards use, so an
 // expired connection can be re-authorized right where the problem surfaces.
 // The button shows in every credential state except 'loading' — an EXPIRED
 // token still reads hasSecret===true, so it must not hide behind

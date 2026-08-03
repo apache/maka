@@ -52,22 +52,14 @@ export const OAUTH_PROVIDER_CONTRACTS = {
   },
   'openai-codex': {
     clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
-    authorizationEndpoint: 'https://auth.openai.com/oauth/authorize',
     tokenEndpoint: 'https://auth.openai.com/oauth/token',
-    scope: 'openid profile email offline_access api.connectors.read api.connectors.invoke',
     tokenUserAgent: 'maka-desktop/0.1.0 (oauth-subscription)',
-    presentation: 'loopback',
     // ChatGPT device-code flow (official codex CLI): request a one-time
     // user code, verify at `deviceVerifyUrl`, poll `deviceauth/token`,
     // then exchange the returned authorization code with this redirect URI.
     deviceAuthBaseUrl: 'https://auth.openai.com/api/accounts',
     deviceVerifyUrl: 'https://auth.openai.com/codex/device',
     deviceRedirectUri: 'https://auth.openai.com/deviceauth/callback',
-    authorizationExtras: [
-      ['id_token_add_organizations', 'true'],
-      ['codex_cli_simplified_flow', 'true'],
-      ['originator', 'codex_cli_rs'],
-    ] as ReadonlyArray<readonly [string, string]>,
     experimentalEnvironmentVariable: 'MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL',
   },
   'xai-oauth': {

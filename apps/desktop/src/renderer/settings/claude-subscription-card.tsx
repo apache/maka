@@ -20,7 +20,7 @@ import {
  * Claude Pro / Max subscription card: the paste-code OAuth flow (browser →
  * copy the `#`-delimited authorization code back) behind the experimental
  * gate. Extracted from provider-oauth-section.tsx (#1042); the browser
- * loopback flow used by the other OAuth providers lives in
+ * loopback/PKCE flow used by the other OAuth providers lives in
  * `useOAuthLoginFlow` — Claude deliberately keeps its own card because it
  * needs the manual authorization-code step and the experimental gate.
  */

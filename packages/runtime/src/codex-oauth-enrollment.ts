@@ -79,7 +79,9 @@ export async function startCodexDeviceAuthorization(
   if (!response.ok) throw new OAuthTokenEndpointError('provider_rejected', response.status);
   const payload = requireOAuthDataRecord(response.payload);
   const deviceAuthId = requireOAuthBoundedString(payload.device_auth_id, 1_024);
-  const userCode = requireOAuthBoundedString(payload.user_code, 1_024);
+  // The official CLI decoder accepts both `user_code` and `usercode`
+  // (codex-rs login/src/device_code_auth.rs serde aliases).
+  const userCode = requireOAuthBoundedString(payload.user_code ?? payload.usercode, 1_024);
   const intervalSeconds = deviceIntervalSeconds(payload.interval);
   const now = input.now?.() ?? Date.now();
   return {

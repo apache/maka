@@ -91,8 +91,15 @@ export async function pollXaiDeviceAuthorization(
     if (now() >= input.authorization.expiresAt) {
       throw new OAuthDeviceAuthorizationExpiredError();
     }
-    await sleep(intervalMs, input.signal);
+    // Sleep at most until the window elapses, then re-check so no request
+    // is issued after the device code expired locally.
+    const remaining = input.authorization.expiresAt - now();
+    if (remaining <= 0) throw new OAuthDeviceAuthorizationExpiredError();
+    await sleep(Math.min(intervalMs, remaining), input.signal);
     input.signal.throwIfAborted();
+    if (now() >= input.authorization.expiresAt) {
+      throw new OAuthDeviceAuthorizationExpiredError();
+    }
     input.onPollAdmission?.();
     const response = await requestOAuthEndpointJson({
       endpoint: XAI.tokenEndpoint,
@@ -124,8 +131,13 @@ export async function pollXaiDeviceAuthorization(
       input.signal.throwIfAborted();
       continue;
     }
-    if (code === 'access_denied' || code === 'authorization_denied' || code === 'expired_token') {
+    // Provider denial of the account is a rejection; a server-side
+    // "expired_token" just means the user did not finish in time.
+    if (code === 'access_denied' || code === 'authorization_denied') {
       throw new OAuthTokenEndpointError('invalid_grant', response.status);
+    }
+    if (code === 'expired_token') {
+      throw new OAuthDeviceAuthorizationExpiredError();
     }
     throw new OAuthTokenEndpointError('provider_rejected', response.status);
   }
