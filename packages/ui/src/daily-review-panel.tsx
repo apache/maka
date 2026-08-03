@@ -207,7 +207,6 @@ export function DailyReviewPanel(props: {
         <div key="report" className="maka-daily-review-route-frame">
           <DailyReviewReport
             archive={route.archive}
-            summary={visibleSummary}
             onBack={() => setRoute({ kind: 'activity' })}
             onCopyMarkdown={props.onCopyMarkdown}
             onAppendMarkdown={props.onAppendMarkdown}
@@ -379,7 +378,6 @@ function DailyReviewMetric(props: { label: string; value: string }) {
 
 function DailyReviewReport(props: {
   archive: DailyReviewArchive;
-  summary: DailyReviewSummary | null;
   onBack(): void;
   onCopyMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
   onAppendMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
@@ -406,21 +404,25 @@ function DailyReviewReport(props: {
     }
   }
 
-  const actionInput = props.summary
-    ? { range: props.archive.range, markdown, label: title, summary: props.summary }
-    : null;
+  const actionInput = {
+    day: props.archive.day,
+    range: props.archive.range,
+    totals: props.archive.totals,
+    markdown,
+    label: title,
+  };
   return (
     <VStack className="maka-daily-review-report" gap={5}>
       <HStack gap={2} vAlign="center" wrap="wrap">
         <Button variant="ghost" size="sm" icon={<ArrowLeft />} label={copy.page.backToActivity} onClick={props.onBack} />
         <StackItem size="fill" />
-        {actionInput && props.onCopyMarkdown ? (
+        {props.onCopyMarkdown ? (
           <Button variant="secondary" size="sm" label={pendingAction === 'copy' ? copy.export.copying : copy.export.copy} isDisabled={pendingAction !== null} onClick={() => void runAction('copy', () => props.onCopyMarkdown?.(actionInput))} />
         ) : null}
-        {actionInput && props.onAppendMarkdown ? (
+        {props.onAppendMarkdown ? (
           <Button variant="secondary" size="sm" label={pendingAction === 'append' ? copy.export.appending : copy.export.append} isDisabled={pendingAction !== null} onClick={() => void runAction('append', () => props.onAppendMarkdown?.(actionInput))} />
         ) : null}
-        {actionInput && props.onSaveMarkdown ? (
+        {props.onSaveMarkdown ? (
           <Button variant="secondary" size="sm" label={pendingAction === 'save' ? copy.export.saving : copy.export.save} isDisabled={pendingAction !== null} onClick={() => void runAction('save', () => props.onSaveMarkdown?.(actionInput))} />
         ) : null}
       </HStack>

@@ -171,8 +171,9 @@ export interface DailyReviewBridge {
  * identity from presentation text.
  */
 export type DailyReviewMarkdownActionInput = {
+  day: DailyReviewArchive['day'];
   range: DailyReviewRange;
+  totals: DailyReviewArchive['totals'];
   markdown: string;
   label: string;
-  summary: DailyReviewSummary;
 };

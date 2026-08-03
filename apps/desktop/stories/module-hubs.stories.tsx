@@ -12,7 +12,7 @@ import {
   ToastProvider,
   useUiLocale,
 } from '@maka/ui';
-import type { ComponentProps, ReactNode } from 'react';
+import { type ComponentProps, type ReactNode, useState } from 'react';
 import { AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
@@ -413,7 +413,12 @@ function ScheduledPlanRemindersSurface(props: { reminders?: PlanReminder[] }) {
   );
 }
 
-function ScheduledDailyReviewSurface(props: { bridge: DailyReviewBridge }) {
+function ScheduledDailyReviewSurface(
+  props: { bridge: DailyReviewBridge } & Pick<
+    ComponentProps<typeof DailyReviewPage>,
+    'onCopyMarkdown' | 'onAppendMarkdown' | 'onSaveMarkdown'
+  >,
+) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
   return (
     <ModuleSurface agentsView="daily-review">
@@ -424,6 +429,9 @@ function ScheduledDailyReviewSurface(props: { bridge: DailyReviewBridge }) {
           badge: <ModuleHubSelector hub="automations" value="daily-review" onChange={() => {}} />,
         }}
         bridge={props.bridge}
+        onCopyMarkdown={props.onCopyMarkdown}
+        onAppendMarkdown={props.onAppendMarkdown}
+        onSaveMarkdown={props.onSaveMarkdown}
       />
     </ModuleSurface>
   );
@@ -642,30 +650,69 @@ export const ScheduledDailyReviewNarrow: Story = {
 // Real path after an analysis exists and the user opens its dedicated detail route.
 // Real path: sidebar → scheduled tasks → Daily Review → view analysis.
 export const ScheduledDailyReviewReport: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{
-        fetchDay: async () => DAILY_REVIEW_SUMMARY,
-        listArchives: async () => [{
-          id: DAILY_REVIEW_ARCHIVE.id,
-          day: DAILY_REVIEW_ARCHIVE.day,
-          range: DAILY_REVIEW_ARCHIVE.range,
-          status: DAILY_REVIEW_ARCHIVE.status,
-          generatedAt: DAILY_REVIEW_ARCHIVE.generatedAt,
-          trigger: DAILY_REVIEW_ARCHIVE.trigger,
-          modelKey: DAILY_REVIEW_ARCHIVE.modelKey,
-          totals: DAILY_REVIEW_ARCHIVE.totals,
-        }],
-        getArchive: async () => DAILY_REVIEW_ARCHIVE,
-      }}
-    />
-  ),
+  render: function Render() {
+    const [savedInput, setSavedInput] = useState<unknown>(null);
+    const staleSummary = {
+      ...DAILY_REVIEW_SUMMARY,
+      day: {
+        fromMs: DAILY_REVIEW_SUMMARY.day.fromMs - 86_400_000,
+        toMs: DAILY_REVIEW_SUMMARY.day.toMs - 86_400_000,
+      },
+      totals: { ...DAILY_REVIEW_SUMMARY.totals, requestCount: 999 },
+    };
+    return (
+      <>
+        <ScheduledDailyReviewSurface
+          bridge={{
+            fetchDay: async (_offsetDays, range) => range === 1 ? DAILY_REVIEW_SUMMARY : staleSummary,
+            listArchives: async () => [{
+              id: DAILY_REVIEW_ARCHIVE.id,
+              day: DAILY_REVIEW_ARCHIVE.day,
+              range: DAILY_REVIEW_ARCHIVE.range,
+              status: DAILY_REVIEW_ARCHIVE.status,
+              generatedAt: DAILY_REVIEW_ARCHIVE.generatedAt,
+              trigger: DAILY_REVIEW_ARCHIVE.trigger,
+              modelKey: DAILY_REVIEW_ARCHIVE.modelKey,
+              totals: DAILY_REVIEW_ARCHIVE.totals,
+            }],
+            getArchive: async () => {
+              await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+              return DAILY_REVIEW_ARCHIVE;
+            },
+          }}
+          onSaveMarkdown={(input) => setSavedInput(input)}
+        />
+        <output data-testid="daily-review-saved-input" hidden>
+          {savedInput ? JSON.stringify(savedInput) : ''}
+        </output>
+      </>
+    );
+  },
   play: async ({ canvasElement }) => {
-    const button = await waitForStoryButton(
+    const view = await waitForStoryButton(
       canvasElement,
       (candidate) => candidate.textContent?.includes('查看分析') === true,
     );
-    button.click();
+    view.click();
+    const recent7Days = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
+    );
+    recent7Days.click();
+    await waitForStoryText(canvasElement, '返回活动');
+    const save = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '保存',
+    );
+    save.click();
+    const output = await waitForStorySelector<HTMLOutputElement>(
+      canvasElement,
+      '[data-testid="daily-review-saved-input"]',
+    );
+    await waitForStoryText(output, 'markdown');
+    const input = JSON.parse(output.textContent ?? '') as Record<string, unknown>;
+    await expect(input.day).toEqual(DAILY_REVIEW_ARCHIVE.day);
+    await expect(input.totals).toEqual(DAILY_REVIEW_ARCHIVE.totals);
   },
 };
 
