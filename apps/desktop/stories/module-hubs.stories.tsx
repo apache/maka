@@ -525,7 +525,7 @@ export const ScheduledDailyReview: Story = {
     week.click();
     const earlier = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.getAttribute('aria-label')?.includes('前一天') === true,
+      (candidate) => candidate.getAttribute('aria-label') === '查看更早一天',
     );
     earlier.click();
     await waitForStoryText(canvasElement, '最近 7 天（往前 1 天）');
