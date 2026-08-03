@@ -394,6 +394,9 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'session_catalog_projection',
         'session_catalog_label_projection',
         'session_messages',
+        'projects',
+        'project_locations',
+        'project_aliases',
         'core_agent_runs',
         'core_agent_run_events',
         'core_agent_run_projections',
@@ -507,9 +510,16 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
       database.close();
     }
   } catch (error) {
-    throw new OperationalBackupError('corrupt_backup', 'Backup runtime.sqlite is invalid', {
-      cause: error,
-    });
+    // The reason has to reach the message: validation covers integrity,
+    // foreign keys, schema versions, ~60 required tables, Artifact payload
+    // reconciliation and message decoding, and a bare "is invalid" leaves an
+    // operator with no way to tell those apart in a log that dropped `cause`.
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new OperationalBackupError(
+      'corrupt_backup',
+      `Backup runtime.sqlite is invalid: ${reason}`,
+      { cause: error },
+    );
   }
 }
 

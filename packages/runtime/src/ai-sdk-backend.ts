@@ -52,6 +52,7 @@ import type {
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
   BackendSendInput,
+  HostedInteractionBridge,
 } from '@maka/core/backend-types';
 import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -125,6 +126,7 @@ import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-
 import { toolResultOutput } from './tool-result-output.js';
 import { buildActiveCompactionHeadAnchor } from './active-full-compact.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
+import type { ProviderImageBudget } from './ai-sdk-compaction.js';
 import {
   AiSdkCompaction,
   composeActiveCompactionProjection,
@@ -508,6 +510,53 @@ function sleepForProviderRetry(delayMs: number, signal: AbortSignal): Promise<vo
 // Implementation
 // ============================================================================
 
+/**
+ * The mutable state of ONE `send()`.
+ *
+ * Identity is readonly and captured at dispatch: a tool that executes minutes
+ * later commits against the run that actually issued it, never against whatever
+ * run happens to be current when it finishes. The remaining fields are the
+ * turn's own stream/abort bookkeeping, isolated so an overlapping turn on the
+ * same backend cannot observe or clear them.
+ *
+ * Each scope owns its ToolRuntime for the same reason: gating, the loop gate,
+ * the subagent and child-run limiters, durable attempts, and step admission are
+ * all per-turn facts.
+ */
+class TurnScope {
+  readonly abortController = new AbortController();
+  aborted = false;
+  loopStopRequested = false;
+  loopStopReason: CompleteEvent['stopReason'] | undefined;
+  /** Paused while this turn waits on a user permission decision. */
+  watchdog: StreamWatchdog | null = null;
+  runTrace: RunTrace | null = null;
+  /**
+   * Image allowance for this turn, accumulated across its provider steps. Owned
+   * by the scope so an overlapping turn cannot spend it, and non-null for the
+   * scope's whole life so no path has to decide what "no budget" means.
+   */
+  readonly imageBudget: ProviderImageBudget = { used: 0, decisions: new Map() };
+  /**
+   * User messages steered into this turn, drained from the caller's queue at
+   * step boundaries. Each entry is the canonical envelope-wrapped user
+   * ModelMessage — the SAME form the replay plan projects the persisted
+   * steering event as, so the envelope text is the message's identity when
+   * deduping against ledger-derived request bases (bare text is not an
+   * identity: a steer can equal the current prompt verbatim). Entries are added
+   * only AFTER the echoed steering_message event is durably consumed (seq-ack),
+   * so a provider request never carries an unpersisted steering directive.
+   */
+  injectedSteeringMessages: ModelMessage[] = [];
+
+  constructor(
+    readonly turnId: string,
+    readonly runId: string | undefined,
+    readonly orchestration: EffectiveOrchestration,
+    readonly toolRuntime: ToolRuntime,
+  ) {}
+}
+
 export class AiSdkBackend implements AgentBackend {
   readonly kind: BackendKind = 'ai-sdk';
   readonly sessionId: string;
@@ -518,39 +567,32 @@ export class AiSdkBackend implements AgentBackend {
   private readonly now: () => number;
   private readonly maxSteps: number | undefined;
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
-  private readonly toolRuntime: ToolRuntime;
   private readonly modelAdapter: ModelAdapter;
   private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
 
-  private aborted = false;
-  private abortController: AbortController | null = null;
-  private currentTurnId: string | null = null;
-  private loopStopRequested = false;
-  private loopStopReason: CompleteEvent['stopReason'] | undefined;
-  private currentInvocationId: string | null = null;
   /**
-   * User messages steered into the running turn, drained from the caller's
-   * queue at step boundaries. Each entry is the canonical envelope-wrapped
-   * user ModelMessage — the SAME form the replay plan projects the persisted
-   * steering event as, so the envelope text is the message's identity when
-   * deduping against ledger-derived request bases (bare text is not an
-   * identity: a steer can equal the current prompt verbatim). Entries are
-   * added only AFTER the echoed steering_message event is durably consumed
-   * (seq-ack), so a provider request never carries an unpersisted steering
-   * directive. Reset per turn.
+   * Every `send()` currently in flight on this backend.
+   *
+   * A set, not a map: nothing looks a scope up by turn id. Control calls that
+   * arrive without a turn (`stop`, and the two `respond*` methods) iterate, and
+   * each scope is already held by reference everywhere else.
+   *
+   * A backend instance is reused for a whole Session and RuntimeKernel lets one
+   * backend generation hold several concurrent runs, so per-turn state cannot
+   * live on the instance: whichever turn started or finished last would speak
+   * for all of them. That is exactly how #1990 crashed a turn — one turn's
+   * teardown cleared the run identity a *different* turn's tool execution then
+   * read back as absent.
    */
-  private injectedSteeringMessages: ModelMessage[] = [];
-  private currentRunId: string | null = null;
-  private currentOrchestration: EffectiveOrchestration | undefined;
-  private imageRequestBudget: { used: number; decisions: Map<string, boolean> } | null = null;
-  /** Side-channel for ToolRuntime settlement to push events into the iterator. */
-  private currentQueue: AsyncEventQueue<SessionEvent> | null = null;
-  /** Paused while the backend is waiting on a user permission decision. */
-  private currentWatchdog: StreamWatchdog | null = null;
-  private currentRunTrace: RunTrace | null = null;
-  private currentUserIntent: string | undefined;
+  private readonly activeTurns = new Set<TurnScope>();
+  /**
+   * Request-shape baseline for change attribution. Session-scoped on purpose:
+   * it compares each provider request against whatever this backend sent last,
+   * across turns.
+   */
   private priorRequestShape: RequestShapeDiagnostic | undefined;
   private readonly compaction: AiSdkCompaction;
+  /** Session-scoped running total, deliberately accumulated across turns. */
   private cumulativeUsageCheckpoint: NormalizedAiSdkUsage | undefined;
   constructor(input: AiSdkBackendInput) {
     this.input = input;
@@ -575,7 +617,8 @@ export class AiSdkBackend implements AgentBackend {
       modelAdapter: this.modelAdapter,
       createProviderRequestTracker: (trackerInput) =>
         this.createProviderRequestTracker(trackerInput),
-      materializeRuntimeReplayPlan: (plan) => this.materializeRuntimeReplayPlan(plan),
+      materializeRuntimeReplayPlan: (plan, imageBudget) =>
+        this.materializeRuntimeReplayPlan(plan, imageBudget),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
       appendTurnTailPrompt: (content, turnTailPrompt) =>
         this.appendTurnTailPrompt(content, turnTailPrompt),
@@ -585,7 +628,22 @@ export class AiSdkBackend implements AgentBackend {
       input.toolAvailability,
       buildInvalidMakaTool(),
     );
-    this.toolRuntime = new ToolRuntime({
+  }
+
+  /**
+   * One ToolRuntime per `send()`, bound to that turn's identity for its whole
+   * lifetime. The scope is passed in rather than read back so a tool settling
+   * long after its step still resolves this turn's watchdog, trace, and run.
+   */
+  private createToolRuntime(identity: {
+    turnId: string;
+    runId: string | undefined;
+    invocationId: string | undefined;
+    hostedInteraction: HostedInteractionBridge | undefined;
+    scope: () => TurnScope;
+  }): ToolRuntime {
+    const input = this.input;
+    return new ToolRuntime({
       sessionId: input.sessionId,
       header: input.header,
       connection: input.connection,
@@ -596,12 +654,13 @@ export class AiSdkBackend implements AgentBackend {
       settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
       newId: this.newId,
       now: this.now,
-      getPermissionPauseTarget: () => this.currentWatchdog,
-      getCurrentInvocationId: () => this.currentInvocationId ?? undefined,
-      getCurrentRunId: () => this.currentRunId ?? undefined,
+      getPermissionPauseTarget: () => identity.scope().watchdog,
+      turnId: identity.turnId,
+      ...(identity.hostedInteraction ? { hostedInteraction: identity.hostedInteraction } : {}),
+      ...(identity.runId ? { runId: identity.runId } : {}),
+      ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
       materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
-        this.materializeToolResultOutput(output, false, toolCallId),
-      getCurrentOrchestration: () => this.currentOrchestration,
+        this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
       spawnChildAgent: input.spawnChildAgent,
       spawnChildSession: input.spawnChildSession,
       prepareChildAgentResume: input.prepareChildAgentResume,
@@ -609,7 +668,7 @@ export class AiSdkBackend implements AgentBackend {
       retryChildAgent: input.retryChildAgent,
       listChildAgents: input.listChildAgents,
       readChildAgentOutput: input.readChildAgentOutput,
-      getRunTrace: () => this.currentRunTrace,
+      getRunTrace: () => identity.scope().runTrace,
       recordToolInvocation: input.recordToolInvocation,
       runtimeCommitSink: input.runtimeCommitSink,
       recordToolArtifacts: input.recordToolArtifacts,
@@ -628,25 +687,59 @@ export class AiSdkBackend implements AgentBackend {
   // send()
   // --------------------------------------------------------------------------
 
-  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    this.aborted = false;
-    const turnId = input.turnId;
-    this.currentTurnId = turnId;
-    this.currentInvocationId = input.invocationId ?? input.runId ?? null;
-    this.currentRunId = input.runId ?? null;
-    this.currentOrchestration =
+  /**
+   * Register one turn's execution scope, with its own ToolRuntime and identity.
+   *
+   * The ToolRuntime holds the scope by reference, so a tool settling long after
+   * its step still reaches this turn's watchdog, trace, and budget — never a
+   * successor's. The accessor exists only because the ToolRuntime is built while
+   * the scope it belongs to is still being constructed.
+   */
+  private openTurnScope(input: BackendSendInput): TurnScope {
+    const orchestration =
       input.orchestration ??
       resolveEffectiveOrchestration(this.input.header.orchestrationMode, undefined);
-    this.currentUserIntent = input.text;
-    this.toolRuntime.beginTurn(turnId, input.hostedInteraction);
-    const turnAbortController = new AbortController();
-    this.abortController = turnAbortController;
-    this.imageRequestBudget = { used: 0, decisions: new Map() };
+    let scope: TurnScope;
+    scope = new TurnScope(
+      input.turnId,
+      input.runId,
+      orchestration,
+      this.createToolRuntime({
+        turnId: input.turnId,
+        runId: input.runId,
+        invocationId: input.invocationId ?? input.runId,
+        hostedInteraction: input.hostedInteraction,
+        scope: () => scope,
+      }),
+    );
+    this.activeTurns.add(scope);
+    return scope;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    // Registration and deregistration live in ONE frame, so a scope that made it
+    // into activeTurns is always removed exactly once — including when setup
+    // throws before the provider pump exists (a mismatched hosted Interaction
+    // Run, an unreadable attachment). A leaked scope would be permanent: nothing
+    // overwrites a Set entry, and stop()/dispose() only iterate it.
+    const scope = this.openTurnScope(input);
+    try {
+      yield* this.sendWithinScope(scope, input);
+    } finally {
+      await this.cleanupAfterTurn(scope);
+    }
+  }
+
+  private async *sendWithinScope(
+    scope: TurnScope,
+    input: BackendSendInput,
+  ): AsyncIterable<SessionEvent> {
+    const turnId = input.turnId;
+    const toolRuntime = scope.toolRuntime;
+    const turnAbortController = scope.abortController;
 
     const midTurnState = this.compaction.buildMidTurnCapacityCompactState(input);
     const queue = new AsyncEventQueue<SessionEvent>();
-    this.currentQueue = queue;
-    this.injectedSteeringMessages = [];
 
     // One AssistantMessage is flushed per provider step (not per turn), so the
     // ledger records the text↔tool timeline at step granularity and each step's
@@ -783,11 +876,11 @@ export class AiSdkBackend implements AgentBackend {
       now: this.now,
       record: this.input.recordRunTrace,
     });
-    this.currentRunTrace = trace;
+    scope.runTrace = trace;
     trace.turnStarted({
-      orchestrationMode: this.currentOrchestration.mode,
-      orchestrationSource: this.currentOrchestration.source,
-      agentSwarmAuthorization: this.currentOrchestration.agentSwarmAuthorization,
+      orchestrationMode: scope.orchestration.mode,
+      orchestrationSource: scope.orchestration.source,
+      agentSwarmAuthorization: scope.orchestration.agentSwarmAuthorization,
     });
     if (this.input.planTraceContext) {
       trace.emit('plan', 'plan_context_resolved', 'Plan context resolved', {
@@ -808,6 +901,7 @@ export class AiSdkBackend implements AgentBackend {
       turnId,
       callKind: 'main',
       modelId: this.input.modelId,
+      runId: scope.runId,
     });
     const providerRequestTraceId = providerRequestTracker?.traceId;
 
@@ -827,7 +921,6 @@ export class AiSdkBackend implements AgentBackend {
         stopReason: 'error',
       } satisfies CompleteEvent);
       queue.close();
-      await this.cleanupAfterTurn(turnId);
       yield* this.drain(queue);
       return;
     }
@@ -839,9 +932,9 @@ export class AiSdkBackend implements AgentBackend {
     // activations from the durable ledger (the current turn is excluded — it has
     // not committed yet) so a group loaded earlier stays advertised.
     const requiredOrchestrationTools =
-      this.currentOrchestration.mode === 'swarm'
+      scope.orchestration.mode === 'swarm'
         ? new Set(['agent_swarm'])
-        : this.currentOrchestration.mode === 'graph'
+        : scope.orchestration.mode === 'graph'
           ? new Set(['view_agent_graph', 'update_agent_graph', 'yield_agent_graph', 'agent_output'])
           : new Set<string>();
     const plan = this.toolAvailabilityRuntime.prepare(
@@ -855,14 +948,8 @@ export class AiSdkBackend implements AgentBackend {
     // current step's snapshot so a group loaded mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
     const currentRepairToolNames = plan.currentRepairToolNames;
-    // Establish clean per-turn ToolRuntime state at the START of the turn, then
-    // install this turn's gating. cleanupAfterTurn() also resets at turn end, but
-    // that runs in send()'s finally and so depends on the consumer draining (or
-    // .return()-ing) the generator; resetting here makes each turn's state — the
-    // loop-gate streak, subagent count, gating — depend only on this turn, not on
-    // the previous turn's teardown.
     if (plan.gating) {
-      this.toolRuntime.setGating(plan.gating);
+      toolRuntime.setGating(plan.gating);
     }
 
     const modelTools: ModelToolSet = {};
@@ -874,7 +961,7 @@ export class AiSdkBackend implements AgentBackend {
     }
 
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
-    const priorReplay = await this.buildPriorMessages(input);
+    const priorReplay = await this.buildPriorMessages(scope, input);
     if (input.continuation && priorReplay.messages.length === 0) {
       const replay = priorReplayFailureTrace(priorReplay);
       const error = new ContinuationReplayEmptyError(replay.gate, replay.diagnosticCodes);
@@ -888,7 +975,6 @@ export class AiSdkBackend implements AgentBackend {
         stopReason: 'error',
       } satisfies CompleteEvent);
       queue.close();
-      await this.cleanupAfterTurn(turnId);
       yield* this.drain(queue);
       return;
     }
@@ -919,13 +1005,13 @@ export class AiSdkBackend implements AgentBackend {
             turnAbortController.abort(watchdogTimeoutError);
           },
         });
-        this.currentWatchdog = watchdog;
+        scope.watchdog = watchdog;
         watchdog.start();
         const activeTools = plan.activeTools;
         const systemPrompt = joinPromptFragments([
-          await this.resolveSystemPrompt(turnId),
-          this.currentOrchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
-          this.currentOrchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
+          await this.resolveSystemPrompt(scope),
+          scope.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
+          scope.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
         ]);
         const turnTailPrompt = input.continuation
           ? undefined
@@ -939,6 +1025,7 @@ export class AiSdkBackend implements AgentBackend {
         const currentUserContent = input.continuation
           ? undefined
           : await this.buildCurrentUserContent(
+              scope.imageBudget,
               input.text,
               input.voiceAudio,
               input.attachments,
@@ -1001,6 +1088,7 @@ export class AiSdkBackend implements AgentBackend {
           });
           const currentTurnMessages = await this.materializeRuntimeReplayPlan(
             { ...replayPlan, items: replayItems },
+            scope.imageBudget,
             settledModelOutputs,
           );
           const operationAudio = input.voiceAudio ? voiceAudioPart(input.voiceAudio) : undefined;
@@ -1131,6 +1219,7 @@ export class AiSdkBackend implements AgentBackend {
                 patch,
               );
             },
+            scope,
             turnAbortController.signal,
           ),
           this.compaction.buildActiveFullCompactProjection(
@@ -1187,6 +1276,7 @@ export class AiSdkBackend implements AgentBackend {
           turnTailPrompt,
           midTurnSystemPromptChars,
           onMidTurnDiagnosticPatch,
+          scope,
           turnAbortController.signal,
         );
         // When mid-turn capacity compaction is active, the prune must also cover
@@ -1235,12 +1325,12 @@ export class AiSdkBackend implements AgentBackend {
         let result: ModelStreamResult;
         let finishReason: ModelFinishReason = 'stop';
         agentLoop: for (;;) {
-          await this.drainSteeringInto(input, turnId, queue, turnAbortController.signal);
+          await this.drainSteeringInto(scope, input, queue);
           if (this.input.loadTurnRuntimeEvents) {
             requestMessages = await loadDurableTurnProjection();
           } else {
             const missingSteering = steeringMessagesMissingFromBase(
-              this.injectedSteeringMessages,
+              scope.injectedSteeringMessages,
               requestMessages,
             );
             if (missingSteering.length > 0)
@@ -1306,7 +1396,7 @@ export class AiSdkBackend implements AgentBackend {
             let sawStreamError = false;
             try {
               for await (const event of result.events) {
-                if (this.aborted) break;
+                if (scope.aborted) break;
                 watchdog.markActivity();
                 if (event.kind === 'error') {
                   // A request-level error ends this stream; capture it and stop
@@ -1422,8 +1512,8 @@ export class AiSdkBackend implements AgentBackend {
               sawStreamError = true;
             }
 
-            if (sawStreamError && !this.aborted) {
-              if (this.loopStopRequested) throw streamFailure;
+            if (sawStreamError && !scope.aborted) {
+              if (scope.loopStopRequested) throw streamFailure;
               // A retry is a fresh provider request that would run at least one
               // more step; with the send-level budget already spent there is
               // nothing left to grant it, so the error is terminal.
@@ -1442,6 +1532,7 @@ export class AiSdkBackend implements AgentBackend {
                       turnTailPrompt,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
+                      origin: scope,
                       abortSignal: turnAbortController.signal,
                     })
                   : undefined;
@@ -1514,11 +1605,11 @@ export class AiSdkBackend implements AgentBackend {
             break;
           }
 
-          // If the stream loop exited because stop() flipped this.aborted while a
+          // If the stream loop exited because stop() flipped scope.aborted while a
           // provider kept yielding after abort instead of throwing, route to the
           // abort handling below. Without this, the post-stream success path would
           // persist a partial assistant turn and emit a false end_turn completion.
-          if (this.aborted) {
+          if (scope.aborted) {
             throw Object.assign(new Error('aborted'), { name: 'AbortError' });
           }
 
@@ -1563,7 +1654,7 @@ export class AiSdkBackend implements AgentBackend {
                 const requestedTool = toolsByName.get(toolCall.toolName);
                 const tool = requestedTool ?? toolsByName.get(INVALID_TOOL_NAME);
                 if (!tool) throw new Error('Runtime invalid-tool fallback is unavailable');
-                return await this.toolRuntime.settleToolCall({
+                return await toolRuntime.settleToolCall({
                   tool,
                   turnId,
                   stepId: providerStepId,
@@ -1603,14 +1694,14 @@ export class AiSdkBackend implements AgentBackend {
               const settlement = settlements[index]!;
               const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
-                this.handlePlanToolResult(settlement.result, turnId, queue);
+                this.handlePlanToolResult(scope, settlement.result, queue);
               }
               if (
                 returnedToolCalls.length === 1 &&
                 toolCall?.toolName === YIELD_AGENT_GRAPH_TOOL_NAME &&
                 isAgentGraphYieldToolResult(settlement.result)
               ) {
-                this.handleAgentGraphYieldToolResult(settlement.result);
+                this.handleAgentGraphYieldToolResult(scope, settlement.result);
               }
             }
             await queue.waitUntilConsumedThroughCurrent();
@@ -1631,8 +1722,8 @@ export class AiSdkBackend implements AgentBackend {
           if (
             returnedToolCalls.length > 0 &&
             !stepLimitReached &&
-            !this.loopStopRequested &&
-            !this.aborted
+            !scope.loopStopRequested &&
+            !scope.aborted
           ) {
             currentStepMessageId = this.newId();
             continue agentLoop;
@@ -1782,9 +1873,9 @@ export class AiSdkBackend implements AgentBackend {
 
         // Nothing may await between this check and terminal emission: Stop must
         // win even when it arrives during post-stream usage persistence.
-        if (this.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        if (scope.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         const stopReason =
-          this.loopStopReason ??
+          scope.loopStopReason ??
           (this.maxSteps !== undefined && finishReason === 'tool-calls'
             ? 'step_limit'
             : this.mapFinishReason(finishReason));
@@ -1797,7 +1888,7 @@ export class AiSdkBackend implements AgentBackend {
           stopReason,
         } satisfies CompleteEvent);
       } catch (err) {
-        streamStatus = this.aborted ? 'aborted' : 'error';
+        streamStatus = scope.aborted ? 'aborted' : 'error';
         streamErrorClass = this.modelAdapter.classifyError(watchdogTimeoutError ?? err);
         // Flush the in-flight step's partial text/thinking before the terminal
         // abort/error events. Earlier steps already flushed at their
@@ -1805,7 +1896,7 @@ export class AiSdkBackend implements AgentBackend {
         // BOTH exits — user stop and provider error / watchdog timeout — so
         // partialOutputRetained reflects what the user actually saw.
         await flushStep().catch(() => {});
-        if (!this.aborted && midTurnState?.exhaustedDetail) {
+        if (!scope.aborted && midTurnState?.exhaustedDetail) {
           // Mid-turn compaction could not produce a provider-safe request: end
           // the turn with the explicit first-class outcome, not a raw error.
           streamErrorClass = 'ContextBudgetExhausted';
@@ -1818,7 +1909,7 @@ export class AiSdkBackend implements AgentBackend {
             stopReason: 'context_budget_exhausted',
             contextBudgetExhaustedDetail: midTurnState.exhaustedDetail,
           } satisfies CompleteEvent);
-        } else if (this.aborted) {
+        } else if (scope.aborted) {
           queue.push({
             type: 'abort',
             id: this.newId(),
@@ -1848,7 +1939,7 @@ export class AiSdkBackend implements AgentBackend {
         }
       } finally {
         watchdog?.stop();
-        if (this.currentWatchdog === watchdog) this.currentWatchdog = null;
+        if (scope.watchdog === watchdog) scope.watchdog = null;
         contextBudgetForTelemetry = contextBudgetWithActiveProjectionDiagnostics(
           contextBudgetForTelemetry,
           activeToolResultPruneDiagnosticPatch,
@@ -1920,15 +2011,15 @@ export class AiSdkBackend implements AgentBackend {
     } finally {
       if (!drainedNormally) turnAbortController.abort();
       await pumpDone.catch(() => {});
-      await this.cleanupAfterTurn(turnId);
     }
   }
 
   private handlePlanToolResult(
+    scope: TurnScope,
     result: PlanToolResult,
-    turnId: string,
     queue: AsyncEventQueue<SessionEvent>,
   ): void {
+    const turnId = scope.turnId;
     if (result.kind === 'plan_submitted') {
       const proposal = result.proposal;
       queue.push({
@@ -1944,80 +2035,110 @@ export class AiSdkBackend implements AgentBackend {
         ...(proposal.risks ? { risks: proposal.risks } : {}),
         steps: proposal.steps.map((step) => ({ ...step, status: 'pending' })),
       });
-      this.currentRunTrace?.emit('plan', 'plan_submitted', 'Plan submitted', {
+      scope.runTrace?.emit('plan', 'plan_submitted', 'Plan submitted', {
         planId: proposal.planId,
         proposalId: proposal.proposalId,
         revision: proposal.revision,
         storeVersion: result.storeVersion,
       });
-      this.loopStopReason = 'plan_handoff';
-      this.loopStopRequested = true;
+      scope.loopStopReason = 'plan_handoff';
+      scope.loopStopRequested = true;
       return;
     }
 
     const traceType = result.kind;
-    this.currentRunTrace?.emit('plan', traceType, 'Plan execution state changed', {
+    scope.runTrace?.emit('plan', traceType, 'Plan execution state changed', {
       planId: result.execution.planId,
       proposalId: result.execution.proposalId,
       executionId: result.execution.executionId,
       storeVersion: result.storeVersion,
     });
     if (result.kind === 'plan_execution_completed' || result.kind === 'plan_execution_cancelled') {
-      this.loopStopRequested = true;
+      scope.loopStopRequested = true;
     }
   }
 
-  private handleAgentGraphYieldToolResult(result: YieldAgentGraphToolResult): void {
-    this.currentRunTrace?.emit(
-      'agent_graph',
-      'graph_supervisor_yielded',
-      'Graph supervisor yielded',
-      {
-        pendingWorkCount: result.pendingWorkCount,
-        liveOperatorCount: result.liveOperatorCount,
-        reason: result.reason,
-      },
-    );
-    this.loopStopReason = 'graph_yield';
-    this.loopStopRequested = true;
+  private handleAgentGraphYieldToolResult(
+    scope: TurnScope,
+    result: YieldAgentGraphToolResult,
+  ): void {
+    scope.runTrace?.emit('agent_graph', 'graph_supervisor_yielded', 'Graph supervisor yielded', {
+      pendingWorkCount: result.pendingWorkCount,
+      liveOperatorCount: result.liveOperatorCount,
+      reason: result.reason,
+    });
+    scope.loopStopReason = 'graph_yield';
+    scope.loopStopRequested = true;
   }
 
   // --------------------------------------------------------------------------
   // Helpers
   // --------------------------------------------------------------------------
 
+  /**
+   * Stop every turn this backend is currently running.
+   *
+   * The control surface carries no turn id, so this stays a broadcast — the
+   * behavior it has always had. What changes is that each turn is now stopped
+   * as ITSELF: its own abort controller, its own ToolRuntime, and its own turn
+   * id on the `endTurn` record. Previously one shared `currentTurnId` labelled
+   * every concurrent turn's teardown, so an overlapping turn closed under a
+   * sibling's identity.
+   *
+   * Teardown is settled for every scope before any failure surfaces. `endTurn`
+   * throws when a durable sandbox denial cannot be written, and it is also the
+   * ONLY thing that rejects a tool parked on `askUserQuestion` — an abort signal
+   * does not wake the registry. So bailing on the first rejection would leave a
+   * sibling parked forever: its own `send()` cannot reach the `finally` that
+   * would clean it up, because that `finally` is waiting on the very tool the
+   * skipped `endTurn` was supposed to reject.
+   */
   async stop(
     _reason: 'user_stop' | 'redirect',
     mode: 'immediate' | 'after_step' = 'immediate',
   ): Promise<void> {
+    const scopes = [...this.activeTurns];
     if (mode === 'after_step') {
-      this.loopStopRequested = true;
-      this.currentRunTrace?.abortRequested(_reason);
+      for (const scope of scopes) {
+        scope.loopStopRequested = true;
+        scope.runTrace?.abortRequested(_reason);
+      }
       return;
     }
-    this.aborted = true;
-    this.abortController?.abort();
     this.compaction.abortHistoryCompact();
-    if (this.currentTurnId !== null) {
-      await this.toolRuntime.endTurn(this.currentTurnId, 'aborted');
+    for (const scope of scopes) {
+      scope.aborted = true;
+      scope.abortController.abort();
+      scope.runTrace?.abortRequested(_reason);
     }
-    this.currentRunTrace?.abortRequested(_reason);
+    const settled = await Promise.allSettled(
+      scopes.map((scope) => scope.toolRuntime.endTurn('aborted')),
+    );
+    const failures = settled.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Failed to stop every active turn');
   }
 
   async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
-    if (await this.toolRuntime.respondToSandboxBoundaryResponse(decision)) {
-      return;
+    // Routed by request id, which is already the identity the registry matches
+    // on: at most one turn parked this request.
+    for (const scope of this.activeTurns) {
+      if (await scope.toolRuntime.respondToSandboxBoundaryResponse(decision)) return;
     }
     throw new Error(`No pending sandbox boundary request ${decision.requestId}`);
   }
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
-    if (this.currentTurnId === null) return;
-    this.toolRuntime.respondToUserQuestion(this.currentTurnId, response);
+    for (const scope of this.activeTurns) {
+      if (scope.toolRuntime.respondToUserQuestion(response)) return;
+    }
   }
 
   async dispose(): Promise<void> {
-    if (!this.aborted) await this.stop('user_stop');
+    if (this.activeTurns.size > 0) await this.stop('user_stop');
+    else this.compaction.abortHistoryCompact();
   }
 
   /** Map ai-sdk finishReason → our CompleteEvent.stopReason. */
@@ -2066,7 +2187,12 @@ export class AiSdkBackend implements AgentBackend {
     turnId: string;
     callKind: ModelCallKind;
     modelId: string;
-    runId?: string;
+    /**
+     * Stated by every caller, never defaulted: an unattributed provider request
+     * is silently dropped by usage accounting, so the compiler has to be the
+     * thing that catches a missing run id (#1990).
+     */
+    runId: string | undefined;
   }): ProviderRequestTracker | undefined {
     const persistCapture = this.input.recordProviderRequestCapture;
     const accounting = this.modelCallAccounting(input.callKind, {
@@ -2089,22 +2215,17 @@ export class AiSdkBackend implements AgentBackend {
   /**
    * Accounting identity for one call kind (#1679).
    *
-   * Owned here rather than by the host that wires the summarizers, because the
-   * only field a host cannot supply is the one that changes per turn: `runId`
-   * lives on this backend. A host configures the capture and attempt plumbing
-   * once; the run a record belongs to is resolved at the moment the call is
-   * actually made.
+   * The run is always supplied by the caller. It cannot be read back off this
+   * backend: one instance serves several concurrent runs, so whichever turn
+   * touched it last would speak for all of them (#1990).
    *
    * Absent when there is no canonical sink, which leaves the corresponding
    * tracker purely diagnostic.
    */
-  modelCallAccounting(
+  private modelCallAccounting(
     callKind: ModelCallKind,
     identity?: {
-      /**
-       * States the run explicitly for a call made outside `send()`, where there
-       * is no live turn to resolve it from — a manual history compaction is one.
-       */
+      /** The run this call is billed to; absent only when there is none. */
       runId?: string;
       /** The model this call actually runs against; priced as that model. */
       modelId?: string;
@@ -2115,7 +2236,7 @@ export class AiSdkBackend implements AgentBackend {
     const modelId = identity?.modelId ?? this.input.modelId;
     return {
       sessionId: this.sessionId,
-      resolveRunId: () => identity?.runId ?? this.currentRunId ?? undefined,
+      resolveRunId: () => identity?.runId,
       connectionSlug: this.input.connection.slug,
       providerId: this.input.connection.providerType,
       callKind,
@@ -2173,7 +2294,10 @@ export class AiSdkBackend implements AgentBackend {
    *  V0.1: text-only round-tripping. Tool calls / results within projected
    *  history are deliberately NOT replayed unless RuntimeEvent native replay
    *  is available for the provider. */
-  private async buildPriorMessages(input: BackendSendInput): Promise<{
+  private async buildPriorMessages(
+    scope: TurnScope,
+    input: BackendSendInput,
+  ): Promise<{
     messages: ModelMessage[];
     gate: RuntimeEventReplayFallbackGate | 'stored_message_projection';
     diagnostics: RuntimeEventModelReplayPlan['diagnostics'];
@@ -2185,7 +2309,7 @@ export class AiSdkBackend implements AgentBackend {
     const priorStored = input.context.filter((message) => message.turnId !== input.turnId);
     if (!input.runtimeContext) {
       return {
-        messages: await this.materializePriorMessages(priorStored),
+        messages: await this.materializePriorMessages(scope.imageBudget, priorStored),
         gate: 'stored_message_projection',
         diagnostics: [],
       };
@@ -2194,6 +2318,7 @@ export class AiSdkBackend implements AgentBackend {
       (event) => event.turnId !== input.turnId,
     );
     const projectedMessages = await this.materializePriorMessages(
+      scope.imageBudget,
       priorStored,
       buildSteeringSidecar(priorRuntimeContext),
     );
@@ -2232,10 +2357,13 @@ export class AiSdkBackend implements AgentBackend {
         if (this.input.summarizeHistoryCompact && this.input.recordHistoryCompactCheckpoint) {
           const writePatch = await this.compaction.writeHistoryCompactCheckpoint({
             turnId: input.turnId,
+            // Stated, not resolved: this runs inside a send, and the backend
+            // may be serving another turn whose run is not this one (#1990).
+            runId: scope.runId,
             contextBudget,
             priorRuntimeContext,
             draftBlock: draftBlocks[0]!,
-            abortSignal: this.abortController?.signal,
+            abortSignal: scope.abortController.signal,
             requestShapeHashBefore: this.priorRequestShape?.requestShapeHash,
           });
           if (writePatch.replacementCheckpoint) {
@@ -2265,7 +2393,7 @@ export class AiSdkBackend implements AgentBackend {
             contextBudget,
             priorRuntimeContext,
             draftBlocks,
-            abortSignal: this.abortController?.signal,
+            abortSignal: scope.abortController.signal,
             requestShapeHashBefore: this.priorRequestShape?.requestShapeHash,
           });
           if (writePatch.replacementBlocks.length > 0) {
@@ -2426,7 +2554,7 @@ export class AiSdkBackend implements AgentBackend {
     if (plan.items.length === 0) {
       return {
         messages: input.continuation
-          ? await this.materializeRuntimeReplayTextOnly(plan)
+          ? await this.materializeRuntimeReplayTextOnly(scope.imageBudget, plan)
           : projectedMessages,
         gate: input.continuation ? 'runtime_replay_text_only' : 'stored_message_projection',
         diagnostics: plan.diagnostics,
@@ -2439,7 +2567,7 @@ export class AiSdkBackend implements AgentBackend {
     if (hasBlockingReplayDiagnostics(plan)) {
       return {
         messages: input.continuation
-          ? await this.materializeRuntimeReplayTextOnly(plan)
+          ? await this.materializeRuntimeReplayTextOnly(scope.imageBudget, plan)
           : projectedMessages,
         gate: input.continuation
           ? 'runtime_replay_text_only'
@@ -2453,7 +2581,7 @@ export class AiSdkBackend implements AgentBackend {
 
     if (!plan.hasProviderNativeSemantics) {
       return {
-        messages: await this.materializeRuntimeReplayPlan(plan),
+        messages: await this.materializeRuntimeReplayPlan(plan, scope.imageBudget),
         gate: 'runtime_replay_text_only',
         diagnostics: plan.diagnostics,
         runtimeEventCount: runtimeContext.length,
@@ -2465,7 +2593,7 @@ export class AiSdkBackend implements AgentBackend {
     if (!this.canReplayProviderNative(plan)) {
       return {
         messages: input.continuation
-          ? await this.materializeRuntimeReplayTextOnly(plan)
+          ? await this.materializeRuntimeReplayTextOnly(scope.imageBudget, plan)
           : projectedMessages,
         gate: input.continuation
           ? 'runtime_replay_text_only'
@@ -2478,7 +2606,7 @@ export class AiSdkBackend implements AgentBackend {
     }
 
     return {
-      messages: await this.materializeRuntimeReplayPlan(plan),
+      messages: await this.materializeRuntimeReplayPlan(plan, scope.imageBudget),
       gate: 'runtime_replay_provider_native',
       diagnostics: plan.diagnostics,
       runtimeEventCount: runtimeContext.length,
@@ -2514,6 +2642,7 @@ export class AiSdkBackend implements AgentBackend {
    */
   private async materializeRuntimeReplayPlan(
     plan: RuntimeEventModelReplayPlan,
+    budget: ProviderImageBudget,
     settledModelOutputs?: ReadonlyMap<string, ToolResultOutput>,
   ): Promise<ModelMessage[]> {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
@@ -2600,6 +2729,7 @@ export class AiSdkBackend implements AgentBackend {
               output:
                 settledModelOutputs?.get(result.toolCallId) ??
                 (await this.materializeToolResultOutput(
+                  budget,
                   result.output,
                   result.isError,
                   `runtime-event:${result.eventId}:tool-result`,
@@ -2723,7 +2853,7 @@ export class AiSdkBackend implements AgentBackend {
         case 'text':
           if (item.role !== 'assistant') {
             await flushPendingSteps();
-            out.push(await this.materializeRuntimeReplayItem(item));
+            out.push(await this.materializeRuntimeReplayItem(budget, item));
             break;
           }
           if (item.stepId !== undefined) {
@@ -2756,16 +2886,19 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   private async materializeRuntimeReplayTextOnly(
+    budget: ProviderImageBudget,
     plan: RuntimeEventModelReplayPlan,
   ): Promise<ModelMessage[]> {
     const messages: ModelMessage[] = [];
     for (const item of plan.items) {
-      if (item.kind === 'text') messages.push(await this.materializeRuntimeReplayItem(item));
+      if (item.kind === 'text')
+        messages.push(await this.materializeRuntimeReplayItem(budget, item));
     }
     return messages;
   }
 
   private async materializeRuntimeReplayItem(
+    budget: ProviderImageBudget,
     item: Extract<RuntimeEventModelReplayItem, { kind: 'text' }>,
   ): Promise<ModelMessage> {
     if (item.role === 'user') {
@@ -2781,6 +2914,7 @@ export class AiSdkBackend implements AgentBackend {
       return {
         role: 'user',
         content: await this.appendImageParts(
+          budget,
           item.content,
           item.attachments,
           `runtime-event:${item.eventId}`,
@@ -2791,6 +2925,7 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   private async materializePriorMessages(
+    budget: ProviderImageBudget,
     stored: readonly StoredMessage[],
     steeringSidecar?: ReadonlyMap<string, { eventId: string }>,
   ): Promise<ModelMessage[]> {
@@ -2807,6 +2942,7 @@ export class AiSdkBackend implements AgentBackend {
             steeringModelMessage(
               sidecar.eventId,
               await this.appendImageParts(
+                budget,
                 buildSteeringEnvelope(formatTextWithInlineRefs(m.text, m)),
                 m.attachments,
                 `steering:${sidecar.eventId}`,
@@ -2817,7 +2953,11 @@ export class AiSdkBackend implements AgentBackend {
         }
         out.push({
           role: 'user',
-          content: await this.appendImageParts(formatTextWithInlineRefs(m.text, m), m.attachments),
+          content: await this.appendImageParts(
+            budget,
+            formatTextWithInlineRefs(m.text, m),
+            m.attachments,
+          ),
         } as ModelMessage);
       }
       // A thinking/tool-only step projects an assistant row with empty text;
@@ -2844,9 +2984,11 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   /** A decision key deduplicates re-materialization; no key charges each occurrence. */
-  private chargeImageBudget(bytes: number, decisionKey?: string): boolean {
-    const budget = this.imageRequestBudget;
-    if (!budget) return true;
+  private chargeImageBudget(
+    budget: ProviderImageBudget,
+    bytes: number,
+    decisionKey?: string,
+  ): boolean {
     if (decisionKey !== undefined) {
       const cached = budget.decisions.get(decisionKey);
       if (cached !== undefined) return cached;
@@ -2867,6 +3009,7 @@ export class AiSdkBackend implements AgentBackend {
    * replay, and the stored-message fallback so all paths present images identically.
    */
   private async appendImageParts(
+    budget: ProviderImageBudget,
     textContent: string,
     attachments?: AttachmentRef[],
     decisionKeyPrefix?: string,
@@ -2897,7 +3040,7 @@ export class AiSdkBackend implements AgentBackend {
       }
       const decisionKey =
         decisionKeyPrefix === undefined ? undefined : `${decisionKeyPrefix}:image:${index}`;
-      if (!this.chargeImageBudget(read.bytes.length, decisionKey)) {
+      if (!this.chargeImageBudget(budget, read.bytes.length, decisionKey)) {
         omittedByBudget += 1;
         continue;
       }
@@ -2917,6 +3060,7 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   private async materializeToolResultOutput(
+    budget: ProviderImageBudget,
     output: unknown,
     isError: boolean,
     decisionKey: string,
@@ -2928,7 +3072,6 @@ export class AiSdkBackend implements AgentBackend {
     if (!this.input.readAttachmentBytes) {
       return toolResultText('Image was read, but its stored bytes are unavailable.');
     }
-    const budget = this.imageRequestBudget;
     if (budget && budget.decisions.get(decisionKey) === false) {
       return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
     }
@@ -2941,7 +3084,7 @@ export class AiSdkBackend implements AgentBackend {
     if (!read.ok) {
       return toolResultText(`Image could not be loaded from artifact storage: ${read.reason}.`);
     }
-    if (!this.chargeImageBudget(read.bytes.length, decisionKey)) {
+    if (!this.chargeImageBudget(budget, read.bytes.length, decisionKey)) {
       return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
     }
     return {
@@ -2958,6 +3101,7 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   private async buildCurrentUserContent(
+    budget: ProviderImageBudget,
     text: string,
     voiceAudio?: EphemeralVoiceAudio,
     attachments?: AttachmentRef[],
@@ -2965,6 +3109,7 @@ export class AiSdkBackend implements AgentBackend {
     runtimeEventId?: string,
   ): Promise<UserContent> {
     const content = await this.appendImageParts(
+      budget,
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),
         ...(quotes !== undefined ? { quotes } : {}),
@@ -2979,7 +3124,8 @@ export class AiSdkBackend implements AgentBackend {
     return parts;
   }
 
-  private async resolveSystemPrompt(turnId: string): Promise<string | undefined> {
+  private async resolveSystemPrompt(scope: TurnScope): Promise<string | undefined> {
+    const turnId = scope.turnId;
     if (typeof this.input.systemPrompt === 'function') {
       return await this.input.systemPrompt({
         sessionId: this.sessionId,
@@ -2987,7 +3133,7 @@ export class AiSdkBackend implements AgentBackend {
         cwd: this.input.header.cwd,
         workspaceRoot: this.input.header.workspaceRoot,
         emitSkillCatalogTrace: (message, data) =>
-          this.currentRunTrace?.emit('skill', 'skill_catalog_built', message, data),
+          scope.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });
     }
     return this.input.systemPrompt;
@@ -3028,23 +3174,15 @@ export class AiSdkBackend implements AgentBackend {
     }
   }
 
-  private async cleanupAfterTurn(turnId: string): Promise<void> {
-    this.abortController = null;
-    this.currentQueue = null;
-    this.currentTurnId = null;
-    this.currentInvocationId = null;
-    this.currentRunId = null;
-    this.currentOrchestration = undefined;
-    this.currentRunTrace = null;
-    this.currentUserIntent = undefined;
-    this.loopStopRequested = false;
-    this.loopStopReason = undefined;
-    this.injectedSteeringMessages = [];
-    try {
-      await this.toolRuntime.endTurn(turnId, this.aborted ? 'aborted' : 'completed');
-    } finally {
-      this.aborted = false;
-    }
+  /**
+   * Retire one turn's scope. Nothing is reset for reuse — the scope is dropped,
+   * so a sibling turn still running on this backend is untouched. Deregistering
+   * before `endTurn` also makes a late tool settlement resolve to "gone" rather
+   * than to whichever turn started next.
+   */
+  private async cleanupAfterTurn(scope: TurnScope): Promise<void> {
+    this.activeTurns.delete(scope);
+    await scope.toolRuntime.endTurn(scope.aborted ? 'aborted' : 'completed');
   }
 
   /**
@@ -3066,11 +3204,12 @@ export class AiSdkBackend implements AgentBackend {
    * ⇒ nack — and only then throws so the dying request is never sent.
    */
   private async drainSteeringInto(
+    scope: TurnScope,
     input: BackendSendInput,
-    turnId: string,
     queue: AsyncEventQueue<SessionEvent>,
-    abortSignal: AbortSignal,
   ): Promise<void> {
+    const turnId = scope.turnId;
+    const abortSignal = scope.abortController.signal;
     const pull = input.pullSteering;
     if (!pull) return;
     const leases = pull();
@@ -3087,7 +3226,7 @@ export class AiSdkBackend implements AgentBackend {
     const undelivered = [...leases];
     try {
       for (const lease of leases) {
-        if (this.aborted || abortSignal?.aborted) {
+        if (scope.aborted || abortSignal?.aborted) {
           // Never pushed: settles as undelivered.
           throw Object.assign(new Error('aborted before steering was pushed'), {
             name: 'AbortError',
@@ -3100,11 +3239,12 @@ export class AiSdkBackend implements AgentBackend {
         // After consumption there must be no fallible gap before ack/injection.
         const eventId = this.newId();
         const providerContent = await this.appendImageParts(
+          scope.imageBudget,
           buildSteeringEnvelope(formatTextWithInlineRefs(lease.content.text, lease.content)),
           lease.content.attachments,
           `steering:${eventId}`,
         );
-        if (this.aborted || abortSignal?.aborted) {
+        if (scope.aborted || abortSignal?.aborted) {
           throw Object.assign(new Error('aborted before steering was pushed'), {
             name: 'AbortError',
           });
@@ -3122,10 +3262,10 @@ export class AiSdkBackend implements AgentBackend {
         } satisfies SessionEvent);
         // The mapped RuntimeEvent inherits this session event's id, so the
         // injected message and its future ledger replay share one identity.
-        this.injectedSteeringMessages.push(steeringModelMessage(eventId, providerContent));
+        scope.injectedSteeringMessages.push(steeringModelMessage(eventId, providerContent));
         input.ackSteering?.([lease.id]);
         undelivered.shift();
-        if (this.aborted || abortSignal?.aborted) {
+        if (scope.aborted || abortSignal?.aborted) {
           // Settled (the ledger owns the message; the next turn replays it),
           // but the send is dying: stop before any request is built with it.
           throw Object.assign(new Error('aborted after steering was durable'), {

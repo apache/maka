@@ -1,5 +1,10 @@
 import { mkdir, rm } from 'node:fs/promises';
 import type { UiLocale, E2eFixtureScenario, E2eFixtureState } from '@maka/core';
+import {
+  backfillSessionProjects,
+  createProjectCatalog,
+  createSessionStore,
+} from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import type { CredentialStore } from './credential-store.js';
 import {
@@ -760,5 +765,24 @@ export async function seedE2eFixture(input: {
     for (const seed of usageStatsSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
+  }
+  await seedSessionProjects(input.workspaceRoot);
+}
+
+/**
+ * Resolve every seeded session's project here rather than leaving it to the
+ * startup backfill. The fixture is meant to hand the renderer a settled state:
+ * the app resolves projects in background startup, concurrently with window
+ * creation, so a test that asserts on project grouping would otherwise be
+ * racing the resolver instead of exercising the sidebar.
+ */
+async function seedSessionProjects(workspaceRoot: string): Promise<void> {
+  const sessions = createSessionStore(workspaceRoot);
+  const catalog = createProjectCatalog(workspaceRoot);
+  try {
+    await backfillSessionProjects({ sessions, catalog });
+  } finally {
+    await sessions.close?.();
+    catalog.close();
   }
 }

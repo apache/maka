@@ -30,6 +30,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     assert.throws(
       () =>
         new ToolRuntime({
+          turnId: 'turn-1',
           sessionId: 'session-1',
           header: header(),
           connection: { providerType: 'openai', slug: 'test' } as never,
@@ -47,6 +48,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     const observed: ExecutionBoundary[] = [];
     let revision = 0;
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -90,6 +92,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     };
     let created: SandboxBoundaryRequest | undefined;
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -120,9 +123,8 @@ describe('ToolRuntime session sandbox boundary', () => {
       newId: nextId(),
       now: () => 1,
       getPermissionPauseTarget: () => null,
-      getCurrentRunId: () => 'run-1',
+      runId: 'run-1',
     });
-    runtime.beginTurn('turn-1');
     const tool = buildRequestSandboxBoundaryTool();
     const pending = runtime.settleToolCall({
       tool,
@@ -186,6 +188,8 @@ describe('ToolRuntime session sandbox boundary', () => {
       },
     };
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
+      hostedInteraction,
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -195,9 +199,8 @@ describe('ToolRuntime session sandbox boundary', () => {
       newId: nextId(),
       now: () => 1,
       getPermissionPauseTarget: () => null,
-      getCurrentRunId: () => 'run-1',
+      runId: 'run-1',
     });
-    runtime.beginTurn('turn-1', hostedInteraction);
     const pending = runtime.settleToolCall({
       tool: buildRequestSandboxBoundaryTool(),
       turnId: 'turn-1',
@@ -268,6 +271,7 @@ describe('ToolRuntime session sandbox boundary', () => {
   test('rejects an invalid expansion before creating durable pending state', async () => {
     let createCalls = 0;
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -289,7 +293,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       now: () => 1,
       getPermissionPauseTarget: () => null,
     });
-    runtime.beginTurn('turn-1');
 
     const settlement = await runtime.settleToolCall({
       tool: buildRequestSandboxBoundaryTool(),
@@ -326,6 +329,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     let created: SandboxBoundaryRequest | undefined;
     const events: SessionEvent[] = [];
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(root),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -365,7 +369,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       now: () => 1,
       getPermissionPauseTarget: () => null,
     });
-    runtime.beginTurn('turn-1');
 
     try {
       const pending = runtime.settleToolCall({
@@ -405,6 +408,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-boundary-directory-'));
     let createCalls = 0;
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(root),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -426,7 +430,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       now: () => 1,
       getPermissionPauseTarget: () => null,
     });
-    runtime.beginTurn('turn-1');
 
     try {
       const settlement = await runtime.settleToolCall({
@@ -465,6 +468,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     let created: SandboxBoundaryRequest | undefined;
     const settlements: Array<{ requestId: string; decision: string }> = [];
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -497,7 +501,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       now: () => 1,
       getPermissionPauseTarget: () => null,
     });
-    runtime.beginTurn('turn-1');
     const pending = runtime.settleToolCall({
       tool: buildRequestSandboxBoundaryTool(),
       turnId: 'turn-1',
@@ -520,7 +523,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     });
 
     const request = await waitForBoundaryRequest(events);
-    await runtime.endTurn('turn-1', 'aborted');
+    await runtime.endTurn('aborted');
     await pending;
     assert.deepEqual(settlements, [{ requestId: request.requestId, decision: 'deny' }]);
   });
@@ -541,6 +544,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     });
     const settlements: string[] = [];
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -572,7 +576,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       now: () => 1,
       getPermissionPauseTarget: () => null,
     });
-    runtime.beginTurn('turn-1');
     const pending = runtime.settleToolCall({
       tool: buildRequestSandboxBoundaryTool(),
       turnId: 'turn-1',
@@ -588,7 +591,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       },
     });
     await createStarted;
-    const ending = runtime.endTurn('turn-1', 'aborted');
+    const ending = runtime.endTurn('aborted');
     releaseCreate({
       sessionId: 'session-1',
       requestId: 'id-1',
@@ -606,6 +609,7 @@ describe('ToolRuntime session sandbox boundary', () => {
 
   test('returns a structured boundary requirement to the agent', async () => {
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -669,6 +673,7 @@ describe('ToolRuntime session sandbox boundary', () => {
   test('returns structured requires_bypass without opening an interaction', async () => {
     const events: SessionEvent[] = [];
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
@@ -737,6 +742,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     // branch a model actually reaches, and it used to say something different
     // from the tool the model called.
     const runtime = new ToolRuntime({
+      turnId: 'turn-1',
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,

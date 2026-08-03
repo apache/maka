@@ -162,6 +162,22 @@ export interface VersionedSessionIdentity {
   readonly expectedVersion: number;
 }
 
+/**
+ * A session whose project membership was never decided.
+ *
+ * `usedAt` is the moment it was last active, so resolving it later rebuilds the
+ * catalog's real recency order instead of collapsing every project to "now".
+ * `revision` is the metadata version this row was read at, so the write that
+ * assigns a project can fence itself against anything that touched the session
+ * in between — including a user detaching it while resolution is still running.
+ */
+export interface UnresolvedProjectSession {
+  readonly id: string;
+  readonly cwd: string;
+  readonly usedAt: number;
+  readonly revision: number;
+}
+
 export type SessionRemovalProbe =
   | { readonly kind: 'present'; readonly record: SessionMetadataRecord }
   | { readonly kind: 'removed' }
@@ -1159,6 +1175,47 @@ export class SqliteSessionMetadataStore {
       `)
       .all(...parameters) as unknown as SessionMetadataRow[];
     return rows.map(decodeRecord);
+  }
+
+  /**
+   * Sessions whose project membership was never resolved.
+   *
+   * `projectId` is deliberately three-valued: a project id means resolved,
+   * `null` means the user chose no project, and an absent key means nobody has
+   * decided yet. Only the third state may be backfilled, and SQL can tell them
+   * apart through `json_type` — `null` reports `'null'` while an absent key
+   * reports SQL NULL. Scoping the query this way keeps startup proportional to
+   * the sessions that still need work rather than to the whole catalog.
+   */
+  async listSessionsWithUnresolvedProject(): Promise<UnresolvedProjectSession[]> {
+    this.assertOpen();
+    // `json_type` distinguishes an absent `projectId` (never decided) from an
+    // explicit JSON `null` (detached on purpose); only the former is pending.
+    // Subagent sessions are excluded: they inherit their parent's project when
+    // spawned, and their working directory is often a throwaway worktree that
+    // must never become one of the user's project locations.
+    const rows = this.db
+      .prepare(`
+        SELECT
+          session_id AS id,
+          json_extract(payload_json, '$.cwd') AS cwd,
+          COALESCE(last_message_at, last_used_at) AS used_at,
+          metadata_version AS revision
+        FROM session_metadata
+        WHERE json_type(payload_json, '$.projectId') IS NULL
+          AND subagent_parent_session_id IS NULL
+        ORDER BY used_at, session_id
+      `)
+      .all() as Array<{ id?: unknown; cwd?: unknown; used_at?: unknown; revision?: unknown }>;
+    return rows.flatMap((row) =>
+      typeof row.id === 'string' &&
+      typeof row.cwd === 'string' &&
+      row.cwd.length > 0 &&
+      typeof row.used_at === 'number' &&
+      typeof row.revision === 'number'
+        ? [{ id: row.id, cwd: row.cwd, usedAt: row.used_at, revision: row.revision }]
+        : [],
+    );
   }
 
   async listCatalogPage(

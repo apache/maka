@@ -136,12 +136,14 @@ describe('SQLite agent graph intent claims', () => {
 
       const legacy = new DatabaseSync(path);
       legacy.exec(`
-        DROP TABLE session_messages;
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
         ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
+        DROP TABLE project_aliases;
+        DROP TABLE project_locations;
+        DROP TABLE projects;
         DROP TABLE session_messages;
         DROP TABLE agent_graph_supervisor_wake_attempts;
         DROP TABLE agent_graph_supervisor_wakes;

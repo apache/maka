@@ -48,7 +48,6 @@ describe('AskUserQuestion runtime round trip', () => {
       now: () => 1,
       getPermissionPauseTarget: () => null,
     });
-    runtime.beginTurn('turn-1');
     const resultPromise = runtime
       .settleToolCall({
         tool: buildAskUserQuestionTool(),
@@ -83,10 +82,10 @@ describe('AskUserQuestion runtime round trip', () => {
     const request = events.find((event) => event.type === 'user_question_request');
     assert.ok(request);
     assert.equal(request.toolUseId, 'tool-1');
-    assert.equal(runtime.pendingUserQuestionCount('turn-1'), 1);
+    assert.equal(runtime.pendingUserQuestionCount(), 1);
 
     assert.equal(
-      runtime.respondToUserQuestion('turn-1', {
+      runtime.respondToUserQuestion({
         requestId: request.requestId,
         answers: ['Extend', null],
       }),
@@ -125,7 +124,6 @@ describe('AskUserQuestion runtime round trip', () => {
       now: () => 1,
       getPermissionPauseTarget: () => null,
     });
-    runtime.beginTurn('turn-1');
     const resultPromise = runtime
       .settleToolCall({
         tool: buildAskUserQuestionTool(),
@@ -153,13 +151,13 @@ describe('AskUserQuestion runtime round trip', () => {
     const request = events.find((event) => event.type === 'user_question_request');
     assert.ok(request);
 
-    runtime.endTurn('turn-1', 'aborted');
+    runtime.endTurn('aborted');
 
     assert.deepEqual(await resultPromise, {
       error: `Turn turn-1 aborted before user question ${request.requestId} was answered`,
     });
     assert.equal(
-      runtime.respondToUserQuestion('turn-1', {
+      runtime.respondToUserQuestion({
         requestId: request.requestId,
         answers: ['Yes'],
       }),

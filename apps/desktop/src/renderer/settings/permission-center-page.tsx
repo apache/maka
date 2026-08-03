@@ -399,7 +399,7 @@ function CapabilityRow(props: {
                   <MetadataListItem key={layer.label} label={layer.label}>
                     {/* Stacked: MetadataListItem flows its children inline, so
                         an unwrapped reason ran straight into the state value
-                        ("探测降级cua-driver 未响应握手…"). */}
+                        ("探测降级maka-cu 未响应握手…"). */}
                     <VStack gap={0.5}>
                       <Text type="body" size="sm">{layer.value}</Text>
                       {layer.reason ? (

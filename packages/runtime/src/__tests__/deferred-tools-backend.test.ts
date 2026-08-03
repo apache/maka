@@ -281,11 +281,11 @@ describe('AiSdkBackend deferred tool loading', () => {
     // targets the diagnostics-consistency invariant, not that subsystem.
     type PriorReplayish = { contextBudget?: Record<string, unknown> };
     const patch = be as unknown as {
-      buildPriorMessages: (input: unknown) => Promise<PriorReplayish>;
+      buildPriorMessages: (scope: unknown, input: unknown) => Promise<PriorReplayish>;
     };
     const realBuildPriorMessages = patch.buildPriorMessages.bind(be);
-    patch.buildPriorMessages = async (input: unknown) => {
-      const prior = await realBuildPriorMessages(input);
+    patch.buildPriorMessages = async (scope: unknown, input: unknown) => {
+      const prior = await realBuildPriorMessages(scope, input);
       return {
         ...prior,
         contextBudget: {

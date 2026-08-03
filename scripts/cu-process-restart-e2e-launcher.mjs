@@ -40,8 +40,7 @@ async function runBuilds() {
       cwd: repoRoot,
     });
   }
-  await runChild('npm', ['run', 'prepare:cua-driver'], { cwd: repoRoot });
-  await runChild('npm', ['run', 'check:cua-driver-artifact'], { cwd: repoRoot });
+  await runChild('npm', ['run', 'prepare:maka-cu'], { cwd: repoRoot });
 }
 
 async function frontmostApplication() {

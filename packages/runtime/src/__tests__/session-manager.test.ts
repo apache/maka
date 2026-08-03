@@ -57,6 +57,7 @@ import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
   BackendRegistry,
+  SessionConfigurationRevisionConflictError,
   SessionConfigurationTransitionError,
   SessionManager,
   headerToSummary,
@@ -65,7 +66,11 @@ import {
   type SessionStore,
   type VersionedSessionHeader,
 } from '../session-manager.js';
-import { RuntimeKernel, type RuntimeKernelLike } from '../runtime-kernel.js';
+import {
+  RuntimeContextCompactError,
+  RuntimeKernel,
+  type RuntimeKernelLike,
+} from '../runtime-kernel.js';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../fake-backend.js';
 import { RuntimeReadModel, RuntimeReadModelError } from '../runtime-read-model.js';
 import type { AgentBackend } from '@maka/core/backend-types';
@@ -3843,7 +3848,7 @@ describe('SessionManager automatic titles', () => {
   });
 });
 
-describe('SessionManager manual compaction', () => {
+describe('SessionManager manual compaction and quiescent session changes', () => {
   test('runs backend history compaction as a runtime turn and persists diagnostics', async () => {
     const store = new MemorySessionStore();
     const runStore = new OrderingAgentRunStore();
@@ -4337,8 +4342,8 @@ describe('SessionManager manual compaction', () => {
     const compactError = await collectSessionEvents(
       manager.compactSession(session.id, { turnId: 'turn-compact' }),
     ).catch((error: unknown) => error);
-    expect(compactError instanceof Error).toBe(true);
-    expect(String((compactError as Error).message)).toMatch(/turn is running|wait for the turn/);
+    expect(compactError instanceof RuntimeContextCompactError).toBe(true);
+    expect((compactError as RuntimeContextCompactError).code).toBe('session_busy');
 
     expect(compactCalls).toEqual([]);
     const messages = await store.readMessages(session.id);
@@ -4447,6 +4452,71 @@ describe('SessionManager manual compaction', () => {
       },
     );
     assert.deepEqual(kernel.disposed, [session.id]);
+  });
+
+  test('workspace relocation uses the same quiescent revision fence as execution configuration', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const kernel = new DelegatingRuntimeKernel();
+    const resourceCalls: string[] = [];
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(26_425),
+      runtimeKernel: kernel,
+      shellRuns: {
+        async terminateSession(sessionId: string) {
+          resourceCalls.push(`terminate:${sessionId}`);
+          return { sessionId, token: Symbol('relocate') };
+        },
+        async commitSessionClose() {
+          resourceCalls.push('commit');
+        },
+        rollbackSessionClose() {
+          resourceCalls.push('rollback');
+        },
+        resumeSession(sessionId: string) {
+          resourceCalls.push(`resume:${sessionId}`);
+        },
+      } as never,
+    });
+    const session = await manager.createSession(makeInput({ cwd: '/workspace/old' }));
+
+    kernel.activeRuns = true;
+    await assert.rejects(
+      manager.relocateSessionWorkspace(session.id, {
+        expectedRevision: 1,
+        cwd: '/workspace/new',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.equal(error.code, 'session_busy');
+        return true;
+      },
+    );
+
+    kernel.activeRuns = false;
+    const committed = await manager.relocateSessionWorkspace(session.id, {
+      expectedRevision: 1,
+      cwd: '/workspace/new',
+    });
+    assert.equal(committed.revision, 2);
+    assert.equal(committed.header.cwd, '/workspace/new');
+    assert.deepEqual(kernel.disposed, [session.id]);
+    assert.deepEqual(resourceCalls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+
+    await assert.rejects(
+      manager.relocateSessionWorkspace(session.id, {
+        expectedRevision: 1,
+        cwd: '/workspace/stale',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationRevisionConflictError);
+        assert.equal(error.actualRevision, 2);
+        return true;
+      },
+    );
+    assert.equal((await store.readHeader(session.id)).cwd, '/workspace/new');
   });
 
   test('configuration transitions reject a claimed turn without waiting for it to settle', async () => {
@@ -19414,6 +19484,8 @@ class DelegatingRuntimeKernel implements RuntimeKernelLike {
     }
   }
 
+  async preflightContextCompaction(): Promise<void> {}
+
   async stopSession(sessionId: string): Promise<void> {
     this.stopped.push(sessionId);
   }
@@ -21370,6 +21442,20 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
           }
         : {}),
     });
+    this.revisions.set(sessionId, revision + 1);
+    return { header, revision: revision + 1, committedAt: revision + 1 };
+  }
+
+  async updateHeaderVersioned(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+    expectedRevision: number,
+  ): Promise<VersionedSessionHeader> {
+    const revision = this.revisions.get(sessionId) ?? 1;
+    if (revision !== expectedRevision) {
+      throw new SessionConfigurationRevisionConflictError(expectedRevision, revision);
+    }
+    const header = await super.updateHeader(sessionId, patch);
     this.revisions.set(sessionId, revision + 1);
     return { header, revision: revision + 1, committedAt: revision + 1 };
   }

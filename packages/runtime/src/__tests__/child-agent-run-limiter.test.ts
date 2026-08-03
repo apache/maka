@@ -218,7 +218,7 @@ describe('ToolRuntime child-agent run permits', () => {
       },
     };
     await executeTool(runtime, tool, new AbortController());
-    runtime.endTurn('turn-1');
+    runtime.endTurn();
 
     assert.ok(capturedSpawn);
     await assert.rejects(
@@ -308,7 +308,7 @@ function buildRuntime(
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
-    getCurrentRunId: () => 'parent-run',
+    runId: 'parent-run',
     spawnChildAgent,
   });
 }

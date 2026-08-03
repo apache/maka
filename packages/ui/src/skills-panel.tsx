@@ -21,6 +21,7 @@ import {
   Switch,
   Tab,
   TabList,
+  Token,
 } from '@astryxdesign/core';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
@@ -63,6 +64,8 @@ function SkillLibraryPanel(props: {
   togglingSkillId?: string | null;
   deletingSkillId?: string | null;
   searchQuery?: string;
+  /** Clears the module-header search box (owned by the outer panel). */
+  onClearSearch?: () => void;
   managedSkillSources?: ManagedSkillSourceEntry[];
   bundledSkillCatalog?: BundledSkillCatalogEntry[];
   onInstallBundledSkill?(id: string): void | Promise<void>;
@@ -308,6 +311,9 @@ function SkillLibraryPanel(props: {
           description={normalizedSkillQuery
             ? copy.market.emptySearchBody
             : copy.market.emptyBody}
+          actions={normalizedSkillQuery && props.onClearSearch
+            ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={props.onClearSearch} />
+            : undefined}
           className="maka-skill-installed-empty"
         />
       ) : marketSources.length === 0 ? (
@@ -315,6 +321,17 @@ function SkillLibraryPanel(props: {
           icon={<Search />}
           title={copy.market.emptySearchTitle}
           description={copy.market.emptyFilterBody}
+          actions={(
+            <UiButton
+              variant="ghost"
+              size="sm"
+              label={copy.market.clearFilters}
+              onClick={() => {
+                setMarketCategory(MARKET_CATEGORY_ALL);
+                props.onClearSearch?.();
+              }}
+            />
+          )}
           className="maka-skill-installed-empty"
         />
       ) : (
@@ -351,7 +368,7 @@ function SkillLibraryPanel(props: {
                 </div>
                 <p>{description}</p>
                 <div className="maka-skill-market-card-foot">
-                  <Badge variant="neutral" className="maka-skill-market-category" label={copy.categories[source.category]} />
+                  <Token size="sm" className="maka-skill-market-category" label={copy.categories[source.category]} />
                   <span>{installed ? copy.install.installed : copy.install.notInstalled}</span>
                 </div>
               </article>
@@ -380,6 +397,9 @@ function SkillLibraryPanel(props: {
           icon={<Search />}
           title={copy.builtin.noMatchTitle}
           description={copy.builtin.noMatchBody}
+          actions={props.onClearSearch
+            ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={props.onClearSearch} />
+            : undefined}
           className="maka-skill-installed-empty"
         />
       ) : (
@@ -411,7 +431,7 @@ function SkillLibraryPanel(props: {
                 </div>
                 <p>{description}</p>
                 <div className="maka-skill-market-card-foot">
-                  <Badge variant="neutral" className="maka-skill-market-category" label={copy.categories[entry.category]} />
+                  <Token size="sm" className="maka-skill-market-category" label={copy.categories[entry.category]} />
                   <span>{entry.installed ? copy.install.installed : copy.install.notInstalled}</span>
                 </div>
               </article>
@@ -882,6 +902,7 @@ export function SkillsModuleMain(props: {
         togglingSkillId={pendingSkillAction?.startsWith('runtime:set:') ? pendingSkillAction.slice('runtime:set:'.length) : null}
         deletingSkillId={pendingSkillAction?.startsWith('delete:') ? pendingSkillAction.slice('delete:'.length) : null}
         searchQuery={skillSearchQuery}
+        onClearSearch={() => setSkillSearchQuery('')}
       />
     </main>
   );

@@ -243,7 +243,10 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const store = createSessionStore(workspaceRoot);
 const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
-const projectCatalog = createProjectCatalog(workspaceRoot);
+const projectCatalog = createProjectCatalog(workspaceRoot, {
+  onLegacyImportFailure: (error) =>
+    console.error('[projects] projects.json could not be imported:', error),
+});
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
 const planStore = createSqlitePlanStore(workspaceRoot);
 const executionStoreWiring = await openDesktopExecutionStoreWiring(workspaceRoot);
@@ -1459,13 +1462,7 @@ wireAppLifecycle({
 });
 
 function computerUseCapabilityInput() {
-  // Whichever executor was selected reports its own shape: cua-driver an
-  // action/capture role pair, maka-cu (§11) a single supervised child. Reading
-  // only `serviceState` meant a ready maka-cu backend produced `undefined`
-  // here, and the card said "not available" while its own availability half
-  // said the opposite.
-  const executorState =
-    computerUse.backend?.serviceState?.() ?? computerUse.backend?.executorState?.();
+  const executorState = computerUse.backend?.executorState?.();
   return {
     backendId: computerUse.backendId,
     health: computerUseServiceHealth(computerUse.backendId, executorState),

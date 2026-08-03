@@ -40,7 +40,9 @@ test('a Git probe failure cannot persistently downgrade a repository to a folder
     await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
 
     await assert.rejects(() => registerProjectWithoutGit(repository, storage));
-    await assert.rejects(() => readFile(join(storage, 'projects.json')), { code: 'ENOENT' });
+    // Nothing may be recorded: a folder identity written here would outlive the
+    // probe failure and permanently split the repository from its worktrees.
+    assert.deepEqual(await createProjectCatalog(storage).list(), []);
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -222,6 +224,84 @@ test('a missing project directory remains in the catalog as unavailable', async 
     assert.equal(unavailable?.available, false);
     assert.equal(unavailable?.preferredPath, undefined);
     assert.equal(unavailable?.locations.length, 1);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('two catalogs changing one project at the same time keep both changes', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-concurrent-'));
+  try {
+    const workspace = join(base, 'workspace');
+    const storage = join(base, 'storage');
+    await mkdir(workspace);
+    const first = createProjectCatalog(storage, { now: () => 1_000 });
+    const second = createProjectCatalog(storage, { now: () => 2_000 });
+    const project = await first.register(workspace);
+    // Both catalogs settle their one-time legacy-import probe first, so the two
+    // mutations below really do overlap instead of queueing behind that I/O.
+    await Promise.all([first.list(), second.list()]);
+
+    // Each catalog rewrites the whole table; without holding the write lock
+    // across its own read, the later writer replays a stale copy and the other
+    // window's edit disappears with no error anywhere.
+    await Promise.all([second.archive(project.id), first.rename(project.id, 'Renamed')]);
+
+    const [merged] = await first.list();
+    assert.equal(merged?.name, 'Renamed', 'the rename must survive the concurrent archive');
+    assert.equal(merged?.archivedAt, 2_000, 'the archive must survive the concurrent rename');
+    first.close();
+    second.close();
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a relink whose merge target changes mid-flight fails instead of half-committing', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-race-'));
+  try {
+    const storage = join(base, 'storage');
+    const home = join(base, 'home');
+    const shared = join(base, 'shared');
+    const elsewhere = join(base, 'elsewhere');
+    await Promise.all([mkdir(home), mkdir(shared), mkdir(elsewhere)]);
+    const first = createProjectCatalog(storage);
+    const second = createProjectCatalog(storage);
+    const moving = await first.register(home);
+    const target = await first.register(shared);
+    await Promise.all([first.list(), second.list()]);
+
+    let releaseCallback!: () => void;
+    let callbackStarted!: () => void;
+    const gate = new Promise<void>((release) => {
+      releaseCallback = release;
+    });
+    const started = new Promise<void>((resolve) => {
+      callbackStarted = resolve;
+    });
+    let observed: string | undefined;
+    const relink = first.relink(moving.id, shared, async (context) => {
+      observed = context.conflictingProjectId;
+      callbackStarted();
+      await gate;
+    });
+    await started;
+
+    // The callback was told to move `target`'s sessions onto `moving`. While it
+    // is doing that, the other window moves `target` somewhere else entirely.
+    await second.relink(target.id, elsewhere);
+    releaseCallback();
+
+    assert.equal(observed, target.id, 'precondition: the callback planned a merge');
+    await assert.rejects(() => relink, /retry/);
+    const projects = await first.list();
+    assert.deepEqual(
+      projects.map((project) => project.id).sort(),
+      [moving.id, target.id].sort(),
+      'neither project may be merged away after the plan went stale',
+    );
+    first.close();
+    second.close();
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -418,7 +498,7 @@ test('selecting a project returns its most recent available location and rejects
   }
 });
 
-test('a malformed project catalog fails closed without overwriting it', async () => {
+test('a malformed legacy catalog is reported and preserved without blocking the catalog', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-corrupt-'));
   try {
     const workspace = join(base, 'workspace');
@@ -428,10 +508,79 @@ test('a malformed project catalog fails closed without overwriting it', async ()
     await mkdir(storage);
     const original = '{"schemaVersion":1,"projects":[{}]}\n';
     await writeFile(catalogPath, original, 'utf8');
-    const catalog = createProjectCatalog(storage);
+    const failures: unknown[] = [];
+    const catalog = createProjectCatalog(storage, {
+      onLegacyImportFailure: (error) => failures.push(error),
+    });
 
-    await assert.rejects(() => catalog.register(workspace), /Invalid project catalog/);
+    // SQLite is the authority: a legacy file that cannot be read must not take
+    // the catalog down with it, and it must stay on disk to recover by hand.
+    const project = await catalog.register(workspace);
+
+    assert.equal((await catalog.list()).length, 1);
+    assert.equal((await catalog.list())[0]?.id, project.id);
     assert.equal(await readFile(catalogPath, 'utf8'), original);
+    assert.equal(failures.length, 1);
+    assert.match(String(failures[0]), /Invalid project catalog/);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a legacy catalog is imported once and then set aside', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-import-'));
+  try {
+    const storage = join(base, 'storage');
+    await mkdir(storage);
+    await writeFile(
+      join(storage, 'projects.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        projects: [
+          {
+            id: 'legacy-project',
+            aliases: ['merged-away'],
+            name: 'Renamed By Hand',
+            identity: 'folder:/gone',
+            locations: [{ path: '/gone', isWorktree: false, lastUsedAt: 5 }],
+            lastUsedAt: 7,
+            archivedAt: 9,
+          },
+        ],
+      }),
+      'utf8',
+    );
+    const failures: unknown[] = [];
+    const catalog = createProjectCatalog(storage, {
+      now: () => 1_000,
+      onLegacyImportFailure: (error) => failures.push(error),
+    });
+
+    const projects = await catalog.list();
+
+    assert.deepEqual(failures, []);
+    // The user's name, relink aliases and archive state only ever lived in this
+    // file; losing them on upgrade would be indistinguishable from data loss.
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0]?.id, 'legacy-project');
+    assert.equal(projects[0]?.name, 'Renamed By Hand');
+    assert.deepEqual(projects[0]?.aliases, ['merged-away']);
+    assert.equal(projects[0]?.archivedAt, 9);
+    await assert.rejects(() => readFile(join(storage, 'projects.json'), 'utf8'), {
+      code: 'ENOENT',
+    });
+    const setAside = JSON.parse(
+      await readFile(join(storage, 'projects.json.imported-1000'), 'utf8'),
+    ) as { projects: Array<{ id: string }> };
+    assert.deepEqual(
+      setAside.projects.map((project) => project.id),
+      ['legacy-project'],
+      'the imported file is kept verbatim so a bad upgrade stays recoverable',
+    );
+
+    // A catalog opened later must not re-import and must not lose the state.
+    catalog.close();
+    assert.equal((await createProjectCatalog(storage).list()).length, 1);
   } finally {
     await rm(base, { recursive: true, force: true });
   }

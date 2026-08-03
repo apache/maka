@@ -50,6 +50,8 @@ export type AgentRunContinuationSource =
 
 export type RootExecutionDescriptor =
   | { kind: 'external_message' }
+  | { kind: 'regenerate'; sourceTurnId: string }
+  | { kind: 'context_compact' }
   | { kind: 'automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {
@@ -160,6 +162,8 @@ export interface AgentRunHeader {
   agentGraphWakeId?: string;
   /** Durable delivery attempt for this host-authored supervisor turn. */
   agentGraphWakeAttemptId?: string;
+  /** Positive identity for a host-authored root that has no message lineage. */
+  rootExecutionKind?: 'context_compact';
   failureClass?: string;
   failureMessage?: string;
   abortSource?: string;
@@ -169,7 +173,13 @@ export interface AgentRunHeader {
 type HostedRootExecutionDescriptor = Extract<
   RootExecutionDescriptor,
   {
-    kind: 'automation' | 'goal' | 'agent_graph_supervisor_wake' | 'safe_boundary_continuation';
+    kind:
+      | 'regenerate'
+      | 'context_compact'
+      | 'automation'
+      | 'goal'
+      | 'agent_graph_supervisor_wake'
+      | 'safe_boundary_continuation';
   }
 >;
 
@@ -177,6 +187,46 @@ export function agentRunMatchesHostedRootExecution(
   run: AgentRunHeader,
   execution: HostedRootExecutionDescriptor,
 ): boolean {
+  if (execution.kind !== 'context_compact' && run.rootExecutionKind !== undefined) return false;
+  if (execution.kind === 'regenerate') {
+    return (
+      run.parentTurnId === execution.sourceTurnId &&
+      run.regeneratedFromTurnId === execution.sourceTurnId &&
+      run.parentRunId === undefined &&
+      run.resumedFromRunId === undefined &&
+      run.retriedFromRunId === undefined &&
+      run.agentId === undefined &&
+      run.agentName === undefined &&
+      run.retriedFromTurnId === undefined &&
+      run.branchOfTurnId === undefined &&
+      run.parentSessionId === undefined &&
+      run.continuationSource === undefined &&
+      run.automationId === undefined &&
+      run.goalId === undefined &&
+      run.agentGraphWakeId === undefined &&
+      run.agentGraphWakeAttemptId === undefined
+    );
+  }
+  if (execution.kind === 'context_compact') {
+    return (
+      run.rootExecutionKind === 'context_compact' &&
+      run.parentTurnId === undefined &&
+      run.regeneratedFromTurnId === undefined &&
+      run.parentRunId === undefined &&
+      run.resumedFromRunId === undefined &&
+      run.retriedFromRunId === undefined &&
+      run.agentId === undefined &&
+      run.agentName === undefined &&
+      run.retriedFromTurnId === undefined &&
+      run.branchOfTurnId === undefined &&
+      run.parentSessionId === undefined &&
+      run.continuationSource === undefined &&
+      run.automationId === undefined &&
+      run.goalId === undefined &&
+      run.agentGraphWakeId === undefined &&
+      run.agentGraphWakeAttemptId === undefined
+    );
+  }
   if (execution.kind === 'safe_boundary_continuation') {
     const source = run.continuationSource;
     return (
@@ -226,7 +276,10 @@ export function agentRunMatchesHostedRootExecution(
 
 function hostedRootAuthorityMatches(
   run: AgentRunHeader,
-  execution: Exclude<HostedRootExecutionDescriptor, { kind: 'safe_boundary_continuation' }>,
+  execution: Exclude<
+    HostedRootExecutionDescriptor,
+    { kind: 'regenerate' | 'context_compact' | 'safe_boundary_continuation' }
+  >,
 ): boolean {
   switch (execution.kind) {
     case 'automation':
@@ -367,6 +420,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'goalId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
+    'rootExecutionKind',
     'failureClass',
     'failureMessage',
     'abortSource',
@@ -405,6 +459,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       isEffectiveOrchestrationSource(value.orchestrationSource)) &&
     (value.agentSwarmAuthorization === undefined ||
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
+    (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
     !(value.automationId !== undefined && value.goalId !== undefined) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&

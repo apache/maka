@@ -1,10 +1,14 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { readFile, realpath, rename, stat } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectLocation, ProjectRecord } from '@maka/core';
 import { hasEnclosingGitEntry } from './git-entry.js';
+import {
+  acquireOperationalStateDatabase,
+  type OperationalStateDatabaseLease,
+} from './operational-state-store.js';
 
 export type { ProjectLocation, ProjectRecord } from '@maka/core';
 
@@ -26,6 +30,22 @@ export function isProjectPathMismatchError(error: unknown): error is ProjectPath
   return error instanceof ProjectPathMismatchError;
 }
 
+/**
+ * The catalog changed underneath a relink while its `beforeCommit` callback was
+ * still reassigning sessions, so the merge the caller was told to prepare is no
+ * longer the merge that would be committed. Relink is already retryable — its
+ * callback throwing leaves the catalog untouched — so failing here hands the
+ * decision back rather than committing a half-true one.
+ */
+export class ProjectRelinkContentionError extends Error {
+  readonly name = 'ProjectRelinkContentionError';
+  readonly code = 'project_relink_contention';
+
+  constructor(readonly projectId: string) {
+    super(`Project changed while relinking, retry: ${projectId}`);
+  }
+}
+
 export interface ProjectRelinkContext {
   projectId: string;
   projectAliases: string[];
@@ -38,6 +58,13 @@ export interface ProjectRelinkContext {
 export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
   register(path: string): Promise<ProjectRecord>;
+  /**
+   * Resolve a path recorded by an existing session rather than chosen by the
+   * user. Unlike `register`, the directory may already be gone — a session
+   * outlives the folder it ran in — so a missing path still yields a stable
+   * folder identity instead of failing.
+   */
+  resolveHistoricalPath(path: string, usedAt?: number): Promise<ProjectRecord>;
   select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
   touch(projectId: string, path?: string): Promise<ProjectRecord>;
   relink(
@@ -48,6 +75,8 @@ export interface ProjectCatalog {
   rename(projectId: string, name: string): Promise<ProjectRecord>;
   archive(projectId: string): Promise<ProjectRecord>;
   restore(projectId: string): Promise<ProjectRecord>;
+  /** Release this catalog's share of the operational database. */
+  close(): void;
 }
 
 interface PersistedProject {
@@ -74,29 +103,48 @@ export function createProjectCatalog(
   deps: {
     now?: () => number;
     createId?: () => string;
+    /** Report a `projects.json` that could not be imported; the catalog still opens. */
+    onLegacyImportFailure?: (error: unknown) => void;
   } = {},
 ): ProjectCatalog {
-  return new FileProjectCatalog(
+  return new SqliteProjectCatalog(
+    acquireOperationalStateDatabase(storageRoot),
     join(storageRoot, 'projects.json'),
     deps.now ?? Date.now,
     deps.createId ?? randomUUID,
+    deps.onLegacyImportFailure ?? (() => {}),
   );
 }
 
-class FileProjectCatalog implements ProjectCatalog {
+/**
+ * The project catalog is operational state: it decides how every session is
+ * organized, and it has to survive backup and restore alongside the sessions
+ * it groups. Keeping it in its own JSON file left it outside the operational
+ * database — and therefore outside `createOperationalStateBackup`, which only
+ * captures `runtime.sqlite` plus the Artifact tree.
+ *
+ * Only the persistence layer moved. Read-modify-write under a serial queue,
+ * the whole-catalog validation on every write, and each method's semantics are
+ * unchanged, so the catalog contract tests carry over as-is.
+ */
+class SqliteProjectCatalog implements ProjectCatalog {
   private queue: Promise<void> = Promise.resolve();
+  private legacyImport: Promise<void> | undefined;
 
   constructor(
-    private readonly path: string,
+    private readonly lease: OperationalStateDatabaseLease,
+    private readonly legacyPath: string,
     private readonly now: () => number,
     private readonly createId: () => string,
+    private readonly onLegacyImportFailure: (error: unknown) => void,
   ) {}
 
+  close(): void {
+    this.lease.close();
+  }
+
   async list(): Promise<ProjectRecord[]> {
-    let projects: PersistedProject[] = [];
-    await this.withQueue(async () => {
-      projects = (await this.read()).projects;
-    });
+    const projects = (await this.read()).projects;
     projects.sort(
       (a, b) =>
         Number(a.archivedAt !== undefined) - Number(b.archivedAt !== undefined) ||
@@ -111,13 +159,34 @@ class FileProjectCatalog implements ProjectCatalog {
     return this.upsertResolvedProject(resolved, this.now());
   }
 
+  async resolveHistoricalPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
+    let resolved: ResolvedProjectLocation;
+    try {
+      resolved = await resolveProjectLocation({ path });
+    } catch (error) {
+      if (!isUnreachablePathError(error)) throw error;
+      let pathIsMissing = false;
+      try {
+        await stat(path);
+      } catch (pathError) {
+        pathIsMissing = isUnreachablePathError(pathError);
+      }
+      if (!pathIsMissing) throw error;
+      const canonicalPath = await canonicalizeMissingPath(path);
+      resolved = {
+        canonicalPath,
+        identity: `folder:${canonicalPath}`,
+        kind: 'folder',
+      };
+    }
+    return this.upsertResolvedProject(resolved, usedAt);
+  }
+
   private async upsertResolvedProject(
     resolved: ResolvedProjectLocation,
     timestamp: number,
   ): Promise<ProjectRecord> {
-    let registered: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      const file = await this.read();
+    const registered = await this.mutate((file) => {
       const locationPath =
         resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
       const existing = file.projects.find((project) => project.identity === resolved.identity);
@@ -134,29 +203,24 @@ class FileProjectCatalog implements ProjectCatalog {
           });
         }
         existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
-        registered = existing;
-      } else {
-        const project: PersistedProject = {
-          id: this.createId(),
-          name: defaultProjectName(resolved),
-          identity: resolved.identity,
-          locations: [
-            {
-              path: locationPath,
-              isWorktree: resolved.git?.isWorktree ?? false,
-              lastUsedAt: timestamp,
-            },
-          ],
-          lastUsedAt: timestamp,
-        };
-        file.projects.push(project);
-        registered = project;
+        return existing;
       }
-      await this.write(file);
+      const project: PersistedProject = {
+        id: this.createId(),
+        name: defaultProjectName(resolved),
+        identity: resolved.identity,
+        locations: [
+          {
+            path: locationPath,
+            isWorktree: resolved.git?.isWorktree ?? false,
+            lastUsedAt: timestamp,
+          },
+        ],
+        lastUsedAt: timestamp,
+      };
+      file.projects.push(project);
+      return project;
     });
-    if (!registered) {
-      throw new Error(`Failed to register project: ${resolved.canonicalPath}`);
-    }
     return this.present(registered);
   }
 
@@ -164,34 +228,34 @@ class FileProjectCatalog implements ProjectCatalog {
     let selected: PersistedProject | undefined;
     let selectedPath: string | undefined;
     await this.withQueue(async () => {
-      const file = await this.read();
-      const project = findProjectById(file.projects, projectId);
-      if (!project) throw new Error(`No such project: ${projectId}`);
-      if (project.archivedAt !== undefined) {
-        throw new Error(`Project is archived: ${projectId}`);
-      }
-      const availableLocations = (
-        await Promise.all(
-          project.locations.map(async (location) => ({
-            location,
-            available: await isDirectory(location.path),
-          })),
-        )
-      )
-        .filter((entry) => entry.available)
-        .sort(
-          (a, b) =>
-            b.location.lastUsedAt - a.location.lastUsedAt ||
-            a.location.path.localeCompare(b.location.path),
-        );
-      const location = availableLocations[0]?.location;
-      if (!location) throw new Error(`Project is unavailable: ${projectId}`);
-      const timestamp = this.now();
-      location.lastUsedAt = timestamp;
-      project.lastUsedAt = timestamp;
-      selected = project;
-      selectedPath = location.path;
-      await this.write(file);
+      // Probing the filesystem cannot happen inside the write transaction, so
+      // availability is decided first and the choice is re-validated under it.
+      const existing = findProjectById((await this.read()).projects, projectId);
+      if (!existing) throw new Error(`No such project: ${projectId}`);
+      const availablePaths = new Set(
+        (
+          await Promise.all(
+            existing.locations.map(async (location) =>
+              (await isDirectory(location.path)) ? location.path : undefined,
+            ),
+          )
+        ).filter((path): path is string => path !== undefined),
+      );
+      [selected, selectedPath] = await this.mutate((file) => {
+        const project = findProjectById(file.projects, projectId);
+        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (project.archivedAt !== undefined) {
+          throw new Error(`Project is archived: ${projectId}`);
+        }
+        const location = project.locations
+          .filter((item) => availablePaths.has(item.path))
+          .sort((a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path))[0];
+        if (!location) throw new Error(`Project is unavailable: ${projectId}`);
+        const timestamp = this.now();
+        location.lastUsedAt = timestamp;
+        project.lastUsedAt = timestamp;
+        return [project, location.path] as const;
+      });
     });
     if (!selected || !selectedPath) throw new Error(`Failed to select project: ${projectId}`);
     return { project: await this.present(selected), path: selectedPath };
@@ -204,9 +268,7 @@ class FileProjectCatalog implements ProjectCatalog {
         ? resolved.git!.worktreeRoot
         : resolved.canonicalPath
       : undefined;
-    let touched: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      const file = await this.read();
+    const touched = await this.mutate((file) => {
       const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
       const location = resolvedPath
@@ -220,10 +282,8 @@ class FileProjectCatalog implements ProjectCatalog {
       const timestamp = this.now();
       if (location) location.lastUsedAt = timestamp;
       project.lastUsedAt = timestamp;
-      touched = project;
-      await this.write(file);
+      return project;
     });
-    if (!touched) throw new Error(`Failed to touch project: ${projectId}`);
     return this.present(touched);
   }
 
@@ -235,50 +295,67 @@ class FileProjectCatalog implements ProjectCatalog {
     const resolved = await resolveProjectLocation({ path });
     const timestamp = this.now();
     let relinked: PersistedProject | undefined;
+    const locationPath =
+      resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
     await this.withQueue(async () => {
-      const file = await this.read();
-      const project = findProjectById(file.projects, projectId);
-      if (!project) throw new Error(`No such project: ${projectId}`);
-      const conflict = file.projects.find(
-        (item) => item.id !== project.id && item.identity === resolved.identity,
+      // `beforeCommit` reassigns the sessions of the project being merged away,
+      // so it cannot run inside the write transaction. It is shown the state it
+      // will act on, and the commit below refuses to proceed if that state no
+      // longer holds: re-deriving instead would leave the catalog consistent
+      // while the sessions the callback already moved point at the wrong owner.
+      const preview = await this.read();
+      const previewProject = findProjectById(preview.projects, projectId);
+      if (!previewProject) throw new Error(`No such project: ${projectId}`);
+      const previewConflict = preview.projects.find(
+        (item) => item.id !== previewProject.id && item.identity === resolved.identity,
       );
-      if (conflict && !beforeCommit) {
-        throw new Error(`Project path already belongs to project: ${conflict.id}`);
+      if (previewConflict && !beforeCommit) {
+        throw new Error(`Project path already belongs to project: ${previewConflict.id}`);
       }
-      const locationPath =
-        resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
       await beforeCommit?.({
-        projectId: project.id,
-        projectAliases: [...(project.aliases ?? [])],
+        projectId: previewProject.id,
+        projectAliases: [...(previewProject.aliases ?? [])],
         destinationPath: locationPath,
-        previousLocations: project.locations.map((location) => ({ ...location })),
-        ...(conflict
+        previousLocations: previewProject.locations.map((location) => ({ ...location })),
+        ...(previewConflict
           ? {
-              conflictingProjectId: conflict.id,
-              conflictingProjectAliases: [...(conflict.aliases ?? [])],
+              conflictingProjectId: previewConflict.id,
+              conflictingProjectAliases: [...(previewConflict.aliases ?? [])],
             }
           : {}),
       });
-      if (conflict) {
-        project.aliases = [
-          ...new Set([...(project.aliases ?? []), conflict.id, ...(conflict.aliases ?? [])]),
+      relinked = await this.mutate((file) => {
+        const project = findProjectById(file.projects, projectId);
+        if (!project) throw new Error(`No such project: ${projectId}`);
+        const conflict = file.projects.find(
+          (item) => item.id !== project.id && item.identity === resolved.identity,
+        );
+        if (conflict && !beforeCommit) {
+          throw new Error(`Project path already belongs to project: ${conflict.id}`);
+        }
+        if (conflict?.id !== previewConflict?.id) {
+          throw new ProjectRelinkContentionError(projectId);
+        }
+        if (conflict) {
+          project.aliases = [
+            ...new Set([...(project.aliases ?? []), conflict.id, ...(conflict.aliases ?? [])]),
+          ];
+          file.projects = file.projects.filter((item) => item.id !== conflict.id);
+        }
+        project.identity = resolved.identity;
+        project.locations = [
+          {
+            path: locationPath,
+            isWorktree: resolved.git?.isWorktree ?? false,
+            lastUsedAt: timestamp,
+          },
+          ...(conflict?.locations
+            .filter((location) => location.path !== locationPath)
+            .map((location) => ({ ...location })) ?? []),
         ];
-        file.projects = file.projects.filter((item) => item.id !== conflict.id);
-      }
-      project.identity = resolved.identity;
-      project.locations = [
-        {
-          path: locationPath,
-          isWorktree: resolved.git?.isWorktree ?? false,
-          lastUsedAt: timestamp,
-        },
-        ...(conflict?.locations
-          .filter((location) => location.path !== locationPath)
-          .map((location) => ({ ...location })) ?? []),
-      ];
-      project.lastUsedAt = Math.max(timestamp, conflict?.lastUsedAt ?? 0);
-      relinked = project;
-      await this.write(file);
+        project.lastUsedAt = Math.max(timestamp, conflict?.lastUsedAt ?? 0);
+        return project;
+      });
     });
     if (!relinked) throw new Error(`Failed to relink project: ${projectId}`);
     return this.present(relinked);
@@ -287,46 +364,36 @@ class FileProjectCatalog implements ProjectCatalog {
   async rename(projectId: string, name: string): Promise<ProjectRecord> {
     const trimmed = name.trim();
     if (!trimmed) throw new TypeError('Project name cannot be empty.');
-    let renamed: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      const file = await this.read();
-      const project = findProjectById(file.projects, projectId);
-      if (!project) throw new Error(`No such project: ${projectId}`);
-      project.name = trimmed;
-      renamed = project;
-      await this.write(file);
-    });
-    if (!renamed) throw new Error(`Failed to rename project: ${projectId}`);
-    return this.present(renamed);
+    return this.present(
+      await this.mutate((file) => {
+        const project = findProjectById(file.projects, projectId);
+        if (!project) throw new Error(`No such project: ${projectId}`);
+        project.name = trimmed;
+        return project;
+      }),
+    );
   }
 
   async archive(projectId: string): Promise<ProjectRecord> {
-    let archived: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      const file = await this.read();
-      const project = findProjectById(file.projects, projectId);
-      if (!project) throw new Error(`No such project: ${projectId}`);
-      const timestamp = this.now();
-      project.archivedAt = timestamp;
-      archived = project;
-      await this.write(file);
-    });
-    if (!archived) throw new Error(`Failed to archive project: ${projectId}`);
-    return this.present(archived);
+    return this.present(
+      await this.mutate((file) => {
+        const project = findProjectById(file.projects, projectId);
+        if (!project) throw new Error(`No such project: ${projectId}`);
+        project.archivedAt = this.now();
+        return project;
+      }),
+    );
   }
 
   async restore(projectId: string): Promise<ProjectRecord> {
-    let restored: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      const file = await this.read();
-      const project = findProjectById(file.projects, projectId);
-      if (!project) throw new Error(`No such project: ${projectId}`);
-      delete project.archivedAt;
-      restored = project;
-      await this.write(file);
-    });
-    if (!restored) throw new Error(`Failed to restore project: ${projectId}`);
-    return this.present(restored);
+    return this.present(
+      await this.mutate((file) => {
+        const project = findProjectById(file.projects, projectId);
+        if (!project) throw new Error(`No such project: ${projectId}`);
+        delete project.archivedAt;
+        return project;
+      }),
+    );
   }
 
   private async present(project: PersistedProject): Promise<ProjectRecord> {
@@ -359,22 +426,164 @@ class FileProjectCatalog implements ProjectCatalog {
   }
 
   private async read(): Promise<ProjectCatalogFile> {
-    try {
-      return normalizeProjectCatalogFile(JSON.parse(await readFile(this.path, 'utf8')));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { schemaVersion: 1, projects: [] };
-      }
-      throw error;
-    }
+    await this.importLegacyCatalogOnce();
+    return this.selectCatalog();
   }
 
-  private async write(file: ProjectCatalogFile): Promise<void> {
-    const normalized = normalizeProjectCatalogFile(file);
-    await mkdir(dirname(this.path), { recursive: true });
-    const tempPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
-    await rename(tempPath, this.path);
+  /**
+   * Read, change and rewrite the catalog inside one `BEGIN IMMEDIATE`.
+   *
+   * The serial queue only orders callers within a process, so a second Maka
+   * window reading the catalog between this one's read and write would rewrite
+   * the whole table from its own stale copy and silently discard the change —
+   * a rename or archive would simply revert. Holding SQLite's write lock across
+   * the whole read-modify-write makes the loser wait rather than clobber.
+   *
+   * Only mutations that are entirely synchronous can run here; `select` and
+   * `relink` await the filesystem mid-change and keep the two-phase form.
+   */
+  private async mutate<T>(change: (file: ProjectCatalogFile) => T): Promise<T> {
+    await this.importLegacyCatalogOnce();
+    return this.lease.transaction('write', () => {
+      const file = this.selectCatalog();
+      const result = change(file);
+      this.replaceCatalog(normalizeProjectCatalogFile(file));
+      return result;
+    });
+  }
+
+  private selectCatalog(): ProjectCatalogFile {
+    return this.lease.transaction('read', () => {
+      const database = this.lease.database;
+      const locations = new Map<string, PersistedProjectLocation[]>();
+      for (const row of database
+        .prepare(
+          `SELECT project_id, path, is_worktree, last_used_at
+           FROM project_locations
+           ORDER BY project_id, path`,
+        )
+        .all() as Array<Record<string, unknown>>) {
+        const bucket = locations.get(row.project_id as string) ?? [];
+        bucket.push({
+          path: row.path as string,
+          isWorktree: row.is_worktree === 1,
+          lastUsedAt: row.last_used_at as number,
+        });
+        locations.set(row.project_id as string, bucket);
+      }
+      const aliases = new Map<string, string[]>();
+      for (const row of database
+        .prepare('SELECT alias, project_id FROM project_aliases ORDER BY project_id, alias')
+        .all() as Array<Record<string, unknown>>) {
+        const bucket = aliases.get(row.project_id as string) ?? [];
+        bucket.push(row.alias as string);
+        aliases.set(row.project_id as string, bucket);
+      }
+      const projects = (
+        database
+          .prepare(
+            `SELECT project_id, identity, name, last_used_at, archived_at
+             FROM projects
+             ORDER BY project_id`,
+          )
+          .all() as Array<Record<string, unknown>>
+      ).map((row): PersistedProject => {
+        const id = row.project_id as string;
+        const projectAliases = aliases.get(id);
+        return {
+          id,
+          ...(projectAliases && projectAliases.length > 0 ? { aliases: projectAliases } : {}),
+          name: row.name as string,
+          identity: row.identity as string,
+          locations: locations.get(id) ?? [],
+          lastUsedAt: row.last_used_at as number,
+          ...(row.archived_at === null ? {} : { archivedAt: row.archived_at as number }),
+        };
+      });
+      return { schemaVersion: 1, projects };
+    });
+  }
+
+  private replaceCatalog(file: ProjectCatalogFile): void {
+    this.lease.transaction('write', () => {
+      const database = this.lease.database;
+      // Catalogs are small and every mutation already rewrote the whole file,
+      // so a full replace keeps the previous read-modify-write semantics
+      // exactly, now with transactional atomicity instead of temp-file rename.
+      database.exec('DELETE FROM project_aliases');
+      database.exec('DELETE FROM project_locations');
+      database.exec('DELETE FROM projects');
+      const insertProject = database.prepare(
+        `INSERT INTO projects(project_id, identity, name, last_used_at, archived_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      const insertLocation = database.prepare(
+        `INSERT INTO project_locations(project_id, path, is_worktree, last_used_at)
+         VALUES (?, ?, ?, ?)`,
+      );
+      const insertAlias = database.prepare(
+        'INSERT INTO project_aliases(alias, project_id) VALUES (?, ?)',
+      );
+      for (const project of file.projects) {
+        insertProject.run(
+          project.id,
+          project.identity,
+          project.name,
+          project.lastUsedAt,
+          project.archivedAt ?? null,
+        );
+        for (const location of project.locations) {
+          insertLocation.run(
+            project.id,
+            location.path,
+            location.isWorktree ? 1 : 0,
+            location.lastUsedAt,
+          );
+        }
+        for (const alias of project.aliases ?? []) insertAlias.run(alias, project.id);
+      }
+    });
+  }
+
+  /**
+   * `projects.json` predates the operational database and was left behind when
+   * the rest of the File stores were retired, so it still holds the only copy
+   * of every project name, relink alias and archive state. Importing it once is
+   * not legacy-format support: it recovers state this refactor would otherwise
+   * strand. The file is renamed rather than deleted so a failed upgrade stays
+   * inspectable, and a malformed file leaves SQLite untouched.
+   *
+   * An import that cannot complete — unreadable file, malformed contents, a
+   * read-only disk — is reported and then dropped rather than rethrown. SQLite
+   * is the authority now, so failing the import must not take the read path
+   * down with it; `projects.json` is still on disk to recover from by hand.
+   */
+  private importLegacyCatalogOnce(): Promise<void> {
+    this.legacyImport ??= (async () => {
+      try {
+        let raw: string;
+        try {
+          raw = await readFile(this.legacyPath, 'utf8');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+          throw error;
+        }
+        const imported = normalizeProjectCatalogFile(JSON.parse(raw));
+        const occupied = this.lease.transaction(
+          'read',
+          () =>
+            this.lease.database.prepare('SELECT 1 AS found FROM projects LIMIT 1').get() !==
+            undefined,
+        );
+        if (!occupied) this.replaceCatalog(imported);
+        // Timestamped so a second upgrade attempt cannot overwrite the only
+        // remaining copy of a catalog that failed to import the first time.
+        await rename(this.legacyPath, `${this.legacyPath}.imported-${this.now()}`);
+      } catch (error) {
+        this.onLegacyImportFailure(error);
+      }
+    })();
+    return this.legacyImport;
   }
 
   private withQueue(operation: () => Promise<void>): Promise<void> {
@@ -484,6 +693,43 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * Canonicalize a path that no longer exists.
+ *
+ * `realpath` fails outright on a missing path, but its job — resolving symlinks
+ * — still matters here: on macOS `/tmp` is a link to `/private/tmp`, so naive
+ * normalization gives a deleted directory a different identity than the same
+ * directory had while it existed, splitting one project in two. Resolving the
+ * nearest surviving ancestor and re-appending the missing segments keeps the
+ * identity stable across the moment the directory disappears.
+ */
+async function canonicalizeMissingPath(path: string): Promise<string> {
+  const absolute = normalize(resolve(path));
+  const missingSegments: string[] = [];
+  let candidate = absolute;
+  for (;;) {
+    try {
+      return normalize(join(await realpath(candidate), ...missingSegments));
+    } catch (error) {
+      if (!isUnreachablePathError(error)) throw error;
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) return absolute;
+    missingSegments.unshift(basename(candidate));
+    candidate = parent;
+  }
+}
+
+/**
+ * A path that cannot be reached, whether because a segment is gone (`ENOENT`)
+ * or because one of its ancestors is now a plain file (`ENOTDIR`). Both mean
+ * the same thing to a historical working directory: keep walking up.
+ */
+function isUnreachablePathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 async function isDirectory(path: string): Promise<boolean> {
