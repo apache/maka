@@ -1,19 +1,22 @@
-/* Settings → Usage page (使用量). Moved out of bot.css — nothing bot-related
-   consumes these rules; they had been hiding ~150 lines of usage styling in
-   the bot budget. Content is an unmodified move; the #1879 height pins and
-   the 900px media query travel intact. */
+/* Settings → Usage page (使用量). Astryx owns the controls and table
+   geometry; this file only composes those primitives into the page hierarchy. */
 
-.settingsUsagePage {
+.settingsUsageOverview,
+.settingsUsageBreakdown,
+.settingsUsageTabPanel {
   display: grid;
   align-content: start;
-  /* #1364: pin the single column to `minmax(0, 1fr)`. With the implicit
-     `auto` track, every block's min-content propagated into the track size —
-     the five-tab bar (~453px intrinsic) and the requests table dragged the
-     whole page into horizontal scroll even though both scroll within
-     themselves. An explicit 0-floor track is the grid-level equivalent of
-     `min-width: 0` on every row. */
+  /* #1364: wide tabs and tables stop at their local group and scroll within
+     themselves instead of widening the settings content column. */
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2-5);
+}
+
+.settingsUsageOverview {
+  gap: var(--space-3);
+}
+
+.settingsUsageBreakdown {
+  gap: var(--space-4);
 }
 
 .settingsUsageToolbar,
@@ -44,25 +47,18 @@
 }
 
 .settingsUsageTabPanel {
-  display: grid;
-  align-content: start;
-  /* #1364: same 0-floor track as `.settingsUsagePage` — the requests table's
-     intrinsic width must stop here and scroll inside its own container. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2);
+  gap: var(--space-3);
   min-height: 0;
-  margin-top: var(--space-2-5);
 }
 
 .settingsUsageNumericCell {
   font-variant-numeric: tabular-nums;
 }
 
-/* The requests table's 8 sized columns are wider than the content column at
-   narrow widths — it scrolls inside its own wrapper instead of clipping at
-   the card edge (page body never scrolls horizontally). */
+/* Astryx Card establishes the table's surface and resets its container-bleed
+   boundary. Astryx Table owns horizontal scrolling inside that boundary. */
 .settingsUsageTable {
-  overflow-x: auto;
+  min-width: 0;
 }
 
 /* Empty tab: the shared EmptyState card, nudged to the density of the
@@ -156,4 +152,3 @@
 
 /* .settingsRow / .settingsRows moved to rows.css — the single style home
    for the settings-rows.tsx primitives (PR-SETTINGS-ROWS-CONVERGENCE-0). */
-

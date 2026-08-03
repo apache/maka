@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import {
+  Card,
   EmptyState,
   SegmentedControl,
   SegmentedControlItem,
@@ -35,6 +36,7 @@ import {
 } from '../locales/settings-usage-copy';
 import { MetricCard } from './settings-metric-card';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { SettingsPage } from './settings-section';
 import { useActionGuard } from './use-action-guard';
 import { useOptimisticSettingsDraft } from './use-optimistic-settings-draft';
 
@@ -115,44 +117,46 @@ export function UsageSettingsPage(props: {
   }
 
   return (
-    <div className="settingsUsagePage">
-      <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
-        <SegmentedControl
-          value={usageDraft.range}
-          label={copy.rangeAria}
-          onChange={(value) => void setRange(value as UsageRange)}
-        >
-          {(['24h', '7d', '30d', 'all'] as const).map((value, index) => (
-            <SegmentedControlItem key={value} value={value} label={copy.ranges[index]} />
-          ))}
-        </SegmentedControl>
-        {/* Detail audit: 刷新 was a primary --action chip glued to the
-            segmented — two control styles fighting in one row for a
-            low-frequency utility. Same quiet icon form as the automations
-            page refresh (one action, one shape everywhere); pinned to the
-            row's trailing edge so the time cluster reads as a single
-            left-aligned group. */}
-        <IconButton
-          variant="ghost"
-          size="sm"
-          isDisabled={refreshing}
-          aria-busy={refreshing}
-          data-pending={refreshing ? 'true' : undefined}
-          label={refreshing ? copy.refreshingAria : copy.refreshAria}
-          tooltip={refreshing ? copy.refreshingAria : copy.refreshAria}
-          onClick={() => void refresh()}
-          icon={<RefreshCcw size={15} aria-hidden="true" />}
-        />
+    <SettingsPage className="settingsUsagePage">
+      <div className="settingsUsageOverview">
+        <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
+          <SegmentedControl
+            value={usageDraft.range}
+            label={copy.rangeAria}
+            onChange={(value) => void setRange(value as UsageRange)}
+          >
+            {(['24h', '7d', '30d', 'all'] as const).map((value, index) => (
+              <SegmentedControlItem key={value} value={value} label={copy.ranges[index]} />
+            ))}
+          </SegmentedControl>
+          {/* Detail audit: 刷新 was a primary --action chip glued to the
+              segmented — two control styles fighting in one row for a
+              low-frequency utility. Same quiet icon form as the automations
+              page refresh (one action, one shape everywhere); pinned to the
+              row's trailing edge so the time cluster reads as a single
+              left-aligned group. */}
+          <IconButton
+            variant="ghost"
+            size="sm"
+            isDisabled={refreshing}
+            aria-busy={refreshing}
+            data-pending={refreshing ? 'true' : undefined}
+            label={refreshing ? copy.refreshingAria : copy.refreshAria}
+            tooltip={refreshing ? copy.refreshingAria : copy.refreshAria}
+            onClick={() => void refresh()}
+            icon={<RefreshCcw size={15} aria-hidden="true" />}
+          />
+        </div>
+
+        <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
+          <MetricCard title={copy.totalRequests} value={String(stats?.summary.totalRequests ?? 0)} />
+          <MetricCard title={copy.totalCost} value={`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`} detail={copy.costHelp} />
+          <MetricCard title={copy.totalTokens} value={String(stats?.summary.totalTokens ?? 0)} detail={copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0)} />
+          <MetricCard title={copy.cacheTokens} value={String(stats?.summary.cacheTokens ?? 0)} detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)} />
+        </div>
       </div>
 
-      <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
-        <MetricCard title={copy.totalRequests} value={String(stats?.summary.totalRequests ?? 0)} />
-        <MetricCard title={copy.totalCost} value={`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`} detail={copy.costHelp} />
-        <MetricCard title={copy.totalTokens} value={String(stats?.summary.totalTokens ?? 0)} detail={copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0)} />
-        <MetricCard title={copy.cacheTokens} value={String(stats?.summary.cacheTokens ?? 0)} detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)} />
-      </div>
-
-      <div>
+      <div className="settingsUsageBreakdown">
         <div className="settingsUsageTabsBar">
           <TabList
             value={usageDraft.activeTab}
@@ -215,7 +219,7 @@ export function UsageSettingsPage(props: {
           </div>
         ) : null}
       </div>
-    </div>
+    </SettingsPage>
   );
 }
 
@@ -483,7 +487,7 @@ function UsageStatsTable(props: {
   }));
 
   return (
-    <div className="settingsUsageTable">
+    <Card className="settingsUsageTable" padding={3}>
       <Table
         aria-label={props.ariaLabel}
         data={data}
@@ -494,6 +498,6 @@ function UsageStatsTable(props: {
         textOverflow="truncate"
         plugins={usageTablePlugins}
       />
-    </div>
+    </Card>
   );
 }
