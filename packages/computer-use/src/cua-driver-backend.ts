@@ -50,7 +50,7 @@ import {
   type CuaDriverReleaseEvent,
   type CuaDriverRoleSnapshot,
 } from './cua-driver-release.js';
-import { CuaDriverService, type CuaDriverJsonRpcResponse } from './cua-driver-service.js';
+import { CuaDriverService } from './cua-driver-service.js';
 import {
   CUA_INSPECT_PREPARED_ELEMENT_SCRIPT,
   buildCuaPrepareElementAtScreenPointScript,
@@ -259,8 +259,6 @@ export type CuaDriverTraceOutcome =
       effect?: ComputerUseEffect;
       completedSubSteps?: number;
     };
-
-export type JsonRpcResponse = CuaDriverJsonRpcResponse;
 
 async function classifyMacProcess(pid: number): Promise<'electron' | 'native' | 'unknown'> {
   const executable = await new Promise<string>((resolve, reject) => {

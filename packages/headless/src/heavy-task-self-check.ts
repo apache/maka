@@ -9,7 +9,6 @@ import type {
   HeavyTaskSemanticSelfCheckState,
   HeavyTaskSelfCheckExecutionHygiene,
   HeavyTaskSourceGuardResult,
-  TaskEvent,
 } from './task-contracts.js';
 import type { TaskRunWriter } from './task-run-store.js';
 
@@ -817,10 +816,6 @@ function recordValue(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export type HeavyTaskSelfCheckEvent = Extract<
-  TaskEvent,
-  { type: 'heavy_task_self_check_recorded' }
->;
 export type {
   HeavyTaskArtifactEvidence,
   HeavyTaskCommandEvidence,
