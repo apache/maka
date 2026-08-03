@@ -2,6 +2,10 @@
   min-width: 0;
 }
 
+.maka-onboarding-center {
+  min-width: 0;
+}
+
 .maka-onboarding-wordmark {
   color: var(--maka-brand);
 }

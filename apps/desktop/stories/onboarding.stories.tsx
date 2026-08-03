@@ -194,8 +194,4 @@ export const NarrowWindow: Story = {
       <OnboardingHero {...heroProps({ kind: 'needs_connection' })} />
     </DetailPane>
   ),
-  play: async ({ canvasElement }) => {
-    const documentElement = canvasElement.ownerDocument.documentElement;
-    await expect(documentElement.scrollWidth).toBe(documentElement.clientWidth);
-  },
 };

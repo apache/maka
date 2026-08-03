@@ -304,7 +304,7 @@ function OnboardingCard(props: {
 }) {
   const copy = getOnboardingCopy(useUiLocale());
   return (
-    <Center width="100%">
+    <Center width="100%" className="maka-onboarding-center">
       <VStack gap={4} hAlign="center" width="min(460px, 100%)" className="maka-onboarding">
         <MakaWordmark width={112} className="maka-onboarding-wordmark" />
         <Card
