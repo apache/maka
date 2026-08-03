@@ -4,6 +4,7 @@ import {
   buildConnectionModelCatalogEntries,
   connectionEnabledModelIds,
   isWiredOAuthProvider,
+  normalizeOpenAiCodexConnection,
   type LlmConnection,
   type ModelCatalogEntry,
   type ProviderType,
@@ -67,7 +68,8 @@ export function pickCatalogDefaultChatModel(connection: Pick<
 
 export function buildCatalogChatModelChoices(connections: readonly LlmConnection[]): ChatModelChoice[] {
   const choices: ChatModelChoice[] = [];
-  for (const connection of connections) {
+  for (const rawConnection of connections) {
+    const connection = normalizeOpenAiCodexConnection(rawConnection);
     if (!isModelConsumerConnection(connection)) continue;
     // Only non-OAuth connections get their user-chosen name surfaced in the
     // menu heading — see `ChatModelChoice.connectionName`. OAuth providers'

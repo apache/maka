@@ -25,7 +25,11 @@
  * enabled model on every real connection before choosing a repair path.
  */
 
-import { isConnectionReady, isRealConnection } from './connection-readiness.js';
+import {
+  isConnectionReady,
+  isRealConnection,
+  normalizeOpenAiCodexConnection,
+} from './connection-readiness.js';
 import { connectionEnabledModelIds, type LlmConnection } from './llm-connections.js';
 import type { SessionSummary } from './session.js';
 
@@ -110,7 +114,9 @@ export interface DeriveOnboardingStateInput {
  *     ready by a per-connection fix → `blocked: all_connections_unhealthy`.
  */
 export function deriveOnboardingState(input: DeriveOnboardingStateInput): OnboardingState {
-  const realConns = input.connections.filter((conn) => isRealConnection(conn));
+  const realConns = input.connections
+    .filter((connection) => isRealConnection(connection))
+    .map(normalizeOpenAiCodexConnection);
   if (realConns.length === 0) return { kind: 'needs_connection' };
 
   // A persisted workspace default is only a compatibility preference now, not

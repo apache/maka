@@ -320,7 +320,10 @@ function AppShellContent({
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
-  const onboardingActivationCandidate = getOnboardingActivationCandidate(onboarding.snapshot);
+  const onboardingActivationCandidate = getOnboardingActivationCandidate(
+    onboarding.snapshot,
+    sessions.length > 0,
+  );
   const {
     settingsOpen,
     settingsRequestedSection,

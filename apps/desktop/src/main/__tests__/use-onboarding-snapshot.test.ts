@@ -43,7 +43,7 @@ const NEEDS_CONNECTION_SNAPSHOT: OnboardingSnapshot = {
 
 describe('getOnboardingActivationCandidate', () => {
   it('exposes the readiness-checked pair during an unsettled first activation', () => {
-    assert.deepEqual(getOnboardingActivationCandidate(READY_SNAPSHOT), {
+    assert.deepEqual(getOnboardingActivationCandidate(READY_SNAPSHOT, false), {
       llmConnectionSlug: 'a',
       model: 'm',
     });
@@ -51,22 +51,32 @@ describe('getOnboardingActivationCandidate', () => {
 
   it('does not influence ordinary new tasks after workspace history exists', () => {
     assert.equal(
-      getOnboardingActivationCandidate({
-        ...READY_SNAPSHOT,
-        state: { kind: 'ready_with_history', connectionSlug: 'a', model: 'm' },
-      }),
+      getOnboardingActivationCandidate(
+        {
+          ...READY_SNAPSHOT,
+          state: { kind: 'ready_with_history', connectionSlug: 'a', model: 'm' },
+        },
+        false,
+      ),
       undefined,
     );
   });
 
   it('does not influence the composer after onboarding is settled', () => {
     assert.equal(
-      getOnboardingActivationCandidate({
-        ...READY_SNAPSHOT,
-        milestones: [{ id: 'initial_onboarding', skippedAt: 1 }],
-      }),
+      getOnboardingActivationCandidate(
+        {
+          ...READY_SNAPSHOT,
+          milestones: [{ id: 'initial_onboarding', skippedAt: 1 }],
+        },
+        false,
+      ),
       undefined,
     );
+  });
+
+  it('does not trust a stale ready-empty snapshot after local history appears', () => {
+    assert.equal(getOnboardingActivationCandidate(READY_SNAPSHOT, true), undefined);
   });
 });
 

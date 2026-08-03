@@ -64,9 +64,11 @@ export interface OnboardingSnapshotState {
  */
 export function getOnboardingActivationCandidate(
   snapshot: Pick<OnboardingSnapshot, 'state' | 'milestones'> | null,
+  hasWorkspaceHistory: boolean,
 ): { llmConnectionSlug: string; model: string } | undefined {
   if (
     snapshot?.state.kind !== 'ready_empty' ||
+    hasWorkspaceHistory ||
     hasSettledInitialOnboarding(snapshot.milestones)
   ) {
     return undefined;
