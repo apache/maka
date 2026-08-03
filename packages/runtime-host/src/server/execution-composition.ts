@@ -383,7 +383,6 @@ export async function createExecutionRuntimeHostComposition(
     });
     graphClient = new HostAgentGraphCoordinator({
       authority: graphCoordinator,
-      sessions: stores.sessionStore,
       continuity: continuityCoordinator,
     });
     const observeBackendInvalidation = (completion: Promise<void>) => {

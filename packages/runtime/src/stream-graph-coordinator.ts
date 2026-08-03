@@ -12,6 +12,7 @@ import type {
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
+  AgentGraphClientTerminalCursorError,
   decodeAgentGraphIntentClaim,
 } from '@maka/core';
 import type { MakaTool } from './tool-runtime.js';
@@ -151,14 +152,20 @@ export type AgentGraphClientChangedListener = (
   event: AgentGraphClientChangedEvent,
 ) => void | Promise<void>;
 
-export class AgentGraphOperatorNotFoundError extends Error {
-  readonly name = 'AgentGraphOperatorNotFoundError';
+export type AgentGraphClientOperationErrorCode =
+  | 'not_found'
+  | 'session_archived'
+  | 'operation_conflict'
+  | 'invalid_request';
+
+export class AgentGraphClientOperationError extends Error {
+  readonly name = 'AgentGraphClientOperationError';
 
   constructor(
-    readonly graphId: string,
-    readonly operatorId: string,
+    readonly code: AgentGraphClientOperationErrorCode,
+    message: string,
   ) {
-    super(`Agent graph operator ${operatorId} was not found in ${graphId}`);
+    super(message);
   }
 }
 
@@ -235,32 +242,53 @@ export class AgentGraphCoordinator {
   ): Promise<AgentGraphClientSnapshot> {
     await this.#assertRootGraphReader(rootSessionId);
     const graphId = agentGraphIdForRootSession(rootSessionId);
+    let before: ReturnType<typeof decodeAgentGraphTerminalCursor> | undefined;
+    try {
+      before = options.terminalCursor
+        ? decodeAgentGraphTerminalCursor(options.terminalCursor)
+        : undefined;
+    } catch {
+      throw new AgentGraphClientOperationError(
+        'invalid_request',
+        'Agent graph terminal cursor is invalid',
+      );
+    }
+    if (before && before.graphId !== graphId) {
+      throw new AgentGraphClientOperationError(
+        'invalid_request',
+        'Agent graph terminal cursor belongs to another root Session',
+      );
+    }
     const record = await this.#readOrRebuildClientProjection(rootSessionId, graphId);
     const snapshot = decodeMaterializedAgentGraphClientSnapshot(record.payload, {
       rootSessionId,
       graphId,
       snapshotVersion: record.snapshotVersion,
     });
-    const before = options.terminalCursor
-      ? decodeAgentGraphTerminalCursor(options.terminalCursor)
-      : undefined;
-    if (before && before.graphId !== graphId) {
-      throw new Error('Agent graph terminal history cursor belongs to another graph');
+    let terminalPage: Awaited<
+      ReturnType<AgentGraphClientProjectionStore['listAgentGraphClientTerminalActivities']>
+    >;
+    try {
+      terminalPage = await this.#input.controlStore.listAgentGraphClientTerminalActivities(
+        graphId,
+        {
+          limit: AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
+          ...(before
+            ? {
+                before: {
+                  eventTime: before.eventTime,
+                  recordId: before.recordId,
+                },
+              }
+            : {}),
+        },
+      );
+    } catch (error) {
+      if (error instanceof AgentGraphClientTerminalCursorError) {
+        throw new AgentGraphClientOperationError('invalid_request', error.message);
+      }
+      throw error;
     }
-    const terminalPage = await this.#input.controlStore.listAgentGraphClientTerminalActivities(
-      graphId,
-      {
-        limit: AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
-        ...(before
-          ? {
-              before: {
-                eventTime: before.eventTime,
-                recordId: before.recordId,
-              },
-            }
-          : {}),
-      },
-    );
     snapshot.terminalHistory = materializedAgentGraphTerminalHistoryPage(
       graphId,
       terminalPage.records.map((activity) =>
@@ -325,7 +353,10 @@ export class AgentGraphCoordinator {
       throw new Error(`Invalid materialized agent graph projection ${graphId}`);
     }
     if (!operator) {
-      throw new AgentGraphOperatorNotFoundError(graphId, operatorId);
+      throw new AgentGraphClientOperationError(
+        'not_found',
+        `Agent graph operator ${operatorId} was not found in ${graphId}`,
+      );
     }
     const inspection = decodeMaterializedAgentGraphOperatorInspection(operator.payload, {
       rootSessionId,
@@ -920,7 +951,10 @@ export class AgentGraphCoordinator {
   async #assertRootSupervisor(rootSessionId: string): Promise<SessionHeader> {
     const header = await this.#assertRootGraphReader(rootSessionId);
     if (header.isArchived || header.status === 'archived') {
-      throw new Error('Archived Sessions cannot supervise an agent graph');
+      throw new AgentGraphClientOperationError(
+        'session_archived',
+        'Archived Sessions cannot supervise an agent graph',
+      );
     }
     return header;
   }
@@ -928,7 +962,8 @@ export class AgentGraphCoordinator {
   async #assertRootGraphReader(rootSessionId: string): Promise<SessionHeader> {
     if (this.#closed) throw new Error('Agent graph coordinator is closed');
     if (this.#input.rootSessionId && rootSessionId !== this.#input.rootSessionId) {
-      throw new Error(
+      throw new AgentGraphClientOperationError(
+        'operation_conflict',
         `Agent graph coordinator is scoped to root Session ${this.#input.rootSessionId}`,
       );
     }
@@ -937,7 +972,10 @@ export class AgentGraphCoordinator {
       throw new Error(`Session store returned ${header.id}, expected ${rootSessionId}`);
     }
     if (header.subagentParent) {
-      throw new Error('Agent graph client reads are available only to root Sessions');
+      throw new AgentGraphClientOperationError(
+        'operation_conflict',
+        'Agent graph client operations are available only to root Sessions',
+      );
     }
     return header;
   }

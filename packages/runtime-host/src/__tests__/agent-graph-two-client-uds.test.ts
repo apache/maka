@@ -3,7 +3,6 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { SessionHeader } from '@maka/core';
 import {
   agentGraphIdForRootSession,
   type AgentGraphClientChangedListener,
@@ -55,7 +54,6 @@ test('two UDS Clients query and control one Agent graph through Session invalida
       );
       const graph = new HostAgentGraphCoordinator({
         authority,
-        sessions: { readHeaderSnapshot: async () => sessionHeader() },
         continuity,
       });
       return {
@@ -153,6 +151,7 @@ class FakeAgentGraphAuthority implements GraphAuthority {
   }
 
   async stop(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
     this.stopCount += 1;
     this.#snapshot.status = 'stopped';
     for (const listener of this.#listeners) {
@@ -255,31 +254,6 @@ function inspection(source: AgentGraphClientSnapshot): AgentGraphOperatorInspect
       activations: 0,
       records: 0,
     },
-  };
-}
-
-function sessionHeader(): SessionHeader {
-  return {
-    id: ROOT_SESSION_ID,
-    workspaceRoot: '/workspace',
-    cwd: '/workspace',
-    createdAt: 1,
-    lastUsedAt: 1,
-    name: 'Root',
-    titleIsManual: false,
-    isFlagged: false,
-    labels: [],
-    isArchived: false,
-    status: 'active',
-    hasUnread: false,
-    backend: 'fake',
-    llmConnectionSlug: 'fake',
-    connectionLocked: false,
-    model: 'fake',
-    permissionMode: 'explore',
-    collaborationMode: 'agent',
-    orchestrationMode: 'default',
-    schemaVersion: 1,
   };
 }
 

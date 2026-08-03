@@ -1,8 +1,6 @@
-import type { SessionHeader } from '@maka/core/session';
 import {
-  AgentGraphOperatorNotFoundError,
+  AgentGraphClientOperationError,
   agentGraphIdForRootSession,
-  decodeAgentGraphTerminalCursor,
   encodeAgentGraphTerminalCursor,
   type AgentGraphClientChangedEvent,
   type AgentGraphClientOperator as RuntimeAgentGraphClientOperator,
@@ -46,10 +44,6 @@ type AgentGraphAuthority = Pick<
   'getSnapshot' | 'inspectOperator' | 'stop' | 'subscribeAll'
 >;
 
-type SessionReader = {
-  readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
-};
-
 type GraphContinuity = Pick<SessionContinuityCoordinator, 'enqueueAgentGraphChanged'>;
 
 type Mutable<T> = {
@@ -60,25 +54,11 @@ type Mutable<T> = {
       : T[K];
 };
 
-type RootOperationFailureCode =
-  | 'not_found'
-  | 'session_archived'
-  | 'operation_conflict'
-  | 'invalid_request';
+type RootOperationFailureCode = AgentGraphClientOperationError['code'];
 
 type GraphQueryFailureCode =
   | Exclude<RootOperationFailureCode, 'session_archived'>
   | 'persistence_failed';
-
-class RootOperationError extends Error {
-  constructor(
-    readonly code: RootOperationFailureCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'RootOperationError';
-  }
-}
 
 /** Client-facing Runtime Host adapter over the durable Agent Graph read model. */
 export class HostAgentGraphCoordinator {
@@ -89,16 +69,13 @@ export class HostAgentGraphCoordinator {
   };
 
   readonly #authority: AgentGraphAuthority;
-  readonly #sessions: SessionReader;
   #unsubscribe: (() => void) | undefined;
 
   constructor(options: {
     authority: AgentGraphAuthority;
-    sessions: SessionReader;
     continuity: GraphContinuity;
   }) {
     this.#authority = options.authority;
-    this.#sessions = options.sessions;
     this.#unsubscribe = options.authority.subscribeAll((event) =>
       options.continuity.enqueueAgentGraphChanged(projectChangedEvent(event)),
     );
@@ -111,21 +88,6 @@ export class HostAgentGraphCoordinator {
 
   async #query(input: AgentGraphQueryInput): Promise<OperationOutcome<'agent.graph.query'>> {
     try {
-      await this.#assertRoot(input.rootSessionId, true);
-      if (input.terminalCursor) {
-        let cursor: ReturnType<typeof decodeAgentGraphTerminalCursor>;
-        try {
-          cursor = decodeAgentGraphTerminalCursor(input.terminalCursor);
-        } catch {
-          throw new RootOperationError('invalid_request', 'Agent graph terminal cursor is invalid');
-        }
-        if (cursor.graphId !== agentGraphIdForRootSession(input.rootSessionId)) {
-          throw new RootOperationError(
-            'invalid_request',
-            'Agent graph terminal cursor belongs to another root Session',
-          );
-        }
-      }
       const snapshot = await this.#authority.getSnapshot(input.rootSessionId, {
         ...(input.terminalCursor ? { terminalCursor: input.terminalCursor } : {}),
       });
@@ -139,23 +101,18 @@ export class HostAgentGraphCoordinator {
     input: AgentGraphOperatorQueryInput,
   ): Promise<OperationOutcome<'agent.graph.operator.query'>> {
     try {
-      await this.#assertRoot(input.rootSessionId, true);
       const inspection = await this.#authority.inspectOperator(
         input.rootSessionId,
         input.operatorId,
       );
       return { ok: true, result: projectInspection(inspection) };
     } catch (error) {
-      if (error instanceof AgentGraphOperatorNotFoundError) {
-        return failure('not_found', 'Agent graph operator was not found');
-      }
       return graphQueryFailure(error);
     }
   }
 
   async #stop(input: AgentGraphStopInput): Promise<OperationOutcome<'agent.graph.stop'>> {
     try {
-      await this.#assertRoot(input.rootSessionId, false);
       await this.#authority.stop(input.rootSessionId);
       return {
         ok: true,
@@ -165,38 +122,14 @@ export class HostAgentGraphCoordinator {
         },
       };
     } catch (error) {
-      if (error instanceof RootOperationError || isSessionNotFoundError(error)) {
-        const code = error instanceof RootOperationError ? error.code : 'not_found';
+      if (error instanceof AgentGraphClientOperationError || isSessionNotFoundError(error)) {
+        const code = error instanceof AgentGraphClientOperationError ? error.code : 'not_found';
         if (code === 'invalid_request') {
           return failure('internal_failure', 'Agent graph stop failed');
         }
         return failure(code, error instanceof Error ? error.message : 'Session was not found');
       }
       return failure('internal_failure', 'Agent graph stop failed');
-    }
-  }
-
-  async #assertRoot(rootSessionId: string, allowArchived: boolean): Promise<void> {
-    let header: SessionHeader;
-    try {
-      header = await this.#sessions.readHeaderSnapshot(rootSessionId);
-    } catch (error) {
-      if (isSessionNotFoundError(error)) {
-        throw new RootOperationError('not_found', 'Session was not found');
-      }
-      throw error;
-    }
-    if (header.subagentParent) {
-      throw new RootOperationError(
-        'operation_conflict',
-        'Agent graph Client operations require a root Session',
-      );
-    }
-    if (!allowArchived && (header.isArchived || header.status === 'archived')) {
-      throw new RootOperationError(
-        'session_archived',
-        'Archived Sessions cannot stop Agent graph execution',
-      );
     }
   }
 }
@@ -233,19 +166,21 @@ function projectSnapshot(snapshot: RuntimeAgentGraphClientSnapshot): AgentGraphC
       ? {}
       : { latestEventTime: snapshot.latestEventTime }),
     operators,
-    edges: candidateEdges.slice(0, AGENT_GRAPH_MAX_EDGES).map(clone),
-    work: snapshot.work.slice(0, AGENT_GRAPH_MAX_WORK).map(clone),
-    stoppedTargets: snapshot.stoppedTargets.slice(-AGENT_GRAPH_MAX_STOPPED_TARGETS).map(clone),
-    ...(snapshot.finish ? { finish: clone(snapshot.finish) } : {}),
-    claims: snapshot.claims.slice(-AGENT_GRAPH_MAX_CLAIMS).map(clone),
+    edges: candidateEdges.slice(0, AGENT_GRAPH_MAX_EDGES).map(projectEdge),
+    work: snapshot.work.slice(0, AGENT_GRAPH_MAX_WORK).map(projectWork),
+    stoppedTargets: snapshot.stoppedTargets
+      .slice(-AGENT_GRAPH_MAX_STOPPED_TARGETS)
+      .map(projectStoppedTarget),
+    ...(snapshot.finish ? { finish: projectFinish(snapshot.finish) } : {}),
+    claims: snapshot.claims.slice(-AGENT_GRAPH_MAX_CLAIMS).map(projectClaim),
     recentControlDecisions: snapshot.recentControlDecisions
       .slice(-AGENT_GRAPH_MAX_CONTROL_DECISIONS)
-      .map(clone),
-    recentActivity: snapshot.recentActivity.slice(-AGENT_GRAPH_MAX_ACTIVITY).map(clone),
+      .map(projectControlDecision),
+    recentActivity: snapshot.recentActivity.slice(-AGENT_GRAPH_MAX_ACTIVITY).map(projectActivity),
     terminalHistory: {
       records: snapshot.terminalHistory.records
         .slice(0, AGENT_GRAPH_MAX_TERMINAL_ACTIVITY)
-        .map(clone),
+        .map(projectActivity),
       ...(snapshot.terminalHistory.nextCursor
         ? { nextCursor: snapshot.terminalHistory.nextCursor }
         : {}),
@@ -286,12 +221,18 @@ function projectInspection(
     graphId: inspection.graphId,
     snapshotVersion: requireFingerprint(inspection.snapshotVersion),
     operator: projectOperator(inspection.operator),
-    inboundEdges: inspection.inboundEdges.slice(-AGENT_GRAPH_MAX_INSPECTION_EDGES).map(clone),
-    outboundEdges: inspection.outboundEdges.slice(-AGENT_GRAPH_MAX_INSPECTION_EDGES).map(clone),
-    work: inspection.work.slice(-AGENT_GRAPH_MAX_INSPECTION_WORK).map(clone),
-    claims: inspection.claims.slice(-AGENT_GRAPH_MAX_INSPECTION_CLAIMS).map(clone),
-    activations: inspection.activations.slice(-AGENT_GRAPH_MAX_INSPECTION_ACTIVATIONS).map(clone),
-    recentRecords: inspection.recentRecords.slice(-AGENT_GRAPH_MAX_INSPECTION_RECORDS).map(clone),
+    inboundEdges: inspection.inboundEdges.slice(-AGENT_GRAPH_MAX_INSPECTION_EDGES).map(projectEdge),
+    outboundEdges: inspection.outboundEdges
+      .slice(-AGENT_GRAPH_MAX_INSPECTION_EDGES)
+      .map(projectEdge),
+    work: inspection.work.slice(-AGENT_GRAPH_MAX_INSPECTION_WORK).map(projectWork),
+    claims: inspection.claims.slice(-AGENT_GRAPH_MAX_INSPECTION_CLAIMS).map(projectClaim),
+    activations: inspection.activations
+      .slice(-AGENT_GRAPH_MAX_INSPECTION_ACTIVATIONS)
+      .map(projectActivation),
+    recentRecords: inspection.recentRecords
+      .slice(-AGENT_GRAPH_MAX_INSPECTION_RECORDS)
+      .map(projectActivity),
     omitted: {
       inboundEdges:
         inspection.omitted.inboundEdges +
@@ -326,9 +267,13 @@ function projectOperator(
         wait.kind !== 'input_route' ||
         wait.upstreamOperatorIds.length <= AGENT_GRAPH_MAX_INPUT_ROUTE_OPERATORS,
     );
-    const waitingFor = eligibleWaits.slice(0, AGENT_GRAPH_MAX_READINESS_WAITS).map(clone);
+    const waitingFor = eligibleWaits
+      .slice(0, AGENT_GRAPH_MAX_READINESS_WAITS)
+      .map(projectReadinessWait);
     return {
-      ...clone(entry),
+      readinessId: entry.readinessId,
+      policyKind: entry.policyKind,
+      status: entry.status,
       waitingFor,
       omittedWaitingFor: entry.omittedWaitingFor + entry.waitingFor.length - waitingFor.length,
     };
@@ -346,7 +291,12 @@ function projectOperator(
   const outboundEdgeIds = operator.outboundEdgeIds.slice(-AGENT_GRAPH_MAX_OPERATOR_REFS);
   const scheduledWorkIds = operator.scheduledWorkIds.slice(-AGENT_GRAPH_MAX_OPERATOR_REFS);
   return {
-    ...clone(operator),
+    operatorId: operator.operatorId,
+    childSessionId: operator.childSessionId,
+    provisionId: operator.provisionId,
+    agentId: operator.agentId,
+    provisionedAt: operator.provisionedAt,
+    status: operator.status,
     inboundEdgeIds,
     outboundEdgeIds,
     scheduledWorkIds,
@@ -363,6 +313,160 @@ function projectOperator(
       readiness: operator.omitted.readiness + operator.readiness.length - readiness.length,
       readinessWaits: operator.omitted.readinessWaits + extraOmittedWaits + omittedReadinessWaits,
     },
+    ...(operator.currentActivation
+      ? {
+          currentActivation: {
+            activationId: operator.currentActivation.activationId,
+            status: operator.currentActivation.status,
+            recordCount: operator.currentActivation.recordCount,
+            firstEventTime: operator.currentActivation.firstEventTime,
+            lastEventTime: operator.currentActivation.lastEventTime,
+            ...(operator.currentActivation.terminalRecordId
+              ? { terminalRecordId: operator.currentActivation.terminalRecordId }
+              : {}),
+            run: projectRunRef(operator.currentActivation.run),
+          },
+        }
+      : {}),
+  };
+}
+
+function projectReadinessWait(
+  wait: RuntimeAgentGraphClientOperator['readiness'][number]['waitingFor'][number],
+): Mutable<AgentGraphClientOperator['readiness'][number]['waitingFor'][number]> {
+  return wait.kind === 'input_route'
+    ? { kind: wait.kind, upstreamOperatorIds: [...wait.upstreamOperatorIds] }
+    : {
+        kind: wait.kind,
+        operatorId: wait.operatorId,
+        activationId: wait.activationId,
+      };
+}
+
+function projectEdge(
+  edge: RuntimeAgentGraphClientSnapshot['edges'][number],
+): Mutable<AgentGraphClientSnapshot['edges'][number]> {
+  return {
+    edgeId: edge.edgeId,
+    fromOperatorId: edge.fromOperatorId,
+    toOperatorId: edge.toOperatorId,
+  };
+}
+
+function projectWork(
+  work: RuntimeAgentGraphClientSnapshot['work'][number],
+): Mutable<AgentGraphClientSnapshot['work'][number]> {
+  return {
+    workId: work.workId,
+    target:
+      work.target.kind === 'agent'
+        ? { kind: work.target.kind, agentId: work.target.agentId }
+        : { kind: work.target.kind, operatorId: work.target.operatorId },
+    inputIds: [...work.inputIds],
+    ...(work.replaces ? { replaces: work.replaces } : {}),
+    status: work.status,
+    instructionPreview: work.instructionPreview,
+    instructionTruncated: work.instructionTruncated,
+    revision: work.revision,
+    committedAt: work.committedAt,
+  };
+}
+
+function projectStoppedTarget(
+  target: RuntimeAgentGraphClientSnapshot['stoppedTargets'][number],
+): Mutable<AgentGraphClientSnapshot['stoppedTargets'][number]> {
+  return {
+    targetId: target.targetId,
+    reason: target.reason,
+    revision: target.revision,
+    committedAt: target.committedAt,
+  };
+}
+
+function projectFinish(
+  finish: NonNullable<RuntimeAgentGraphClientSnapshot['finish']>,
+): Mutable<NonNullable<AgentGraphClientSnapshot['finish']>> {
+  return {
+    resultIds: [...finish.resultIds],
+    reason: finish.reason,
+    revision: finish.revision,
+    committedAt: finish.committedAt,
+  };
+}
+
+function projectClaim(
+  claim: RuntimeAgentGraphClientSnapshot['claims'][number],
+): Mutable<AgentGraphClientSnapshot['claims'][number]> {
+  return {
+    claimId: claim.claimId,
+    intentId: claim.intentId,
+    operatorId: claim.operatorId,
+    childSessionId: claim.childSessionId,
+    run: projectRunRef(claim.run),
+    admissionState: claim.admissionState,
+    claimedAt: claim.claimedAt,
+  };
+}
+
+function projectControlDecision(
+  decision: RuntimeAgentGraphClientSnapshot['recentControlDecisions'][number],
+): Mutable<AgentGraphClientSnapshot['recentControlDecisions'][number]> {
+  return {
+    updateId: decision.updateId,
+    revision: decision.revision,
+    committedAt: decision.committedAt,
+    source: {
+      sessionId: decision.source.sessionId,
+      agentRunId: decision.source.agentRunId,
+      turnId: decision.source.turnId,
+      toolCallId: decision.source.toolCallId,
+    },
+    addedWorkIds: [...decision.addedWorkIds],
+    stoppedTargetIds: [...decision.stoppedTargetIds],
+    selectedResultIds: [...decision.selectedResultIds],
+  };
+}
+
+function projectActivity(
+  activity: RuntimeAgentGraphClientSnapshot['recentActivity'][number],
+): Mutable<AgentGraphClientSnapshot['recentActivity'][number]> {
+  return {
+    recordId: activity.recordId,
+    operatorId: activity.operatorId,
+    activationId: activity.activationId,
+    eventTime: activity.eventTime,
+    facets: [...activity.facets],
+    signals: activity.signals.map((signal) =>
+      signal.kind === 'attention'
+        ? { kind: signal.kind, reason: signal.reason }
+        : { kind: signal.kind, status: signal.status },
+    ),
+    run: projectRunRef(activity.run),
+  };
+}
+
+function projectActivation(
+  activation: RuntimeAgentGraphOperatorInspection['activations'][number],
+): Mutable<AgentGraphOperatorInspection['activations'][number]> {
+  return {
+    activationId: activation.activationId,
+    status: activation.status,
+    recordCount: activation.recordCount,
+    firstEventTime: activation.firstEventTime,
+    lastEventTime: activation.lastEventTime,
+    lastRecordId: activation.lastRecordId,
+    ...(activation.terminalRecordId ? { terminalRecordId: activation.terminalRecordId } : {}),
+    run: projectRunRef(activation.run),
+  };
+}
+
+function projectRunRef(
+  run: RuntimeAgentGraphClientSnapshot['recentActivity'][number]['run'],
+): Mutable<AgentGraphClientSnapshot['recentActivity'][number]['run']> {
+  return {
+    sessionId: run.sessionId,
+    agentRunId: run.agentRunId,
+    ...(run.turnId ? { turnId: run.turnId } : {}),
   };
 }
 
@@ -476,7 +580,7 @@ function graphQueryFailure(error: unknown): {
   ok: false;
   error: { code: GraphQueryFailureCode; message: string };
 } {
-  if (error instanceof RootOperationError) {
+  if (error instanceof AgentGraphClientOperationError) {
     return error.code === 'session_archived'
       ? failure('operation_conflict', error.message)
       : failure(error.code, error.message);
@@ -501,8 +605,4 @@ function requireFingerprint(value: string): `sha256:${string}` {
 
 function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
-}
-
-function clone<T>(value: T): Mutable<T> {
-  return structuredClone(value) as Mutable<T>;
 }

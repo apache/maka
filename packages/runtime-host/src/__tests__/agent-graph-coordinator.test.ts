@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { SessionHeader } from '@maka/core';
 import {
-  AgentGraphOperatorNotFoundError,
+  AgentGraphClientOperationError,
   agentGraphIdForRootSession,
   decodeAgentGraphTerminalCursor,
   type AgentGraphClientActivity,
@@ -47,7 +46,6 @@ describe('Host Agent Graph coordinator', () => {
           };
         },
       } satisfies GraphAuthority,
-      sessions: { readHeaderSnapshot: async () => rootHeader() },
       continuity: { enqueueAgentGraphChanged: (event) => invalidations.push(event) },
     });
 
@@ -96,33 +94,29 @@ describe('Host Agent Graph coordinator', () => {
   });
 
   test('returns stable root, archive, operator, and cursor failures', async () => {
-    const snapshot = graphSnapshot();
     const authority = {
-      getSnapshot: async () => snapshot,
-      inspectOperator: async () => {
-        throw new AgentGraphOperatorNotFoundError(snapshot.graphId, 'missing-operator');
+      getSnapshot: async (_rootSessionId: string, options?: { terminalCursor?: string }) => {
+        throw new AgentGraphClientOperationError(
+          options?.terminalCursor ? 'invalid_request' : 'operation_conflict',
+          options?.terminalCursor
+            ? 'Agent graph terminal activity cursor is stale or invalid'
+            : 'Agent graph client operations are available only to root Sessions',
+        );
       },
-      stop: async () => undefined,
+      inspectOperator: async () => {
+        throw new AgentGraphClientOperationError('not_found', 'Agent graph operator was not found');
+      },
+      stop: async () => {
+        throw new AgentGraphClientOperationError(
+          'session_archived',
+          'Archived Sessions cannot supervise an agent graph',
+        );
+      },
       subscribeAll: () => () => undefined,
     } satisfies GraphAuthority;
 
     const child = new HostAgentGraphCoordinator({
       authority,
-      sessions: {
-        readHeaderSnapshot: async () =>
-          rootHeader({
-            subagentParent: {
-              kind: 'subagent',
-              parentSessionId: 'parent-1',
-              spawnedBy: {
-                parentRunId: 'parent-run',
-                parentTurnId: 'parent-turn',
-                toolCallId: 'tool-call',
-              },
-              lifecycle: 'foreground',
-            },
-          }),
-      },
       continuity: { enqueueAgentGraphChanged: () => undefined },
     });
     const childQuery = await child.handlers['agent.graph.query'](
@@ -131,44 +125,41 @@ describe('Host Agent Graph coordinator', () => {
     );
     assert.equal(childQuery.ok, false);
     if (!childQuery.ok) assert.equal(childQuery.error.code, 'operation_conflict');
-    child.close();
 
-    const archived = new HostAgentGraphCoordinator({
-      authority,
-      sessions: {
-        readHeaderSnapshot: async () =>
-          rootHeader({ isArchived: true, status: 'archived', archivedAt: 2 }),
-      },
-      continuity: { enqueueAgentGraphChanged: () => undefined },
-    });
-    const archivedStop = await archived.handlers['agent.graph.stop'](
+    const archivedStop = await child.handlers['agent.graph.stop'](
       { rootSessionId: 'root-1' },
       context(),
     );
     assert.equal(archivedStop.ok, false);
     if (!archivedStop.ok) assert.equal(archivedStop.error.code, 'session_archived');
 
-    const missingOperator = await archived.handlers['agent.graph.operator.query'](
+    const missingOperator = await child.handlers['agent.graph.operator.query'](
       { rootSessionId: 'root-1', operatorId: 'missing-operator' },
       context(),
     );
     assert.equal(missingOperator.ok, false);
     if (!missingOperator.ok) assert.equal(missingOperator.error.code, 'not_found');
 
-    const invalidCursor = await archived.handlers['agent.graph.query'](
+    const invalidCursor = await child.handlers['agent.graph.query'](
       { rootSessionId: 'root-1', terminalCursor: 'Y3Vyc29y' },
       context(),
     );
     assert.equal(invalidCursor.ok, false);
     if (!invalidCursor.ok) assert.equal(invalidCursor.error.code, 'invalid_request');
-    archived.close();
+    child.close();
   });
 
   test('bounds large snapshots while preserving omission and terminal continuation', () => {
     const source = graphSnapshot();
-    source.operators = Array.from({ length: 40 }, (_, index) =>
-      graphOperator(`operator-${index}`, index),
-    );
+    source.operators = Array.from({ length: 40 }, (_, index) => {
+      const operator = graphOperator(`operator-${index}`, index);
+      const status = index < 8 ? ('running' as const) : ('completed' as const);
+      return {
+        ...operator,
+        status,
+        currentActivation: { ...operator.currentActivation, status },
+      };
+    });
     source.edges = Array.from({ length: 200 }, (_, index) => ({
       edgeId: `edge-${index}`,
       fromOperatorId: `operator-${index % 40}`,
@@ -176,15 +167,38 @@ describe('Host Agent Graph coordinator', () => {
     }));
     source.recentActivity = Array.from({ length: 64 }, (_, index) => activity(index));
     source.terminalHistory = {
-      records: Array.from({ length: 64 }, (_, index) => terminalActivity(index)),
+      records: Array.from({ length: 64 }, (_, index) => terminalActivity(63 - index)),
     };
 
     const projected = projectAgentGraphClientSnapshot(source);
     assert.ok(Buffer.byteLength(JSON.stringify(projected), 'utf8') <= AGENT_GRAPH_RESULT_MAX_BYTES);
     assert.doesNotThrow(() => decodeAgentGraphClientSnapshot(projected));
-    assert.ok(projected.omitted.operators >= 8);
-    assert.ok(projected.omitted.edges > 0);
-    assert.ok(projected.omitted.recentActivity > 0);
+    assert.equal(projected.operators.length + projected.omitted.operators, source.operators.length);
+    assert.equal(projected.edges.length + projected.omitted.edges, source.edges.length);
+    assert.equal(
+      projected.recentActivity.length + projected.omitted.recentActivity,
+      source.recentActivity.length,
+    );
+    assert.deepEqual(
+      projected.operators.slice(0, 8).map((operator) => operator.operatorId),
+      Array.from({ length: 8 }, (_, index) => `operator-${index}`),
+      'byte fitting must retain every live operator before terminal operators',
+    );
+    assert.deepEqual(
+      projected.recentActivity.map((record) => record.recordId),
+      source.recentActivity
+        .slice(source.recentActivity.length - projected.recentActivity.length)
+        .map((record) => record.recordId),
+      'byte fitting must retain the latest recent activity',
+    );
+    const firstOperator = projected.operators[0]!;
+    assert.equal(
+      firstOperator.inboundEdgeIds.length + firstOperator.omitted.inboundEdgeIds,
+      source.operators[0]!.inboundEdgeIds.length,
+    );
+    assert.deepEqual(firstOperator.readiness[0]?.waitingFor, []);
+    assert.equal(firstOperator.readiness[0]?.omittedWaitingFor, 1);
+    assert.equal(firstOperator.omitted.readinessWaits, 1);
     assert.ok(projected.terminalHistory.records.length > 0);
     assert.ok(projected.terminalHistory.nextCursor);
     const cursor = decodeAgentGraphTerminalCursor(projected.terminalHistory.nextCursor!);
@@ -209,10 +223,44 @@ describe('Host Agent Graph coordinator', () => {
     const projected = projectAgentGraphOperatorInspection(source);
     assert.ok(Buffer.byteLength(JSON.stringify(projected), 'utf8') <= AGENT_GRAPH_RESULT_MAX_BYTES);
     assert.equal(projected.operator.operatorId, 'operator-1');
-    assert.ok(projected.omitted.inboundEdges >= 36);
-    assert.ok(projected.omitted.outboundEdges >= 36);
-    assert.ok(projected.omitted.records >= 96);
+    assert.equal(
+      projected.inboundEdges.length + projected.omitted.inboundEdges,
+      source.inboundEdges.length,
+    );
+    assert.equal(
+      projected.outboundEdges.length + projected.omitted.outboundEdges,
+      source.outboundEdges.length,
+    );
+    assert.equal(
+      projected.recentRecords.length + projected.omitted.records,
+      source.recentRecords.length,
+    );
+    assert.deepEqual(
+      projected.inboundEdges.map((edge) => edge.edgeId),
+      source.inboundEdges
+        .slice(source.inboundEdges.length - projected.inboundEdges.length)
+        .map((edge) => edge.edgeId),
+    );
+    assert.deepEqual(
+      projected.recentRecords.map((record) => record.recordId),
+      source.recentRecords
+        .slice(source.recentRecords.length - projected.recentRecords.length)
+        .map((record) => record.recordId),
+    );
     assert.doesNotThrow(() => decodeAgentGraphOperatorInspection(projected));
+  });
+
+  test('projects only allowlisted Runtime fields onto the wire', () => {
+    const source = graphSnapshot();
+    Object.assign(source.operators[0]!, { privatePrompt: 'operator-secret' });
+    Object.assign(source.operators[0]!.readiness[0]!, {
+      privatePolicy: 'readiness-secret',
+    });
+    Object.assign(source.recentActivity[0]!, { privatePayload: 'activity-secret' });
+
+    const projected = projectAgentGraphClientSnapshot(source);
+    assert.equal(JSON.stringify(projected).includes('secret'), false);
+    assert.doesNotThrow(() => decodeAgentGraphClientSnapshot(projected));
   });
 });
 
@@ -350,20 +398,6 @@ function terminalActivity(index: number): AgentGraphClientActivity {
     facets: ['completed'],
     signals: [{ kind: 'terminal', status: 'completed' }],
   };
-}
-
-function rootHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
-  return {
-    id: 'root-1',
-    label: 'Root',
-    model: 'fake',
-    provider: 'fake',
-    createdAt: 1,
-    lastUsedAt: 1,
-    status: 'active',
-    isArchived: false,
-    ...overrides,
-  } as SessionHeader;
 }
 
 function context(): ConnectionContext {

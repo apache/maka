@@ -29,10 +29,12 @@ import { SessionActivityRegistry } from '../goal-turn-lifecycle.js';
 import { AgentGraphSupervisorWakeCoordinator } from '../agent-graph-supervisor-wake.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 import {
+  AgentGraphClientOperationError,
   AgentGraphCoordinator,
   agentGraphIdForRootSession,
   type AgentGraphCoordinatorInput,
 } from '../stream-graph-coordinator.js';
+import { encodeAgentGraphTerminalCursor } from '../stream-graph-read-model.js';
 import {
   UPDATE_AGENT_GRAPH_TOOL_NAME,
   YIELD_AGENT_GRAPH_TOOL_NAME,
@@ -263,13 +265,32 @@ describe('host-managed agent graph coordinator', () => {
       assert.equal(inspection.claims.length, 1);
       assert.equal(inspection.activations.length, 1);
       assert.deepEqual(delayedControlStore.projectionReadCounts(), {
+        snapshot: readsBeforeInspection.snapshot + 1,
         composite: readsBeforeInspection.composite + 1,
         operator: readsBeforeInspection.operator,
+        terminal: readsBeforeInspection.terminal,
       });
       assert.equal(
         graphRuntimeHistoryReads,
         historyReadsBeforeClient,
         'client reads must use the materialized SQLite projection',
+      );
+      const readsBeforeInvalidCursor = delayedControlStore.projectionReadCounts();
+      const commitsBeforeInvalidCursor = delayedControlStore.projectionCommits.length;
+      await assert.rejects(
+        coordinator.getSnapshot(rootSession.id, { terminalCursor: 'invalid-cursor' }),
+        (error: unknown) =>
+          error instanceof AgentGraphClientOperationError && error.code === 'invalid_request',
+      );
+      assert.deepEqual(
+        delayedControlStore.projectionReadCounts(),
+        readsBeforeInvalidCursor,
+        'invalid cursors must fail before reading or repairing the materialized projection',
+      );
+      assert.equal(
+        delayedControlStore.projectionCommits.length,
+        commitsBeforeInvalidCursor,
+        'invalid cursors must fail before committing a repaired materialized projection',
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.ok(clientEvents.includes('reconciled'));
@@ -294,6 +315,16 @@ describe('host-managed agent graph coordinator', () => {
         ).records.length,
         1,
         'the authoritative RuntimeEvent fold must populate terminal history',
+      );
+      await assert.rejects(
+        coordinator.getSnapshot(rootSession.id, {
+          terminalCursor: encodeAgentGraphTerminalCursor(graphId, {
+            recordId: 'missing-terminal-record',
+            eventTime: 1,
+          }),
+        }),
+        (error: unknown) =>
+          error instanceof AgentGraphClientOperationError && error.code === 'invalid_request',
       );
       await assert.rejects(
         coordinator.toolsForSession(childSessions[0]!.id),
@@ -922,7 +953,12 @@ function createCoordinator(input: {
 function createDelayableControlStore(store: ReturnType<typeof createSqliteSessionMetadataStore>): {
   store: ReturnType<typeof createSqliteSessionMetadataStore>;
   projectionCommits: Array<Parameters<typeof store.commitAgentGraphClientProjection>[0]>;
-  projectionReadCounts(): { composite: number; operator: number };
+  projectionReadCounts(): {
+    snapshot: number;
+    composite: number;
+    operator: number;
+    terminal: number;
+  };
   failProjectionCommits(error: unknown): void;
   failNextProjectionCommits(count: number, error: unknown): void;
   holdNextCommit(): { started: Promise<void>; release(): void };
@@ -936,8 +972,10 @@ function createDelayableControlStore(store: ReturnType<typeof createSqliteSessio
   const projectionCommits: Array<Parameters<typeof store.commitAgentGraphClientProjection>[0]> = [];
   let projectionFailure: unknown;
   let remainingProjectionFailures: number | 'always' = 0;
+  let snapshotProjectionReads = 0;
   let compositeProjectionReads = 0;
   let operatorProjectionReads = 0;
+  let terminalActivityReads = 0;
   const proxy = new Proxy(store, {
     get(target, property) {
       if (property === 'commitAgentGraphScheduleUpdate') {
@@ -980,6 +1018,20 @@ function createDelayableControlStore(store: ReturnType<typeof createSqliteSessio
           return target.readAgentGraphClientOperatorProjection(...args);
         };
       }
+      if (property === 'readAgentGraphClientProjection') {
+        return async (...args: Parameters<typeof target.readAgentGraphClientProjection>) => {
+          snapshotProjectionReads += 1;
+          return target.readAgentGraphClientProjection(...args);
+        };
+      }
+      if (property === 'listAgentGraphClientTerminalActivities') {
+        return async (
+          ...args: Parameters<typeof target.listAgentGraphClientTerminalActivities>
+        ) => {
+          terminalActivityReads += 1;
+          return target.listAgentGraphClientTerminalActivities(...args);
+        };
+      }
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },
@@ -988,8 +1040,10 @@ function createDelayableControlStore(store: ReturnType<typeof createSqliteSessio
     store: proxy,
     projectionCommits,
     projectionReadCounts: () => ({
+      snapshot: snapshotProjectionReads,
       composite: compositeProjectionReads,
       operator: operatorProjectionReads,
+      terminal: terminalActivityReads,
     }),
     failProjectionCommits(error) {
       projectionFailure = error;

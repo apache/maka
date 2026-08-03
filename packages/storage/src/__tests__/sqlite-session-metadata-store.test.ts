@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import {
+  AgentGraphClientTerminalCursorError,
   canReadPath,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
@@ -2318,7 +2319,7 @@ describe('SQLite agent graph client projections', () => {
           limit: 2,
           before: { eventTime: 99, recordId: 'record-2' },
         }),
-        /stale or invalid/,
+        (error: unknown) => error instanceof AgentGraphClientTerminalCursorError,
       );
 
       await store.commitAgentGraphClientProjection({

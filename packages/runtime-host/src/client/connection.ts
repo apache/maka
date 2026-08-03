@@ -723,9 +723,10 @@ function requireTimeout(value: number, label: string): number {
 
 function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number | undefined {
   switch (operation) {
+    case 'agent.graph.stop':
     case 'connection.models.fetch':
     case 'connection.test.run':
-      // Completion effects own provider deadlines and may wait behind same-connection FIFO work.
+      // Completion effects own their deadlines and may wait for admitted work to settle.
       return undefined;
     default:
       return DEFAULT_REQUEST_TIMEOUT_MS;

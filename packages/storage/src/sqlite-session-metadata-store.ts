@@ -7,6 +7,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
+  AgentGraphClientTerminalCursorError,
   assessSandboxBoundaryExpansion,
   assertExecutionBoundaryCapacity,
   assertAgentGraphScheduleUpdateRequest,
@@ -2141,7 +2142,9 @@ export class SqliteSessionMetadataStore {
         `)
         .get(graphId, input.before.recordId) as { eventTime?: unknown } | undefined;
       if (cursor?.eventTime !== input.before.eventTime) {
-        throw new Error('Agent graph terminal activity cursor is stale or invalid');
+        throw new AgentGraphClientTerminalCursorError(
+          'Agent graph terminal activity cursor is stale or invalid',
+        );
       }
     }
     const rows = this.db
