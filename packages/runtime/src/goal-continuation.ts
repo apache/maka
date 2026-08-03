@@ -122,6 +122,30 @@ export type GoalObservedTurnStart =
   | { kind: 'registered'; settle: GoalObservedTurnSettler }
   | { kind: 'unavailable'; reason: string };
 
+/**
+ * Why a turn does not hold the right to change its session's goal.
+ *
+ * Only `goal_changed` describes a race. The rest are settled facts about this
+ * turn that no later call within it can change, which is the distinction a
+ * refusal has to carry: telling a caller to look again and retry is only honest
+ * when looking again can produce a different answer.
+ */
+export type GoalControlDecline =
+  | /** This turn was never registered under a Goal boundary, or its registration is gone. */
+  'turn_not_registered'
+  | /** Goal continuation is shutting down. */ 'coordinator_disposed'
+  | /** This turn already armed a goal. */ 'goal_already_armed'
+  | /** This turn started before the goal it is trying to change existed. */ 'goal_not_observed'
+  | /** The goal generation this turn observed is no longer the current one. */ 'goal_changed';
+
+export type GoalControlStanding =
+  | { kind: 'held' }
+  | { kind: 'declined'; reason: GoalControlDecline };
+
+function declined(reason: GoalControlDecline): GoalControlStanding {
+  return { kind: 'declined', reason };
+}
+
 export class GoalContinuationCoordinator {
   private readonly lanes = new Map<string, SessionLane>();
   private readonly activeDrains = new Set<Promise<void>>();
@@ -181,23 +205,51 @@ export class GoalContinuationCoordinator {
     };
   }
 
+  /**
+   * Why this turn may not arm a Goal, or that it may.
+   *
+   * Split out because the refusal a model reads has to name a cause. Every
+   * check below used to collapse into one `undefined`, and the sentence built
+   * from it asserted the one cause that is recoverable — a concurrent change —
+   * and told the caller to look and try again. For the other causes there is
+   * nothing to look at: the turn is not registered, or a later turn owns the
+   * lane, and no amount of re-reading changes that within this turn.
+   */
+  activationStanding(sessionId: string, turnId: string): GoalControlStanding {
+    const lane = this.lanes.get(sessionId);
+    const registration = lane?.turns.get(turnId);
+    if (!lane || !registration) return declined('turn_not_registered');
+    if (!this.isCurrent(lane)) return declined('coordinator_disposed');
+    if (registration.controlLease !== undefined) return declined('goal_already_armed');
+    if (this.deps.goalManager.getControlLease(sessionId) !== registration.observedControlLease) {
+      return declined('goal_changed');
+    }
+    return { kind: 'held' };
+  }
+
+  /** The same question for a mutation of the generation this turn observed. */
+  mutationStanding(sessionId: string, turnId: string): GoalControlStanding {
+    const lane = this.lanes.get(sessionId);
+    const registration = lane?.turns.get(turnId);
+    if (!lane || !registration) return declined('turn_not_registered');
+    if (!this.isCurrent(lane)) return declined('coordinator_disposed');
+    const controlLease = registration.controlLease ?? registration.observedControlLease;
+    if (!controlLease) return declined('goal_not_observed');
+    if (!this.deps.goalManager.matchesControlLease(sessionId, controlLease)) {
+      return declined('goal_changed');
+    }
+    return { kind: 'held' };
+  }
+
   /** Execute and bind one Goal activation only while this exact turn owns the right to do so. */
   activateGoal(
     sessionId: string,
     turnId: string,
     activate: () => GoalState,
   ): GoalState | undefined {
-    const lane = this.lanes.get(sessionId);
-    const registration = lane?.turns.get(turnId);
-    if (
-      !lane ||
-      !this.isCurrent(lane) ||
-      !registration ||
-      registration.controlLease !== undefined ||
-      this.deps.goalManager.getControlLease(sessionId) !== registration.observedControlLease
-    ) {
-      return undefined;
-    }
+    if (this.activationStanding(sessionId, turnId).kind !== 'held') return undefined;
+    const registration = this.lanes.get(sessionId)?.turns.get(turnId);
+    if (!registration) return undefined;
     const goal = activate();
     registration.controlLease = this.deps.goalManager.getControlLease(sessionId);
     if (registration.checkpoint) registration.checkpoint = goalCheckpoint(goal);
@@ -206,18 +258,11 @@ export class GoalContinuationCoordinator {
 
   /** Mutate the exact Goal generation observed by this turn. */
   mutateGoal(sessionId: string, turnId: string, mutate: () => GoalState): GoalState | undefined {
+    if (this.mutationStanding(sessionId, turnId).kind !== 'held') return undefined;
     const lane = this.lanes.get(sessionId);
     const registration = lane?.turns.get(turnId);
     const controlLease = registration?.controlLease ?? registration?.observedControlLease;
-    if (
-      !lane ||
-      !this.isCurrent(lane) ||
-      !registration ||
-      !controlLease ||
-      !this.deps.goalManager.matchesControlLease(sessionId, controlLease)
-    ) {
-      return undefined;
-    }
+    if (!lane || !registration || !controlLease) return undefined;
 
     const goal = mutate();
     this.abortEvaluation(lane, 'Goal lifecycle changed during evaluation');

@@ -1567,6 +1567,8 @@ export {
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
+  GoalControlDecline,
+  GoalControlStanding,
   GoalObservedTurnStart,
   GoalObservedTurnSettler,
   GoalSessionCloseOperation,

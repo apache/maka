@@ -2132,8 +2132,11 @@ describe('ShellRunProcessManager', () => {
               pty: true,
             }),
           ),
-        // Names the tool that frees a slot, which the old wording did not.
-        /No free interactive \(PTY\) background task slot: 1 are already running.*StopBackgroundTask/s,
+        // Names the tool that frees a slot, which the old wording did not —
+        // and offers it as a condition rather than a promise, because the
+        // counter is manager-wide while StopBackgroundTask takes a
+        // session-scoped ref.
+        /No free interactive \(PTY\) background task slot: the runtime is at its limit of 1 .*StopBackgroundTask if you started any, or wait for a running task to finish/s,
       );
 
       const pipeRun = await manager.runBackgroundBash(
@@ -2154,7 +2157,7 @@ describe('ShellRunProcessManager', () => {
               command: waitForeverCommand(),
             }),
           ),
-        /No free background task slot: 2 are already running.*StopBackgroundTask/s,
+        /No free background task slot: the runtime is at its limit of 2 .*StopBackgroundTask if you started any, or wait for a running task to finish/s,
       );
 
       await manager.stopBackgroundTask('session-1', ptyRun.ref, NO_ABORT);

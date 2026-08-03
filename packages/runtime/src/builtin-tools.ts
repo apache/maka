@@ -73,18 +73,42 @@ import {
 const GREP_TIMEOUT_MS = 120_000;
 
 /**
- * The filesystem worker answered with a different operation's result than the
- * one that was requested. Naming the worker told the model about an internal
- * component it cannot address, and the wording read like an argument
- * complaint — on Edit the likeliest reaction was another `old_string` guess,
- * which can never fix this. Say what did not happen, that the arguments were
- * not the cause, and what to do next.
+ * The filesystem worker answered with a well-formed result of a different
+ * operation than the one that was requested.
+ *
+ * Naming the worker told the model about an internal component it cannot
+ * address, and the original wording read like an argument complaint — on Edit
+ * the likeliest reaction was another `old_string` guess, which can never fix
+ * this. But the replacement has to be careful about two things it cannot say.
+ *
+ * It cannot say the write did not land. Real failures throw; this branch fires
+ * on a mislabelled success, and a mislabelled success is still a success as far
+ * as the disk is concerned. "Nothing was written to disk" is a claim about a
+ * file this code did not look at.
+ *
+ * And it cannot phrase a failed read as an empty one. "Grep could not be
+ * completed inside Maka, so no matches were produced" reads as a search that
+ * ran and found nothing, and a model that takes it that way concludes the
+ * pattern is absent from the repository — the opposite of what happened.
+ *
+ * So a read says no result came back, and says what that does not mean. A write
+ * says Maka cannot tell what happened to the file, and sends the model to look
+ * rather than to retry a call that may have already taken effect.
  */
-function internalFilesystemFailure(tool: string, unchanged: string, extra?: string): Error {
+function internalFilesystemReadFailure(tool: string, missing: string, notMeaning: string): Error {
   return new Error(
-    `${tool} could not be completed inside Maka, so ${unchanged}. ` +
-      `This is an internal failure, not a problem with your arguments${extra ? ` — ${extra}` : ''}. ` +
+    `${tool} could not be completed inside Maka, so ${missing}. ` +
+      `This is an internal failure, not a problem with your arguments, and it does not mean ${notMeaning}. ` +
       `Retry the same ${tool} call once; if it fails again, use Bash to do the same work.`,
+  );
+}
+
+function internalFilesystemWriteFailure(tool: string, subject: string, extra?: string): Error {
+  return new Error(
+    `${tool} could not be completed inside Maka. Maka cannot tell whether ${subject}, ` +
+      `so treat the file as being in an unknown state. ` +
+      `This is an internal failure, not a problem with your arguments${extra ? ` — ${extra}` : ''}. ` +
+      `Read the file to find out what it now contains before writing to it again.`,
   );
 }
 
@@ -291,7 +315,12 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             });
             return { kind: 'image' as const, mimeType: result.mimeType, ref };
           }
-          if (result.kind !== 'read') throw internalFilesystemFailure('Read', 'nothing was read');
+          if (result.kind !== 'read')
+            throw internalFilesystemReadFailure(
+              'Read',
+              'no file content came back',
+              'the file is empty or missing',
+            );
           return { content: result.content };
         }
         const { path: resolvedPath } = await executor.resolveExistingPath({
@@ -355,7 +384,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'write')
-              throw internalFilesystemFailure('Write', 'nothing was written to disk');
+              throw internalFilesystemWriteFailure('Write', 'the file was written');
             return { ok: result.ok, path: result.path, bytes: result.bytes };
           }
           const { path: resolvedPath } = await executor.resolveWritablePath({
@@ -407,9 +436,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'edit')
-              throw internalFilesystemFailure(
+              throw internalFilesystemWriteFailure(
                 'Edit',
-                'the file is unchanged',
+                'the edit was applied',
                 'a different old_string will not help',
               );
             return {
@@ -484,7 +513,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'format_json') {
-              throw internalFilesystemFailure('FormatJson', 'the file is unchanged');
+              throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
             }
             return result;
           }
@@ -564,7 +593,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
           });
           if (result.kind !== 'glob')
-            throw internalFilesystemFailure('Glob', 'no file list was produced');
+            throw internalFilesystemReadFailure(
+              'Glob',
+              'no file list came back',
+              'no files match the pattern',
+            );
           return { files: result.files };
         }
         const { path: base } = await executor.resolveExistingPath({
@@ -607,7 +640,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             ...(abortSignal ? { abortSignal } : {}),
           });
           if (result.kind !== 'grep')
-            throw internalFilesystemFailure('Grep', 'no matches were produced');
+            throw internalFilesystemReadFailure(
+              'Grep',
+              'no search result came back',
+              'the pattern is absent',
+            );
           return { matches: result.matches };
         }
         const { path: searchPath } = await executor.resolveExistingPath({

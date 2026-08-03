@@ -1731,16 +1731,26 @@ export class ShellRunProcessManager
   }
 
   private reserveSlot(mode: ShellMode): ShellRunSlotReservation {
+    // The counters are manager-wide and `StopBackgroundTask` takes a
+    // session-scoped ref, so the session that hits the cap may own none of the
+    // runs holding it. Saying "stop one" flatly would promise a move that can
+    // be unavailable; this offers it as a condition and names waiting as the
+    // path that always exists.
     if (this.reservedShellRuns >= this.maxLiveShellRuns) {
       throw new Error(
-        `No free background task slot: ${this.maxLiveShellRuns} are already running. ` +
-          'Stop one with StopBackgroundTask, or wait for one to finish, before starting another.',
+        `No free background task slot: the runtime is at its limit of ${this.maxLiveShellRuns} ` +
+          'live background tasks. The limit is shared across sessions, so some of them may not be ' +
+          'yours. Stop one of yours with StopBackgroundTask if you started any, or wait for a ' +
+          'running task to finish.',
       );
     }
     if (mode === 'pty' && this.reservedPtyRuns >= this.maxLivePtyRuns) {
       throw new Error(
-        `No free interactive (PTY) background task slot: ${this.maxLivePtyRuns} are already running. ` +
-          'Stop one with StopBackgroundTask, or wait for one to finish, before starting another.',
+        `No free interactive (PTY) background task slot: the runtime is at its limit of ` +
+          `${this.maxLivePtyRuns} live interactive tasks. The limit is shared across sessions, so ` +
+          'some of them may not be yours. Stop one of yours with StopBackgroundTask if you started ' +
+          'any, or wait for a running task to finish. A non-interactive background task does not ' +
+          'use this limit.',
       );
     }
     this.reservedShellRuns += 1;

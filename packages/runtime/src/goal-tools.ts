@@ -15,7 +15,7 @@ import {
   type GoalManager,
   type GoalState,
 } from './goal-state.js';
-import type { GoalContinuationCoordinator } from './goal-continuation.js';
+import type { GoalContinuationCoordinator, GoalControlDecline } from './goal-continuation.js';
 
 export const GOAL_SET_TOOL_NAME = 'GoalSet';
 export const GOAL_CLEAR_TOOL_NAME = 'GoalClear';
@@ -23,10 +23,61 @@ export const GOAL_STATUS_TOOL_NAME = 'GoalStatus';
 export const GOAL_PAUSE_TOOL_NAME = 'GoalPause';
 export const GOAL_RESUME_TOOL_NAME = 'GoalResume';
 
+/**
+ * What a declined Goal mutation tells the model to do next.
+ *
+ * These four tools all failed the same way and said so in one sentence: the
+ * turn no longer owns Goal control. Opaque, but it asked for nothing. Replacing
+ * it with a single cause and a retry made it worse, because only one of the
+ * causes is a race. A turn that was never registered under a Goal boundary —
+ * every turn started with `goalBoundary: 'none'`, and every turn whose session
+ * was closed and removed — declines permanently. Told to call GoalStatus and
+ * then retry "if there is still no active goal", such a turn gets "No goal set
+ * for this session", satisfies the condition, retries, and receives the
+ * identical refusal, forever.
+ *
+ * So a retry is prescribed only where a retry can succeed. Everywhere else the
+ * sentence says the turn cannot do this and asks the model to move on. Reading
+ * the goal is always safe, so GoalStatus is still offered where it would tell
+ * the model something it does not know.
+ */
+function declineAdvice(reason: GoalControlDecline): string {
+  switch (reason) {
+    case 'goal_changed':
+      return (
+        'the session goal changed while this turn was running. ' +
+        'Call GoalStatus to see the current goal, then act on what it reports.'
+      );
+    case 'goal_already_armed':
+      return (
+        'this turn has already armed a goal. Call GoalStatus to see it. ' +
+        'This turn cannot arm a second one.'
+      );
+    case 'coordinator_disposed':
+      return (
+        'the goal system is shutting down, so it can no longer be changed. ' +
+        'Do not call this tool again in this turn; say what you were trying to change.'
+      );
+    case 'goal_not_observed':
+      return (
+        'this turn began before the current goal existed, so it cannot change it. ' +
+        'Do not call this tool again in this turn; say what you were trying to change.'
+      );
+    case 'turn_not_registered':
+      return (
+        'this turn does not run under the session goal boundary, so it cannot change the goal. ' +
+        'Do not call this tool again in this turn; say what you were trying to change.'
+      );
+  }
+}
+
 export interface GoalToolsDeps {
   goalManager: GoalManager;
   /** Owns atomic turn authorization for every model-triggered Goal mutation. */
-  goalContinuation: Pick<GoalContinuationCoordinator, 'activateGoal' | 'mutateGoal'>;
+  goalContinuation: Pick<
+    GoalContinuationCoordinator,
+    'activateGoal' | 'mutateGoal' | 'activationStanding' | 'mutationStanding'
+  >;
   /** Current cumulative token count for a session (baseline for budget). */
   getTokenCount?: (sessionId: string) => number;
   /** Reject new model-owned mutations while the enclosing authority drains. */
@@ -117,10 +168,11 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         }).goal;
       });
       if (!goal) {
-        return (
-          'Goal not set: the session goal changed while this turn was running, so nothing was armed. ' +
-          'Call GoalStatus to see the current goal, then call GoalSet again only if there is still no active goal.'
-        );
+        // Nothing was mutated on this path, so asking now returns the same
+        // answer the attempt acted on.
+        const standing = deps.goalContinuation.activationStanding(ctx.sessionId, ctx.turnId);
+        const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
+        return `Goal not set: ${declineAdvice(cause)}`;
       }
       const limits = [
         `max ${goal.maxIterations} turns`,
@@ -153,10 +205,9 @@ function buildGoalClearTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
         return deps.goalManager.clear(ctx.sessionId)!;
       });
       if (!goal) {
-        return (
-          'Goal not cleared: the session goal changed while this turn was running. ' +
-          'Call GoalStatus to see whether it is already gone before calling GoalClear again.'
-        );
+        const standing = deps.goalContinuation.mutationStanding(ctx.sessionId, ctx.turnId);
+        const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
+        return `Goal not cleared: ${declineAdvice(cause)}`;
       }
       return `Goal cleared: "${goal.condition}" after ${goal.iterations} turn(s).`;
     },
@@ -180,10 +231,9 @@ function buildGoalPauseTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
         return deps.goalManager.pause(ctx.sessionId)!;
       });
       if (!goal) {
-        return (
-          'Goal not paused: the session goal changed while this turn was running. ' +
-          'Call GoalStatus to see its current status before calling GoalPause again.'
-        );
+        const standing = deps.goalContinuation.mutationStanding(ctx.sessionId, ctx.turnId);
+        const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
+        return `Goal not paused: ${declineAdvice(cause)}`;
       }
       return `Goal paused: "${goal.condition}" at turn ${goal.iterations}. Use GoalResume to continue.`;
     },
@@ -205,10 +255,9 @@ function buildGoalResumeTool(deps: GoalToolsDeps): MakaTool<Record<string, never
         return deps.goalManager.resume(ctx.sessionId)!;
       });
       if (!goal) {
-        return (
-          'Goal not resumed: the session goal changed while this turn was running. ' +
-          'Call GoalStatus to see its current status before calling GoalResume again.'
-        );
+        const standing = deps.goalContinuation.activationStanding(ctx.sessionId, ctx.turnId);
+        const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
+        return `Goal not resumed: ${declineAdvice(cause)}`;
       }
       return `Goal resumed: "${goal.condition}". Autonomous continuation re-enabled.`;
     },

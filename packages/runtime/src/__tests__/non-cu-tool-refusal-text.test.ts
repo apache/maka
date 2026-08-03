@@ -29,6 +29,7 @@ import { AGENT_SWARM_TOOL_NAME, buildAgentSwarmTool } from '../agent-swarm-tools
 import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import { buildGoalTools, GOAL_SET_TOOL_NAME, GOAL_STATUS_TOOL_NAME } from '../goal-tools.js';
+import type { GoalControlDecline } from '../goal-continuation.js';
 import { GoalManager } from '../goal-state.js';
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
@@ -159,7 +160,15 @@ describe('E1 — capability-missing refusals name the tool and a fallback', () =
     assertActionable(text, AGENT_SWARM_TOOL_NAME, ['resume_run_ids']);
   });
 
-  test('AskUserQuestion', async () => {
+  // ToolRuntime injects `askUserQuestion` and `requestSandboxBoundary`
+  // unconditionally — unlike `listChildAgents` and `readChildAgentOutput`
+  // beside them, which are spread only when present — so these two branches
+  // cannot fire through it. Availability is decided when the tool set is
+  // assembled: the CLI adds both only on the TUI surface. The guards stay
+  // because the context type declares the callbacks optional and an embedder
+  // may build one without them; these two tests cover that contract, not a
+  // production path.
+  test('AskUserQuestion on a context that does not carry the callback', async () => {
     const tool = buildAskUserQuestionTool();
     const text = await refusalOf(() =>
       tool.impl(
@@ -172,7 +181,7 @@ describe('E1 — capability-missing refusals name the tool and a fallback', () =
     assertActionable(text, 'AskUserQuestion', ['reply text']);
   });
 
-  test('request_sandbox_boundary', async () => {
+  test('request_sandbox_boundary on a context that does not carry the callback', async () => {
     const tool = buildRequestSandboxBoundaryTool();
     const text = await refusalOf(() =>
       tool.impl({ expansion: {} as never, justification: 'need it' }, ctx()),
@@ -182,7 +191,10 @@ describe('E1 — capability-missing refusals name the tool and a fallback', () =
 });
 
 describe('E2 — goal turn-ownership refusals', () => {
-  function goalTools(seed?: 'active' | 'paused'): MakaTool[] {
+  function goalTools(
+    seed: 'active' | 'paused' | undefined,
+    reason: GoalControlDecline,
+  ): MakaTool[] {
     const goalManager = new GoalManager({ generateId: () => 'g-1', now: () => 1000 });
     if (seed) {
       goalManager.create('session-1', 'tests pass', {});
@@ -190,10 +202,16 @@ describe('E2 — goal turn-ownership refusals', () => {
     }
     return buildGoalTools({
       goalManager,
-      // Both authorization gates decline. This is the exact case the old text
-      // described with two different internal nouns ("Goal activation" vs
-      // "Goal control") and no recovery step.
-      goalContinuation: { activateGoal: () => undefined, mutateGoal: () => undefined } as never,
+      // Both authorization gates decline, and the coordinator reports why. The
+      // old text described this with two different internal nouns ("Goal
+      // activation" vs "Goal control") and no recovery step; the version after
+      // that asserted one cause and prescribed a retry for all of them.
+      goalContinuation: {
+        activateGoal: () => undefined,
+        mutateGoal: () => undefined,
+        activationStanding: () => ({ kind: 'declined', reason }),
+        mutationStanding: () => ({ kind: 'declined', reason }),
+      } as never,
       now: () => 1000,
     });
   }
@@ -205,29 +223,83 @@ describe('E2 — goal turn-ownership refusals', () => {
     ['GoalResume', 'paused', {}],
   ];
 
-  for (const [name, seed, args] of gates) {
-    test(`${name} declines with a checkable next action`, async () => {
-      const tool = goalTools(seed).find((candidate) => candidate.name === name)!;
-      const text = String(await tool.impl(args as never, ctx()));
+  async function refusal(
+    name: string,
+    seed: 'active' | 'paused' | undefined,
+    args: Record<string, unknown>,
+    reason: GoalControlDecline,
+  ): Promise<string> {
+    const tool = goalTools(seed, reason).find((candidate) => candidate.name === name)!;
+    return String(await tool.impl(args as never, ctx()));
+  }
 
-      // The gate really fired, rather than an earlier "no goal" branch.
-      assert.ok(/changed while this turn was running/.test(text), text);
-      // Recovery: one named tool the model can actually call.
+  for (const [name, seed, args] of gates) {
+    test(`${name} points at GoalStatus when the goal really did change`, async () => {
+      const text = await refusal(name, seed, args, 'goal_changed');
+
+      assertNoHostInternals(text);
+      // Recovery: one named tool the model can actually call, and reading is
+      // always available.
       assert.ok(text.includes(GOAL_STATUS_TOOL_NAME), `must point at GoalStatus: ${text}`);
       // The two internal nouns are gone, and with them the false distinction.
       assert.ok(!/owns Goal (activation|control)/.test(text), text);
     });
+
+    for (const reason of [
+      'turn_not_registered',
+      'coordinator_disposed',
+      'goal_not_observed',
+    ] as const) {
+      test(`${name} does not prescribe a retry it cannot satisfy (${reason})`, async () => {
+        const text = await refusal(name, seed, args, reason);
+
+        assertNoHostInternals(text);
+        // The whole point. These causes are settled facts about this turn, so
+        // a re-read tells the model nothing new and the same call returns the
+        // same refusal. Asking for either builds an unbounded loop.
+        assert.ok(
+          text.includes('Do not call this tool again in this turn'),
+          `must say the retry is pointless: ${text}`,
+        );
+        assert.ok(
+          !new RegExp(`call ${name} again`, 'i').test(text),
+          `must not ask for the call that cannot succeed: ${text}`,
+        );
+        assert.ok(
+          !text.includes(GOAL_STATUS_TOOL_NAME),
+          `must not send the model to read state that cannot change the outcome: ${text}`,
+        );
+      });
+    }
   }
+
+  test('a turn that already armed a goal is told so, and reading it is still useful', async () => {
+    // The one permanent cause where GoalStatus does tell the model something
+    // it does not know: the goal it is asking about exists, and it set it.
+    const text = await refusal(
+      GOAL_SET_TOOL_NAME,
+      undefined,
+      { condition: 'x' },
+      'goal_already_armed',
+    );
+
+    assert.ok(/already armed a goal/.test(text), text);
+    assert.ok(text.includes(GOAL_STATUS_TOOL_NAME), text);
+    assert.ok(!/call GoalSet again/i.test(text), text);
+  });
 });
 
 describe('E3 — an internal filesystem mismatch does not read as an argument complaint', () => {
   async function refuseWith(name: string, args: unknown): Promise<string> {
     const cwd = await workspace();
     const tools = buildBuiltinTools({
-      // Answer every request with a result of the wrong kind, which is the
-      // exact condition the old "Filesystem worker returned a mismatched X
-      // result." message described.
-      filesystemWorker: { execute: async () => ({ kind: 'glob', files: [] }) } as never,
+      // Answer every request with a well-formed result of some other
+      // operation, which is the exact condition this branch exists for. Keyed
+      // off the request so a Glob request does not get a Glob answer back.
+      filesystemWorker: {
+        execute: async ({ operation }: { operation: { kind: string } }) =>
+          operation.kind === 'glob' ? { kind: 'grep', matches: [] } : { kind: 'glob', files: [] },
+      } as never,
     });
     const tool = tools.find((candidate) => candidate.name === name)!;
     return await refusalOf(() =>
@@ -250,7 +322,7 @@ describe('E3 — an internal filesystem mismatch does not read as an argument co
     );
   }
 
-  test('Edit says the file is unchanged and that old_string is not the problem', async () => {
+  test('Edit does not claim the file is unchanged, and rules out the old_string retry', async () => {
     const text = await refuseWith('Edit', {
       path: 'a.txt',
       old_string: 'x',
@@ -258,16 +330,36 @@ describe('E3 — an internal filesystem mismatch does not read as an argument co
     });
     assertNoHostInternals(text);
     assert.ok(text.includes('Edit'), text);
-    assert.ok(/unchanged/.test(text), text);
+    // The branch fires on a mislabelled success. Real failures throw, so this
+    // code has no idea whether the edit landed, and saying it did not is a
+    // claim about a file nothing here looked at.
+    assert.ok(/cannot tell whether/.test(text), `must not assert disk state: ${text}`);
+    assert.ok(!/the file is unchanged/.test(text), `must not assert disk state: ${text}`);
     assert.ok(text.includes('old_string'), `must rule out the old_string retry: ${text}`);
-    assert.ok(text.includes('Bash'), `must offer a way out: ${text}`);
+    assert.ok(/Read the file/.test(text), `must send the model to look: ${text}`);
   });
 
-  test('Write says nothing was written and offers a way out', async () => {
+  test('Write does not claim nothing reached the disk', async () => {
     const text = await refuseWith('Write', { path: 'a.txt', content: 'x' });
     assertNoHostInternals(text);
-    assert.ok(/nothing was written/.test(text), text);
-    assert.ok(text.includes('Bash'), text);
+    assert.ok(/cannot tell whether the file was written/.test(text), text);
+    assert.ok(!/nothing was written/.test(text), `must not assert disk state: ${text}`);
+    assert.ok(/unknown state/.test(text), text);
+  });
+
+  test('a failed search does not read as a search that found nothing', async () => {
+    // "Grep could not be completed inside Maka, so no matches were produced"
+    // reads as a successful empty search, and a model that takes it that way
+    // concludes the pattern is absent from the repository.
+    const grep = await refuseWith('Grep', { pattern: 'needle' });
+    assertNoHostInternals(grep);
+    assert.ok(!/no matches were produced/.test(grep), `must not read as an empty result: ${grep}`);
+    assert.ok(/does not mean the pattern is absent/.test(grep), grep);
+    assert.ok(grep.includes('Bash'), `must offer a way out: ${grep}`);
+
+    const glob = await refuseWith('Glob', { pattern: '**/*.ts' });
+    assertNoHostInternals(glob);
+    assert.ok(/does not mean no files match/.test(glob), glob);
   });
 });
 
@@ -305,7 +397,12 @@ describe('E5 — background task refs and capacity', () => {
         abortSignal: NO_ABORT,
       } as never),
     );
+    // The counters are manager-wide and StopBackgroundTask takes a
+    // session-scoped ref, so the session that hits the cap may own none of the
+    // runs holding it. The sentence may offer that move, but not promise it.
     assert.ok(text.includes('StopBackgroundTask'), text);
+    assert.ok(/shared across sessions/.test(text), `must not promise an unavailable move: ${text}`);
+    assert.ok(/wait for a running task to finish/.test(text), text);
   });
 
   test('a full PTY slot names StopBackgroundTask', async () => {
@@ -331,6 +428,7 @@ describe('E5 — background task refs and capacity', () => {
     );
     assert.ok(text.includes('StopBackgroundTask'), text);
     assert.ok(/PTY/.test(text), text);
+    assert.ok(/shared across sessions/.test(text), text);
   });
 });
 

@@ -280,6 +280,11 @@ describe('GoalContinuationCoordinator settlement', () => {
       await set.impl({ condition: 'replacement' }, goalToolContext('turn-old')),
     );
 
+    // A real race: another turn armed and cleared a goal, so the generation
+    // this turn observed is gone. Reading the current goal is worth doing and
+    // can change what the model does next, so this is where a look-again
+    // instruction is honest.
+    assert.match(output, /the session goal changed while this turn was running/);
     assert.match(output, /Call GoalStatus/);
     assert.equal(manager.get(SESSION)?.status, 'cleared');
     assert.equal(manager.get(SESSION)?.condition, 'first');
@@ -302,7 +307,7 @@ describe('GoalContinuationCoordinator settlement', () => {
       await set.impl({ condition: 'replacement' }, goalToolContext('turn-old')),
     );
 
-    assert.match(output, /Call GoalStatus/);
+    assert.match(output, /the session goal changed while this turn was running/);
     assert.equal(manager.get(SESSION)?.condition, 'paused goal');
     assert.equal(manager.get(SESSION)?.status, 'cleared');
   });
@@ -324,8 +329,14 @@ describe('GoalContinuationCoordinator settlement', () => {
     registerObservedTurn(coordinator, SESSION, 'turn-replacement');
     await set.impl({ condition: 'replacement' }, goalToolContext('turn-replacement'));
 
-    assert.match(String(await pause.impl({}, goalToolContext('turn-old'))), /Call GoalStatus/);
-    assert.match(String(await clear.impl({}, goalToolContext('turn-old'))), /Call GoalStatus/);
+    assert.match(
+      String(await pause.impl({}, goalToolContext('turn-old'))),
+      /the session goal changed while this turn was running/,
+    );
+    assert.match(
+      String(await clear.impl({}, goalToolContext('turn-old'))),
+      /the session goal changed while this turn was running/,
+    );
     assert.equal(manager.get(SESSION)?.condition, 'replacement');
     assert.equal(manager.get(SESSION)?.status, 'active');
   });
@@ -346,7 +357,14 @@ describe('GoalContinuationCoordinator settlement', () => {
         await set.impl({ condition: 'must not exist' }, goalToolContext('turn-deleted')),
       );
 
-      assert.match(output, /Call GoalStatus/);
+      // The loop this replaced: the session was closed and removed, so this
+      // turn has no registration and never will. Told to call GoalStatus and
+      // retry "if there is still no active goal", the model gets "No goal set
+      // for this session", satisfies the condition, retries, and receives the
+      // identical refusal forever. The refusal must not ask for that.
+      assert.match(output, /does not run under the session goal boundary/);
+      assert.match(output, /Do not call this tool again in this turn/);
+      assert.doesNotMatch(output, /call GoalSet again/i);
       assert.equal(manager.get(SESSION), undefined);
     });
 
@@ -368,7 +386,9 @@ describe('GoalContinuationCoordinator settlement', () => {
       manager.pause(SESSION);
       const output = String(await resume.impl({}, goalToolContext('turn-archived')));
 
-      assert.match(output, /Call GoalStatus/);
+      assert.match(output, /does not run under the session goal boundary/);
+      assert.match(output, /Do not call this tool again in this turn/);
+      assert.doesNotMatch(output, /call GoalResume again/i);
       assert.equal(manager.get(SESSION)?.condition, 'replacement');
       assert.equal(manager.get(SESSION)?.status, 'paused');
     });
