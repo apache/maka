@@ -27,7 +27,6 @@
 
 import { isConnectionReady, isRealConnection } from './connection-readiness.js';
 import { connectionEnabledModelIds, type LlmConnection } from './llm-connections.js';
-import { buildConnectionModelCatalogEntries } from './model-catalog.js';
 import type { SessionSummary } from './session.js';
 
 // ============================================================================
@@ -50,10 +49,13 @@ import type { SessionSummary } from './session.js';
  *    chat-capable model. Fix: open model management for the named slug.
  *  - `ready_empty` — fully configured, no sessions yet. #1433: this is
  *    no longer an onboarding surface — the ordinary empty chat state
- *    with its Composer takes over, and the hero renders nothing.
+ *    with its Composer takes over, and the hero renders nothing. Its
+ *    connection/model pair is the readiness-checked first-task candidate;
+ *    the configured connection default leads when it remains usable.
  *  - `ready_with_history` — fully configured, ≥1 session in the
  *    workspace (including archived / aborted — they are still user
- *    history and onboarding must not regress to blank slate).
+ *    history and onboarding must not regress to blank slate). It retains the
+ *    same readiness evidence, but does not activate first-task selection.
  *  - `blocked: all_connections_unhealthy` — real connections exist
  *    but NONE can be made ready by a per-connection fix (for example, all
  *    disabled or runtime-unwired).
@@ -122,7 +124,7 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
     ? [preferred, ...realConns.filter((connection) => connection.slug !== preferred.slug)]
     : realConns;
   for (const connection of candidates) {
-    for (const model of activationModelCandidates(connection)) {
+    for (const model of connectionEnabledModelIds(connection)) {
       const verdict = isConnectionReady({
         connection,
         hasSecret: input.secrets[connection.slug] === true,
@@ -139,7 +141,7 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
   // No candidate can start a session. Route to the first connection with an
   // actionable repair, using the connection store's stable persisted order.
   for (const connection of candidates) {
-    const requestedModel = activationModelCandidates(connection)[0];
+    const requestedModel = connectionEnabledModelIds(connection)[0];
     const verdict = isConnectionReady({
       connection,
       hasSecret: input.secrets[connection.slug] === true,
@@ -178,19 +180,6 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
  */
 function hasHistory(sessions: ReadonlyArray<SessionSummary>): boolean {
   return sessions.length > 0;
-}
-
-function activationModelCandidates(connection: LlmConnection): string[] {
-  const enabledIds = connectionEnabledModelIds(connection);
-  const enabled = new Set(enabledIds);
-  const ordered = buildConnectionModelCatalogEntries({ connection })
-    .filter((entry) => entry.canUseAsChatDefault && enabled.has(entry.id))
-    .map((entry) => entry.id);
-  const seen = new Set(ordered);
-  for (const id of enabledIds) {
-    if (!seen.has(id)) ordered.push(id);
-  }
-  return ordered;
 }
 
 // ============================================================================

@@ -72,7 +72,7 @@ import {
   usePlanModeState,
 } from './plan-mode-panel';
 import { McpPage } from './mcp-page';
-import { useOnboardingSnapshot } from './use-onboarding-snapshot';
+import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
@@ -320,13 +320,7 @@ function AppShellContent({
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
-  const onboardingActivationCandidate =
-    onboardingState?.kind === 'ready_empty' || onboardingState?.kind === 'ready_with_history'
-      ? {
-          llmConnectionSlug: onboardingState.connectionSlug,
-          model: onboardingState.model,
-        }
-      : undefined;
+  const onboardingActivationCandidate = getOnboardingActivationCandidate(onboarding.snapshot);
   const {
     settingsOpen,
     settingsRequestedSection,

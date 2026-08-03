@@ -16,6 +16,7 @@ import {
   advanceOnboardingSnapshotState,
   createOnboardingSnapshotPoller,
   createOnboardingSnapshotState,
+  getOnboardingActivationCandidate,
   isSetupRequired,
 } from '../../renderer/use-onboarding-snapshot.js';
 import type { OnboardingSnapshot } from '../../preload/bridge-contract.js';
@@ -39,6 +40,35 @@ const NEEDS_CONNECTION_SNAPSHOT: OnboardingSnapshot = {
   connections: [],
   defaultSlug: null,
 };
+
+describe('getOnboardingActivationCandidate', () => {
+  it('exposes the readiness-checked pair during an unsettled first activation', () => {
+    assert.deepEqual(getOnboardingActivationCandidate(READY_SNAPSHOT), {
+      llmConnectionSlug: 'a',
+      model: 'm',
+    });
+  });
+
+  it('does not influence ordinary new tasks after workspace history exists', () => {
+    assert.equal(
+      getOnboardingActivationCandidate({
+        ...READY_SNAPSHOT,
+        state: { kind: 'ready_with_history', connectionSlug: 'a', model: 'm' },
+      }),
+      undefined,
+    );
+  });
+
+  it('does not influence the composer after onboarding is settled', () => {
+    assert.equal(
+      getOnboardingActivationCandidate({
+        ...READY_SNAPSHOT,
+        milestones: [{ id: 'initial_onboarding', skippedAt: 1 }],
+      }),
+      undefined,
+    );
+  });
+});
 
 describe('createOnboardingSnapshotPoller', () => {
   it('routes a successful getSnapshot to onSnapshot', async () => {

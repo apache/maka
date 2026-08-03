@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, type LlmConnection, type OnboardingState, type SessionSummary, type UiLocale } from '@maka/core';
+import { generalizedErrorMessage, generalizedErrorMessageChinese, hasSettledInitialOnboarding, type LlmConnection, type OnboardingState, type SessionSummary, type UiLocale } from '@maka/core';
 import { useUiLocale } from '@maka/ui';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { getOnboardingCopy } from './locales/onboarding-copy.js';
@@ -55,6 +55,26 @@ export interface UseOnboardingSnapshotDeps {
 export interface OnboardingSnapshotState {
   snapshot: OnboardingSnapshot | null;
   mountedSnapshotHandoff: OnboardingSnapshot | null;
+}
+
+/**
+ * The core readiness pair may seed only the unfinished first task. Once the
+ * guide is settled or workspace history exists, normal Composer preference
+ * rules own new-task selection again.
+ */
+export function getOnboardingActivationCandidate(
+  snapshot: Pick<OnboardingSnapshot, 'state' | 'milestones'> | null,
+): { llmConnectionSlug: string; model: string } | undefined {
+  if (
+    snapshot?.state.kind !== 'ready_empty' ||
+    hasSettledInitialOnboarding(snapshot.milestones)
+  ) {
+    return undefined;
+  }
+  return {
+    llmConnectionSlug: snapshot.state.connectionSlug,
+    model: snapshot.state.model,
+  };
 }
 
 export function createOnboardingSnapshotState(initialSnapshot: OnboardingSnapshot | null): OnboardingSnapshotState {

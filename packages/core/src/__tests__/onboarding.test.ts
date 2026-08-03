@@ -88,6 +88,37 @@ describe('deriveOnboardingState', () => {
     });
   });
 
+  it('keeps the configured connection default ahead of catalog order', () => {
+    const connection = realConnection({
+      defaultModel: 'claude-sonnet-4-5-20250929',
+      enabledModelIds: ['claude-opus-4-6', 'claude-sonnet-4-5-20250929'],
+      models: [{ id: 'claude-opus-4-6' }, { id: 'claude-sonnet-4-5-20250929' }],
+    });
+
+    assert.deepEqual(derive({ connections: [connection], secrets: { [connection.slug]: true } }), {
+      kind: 'ready_empty',
+      connectionSlug: connection.slug,
+      model: 'claude-sonnet-4-5-20250929',
+    });
+  });
+
+  it('falls back when the configured connection default cannot serve chat', () => {
+    const connection = realConnection({
+      defaultModel: 'image-only',
+      enabledModelIds: ['image-only', 'claude-sonnet-4-5-20250929'],
+      models: [
+        { id: 'image-only', capabilities: { chat: false, imageGeneration: true } },
+        { id: 'claude-sonnet-4-5-20250929' },
+      ],
+    });
+
+    assert.deepEqual(derive({ connections: [connection], secrets: { [connection.slug]: true } }), {
+      kind: 'ready_empty',
+      connectionSlug: connection.slug,
+      model: 'claude-sonnet-4-5-20250929',
+    });
+  });
+
   it('covers the top-level state decision table', () => {
     const ready = realConnection();
     const disabled = realConnection({ enabled: false });
