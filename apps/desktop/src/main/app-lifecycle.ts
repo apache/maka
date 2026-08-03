@@ -11,6 +11,7 @@ import type {
   ShellRunProcessManager,
 } from '@maka/runtime';
 import type { McpClientManager } from '@maka/mcp';
+import { backfillSessionProjects } from '@maka/storage';
 import type {
   createConnectionStore,
   createProjectCatalog,
@@ -183,6 +184,23 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     }
   }
 
+  async function resolveSessionProjectsOnStartup(): Promise<void> {
+    try {
+      const result = await backfillSessionProjects({
+        sessions: sessionStore,
+        catalog: projectCatalog,
+      });
+      if (result.failed > 0) {
+        console.error(`[projects] could not resolve ${result.failed} session project(s)`);
+      }
+      if (result.resolved > 0) emitSessionsChanged('migrated');
+    } catch (error) {
+      // Best-effort: an unresolved project only affects sidebar grouping, and
+      // the sessions themselves must still reach the renderer.
+      console.error('[projects] session project resolution failed:', error);
+    }
+  }
+
   async function ensureBootstrapConnection(): Promise<void> {
     await mkdir(workspaceRoot, { recursive: true });
     if ((await connectionStore.list()).length > 0) return;
@@ -301,6 +319,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       await step('keep-awake', () => keepSystemAwake.apply(resolved.system.keepSystemAwake));
     }
     await step('usage readiness', () => ensureUsageReady());
+    await step('project resolution', () => resolveSessionProjectsOnStartup());
     await step('session recovery', () => recoverInterruptedSessionsOnStartup());
     let botRegistryReady = false;
     if (settings) {

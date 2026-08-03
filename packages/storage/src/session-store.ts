@@ -151,6 +151,8 @@ export interface SessionStore {
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   /** Enumerate durable metadata without reading transcript bodies. */
   listHeaders(): Promise<SessionHeader[]>;
+  /** Sessions whose project membership was never decided, with their working directory. */
+  listSessionsWithUnresolvedProject(): Promise<Array<{ id: string; cwd: string }>>;
   listForRecovery(): Promise<SessionHeader[]>;
   /** Read only the durable header without triggering connection-lock self-healing. */
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
@@ -529,6 +531,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return (await this.metadata.list())
       .map((record) => record.header)
       .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  async listSessionsWithUnresolvedProject(): Promise<Array<{ id: string; cwd: string }>> {
+    await this.ensureReady();
+    return this.metadata.listSessionsWithUnresolvedProject();
   }
 
   async readHeaderSnapshot(sessionId: string): Promise<SessionHeader> {
