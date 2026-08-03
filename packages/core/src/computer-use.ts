@@ -546,8 +546,16 @@ export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArg
       ? { app: boundedDisplay(redactSecrets(app), 256) }
       : {}),
     ...(typeof windowId === 'number' && Number.isInteger(windowId) ? { window_id: windowId } : {}),
+    // Redacted like every field beside it. This one is the model's way back to
+    // an observation it already read, so the temptation is to pass it through
+    // untouched — but the model is what wrote it, and nothing validates the
+    // arguments before this projection runs, so a secret-shaped value under
+    // this key reached the transcript verbatim while the same string under
+    // `app` or `element_id` was redacted. An id the executor actually minted is
+    // a UUID, which `redactSecrets` leaves alone, so the observe-then-act loop
+    // is unaffected: what gets rewritten here was never one of ours.
     ...(typeof observationId === 'string' && stableIdentifier(observationId)
-      ? { observation_id: stableIdentifier(observationId) }
+      ? { observation_id: boundedDisplay(redactSecrets(stableIdentifier(observationId)!), 256) }
       : {}),
     ...(typeof elementId === 'string' && elementId.length > 0
       ? { element_id: boundedDisplay(redactSecrets(elementId), 256) }

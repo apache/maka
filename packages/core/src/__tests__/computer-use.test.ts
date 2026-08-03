@@ -187,6 +187,38 @@ describe('Computer Use foundation contract', () => {
     );
   });
 
+  /**
+   * `observation_id` was the one identifier on this projection that skipped
+   * `redactSecrets`, so a secret-shaped value under that key reached the
+   * persisted call, the `tool_start` event and the model's own replayed history
+   * verbatim, while the same string under `app` or `element_id` did not.
+   *
+   * The reason it looked unsafe to redact is that the model quotes this id back
+   * on its next call, so rewriting it could break the observe-then-act loop.
+   * It cannot: the executor mints these with `randomUUID`, and a UUID carries no
+   * run of 40-plus hex characters, so `redactSecrets` leaves it alone. Anything
+   * it does rewrite was never an id this host handed out.
+   */
+  test('a secret-shaped observation id is redacted, and a real one is not', () => {
+    const secret = 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvWxYz01';
+    const asObservation = computerUseModelCallArgs({
+      action: 'click_element',
+      observation_id: secret,
+      element_id: 'e12',
+    });
+    const asApp = computerUseModelCallArgs({ action: 'click_element', app: secret });
+    assert.equal(asObservation.observation_id?.includes(secret), false);
+    assert.equal(asObservation.observation_id, asApp.app);
+
+    // The shape the executor actually mints survives, or the model cannot name
+    // the observation it just read and every bound action stops working.
+    const minted = '3f2b1c9e-4a5d-6e7f-8091-a2b3c4d5e6f7';
+    assert.equal(
+      computerUseModelCallArgs({ action: 'click_element', observation_id: minted }).observation_id,
+      minted,
+    );
+  });
+
   test('approval scope separates read, screenshot, and mutation classes', () => {
     const metadata = computerUseApprovalScopeKey({
       action: 'observe',
