@@ -458,6 +458,16 @@ export interface SessionStreamerDeps {
   sessionActivities: SessionActivityRegistry;
   goalWiring: GoalWiring;
   computerUseOverlay: AssembledTools['computerUseOverlay'];
+  /**
+   * The picture-in-picture mirror, retired on the same signal as the cursor.
+   *
+   * Cleared only when a session was stopped, archived or deleted, the mirror
+   * would outlive the run it belonged to and keep showing that run's last
+   * frame while the next turn drove a different application. A mirror showing
+   * the wrong window is worse than no mirror, because it is read as "this is
+   * what the agent is doing".
+   */
+  computerUsePip?: { complete(sessionId: string): void };
   computerUseTools: AssembledTools['computerUseTools'];
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
   emitSessionsChanged: (
@@ -491,6 +501,7 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
     sessionActivities,
     goalWiring,
     computerUseOverlay,
+    computerUsePip,
     computerUseTools,
     safeSendToRenderer,
     emitSessionsChanged,
@@ -525,6 +536,10 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
         if (isTurnStatusChangingSessionEvent(event)) {
           emitSessionsChanged('turn-status-change', sessionId, { turnId });
           computerUseOverlay.clearForSession(sessionId);
+          // The mirror lingers rather than vanishing: a person watching
+          // background work looks over at the moment the answer arrives, which
+          // is the moment an immediate teardown would take the window away.
+          computerUsePip?.complete(sessionId);
           computerUseTools.clearSession(sessionId);
         }
         options.observeEvent?.(event);
@@ -544,6 +559,9 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
         emitSessionsChanged('status-change', sessionId, { turnId });
         emitSessionsChanged('turn-status-change', sessionId, { turnId });
         computerUseOverlay.clearForSession(sessionId);
+        // A stream that dies ends the turn as surely as a completion event
+        // does, and it is the path where the last frame matters most.
+        computerUsePip?.complete(sessionId);
         computerUseTools.clearSession(sessionId);
       },
       onDrained: async (outcome) => {

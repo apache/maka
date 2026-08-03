@@ -656,12 +656,17 @@ const {
   browserTools,
   computerUse,
   computerUseOverlay,
+  computerUsePip,
   computerUseTools,
   desktopProductToolSurface,
   builtinTools,
   childAgentTools,
   sandboxDiagnosticsProvider,
 } = assembleDesktopTools({
+  // The mirror anchors to the app window and becomes its child; without this
+  // it falls back to floating above every application on the primary display,
+  // with no pointer to hover-test against and so no controls at all.
+  mainWindow: mainWindowController,
   isComputerUseRealModelE2e,
   workspaceRoot,
   taskLedgerStore,
@@ -692,7 +697,12 @@ const desktopBackendToolSurfaceDeps = {
     agentGraphCoordinator.toolsForSession(sessionId),
 };
 // Cursor-overlay teardown assigns a module-scoped `let`, so it stays in boot.ts.
-onMainWindowClose = () => computerUseOverlay.destroyAll();
+onMainWindowClose = () => {
+  computerUseOverlay.destroyAll();
+  // The mirror is a child of the window that just closed; without this it
+  // outlives its parent, still polling the pointer at 20Hz.
+  computerUsePip.destroyAll();
+};
 const systemPromptService = createSystemPromptMainService({
   settingsStore,
   workspaceRoot,
@@ -1072,6 +1082,7 @@ function registerIpc(): void {
     goalWiring,
     automationManager: automationWiring.manager,
     computerUseOverlay,
+    computerUsePip,
     computerUseTools,
     artifactStore,
     attachmentApprovals,
@@ -1232,6 +1243,7 @@ const streamEvents = createSessionStreamer({
   sessionActivities,
   goalWiring,
   computerUseOverlay,
+  computerUsePip,
   computerUseTools,
   safeSendToRenderer,
   emitSessionsChanged,
@@ -1418,6 +1430,7 @@ wireAppLifecycle({
   goalWiring,
   computerUse,
   computerUseOverlay,
+  computerUsePip,
   shellRuns,
   mcpManager,
   runtimePersistence,

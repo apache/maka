@@ -24,6 +24,7 @@ class FakeWindow {
   ignoringMouse = true;
   private readyCb: (() => void) | null = null;
   private goneCb: (() => void) | null = null;
+  private loadFailureCb: ((reason: string) => void) | null = null;
   private messageCb: ((channel: string, payload: unknown) => void) | null = null;
   /** Every setBounds, so a test can tell "did not move" from "moved back". */
   moves: any[] = [];
@@ -35,6 +36,9 @@ class FakeWindow {
   }
   onGone(cb: () => void): void {
     this.goneCb = cb;
+  }
+  onLoadFailure(cb: (reason: string) => void): void {
+    this.loadFailureCb = cb;
   }
   onMessage(cb: (channel: string, payload: unknown) => void): void {
     this.messageCb = cb;
@@ -63,6 +67,9 @@ class FakeWindow {
   }
   fireGone(): void {
     this.goneCb?.();
+  }
+  fireLoadFailure(reason = 'ERR_FILE_NOT_FOUND (-6)'): void {
+    this.loadFailureCb?.(reason);
   }
   fireMessage(channel: string, payload?: unknown): void {
     this.messageCb?.(channel, payload);
@@ -702,6 +709,62 @@ test('Computer Use picture-in-picture mirror', async (t) => {
     windows[0]!.fireGone();
     assert.equal(pip.isVisible(), false);
     assert.equal(pip.currentSessionId(), null);
+  });
+
+  await t.test('a page that fails to load is destroyed, not left invisible', () => {
+    // `showInactive` and the hover watch both live behind `onReady`, which a
+    // failed load never fires. Left alone, the window is invisible, has no
+    // controls, is never torn down, and quietly accumulates queued frames --
+    // one per session, indistinguishable from a mirror that is working. A
+    // missing dist/overlay/pip.html is enough to produce it.
+    const { pip, windows } = makePip();
+    pip.present({ sessionId: 's1', ...FRAME });
+    const failed = windows[0]!;
+    assert.equal(failed.shown, false, 'nothing is shown before the page loads');
+
+    failed.fireLoadFailure();
+
+    assert.equal(failed.destroyed, true, 'the window must not leak');
+    assert.equal(pip.isVisible(), false);
+    assert.equal(pip.currentSessionId(), null);
+
+    // And the next frame gets a fresh window rather than feeding the dead one.
+    pip.present({ sessionId: 's1', ...FRAME });
+    assert.equal(windows.length, 2);
+    assert.equal(windows[1]!.destroyed, false);
+  });
+
+  await t.test('rests against the app window\'s display, not the mirror\'s', () => {
+    // The anchors are corners of the app window, so they are expressed in that
+    // window's display's coordinates. Clamping them into the work area of
+    // whichever display the mirror currently sits on mixes two coordinate
+    // spaces: with the app on an external display and the mirror still on the
+    // built-in one, the corner computed on the external screen was clamped to
+    // the built-in screen's right edge and the mirror parked there.
+    const BUILT_IN = { x: 0, y: 0, width: 1600, height: 1000 };
+    const EXTERNAL = { x: 1600, y: 0, width: 1920, height: 1080 };
+    const appWindow = { x: 1700, y: 100, width: 1000, height: 700 };
+    const { pip, windows } = makePip({
+      resolveAnchorRect: () => appWindow,
+      // The mirror's own bounds start on the built-in display; the app is on
+      // the external one.
+      workAreaFor: (rect: { x: number }) => (rect.x >= EXTERNAL.x ? EXTERNAL : BUILT_IN),
+    });
+
+    // A frame whose aspect differs from the default re-seats the mirror, which
+    // is the path that asks for a rest position.
+    pip.present({ sessionId: 's1', ...FRAME, widthPx: 1000, heightPx: 800 });
+    const w = windows[0]!;
+    const landed = w.moves[w.moves.length - 1]!;
+    assert.equal(
+      landed.x,
+      appWindow.x + appWindow.width - landed.width - 24,
+      'inset 24pt from the app window, in the app window\'s own space',
+    );
+    assert.ok(
+      landed.x >= EXTERNAL.x && landed.x + landed.width <= EXTERNAL.x + EXTERNAL.width,
+      'and therefore on the display the app is on',
+    );
   });
 });
 

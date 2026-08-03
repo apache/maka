@@ -35,6 +35,18 @@ export interface PipWindowLike {
   onReady(cb: () => void): void;
   onGone(cb: () => void): void;
   /**
+   * The page could not be loaded, so `onReady` will never fire.
+   *
+   * Without this the two states are indistinguishable from the controller's
+   * side: `onReady` gates showing the window and starting the hover watch, so
+   * a failed load leaves a window that is never shown, never made
+   * interactive, never torn down, and silently accumulating queued frames —
+   * one leaked per session, looking exactly like a mirror that is working.
+   * A missing `dist/overlay/pip.html` (the overlay build not re-run) is
+   * enough to produce it.
+   */
+  onLoadFailure(cb: (reason: string) => void): void;
+  /**
    * Messages from this window's renderer only.
    *
    * Scoped to the WebContents rather than global `ipcMain`, so the drag and
@@ -191,7 +203,30 @@ export function defaultCreateWindow(
   // Click-through with moves forwarded: the page still sees the pointer cross
   // it, which is how it knows to ask for the clicks back.
   w.setIgnoreMouseEvents(true, { forward: true });
-  void w.loadFile(htmlPath);
+  // A load failure has to be both audible and terminal. `did-finish-load` is
+  // what tells the controller the window is usable; a failed load emits
+  // `did-fail-load` instead, so nothing would ever fire and the window would
+  // sit there invisible and undestroyed for the rest of the process's life.
+  // Report it once, from whichever of the two signals arrives first.
+  let reportLoadFailure: ((reason: string) => void) | undefined;
+  let failure: string | undefined;
+  const fail = (reason: string): void => {
+    if (failure !== undefined) return;
+    failure = reason;
+    console.error(`[computer-use] picture-in-picture failed to load ${htmlPath}: ${reason}`);
+    reportLoadFailure?.(reason);
+  };
+  w.webContents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      // A subframe failing is not this window failing to exist.
+      if (!isMainFrame) return;
+      fail(`${errorDescription || 'load failed'} (${errorCode}) ${validatedURL}`);
+    },
+  );
+  void w.loadFile(htmlPath).catch((error: unknown) => {
+    fail(error instanceof Error ? error.message : String(error));
+  });
   const PIP_CHANNELS = [
     'pip:pointer-down',
     'pip:pointer-move',
@@ -205,6 +240,13 @@ export function defaultCreateWindow(
     send: (channel, payload) => w.webContents.send(channel, payload),
     onReady: (cb) => w.webContents.once('did-finish-load', cb),
     onGone: (cb) => w.once('closed', cb),
+    onLoadFailure: (cb) => {
+      reportLoadFailure = cb;
+      // The failure can beat the subscription: `loadFile` is started in this
+      // function and the controller subscribes after it returns. Replaying it
+      // is what keeps a fast failure from being lost.
+      if (failure !== undefined) cb(failure);
+    },
     onMessage: (cb) => {
       // `webContents.ipc` is scoped to this window, so nothing else in the app
       // can drive the mirror by sending on the same channel names.

@@ -108,6 +108,10 @@ const ALLOW = new Map([
   ],
   ['scripts/check-console.mjs', 'this script — explicit allow.'],
   [
+    'apps/desktop/src/main/computer-use/pip-electron.ts',
+    'picture-in-picture load failure: the one state that is otherwise silent and invisible; logs the overlay asset path and the Chromium error code only.',
+  ],
+  [
     'apps/desktop/src/main/automation-wiring.ts',
     'best-effort sync warning when durable automation persistence fails.',
   ],

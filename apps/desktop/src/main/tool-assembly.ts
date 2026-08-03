@@ -324,6 +324,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     browserTools,
     computerUse,
     computerUseOverlay,
+    computerUsePip,
     computerUseTools,
     desktopProductToolSurface,
     builtinTools: [...desktopProductToolSurface.tools],

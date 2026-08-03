@@ -71,6 +71,8 @@ export interface AppLifecycleDeps {
   goalWiring: ReturnType<typeof createMainGoalWiring>;
   computerUse: AssembledTools['computerUse'];
   computerUseOverlay: AssembledTools['computerUseOverlay'];
+  /** The Computer Use mirror, torn down on the same two paths as the cursor. */
+  computerUsePip: AssembledTools['computerUsePip'];
   shellRuns: ShellRunProcessManager;
   mcpManager: McpClientManager;
   runtimePersistence: Awaited<ReturnType<typeof openRuntimeEventPersistence>>;
@@ -128,6 +130,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     goalWiring,
     computerUse,
     computerUseOverlay,
+    computerUsePip,
     shellRuns,
     mcpManager,
     runtimePersistence,
@@ -367,6 +370,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
 
   app.on('window-all-closed', () => {
     computerUseOverlay.destroyAll();
+    computerUsePip.destroyAll();
     if (process.platform !== 'darwin') app.quit();
   });
 
@@ -387,6 +391,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     getSettingsIpc()?.dispose();
     const results = await Promise.allSettled([
       Promise.resolve().then(() => computerUseOverlay.destroyAll()),
+      Promise.resolve().then(() => computerUsePip.destroyAll()),
       Promise.resolve().then(() => computerUse.backend?.dispose?.()),
       botRegistry.stopAll(),
       Promise.resolve(mainWindowController.disposeBrowserViews()),

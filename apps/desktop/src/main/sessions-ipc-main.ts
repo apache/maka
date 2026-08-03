@@ -79,6 +79,16 @@ export interface SessionsIpcDeps {
   goalWiring: MainGoalWiring;
   automationManager: MainAutomationWiring['manager'];
   computerUseOverlay: SessionOverlayCleanup;
+  /**
+   * Picture-in-picture mirror of the driven window; torn down with its session.
+   *
+   * Its stop control is pointed back at the same `stopSession` the in-app stop
+   * button runs, so stopping from the mirror and stopping from the window
+   * cannot drift apart.
+   */
+  computerUsePip?: SessionOverlayCleanup & {
+    setStopHandler(handler: (sessionId: string) => void): void;
+  };
   computerUseTools: SessionToolCleanup;
   artifactStore: ArtifactStore;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -196,6 +206,7 @@ export function registerSessionsIpc(
     goalWiring,
     automationManager,
     computerUseOverlay,
+    computerUsePip,
     computerUseTools,
     artifactStore,
     attachmentApprovals,
@@ -228,6 +239,8 @@ export function registerSessionsIpc(
   });
   const removeSession = async (sessionId: string): Promise<void> => {
     computerUseOverlay.clearForSession(sessionId);
+    // The mirror is per-session too, and dies with it.
+    computerUsePip?.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await goalWiring.removeSession(sessionId, () => runtime.remove(sessionId));
     invalidateSessionBindings?.(sessionId);
@@ -358,8 +371,11 @@ export function registerSessionsIpc(
       getPrivacyContext: getWorkspacePrivacyContext,
     });
   });
-  ipcMain.handle('sessions:stop', async (_event, sessionId: string, input?: { source?: 'stop_button' }) => {
+  // Named rather than inline so the mirror's own stop control can be pointed at
+  // it. Two places that stop a run must stop it identically.
+  async function stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
     computerUseOverlay.clearForSession(sessionId);
+    computerUsePip?.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await stopAgentGraph?.(sessionId);
     // Read before stopping, while the runs are still registered: ending a turn
@@ -377,7 +393,13 @@ export function registerSessionsIpc(
         ...(broadcast.turnId ? [{ turnId: broadcast.turnId }] : []),
       );
     }
+  }
+  computerUsePip?.setStopHandler((sessionId) => {
+    void stopSession(sessionId, { source: 'stop_button' });
   });
+  ipcMain.handle('sessions:stop', async (_event, sessionId: string, input?: { source?: 'stop_button' }) =>
+    stopSession(sessionId, input),
+  );
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
   );
@@ -562,6 +584,7 @@ export function registerSessionsIpc(
   ipcMain.handle('sessions:archive', async (_event, sessionId: string, options?: unknown) => {
     for (const id of await resolveSessionActionIds(runtime, sessionId, options)) {
       computerUseOverlay.clearForSession(id);
+      computerUsePip?.clearForSession(id);
       computerUseTools.clearSession(id);
       await stopAgentGraph?.(id);
       await goalWiring.archiveSession(id, () => runtime.archive(id));

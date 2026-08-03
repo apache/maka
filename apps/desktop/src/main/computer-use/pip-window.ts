@@ -359,7 +359,13 @@ export function createComputerUsePipController(
     const size = { width: current.width, height: current.height };
     const anchors = pipAnchors(host, size, PIP_MARGIN);
     const chosen = anchorFor(anchors, alignment) ?? anchors[anchors.length - 1]!;
-    return clampToWorkArea(chosen.point, size, workAreaOf(current));
+    // Clamped against the host's display, not the mirror's. The anchors are
+    // corners of the app window, so they live in that window's display's
+    // coordinates; clamping them into the work area of whichever display the
+    // mirror happens to be on right now mixes two coordinate spaces and parks
+    // the mirror against an arbitrary edge the moment the two differ — which
+    // is every time the app is on an external display and the mirror is not.
+    return clampToWorkArea(chosen.point, size, workAreaOf(host));
   }
 
   function moveTo(w: PipWindowLike, point: Point, size: { width: number; height: number }): void {
@@ -449,7 +455,9 @@ export function createComputerUsePipController(
     const chosen = pickPipAnchor(pipAnchors(host, size, PIP_MARGIN), origin, velocity, host);
     alignment = chosen.alignment;
     motion = { position: origin, velocity };
-    motionTarget = clampToWorkArea(chosen.point, size, workAreaOf(bounds));
+    // Same reason as `restPoint`: the anchor came out of the host's space, so
+    // the clamp has to be the host's display too.
+    motionTarget = clampToWorkArea(chosen.point, size, workAreaOf(host));
     animate();
   }
 
@@ -583,6 +591,12 @@ export function createComputerUsePipController(
       watchHover(created);
     });
     created.onGone(() => {
+      if (win === created) teardown();
+    });
+    // A window whose page never loads is not a mirror, it is a leak: nothing
+    // shows it, nothing starts its hover watch, and nothing would ever destroy
+    // it. Treat it as gone, which is what it is.
+    created.onLoadFailure(() => {
       if (win === created) teardown();
     });
     // Keep the mirror on the app window's corner across resizes and display
