@@ -416,6 +416,25 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('validates a tool transition after unrelated invocation history', async () => {
+    await withStore(async (store) => {
+      const unrelated = functionCallEvent({
+        id: 'unrelated-event',
+        sessionId: 'session-2',
+        invocationId: 'invocation-2',
+        runId: 'run-2',
+        turnId: 'turn-2',
+        content: { kind: 'text', text: 'unrelated history' },
+      });
+      await store.appendRuntimeEvent(unrelated.sessionId, unrelated.runId, unrelated);
+
+      const result = await commitPrepared(store);
+
+      assert.equal(result.created, true);
+      assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
+    });
+  });
+
   it('rebuilds disposable tool projections from RuntimeEvent facts', async () => {
     await withStore(async (store) => {
       await commitPrepared(store);

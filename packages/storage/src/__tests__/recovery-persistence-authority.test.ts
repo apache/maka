@@ -852,10 +852,8 @@ describe('SQLite recovery persistence authority', () => {
   it('fail-stops a new session tool boundary when another session ledger is corrupt', async () => {
     await withStore(async (store, dbPath) => {
       await prepare(store);
-      store.close();
       injectDuplicateCall(dbPath, 3);
 
-      const reopened = createSqliteRuntimeStore(dbPath);
       const unrelatedCall = callEvent();
       unrelatedCall.id = 'unrelated-call-event';
       unrelatedCall.sessionId = 'session-2';
@@ -867,15 +865,11 @@ describe('SQLite recovery persistence authority', () => {
       }
       unrelatedCall.content.id = 'provider-call-2';
       unrelatedCall.refs = { toolCallId: 'provider-call-2' };
-      try {
-        await assert.rejects(
-          reopened.appendRuntimeEvent('session-2', 'run-2', unrelatedCall),
-          /duplicate_call/,
-        );
-        assert.deepEqual(await reopened.readImmutableRuntimeEvents('session-2', 'run-2'), []);
-      } finally {
-        reopened.close();
-      }
+      await assert.rejects(
+        store.appendRuntimeEvent('session-2', 'run-2', unrelatedCall),
+        /duplicate_call/,
+      );
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-2', 'run-2'), []);
     });
   });
 

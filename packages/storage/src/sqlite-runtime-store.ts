@@ -205,6 +205,7 @@ export class SqliteRuntimeStore
   readonly workspaceVersionAuthorityCapability = WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
   private readonly db: DatabaseSync;
   private readonly databaseLease?: OperationalStateDatabaseLease;
+  private toolLedgerHealth: ToolLedgerHealth | undefined;
   private closed = false;
 
   constructor(
@@ -223,6 +224,7 @@ export class SqliteRuntimeStore
       assertWorkspaceVersionAuthorityCapability(this.db);
       if (!options.readOnly) {
         this.registerWorkspaceBaselineAuthorityWriter(options.databaseLease.databasePath);
+        this.refreshToolLedgerHealth();
       }
       return;
     }
@@ -246,7 +248,10 @@ export class SqliteRuntimeStore
       assertRecoveryAuthorityCapability(this.db);
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
-      if (!options.readOnly) this.registerWorkspaceBaselineAuthorityWriter(path);
+      if (!options.readOnly) {
+        this.registerWorkspaceBaselineAuthorityWriter(path);
+        this.refreshToolLedgerHealth();
+      }
     } catch (error) {
       this.db.close();
       this.closed = true;
@@ -2121,13 +2126,21 @@ export class SqliteRuntimeStore
     candidateEvents: readonly RuntimeEvent[],
     expectedTransition: Parameters<typeof validateToolLedgerTransition>[0]['expectedTransition'],
   ): void {
-    const rows = this.db
-      .prepare(`
-        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-        FROM runtime_events
-        ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
-      `)
-      .all() as unknown as RuntimeEventStorageRow[];
+    this.assertWorkspaceToolLedgerHealthy();
+    // Tool-call identity is scoped by invocation. Reading unrelated invocations here turns
+    // concurrent subagents into repeated whole-workspace scans without strengthening the
+    // transition check; event and operation uniqueness remain enforced by SQLite keys.
+    const rows: RuntimeEventStorageRow[] = [];
+    const invocationIds = [...new Set(candidateEvents.map((event) => event.invocationId))].sort();
+    const readInvocation = this.db.prepare(`
+      SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+      FROM runtime_events
+      WHERE invocation_id = ?
+      ORDER BY event_seq ASC, event_id ASC
+    `);
+    for (const invocationId of invocationIds) {
+      rows.push(...(readInvocation.all(invocationId) as unknown as RuntimeEventStorageRow[]));
+    }
     const validation = validateToolLedgerTransition({
       existingEvents: rows.map(decodeRuntimeEventStorageRow),
       candidateEvents: candidateEvents.map(canonicalizeRuntimeEventForStorage),
@@ -2138,6 +2151,42 @@ export class SqliteRuntimeStore
         `Tool ledger transition rejected: ${validation.code} at ${validation.eventId}`,
       );
     }
+  }
+
+  private assertWorkspaceToolLedgerHealthy(): void {
+    const dataVersion = this.runtimeDataVersion();
+    if (!this.toolLedgerHealth || this.toolLedgerHealth.dataVersion !== dataVersion) {
+      this.refreshToolLedgerHealth();
+    }
+    const health = this.toolLedgerHealth!;
+    if (health.decodeFailure) throw health.decodeFailure.error;
+    if (health.issue) {
+      throw new Error(
+        `Tool ledger transition rejected: ${health.issue.code} at ${health.issue.eventId}`,
+      );
+    }
+  }
+
+  private refreshToolLedgerHealth(): void {
+    const dataVersion = this.runtimeDataVersion();
+    try {
+      const rows = this.db
+        .prepare(`
+          SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+          FROM runtime_events
+          ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
+        `)
+        .all() as unknown as RuntimeEventStorageRow[];
+      const scan = scanToolLedger(rows.map(decodeRuntimeEventStorageRow));
+      this.toolLedgerHealth = { dataVersion, issue: scan.issues[0] };
+    } catch (error) {
+      this.toolLedgerHealth = { dataVersion, decodeFailure: { error } };
+    }
+  }
+
+  private runtimeDataVersion(): number {
+    const row = this.db.prepare('PRAGMA data_version').get() as { data_version: number };
+    return row.data_version;
   }
 
   private assertInvocationIdentity(events: readonly RuntimeEvent[]): void {
@@ -2500,6 +2549,12 @@ export class SqliteRuntimeStore
       .get(operationId) as ToolOperationRow | undefined;
     return row ? toolOperationFromRow(row) : undefined;
   }
+}
+
+interface ToolLedgerHealth {
+  dataVersion: number;
+  issue?: ReturnType<typeof scanToolLedger>['issues'][number];
+  decodeFailure?: { error: unknown };
 }
 
 interface ToolOperationRow {
