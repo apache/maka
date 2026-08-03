@@ -211,6 +211,32 @@ describe('buildRunManifestFingerprint', () => {
     );
   });
 
+  // Regression guard for the harness-oracle-registry divergence: the registry
+  // path recomputes a fingerprint over entry/snapshot bodies and compares it to
+  // a stored value. Before unification, harness-oracle-registry.ts carried a
+  // local canonicalJson copy that omitted the undefined-field filter, so a body
+  // containing an undefined-valued nested field would hash to invalid JSON
+  // ({"field":undefined}) and never match the canonical computation. This pins
+  // the contract through buildRunManifestFingerprint using a registry-shaped
+  // payload with a nested undefined field.
+  test('registry-shaped body with a nested undefined field matches the all-defined body', () => {
+    const allDefined = {
+      schemaVersion: 1,
+      taskId: 'task-a',
+      identity: { taskFingerprint: 'sha256:aaa', executionPolicyFingerprint: 'sha256:bbb' },
+      execution: { status: 'completed' },
+      oracle: { outcome: 'passed', reward: 1, attempts: 1 },
+    };
+    const withUndefined = {
+      ...allDefined,
+      identity: { ...allDefined.identity, evidenceFingerprint: undefined },
+    };
+    assert.equal(
+      buildRunManifestFingerprint(withUndefined),
+      buildRunManifestFingerprint(allDefined),
+    );
+  });
+
   test('yields a sha256:<64 lowercase hex> string', () => {
     assert.match(buildRunManifestFingerprint({ a: 1 }), /^sha256:[a-f0-9]{64}$/);
   });
