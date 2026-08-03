@@ -125,6 +125,13 @@
    bubble, so it needs its own line and the gap above it. */
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
 .maka-deep-thinking { min-width: 0; }
+/* The reasoning body inside the Astryx ChatReasoning disclosure. The official
+   atoms own no white-space (the shell assumes children are pre-rendered), so
+   the inherited `white-space: normal` collapses every newline in thinking
+   text. Restore the pre-wrap reading contract the pre-Astryx disclosure had
+   (dropped in the #1748 migration). `word-break` keeps long tokens from
+   overflowing the box, as the old body did. */
+.maka-chat-reasoning-content { white-space: pre-wrap; word-break: break-word; }
 
 @keyframes maka-spin { to { transform: rotate(360deg); } }
 .maka-spin { animation: maka-spin 1s linear infinite; }

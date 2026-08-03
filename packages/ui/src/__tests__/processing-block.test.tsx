@@ -72,6 +72,11 @@ describe('deep-thinking disclosure', () => {
     assert.match(markup, /class="[^"]*astryx-chat-reasoning[^"]*"/);
     assert.match(markup, /class="maka-assistant-answer-content"/);
     assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
+    // The reasoning body carries the product wrap class so
+    // `.maka-chat-reasoning-content` in styles.css can restore pre-wrap —
+    // Astryx's own atoms declare no white-space, so without this seam the
+    // inherited `normal` collapses every newline in the thinking text.
+    assert.match(markup, /class="maka-chat-reasoning-content [^"]*"/);
     assert.match(markup, /private reasoning/);
     assert.doesNotMatch(markup, /data-slot="reasoning-trigger"/);
     assert.doesNotMatch(markup, /复制思考过程/);
