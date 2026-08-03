@@ -10,6 +10,8 @@ from typing import Any
 COMMAND_SCOPE_ENV = "MAKA_HARBOR_COMMAND_SCOPE"
 COMMAND_ID_ENV = "MAKA_HARBOR_COMMAND_ID"
 COMMAND_SCOPE_ROOT = "/tmp/maka-harbor-command-scopes"
+OUTPUT_REPLAY_TIMEOUT_SEC = 60
+PROCESS_SCOPE_CLEANUP_TIMEOUT_SEC = 10
 
 
 async def cleanup_process_scope(
@@ -20,6 +22,7 @@ async def cleanup_process_scope(
         await agent.exec_as_agent(
             environment,
             command=scoped_process_cleanup_command(scope, "TERM"),
+            timeout_sec=PROCESS_SCOPE_CLEANUP_TIMEOUT_SEC,
         )
     except BaseException as error:
         first_error = error
@@ -28,20 +31,33 @@ async def cleanup_process_scope(
         await agent.exec_as_agent(
             environment,
             command=scoped_process_cleanup_command(scope, "KILL"),
+            timeout_sec=PROCESS_SCOPE_CLEANUP_TIMEOUT_SEC,
         )
     except BaseException as error:
-        if first_error is None:
-            first_error = error
-    if first_error is not None:
-        raise first_error
+        if first_error is not None:
+            raise error from first_error
+        raise
 
 
-def scoped_command(command: str, scope: str, command_id: str) -> str:
+def scoped_command(
+    command: str,
+    scope: str,
+    command_id: str,
+    output_replay_timeout_sec: int = OUTPUT_REPLAY_TIMEOUT_SEC,
+) -> str:
+    if isinstance(output_replay_timeout_sec, bool) or not isinstance(
+        output_replay_timeout_sec, int
+    ) or output_replay_timeout_sec < 1:
+        raise ValueError("output replay timeout must be positive")
     scope_dir = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}")
     pgid_path = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.pgid")
     wrapper_path = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.wrapper")
     stdout_path = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.stdout")
     stderr_path = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.stderr")
+    replay_env = (
+        f"env {COMMAND_SCOPE_ENV}={shlex.quote(scope)} "
+        f"{COMMAND_ID_ENV}={shlex.quote(command_id)}"
+    )
     return (
         f"mkdir -p -- {scope_dir}; printf '%s\\n' \"$$\" > {wrapper_path}; set -m; "
         f"env {COMMAND_SCOPE_ENV}={shlex.quote(scope)} "
@@ -51,7 +67,12 @@ def scoped_command(command: str, scope: str, command_id: str) -> str:
         "set +m; "
         f"printf '%s\\n' \"$command_pid\" > {pgid_path}; "
         "wait \"$command_pid\" 2>/dev/null; command_status=$?; "
-        f"cat -- {stdout_path}; cat -- {stderr_path} >&2; "
+        f"{replay_env} timeout -s KILL {output_replay_timeout_sec} cat -- {stdout_path} & "
+        "stdout_replay_pid=$!; "
+        f"{replay_env} timeout -s KILL {output_replay_timeout_sec} cat -- {stderr_path} >&2 & "
+        "stderr_replay_pid=$!; "
+        "wait \"$stdout_replay_pid\" 2>/dev/null || true; "
+        "wait \"$stderr_replay_pid\" 2>/dev/null || true; "
         f"rm -f -- {stdout_path} {stderr_path}; "
         f"kill -0 -- \"-$command_pid\" 2>/dev/null || rm -f -- {pgid_path}; "
         f"rm -f -- {wrapper_path}; "

@@ -1208,7 +1208,9 @@ with tempfile.TemporaryDirectory() as tmp:
 
 function pythonBufferedWrapperCleanupSmokeScript(root: string): string {
   return String.raw`
+import contextlib
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -1221,28 +1223,63 @@ from process_scope import COMMAND_SCOPE_ROOT, scoped_command, scoped_process_cle
 
 scope = f"buffered-wrapper-cleanup-{os.getpid()}"
 scope_dir = Path(COMMAND_SCOPE_ROOT) / scope
+stdout_path = scope_dir / "command.stdout"
+pgid_path = scope_dir / "command.pgid"
+
+def replay_pids():
+    matches = []
+    for cmdline_path in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            cmdline = cmdline_path.read_bytes()
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        if cmdline.split(bytes([0]))[:2] == [b"cat", b"--"] and str(stdout_path).encode() in cmdline:
+            matches.append(int(cmdline_path.parent.name))
+    return matches
+
 process = subprocess.Popen(
-    ["bash", "-lc", scoped_command("head -c 1048576 /dev/zero; sleep 30", scope, "command")],
+    [
+        "bash",
+        "-lc",
+        scoped_command(
+            "head -c 1048576 /dev/zero; sleep 30",
+            scope,
+            "command",
+            output_replay_timeout_sec=1,
+        ),
+    ],
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
 )
 try:
-    stdout_path = scope_dir / "command.stdout"
     deadline = time.time() + 2
     while (not stdout_path.exists() or stdout_path.stat().st_size < 1048576) and time.time() < deadline:
         time.sleep(0.01)
     assert stdout_path.exists() and stdout_path.stat().st_size == 1048576
+    command_pgid = int(pgid_path.read_text(encoding="utf-8").strip())
+    os.killpg(command_pgid, signal.SIGKILL)
+    deadline = time.time() + 2
+    while not replay_pids() and time.time() < deadline:
+        time.sleep(0.01)
+    assert replay_pids(), "wrapper never entered buffered stdout replay"
+    process.wait(timeout=2)
+    deadline = time.time() + 1
+    while replay_pids() and time.time() < deadline:
+        time.sleep(0.01)
+    assert not replay_pids(), "bounded stdout replay did not settle"
     subprocess.run(
         ["bash", "-lc", scoped_process_cleanup_command(scope, "KILL")],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    process.wait(timeout=1)
 finally:
     if process.poll() is None:
         process.kill()
         process.wait()
+    for pid in replay_pids():
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
 `;
 }
 
@@ -3807,6 +3844,9 @@ class ClaudeCode:
             "auth_token": self._get_env("ANTHROPIC_AUTH_TOKEN"),
             "oauth_token": self._get_env("CLAUDE_CODE_OAUTH_TOKEN"),
         })
+        if instruction == "cancel":
+            environment.started.set()
+            await asyncio.Event().wait()
         if instruction == "pipeline-fail":
             result = await self.exec_as_agent(
                 environment,
@@ -3856,9 +3896,16 @@ from claude_code_agent import MakaClaudeCodeAgent
 class Environment:
     def __init__(self):
         self.commands = []
+        self.cleanup_timeouts = []
+        self.started = asyncio.Event()
 
-    async def exec(self, command, env=None, **kwargs):
+    async def exec(self, command, env=None, timeout_sec=None, **kwargs):
         self.commands.append(command)
+        if "/proc/[0-9]*/environ" in command:
+            self.cleanup_timeouts.append(timeout_sec)
+            if "kill -TERM" in command:
+                raise RuntimeError("simulated stuck TERM cleanup transport")
+            return types.SimpleNamespace(return_code=0, stdout="", stderr="")
         process = await asyncio.create_subprocess_exec(
             "bash",
             "-lc",
@@ -3933,6 +3980,23 @@ with tempfile.TemporaryDirectory() as tmp:
     pipeline_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
     assert pipeline_cell["status"] == "failed", pipeline_cell
     assert pipeline_cell["errorClass"] == "infra_failed", pipeline_cell
+
+    environment.cleanup_timeouts.clear()
+    cancelled = agent(logs)
+
+    async def cancel_claude():
+        task = asyncio.create_task(cancelled.run("cancel", environment, context))
+        await asyncio.wait_for(environment.started.wait(), timeout=1)
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=1)
+        except asyncio.CancelledError:
+            return
+        raise AssertionError("expected Claude Code cancellation")
+
+    asyncio.run(cancel_claude())
+    assert environment.cleanup_timeouts == [10, 10], environment.cleanup_timeouts
+    assert cancelled._failure_class == "budget_exhausted", cancelled._failure_class
 
 print("claude-code adapter ok")
 `;
