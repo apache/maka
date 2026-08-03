@@ -68,6 +68,11 @@ export function SettingsSection(props: {
   /** Group-level action cluster (refresh, add, filter), right-aligned. */
   action?: ReactNode;
   variant?: 'rows' | 'bare';
+  /** 'split' pairs the header (left column) with the body (right column) at
+   *  wide content widths — the Astryx settings template's two-column form.
+   *  Falls back to the stacked layout below the width threshold. The anchor
+   *  Divider is omitted in split mode; the column seam carries the grouping. */
+  layout?: 'stack' | 'split';
   className?: string;
   /** Class for the body element, when a page needs to pin its own grid. */
   bodyClassName?: string;
@@ -75,7 +80,11 @@ export function SettingsSection(props: {
 }) {
   const hasHeader = props.title != null || props.description != null || props.action != null;
   return (
-    <section className={cn('settingsSection', props.className)} aria-labelledby={props.titleId}>
+    <section
+      className={cn('settingsSection', props.className)}
+      data-layout={props.layout === 'split' ? 'split' : undefined}
+      aria-labelledby={props.titleId}
+    >
       {hasHeader ? (
         /* The header is Astryx's own settings idiom — `Heading level={3}` over
            a `Text type="supporting" color="secondary"` lede — as used by the
@@ -98,7 +107,7 @@ export function SettingsSection(props: {
           {props.action != null ? <div>{props.action}</div> : null}
         </HStack>
       ) : null}
-      {hasHeader ? <Divider /> : null}
+      {hasHeader && props.layout !== 'split' ? <Divider /> : null}
       {props.variant === 'bare' ? (
         <div className={cn('settingsSectionBody', props.bodyClassName)}>{props.children}</div>
       ) : (

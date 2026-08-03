@@ -124,6 +124,7 @@
    no longer a card — it's just the vertical container with gap, and
    `.settingsRows` is the ONLY card primitive. */
 .settingsPageStack {
+  container: settings-page / inline-size;
   display: grid;
   align-content: start;
   /* #1362: explicit column. The implicit `auto` track sizes to the widest
@@ -159,6 +160,21 @@
      (a long mono path, a scrollable pre) must not widen the section. */
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
+}
+
+/* The Astryx settings template's two-column form (layout='split'): title +
+   lede in a fixed left column, the rows in the right column, 40px between —
+   template evidence: settings/page.tsx Grid columns={{minWidth: 320}}
+   gap={10}. Below the threshold the section falls back to the stacked grid
+   above. Gated on the page-stack container width, so a section splits only
+   where its page actually grants a wide content column (General at 1040)
+   and stays stacked on narrow pages regardless of window size. */
+@container settings-page (min-width: 880px) {
+  .settingsSection[data-layout='split'] {
+    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+    column-gap: var(--space-10);
+    row-gap: var(--space-2);
+  }
 }
 
 .settingsSectionBodyHidden {

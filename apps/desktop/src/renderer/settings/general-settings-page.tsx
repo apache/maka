@@ -61,7 +61,7 @@ export function GeneralSettingsPage(props: {
           moved here from the 外观 page — they configure who you are to the
           app, not how the app looks. The component keeps its save flow. */}
       <PersonalizationSettingsPage settings={props.settings} onUpdate={props.onUpdate} />
-      <SettingsSection title={sections.privacy} description={sections.privacyHelp}>
+      <SettingsSection layout="split" title={sections.privacy} description={sections.privacyHelp}>
         <SettingsRow
           label={copy.incognito}
           description={copy.incognitoHelp}
@@ -99,6 +99,7 @@ export function GeneralSettingsPage(props: {
         onUpdate={props.onUpdate}
       />
       <SettingsSection
+        layout="split"
         title={memoryCopy.text.instructions}
         description={memoryCopy.text.instructionsHelp}
       >
@@ -121,7 +122,7 @@ export function GeneralSettingsPage(props: {
           onCreate={workspaceInstructions.createFile}
         />
       </SettingsSection>
-      <SettingsSection title={sections.network} description={sections.networkHelp}>
+      <SettingsSection layout="split" title={sections.network} description={sections.networkHelp}>
         <NetworkProxySection settings={props.settings} onUpdate={props.onUpdate} />
       </SettingsSection>
     </SettingsPage>
@@ -238,7 +239,7 @@ function GeneralDefaultsCard(props: {
   }
 
   return (
-    <SettingsSection title={sections.chatDefaults} description={sections.chatDefaultsHelp}>
+    <SettingsSection layout="split" title={sections.chatDefaults} description={sections.chatDefaultsHelp}>
       <SettingsRow
         label={copy.defaultModel}
         description={copy.defaultModelHelp}

@@ -176,7 +176,7 @@ export function PersonalizationSettingsPage(props: {
       {/* These editable values stay in the same grouped Settings card as the
           neighboring preferences; the full-width tone field uses the vertical
           row variant. */}
-      <SettingsSection title={sections.identity} description={sections.identityHelp}>
+      <SettingsSection layout="split" title={sections.identity} description={sections.identityHelp}>
         <SettingsField>
           <TextInput
             type="text"
