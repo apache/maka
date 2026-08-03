@@ -31,6 +31,11 @@ type RendererComponents = {
     onAddProvider(): void;
     onBrowseProviders(): void;
   }): ReactNode;
+  ProviderCatalogPage(props: {
+    filter: { query: string; category: 'recommended' };
+    onFilterChange(filter: { query: string; category: 'recommended' }): void;
+    onPick(): void;
+  }): ReactNode;
   ToastProvider(props: { children: ReactNode }): ReactNode;
   UsageSettingsPage(props: {
     settings: AppSettings;
@@ -138,6 +143,18 @@ describe('Astryx component behavior', () => {
     assert.doesNotMatch(markup, /配置 AI 进度|当前步骤|待完成/);
   });
 
+  it('keeps routine provider metadata out of badges', async () => {
+    const { LocaleProvider, ProviderCatalogPage } = await rendererComponents;
+    const markup = renderWithLocale(LocaleProvider, createElement(ProviderCatalogPage, {
+      filter: { query: '', category: 'recommended' },
+      onFilterChange: () => undefined,
+      onPick: () => undefined,
+    }));
+
+    assert.match(markup, /data-maka-contract="provider-catalog"/);
+    assert.doesNotMatch(markup, /astryx-badge/);
+  });
+
   it('opens WeChat advanced settings only when advanced values already exist', async () => {
     const { BotWeChatFields, LocaleProvider, ToastProvider } = await rendererComponents;
     const channel: BotChannelSettings = {
@@ -218,6 +235,7 @@ async function importRendererComponents(): Promise<RendererComponents> {
         "export { BotWeChatFields } from './apps/desktop/src/renderer/settings/bot-wechat-login.tsx';",
         "export { KeyboardHelpModal } from './apps/desktop/src/renderer/keyboard-help.tsx';",
         "export { OnboardingHero } from './apps/desktop/src/renderer/OnboardingHero.tsx';",
+        "export { ProviderCatalogPage } from './apps/desktop/src/renderer/settings/provider-catalog-page.tsx';",
         "export { UsageSettingsPage } from './apps/desktop/src/renderer/settings/usage-settings-page.tsx';",
         "export { LocaleProvider } from './packages/ui/dist/locale-context.js';",
         "export { ToastProvider } from './packages/ui/dist/toast.js';",

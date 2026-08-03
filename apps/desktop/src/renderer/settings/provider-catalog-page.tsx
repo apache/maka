@@ -1,8 +1,6 @@
 import {
-  Badge,
   Banner,
   EmptyState,
-  HStack,
   List,
   ListItem,
   Selector,
@@ -127,14 +125,9 @@ export function ProviderCatalogPage(props: {
               data-status="ready"
               data-logged-in={card.isLoggedIn ? 'true' : undefined}
               startContent={<ProviderLogo type={card.providerType} />}
-              label={<span aria-label={providerCopy.oauthSection.cardAria(card.name, card.badge, card.description)}>{card.name}</span>}
+              label={<span aria-label={providerCopy.oauthSection.cardAria(card.name, card.status, card.description)}>{card.name}</span>}
               description={card.description}
-              endContent={(
-                <HStack gap={2} vAlign="center">
-                  <Badge variant={card.isLoggedIn ? 'neutral' : 'info'} label={card.badge} />
-                  <ChevronRight size={15} aria-hidden="true" />
-                </HStack>
-              )}
+              endContent={<ChevronRight size={15} aria-hidden="true" />}
               onClick={() => props.onPick({
                 method: 'account',
                 cardId: card.id,
@@ -152,14 +145,9 @@ export function ProviderCatalogPage(props: {
                 data-provider={type}
                 data-status="ready"
                 startContent={<ProviderLogo type={type} />}
-                label={<span aria-label={catalogCopy.cardAria(display.name, display.badge, display.description)}>{display.name}</span>}
+                label={<span aria-label={catalogCopy.cardAria(display.name, display.description)}>{display.name}</span>}
                 description={display.description}
-                endContent={(
-                  <HStack gap={2} vAlign="center">
-                    {display.badge && <Badge variant="neutral" label={display.badge} />}
-                    <ChevronRight size={15} aria-hidden="true" />
-                  </HStack>
-                )}
+                endContent={<ChevronRight size={15} aria-hidden="true" />}
                 onClick={() => props.onPick({ method: 'credentials', providerType: type, name: display.name })}
               />
             );

@@ -25,8 +25,8 @@ export interface OAuthCard {
   name: string;
   /** Account email once signed in, the static pitch otherwise. */
   description: string;
-  /** 已登录 once signed in, 可用 otherwise. */
-  badge: string;
+  /** A meaningful account state; routine availability stays in the description. */
+  status?: string;
   isLoggedIn: boolean;
 }
 
@@ -51,10 +51,10 @@ export function useOAuthCards(props: { query?: string }) {
   const mountedRef = useMountedRef();
   const refreshTicketRef = useRef(0);
   // PR-OAUTH-CARD-LIVE-STATE-0 (WAWQAQ msg d79fd115 follow-up): before this
-  // lift the cards stayed at the static "可用 / 预览" label even after the
-  // user finished the OAuth flow — there was no parent re-fetch. Each service
-  // now carries a runtimeState + email so its row can show "已登录" and the
-  // account email inline, re-fetched whenever a login step closes (success OR
+  // lift the cards stayed at their static catalog copy even after the user
+  // finished the OAuth flow — there was no parent re-fetch. Each service now
+  // carries a runtimeState + email so its row can show the account email inline,
+  // re-fetched whenever a login step closes (success OR
   // cancel — the user may have signed out from inside it).
   const [cardStates, setCardStates] = useState<Record<OAuthCardId, SubscriptionSnapshot | null>>({
     claude: null,
@@ -151,7 +151,7 @@ export function useOAuthCards(props: { query?: string }) {
         providerType: card.providerType,
         name: card.name,
         description: isLoggedIn && snapshot?.email ? snapshot.email : card.description,
-        badge: isLoggedIn ? copy.signedIn : card.statusLabel,
+        ...(isLoggedIn ? { status: copy.signedIn } : {}),
         isLoggedIn,
       };
     });
@@ -183,13 +183,12 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
   providerType: ProviderType;
   name: string;
   description: string;
-  statusLabel: string;
 }> {
   return [
-    { id: 'claude', providerType: 'claude-subscription', name: 'Claude Code', description: copy.claudeDescription, statusLabel: copy.available },
-    { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription, statusLabel: copy.available },
-    { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription, statusLabel: copy.available },
-    { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription, statusLabel: copy.available },
+    { id: 'claude', providerType: 'claude-subscription', name: 'Claude Code', description: copy.claudeDescription },
+    { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription },
+    { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription },
+    { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription },
   ];
 }
 

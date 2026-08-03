@@ -89,7 +89,7 @@ const zhCopy = {
   catalog: {
     unavailable: '未开放',
     wiredTitle: (name: string) => `${name}（请从账号连接登录）`,
-    unwiredTitle: (name: string) => `${name}（账号登录暂未接入聊天发送）`, cardAria: (name: string, badge: string | undefined, description: string) => `添加模型供应商：${name}${badge ? `，标签：${badge}` : ''}，${description}`,
+    unwiredTitle: (name: string) => `${name}（账号登录暂未接入聊天发送）`, cardAria: (name: string, description: string) => `添加模型供应商：${name}，${description}`,
   },
   add: {
     invalidSlug: '连接标识格式不正确', duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
@@ -114,7 +114,7 @@ const zhCopy = {
     logoutTitle: (name: string) => `退出 ${name} 登录？`,
   },
   oauthSection: {
-    available: '可用', signedIn: '已登录', claudeDescription: 'Claude Pro / Max 订阅账号登录。', codexDescription: 'ChatGPT Plus / Pro 订阅账号登录。', xaiDescription: 'SuperGrok / X Premium 账号登录。',
+    signedIn: '已登录', claudeDescription: 'Claude Pro / Max 订阅账号登录。', codexDescription: 'ChatGPT Plus / Pro 订阅账号登录。', xaiDescription: 'SuperGrok / X Premium 账号登录。',
     copilotDescription: '导入兼容 GitHub 凭据连接 Copilot 订阅。', serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。',
     aria: 'OAuth 登录',
     staleState: 'OAuth 登录状态暂时没刷新成功，已保留上一次状态。', claudeSubtitle: '登录 Claude Pro / Max 后，会同步成模型连接。',
@@ -124,7 +124,7 @@ const zhCopy = {
     copilotSetup: '请配置具有 Copilot Requests 权限的 fine-grained PAT；普通 gh auth login 可能不包含该权限。', importing: '导入中…',
     reimport: '重新导入', importCredential: '导入兼容凭据', verifying: '验证中…', reverify: '重新验证', removing: '移除中…', removeLocal: '移除本地登录',
     loadingAccount: '正在加载账号状态…', authorizing: '请在弹出的浏览器窗口完成登录。', refreshing: '正在刷新访问令牌…', refreshTokenFailed: '令牌刷新失败，请重新登录。',
-    cardAria: (name: string, badge: string, description: string) => `打开 OAuth 登录：${name}，状态：${badge}，${description.replace(/[。.!！？?]+$/u, '')}`,
+    cardAria: (name: string, status: string | undefined, description: string) => `打开 OAuth 登录：${name}${status ? `，状态：${status}` : ''}，${description.replace(/[。.!！？?]+$/u, '')}`,
     connectTitle: (name: string) => `连接 ${name}`, login: (name: string) => `登录 ${name}`, signedOut: (name: string) => `${name} 尚未登录。`,
     storageFailed: (name: string) => `${name} 本地凭据读取失败，请重新登录。`, providerUnavailable: (name: string) => `${name} 已登录，但当前 provider 状态不可用。`,
   },
@@ -230,7 +230,7 @@ const enCopy: ProviderSettingsCopy = {
   catalog: {
     unavailable: 'Unavailable',
     wiredTitle: (name: string) => `${name} (sign in under account connections)`,
-    unwiredTitle: (name: string) => `${name} (account sign-in not connected to chat)`, cardAria: (name: string, badge: string | undefined, description: string) => `Add model provider: ${name}${badge ? `; badge: ${badge}` : ''}; ${description}`,
+    unwiredTitle: (name: string) => `${name} (account sign-in not connected to chat)`, cardAria: (name: string, description: string) => `Add model provider: ${name}; ${description}`,
   },
   add: {
     invalidSlug: 'The connection identifier format is invalid', duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
@@ -255,7 +255,7 @@ const enCopy: ProviderSettingsCopy = {
     logoutTitle: (name: string) => `Sign out of ${name}?`,
   },
   oauthSection: {
-    available: 'Available', signedIn: 'Signed in', claudeDescription: 'Sign in with a Claude Pro / Max subscription.', codexDescription: 'Sign in with a ChatGPT Plus / Pro subscription.', xaiDescription: 'Sign in with SuperGrok or X Premium.',
+    signedIn: 'Signed in', claudeDescription: 'Sign in with a Claude Pro / Max subscription.', codexDescription: 'Sign in with a ChatGPT Plus / Pro subscription.', xaiDescription: 'Sign in with SuperGrok or X Premium.',
     copilotDescription: 'Import compatible GitHub credentials to connect a Copilot subscription.', serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.',
     aria: 'OAuth sign-in',
     staleState: 'OAuth sign-in status could not be refreshed. The last known state is preserved. ', claudeSubtitle: 'After Claude Pro / Max sign-in, the account is synchronized as a model connection.',
@@ -265,7 +265,7 @@ const enCopy: ProviderSettingsCopy = {
     copilotSetup: 'Configure a fine-grained PAT with Copilot Requests permission. A normal gh auth login may not include it.', importing: 'Importing…',
     reimport: 'Reimport', importCredential: 'Import compatible credentials', verifying: 'Verifying…', reverify: 'Verify again', removing: 'Removing…', removeLocal: 'Remove local sign-in',
     loadingAccount: 'Loading account status…', authorizing: 'Complete sign-in in the browser window.', refreshing: 'Refreshing access token…', refreshTokenFailed: 'Token refresh failed. Sign in again.',
-    cardAria: (name: string, badge: string, description: string) => `Open OAuth sign-in: ${name}; status: ${badge}; ${description.replace(/[。.!！？?]+$/u, '')}`,
+    cardAria: (name: string, status: string | undefined, description: string) => `Open OAuth sign-in: ${name}${status ? `; status: ${status}` : ''}; ${description.replace(/[。.!！？?]+$/u, '')}`,
     connectTitle: (name: string) => `Connect ${name}`, login: (name: string) => `Sign in to ${name}`, signedOut: (name: string) => `${name} is signed out.`,
     storageFailed: (name: string) => `Could not read local credentials for ${name}. Sign in again.`, providerUnavailable: (name: string) => `${name} is signed in, but the provider status is currently unavailable.`,
   },
