@@ -7,7 +7,7 @@ import type { ProjectRootController } from './project-root-controller.js';
 import { resolveOpenPath, type OpenPathResult } from './open-path-guard.js';
 import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
 import type { resolveBuildInfo } from './build-info.js';
-import { createAppUpdateService, type AppUpdateService, type AppUpdateStatus } from './app-update-service.js';
+import type { AppUpdateService, AppUpdateStatus } from './app-update-service.js';
 import type { ProjectManagementService } from './project-management-service.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
@@ -23,25 +23,11 @@ export interface AppIpcDeps {
   buildInfo: BuildInfo;
   e2eFixture: E2eFixture;
   projectManagement: ProjectManagementService;
-  updateService?: AppUpdateService;
+  updateService: AppUpdateService;
 }
 
 export function registerAppIpc(deps: AppIpcDeps): void {
-  const { mainWindowController, projectRoot, workspaceRoot, buildInfo, e2eFixture } = deps;
-  const updateService = deps.updateService ?? createAppUpdateService({
-    currentVersion: app.getVersion(),
-    isPackaged: app.isPackaged,
-    platform: process.platform,
-    arch: process.arch,
-    openExternal: (url) => shell.openExternal(url),
-    mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
-    mockState: process.env.MAKA_UPDATE_MOCK_STATE === 'available' ||
-      process.env.MAKA_UPDATE_MOCK_STATE === 'downloading' ||
-      process.env.MAKA_UPDATE_MOCK_STATE === 'downloaded'
-      ? process.env.MAKA_UPDATE_MOCK_STATE
-      : undefined,
-    onStatusChange: (status) => mainWindowController.send('app:updateStatusChanged', status),
-  });
+  const { mainWindowController, projectRoot, workspaceRoot, buildInfo, e2eFixture, updateService } = deps;
   // Call-time read of the shared project-root authority: every handler must
   // observe the latest selection, not a snapshot taken at registration.
   const currentProjectRoot = (): Promise<string> => projectRoot.current();
@@ -86,8 +72,6 @@ export function registerAppIpc(deps: AppIpcDeps): void {
     };
   });
   ipcMain.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
-  ipcMain.handle('app:checkForUpdates', (): Promise<AppUpdateStatus> => updateService.checkForUpdates());
-  ipcMain.handle('app:downloadUpdate', (): Promise<AppUpdateStatus> => updateService.downloadUpdate());
   ipcMain.handle('app:installUpdate', () => updateService.installUpdate());
   ipcMain.handle('app:openUpdateDownload', () => updateService.openUpdateDownload());
   ipcMain.handle('projects:list', () => deps.projectManagement.list());

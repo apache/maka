@@ -402,7 +402,6 @@ type ShellCopy = {
     updateInstallFailedTitle: string;
     updateInstallFailedFallback: string;
     updateInstallManualFallback: string;
-    updateDownloadFailedTitle: string;
     updateOpenFailedTitle: string;
     updateOpenManualFallback: string;
     loading: string;
@@ -1082,7 +1081,6 @@ const SHELL_COPY_BY_LOCALE = {
       updateInstallFailedTitle: '无法安装更新',
       updateInstallFailedFallback: '请稍后重试。',
       updateInstallManualFallback: '请稍后重试，或手动下载最新版本。',
-      updateDownloadFailedTitle: '无法下载更新',
       updateOpenFailedTitle: '无法打开更新',
       updateOpenManualFallback: '请稍后重试，或前往 GitHub Releases 下载最新版本。',
       loading: '加载中',
@@ -1590,7 +1588,6 @@ const SHELL_COPY_BY_LOCALE = {
       updateInstallFailedTitle: 'Could not install update',
       updateInstallFailedFallback: 'Try again later.',
       updateInstallManualFallback: 'Try again later, or download the latest version manually.',
-      updateDownloadFailedTitle: 'Could not download update',
       updateOpenFailedTitle: 'Could not open update',
       updateOpenManualFallback: 'Try again later, or download the latest version from GitHub Releases.',
       loading: 'Loading',

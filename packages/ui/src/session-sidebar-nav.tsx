@@ -113,7 +113,7 @@ export function SessionSidebarFooter(props: {
           variant="ghost"
           width="100%"
           onClick={props.onOpenUpdate}
-          isDisabled={props.updateReminder.state === 'downloading'}
+          isDisabled={props.updateReminder.state === 'available' || props.updateReminder.state === 'downloading'}
         >
           {props.updateReminder.state === 'downloading' && <span className="maka-sidebar-update-progress" aria-hidden="true" />}
           <span>{updateLabel}</span>

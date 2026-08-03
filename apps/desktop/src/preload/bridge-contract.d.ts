@@ -691,8 +691,6 @@ export interface MakaBridge {
     }>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
-    checkForUpdates(): Promise<AppUpdateStatus>;
-    downloadUpdate(): Promise<AppUpdateStatus>;
     installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }>;
     openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }>;
     sessionProjectInfo(sessionId: string): Promise<{

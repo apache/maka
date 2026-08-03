@@ -181,8 +181,6 @@ type ComposerImportOwner = {
  * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-
 /**
  * Module surfaces that own their whole column and render no workspace toolbar.
  * This used to be a `display: none` rule keyed on the detail panel's
@@ -379,32 +377,20 @@ function AppShellContent({
   const voiceCopy = getDesktopConversationCopy(uiLocale).voice;
   useEffect(() => {
     let cancelled = false;
-    const refreshUpdateStatus = () => {
-      void window.maka.app
-        .checkForUpdates()
-        .then((next) => {
-          if (!cancelled) setAppUpdateStatus(next);
-        })
-        .catch(() => {
-          if (!cancelled) setAppUpdateStatus(null);
-        });
-    };
-
+    let receivedPush = false;
+    const unsubscribeUpdateStatus = window.maka.app.subscribeUpdateStatus((next) => {
+      receivedPush = true;
+      if (!cancelled) setAppUpdateStatus(next);
+    });
     void window.maka.app
       .updateStatus()
       .then((next) => {
-        if (!cancelled) setAppUpdateStatus(next);
+        if (!cancelled && !receivedPush) setAppUpdateStatus(next);
       })
       .catch(() => {});
-    const unsubscribeUpdateStatus = window.maka.app.subscribeUpdateStatus((next) => {
-      if (!cancelled) setAppUpdateStatus(next);
-    });
-    refreshUpdateStatus();
-    const interval = window.setInterval(refreshUpdateStatus, UPDATE_CHECK_INTERVAL_MS);
     return () => {
       cancelled = true;
       unsubscribeUpdateStatus();
-      window.clearInterval(interval);
     };
   }, []);
 
@@ -438,16 +424,7 @@ function AppShellContent({
         });
       return;
     }
-    if (appUpdateStatus?.state === 'available' || appUpdateStatus?.state === 'error') {
-      void window.maka.app
-        .downloadUpdate()
-        .then((next) => setAppUpdateStatus(next))
-        .catch((error) => {
-          toastApi.error(
-            shellCopy.updateDownloadFailedTitle,
-            localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
-          );
-        });
+    if (appUpdateStatus?.state === 'available' || appUpdateStatus?.state === 'downloading') {
       return;
     }
     void window.maka.app

@@ -1083,12 +1083,6 @@ const makaBridge = {
     updateStatus(): Promise<AppUpdateStatus> {
       return ipcRenderer.invoke('app:updateStatus');
     },
-    checkForUpdates(): Promise<AppUpdateStatus> {
-      return ipcRenderer.invoke('app:checkForUpdates');
-    },
-    downloadUpdate(): Promise<AppUpdateStatus> {
-      return ipcRenderer.invoke('app:downloadUpdate');
-    },
     installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }> {
       return ipcRenderer.invoke('app:installUpdate');
     },

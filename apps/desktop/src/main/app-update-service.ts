@@ -37,9 +37,9 @@ export type AppUpdateStatus =
   | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
 
 export interface AppUpdateService {
+  start(): void;
+  dispose(): void;
   getStatus(): AppUpdateStatus;
-  checkForUpdates(): Promise<AppUpdateStatus>;
-  downloadUpdate(): Promise<AppUpdateStatus>;
   installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }>;
   openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }>;
 }
@@ -54,10 +54,15 @@ interface AppUpdateServiceDeps {
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
+  clock?: {
+    setTimeout(callback: () => void, delayMs: number): unknown;
+    clearTimeout(handle: unknown): void;
+  };
 }
 
 const RELEASES_URL = 'https://github.com/Maka-Agent/maka-agent/releases/latest';
-const { autoUpdater } = electronUpdater;
+const FIRST_UPDATE_CHECK_DELAY_MS = 10_000;
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');
@@ -148,8 +153,16 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   let status: AppUpdateStatus = { state: 'idle', currentVersion: deps.currentVersion };
   let latestInfo: UpdateInfo | undefined;
   let checkInFlight: Promise<AppUpdateStatus> | null = null;
-  let downloadInFlight: Promise<AppUpdateStatus> | null = null;
-  const updater = deps.updater ?? autoUpdater;
+  let checkTimer: unknown;
+  let started = false;
+  let disposed = false;
+  // Resolve Electron's singleton lazily so tests can inject an updater without
+  // constructing electron-updater's AppAdapter in a plain Node process.
+  const updater = deps.updater ?? electronUpdater.autoUpdater;
+  const clock = deps.clock ?? {
+    setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  };
 
   const publish = (next: AppUpdateStatus): AppUpdateStatus => {
     status = next;
@@ -162,7 +175,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       ? status.latestVersion
       : updateInfoVersion(latestInfo);
 
-  updater.autoDownload = false;
+  updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
   updater.allowPrerelease = false;
   updater.logger = null;
@@ -223,40 +236,9 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     });
   });
 
-  async function downloadUpdate(): Promise<AppUpdateStatus> {
-    if (deps.mockLatestVersion) {
-      return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, deps.mockState ?? 'downloaded'));
-    }
-    if (!deps.isPackaged) return status;
-    if (status.state === 'downloaded') return status;
-    if (downloadInFlight) return downloadInFlight;
-    const version = latestVersion() ?? deps.currentVersion;
-    publish({
-      state: 'downloading',
-      currentVersion: deps.currentVersion,
-      latestVersion: version,
-      progress: { percent: 0 },
-    });
-    downloadInFlight = updater
-      .downloadUpdate()
-      .then(() => status)
-      .catch((error) => publish({
-        state: 'error',
-        currentVersion: deps.currentVersion,
-        latestVersion: version,
-        message: error instanceof Error ? error.message : String(error),
-      }))
-      .finally(() => {
-        downloadInFlight = null;
-      });
-    return downloadInFlight;
-  }
-
   async function checkForUpdates(): Promise<AppUpdateStatus> {
     if (deps.mockLatestVersion) {
-      const next = mockStatus(deps.currentVersion, deps.mockLatestVersion, deps.mockState ?? 'downloading');
-      publish(next);
-      return next.state === 'available' ? downloadUpdate() : next;
+      return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, deps.mockState ?? 'downloading'));
     }
     if (!deps.isPackaged) {
       return publish({ state: 'not-available', currentVersion: deps.currentVersion });
@@ -265,10 +247,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (checkInFlight) return checkInFlight;
     checkInFlight = updater
       .checkForUpdates()
-      .then(async (result) => {
-        if (result?.isUpdateAvailable) return downloadUpdate();
-        return status;
-      })
+      .then(() => status)
       .catch((error) => publish({
         state: 'error',
         currentVersion: deps.currentVersion,
@@ -279,6 +258,32 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
         checkInFlight = null;
       });
     return checkInFlight;
+  }
+
+  const scheduleCheck = (delayMs: number): void => {
+    if (disposed) return;
+    checkTimer = clock.setTimeout(() => {
+      checkTimer = undefined;
+      void checkForUpdates().finally(() => {
+        scheduleCheck(UPDATE_CHECK_INTERVAL_MS);
+      });
+    }, delayMs);
+  };
+
+  function start(): void {
+    if (started || disposed) return;
+    started = true;
+    if (!deps.isPackaged && !deps.mockLatestVersion) return;
+    scheduleCheck(FIRST_UPDATE_CHECK_DELAY_MS);
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    if (checkTimer !== undefined) {
+      clock.clearTimeout(checkTimer);
+      checkTimer = undefined;
+    }
   }
 
   async function installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }> {
@@ -309,9 +314,9 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   }
 
   return {
+    start,
+    dispose,
     getStatus: () => status,
-    checkForUpdates,
-    downloadUpdate,
     installUpdate,
     openUpdateDownload,
   };
