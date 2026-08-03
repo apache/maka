@@ -14,11 +14,19 @@ when the installed Electron version changes. Run
 The scripts launch the bundle through macOS LaunchServices rather than executing
 its internal binary from a terminal. This is required for TCC to attribute the
 running process to `Maka Dev` and recognize the stored grants.
-The generated bundle also contains a small local bootstrap, so macOS's Screen
-Recording “Quit & Reopen” action can reopen the repository app without relying
-on command-line arguments that the system restart discards.
+The launcher remains alive as the development-session supervisor until the
+terminal receives Ctrl-C or SIGTERM. The generated bundle contains a small local
+bootstrap that reads a PID-validated, per-worktree session file, restoring the
+Vite URL and a curated environment-variable allowlist before importing the main
+process. macOS's Screen Recording “Quit & Reopen” action can therefore reconnect
+to the same HMR session without relying on command-line arguments that the
+system restart discards. Session files are written atomically with mode `0600`.
 It uses `~/Library/Application Support/Maka Dev` for development state, keeping
 development restarts isolated from the packaged Maka profile.
+
+Only one supervised Maka Dev session can use a worktree at a time. Runtime
+preparation is protected by a PID lock, and shutdown targets the app PID recorded
+by that supervisor rather than every process sharing the development bundle ID.
 
 Grant permissions to **Maka Dev**, not a generic Electron entry. Screen Recording
 changes require restarting the development app. Recreating the app or changing

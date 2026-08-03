@@ -29,6 +29,7 @@ import { getPermissionOverlayCopy } from './permission-overlay-copy.js';
 import {
   createPermissionOverlayController,
   isDragGrantPermission,
+  startScreenRecordingOnboarding,
   type DragGrantPermissionId,
   type PermissionOverlayController,
   type PermissionOverlayWindowLike,
@@ -306,12 +307,13 @@ export function registerPermissionOverlayIpc(deps: PermissionOverlayIpcDeps): vo
 
   ipcMain.handle('permissions:startDragOnboarding', async (_event, id: unknown) => {
     if (id === 'screen_recording') {
-      const requested = await requestPermissionAccess(id);
-      if (!requested.ok) return requested;
-      if (systemPreferences.getMediaAccessStatus('screen') === 'granted') return requested;
-      // A real capture request engages TCC, but macOS may still require the
-      // app bundle to be added in System Settings. Continue into the existing
-      // drag card instead of replacing that second half of the workflow.
+      return startScreenRecordingOnboarding({
+        requestAccess: () => requestPermissionAccess(id),
+        isGranted: () => systemPreferences.getMediaAccessStatus('screen') === 'granted',
+        // A real capture request engages TCC, but macOS may still require the
+        // bundle in System Settings. Preserve the drag-card second half.
+        startDrag: () => deps.controller.start(id),
+      });
     }
     return deps.controller.start(id);
   });

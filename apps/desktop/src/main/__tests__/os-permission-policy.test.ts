@@ -4,6 +4,7 @@ import {
   mapMediaAccessStatus,
   mediaPermissionActions,
   planPermissionRequest,
+  requestScreenCaptureConsent,
   supportsMediaPermissionProbe,
 } from '../os-permission-policy.js';
 
@@ -96,5 +97,18 @@ describe('OS permission platform policy', () => {
       id: 'microphone',
       platform: 'linux',
     }), 'unsupported_platform');
+  });
+
+  it('attempts a real screen capture before deciding whether settings are needed', async () => {
+    let captures = 0;
+    assert.equal(await requestScreenCaptureConsent({
+      capture: async () => { captures += 1; },
+      status: () => 'denied',
+    }), 'open_settings');
+    assert.equal(captures, 1);
+    assert.equal(await requestScreenCaptureConsent({
+      capture: async () => { throw new Error('TCC denied'); },
+      status: () => 'granted',
+    }), 'granted');
   });
 });

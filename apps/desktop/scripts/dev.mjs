@@ -25,8 +25,11 @@ import { createServer } from 'vite';
 import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
 import {
+  clearDevelopmentSession,
+  createDevelopmentSession,
   quitMacosDevelopmentApp,
   resolveMacosDevelopmentLaunch,
+  writeDevelopmentSession,
 } from './dev-app-runtime.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -147,7 +150,16 @@ if (!devUrl) {
 
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
 const appArgs = [DESKTOP_DIR, ...process.argv.slice(2)];
-const macosLaunch = resolveMacosDevelopmentLaunch(appArgs, { VITE_DEV_SERVER_URL: devUrl });
+const macosLaunch = await resolveMacosDevelopmentLaunch();
+if (macosLaunch) {
+  const userDataArg = process.argv.slice(2).find((arg) => arg.startsWith('--user-data-dir='));
+  writeDevelopmentSession(createDevelopmentSession({
+    supervisorPid: process.pid,
+    viteUrl: devUrl,
+    env: process.env,
+    userDataDir: userDataArg?.slice('--user-data-dir='.length),
+  }));
+}
 const electron = spawn(macosLaunch?.command ?? resolveElectronBin(), macosLaunch?.args ?? appArgs, {
   cwd: DESKTOP_DIR,
   stdio: 'inherit',
@@ -158,7 +170,10 @@ let shuttingDown = false;
 async function shutdown(code, options = {}) {
   if (shuttingDown) return;
   shuttingDown = true;
-  if (macosLaunch) quitMacosDevelopmentApp();
+  if (macosLaunch) {
+    await quitMacosDevelopmentApp();
+    clearDevelopmentSession();
+  }
   if (options.killElectron !== false) {
     await terminateProcessTree(electron);
   }
@@ -181,7 +196,13 @@ function terminateProcessTree(child) {
   return Promise.resolve();
 }
 
-electron.on('exit', (code) => shutdown(code ?? 0, { killElectron: false }));
+if (!macosLaunch) {
+  electron.on('exit', (code) => shutdown(code ?? 0, { killElectron: false }));
+} else {
+  electron.on('exit', (code) => {
+    if (code && code !== 0) shutdown(code, { killElectron: false });
+  });
+}
 electron.on('error', (err) => {
   console.error(`[dev] failed to start Electron: ${err.message}`);
   shutdown(1);

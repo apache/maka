@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 import { developmentAppPath, prepareDevelopmentApp } from './dev-app-runtime.mjs';
 
-prepareDevelopmentApp();
+await prepareDevelopmentApp();
 console.log(`[dev-app] ready: ${developmentAppPath}`);

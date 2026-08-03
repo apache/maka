@@ -58,3 +58,15 @@ export function planPermissionRequest(input: {
   if (input.microphoneStatus === 'not-determined') return 'request_microphone';
   return 'open_settings';
 }
+
+export async function requestScreenCaptureConsent(deps: {
+  capture(): Promise<void>;
+  status(): string;
+}): Promise<'granted' | 'open_settings'> {
+  try {
+    await deps.capture();
+  } catch {
+    // A denied first request is expected; System Settings is the recovery.
+  }
+  return deps.status() === 'granted' ? 'granted' : 'open_settings';
+}

@@ -16,6 +16,7 @@ import {
   GRANT_POLL_MS,
   createPermissionOverlayController,
   isDragGrantPermission,
+  startScreenRecordingOnboarding,
   type PermissionOverlayDeps,
   type PermissionOverlayWindowLike,
 } from '../permission-overlay/permission-overlay-controller.js';
@@ -132,6 +133,17 @@ function createHarness(overrides: Partial<PermissionOverlayDeps> = {}) {
 }
 
 describe('drag-to-grant permission overlay', () => {
+  it('requests screen capture before continuing into the drag card', async () => {
+    const calls: string[] = [];
+    const result = await startScreenRecordingOnboarding({
+      requestAccess: async () => { calls.push('request'); return { ok: true }; },
+      isGranted: () => false,
+      startDrag: async () => { calls.push('drag'); return { ok: true }; },
+    });
+    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(calls, ['request', 'drag']);
+  });
+
   it('only recognises the two drag-to-grant permissions', () => {
     assert.equal(isDragGrantPermission('accessibility'), true);
     assert.equal(isDragGrantPermission('screen_recording'), true);

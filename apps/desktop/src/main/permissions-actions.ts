@@ -22,7 +22,7 @@
 import { desktopCapturer, shell, systemPreferences } from 'electron';
 import type { OsPermissionId } from '@maka/core';
 import { OS_PERMISSION_IDS } from '@maka/core';
-import { planPermissionRequest } from './os-permission-policy.js';
+import { planPermissionRequest, requestScreenCaptureConsent } from './os-permission-policy.js';
 
 export type PermissionActionResult =
   | { ok: true }
@@ -102,16 +102,16 @@ export async function requestPermissionAccess(input: unknown): Promise<Permissio
         // request is the Electron-supported way to engage the screen capture
         // consent path; if TCC still reports denied, take the user directly to
         // the pane where the grant must be completed.
-        try {
-          await desktopCapturer.getSources({
-            types: ['screen'],
-            thumbnailSize: { width: 1, height: 1 },
-          });
-        } catch {
-          // A denied first request is expected; the settings pane is the
-          // recovery path below, not a generic request failure toast.
-        }
-        return systemPreferences.getMediaAccessStatus('screen') === 'granted'
+        const outcome = await requestScreenCaptureConsent({
+          capture: async () => {
+            await desktopCapturer.getSources({
+              types: ['screen'],
+              thumbnailSize: { width: 1, height: 1 },
+            });
+          },
+          status: () => systemPreferences.getMediaAccessStatus('screen'),
+        });
+        return outcome === 'granted'
           ? { ok: true }
           : openSystemPermissionPane(id);
       }

@@ -3,14 +3,26 @@ import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  clearDevelopmentSession,
+  createDevelopmentSession,
   quitMacosDevelopmentApp,
   resolveMacosDevelopmentLaunch,
+  writeDevelopmentSession,
 } from './dev-app-runtime.mjs';
 
 const desktopDir = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const repoRoot = resolve(desktopDir, '..', '..');
-const forwardedArgs = [desktopDir, ...process.argv.slice(2)];
-const macosLaunch = resolveMacosDevelopmentLaunch(forwardedArgs);
+const cliArgs = process.argv.slice(2);
+const forwardedArgs = [desktopDir, ...cliArgs];
+const macosLaunch = await resolveMacosDevelopmentLaunch();
+if (macosLaunch) {
+  const userDataArg = cliArgs.find((arg) => arg.startsWith('--user-data-dir='));
+  writeDevelopmentSession(createDevelopmentSession({
+    supervisorPid: process.pid,
+    env: process.env,
+    userDataDir: userDataArg?.slice('--user-data-dir='.length),
+  }));
+}
 const electronBin =
   process.platform === 'win32'
     ? join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe')
@@ -23,19 +35,34 @@ const child = spawn(command, args, {
   stdio: 'inherit',
   env: process.env,
 });
+const keepAlive = macosLaunch ? setInterval(() => undefined, 60_000) : null;
 let stopping = false;
-function stop() {
+async function stop() {
   if (stopping) return;
   stopping = true;
-  if (macosLaunch) quitMacosDevelopmentApp();
-  else child.kill('SIGTERM');
+  if (macosLaunch) {
+    await quitMacosDevelopmentApp();
+    clearDevelopmentSession();
+  } else child.kill('SIGTERM');
+  if (keepAlive) clearInterval(keepAlive);
+  process.exitCode = 0;
 }
 child.on('error', (error) => {
   console.error(`[dev-app] failed to start: ${error.message}`);
-  process.exitCode = 1;
+  void stop().then(() => {
+    process.exitCode = 1;
+  });
 });
 child.on('exit', (code, signal) => {
-  if (!stopping) process.exitCode = signal ? 1 : (code ?? 0);
+  if (!macosLaunch && !stopping) {
+    process.exitCode = signal ? 1 : (code ?? 0);
+  } else if (macosLaunch && code && code !== 0) {
+    void stop().then(() => {
+      process.exitCode = code;
+    });
+  }
 });
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);
+process.on('SIGINT', () => void stop());
+process.on('SIGTERM', () => void stop());
+// `open` exits immediately after handing the launch to LaunchServices. The
+// timer above keeps the supervisor alive so app restarts can recover its session.
