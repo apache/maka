@@ -75,6 +75,12 @@ import type {
 } from '@maka/core/daily-review';
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
+import type {
+  BrowserWorkflow,
+  BrowserWorkflowAction,
+  BrowserWorkflowProgress,
+  BrowserWorkflowWaitConditionInput,
+} from '@maka/core/browser-workflow';
 import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
 import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type {
@@ -1031,7 +1037,27 @@ export interface MakaBridge {
     stop(sessionId: string): Promise<void>;
     close(sessionId: string): Promise<void>;
     getState(sessionId: string): Promise<BrowserState | null>;
+    prepare(sessionId: string): Promise<void>;
     onState(handler: (payload: { sessionId: string; state: BrowserState }) => void): () => void;
     onLive(handler: (payload: { sessionIds: string[] }) => void): () => void;
+    workflows: {
+      list(): Promise<BrowserWorkflow[]>;
+      startRecording(sessionId: string): Promise<{ recordingId: string; sessionId: string }>;
+      stopRecording(sessionId: string): Promise<{
+        draftId: string;
+        actionCount: number;
+        sensitiveActionIds: string[];
+        actions: BrowserWorkflowAction[];
+      }>;
+      addWaitCondition(sessionId: string, input: BrowserWorkflowWaitConditionInput): Promise<string>;
+      releaseSession(sessionId: string): void;
+      saveRecording(draftId: string, name: string): Promise<BrowserWorkflow>;
+      discardRecording(draftId: string): void;
+      run(workflowId: string, sessionId: string, sensitiveValues?: Record<string, string>): Promise<void>;
+      cancel(runId: string): void;
+      rename(workflowId: string, name: string): Promise<BrowserWorkflow>;
+      delete(workflowId: string): Promise<void>;
+      onProgress(handler: (payload: BrowserWorkflowProgress) => void): () => void;
+    };
   };
 }

@@ -8,6 +8,7 @@ apps/desktop/src/renderer/artifact-pane.tsx
 apps/desktop/src/renderer/artifact-preview-registry-shell.tsx
 apps/desktop/src/renderer/artifact-preview.tsx
 apps/desktop/src/renderer/browser-panel.tsx
+apps/desktop/src/renderer/browser-workflow-page.tsx
 apps/desktop/src/renderer/cascade-layers.css
 apps/desktop/src/renderer/chat-composer-region.tsx
 apps/desktop/src/renderer/chat-message-surface.tsx

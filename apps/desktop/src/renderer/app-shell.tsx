@@ -93,6 +93,7 @@ import {
   usePlanModeState,
 } from './plan-mode-panel';
 import { McpPage } from './mcp-page';
+import { BrowserWorkflowPage } from './browser-workflow-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
@@ -237,7 +238,7 @@ const SETTLE_FALLBACK_GRACE_MS = 1000;
  * `data-agents-view`; the toolbar now lives in the window titlebar, which is not
  * a descendant of the detail panel, so the condition belongs here.
  */
-const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review']);
+const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review', 'browser-workflows']);
 
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
@@ -410,7 +411,25 @@ function AppShellContent({
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   // P3: session ids with a live embedded-browser view. The right-side
   // BrowserPanel mounts only for these, so ordinary chats reserve no space.
-  const [, setLiveBrowserSessionIds] = useState<string[]>([]);
+  const [liveBrowserSessionIds, setLiveBrowserSessionIds] = useState<string[]>([]);
+  const liveBrowserSessionIdsRef = useRef(liveBrowserSessionIds);
+  liveBrowserSessionIdsRef.current = liveBrowserSessionIds;
+  const waitForBrowserSessionLive = useCallback((sessionId: string): Promise<void> => {
+    if (liveBrowserSessionIdsRef.current.includes(sessionId)) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const off = window.maka.browser.onLive((payload) => {
+        if (!payload.sessionIds.includes(sessionId)) return;
+        if (timeout) clearTimeout(timeout);
+        off();
+        resolve();
+      });
+      timeout = setTimeout(() => {
+        off();
+        reject(new Error('The browser panel did not become ready in time.'));
+      }, 5_000);
+    });
+  }, []);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
@@ -2906,6 +2925,21 @@ function AppShellContent({
                   onSnooze={(id) => snoozeScheduledTask(id)}
                   onClearRunHistory={(id) => clearScheduledTaskRunHistory(id)}
                   onDelete={(id) => deleteScheduledTask(id)}
+                />
+              ) : navSelection.section === 'automations' && navSelection.module === 'browser-workflows' ? (
+                <BrowserWorkflowPage
+                  hubHeader={automationsHubHeader}
+                  activeSessionId={activeId ?? null}
+                  onRun={async (workflowId, sensitiveValues) => {
+                    if (!activeId) throw new Error('No active browser session.');
+                    setNavSelection({ section: 'sessions', filter: 'chats' });
+                    setWorkbarCollapsed(false);
+                    openWorkbarTab('browser', 'right');
+                    const browserReady = waitForBrowserSessionLive(activeId);
+                    await window.maka.browser.prepare(activeId);
+                    await browserReady;
+                    await window.maka.browser.workflows.run(workflowId, activeId, sensitiveValues);
+                  }}
                 />
               ) : navSelection.section === 'automations' && navSelection.module === 'daily-review' ? (
                 <DailyReviewPage

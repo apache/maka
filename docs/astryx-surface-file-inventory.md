@@ -35,7 +35,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/artifact-pane.tsx` | shell-chrome-or-panel | Badge, Banner, Button, EmptyState | aligned — uses Astryx (Badge, Banner, Button, EmptyState) | aligned |
 | `apps/desktop/src/renderer/artifact-preview-registry-shell.tsx` | shell-chrome-or-panel | Banner, Button, Spinner | aligned — uses Astryx (Banner, Button, Spinner) | aligned |
 | `apps/desktop/src/renderer/artifact-preview.tsx` | shell-chrome-or-panel | Banner, Button, Spinner | aligned — uses Astryx (Banner, Button, Spinner) | aligned |
-| `apps/desktop/src/renderer/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, Toolbar, Tooltip | aligned — uses Astryx (EmptyState, IconButton, Toolbar, Tooltip) | aligned |
+| `apps/desktop/src/renderer/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, SegmentedControl, SegmentedControlItem, Toolbar, Tooltip | aligned — uses Astryx (EmptyState, IconButton, SegmentedControl, SegmentedControlItem, Toolbar, Tooltip) | aligned |
+| `apps/desktop/src/renderer/browser-workflow-page.tsx` | shell-chrome-or-panel | Button, EmptyState | aligned — uses Astryx (Button, EmptyState) | aligned |
 | `apps/desktop/src/renderer/cascade-layers.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/chat-composer-region.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
 | `apps/desktop/src/renderer/chat-message-surface.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |

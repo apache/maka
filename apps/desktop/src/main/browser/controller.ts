@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { type BrowserWindow, type Session, shell, WebContentsView } from 'electron';
 import { CdpBridge, type AutomationEndpoint } from './cdp-bridge.js';
 import { browserViewWebPreferences } from './options.js';
@@ -9,6 +10,16 @@ import {
   safeExternalUrl,
   viewportBounds,
 } from './logic.js';
+import {
+  flushBrowserWorkflowNavigation,
+  createBrowserWorkflowRecorderInstallScript,
+  notifyBrowserWorkflowNavigation,
+  notifyBrowserWorkflowRecorderEvent,
+  parseBrowserWorkflowRecorderConsoleMessage,
+  WORKFLOW_RECORDER_DISPOSE_SCRIPT,
+  WORKFLOW_RECORDER_DRAIN_SCRIPT,
+  WORKFLOW_RECORDER_ISOLATED_WORLD_ID,
+} from './workflow-recorder.js';
 
 // The security backstop is PARTITION-level: every conversation's view shares
 // `persist:maka-browser`, so the handlers + will-download guard belong to that
@@ -39,6 +50,10 @@ export class BrowserViewController {
   /** True while the view holds real on-screen bounds (last setViewport painted it). */
   private shownWithBounds = false;
   private automation: CdpBridge | null = null;
+  private workflowRecorderActive = false;
+  private workflowRecorderCredential: string | null = null;
+  private internalNavigationDepth = 0;
+  private toolbarNavigationPending = false;
 
   constructor(
     private readonly window: BrowserWindow,
@@ -59,24 +74,59 @@ export class BrowserViewController {
   private wireEvents(): void {
     const wc = this.wc;
     wc.on('did-start-loading', () => this.emitState());
-    wc.on('did-stop-loading', () => this.emitState());
-    wc.on('did-navigate', () => {
-      this.favicon = null;
+    wc.on('did-stop-loading', () => {
+      this.toolbarNavigationPending = false;
       this.emitState();
     });
-    wc.on('did-navigate-in-page', () => this.emitState());
+    const installWorkflowRecorder = () => {
+      const credential = this.workflowRecorderCredential;
+      if (this.workflowRecorderActive && credential) {
+        void this.executeWorkflowRecorderScript(createBrowserWorkflowRecorderInstallScript(credential)).catch(() => {});
+      }
+    };
+    // dom-ready fires as soon as the document can receive user input; the
+    // finish-load reinstall covers navigations that replace the isolated world.
+    wc.on('dom-ready', installWorkflowRecorder);
+    wc.on('did-finish-load', installWorkflowRecorder);
+    wc.on('did-navigate', (_event, url) => {
+      this.favicon = null;
+      this.emitState();
+      if (this.toolbarNavigationPending) {
+        this.toolbarNavigationPending = false;
+        void notifyBrowserWorkflowNavigation(this.sessionId, url, 'explicit').catch(() => {});
+      } else if (this.internalNavigationDepth === 0) {
+        void notifyBrowserWorkflowNavigation(this.sessionId, url, 'interaction').catch(() => {});
+      }
+    });
+    wc.on('did-navigate-in-page', (_event, url, isMainFrame) => {
+      this.emitState();
+      if (isMainFrame && this.toolbarNavigationPending) {
+        this.toolbarNavigationPending = false;
+        void notifyBrowserWorkflowNavigation(this.sessionId, url, 'explicit').catch(() => {});
+      } else if (isMainFrame && this.internalNavigationDepth === 0) {
+        void notifyBrowserWorkflowNavigation(this.sessionId, url, 'interaction').catch(() => {});
+      }
+    });
     wc.on('page-title-updated', () => this.emitState());
     wc.on('page-favicon-updated', (_event, favicons: string[]) => {
       this.favicon = favicons[0] ?? null;
       this.emitState();
     });
     wc.on('did-fail-load', () => this.emitState());
+    wc.on('console-message', (_event, _level, message) => {
+      const credential = this.workflowRecorderCredential;
+      if (!credential) return;
+      const recorderEvent = parseBrowserWorkflowRecorderConsoleMessage(message, credential);
+      if (recorderEvent !== null) {
+        notifyBrowserWorkflowRecorderEvent(this.sessionId, recorderEvent);
+      }
+    });
 
     // Single-view browser: keep http(s) "open in new window" links in-place and
     // hand any other scheme to the system browser. Never spawn a child window.
     wc.setWindowOpenHandler(({ url }) => {
       const navigable = parseNavigable(url);
-      if (navigable) void this.loadInternal(navigable);
+      if (navigable) void this.loadInternal(navigable, 'interaction');
       else this.openExternal(url);
       return { action: 'deny' };
     });
@@ -84,7 +134,10 @@ export class BrowserViewController {
     // Block link navigations to non-web schemes (file://, etc.); route real
     // external schemes to the system browser instead of failing silently.
     wc.on('will-navigate', (event, url) => {
-      if (parseNavigable(url)) return;
+      if (parseNavigable(url)) {
+        void flushBrowserWorkflowNavigation(this.sessionId).catch(() => {});
+        return;
+      }
       event.preventDefault();
       this.openExternal(url);
     });
@@ -111,13 +164,25 @@ export class BrowserViewController {
     if (safe) void shell.openExternal(safe).catch(() => {});
   }
 
-  private async loadInternal(url: string): Promise<void> {
+  private async loadInternal(
+    url: string,
+    source: 'explicit' | 'interaction' = 'explicit',
+  ): Promise<void> {
+    await flushBrowserWorkflowNavigation(this.sessionId).catch(() => {});
+    this.internalNavigationDepth += 1;
+    let loaded = false;
     // loadURL rejects on aborted/failed loads (e.g. a superseding navigation);
     // the did-fail-load handler already surfaces errors, so swallow here.
     try {
       await this.wc.loadURL(url);
+      loaded = true;
     } catch {
       /* surfaced via did-fail-load */
+    } finally {
+      this.internalNavigationDepth -= 1;
+    }
+    if (loaded) {
+      await notifyBrowserWorkflowNavigation(this.sessionId, this.wc.getURL(), source).catch(() => {});
     }
   }
 
@@ -147,15 +212,57 @@ export class BrowserViewController {
     await this.loadInternal(url);
   }
 
+  async startWorkflowRecorder(): Promise<void> {
+    if (this.destroyed || this.wc.isDestroyed()) throw new Error('Browser page is no longer available.');
+    const credential = randomUUID();
+    this.workflowRecorderActive = true;
+    this.workflowRecorderCredential = credential;
+    try {
+      await this.executeWorkflowRecorderScript(createBrowserWorkflowRecorderInstallScript(credential));
+    } catch (error) {
+      this.workflowRecorderActive = false;
+      this.workflowRecorderCredential = null;
+      throw error;
+    }
+  }
+
+  async drainWorkflowRecorderEvents(): Promise<unknown[]> {
+    if (this.destroyed || this.wc.isDestroyed()) return [];
+    const events = await this.executeWorkflowRecorderScript(WORKFLOW_RECORDER_DRAIN_SCRIPT);
+    return Array.isArray(events) ? events : [];
+  }
+
+  async stopWorkflowRecorder(): Promise<unknown[]> {
+    this.workflowRecorderActive = false;
+    if (this.destroyed || this.wc.isDestroyed()) {
+      this.workflowRecorderCredential = null;
+      return [];
+    }
+    const events = await this.executeWorkflowRecorderScript(WORKFLOW_RECORDER_DISPOSE_SCRIPT).catch(() => []);
+    this.workflowRecorderCredential = null;
+    return Array.isArray(events) ? events : [];
+  }
+
+  private executeWorkflowRecorderScript(code: string): Promise<unknown> {
+    return this.wc.executeJavaScriptInIsolatedWorld(WORKFLOW_RECORDER_ISOLATED_WORLD_ID, [{ code }], true);
+  }
+
   goBack(): void {
-    if (this.wc.navigationHistory.canGoBack()) this.wc.navigationHistory.goBack();
+    if (this.wc.navigationHistory.canGoBack()) {
+      this.toolbarNavigationPending = true;
+      this.wc.navigationHistory.goBack();
+    }
   }
 
   goForward(): void {
-    if (this.wc.navigationHistory.canGoForward()) this.wc.navigationHistory.goForward();
+    if (this.wc.navigationHistory.canGoForward()) {
+      this.toolbarNavigationPending = true;
+      this.wc.navigationHistory.goForward();
+    }
   }
 
   reload(): void {
+    this.toolbarNavigationPending = true;
     this.wc.reload();
   }
 
@@ -252,6 +359,8 @@ export class BrowserViewController {
   async dispose(): Promise<void> {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.workflowRecorderActive = false;
+    this.workflowRecorderCredential = null;
     // Final empty-state push: the renderer panel outlives the view, so without
     // this it would keep showing stale hasPage/url for a page that is gone.
     this.onState(

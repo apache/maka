@@ -19,7 +19,7 @@
  * and this one has nothing to light.
  */
 export type ExtensionModule = 'skills' | 'mcp';
-export type AutomationModule = 'scheduled-tasks' | 'daily-review';
+export type AutomationModule = 'scheduled-tasks' | 'daily-review' | 'browser-workflows';
 
 export type NavSelection =
   | { section: 'sessions' }

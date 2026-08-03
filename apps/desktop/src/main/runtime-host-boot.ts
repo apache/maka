@@ -26,6 +26,7 @@ import { McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
   createMcpConfigStore,
+  createBrowserWorkflowStore,
 } from "@maka/storage";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
@@ -241,6 +242,7 @@ if (startupRuntimeHost.profile.kind === "local" && !startupLocalStorageRoot) {
 }
 localStorageRootReady = Boolean(startupLocalStorageRoot);
 const settingsStore = createSettingsStore(workspaceRoot);
+const browserWorkflowStore = createBrowserWorkflowStore(workspaceRoot);
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
@@ -462,6 +464,7 @@ registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
 const browserIpc = registerBrowserIpc({
   mainWindowController,
+  browserWorkflowStore,
   getActiveHostRef: activeRuntimeHostRef,
 });
 registerNotificationsIpc({
@@ -509,7 +512,10 @@ owner = await startRuntimeHostDesktopOwner(
     resizeImage: resizeImageForAttachment,
     nativeCapabilities: {
       browserTools: native.browserTools,
-      releaseBrowserSession,
+      releaseBrowserSession: async (sessionId) => {
+        await browserIpc.releaseSession(sessionId);
+        await releaseBrowserSession(sessionId);
+      },
       computerUseTools: native.computerUseTools,
       additionalGroups: () => {
         const mcpTools = buildMcpTools(mcpManager);

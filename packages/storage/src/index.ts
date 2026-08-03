@@ -118,6 +118,7 @@ export {
 export type { InteractiveDeepResearchStoreWriter } from './deep-research-authority.js';
 export * from './config-transfer.js';
 export * from './daily-review-authority.js';
+export * from './browser-workflow-store.js';
 export * from './sqlite-runtime-store.js';
 export * from './runtime-event-persistence.js';
 export {

@@ -105,6 +105,12 @@ import type {
 } from '@maka/core/daily-review';
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
+import type {
+  BrowserWorkflow,
+  BrowserWorkflowAction,
+  BrowserWorkflowProgress,
+  BrowserWorkflowWaitConditionInput,
+} from '@maka/core/browser-workflow';
 import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
 import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import {
@@ -1921,11 +1927,57 @@ const makaBridge = {
     getState(sessionId: string): Promise<BrowserState | null> {
       return invokeActiveRuntimeHost('browser:get-state', sessionId);
     },
+    prepare(sessionId: string): Promise<void> {
+      return invokeActiveRuntimeHost('browser:prepare-view', sessionId);
+    },
     onState(handler: (payload: { sessionId: string; state: BrowserState }) => void): () => void {
       return subscribeActiveRuntimeHostEvent('browser:state', handler);
     },
     onLive(handler: (payload: { sessionIds: string[] }) => void): () => void {
       return subscribeActiveRuntimeHostEvent('browser:live', handler);
+    },
+    workflows: {
+      list(): Promise<BrowserWorkflow[]> {
+        return invokeActiveRuntimeHost('browser:workflow-list');
+      },
+      startRecording(sessionId: string): Promise<{ recordingId: string; sessionId: string }> {
+        return invokeActiveRuntimeHost('browser:workflow-start-recording', sessionId);
+      },
+      stopRecording(sessionId: string): Promise<{
+        draftId: string;
+        actionCount: number;
+        sensitiveActionIds: string[];
+        actions: BrowserWorkflowAction[];
+      }> {
+        return invokeActiveRuntimeHost('browser:workflow-stop-recording', sessionId);
+      },
+      addWaitCondition(sessionId: string, input: BrowserWorkflowWaitConditionInput): Promise<string> {
+        return invokeActiveRuntimeHost('browser:workflow-add-wait', sessionId, input);
+      },
+      releaseSession(sessionId: string): void {
+        sendActiveRuntimeHost('browser:workflow-release-session', sessionId);
+      },
+      saveRecording(draftId: string, name: string): Promise<BrowserWorkflow> {
+        return invokeActiveRuntimeHost('browser:workflow-save-recording', draftId, name);
+      },
+      discardRecording(draftId: string): void {
+        sendActiveRuntimeHost('browser:workflow-discard-recording', draftId);
+      },
+      run(workflowId: string, sessionId: string, sensitiveValues?: Record<string, string>): Promise<void> {
+        return invokeActiveRuntimeHost('browser:workflow-run', workflowId, sessionId, sensitiveValues ?? {});
+      },
+      cancel(runId: string): void {
+        sendActiveRuntimeHost('browser:workflow-cancel', runId);
+      },
+      rename(workflowId: string, name: string): Promise<BrowserWorkflow> {
+        return invokeActiveRuntimeHost('browser:workflow-rename', workflowId, name);
+      },
+      delete(workflowId: string): Promise<void> {
+        return invokeActiveRuntimeHost('browser:workflow-delete', workflowId);
+      },
+      onProgress(handler: (payload: BrowserWorkflowProgress) => void): () => void {
+        return subscribeActiveRuntimeHostEvent('browser:workflow-progress', handler);
+      },
     },
   },
 } satisfies MakaBridge;

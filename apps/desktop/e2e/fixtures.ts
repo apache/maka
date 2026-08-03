@@ -263,7 +263,7 @@ async function withE2eWindow(
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
   },
-  use: (page: Page, context: { userDataDir: string }) => Promise<void>,
+  use: (page: Page, context: { app: ElectronApplication; userDataDir: string }) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
   // Lives inside the throwaway userData dir so the existing teardown removes
@@ -327,7 +327,7 @@ async function withE2eWindow(
       const rendererDetail = rendererLogs.length > 0 ? `\nRenderer console:\n${rendererLogs.join('\n')}` : '';
       throw new Error(`${detail}${mainDetail}${rendererDetail}`, { cause: error });
     }
-    await use(page, { userDataDir });
+    await use(page, { app, userDataDir });
   } finally {
     try {
       if (app) await closeElectronApplication(app, 5_000);
@@ -345,6 +345,7 @@ export const test = base.extend<{
   projectSidebarWindow: Page;
   promptRailWindow: Page;
   promptRailMotionWindow: Page;
+  browserWorkflowWindow: { page: Page; app: ElectronApplication; userDataDir: string };
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
@@ -419,6 +420,17 @@ export const test = base.extend<{
       showWindow: true,
       scrollMotion: 'smooth',
     }, use);
+  },
+  browserWorkflowWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-maka-contract="session-workbar-right"]',
+        e2eFixtureScenario: 'turn-narrative',
+        locale: 'zh',
+      },
+      (page, context) => use({ page, app: context.app, userDataDir: context.userDataDir }),
+    );
   },
 });
 

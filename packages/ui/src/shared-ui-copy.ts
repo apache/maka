@@ -60,6 +60,7 @@ export interface SharedUiCopy {
       selectorLabel: (module: string) => string;
       scheduledTasks: string;
       dailyReview: string;
+      browserWorkflows: string;
     };
   };
   modules: {
@@ -162,17 +163,18 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: '定时任务',
-        description: '安排定时运行，并回顾本机任务的工作进展。',
+        description: '安排定时运行、回顾本机任务进展，并管理可复用的浏览器操作流程。',
         selectorLabel: (module) => `定时任务内容：${module}`,
         scheduledTasks: '定时任务',
         dailyReview: '每日回顾',
+        browserWorkflows: '操作流程',
       },
     },
     modules: {
       skills: '技能',
       loadingSkills: '正在加载技能…',
-      automations: '定时任务',
-      loadingAutomations: '正在加载定时任务…',
+      automations: '自动任务',
+      loadingAutomations: '正在加载自动任务…',
       dailyReview: '每日回顾',
       loadingDailyReview: '正在加载每日回顾…',
       dailyReviewDescription: '自动汇总本机任务，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。',
@@ -251,17 +253,18 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: 'Scheduled tasks',
-        description: 'Schedule recurring runs and review progress across local tasks.',
+        description: 'Schedule recurring runs, review local task progress, and manage reusable browser workflows.',
         selectorLabel: (module) => `Scheduled task content: ${module}`,
         scheduledTasks: 'Scheduled tasks',
         dailyReview: 'Daily review',
+        browserWorkflows: 'Browser workflows',
       },
     },
     modules: {
       skills: 'Skills',
       loadingSkills: 'Loading skills…',
-      automations: 'Scheduled tasks',
-      loadingAutomations: 'Loading scheduled tasks…',
+      automations: 'Automations',
+      loadingAutomations: 'Loading automations…',
       dailyReview: 'Daily review',
       loadingDailyReview: 'Loading daily review…',
       dailyReviewDescription: 'Summarize local tasks into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.',
