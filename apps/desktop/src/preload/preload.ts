@@ -942,23 +942,11 @@ const makaBridge = {
     runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
       return ipcRenderer.invoke('daily-review:runOnce', input);
     },
-    list(): Promise<DailyReviewArchiveSummary[]> {
-      return ipcRenderer.invoke('daily-review:list');
-    },
     listArchives(): Promise<DailyReviewArchiveSummary[]> {
       return ipcRenderer.invoke('daily-review:list');
     },
-    get(archiveId: string): Promise<DailyReviewArchive | null> {
-      return ipcRenderer.invoke('daily-review:get', archiveId);
-    },
     getArchive(archiveId: string): Promise<DailyReviewArchive | null> {
       return ipcRenderer.invoke('daily-review:get', archiveId);
-    },
-    delete(archiveId: string): Promise<void> {
-      return ipcRenderer.invoke('daily-review:delete', archiveId);
-    },
-    deleteArchive(archiveId: string): Promise<void> {
-      return ipcRenderer.invoke('daily-review:delete', archiveId);
     },
     /**
      * PR-DAILY-REVIEW-EXPORT-FILE-0: render the markdown in the renderer
@@ -989,11 +977,6 @@ const makaBridge = {
     },
   },
   appWindow: {
-    subscribeOpenSettings(handler: () => void): () => void {
-      const listener = () => handler();
-      ipcRenderer.on('window:openSettings', listener);
-      return () => ipcRenderer.off('window:openSettings', listener);
-    },
     setTitlebarControlsVisible(visible: boolean): Promise<void> {
       return ipcRenderer.invoke('window:setTitlebarControlsVisible', visible);
     },

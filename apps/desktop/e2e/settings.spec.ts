@@ -243,3 +243,10 @@ test('remote access prioritizes a configured channel that needs attention', asyn
   const recentFailure = settings.getByRole('alert').filter({ hasText: '最近一次失败' });
   await expect(recentFailure).toContainText(runtimeError);
 });
+
+test('the platform settings shortcut opens settings', async ({ window: page }) => {
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+,' : 'Control+,');
+  await expect(page.getByLabel('设置内容')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByLabel('设置内容')).toBeHidden();
+});

@@ -609,12 +609,8 @@ export interface MakaBridge {
     getConfig?(): Promise<DailyReviewConfig>;
     setConfig?(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig>;
     runOnce?(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }>;
-    list?(): Promise<DailyReviewArchiveSummary[]>;
-    get?(archiveId: string): Promise<DailyReviewArchive | null>;
-    delete?(archiveId: string): Promise<void>;
     listArchives?(): Promise<DailyReviewArchiveSummary[]>;
     getArchive?(archiveId: string): Promise<DailyReviewArchive | null>;
-    deleteArchive?(archiveId: string): Promise<void>;
     saveMarkdownToFile(input: {
       markdown: string;
       defaultName: string;
@@ -630,7 +626,6 @@ export interface MakaBridge {
      */
   };
   appWindow: {
-    subscribeOpenSettings(handler: () => void): () => void;
     setTitlebarControlsVisible(visible: boolean): Promise<void>;
     setThemeSource(themePref: ThemePreference): Promise<void>;
     // PR-WINDOW-TITLEBAR-0: re-sync the native Windows titleBarOverlay

@@ -269,9 +269,6 @@ export function useAppShellBootstrapSubscriptions(options: {
     }
     },
   );
-  const handleOpenSettings = useEffectEvent(() => {
-    options.openSettings();
-  });
   const handlePlanChange = useEffectEvent(() => {
     void options.refreshPlanReminders();
   });
@@ -337,7 +334,6 @@ export function useAppShellBootstrapSubscriptions(options: {
       void options.refreshConnections();
     });
     const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
-    const unsubscribeOpenSettings = window.maka.appWindow.subscribeOpenSettings(handleOpenSettings);
     const unsubscribePlanChanges = window.maka.plans.subscribeChanges(handlePlanChange);
     const unsubscribePlanDue = window.maka.plans.subscribeDue(handlePlanDue);
     markRendererMounted();
@@ -347,7 +343,6 @@ export function useAppShellBootstrapSubscriptions(options: {
       unsubscribeConnections();
       unsubscribeSettingsExternal();
       unsubscribeSessionChanges();
-      unsubscribeOpenSettings();
       unsubscribePlanChanges();
       unsubscribePlanDue();
       window.removeEventListener('keydown', handleKeyDown);

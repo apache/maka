@@ -53,9 +53,6 @@ type RendererMakaStub = {
       projectGit: { isGitRepo: boolean };
     }>;
   };
-  appWindow: {
-    subscribeOpenSettings(callback: () => void): () => void;
-  };
   connections: {
     subscribeEvents(callback: (event: ConnectionEvent) => void): () => void;
   };
@@ -919,9 +916,6 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
         projectPath: '/workspace/relocated',
         projectGit: { isGitRepo: false },
       }),
-    },
-    appWindow: {
-      subscribeOpenSettings: () => noop,
     },
     connections: {
       subscribeEvents(callback: (event: ConnectionEvent) => void) {
