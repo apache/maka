@@ -13,12 +13,13 @@ import {
   ChatMessageMetadata,
   ChatSystemMessage,
   ChatTokenizedText,
+  HStack,
   IconButton as UiIconButton,
+  Thumbnail,
   Token,
+  useLightbox,
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
-import { Dialog } from '@astryxdesign/core/Dialog';
-import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import {
   SKILL_INVOCATION_TOKEN_SOURCE,
@@ -79,9 +80,7 @@ function sentSkillTokens(text: string) {
  * Memoized so streaming list re-renders do not re-parse settled bubbles.
  */
 function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentBytes?: ReadAttachmentBytes }) {
-  const copy = getConversationCopy(useUiLocale()).messages;
   const [src, setSrc] = useState<string | undefined>(undefined);
-  const [lightboxOpen, setLightboxOpen] = useState(false);
   const { onReadAttachmentBytes } = props;
   useEffect(() => {
     if (props.attachment.ref.kind !== 'session_file') return;
@@ -101,39 +100,32 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
   }, [props.attachment, onReadAttachmentBytes]);
   if (!src) {
     return (
-      <span className="maka-user-attachment-thumb-pending" aria-hidden="true">
-        <Loader2 />
-      </span>
+      <Thumbnail
+        className="maka-user-attachment-thumbnail"
+        alt={props.attachment.name}
+        label={props.attachment.name}
+        isLoading
+      />
     );
   }
+  return <LoadedAttachmentImage src={src} name={props.attachment.name} />;
+}
+
+function LoadedAttachmentImage(props: { src: string; name: string }) {
+  const lightbox = useLightbox({
+    media: { src: props.src, alt: props.name },
+    hasZoom: true,
+  });
   return (
     <>
-      <button
-        type="button"
-        className="maka-user-attachment-thumb"
-        onClick={() => setLightboxOpen(true)}
-        aria-label={copy.imageAriaLabel(props.attachment.name)}
-      >
-        <img className="maka-user-attachment-thumb-image" src={src} alt={props.attachment.name} />
-      </button>
-      <Dialog
-        isOpen={lightboxOpen}
-        onOpenChange={setLightboxOpen}
-        padding={0}
-        purpose="info"
-        width="auto"
-        maxHeight="90vh"
-        aria-label={copy.imageAriaLabel(props.attachment.name)}
-      >
-        <Layout
-          height="auto"
-          content={
-            <LayoutContent padding={0} isScrollable={false}>
-              <img className="maka-user-attachment-lightbox-image" src={src} alt={props.attachment.name} />
-            </LayoutContent>
-          }
-        />
-      </Dialog>
+      <Thumbnail
+        className="maka-user-attachment-thumbnail"
+        src={props.src}
+        alt={props.name}
+        label={props.name}
+        onClick={() => lightbox.open()}
+      />
+      {lightbox.element}
     </>
   );
 }
@@ -199,7 +191,7 @@ const MessageBody = memo(function MessageBody(props: {
     return (
       <>
         {nonImageAttachments.length > 0 ? (
-          <div className="maka-user-attachment-tokens">
+          <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachment-tokens">
             {nonImageAttachments.map((attachment, index) => (
               <Token
                 key={`${attachment.name}-${index}`}
@@ -209,7 +201,7 @@ const MessageBody = memo(function MessageBody(props: {
                 description={attachment.bytes !== undefined ? formatBytes(attachment.bytes) : undefined}
               />
             ))}
-          </div>
+          </HStack>
         ) : null}
         {props.quotes && props.quotes.length > 0 ? (
           <div className="maka-user-quotes">
@@ -219,7 +211,7 @@ const MessageBody = memo(function MessageBody(props: {
           </div>
         ) : null}
         {imageAttachments.length > 0 ? (
-          <div className="maka-user-attachments">
+          <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachments">
             {imageAttachments.map((attachment, index) => (
               <AttachmentImage
                 key={`${attachment.name}-${index}`}
@@ -227,7 +219,7 @@ const MessageBody = memo(function MessageBody(props: {
                 onReadAttachmentBytes={props.onReadAttachmentBytes}
               />
             ))}
-          </div>
+          </HStack>
         ) : null}
         <ChatMessageBubble
           className="maka-chat-message-bubble maka-chat-message-bubble-user"

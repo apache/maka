@@ -111,6 +111,7 @@ describe('sent reference frontend', () => {
     assert.notEqual(tokenIndex, -1);
     assert.ok(tokenIndex < bubbleIndex);
     assert.match(markup, /lucide-file-text/);
+    assert.match(markup, /class="[^"]*astryx-icon[^"]*"[^>]*data-size="sm"/);
     assert.match(markup, /design-spec\.pdf/);
     assert.match(markup, /aria-description="500\.0 KB"/);
     assert.doesNotMatch(markup, />500\.0 KB</);
@@ -135,6 +136,7 @@ describe('sent reference frontend', () => {
     } satisfies Parameters<typeof ChatView>[0]));
 
     assert.match(markup, /maka-user-attachments/);
-    assert.match(markup, /maka-user-attachment-thumb-pending/);
+    assert.match(markup, /astryx-thumbnail/);
+    assert.doesNotMatch(markup, /maka-user-attachment-thumb(?:-pending|-image)?(?:\s|")/);
   });
 });

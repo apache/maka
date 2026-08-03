@@ -79,19 +79,10 @@
   font: var(--maka-text-body);
  margin: 0; color: var(--muted-foreground); }
 
-.maka-user-attachment-thumb-pending { display: grid; width: 128px; height: 128px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-surface); color: var(--muted-foreground); background: var(--foreground-alpha-6); }
-.maka-user-attachment-thumb-pending > svg { width: 20px; height: 20px; animation: maka-spin 1s linear infinite; }
-.maka-user-attachment-thumb { position: relative; display: inline-flex; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-surface); transition: opacity var(--duration-quick); }
-.maka-user-attachment-thumb:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.maka-user-attachment-thumb-image { width: 128px; height: 128px; object-fit: cover; transition: opacity var(--duration-quick); }
-.maka-user-attachment-thumb:hover .maka-user-attachment-thumb-image { opacity: 0.9; }
-.maka-user-attachment-lightbox-image { max-width: 90vw; max-height: 90vh; border-radius: var(--radius-surface); object-fit: contain; box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25); }
 .maka-message-meta { opacity: 0; transition: opacity var(--duration-quick) var(--ease-out-strong); }
 .maka-user-message:hover .maka-message-meta,
 .maka-user-message:focus-within .maka-message-meta { opacity: 1; }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
-.maka-user-attachments { display: flex; max-width: 100%; flex-wrap: wrap; gap: 6px; }
-.maka-user-attachment-tokens { display: flex; max-width: 100%; flex-wrap: wrap; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,

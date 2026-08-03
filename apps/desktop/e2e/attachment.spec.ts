@@ -77,20 +77,33 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
 
   const sentMessage = page.getByLabel('你发送的消息').last();
   const fileToken = sentMessage.locator('.maka-user-attachment-tokens .astryx-token');
-  const image = sentMessage.locator('.maka-user-attachment-thumb');
+  const fileIcon = fileToken.locator('.astryx-icon');
+  const image = sentMessage.locator('.maka-user-attachments .astryx-thumbnail');
   const bubble = sentMessage.locator('.maka-chat-message-bubble-user');
   await expect(fileToken).toContainText('note.txt');
+  await expect(fileIcon).toHaveCSS('width', '16px');
+  await expect(fileIcon).toHaveCSS('height', '16px');
   await expect(image).toBeVisible();
+  await expect(image).toHaveCSS('width', '64px');
   await expect(bubble).toContainText('sending mixed attachments');
 
-  const [fileBox, imageBox, bubbleBox] = await Promise.all([
+  const [fileBox, iconBox, imageBox, bubbleBox] = await Promise.all([
     fileToken.boundingBox(),
+    fileIcon.boundingBox(),
     image.boundingBox(),
     bubble.boundingBox(),
   ]);
   expect(fileBox).not.toBeNull();
+  expect(iconBox).not.toBeNull();
   expect(imageBox).not.toBeNull();
   expect(bubbleBox).not.toBeNull();
+  expect(iconBox!.y).toBeGreaterThanOrEqual(fileBox!.y);
+  expect(iconBox!.y + iconBox!.height).toBeLessThanOrEqual(fileBox!.y + fileBox!.height);
   expect(fileBox!.y + fileBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
   expect(imageBox!.y + imageBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
+
+  await image.getByRole('button').click();
+  await expect(page.locator('.astryx-lightbox')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.astryx-lightbox')).not.toBeVisible();
 });
