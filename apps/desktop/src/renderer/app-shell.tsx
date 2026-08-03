@@ -560,7 +560,7 @@ function AppShellContent({
   // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
   // Memoized so the panel's `useEffect` cleanup keys
   // off a stable reference instead of refetching on every render.
-  const dailyReviewBridge = useMemo(() => createAppShellDailyReviewBridge(connections, uiLocale), [connections, uiLocale]);
+  const dailyReviewBridge = useMemo(() => createAppShellDailyReviewBridge(uiLocale), [uiLocale]);
   const {
     appendDailyReviewMarkdown,
     copyDailyReviewMarkdown,

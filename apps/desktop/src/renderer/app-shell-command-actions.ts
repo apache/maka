@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react';
 import type {
+  DailyReviewRange,
   DailyReviewSummary,
   LlmConnection,
   PermissionMode,
@@ -66,7 +67,12 @@ export interface AppShellCommandListOptions {
   openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
-  saveDailyReviewMarkdown: (input: { markdown: string; label: string; summary: DailyReviewSummary }) => Promise<void>;
+  saveDailyReviewMarkdown: (input: {
+    range: DailyReviewRange;
+    markdown: string;
+    label: string;
+    summary: DailyReviewSummary;
+  }) => Promise<void>;
   setNavSelection: (selection: NavSelection) => void;
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setThemePref: (themePref: ThemePreference) => void;
@@ -290,7 +296,7 @@ export function buildAppShellCommandList(
       try {
         const summary = await dailyReviewBridge.fetchDay(0, 1);
         const markdown = formatDailyReviewMarkdown(summary, copy.today, options.uiLocale);
-        await saveDailyReviewMarkdown({ markdown, label: copy.today, summary });
+        await saveDailyReviewMarkdown({ range: 1, markdown, label: copy.today, summary });
       } catch (err) {
         toastApi.error(
           copy.saveFailedTitle,

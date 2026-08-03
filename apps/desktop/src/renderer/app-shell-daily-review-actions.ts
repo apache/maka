@@ -1,4 +1,4 @@
-import type { DailyReviewSummary, UiLocale } from '@maka/core';
+import type { DailyReviewRange, DailyReviewSummary, UiLocale } from '@maka/core';
 import { dailyReviewActionErrorMessage, dailyReviewExportDefaultName } from './daily-review-actions';
 import { getShellCopy } from './locales/shell-copy.js';
 
@@ -14,6 +14,7 @@ type ComposerAppendHandle = {
 };
 
 type DailyReviewMarkdownInput = {
+  range: DailyReviewRange;
   markdown: string;
   label: string;
   summary: DailyReviewSummary;
@@ -67,7 +68,7 @@ export function createAppShellDailyReviewActions(deps: {
     try {
       const result = await window.maka.dailyReview.saveMarkdownToFile({
         markdown: input.markdown,
-        defaultName: dailyReviewExportDefaultName(input.label),
+        defaultName: dailyReviewExportDefaultName({ range: input.range, day: input.summary.day }),
       });
       if (result.ok) {
         if (shouldShowFeedback()) {

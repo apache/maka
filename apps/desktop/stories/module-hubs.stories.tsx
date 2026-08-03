@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect } from 'storybook/test';
 import type { DailyReviewArchive, DailyReviewSummary, PlanReminder } from '@maka/core';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
@@ -440,6 +441,26 @@ async function waitForStoryButton(
   throw new Error('Story action button did not render');
 }
 
+async function waitForStorySelector<T extends Element>(
+  canvasElement: HTMLElement,
+  selector: string,
+): Promise<T> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const element = canvasElement.querySelector<T>(selector);
+    if (element) return element;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error(`Story selector did not render: ${selector}`);
+}
+
+async function waitForStoryText(canvasElement: HTMLElement, text: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (canvasElement.textContent?.includes(text)) return;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error(`Story text did not render: ${text}`);
+}
+
 // Real path: sidebar → 扩展 → 技能, with several installed skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
@@ -492,6 +513,53 @@ export const ScheduledDailyReview: Story = {
   ),
 };
 
+// Real path: sidebar → scheduled tasks → Daily Review while saved reports load.
+export const ScheduledDailyReviewArchivesLoading: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => new Promise(() => undefined),
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitForStorySelector(canvasElement, '.maka-daily-review-content');
+    const generate = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('生成分析') === true,
+    );
+    await expect(generate.disabled).toBe(true);
+  },
+};
+
+// Real path: sidebar → scheduled tasks → Daily Review after saved reports fail to load.
+export const ScheduledDailyReviewArchivesFailed: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => {
+          throw new Error('archive fixture unavailable');
+        },
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitForStorySelector(canvasElement, '.maka-daily-review-content');
+    await waitForStoryText(canvasElement, '每日回顾刷新失败');
+    const generate = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('生成分析') === true,
+    );
+    await expect(generate.disabled).toBe(true);
+  },
+};
+
 // Real path: sidebar → scheduled tasks → Daily Review while a new range loads.
 export const ScheduledDailyReviewRefreshing: Story = {
   render: () => (
@@ -510,9 +578,16 @@ export const ScheduledDailyReviewRefreshing: Story = {
   play: async ({ canvasElement }) => {
     const button = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.includes('本周') === true,
+      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
     );
     button.click();
+    const content = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '.maka-daily-review-content',
+    );
+    await expect(button.getAttribute('aria-checked')).toBe('true');
+    await expect(content.getAttribute('aria-busy')).toBe('true');
+    await expect(canvasElement.querySelector('.astryx-skeleton')).toBeNull();
   },
 };
 

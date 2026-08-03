@@ -1,7 +1,7 @@
-import type { DailyReviewConfig, DailyReviewRange, LlmConnection, UiLocale } from '@maka/core';
+import type { DailyReviewRange, UiLocale } from '@maka/core';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 
-export function createAppShellDailyReviewBridge(_connections: readonly LlmConnection[], locale: UiLocale = 'zh') {
+export function createAppShellDailyReviewBridge(locale: UiLocale = 'zh') {
   const copy = getShellRemainingCopy(locale).dailyReview;
   return {
     async fetchDay(offsetDays: number, daySpan?: number) {
@@ -25,21 +25,6 @@ export function createAppShellDailyReviewBridge(_connections: readonly LlmConnec
       const archive = await getArchive(archiveId);
       if (!archive) throw new Error(copy.archiveMissing);
       return archive;
-    },
-    deleteArchive(archiveId: string) {
-      const deleteArchive = window.maka.dailyReview.deleteArchive;
-      if (!deleteArchive) throw new Error(copy.historyUnavailable);
-      return deleteArchive(archiveId);
-    },
-    fetchConfig() {
-      const getConfig = window.maka.dailyReview.getConfig;
-      if (!getConfig) throw new Error(copy.settingsUnavailable);
-      return getConfig();
-    },
-    updateConfig(patch: Partial<DailyReviewConfig>) {
-      const setConfig = window.maka.dailyReview.setConfig;
-      if (!setConfig) throw new Error(copy.settingsUnavailable);
-      return setConfig(patch);
     },
   };
 }

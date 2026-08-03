@@ -7,7 +7,7 @@ import type {
   DailyReviewSectionKey,
   DailyReviewSummary,
 } from '@maka/core';
-import { DAILY_REVIEW_RANGES, uiLocaleToIntlLocale } from '@maka/core';
+import { DAILY_REVIEW_RANGES, DAILY_REVIEW_SECTION_KEYS, uiLocaleToIntlLocale } from '@maka/core';
 import {
   Banner,
   Button,
@@ -49,6 +49,11 @@ type DailyReviewRoute =
   | { kind: 'activity' }
   | { kind: 'report'; archive: DailyReviewArchive };
 
+type DailyReviewArchiveState =
+  | { status: 'loading' }
+  | { status: 'ready'; archives: DailyReviewArchiveSummary[] }
+  | { status: 'error'; error: string };
+
 export function DailyReviewPanel(props: {
   bridge: DailyReviewBridge;
   hubHeader?: ModuleHubHeader;
@@ -70,7 +75,7 @@ export function DailyReviewPanel(props: {
     createDailyReviewActivityState,
   );
   const [reloadToken, setReloadToken] = useState(0);
-  const [archives, setArchives] = useState<DailyReviewArchiveSummary[]>([]);
+  const [archiveState, setArchiveState] = useState<DailyReviewArchiveState>({ status: 'loading' });
   const [archivesReloadToken, setArchivesReloadToken] = useState(0);
   const [route, setRoute] = useState<DailyReviewRoute>({ kind: 'activity' });
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -82,15 +87,17 @@ export function DailyReviewPanel(props: {
   const displayedSummary = resolvedView?.summary ?? null;
   const visibleSummary = resolvedView?.scopeKey === scopeKey ? resolvedView.summary : null;
   const loading = activityState.pendingScopeKey !== null;
-  const error = actionError ?? activityState.error;
+  const error = actionError
+    ?? activityState.error
+    ?? (archiveState.status === 'error' ? archiveState.error : null);
   const currentArchive = useMemo(() => {
-    if (!visibleSummary) return null;
-    return archives.find((archive) =>
+    if (!visibleSummary || archiveState.status !== 'ready') return null;
+    return archiveState.archives.find((archive) =>
       archive.range === range
       && archive.day.fromMs === visibleSummary.day.fromMs
       && archive.day.toMs === visibleSummary.day.toMs,
     ) ?? null;
-  }, [archives, range, visibleSummary]);
+  }, [archiveState, range, visibleSummary]);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,19 +122,25 @@ export function DailyReviewPanel(props: {
   useEffect(() => {
     const listArchives = bridgeRef.current.listArchives;
     if (!listArchives) {
-      setArchives([]);
+      setArchiveState({ status: 'ready', archives: [] });
       return;
     }
     let cancelled = false;
+    setArchiveState({ status: 'loading' });
     listArchives().then((next) => {
-      if (!cancelled) setArchives(next);
-    }).catch(() => {
-      if (!cancelled) setArchives([]);
+      if (!cancelled) setArchiveState({ status: 'ready', archives: next });
+    }).catch((nextError: unknown) => {
+      if (!cancelled) {
+        setArchiveState({
+          status: 'error',
+          error: dailyReviewPanelErrorMessage(nextError, locale),
+        });
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [archivesReloadToken]);
+  }, [archivesReloadToken, locale]);
 
   const rangeLabel = formatScopeLabel(activityState.selection);
   const displayedRangeLabel = resolvedView ? formatScopeLabel(resolvedView.scope) : rangeLabel;
@@ -207,7 +220,11 @@ export function DailyReviewPanel(props: {
   const totals = displayedSummary?.totals;
   const currentTotals = visibleSummary?.totals;
   const hasActivity = Boolean(currentTotals && currentTotals.sessionCount + currentTotals.requestCount > 0);
-  const canAnalyze = Boolean(props.bridge.runOnce && props.bridge.getArchive);
+  const canAnalyze = Boolean(
+    props.bridge.runOnce
+    && props.bridge.listArchives
+    && props.bridge.getArchive,
+  );
 
   return (
     <VStack className="maka-daily-review-panel" gap={5}>
@@ -269,7 +286,12 @@ export function DailyReviewPanel(props: {
             size="sm"
             label={copy.page.generateAnalysis}
             isLoading={pendingAction === 'generate'}
-            isDisabled={pendingAction !== null || !visibleSummary || !hasActivity}
+            isDisabled={
+              archiveState.status !== 'ready'
+              || pendingAction !== null
+              || !visibleSummary
+              || !hasActivity
+            }
             onClick={() => void generateAnalysis()}
           />
         ) : null}
@@ -289,6 +311,7 @@ export function DailyReviewPanel(props: {
               setActionError(null);
               dispatchActivity({ type: 'selected', scope: activityState.selection });
               setReloadToken((value) => value + 1);
+              setArchivesReloadToken((value) => value + 1);
             }}
           />}
         />
@@ -385,7 +408,9 @@ function DailyReviewReport(props: {
     }
   }
 
-  const actionInput = props.summary ? { markdown, label: title, summary: props.summary } : null;
+  const actionInput = props.summary
+    ? { range: props.archive.range, markdown, label: title, summary: props.summary }
+    : null;
   return (
     <VStack className="maka-daily-review-report" gap={5}>
       <HStack gap={2} vAlign="center" wrap="wrap">
@@ -436,8 +461,7 @@ function reportSections(sections: DailyReviewArchiveSectionContent): Array<{
   key: DailyReviewSectionKey;
   content: string;
 }> {
-  const keys: DailyReviewSectionKey[] = ['summary', 'gaps', 'usage', 'code'];
-  return keys.flatMap((key) => {
+  return DAILY_REVIEW_SECTION_KEYS.flatMap((key) => {
     const content = sections[key]?.trim();
     return content ? [{ key, content }] : [];
   });

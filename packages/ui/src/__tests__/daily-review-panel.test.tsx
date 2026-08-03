@@ -33,8 +33,8 @@ describe('Daily Review activity surface', () => {
     const markup = renderPanel();
 
     assert.match(markup, />今日</);
-    assert.match(markup, />本周</);
-    assert.match(markup, />本月</);
+    assert.match(markup, />最近 7 天</);
+    assert.match(markup, />最近 30 天</);
     assert.match(markup, />生成分析</);
     assert.doesNotMatch(markup, /生成每日回顾|生成深度分析|分析模型/);
   });

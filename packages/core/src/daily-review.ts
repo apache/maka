@@ -183,25 +183,14 @@ export function dailyUsageQuery(day: DayRangeMs): UsageQuery {
   return { range: { from: day.fromMs, to: day.toMs } };
 }
 
-/** Default cap for "today's sessions" / "top tools" / "top models" lists. */
+/** Default cap for activity sessions and generated report evidence. */
 export const DAILY_REVIEW_LIST_LIMIT = 8;
 
 /**
  * PR-DAILY-REVIEW-FULL-0 — config + archive contract.
  *
- * Adds the missing pieces on top of MVP-0: a scheduled run, LLM-
- * generated narrative sections, a persisted archive of past reports,
- * and a 深度分析 (deep-analysis) mode. The locked interface is
- * documented in the project thread; this file is the single source
- * of truth used by core, main, preload, and renderer.
- *
- * borrow: external reference's "every morning auto-summary" + Settings
- * sub-toggles for content categories (对话摘要 / 遗漏提醒 / 使用洞察 /
- * 代码建议).
- *
- * diverge: archive lives on disk as plain JSON files in the workspace
- * (no DB), no cloud sync, manual + cron run the same pipeline, model
- * selection reuses the existing connection picker.
+ * One range contract shared by core, main, preload, and renderer. Archives
+ * remain local JSON files; manual and scheduled runs use the same pipeline.
  */
 
 export type DailyReviewRange = 1 | 7 | 30;
