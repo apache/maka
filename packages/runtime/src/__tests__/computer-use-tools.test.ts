@@ -481,7 +481,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
       modelText?: string;
     };
-    const observationId = JSON.parse(observed.modelText ?? '{}').observation_id;
+    const observationId = observationIdOf(observed.modelText);
     await tool.impl(
       {
         action: 'left_click',

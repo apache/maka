@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { CuAction } from '@maka/core';
 import { buildComputerUseTools } from '@maka/runtime';
+import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import { createComputerUseOverlayHook } from '../computer-use-overlay-hook.js';
 
 function fakeController() {
@@ -344,7 +345,10 @@ async function driveRealTool(
     { action: 'observe', app: 'Fixture' } as never,
     toolContext() as never,
   )) as { modelText?: string };
-  const observationId = JSON.parse(first.modelText ?? '{}').observation_id;
+  // `observe` answers in the rendered observation format, not JSON, so the id
+  // is read with the same parser the runtime's own tests use rather than a
+  // second copy of the grammar here.
+  const observationId = parseObservationText(first.modelText ?? '')?.observation_id;
   events.length = 0;
   await tool.impl({ ...call, observation_id: observationId } as never, toolContext() as never);
   return events;
