@@ -93,9 +93,9 @@ class FileDailyReviewArchiveStore implements DailyReviewArchiveStore {
       throw error;
     }
     try {
-      const parsed = JSON.parse(raw) as Parameters<typeof normalizeDailyReviewArchive>[0];
-      if (parsed.id !== id) throw new Error(`Daily Review archive id mismatch: ${id}`);
-      return normalizeDailyReviewArchive(parsed);
+      const archive = normalizeDailyReviewArchive(JSON.parse(raw));
+      if (archive.id !== id) throw new Error(`Daily Review archive id mismatch: ${id}`);
+      return archive;
     } catch {
       return null;
     }

@@ -307,32 +307,103 @@ export function dailyReviewArchiveId(day: DayRangeMs, range: DailyReviewRange): 
   return `${yyyy}-${mm}-${dd}-${range}d`;
 }
 
-type LegacyDailyReviewArchive = Omit<DailyReviewArchive, 'range'> & {
-  readonly mode: 'daily' | 'deep';
-};
-
 /** Maps the retired daily/deep read format onto the one range contract. */
-export function normalizeDailyReviewArchive(
-  archive: DailyReviewArchive | LegacyDailyReviewArchive,
-): DailyReviewArchive {
-  if ('range' in archive) {
-    if (!DAILY_REVIEW_RANGES.includes(archive.range)) {
-      throw new Error(`Invalid Daily Review range: ${String(archive.range)}`);
+export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive {
+  if (!isRecord(input)) throw invalidDailyReviewArchive('record');
+  let range: DailyReviewRange;
+  if ('range' in input) {
+    if (!DAILY_REVIEW_RANGES.includes(input.range as DailyReviewRange)) {
+      throw invalidDailyReviewArchive('range');
     }
-    return archive;
+    range = input.range as DailyReviewRange;
+  } else if (input.mode === 'daily' || input.mode === 'deep') {
+    range = input.mode === 'deep' ? 7 : 1;
+  } else {
+    throw invalidDailyReviewArchive('range');
+  }
+
+  if (typeof input.id !== 'string' || input.id.length === 0) {
+    throw invalidDailyReviewArchive('id');
+  }
+  if (
+    !isRecord(input.day) ||
+    !isFiniteNumber(input.day.fromMs) ||
+    !isFiniteNumber(input.day.toMs) ||
+    input.day.toMs <= input.day.fromMs
+  ) {
+    throw invalidDailyReviewArchive('day');
+  }
+  if (!DAILY_REVIEW_ARCHIVE_STATUSES.includes(input.status as DailyReviewArchiveStatus)) {
+    throw invalidDailyReviewArchive('status');
+  }
+  if (!isFiniteNumber(input.generatedAt)) throw invalidDailyReviewArchive('generatedAt');
+  if (input.trigger !== 'cron' && input.trigger !== 'manual') {
+    throw invalidDailyReviewArchive('trigger');
+  }
+  if (typeof input.modelKey !== 'string') throw invalidDailyReviewArchive('modelKey');
+  const sections = normalizeDailyReviewArchiveSections(input.sections);
+  const totals = normalizeDailyReviewArchiveTotals(input.totals);
+  if (input.errorMessage !== undefined && typeof input.errorMessage !== 'string') {
+    throw invalidDailyReviewArchive('errorMessage');
+  }
+
+  return {
+    id: input.id,
+    day: { fromMs: input.day.fromMs, toMs: input.day.toMs },
+    range,
+    status: input.status as DailyReviewArchiveStatus,
+    generatedAt: input.generatedAt,
+    trigger: input.trigger,
+    modelKey: input.modelKey,
+    sections,
+    totals,
+    errorMessage: input.errorMessage,
+  };
+}
+
+function normalizeDailyReviewArchiveSections(input: unknown): DailyReviewArchiveSectionContent {
+  if (!isRecord(input)) throw invalidDailyReviewArchive('sections');
+  const sections: Record<string, string> = {};
+  for (const key of DAILY_REVIEW_SECTION_KEYS) {
+    const value = input[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string') throw invalidDailyReviewArchive(`sections.${key}`);
+    sections[key] = value;
+  }
+  return sections;
+}
+
+function normalizeDailyReviewArchiveTotals(input: unknown): DailyReviewTotals {
+  if (!isRecord(input)) throw invalidDailyReviewArchive('totals');
+  for (const key of ['sessionCount', 'requestCount', 'totalTokens', 'errorCount'] as const) {
+    if (!isNonNegativeInteger(input[key])) throw invalidDailyReviewArchive(`totals.${key}`);
+  }
+  if (!isFiniteNumber(input.costUsd) || input.costUsd < 0) {
+    throw invalidDailyReviewArchive('totals.costUsd');
   }
   return {
-    id: archive.id,
-    day: archive.day,
-    range: archive.mode === 'deep' ? 7 : 1,
-    status: archive.status,
-    generatedAt: archive.generatedAt,
-    trigger: archive.trigger,
-    modelKey: archive.modelKey,
-    sections: archive.sections,
-    totals: archive.totals,
-    errorMessage: archive.errorMessage,
+    sessionCount: input.sessionCount as number,
+    requestCount: input.requestCount as number,
+    totalTokens: input.totalTokens as number,
+    costUsd: input.costUsd,
+    errorCount: input.errorCount as number,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return isFiniteNumber(value) && Number.isInteger(value) && value >= 0;
+}
+
+function invalidDailyReviewArchive(field: string): Error {
+  return new Error(`Invalid Daily Review archive ${field}`);
 }
 
 /** Strips the section bodies down to a lightweight history-list row. */

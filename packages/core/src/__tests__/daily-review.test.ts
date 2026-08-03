@@ -229,6 +229,39 @@ describe('Daily Review range contract', () => {
     assert.equal(legacy.sections.summary, 'Seven days');
   });
 
+  it('rejects structurally invalid canonical archives', () => {
+    const valid = {
+      id: '2026-08-03-1d',
+      day,
+      range: 1,
+      status: 'ok',
+      generatedAt: day.toMs,
+      trigger: 'manual',
+      modelKey: '',
+      sections: { summary: 'Today' },
+      totals: {
+        sessionCount: 1,
+        requestCount: 2,
+        totalTokens: 3,
+        costUsd: 0.04,
+        errorCount: 0,
+      },
+    };
+    const invalid = [
+      { ...valid, day: undefined },
+      { ...valid, status: 'unknown' },
+      { ...valid, generatedAt: Number.NaN },
+      { ...valid, trigger: 'unknown' },
+      { ...valid, modelKey: 42 },
+      { ...valid, sections: { summary: 42 } },
+      { ...valid, totals: { requestCount: 2 } },
+    ];
+
+    for (const archive of invalid) {
+      assert.throws(() => normalizeDailyReviewArchive(archive));
+    }
+  });
+
   it('keeps only the three settings that control real behavior', () => {
     assert.deepEqual(
       normalizeDailyReviewConfig({

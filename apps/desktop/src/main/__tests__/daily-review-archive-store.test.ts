@@ -96,6 +96,20 @@ describe('Daily Review archive corruption recovery', () => {
     ]);
   });
 
+  it('keeps healthy archives available when a sibling has an invalid schema', async () => {
+    const root = await aRoot();
+    const store = createDailyReviewArchiveStore(root);
+    await store.putArchive(anArchive());
+    await writeFile(
+      join(root, 'daily-reviews', 'archive', '2026-08-02-1d.json'),
+      JSON.stringify({ id: '2026-08-02-1d', range: 1 }),
+    );
+
+    assert.deepEqual((await store.listArchives()).map((archive) => archive.id), [
+      '2026-08-03-1d',
+    ]);
+  });
+
   it('treats a corrupt canonical archive as missing so generation can replace it', async () => {
     const root = await aRoot();
     const archiveRoot = join(root, 'daily-reviews', 'archive');
