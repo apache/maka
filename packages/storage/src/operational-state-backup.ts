@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, lstatSync } from 'node:fs';
 import {
+  chmod,
   copyFile,
   lstat,
   mkdir,
@@ -13,7 +14,9 @@ import {
 } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
+import { decodeStoredMessageForRecovery } from './execution-record-codec.js';
 import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
@@ -26,6 +29,7 @@ import { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
 import { SQLITE_USAGE_SCHEMA_VERSION } from './sqlite-usage-schema.js';
 import { SQLITE_WORKFLOW_SCHEMA_VERSION } from './sqlite-workflow-schema.js';
+import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 
 export const OPERATIONAL_BACKUP_FORMAT = 'maka-operational-backup';
 export const OPERATIONAL_BACKUP_SCHEMA_VERSION = 3 as const;
@@ -84,16 +88,25 @@ export async function createOperationalStateBackup(
     assertSeparateRoots(canonicalStateRoot, destinationRoot);
     const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
     try {
-      await mkdir(stagingRoot, { recursive: true });
+      await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
       const database = acquireOperationalStateDatabase(canonicalStateRoot);
+      const databasePath = resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
       try {
-        await database.backup(resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME));
+        await database.backup(databasePath);
       } finally {
         database.close();
       }
+      normalizeStandaloneSqliteSnapshot(databasePath);
+      await chmod(databasePath, 0o600);
+      await syncFile(databasePath);
       const artifactRoot = resolve(canonicalStateRoot, 'artifacts');
       if (await pathExists(artifactRoot)) {
-        await copyRegularTree(artifactRoot, resolve(stagingRoot, 'artifacts'), artifactRoot);
+        await copyRegularTree(
+          artifactRoot,
+          resolve(stagingRoot, 'artifacts'),
+          artifactRoot,
+          stagingRoot,
+        );
       }
       const createdAt = (input.now ?? Date.now)();
       if (!Number.isSafeInteger(createdAt) || createdAt < 0) {
@@ -105,13 +118,18 @@ export async function createOperationalStateBackup(
         createdAt,
         files: await inventory(stagingRoot),
       };
-      await writeFile(
-        resolve(stagingRoot, OPERATIONAL_BACKUP_MANIFEST_FILE),
-        `${JSON.stringify(manifest, null, 2)}\n`,
-        'utf8',
-      );
+      const manifestPath = resolve(stagingRoot, OPERATIONAL_BACKUP_MANIFEST_FILE);
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
+      await syncFile(manifestPath);
+      await validateOperationalStateBackup(stagingRoot);
+      await syncDirectoryChain(stagingRoot, stagingRoot);
       await mkdir(dirname(destinationRoot), { recursive: true });
       await rename(stagingRoot, destinationRoot);
+      await syncDirectory(dirname(destinationRoot));
       return manifest;
     } catch (error) {
       await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
@@ -137,7 +155,7 @@ export async function validateOperationalStateBackup(
   if (JSON.stringify(actual) !== JSON.stringify(manifest.files)) {
     throw new OperationalBackupError('corrupt_backup', 'Backup file inventory does not match');
   }
-  validateSqlite(resolve(root, OPERATIONAL_STATE_DATABASE_NAME));
+  validateSqlite(resolve(root, OPERATIONAL_STATE_DATABASE_NAME), manifest.files);
   return manifest;
 }
 
@@ -151,15 +169,25 @@ export async function restoreOperationalStateBackup(
   const manifest = await validateOperationalStateBackup(backupRoot);
   const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await mkdir(stagingRoot, { recursive: true });
+    await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
     for (const file of manifest.files) {
       const source = resolveInside(backupRoot, file.path);
       const destination = resolveInside(stagingRoot, file.path);
       await mkdir(dirname(destination), { recursive: true });
       await copyFile(source, destination);
+      await chmod(destination, 0o600);
+      await syncFile(destination);
+      await syncDirectoryChain(dirname(destination), stagingRoot);
     }
+    const actual = await inventory(stagingRoot);
+    if (JSON.stringify(actual) !== JSON.stringify(manifest.files)) {
+      throw new OperationalBackupError('corrupt_backup', 'Restored file inventory does not match');
+    }
+    validateSqlite(resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME), manifest.files);
+    await syncDirectoryChain(stagingRoot, stagingRoot);
     await mkdir(dirname(destinationRoot), { recursive: true });
     await rename(stagingRoot, destinationRoot);
+    await syncDirectory(dirname(destinationRoot));
     return manifest;
   } catch (error) {
     await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
@@ -261,15 +289,25 @@ async function describeFile(root: string, path: string): Promise<OperationalBack
   };
 }
 
-async function copyRegularTree(source: string, destination: string, root: string): Promise<void> {
+async function copyRegularTree(
+  source: string,
+  destination: string,
+  root: string,
+  destinationRoot: string,
+): Promise<void> {
   const metadata = await lstat(source);
   if (metadata.isSymbolicLink()) {
     throw new OperationalBackupError('invalid_root', 'Artifact tree cannot contain symlinks');
   }
   if (metadata.isDirectory()) {
-    await mkdir(destination, { recursive: true });
+    await mkdir(destination, { recursive: true, mode: 0o700 });
     for (const entry of await readdir(source)) {
-      await copyRegularTree(resolve(source, entry), resolve(destination, entry), root);
+      await copyRegularTree(
+        resolve(source, entry),
+        resolve(destination, entry),
+        root,
+        destinationRoot,
+      );
     }
     return;
   }
@@ -277,16 +315,31 @@ async function copyRegularTree(source: string, destination: string, root: string
     throw new OperationalBackupError('invalid_root', 'Artifact tree contains a non-regular file');
   }
   resolveInside(root, relative(root, source));
-  await mkdir(dirname(destination), { recursive: true });
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
   await copyFile(source, destination);
+  await chmod(destination, 0o600);
+  await syncFile(destination);
+  await syncDirectoryChain(dirname(destination), destinationRoot);
 }
 
-function validateSqlite(path: string): void {
+function validateSqlite(path: string, files: readonly OperationalBackupFile[]): void {
   try {
+    const metadata = lstatSync(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error('runtime.sqlite is not a regular file');
+    }
     const database = new DatabaseSync(path, { readOnly: true });
     try {
-      const row = database.prepare('PRAGMA quick_check').get() as { quick_check?: unknown };
-      if (row.quick_check !== 'ok') throw new Error('quick_check failed');
+      database.exec('PRAGMA query_only = ON; PRAGMA foreign_keys = ON; BEGIN');
+      const integrity = database.prepare('PRAGMA integrity_check').all() as Array<{
+        integrity_check?: unknown;
+      }>;
+      if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') {
+        throw new Error('integrity_check failed');
+      }
+      if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+        throw new Error('foreign_key_check failed');
+      }
       const expected = new Map<string, number>([
         ['runtime', SQLITE_RUNTIME_SCHEMA_VERSION],
         ['session_metadata', SQLITE_SESSION_METADATA_SCHEMA_VERSION],
@@ -308,13 +361,172 @@ function validateSqlite(path: string): void {
       ) {
         throw new Error('operational schema versions do not match');
       }
+
+      const requiredTables = [
+        'operational_schema_migrations',
+        'runtime_events',
+        'tool_journal_events',
+        'tool_operations',
+        'runtime_partial_snapshots',
+        'runtime_capabilities',
+        'runtime_continuation_claims',
+        'runtime_workspace_epochs',
+        'runtime_workspace_versions',
+        'runtime_workspace_heads',
+        'headless_task_run_events',
+        'session_metadata_schema',
+        'session_metadata',
+        'session_metadata_labels',
+        'session_metadata_tombstones',
+        'subagent_spawns',
+        'agent_graph_intent_claims',
+        'agent_graph_schedule_updates',
+        'agent_graph_operator_provisions',
+        'agent_graph_client_projections',
+        'agent_graph_client_operator_projections',
+        'agent_graph_client_terminal_activity',
+        'agent_graph_client_applied_records',
+        'agent_graph_supervisor_wakes',
+        'agent_graph_supervisor_wake_attempts',
+        'sandbox_boundary_log',
+        'session_create_claims',
+        'session_catalog_state',
+        'session_catalog_projection',
+        'session_catalog_label_projection',
+        'session_messages',
+        'core_agent_runs',
+        'core_agent_run_events',
+        'core_agent_run_projections',
+        'core_root_turn_admissions',
+        'core_root_source_message_proofs',
+        'core_interaction_requests',
+        'core_interaction_outcomes',
+        'core_message_host_epochs',
+        'core_message_receipts',
+        'core_shell_runs',
+        'workflow_task_ledger_events',
+        'workflow_task_ledger_projections',
+        'workflow_plan_events',
+        'workflow_plan_projections',
+        'workflow_deep_research_events',
+        'workflow_plan_reminders',
+        'workflow_quote_companion_cleanup',
+        'workflow_daily_review_state',
+        'workflow_daily_review_archives',
+        'usage_llm_calls',
+        'usage_tool_invocations',
+        'usage_model_call_attempts',
+        'usage_model_call_reprojection',
+        'usage_pricing_authority',
+        'usage_pricing_overrides',
+        'artifact_records',
+        'automation_authority_state',
+        'automation_definitions',
+        'automation_pending_fires',
+      ];
+      const tableExists = database.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+      );
+      for (const table of requiredTables) {
+        if (tableExists.get(table) === undefined) {
+          throw new Error(`required table is missing: ${table}`);
+        }
+      }
+
+      const artifactRows = database
+        .prepare(`
+          SELECT artifact_id, session_id, created_at, status, relative_path, record_json
+          FROM artifact_records
+          ORDER BY created_at, storage_key
+        `)
+        .all() as Array<{
+        artifact_id?: unknown;
+        session_id?: unknown;
+        created_at?: unknown;
+        status?: unknown;
+        relative_path?: unknown;
+        record_json?: unknown;
+      }>;
+      const artifacts = decodeArtifactRecordJsons(artifactRows.map((row) => row.record_json));
+      const filesByPath = new Map(files.map((file) => [file.path, file]));
+      for (const [index, record] of artifacts.entries()) {
+        const row = artifactRows[index];
+        if (
+          row?.artifact_id !== record.id ||
+          row.session_id !== record.sessionId ||
+          row.created_at !== record.createdAt ||
+          row.status !== record.status ||
+          row.relative_path !== record.relativePath
+        ) {
+          throw new Error(`artifact indexes do not match record: ${record.id}`);
+        }
+        const payload = filesByPath.get(`artifacts/${record.relativePath}`);
+        if (!payload || payload.size !== record.sizeBytes) {
+          throw new Error(`artifact payload does not match metadata: ${record.id}`);
+        }
+      }
+
+      const messageRows = database
+        .prepare(`
+          SELECT session_id, sequence, message_id, message_type, message_ts, record_json
+          FROM session_messages
+          ORDER BY session_id, sequence
+        `)
+        .all() as Array<{
+        session_id?: unknown;
+        sequence?: unknown;
+        message_id?: unknown;
+        message_type?: unknown;
+        message_ts?: unknown;
+        record_json?: unknown;
+      }>;
+      for (const row of messageRows) {
+        if (
+          typeof row.session_id !== 'string' ||
+          !Number.isSafeInteger(row.sequence) ||
+          (row.sequence as number) < 0 ||
+          typeof row.record_json !== 'string'
+        ) {
+          throw new Error('session message index is invalid');
+        }
+        const message = decodeStoredMessageForRecovery(JSON.parse(row.record_json));
+        if (
+          message.id !== row.message_id ||
+          message.type !== row.message_type ||
+          message.ts !== row.message_ts
+        ) {
+          throw new Error(`session message indexes do not match record: ${message.id}`);
+        }
+      }
     } finally {
+      try {
+        database.exec('ROLLBACK');
+      } catch {
+        // Preserve the validation error.
+      }
       database.close();
     }
   } catch (error) {
     throw new OperationalBackupError('corrupt_backup', 'Backup runtime.sqlite is invalid', {
       cause: error,
     });
+  }
+}
+
+function normalizeStandaloneSqliteSnapshot(path: string): void {
+  const database = new DatabaseSync(path);
+  try {
+    const row = database.prepare('PRAGMA journal_mode = DELETE').get() as
+      | { journal_mode?: unknown }
+      | undefined;
+    if (row?.journal_mode !== 'delete') {
+      throw new OperationalBackupError(
+        'corrupt_backup',
+        'Unable to make the SQLite backup self-contained',
+      );
+    }
+  } finally {
+    database.close();
   }
 }
 

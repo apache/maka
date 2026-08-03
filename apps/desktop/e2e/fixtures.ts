@@ -356,7 +356,7 @@ export const test = base.extend<{
     );
   },
   // Stale sessions: boots the e2e-fixture `stale-sessions` fixture — one
-  // healthy session (zai-live, secret seeded), one unlocked fake session
+  // healthy session (zai-live, secret seeded) and one locked fake-backend session
   // (opened active). Exercises the #1038 health-notice authority against real IPC
   // (connection list, hasSecret probe, connectionLocked summaries).
   // Readiness = turns on screen: the fake session is open.

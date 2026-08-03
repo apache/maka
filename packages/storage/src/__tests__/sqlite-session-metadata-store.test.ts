@@ -231,6 +231,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v12 = new DatabaseSync(path);
       v12.exec(`
+        DROP TABLE session_messages;
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
         ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
@@ -994,6 +995,7 @@ describe('SqliteSessionMetadataStore', () => {
       // Rewind to the pre-provenance shape a shipped database would have.
       const v13 = new DatabaseSync(path);
       v13.exec(`
+        DROP TABLE session_messages;
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
         ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
@@ -1502,6 +1504,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v4 = new DatabaseSync(path);
       v4.exec(`
+        DROP TABLE session_messages;
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
         ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;

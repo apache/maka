@@ -53,6 +53,17 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('reports a missing ShellRun with the ENOENT store contract', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteShellRunStore(root);
+      try {
+        await assert.rejects(store.readShellRun('session-1', 'missing-shell'), { code: 'ENOENT' });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   test('persists message receipts', async () => {
     await withRoot(async (root) => {
       const store = createSqliteMessageReceiptStore(root);

@@ -40,7 +40,7 @@ async function probeNoticeAlignment(page: import('@playwright/test').Page) {
   });
 }
 
-test('locked stale sessions show the health notice even with a ready default', async ({ staleSessionsWindow: page }) => {
+test('a locked stale session shows the health notice even with a ready default', async ({ staleSessionsWindow: page }) => {
   // Active = stale fake session (locked by its history): notice shows.
   await expect(page.getByText('会话已过期 · 请先配置真实模型')).toBeVisible();
 

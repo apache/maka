@@ -115,6 +115,20 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('seeds an empty pricing authority for a fresh workspace', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      try {
+        assert.deepEqual(await stores.pricing.snapshot(), { revision: 0, overrides: [] });
+      } finally {
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('classifies a renamed or replaced live root as a draining persistence failure', async () => {
     for (const replacement of [false, true]) {
       await withInteractiveRoot(async ({ root, capability }) => {

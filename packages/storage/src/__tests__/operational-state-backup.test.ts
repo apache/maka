@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { createSqliteArtifactStore } from '../artifact-store.js';
 import { createSessionStore } from '../session-store.js';
 import {
   createOperationalStateBackup,
+  OperationalBackupError,
   restoreOperationalStateBackup,
   validateOperationalStateBackup,
 } from '../operational-state-backup.js';
@@ -34,8 +36,18 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
       text: 'durable',
     });
     await sessions.close?.();
-    await mkdir(join(stateRoot, 'artifacts'), { recursive: true });
-    await writeFile(join(stateRoot, 'artifacts', 'note.txt'), 'artifact');
+    const artifacts = createSqliteArtifactStore(stateRoot);
+    const artifact = await artifacts.create({
+      id: 'artifact-1',
+      sessionId: session.id,
+      turnId: 'turn-1',
+      name: 'note.txt',
+      kind: 'file',
+      content: 'artifact',
+      source: 'fixture',
+      now: 2,
+    });
+    artifacts.close?.();
 
     await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot, now: () => 10 });
     assert.equal((await validateOperationalStateBackup(backupRoot)).createdAt, 10);
@@ -44,10 +56,47 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     const restored = createSessionStore(restoreRoot);
     try {
       assert.equal((await restored.readMessages(session.id))[0]?.id, 'message-1');
-      assert.equal(await readFile(join(restoreRoot, 'artifacts', 'note.txt'), 'utf8'), 'artifact');
+      assert.equal(
+        await readFile(join(restoreRoot, 'artifacts', artifact.relativePath), 'utf8'),
+        'artifact',
+      );
     } finally {
       await restored.close?.();
     }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('rejects a backup whose SQLite Artifact metadata has no matching payload', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-operational-backup-artifact-'));
+  const stateRoot = join(base, 'state');
+  try {
+    const artifacts = createSqliteArtifactStore(stateRoot);
+    const artifact = await artifacts.create({
+      id: 'artifact-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      name: 'note.txt',
+      kind: 'file',
+      content: 'artifact',
+      source: 'fixture',
+      now: 2,
+    });
+    artifacts.close?.();
+    await rm(join(stateRoot, 'artifacts', artifact.relativePath));
+
+    await assert.rejects(
+      createOperationalStateBackup({
+        stateRoot,
+        destinationRoot: join(base, 'backup'),
+        now: () => 10,
+      }),
+      (error: unknown) =>
+        error instanceof OperationalBackupError &&
+        error.code === 'corrupt_backup' &&
+        /artifact payload/i.test(error.message),
+    );
   } finally {
     await rm(base, { recursive: true, force: true });
   }
