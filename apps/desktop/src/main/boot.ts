@@ -28,7 +28,6 @@ import { OpenAiCodexService } from './oauth/openai-codex-service.js';
 import { createOpenAiCodexE2eFixtureService } from './openai-codex-e2e-fixture.js';
 import { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
 import { XaiOAuthService } from './oauth/xai-oauth-service.js';
-import { CursorSubscriptionService } from './oauth/cursor-subscription-service.js';
 import { AntigravitySubscriptionService } from './oauth/antigravity-subscription-service.js';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import { ok } from '@maka/core/result';
@@ -198,7 +197,8 @@ try {
   }
   throw error;
 }
-const workspaceRoot = join(app.getPath('userData'), 'workspaces', e2eFixture?.workspaceName ?? 'default');
+const userDataDir = app.getPath('userData');
+const workspaceRoot = join(userDataDir, 'workspaces', e2eFixture?.workspaceName ?? 'default');
 const credentialStore = createFileCredentialStore(workspaceRoot);
 if (e2eFixture) {
   console.log(`[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`);
@@ -295,7 +295,7 @@ const claudeSubscription = new ClaudeSubscriptionService({
   openExternal: (url) => shell.openExternal(url),
   credentialStore,
 });
-// PR-MODEL-OAUTH-ALL-0: Codex / Cursor / Antigravity subscription
+// PR-MODEL-OAUTH-ALL-0: Codex / Antigravity subscription
 // services. Same shape as `claudeSubscription` — main-process only,
 // IPC payloads never carry tokens, each gated behind its own
 // MAKA_*_EXPERIMENTAL env var. Antigravity is a `preview` placeholder
@@ -386,11 +386,6 @@ const voiceIpcService = createVoiceIpcService({
 function hasConnectionSecret(connection: LlmConnection): Promise<boolean> {
   return oauthModelConnections.hasConnectionSecret(connection);
 }
-const cursorSubscription = new CursorSubscriptionService({
-  userDataDir: app.getPath('userData'),
-  openExternal: (url) => shell.openExternal(url),
-  credentialStore,
-});
 const antigravitySubscription = new AntigravitySubscriptionService({
   userDataDir: app.getPath('userData'),
   openExternal: (url) => shell.openExternal(url),
@@ -1127,7 +1122,6 @@ function registerIpc(): void {
     openAiCodex,
     githubCopilotSubscription,
     xaiOAuth,
-    cursorSubscription,
     antigravitySubscription,
     isClaudeSubscriptionAuthenticatedState,
     syncClaudeSubscriptionConnection,
@@ -1429,6 +1423,7 @@ registerIpc();
 wireAppLifecycle({
   startHidden,
   e2eFixture,
+  userDataDir,
   workspaceRoot,
   sessionStore: store,
   projectCatalog,

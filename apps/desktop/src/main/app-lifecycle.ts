@@ -40,6 +40,7 @@ import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { createAppQuitCoordinator } from './app-quit-coordinator.js';
 import { resolveDockPresentation } from './dock-presentation.js';
 import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
+import { retireCursorSubscriptionCredentials } from './oauth/cursor-subscription-retirement.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 export interface AppLifecycleDeps {
@@ -51,6 +52,7 @@ export interface AppLifecycleDeps {
   // review would leave no way back.
   startHidden: boolean;
   e2eFixture: ReturnType<typeof resolveE2eFixture>;
+  userDataDir: string;
   workspaceRoot: string;
   sessionStore: ReturnType<typeof createSessionStore>;
   projectCatalog: ReturnType<typeof createProjectCatalog>;
@@ -109,8 +111,8 @@ export interface AppLifecycleDeps {
 /**
  * Startup / lifecycle cluster extracted from main.ts (arch R6). Pure move of the
  * post-`registerIpc()` tail: the `app.whenReady()` startup flow (dock icon,
- * fixture seeding, credential startup, window creation, background startup),
- * `runCredentialStartup` / `runBackgroundStartup` / `ensureBootstrapConnection` /
+ * fixture seeding, window creation, background startup),
+ * `runBackgroundStartup` / `ensureBootstrapConnection` /
  * `recoverInterruptedSessionsOnStartup`, the `window-all-closed` and `before-quit`
  * handlers, and `runBeforeQuitCleanup`. Startup ORDER is the product, so the
  * bodies stay behaviorally identical to their in-main.ts originals; every
@@ -123,6 +125,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   const {
     startHidden,
     e2eFixture,
+    userDataDir,
     workspaceRoot,
     sessionStore,
     projectCatalog,
@@ -301,6 +304,9 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
 
     // E2e-fixture seeding happens synchronously in `whenReady` before the
     // window opens (see there for why); only the real bootstrap runs here.
+    await step('retired Cursor credentials', () =>
+      retireCursorSubscriptionCredentials({ userDataDir, credentialStore }),
+    );
     if (!e2eFixture) {
       await step('bootstrap connection', () => ensureBootstrapConnection());
     }

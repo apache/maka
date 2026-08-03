@@ -13,7 +13,6 @@ import { after, describe, it } from 'node:test';
 import type { SubscriptionActionResult } from '@maka/core';
 import { AntigravitySubscriptionService } from '../oauth/antigravity-subscription-service.js';
 import { ClaudeSubscriptionService } from '../oauth/claude-subscription-service.js';
-import { CursorSubscriptionService } from '../oauth/cursor-subscription-service.js';
 import { OpenAiCodexService } from '../oauth/openai-codex-service.js';
 import type { SharedOAuthCredentialStore } from '../oauth/shared-credential-bridge.js';
 import { XaiOAuthService } from '../oauth/xai-oauth-service.js';
@@ -105,30 +104,6 @@ const STORE_AUTHORITY_SERVICES: ServiceCase[] = [
         ...input,
         now: () => NOW,
         openExternal: async () => undefined,
-      }),
-  },
-  {
-    name: 'Cursor',
-    slug: 'cursor-subscription',
-    legacyFile: '.cursor_subscription_token',
-    initialTokens: {
-      access_token: 'cursor-access',
-      refresh_token: 'cursor-refresh',
-      expires_at: NOW + 3_600_000,
-    },
-    refresh: {
-      accessToken: 'cursor-access-refreshed',
-      response: {
-        accessToken: 'cursor-access-refreshed',
-        refreshToken: 'cursor-refresh-refreshed',
-      },
-    },
-    create: (input) =>
-      new CursorSubscriptionService({
-        ...input,
-        now: () => NOW,
-        openExternal: async () => undefined,
-        sleepFn: async () => undefined,
       }),
   },
   {
@@ -508,33 +483,6 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
       provider: 'openai-codex',
       runtimeState: 'not_logged_in',
     });
-  });
-
-  it('Cursor login writes the successful poll result to its shared credential', async () => {
-    const credentials = createMemoryCredentialStore();
-    const userDataDir = await makeUserDataDir();
-    const service = new CursorSubscriptionService({
-      userDataDir,
-      openExternal: async () => undefined,
-      now: () => NOW,
-      sleepFn: async () => undefined,
-      fetchFn: async () =>
-        Response.json({
-          accessToken: 'cursor-login-access',
-          refreshToken: 'cursor-login-refresh',
-        }),
-      credentialStore: credentials.store,
-    });
-
-    const authorization = await service.getAuthorizationUrl();
-    assert.ok('authRequestId' in authorization);
-    assert.deepEqual(await service.completeAuthorization(authorization.authRequestId), { ok: true });
-    const stored = JSON.parse(
-      credentials.get('cursor-subscription', 'oauth_token') ?? 'null',
-    ) as { access_token?: string };
-    assert.equal(stored.access_token, 'cursor-login-access');
-    assert.equal(credentials.get('codex-subscription', 'oauth_token'), null);
-    await assert.rejects(stat(join(userDataDir, '.cursor_subscription_token')), { code: 'ENOENT' });
   });
 
 });
