@@ -325,13 +325,19 @@ describe('PiAgentBackend skeleton', () => {
       events.push(event);
     }
     const start = events.find((event) => event.type === 'tool_start');
+    // This is the record the model reads back as its own call, so it is written
+    // in the tool's argument names: `window_id`, not the approval projection's
+    // `windowId`, and without the two fields the host adds for a permission
+    // decision. Every argument the call carried keeps its key — a call shown
+    // with no `text` is a shape the model will send again — and every value
+    // that came off the screen or out of a person is reduced to what it was.
     const expected = {
       action: 'type',
-      approvalClass: 'keyboard_mutation',
-      rememberForTurnAllowed: true,
       app: 'Example',
-      windowId: 42,
-      observationId: 'frame-1',
+      window_id: 42,
+      observation_id: 'frame-1',
+      text: '<text>',
+      coordinate: '<point>',
     };
     assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, expected);
     const toolCall = messages.find((message) => message.type === 'tool_call');

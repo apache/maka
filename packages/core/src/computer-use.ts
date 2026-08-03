@@ -17,12 +17,6 @@ export const COMPUTER_USE_ERROR_CODES = [
   'capture_failed',
   'sensitivity_blocked',
   'unsupported_action',
-  // The executor attempted the action, the OS refused it, and nothing happened —
-  // or nothing was attempted because every path that could reach the target was
-  // forbidden. Distinct from `unsupported_action`, which is decided before
-  // anything is dispatched: "the element does not offer this" tells the model to
-  // try something else, "we tried and it said no" tells it to try again.
-  'dispatch_refused',
   'aborted',
   'timeout',
   'no_active_frame',
@@ -339,15 +333,30 @@ const MODEL_CALL_NAMED_ARGS = new Set([
 /**
  * Arguments whose value is the model's own choice from a fixed set, a number,
  * or a word it wrote itself — nothing here comes off the screen.
+ *
+ * Keyed by action, not by argument name, because `text` is six arguments
+ * wearing one name. It carries the key for `press_key`, `key` and `hold_key`,
+ * the element action name for `secondary_action`, the substring to select for
+ * `select_text`, and whatever a person asked to be typed for `type`. Two of
+ * those come off the screen or out of a person's head; four are a name the
+ * model picked from a set the executor publishes.
+ *
+ * Keying on the name meant excluding all six, which is right for `type` and
+ * wrong for the rest — and the wrong half is the one that motivated this
+ * projection: the model read back `press_key ... text: <text>` and could not
+ * see which key it had pressed.
  */
-const MODEL_CALL_PLAIN_VALUES = new Set([
-  'include_screenshot',
-  'scroll_direction',
-  'scroll_amount',
-  'window_action',
-  'duration',
-  'menu',
-  'query',
+const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['observe', new Set(['include_screenshot'])],
+  ['screenshot', new Set(['include_screenshot'])],
+  ['scroll', new Set(['scroll_direction', 'scroll_amount'])],
+  ['wait', new Set(['duration'])],
+  // The key name, from the set of key names the executor accepts.
+  ['press_key', new Set(['text'])],
+  ['key', new Set(['text'])],
+  ['hold_key', new Set(['text', 'duration'])],
+  // The element action name, from the closed set the observation lists.
+  ['secondary_action', new Set(['text'])],
 ]);
 
 /**
@@ -378,17 +387,18 @@ export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArg
   const observationId =
     ownDataProperty(record, 'observation_id') ?? ownDataProperty(record, 'observationId');
   const elementId = ownDataProperty(record, 'element_id') ?? ownDataProperty(record, 'elementId');
-  // Every remaining argument the model sent, as a shape. This projection used
-  // to name five keys and drop the rest, so `element_sequence` came back to the
-  // model as a call carrying only an observation id, `press_key` as one with no
-  // key, `set_value` as one with no value. The model reads that as the shape
-  // that worked and sends it again — and a real session refused eighteen calls
-  // for missing exactly the fields this had removed. The privacy boundary is
-  // about values, and only values are withheld.
+  // Every remaining argument the model sent, as a shape. The approval summary
+  // this replaces names five keys and drops the rest, so `press_key` came back
+  // to the model as a call with no key, `set_value` as one with no value,
+  // `scroll` as one with no direction. The model reads that as the shape that
+  // worked and sends it again — and a real session refused eighteen calls for
+  // missing exactly the fields the projection had removed. The privacy boundary
+  // is about values, and only values are withheld.
   const rest: Record<string, string | number | boolean> = {};
+  const plain = MODEL_CALL_PLAIN_VALUES.get(action);
   for (const [key, value] of Object.entries(record ?? {})) {
     if (MODEL_CALL_NAMED_ARGS.has(key) || HOST_ONLY_ARGS.has(key)) continue;
-    if (MODEL_CALL_PLAIN_VALUES.has(key)) {
+    if (plain?.has(key)) {
       rest[key] =
         typeof value === 'string'
           ? boundedDisplay(redactSecrets(value), 256)
@@ -430,48 +440,33 @@ const POINTER_ACTIONS = new Set([
 ]);
 
 const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
-const SEMANTIC_ACTIONS = new Set([
-  'click_element',
-  'set_value',
-  'select_text',
-  'secondary_action',
-  // Scrolling an element moves what is on screen without changing any value.
-  // It is still a mutation of the target's state, and it is the semantic twin
-  // of the coordinate `scroll` that already sits in POINTER_ACTIONS.
-  'scroll_element',
-  // A sequence of element actions is still element actions: same class, same
-  // approval, one call.
-  'element_sequence',
-  // Starting an app changes what is on screen. It touches no element, but it
-  // is not a read, and letting it fall through to the default would have
-  // classified it correctly by accident rather than on purpose.
-  'launch_app',
-]);
+const SEMANTIC_ACTIONS = new Set(['click_element', 'set_value', 'select_text', 'secondary_action']);
 
 /**
- * Every semantic action name, as the tool schema spells them.
+ * Every action name the tool schema spells out itself, as it spells them —
+ * that is, every name that is not one of the `CU_ACTION_TYPES` coordinate
+ * actions folded in below.
  *
  * Hand-written beside a schema that already lists them, and it drifted:
- * `window_action` was added to the schema and not here, so every window move,
- * resize and minimise was summarised as `unknown` — in the approval a person
- * reads before allowing it, and in the record the model reads back of its own
- * call. A real run shows one such call succeeding while both projections of it
- * said `unknown`.
+ * `window_action` was added to the strict union and not here, so had it also
+ * reached the wire, every window move, resize and minimise would have been
+ * summarised as `unknown` — in the approval a person reads before allowing it,
+ * and in the record the model reads back of its own call.
  *
- * `computer-use-approval-actions.test.ts` in @maka/runtime holds the two lists
- * against each other, because this package cannot import the schema.
+ * Drift in the other direction costs just as much and is quieter. A name listed
+ * here that the schema does not accept makes `computerUseApprovalSummary`
+ * report an action the tool will reject as though it were one that had been
+ * taken, and makes `rememberForTurnAllowed` true for it. So the guard in
+ * `computer-use-schema-parity.test.ts` (@maka/runtime, which can import the
+ * schema; this package cannot) compares the two lists in both directions.
  */
 export const COMPUTER_USE_SEMANTIC_ACTIONS = [
   'list_apps',
-  'launch_app',
   'observe',
   'click_element',
   'set_value',
   'select_text',
   'secondary_action',
-  'scroll_element',
-  'element_sequence',
-  'window_action',
   'press_key',
 ] as const;
 
@@ -575,40 +570,4 @@ function ownDataProperty(record: Record<string, unknown>, key: string): unknown 
     throw new Error(`Computer Use approval requires ${key} to be a plain data property`);
   }
   return descriptor.value;
-}
-
-/**
- * Whether the model may drive the machine at all.
- *
- * Computer Use is gated by the tool, not by the application it is pointed at.
- * That is how everything else in Maka is gated — `load_tools` admits tools,
- * plan mode strips them, the tool surface is assembled per turn — and adding an
- * application axis would be a second dimension nothing else has, paid for with
- * a per-app grant store and a revocation screen, to ask a question ("allow Maka
- * to use 词典?") that a person cannot weigh and will answer yes to.
- *
- * It also is not a substitute for the macOS grants. Accessibility and Screen
- * Recording are what actually let anything happen; this decides whether Maka
- * offers the capability to the model in the first place.
- *
- * Off by default. Turning on a capability that reads the screen and presses
- * buttons is a decision, not a migration.
- */
-export interface ComputerUseSettings {
-  readonly enabled: boolean;
-}
-
-export type ComputerUseSettingsPatch = Partial<{ enabled: boolean }>;
-
-export function defaultComputerUseSettings(): ComputerUseSettings {
-  return { enabled: false };
-}
-
-export function mergeComputerUseSettings(
-  current: ComputerUseSettings | undefined,
-  patch: ComputerUseSettingsPatch | undefined,
-): ComputerUseSettings {
-  const base = current ?? defaultComputerUseSettings();
-  if (!patch) return base;
-  return { enabled: typeof patch.enabled === 'boolean' ? patch.enabled : base.enabled };
 }
