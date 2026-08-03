@@ -214,12 +214,21 @@
          corner opposite the anchor, so dragging away from the anchor grows the
          mirror — the same gesture reads the same way in every corner.
 
+         Which corner that is comes from main, over `pip:layout`, as
+         `body[data-grip]`. It used to be hard-coded `left: 8px; top: 8px`,
+         which is the corner opposite the *default* bottom-right anchor and
+         wrong in the other three: throw the mirror to the top-left and the
+         grip landed on the pinned corner, so dragging it grew the tile from
+         the far edge while the handle itself could not move and the pointer
+         came off it on the first pixel.
+
          It is a chip, not a bare bracket. Two hairlines drawn straight onto
          the mirrored window were read as a white L left over from something
          else; giving it the buttons' scrim says it belongs to the same set of
          controls, and it shares their 8pt inset for the same reason. */
       #resize {
         position: absolute;
+        /* Opposite the default bottom-right anchor, until main says otherwise. */
         left: 8px;
         top: 8px;
         width: 20px;
@@ -232,6 +241,27 @@
         pointer-events: none;
         cursor: nwse-resize;
       }
+      body[data-grip='top-right'] #resize {
+        left: auto;
+        right: 8px;
+        top: 8px;
+        bottom: auto;
+        cursor: nesw-resize;
+      }
+      body[data-grip='bottom-left'] #resize {
+        left: 8px;
+        right: auto;
+        top: auto;
+        bottom: 8px;
+        cursor: nesw-resize;
+      }
+      body[data-grip='bottom-right'] #resize {
+        left: auto;
+        right: 8px;
+        top: auto;
+        bottom: 8px;
+        cursor: nwse-resize;
+      }
       #resize:hover {
         background: rgb(0 0 0 / 0.75);
       }
@@ -242,6 +272,22 @@
         border-left: 1.5px solid rgb(255 255 255 / 0.92);
         border-top: 1.5px solid rgb(255 255 255 / 0.92);
         border-radius: 2px 0 0 0;
+      }
+      /* The bracket points out of the tile, so it turns with the grip. */
+      body[data-grip='top-right'] #resize::after {
+        transform: rotate(90deg);
+      }
+      body[data-grip='bottom-right'] #resize::after {
+        transform: rotate(180deg);
+      }
+      body[data-grip='bottom-left'] #resize::after {
+        transform: rotate(270deg);
+      }
+      /* The grip and the controls cannot share a corner. The controls sit
+         top-right by default; when the grip is sent there, they move over. */
+      body[data-grip='top-right'] #controls {
+        right: auto;
+        left: 8px;
       }
       #resize[data-visible='1'] {
         opacity: 1;

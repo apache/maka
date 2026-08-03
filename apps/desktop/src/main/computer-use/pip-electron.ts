@@ -21,10 +21,12 @@ import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
-import { PIP_DEFAULT_EDGE, PIP_MAX_EDGE, PIP_MIN_EDGE, anchorFor } from './pip-motion.js';
-// One margin, kept where the controller already had it. Copying the number
-// here would be a second place to change it and a second place to forget.
-import { PIP_MARGIN } from './pip-window.js';
+import {
+  PIP_DEFAULT_EDGE,
+  PIP_MARGIN,
+  PIP_MAX_EDGE,
+  PIP_MIN_EDGE,
+} from './pip-motion.js';
 
 export interface ParentWindowLike {
   isDestroyed(): boolean;

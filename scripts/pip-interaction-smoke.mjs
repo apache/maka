@@ -140,10 +140,17 @@ app.whenReady().then(async () => {
 
   // ── throw it at the opposite corner ───────────────────────────────────────
   const before = mirror.getBounds();
-  pointer = { x: before.x + 20, y: before.y + 20 };
+  // Press in the middle of the tile, clear of both the controls (top-right,
+  // 20x20 inset 8) and the resize grip (20x20 inset 8, on whichever corner is
+  // opposite the anchor). This used to press at (20, 20), which is inside the
+  // grip's 8..28 box: the grip stops the event propagating, so no drag ever
+  // started, the moves ran as a resize instead, and the five checks after it
+  // failed on the cascade. This half of the script had never completed.
+  const GRAB = { x: Math.round(before.width / 2), y: Math.round(before.height / 2) };
+  pointer = { x: before.x + GRAB.x, y: before.y + GRAB.y };
   contents.sendInputEvent({
     type: 'mouseDown',
-    ...inMirror(20, 20),
+    ...inMirror(GRAB.x, GRAB.y),
     button: 'left',
     clickCount: 1,
   });
@@ -157,10 +164,15 @@ app.whenReady().then(async () => {
     [0.22, 0.18],
   ]) {
     pointer = { x: appNow.x + appNow.width * fx, y: appNow.y + appNow.height * fy };
-    contents.sendInputEvent({ type: 'mouseMove', ...inMirror(20, 20) });
+    contents.sendInputEvent({ type: 'mouseMove', ...inMirror(GRAB.x, GRAB.y) });
     await sleep(30);
   }
-  contents.sendInputEvent({ type: 'mouseUp', ...inMirror(20, 20), button: 'left', clickCount: 1 });
+  contents.sendInputEvent({
+    type: 'mouseUp',
+    ...inMirror(GRAB.x, GRAB.y),
+    button: 'left',
+    clickCount: 1,
+  });
 
   const landed = await settled(mirror);
   check(
@@ -189,6 +201,17 @@ app.whenReady().then(async () => {
   const beforeGrip = mirror.getBounds();
   const gripAt = await contents.executeJavaScript(
     "(() => { const r = document.getElementById('resize').getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()",
+  );
+  // The tile is anchored top-left, so its top-left corner is the one held
+  // still and the grip has to be on the bottom-right — the corner that moves.
+  // Pinning the grip to the tile's top-left, which is what the CSS did before
+  // main started sending the alignment down, put the handle on the corner the
+  // gesture holds: the pointer left it on the first pixel of the drag.
+  check(
+    'the grip sits on the corner opposite the anchor',
+    gripAt.x > beforeGrip.width / 2 && gripAt.y > beforeGrip.height / 2,
+    `grip at ${JSON.stringify(gripAt)} in a ${beforeGrip.width}x${beforeGrip.height} tile ` +
+      `anchored ${pip.currentAlignment()}`,
   );
   pointer = { x: beforeGrip.x + gripAt.x, y: beforeGrip.y + gripAt.y };
   contents.sendInputEvent({ type: 'mouseMove', ...gripAt });
@@ -224,13 +247,26 @@ app.whenReady().then(async () => {
   );
 
   // ── hide dismisses it ─────────────────────────────────────────────────────
-  contents.sendInputEvent({ type: 'mouseMove', ...inMirror(60, 20) });
+  //
+  // The controls are click-through until the *main-side* pointer says the
+  // pointer is on the mirror — that is the whole point of the hover poll — so
+  // the fixture has to move its pointer as well as send the page event. It
+  // did not, and the grip drag happened to leave the pointer one point past
+  // the tile's bottom edge, so the window was still ignoring mouse events and
+  // the controls still had `pointer-events: none` when the click arrived.
+  const tile = mirror.getBounds();
+  pointer = { x: tile.x + tile.width / 2, y: tile.y + tile.height / 2 };
   await sleep(200);
+  const visibleNow = await contents.executeJavaScript(
+    "document.getElementById('controls').dataset.visible",
+  );
+  check('the controls are on before the click', visibleNow === '1', `data-visible=${visibleNow}`);
   const hideAt = await contents.executeJavaScript(
     '(() => { const b = document.querySelector(\'[data-control="hide"]\'); const r = b.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()',
   );
+  pointer = { x: tile.x + hideAt.x, y: tile.y + hideAt.y };
   contents.sendInputEvent({ type: 'mouseMove', ...hideAt });
-  await sleep(80);
+  await sleep(120);
   contents.sendInputEvent({ type: 'mouseDown', ...hideAt, button: 'left', clickCount: 1 });
   contents.sendInputEvent({ type: 'mouseUp', ...hideAt, button: 'left', clickCount: 1 });
   await sleep(400);

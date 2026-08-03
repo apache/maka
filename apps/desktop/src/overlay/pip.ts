@@ -7,6 +7,7 @@ declare global {
       onFrame(cb: (payload: unknown) => void): void;
       onCursor(cb: (payload: unknown) => void): void;
       onControls(cb: (payload: unknown) => void): void;
+      onLayout(cb: (payload: unknown) => void): void;
       onCompleted(cb: () => void): void;
       send(channel: string, payload?: unknown): void;
     };
@@ -96,6 +97,25 @@ window.computerUsePip.onControls((payload) => {
   controls.dataset.visible = visible;
   chrome.dataset.visible = visible;
   resize.dataset.visible = visible;
+});
+
+/**
+ * Which corner the grip belongs on.
+ *
+ * Main decides, because main is what knows the anchor: the tile grows away
+ * from the corner it is pinned to, so the handle has to be on the corner that
+ * actually moves. The CSS used to pin it to the tile's top-left, which is only
+ * right for the default bottom-right anchor — in the other three the pointer
+ * came off the grip immediately, because the grip was sitting on the one
+ * corner the gesture holds still.
+ */
+const GRIP_CORNERS = new Set(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
+
+window.computerUsePip.onLayout((payload) => {
+  if (!isRecord(payload)) return;
+  const corner = payload.gripCorner;
+  if (typeof corner !== 'string' || !GRIP_CORNERS.has(corner)) return;
+  document.body.dataset.grip = corner;
 });
 
 document.addEventListener('mousemove', () => {

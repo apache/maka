@@ -43,6 +43,40 @@ describe('picture-in-picture lifecycle wiring', () => {
     );
   });
 
+  it('the overlay hook Computer Use is given is wrapped by the mirror', async () => {
+    // The one assertion that makes this branch safe to merge alongside the
+    // others that touch the same expression.
+    //
+    // `createComputerUseHost({ overlay })` takes a single hook, and every
+    // feature that wants to see actions go past wraps the one before it. That
+    // makes the expression a merge conflict by construction: resolving it by
+    // taking one side compiles, type-checks, and leaves every test in both
+    // branches green while one branch's entire feed is silently disconnected.
+    // Measured here by replacing the value with the bare
+    // `createComputerUseOverlayHook(computerUseOverlay)`: `tsc` exits 0 and all
+    // 71 mirror tests pass against a window that can never receive a frame,
+    // because every one of them constructs the wrapper itself.
+    //
+    // So this asserts the production expression, not the wrapper's behaviour.
+    // The correct resolution nests the wrappers rather than choosing between
+    // them; whichever order they end up in, `withComputerUsePip` has to be one
+    // of them.
+    const source = await read('tool-assembly.ts');
+    const overlay = /\n    overlay: ([\s\S]*?),\n  \}\);/.exec(source)?.[1];
+    assert.ok(overlay, 'createComputerUseHost must be given an overlay hook');
+    assert.match(
+      overlay,
+      /withComputerUsePip\(/,
+      'a mirror that is not in the overlay chain is never handed a frame: no ' +
+        'present, no cursor, and a window that only ever shows its placeholder',
+    );
+    assert.match(
+      overlay,
+      /createComputerUseOverlayHook\(computerUseOverlay\)/,
+      'and it wraps the cursor hook rather than replacing it',
+    );
+  });
+
   it('boot.ts gives the assembly the app window it asks for', async () => {
     const source = await read('boot.ts');
     assert.match(

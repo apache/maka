@@ -201,6 +201,49 @@ describe('Computer Use mirror appearance', () => {
     );
     assert.equal(declaration(grip, 'cursor'), 'nwse-resize');
   });
+
+  it('moves the grip to the corner opposite whichever anchor main sends down', async () => {
+    // The gesture's sign follows the anchor (pipResizeEdge), so the handle has
+    // to as well. The CSS used to hard-code `left: 8px; top: 8px` — the corner
+    // opposite the default bottom-right anchor and wrong in the other three.
+    // Anchored top-left, the grip sat on the pinned corner: dragging it grew
+    // the tile from the far edge while the handle could not move, so the
+    // pointer came off it on the first pixel.
+    const css = await styleSheet();
+    // Every corner the mirror can rest on has a rule, keyed on the attribute
+    // the page sets from `pip:layout`.
+    const corners = {
+      // The bare rule is the default: opposite bottom-right.
+      'top-left': block(css, '#resize {'),
+      'top-right': block(css, "body[data-grip='top-right'] #resize {"),
+      'bottom-left': block(css, "body[data-grip='bottom-left'] #resize {"),
+      'bottom-right': block(css, "body[data-grip='bottom-right'] #resize {"),
+    } as const;
+    for (const [corner, rule] of Object.entries(corners)) {
+      const [vertical, horizontal] = corner.split('-');
+      // The inset the corner names is the one that is set; the other is auto,
+      // because a stale `left` beats a new `right` and the chip would stay.
+      assert.equal(Number.parseFloat(declaration(rule, vertical)), 8, `${corner}: ${vertical}`);
+      assert.equal(Number.parseFloat(declaration(rule, horizontal)), 8, `${corner}: ${horizontal}`);
+      const oppositeV = vertical === 'top' ? 'bottom' : 'top';
+      const oppositeH = horizontal === 'left' ? 'right' : 'left';
+      if (rule !== corners['top-left']) {
+        assert.equal(declaration(rule, oppositeV), 'auto', `${corner}: ${oppositeV}`);
+        assert.equal(declaration(rule, oppositeH), 'auto', `${corner}: ${oppositeH}`);
+      }
+      // A grip on the ↖↘ diagonal points that way; the other two are ↗↙.
+      const diagonal = corner === 'top-left' || corner === 'bottom-right';
+      assert.equal(
+        declaration(rule, 'cursor'),
+        diagonal ? 'nwse-resize' : 'nesw-resize',
+        `${corner}: cursor`,
+      );
+    }
+    // The controls own the top-right, so they move when the grip is sent there.
+    const moved = block(css, "body[data-grip='top-right'] #controls {");
+    assert.equal(declaration(moved, 'right'), 'auto');
+    assert.equal(Number.parseFloat(declaration(moved, 'left')), 8);
+  });
 });
 
 // ── the page, running ────────────────────────────────────────────────────────
@@ -235,10 +278,12 @@ type Bridge = {
   frame(payload: unknown): void;
   cursor(payload: unknown): void;
   controls(payload: unknown): void;
+  layout(payload: unknown): void;
 };
 
 /** Load the built page against a stub DOM and hand back its inputs. */
-async function loadPage(): Promise<{ nodes: Record<string, Stub>; send: Bridge }> {
+let loads = 0;
+async function loadPage(): Promise<{ nodes: Record<string, Stub>; body: Stub; send: Bridge }> {
   const nodes: Record<string, Stub> = {};
   for (const id of ['frame', 'cursor', 'placeholder', 'chrome', 'controls', 'resize']) {
     nodes[id] = element();
@@ -254,25 +299,36 @@ async function loadPage(): Promise<{ nodes: Record<string, Stub>; send: Bridge }
     onControls: (cb: (p: unknown) => void) => {
       handlers.controls = cb;
     },
+    onLayout: (cb: (p: unknown) => void) => {
+      handlers.layout = cb;
+    },
     onCompleted: (cb: () => void) => {
       handlers.completed = cb;
     },
     send: () => {},
   };
+  const body = element();
   const globals = globalThis as unknown as Record<string, unknown>;
   globals.document = {
     getElementById: (id: string) => nodes[id] ?? null,
     addEventListener: () => {},
-    body: element(),
+    body,
   };
   globals.window = { addEventListener: () => {}, computerUsePip: bridge };
-  await import(pathToFileURL(PIP_BUNDLE).href);
+  // A fresh copy per call. The bundle registers its handlers as a side effect
+  // of being evaluated, and a plain re-import is served from the module cache:
+  // the second caller would get its bridge back untouched and every handler
+  // undefined.
+  loads += 1;
+  await import(`${pathToFileURL(PIP_BUNDLE).href}?load=${loads}`);
   return {
     nodes,
+    body,
     send: {
       frame: (p) => handlers.frame(p),
       cursor: (p) => handlers.cursor(p),
       controls: (p) => handlers.controls(p),
+      layout: (p) => handlers.layout(p),
     },
   };
 }
@@ -302,4 +358,24 @@ test('the placeholder comes down when the stream starts, and the chrome moves wi
   assert.equal(nodes.resize.dataset.visible, '1');
   send.controls({ visible: false });
   assert.equal(nodes.chrome.dataset.visible, '0');
+});
+
+test('the page moves the grip to whichever corner main names', async () => {
+  // The CSS can only follow the anchor if the page is told what the anchor is,
+  // and before `pip:layout` nothing sent it: `grep alignment src/overlay/`
+  // returned nothing at all, so the grip was frozen on the tile's top-left.
+  const { body, send } = await loadPage();
+
+  send.layout({ alignment: 'top-left', gripCorner: 'bottom-right' });
+  assert.equal(body.dataset.grip, 'bottom-right');
+  send.layout({ alignment: 'bottom-left', gripCorner: 'top-right' });
+  assert.equal(body.dataset.grip, 'top-right');
+
+  // Anything the page does not recognise leaves the grip where it is, rather
+  // than clearing the attribute and dropping the tile back to the default
+  // corner while it is anchored somewhere else.
+  send.layout({ alignment: 'top-left', gripCorner: 'middle' });
+  assert.equal(body.dataset.grip, 'top-right');
+  send.layout(null);
+  assert.equal(body.dataset.grip, 'top-right');
 });

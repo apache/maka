@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld('computerUsePip', {
   onControls: (cb: (p: unknown) => void): void => {
     ipcRenderer.on('pip:controls', (_e, payload) => cb(payload));
   },
+  onLayout: (cb: (p: unknown) => void): void => {
+    ipcRenderer.on('pip:layout', (_e, payload) => cb(payload));
+  },
   onCompleted: (cb: () => void): void => {
     ipcRenderer.on('pip:completed', () => cb());
   },

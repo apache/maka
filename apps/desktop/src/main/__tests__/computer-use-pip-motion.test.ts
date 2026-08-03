@@ -7,13 +7,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  PIP_FLICK_MIN_SPEED,
   PIP_SPRING,
   PIP_THROW_MAX,
   PIP_THROW_REFERENCE,
   PIP_THROW_SCALE,
   PipDragTracker,
   anchorFor,
+  pipGripCorner,
   pipResizeEdge,
   clampToWorkArea,
   pickPipAnchor,
@@ -113,7 +113,31 @@ test('picture-in-picture motion', async (t) => {
     assert.equal(PIP_THROW_SCALE, 0.55);
     assert.equal(PIP_THROW_REFERENCE, 5000);
     assert.equal(PIP_THROW_MAX, 0.45);
-    assert.equal(PIP_FLICK_MIN_SPEED, 120);
+  });
+
+  await t.test('the grip is on the corner the resize gesture actually moves', () => {
+    // `pipResizeEdge` takes its sign from the anchor, because the anchored
+    // corner is the one held still while the tile grows. The handle has to be
+    // on the corner that moves, or the pointer separates from it immediately.
+    // These two functions are the only reason the gesture is coherent, and
+    // they used to disagree: the sign came from here and the handle's position
+    // was hard-coded to the tile's top-left in CSS.
+    assert.equal(pipGripCorner('bottom-right'), 'top-left');
+    assert.equal(pipGripCorner('bottom-left'), 'top-right');
+    assert.equal(pipGripCorner('top-right'), 'bottom-left');
+    assert.equal(pipGripCorner('top-left'), 'bottom-right');
+
+    // Stated as the invariant rather than as four pairs: for every anchor, the
+    // grip is on the opposite corner *and* dragging it away from the anchor
+    // grows the tile. Flip either function alone and this fails.
+    for (const alignment of ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const) {
+      const grip = pipGripCorner(alignment);
+      assert.notEqual(grip.startsWith('top'), alignment.startsWith('top'), alignment);
+      assert.notEqual(grip.endsWith('left'), alignment.endsWith('left'), alignment);
+      // The grip is below the anchor exactly when dragging down must grow.
+      const growsDownward = pipResizeEdge(200, 500, 560, alignment) > 200;
+      assert.equal(growsDownward, grip.startsWith('bottom'), alignment);
+    }
   });
 
   await t.test('a resize drag grows away from the anchor, in every corner', () => {
@@ -181,16 +205,5 @@ test('picture-in-picture motion', async (t) => {
     tracker.update({ x: 20, y: 20 }, 50);
     const v = tracker.velocity();
     assert.ok(Number.isFinite(v.x) && Number.isFinite(v.y), `finite, got ${JSON.stringify(v)}`);
-  });
-
-  await t.test('a press with no movement is not a drag', () => {
-    // Distinguishes a click on a hover control from a drag that happened to
-    // start there.
-    const tracker = new PipDragTracker({ x: 10, y: 10 }, { x: 0, y: 0 }, 0);
-    assert.equal(tracker.hasMoved, false);
-    tracker.update({ x: 10, y: 10 }, 20);
-    assert.equal(tracker.hasMoved, false);
-    tracker.update({ x: 11, y: 10 }, 40);
-    assert.equal(tracker.hasMoved, true);
   });
 });

@@ -8,13 +8,14 @@ import {
   type ParentWindowLike,
   type PipWindowLike,
 } from './pip-electron.js';
-import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
 import {
+  PIP_MARGIN,
   PIP_SPRING,
   PipDragTracker,
   anchorFor,
+  pipGripCorner,
   pipResizeEdge,
   clampToWorkArea,
   pickPipAnchor,
@@ -190,21 +191,6 @@ export interface CreatePipControllerDeps {
 }
 
 /**
- * Longest edge of the mirror, in points.
- *
- * Recovered from Codex, which defaults to 200 and clamps to [100, 400] — the
- * same constant appears in its capture service and again in its Electron
- * host's native addon, and the clamp is repeated across six methods. This was
- * 420 on a guess, which is above Codex's absolute maximum and about 4.4x the
- * area of its default. A mirror of peripheral information should not be the
- * second-largest thing on the screen.
- */
-const PIP_DEFAULT_EDGE = 200;
-const PIP_MIN_EDGE = 100;
-const PIP_MAX_EDGE = 400;
-/** Inset from the screen corner, matching Codex's 24pt anchor inset. */
-export const PIP_MARGIN = 24;
-/**
  * How long a finished run's mirror stays before it retires.
  *
  * Codex's value, read from its own dispatch: `dispatch_time(DISPATCH_TIME_NOW,
@@ -305,6 +291,23 @@ export function createComputerUsePipController(
       return;
     }
     win.send(channel, payload);
+  }
+
+  /**
+   * Tell the page which corner the tile is anchored to.
+   *
+   * The renderer needs this for exactly one thing, and it is not cosmetic: the
+   * resize grip has to sit on the corner opposite the anchor, because that is
+   * the corner that moves when the tile grows. `pipResizeEdge` already takes
+   * its sign from the alignment; before this, nothing sent the alignment to the
+   * page at all, so the grip stayed pinned to the tile's top-left in CSS and
+   * only the default bottom-right anchor lined up. Throw the mirror to the
+   * top-left and the grip sat on the pinned corner: dragging it down grew the
+   * tile from the far edge while the handle itself could not move, so the
+   * pointer left the grip on the first pixel.
+   */
+  function pushAlignment(): void {
+    push('pip:layout', { alignment, gripCorner: pipGripCorner(alignment) });
   }
 
   function teardown(): void {
@@ -454,6 +457,7 @@ export function createComputerUsePipController(
     const host = hostRect(bounds);
     const chosen = pickPipAnchor(pipAnchors(host, size, PIP_MARGIN), origin, velocity, host);
     alignment = chosen.alignment;
+    pushAlignment();
     motion = { position: origin, velocity };
     // Same reason as `restPoint`: the anchor came out of the host's space, so
     // the clamp has to be the host's display too.
@@ -582,6 +586,9 @@ export function createComputerUsePipController(
     const anchor = deps.resolveAnchorRect?.();
     anchorSize = anchor ? { width: anchor.width, height: anchor.height } : null;
     created.onMessage((channel, payload) => handleMessage(created, channel, payload));
+    // Queued until the page loads. A fresh window inherits whichever corner the
+    // last one was thrown to, so this cannot be left to the first drag.
+    pushAlignment();
     created.onReady(() => {
       if (win !== created) return;
       ready = true;

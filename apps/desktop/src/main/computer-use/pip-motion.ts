@@ -55,6 +55,39 @@ export const PIP_MIN_EDGE = 100;
 export const PIP_DEFAULT_EDGE = 200;
 export const PIP_MAX_EDGE = 400;
 
+/**
+ * Inset from the host's corner, matching Codex's 24pt anchor inset.
+ *
+ * Lives here, with the rest of the geometry, rather than in the controller.
+ * It used to live in pip-window.ts and be imported back by pip-electron.ts,
+ * which pip-window.ts imports from — a value-level cycle that only worked
+ * because each side touched the other's bindings from inside a function body.
+ * This module imports nothing, so nothing can cycle through it.
+ */
+export const PIP_MARGIN = 24;
+
+/**
+ * The corner of the tile the resize grip sits on: the one opposite the anchor.
+ *
+ * The gesture's sign already follows the anchor (`pipResizeEdge`), because the
+ * anchored corner is the one that stays put while the tile grows. The handle
+ * has to follow it too, or the pointer separates from the grip on the first
+ * pixel of the drag — which is what happened in all three non-default corners
+ * while the grip was pinned to the tile's top-left in CSS.
+ */
+export function pipGripCorner(alignment: PipAlignment): PipAlignment {
+  switch (alignment) {
+    case 'bottom-right':
+      return 'top-left';
+    case 'bottom-left':
+      return 'top-right';
+    case 'top-right':
+      return 'bottom-left';
+    case 'top-left':
+      return 'bottom-right';
+  }
+}
+
 export const PIP_SPRING = {
   dragging: { stiffness: 900, damping: 55 },
   settling: { stiffness: 320, damping: 42 },
@@ -150,18 +183,18 @@ export function anchorFor(anchors: PipAnchor[], alignment: PipAlignment): PipAnc
  * The 0.55 matters: it is the difference between "the window goes where you
  * threw it" and "the window goes where you were pointing", and only the first
  * one feels like it has weight.
+ *
+ * Codex has a fourth constant here, `hypot(velocity) >= 120`, and it is
+ * deliberately not carried over: it gates whether anchors on *other displays*
+ * are candidates at all. Maka's anchors are the four corners of one host
+ * window, so there is no cross-display candidate for it to gate, and a slow
+ * release already reads as a place rather than a throw — the reach it produces
+ * is near zero, so the nearest corner wins on distance alone. It was ported
+ * once with no reader and one assertion that compared the literal to itself.
  */
 export const PIP_THROW_SCALE = 0.55;
 export const PIP_THROW_REFERENCE = 5000;
 export const PIP_THROW_MAX = 0.45;
-/**
- * Below this the flick is not a flick.
- *
- * `hypot(velocity) >= 120` is the same test Codex uses to decide whether
- * anchors on other displays are even candidates — a slow release stays on the
- * display it was released on, a real throw may cross.
- */
-export const PIP_FLICK_MIN_SPEED = 120;
 
 /**
  * Score every anchor against a throw and return the winner.
@@ -272,7 +305,6 @@ export class PipDragTracker {
   private grab: Point;
   private previous: { point: Point; at: number } | null = null;
   private latest: { point: Point; at: number };
-  private moved = false;
 
   constructor(pointer: Point, windowOrigin: Point, at: number) {
     this.origin = windowOrigin;
@@ -282,7 +314,6 @@ export class PipDragTracker {
 
   /** Window origin implied by the pointer, keeping the grab offset. */
   update(pointer: Point, at: number): Point {
-    if (pointer.x !== this.latest.point.x || pointer.y !== this.latest.point.y) this.moved = true;
     this.previous = this.latest;
     this.latest = { point: pointer, at };
     this.origin = { x: pointer.x - this.grab.x, y: pointer.y - this.grab.y };
@@ -291,10 +322,6 @@ export class PipDragTracker {
 
   get windowOrigin(): Point {
     return this.origin;
-  }
-
-  get hasMoved(): boolean {
-    return this.moved;
   }
 
   /** Points per second at release, or zero when the pointer was still. */

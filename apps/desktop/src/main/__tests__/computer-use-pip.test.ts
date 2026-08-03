@@ -820,6 +820,57 @@ test('picture-in-picture wiring into the overlay hook', async (t) => {
     assert.deepEqual(calls.find((c) => c.m === 'setCursor')!.a, { sessionId: 's1', x: 500, y: 400 });
   });
 
+  await t.test('falls back to the point the action was addressed to', () => {
+    // The executor reports `resolvedScreenPoint` only for the coordinate
+    // paths. An element action resolves to an element, so it carries none —
+    // and accessibility is how Maka dispatches by default, which made this the
+    // ordinary case rather than the exceptional one. The context still knows
+    // where the action was aimed (`presentationScreenPoint`, the element's own
+    // centre, already computed to fly the cursor there), and without that
+    // fallback the mirror cleared its cursor at the end of every accessibility
+    // action: the one window the user could watch showed the app being driven
+    // by nothing at all.
+    const { calls, pip } = sink();
+    const hook = { onActionBegin: () => undefined, onActionEnd: () => undefined };
+    const wrapped = withComputerUsePip(hook as never, pip as never) as any;
+    wrapped.onActionEnd({ type: 'click_element' }, {
+      screenshot: { base64: 'AAAA', mimeType: 'image/png', widthPx: 1000, heightPx: 800 },
+      // No resolvedScreenPoint: this is a semantic action.
+      observation: { windowBounds: { x: 500, y: 100, width: 500, height: 400 } },
+    }, {
+      sessionId: 's1',
+      toolCallId: 't1',
+      presentationScreenPoint: { x: 750, y: 300 },
+    });
+
+    assert.deepEqual(
+      calls.find((c) => c.m === 'setCursor')!.a,
+      { sessionId: 's1', x: 500, y: 400 },
+      'the element centre is mapped into capture pixels the same way a ' +
+        'coordinate landing is',
+    );
+  });
+
+  await t.test('prefers where the action landed over where it was aimed', () => {
+    // The fallback is a fallback. When the executor reports a real landing
+    // point, that is the truth about where the pointer went; the aim point is
+    // only what was asked for.
+    const { calls, pip } = sink();
+    const hook = { onActionBegin: () => undefined, onActionEnd: () => undefined };
+    const wrapped = withComputerUsePip(hook as never, pip as never) as any;
+    wrapped.onActionEnd({ type: 'left_click' }, {
+      screenshot: { base64: 'AAAA', mimeType: 'image/png', widthPx: 1000, heightPx: 800 },
+      resolvedScreenPoint: { x: 750, y: 300 },
+      observation: { windowBounds: { x: 500, y: 100, width: 500, height: 400 } },
+    }, {
+      sessionId: 's1',
+      toolCallId: 't1',
+      presentationScreenPoint: { x: 500, y: 100 },
+    });
+
+    assert.deepEqual(calls.find((c) => c.m === 'setCursor')!.a, { sessionId: 's1', x: 500, y: 400 });
+  });
+
   await t.test('hides the cursor when the action resolved no point', () => {
     // Semantic actions address an element; some report no screen point at all.
     // Leaving a stale dot on screen would assert something untrue.
