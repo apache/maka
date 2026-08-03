@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { userEvent } from 'storybook/test';
 import { ToastProvider } from '@maka/ui';
 import type {
   AppSettings,
@@ -793,11 +794,9 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
     canvasElement,
     (candidate) => candidate.textContent?.includes('跟随对话默认') === true,
   );
-  selector.click();
+  await userEvent.click(selector);
   await waitForStoryCondition(
-    () => document.querySelector<HTMLElement>('[role="listbox"]')
-      ?.closest<HTMLElement>('[popover]')
-      ?.matches(':popover-open') === true,
+    () => selector.getAttribute('aria-expanded') === 'true',
     'Daily Review model selector did not open',
   );
   return selector;
