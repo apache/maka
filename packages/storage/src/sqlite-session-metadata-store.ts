@@ -1161,6 +1161,33 @@ export class SqliteSessionMetadataStore {
     return rows.map(decodeRecord);
   }
 
+  /**
+   * Sessions whose project membership was never resolved.
+   *
+   * `projectId` is deliberately three-valued: a project id means resolved,
+   * `null` means the user chose no project, and an absent key means nobody has
+   * decided yet. Only the third state may be backfilled, and SQL can tell them
+   * apart through `json_type` — `null` reports `'null'` while an absent key
+   * reports SQL NULL. Scoping the query this way keeps startup proportional to
+   * the sessions that still need work rather than to the whole catalog.
+   */
+  async listSessionsWithUnresolvedProject(): Promise<Array<{ id: string; cwd: string }>> {
+    this.assertOpen();
+    const rows = this.db
+      .prepare(`
+        SELECT session_id AS id, json_extract(payload_json, '$.cwd') AS cwd
+        FROM session_metadata
+        WHERE json_type(payload_json, '$.projectId') IS NULL
+        ORDER BY session_id
+      `)
+      .all() as Array<{ id?: unknown; cwd?: unknown }>;
+    return rows.flatMap((row) =>
+      typeof row.id === 'string' && typeof row.cwd === 'string' && row.cwd.length > 0
+        ? [{ id: row.id, cwd: row.cwd }]
+        : [],
+    );
+  }
+
   async listCatalogPage(
     filter: SessionListFilter,
     cursor: SessionMetadataCatalogCursor | undefined,
@@ -2587,9 +2614,10 @@ export class SqliteSessionMetadataStore {
           backend,
           llm_connection_slug,
           model,
+          project_id,
           metadata_version,
           committed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         header.id,
@@ -2617,6 +2645,7 @@ export class SqliteSessionMetadataStore {
         header.backend,
         header.llmConnectionSlug,
         header.model,
+        header.projectId ?? null,
         metadataVersion,
         committedAt,
       );
@@ -2827,6 +2856,7 @@ export class SqliteSessionMetadataStore {
           backend = ?,
           llm_connection_slug = ?,
           model = ?,
+          project_id = ?,
           metadata_version = ?,
           committed_at = ?
         WHERE session_id = ? AND metadata_version = ?
@@ -2849,6 +2879,7 @@ export class SqliteSessionMetadataStore {
         next.backend,
         next.llmConnectionSlug,
         next.model,
+        next.projectId ?? null,
         metadataVersion,
         committedAt,
         sessionId,

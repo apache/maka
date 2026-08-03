@@ -231,12 +231,16 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v12 = new DatabaseSync(path);
       v12.exec(`
-        DROP TABLE session_messages;
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
         ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
+        DROP INDEX session_metadata_by_project;
+        ALTER TABLE session_metadata DROP COLUMN project_id;
+        DROP TABLE project_aliases;
+        DROP TABLE project_locations;
+        DROP TABLE projects;
         DROP TABLE session_messages;
         UPDATE session_metadata_schema
         SET version = 12
@@ -995,11 +999,15 @@ describe('SqliteSessionMetadataStore', () => {
       // Rewind to the pre-provenance shape a shipped database would have.
       const v13 = new DatabaseSync(path);
       v13.exec(`
-        DROP TABLE session_messages;
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
         ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
+        DROP INDEX session_metadata_by_project;
+        ALTER TABLE session_metadata DROP COLUMN project_id;
+        DROP TABLE project_aliases;
+        DROP TABLE project_locations;
+        DROP TABLE projects;
         DROP TABLE session_messages;
         ALTER TABLE sandbox_boundary_log DROP COLUMN turn_id;
         ALTER TABLE sandbox_boundary_log DROP COLUMN run_id;
@@ -1504,12 +1512,16 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v4 = new DatabaseSync(path);
       v4.exec(`
-        DROP TABLE session_messages;
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
         ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
+        DROP INDEX session_metadata_by_project;
+        ALTER TABLE session_metadata DROP COLUMN project_id;
+        DROP TABLE project_aliases;
+        DROP TABLE project_locations;
+        DROP TABLE projects;
         DROP TABLE session_messages;
         DROP TABLE agent_graph_supervisor_wake_attempts;
         DROP TABLE agent_graph_supervisor_wakes;

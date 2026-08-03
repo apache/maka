@@ -1,10 +1,14 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { readFile, realpath, rename, stat } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectLocation, ProjectRecord } from '@maka/core';
 import { hasEnclosingGitEntry } from './git-entry.js';
+import {
+  acquireOperationalStateDatabase,
+  type OperationalStateDatabaseLease,
+} from './operational-state-store.js';
 
 export type { ProjectLocation, ProjectRecord } from '@maka/core';
 
@@ -38,6 +42,13 @@ export interface ProjectRelinkContext {
 export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
   register(path: string): Promise<ProjectRecord>;
+  /**
+   * Resolve a path recorded by an existing session rather than chosen by the
+   * user. Unlike `register`, the directory may already be gone — a session
+   * outlives the folder it ran in — so a missing path still yields a stable
+   * folder identity instead of failing.
+   */
+  resolveHistoricalPath(path: string, usedAt?: number): Promise<ProjectRecord>;
   select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
   touch(projectId: string, path?: string): Promise<ProjectRecord>;
   relink(
@@ -74,20 +85,35 @@ export function createProjectCatalog(
   deps: {
     now?: () => number;
     createId?: () => string;
+    databaseLease?: OperationalStateDatabaseLease;
   } = {},
 ): ProjectCatalog {
-  return new FileProjectCatalog(
+  return new SqliteProjectCatalog(
+    deps.databaseLease ?? acquireOperationalStateDatabase(storageRoot),
     join(storageRoot, 'projects.json'),
     deps.now ?? Date.now,
     deps.createId ?? randomUUID,
   );
 }
 
-class FileProjectCatalog implements ProjectCatalog {
+/**
+ * The project catalog is operational state: it decides how every session is
+ * organized, and it has to survive backup and restore alongside the sessions
+ * it groups. Keeping it in its own JSON file left it outside the operational
+ * database — and therefore outside `createOperationalStateBackup`, which only
+ * captures `runtime.sqlite` plus the Artifact tree.
+ *
+ * Only the persistence layer moved. Read-modify-write under a serial queue,
+ * the whole-catalog validation on every write, and each method's semantics are
+ * unchanged, so the catalog contract tests carry over as-is.
+ */
+class SqliteProjectCatalog implements ProjectCatalog {
   private queue: Promise<void> = Promise.resolve();
+  private legacyImport: Promise<void> | undefined;
 
   constructor(
-    private readonly path: string,
+    private readonly lease: OperationalStateDatabaseLease,
+    private readonly legacyPath: string,
     private readonly now: () => number,
     private readonly createId: () => string,
   ) {}
@@ -109,6 +135,29 @@ class FileProjectCatalog implements ProjectCatalog {
   async register(path: string): Promise<ProjectRecord> {
     const resolved = await resolveProjectLocation({ path });
     return this.upsertResolvedProject(resolved, this.now());
+  }
+
+  async resolveHistoricalPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
+    let resolved: ResolvedProjectLocation;
+    try {
+      resolved = await resolveProjectLocation({ path });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      let pathIsMissing = false;
+      try {
+        await stat(path);
+      } catch (pathError) {
+        pathIsMissing = (pathError as NodeJS.ErrnoException).code === 'ENOENT';
+      }
+      if (!pathIsMissing) throw error;
+      const canonicalPath = normalize(resolve(path));
+      resolved = {
+        canonicalPath,
+        identity: `folder:${canonicalPath}`,
+        kind: 'folder',
+      };
+    }
+    return this.upsertResolvedProject(resolved, usedAt);
   }
 
   private async upsertResolvedProject(
@@ -359,22 +408,135 @@ class FileProjectCatalog implements ProjectCatalog {
   }
 
   private async read(): Promise<ProjectCatalogFile> {
-    try {
-      return normalizeProjectCatalogFile(JSON.parse(await readFile(this.path, 'utf8')));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { schemaVersion: 1, projects: [] };
-      }
-      throw error;
-    }
+    await this.importLegacyCatalogOnce();
+    return this.selectCatalog();
   }
 
   private async write(file: ProjectCatalogFile): Promise<void> {
-    const normalized = normalizeProjectCatalogFile(file);
-    await mkdir(dirname(this.path), { recursive: true });
-    const tempPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
-    await rename(tempPath, this.path);
+    this.replaceCatalog(normalizeProjectCatalogFile(file));
+  }
+
+  private selectCatalog(): ProjectCatalogFile {
+    return this.lease.transaction('read', () => {
+      const database = this.lease.database;
+      const locations = new Map<string, PersistedProjectLocation[]>();
+      for (const row of database
+        .prepare(
+          `SELECT project_id, path, is_worktree, last_used_at
+           FROM project_locations
+           ORDER BY project_id, path`,
+        )
+        .all() as Array<Record<string, unknown>>) {
+        const bucket = locations.get(row.project_id as string) ?? [];
+        bucket.push({
+          path: row.path as string,
+          isWorktree: row.is_worktree === 1,
+          lastUsedAt: row.last_used_at as number,
+        });
+        locations.set(row.project_id as string, bucket);
+      }
+      const aliases = new Map<string, string[]>();
+      for (const row of database
+        .prepare('SELECT alias, project_id FROM project_aliases ORDER BY project_id, alias')
+        .all() as Array<Record<string, unknown>>) {
+        const bucket = aliases.get(row.project_id as string) ?? [];
+        bucket.push(row.alias as string);
+        aliases.set(row.project_id as string, bucket);
+      }
+      const projects = (
+        database
+          .prepare(
+            `SELECT project_id, identity, name, last_used_at, archived_at
+             FROM projects
+             ORDER BY project_id`,
+          )
+          .all() as Array<Record<string, unknown>>
+      ).map((row): PersistedProject => {
+        const id = row.project_id as string;
+        const projectAliases = aliases.get(id);
+        return {
+          id,
+          ...(projectAliases && projectAliases.length > 0 ? { aliases: projectAliases } : {}),
+          name: row.name as string,
+          identity: row.identity as string,
+          locations: locations.get(id) ?? [],
+          lastUsedAt: row.last_used_at as number,
+          ...(row.archived_at === null ? {} : { archivedAt: row.archived_at as number }),
+        };
+      });
+      return { schemaVersion: 1, projects };
+    });
+  }
+
+  private replaceCatalog(file: ProjectCatalogFile): void {
+    this.lease.transaction('write', () => {
+      const database = this.lease.database;
+      // Catalogs are small and every mutation already rewrote the whole file,
+      // so a full replace keeps the previous read-modify-write semantics
+      // exactly, now with transactional atomicity instead of temp-file rename.
+      database.exec('DELETE FROM project_aliases');
+      database.exec('DELETE FROM project_locations');
+      database.exec('DELETE FROM projects');
+      const insertProject = database.prepare(
+        `INSERT INTO projects(project_id, identity, name, last_used_at, archived_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      const insertLocation = database.prepare(
+        `INSERT INTO project_locations(project_id, path, is_worktree, last_used_at)
+         VALUES (?, ?, ?, ?)`,
+      );
+      const insertAlias = database.prepare(
+        'INSERT INTO project_aliases(alias, project_id) VALUES (?, ?)',
+      );
+      for (const project of file.projects) {
+        insertProject.run(
+          project.id,
+          project.identity,
+          project.name,
+          project.lastUsedAt,
+          project.archivedAt ?? null,
+        );
+        for (const location of project.locations) {
+          insertLocation.run(
+            project.id,
+            location.path,
+            location.isWorktree ? 1 : 0,
+            location.lastUsedAt,
+          );
+        }
+        for (const alias of project.aliases ?? []) insertAlias.run(alias, project.id);
+      }
+    });
+  }
+
+  /**
+   * `projects.json` predates the operational database and was left behind when
+   * the rest of the File stores were retired, so it still holds the only copy
+   * of every project name, relink alias and archive state. Importing it once is
+   * not legacy-format support: it recovers state this refactor would otherwise
+   * strand. The file is renamed rather than deleted so a failed upgrade stays
+   * inspectable, and a malformed file fails closed without touching SQLite.
+   */
+  private importLegacyCatalogOnce(): Promise<void> {
+    this.legacyImport ??= (async () => {
+      let raw: string;
+      try {
+        raw = await readFile(this.legacyPath, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw error;
+      }
+      const imported = normalizeProjectCatalogFile(JSON.parse(raw));
+      const occupied = this.lease.transaction(
+        'read',
+        () =>
+          this.lease.database.prepare('SELECT 1 AS found FROM projects LIMIT 1').get() !==
+          undefined,
+      );
+      if (!occupied) this.replaceCatalog(imported);
+      await rename(this.legacyPath, `${this.legacyPath}.imported`);
+    })();
+    return this.legacyImport;
   }
 
   private withQueue(operation: () => Promise<void>): Promise<void> {

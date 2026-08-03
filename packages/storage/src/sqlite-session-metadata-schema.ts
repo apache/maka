@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 20;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 21;
 
 export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
   'agent_graph_intent_claims',
@@ -796,6 +796,53 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     CREATE INDEX session_messages_by_time
       ON session_messages(session_id, message_ts, sequence);
+  `,
+  ],
+  [
+    21,
+    `
+    CREATE TABLE projects (
+      project_id TEXT PRIMARY KEY,
+      identity TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      last_used_at INTEGER NOT NULL,
+      archived_at INTEGER
+    );
+
+    CREATE TABLE project_locations (
+      project_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      is_worktree INTEGER NOT NULL CHECK (is_worktree IN (0, 1)),
+      last_used_at INTEGER NOT NULL,
+      PRIMARY KEY(project_id, path),
+      FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE project_aliases (
+      alias TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX project_aliases_by_project
+      ON project_aliases(project_id, alias);
+
+    CREATE INDEX projects_by_recency
+      ON projects(archived_at, last_used_at DESC, project_id);
+
+    -- Project membership was already carried inside the header payload; lifting
+    -- it into its own column is what makes "group by project" a SQL query
+    -- instead of a full-table scan decoded in JS. NULL covers both "explicitly
+    -- no project" and "never resolved" — the two are distinguished by
+    -- json_type(payload_json, '$.projectId'), which is only needed by the
+    -- backfill path, so the column stays free of that redundancy.
+    ALTER TABLE session_metadata ADD COLUMN project_id TEXT;
+
+    UPDATE session_metadata
+      SET project_id = json_extract(payload_json, '$.projectId');
+
+    CREATE INDEX session_metadata_by_project
+      ON session_metadata(project_id, last_message_at DESC, session_id);
   `,
   ],
 ]);
