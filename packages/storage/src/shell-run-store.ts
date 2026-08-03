@@ -173,7 +173,11 @@ function readSqliteShellRun(
       WHERE session_id = ? AND shell_run_id = ?
     `)
     .get(sessionId, shellRunId) as { record_json?: unknown } | undefined;
-  if (!row) throw new Error(`ShellRun does not exist: ${shellRunId}`);
+  if (!row) {
+    const error = new Error(`ShellRun does not exist: ${shellRunId}`) as Error & { code?: string };
+    error.code = 'ENOENT';
+    throw error;
+  }
   if (typeof row.record_json !== 'string') throw new Error('Invalid SQLite ShellRun row');
   return normalizeShellRunRecord(JSON.parse(row.record_json), sessionId, shellRunId);
 }
