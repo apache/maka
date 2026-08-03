@@ -222,7 +222,7 @@ export function buildAutomationAuthorityTool(
             const r = await deps.authority.pause(id, ctx.sessionId);
             return r
               ? `Automation "${r.name}" paused. Use mode "resume" to reactivate.`
-              : `Cannot pause "${id}": not found, not owned, or not active.`;
+              : await explainManageFailure(deps.authority, id, ctx.sessionId, 'pause');
           });
           break;
         }
@@ -243,7 +243,7 @@ export function buildAutomationAuthorityTool(
                 return `Cannot resume "${id}": its fire budget is exhausted (fired ${existing.fireCount}${existing.maxFires != null ? `/${existing.maxFires}` : ''} time(s)). Create a new automation instead.`;
               }
             }
-            return `Cannot resume "${id}": not found, not owned, or not paused.`;
+            return await explainManageFailure(deps.authority, id, ctx.sessionId, 'resume');
           });
           break;
         }
@@ -259,6 +259,43 @@ async function handleById(
 ): Promise<string> {
   if (!input.id) return 'Error: "id" is required for delete/pause/resume.';
   return await run(input.id);
+}
+
+/**
+ * Say what actually blocked pause/resume, and what to do about it.
+ *
+ * "not found, not owned, or not active" folds three independent causes into one
+ * sentence and names a next action for none of them. Two of the three are
+ * answered by mode "list"; the third is a status the model can neither see nor
+ * change by sending the same call again, so it has to be said out loud.
+ *
+ * The authority only exposes automations this session may manage, so a missing
+ * id and another session's id are genuinely indistinguishable here and share
+ * one message — but that message points at mode "list", which settles both.
+ */
+async function explainManageFailure(
+  authority: AutomationToolAuthority,
+  id: string,
+  sessionId: string,
+  verb: 'pause' | 'resume',
+): Promise<string> {
+  const listHint = 'Use mode "list" to see the automations you can manage and their ids.';
+  const existing = await authority.get(id, sessionId);
+  if (!existing) {
+    return `Cannot ${verb} "${id}": this session has no automation with that id. ${listHint}`;
+  }
+  if (verb === 'pause') {
+    return `Cannot pause "${id}": it is ${existing.status}, and only an active automation can be paused.`;
+  }
+  if (existing.status === 'paused') {
+    // resume() declined a paused automation whose fire budget the caller above
+    // found intact, so nothing the model can send will revive it.
+    return `Cannot resume "${id}": it is paused but can no longer fire. Create a new automation instead.`;
+  }
+  const terminal = existing.status === 'completed' || existing.status === 'expired';
+  return `Cannot resume "${id}": it is ${existing.status}, and only a paused automation can be resumed.${
+    terminal ? ' Create a new automation instead.' : ''
+  }`;
 }
 
 async function handleCreate(

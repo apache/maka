@@ -518,3 +518,53 @@ describe('Automation integration: cron gating by host capability', () => {
     assert.equal(schema.safeParse({ ...input, prompt: '提'.repeat(2_001) }).success, false);
   });
 });
+
+describe('Automation integration: a refused pause/resume says which cause stopped it', () => {
+  function createFor(t: ReturnType<typeof createIntegrationSetup>, sessionId: string): string {
+    const created = t.manager.create({
+      kind: 'heartbeat',
+      name: 'poller',
+      prompt: 'poll',
+      sessionId,
+      schedule: { type: 'interval', seconds: 30 },
+    });
+    if ('error' in created) throw new Error(created.error);
+    return created.id;
+  }
+
+  test('an unknown id says so, and points at the mode that lists the real ones', async () => {
+    for (const mode of ['pause', 'resume'] as const) {
+      const t = createIntegrationSetup();
+      const text = (await t.tool.impl({ mode, id: 'auto-404' }, t.ctx())) as string;
+      assert.match(text, /has no automation with that id/);
+      assert.match(text, /mode "list"/);
+      // The old sentence offered three causes and a next step for none of them.
+      assert.doesNotMatch(text, /not found, not owned/);
+    }
+  });
+
+  test("another session's automation reads the same way, because the recovery is the same", async () => {
+    const t = createIntegrationSetup();
+    const id = createFor(t, 'some-other-session');
+    const text = (await t.tool.impl({ mode: 'pause', id }, t.ctx())) as string;
+    assert.match(text, /has no automation with that id/);
+    assert.match(text, /mode "list"/);
+  });
+
+  test('a wrong-status automation reports the status it actually has', async () => {
+    const t = createIntegrationSetup();
+    const id = createFor(t, SESSION_ID);
+
+    // It is active, so resume is the wrong verb for it.
+    const resumed = (await t.tool.impl({ mode: 'resume', id }, t.ctx())) as string;
+    assert.match(resumed, /it is active/);
+    assert.match(resumed, /only a paused automation can be resumed/);
+    assert.doesNotMatch(resumed, /not found, not owned/);
+
+    // Once paused, pause becomes the wrong verb instead.
+    await t.tool.impl({ mode: 'pause', id }, t.ctx());
+    const paused = (await t.tool.impl({ mode: 'pause', id }, t.ctx())) as string;
+    assert.match(paused, /it is paused/);
+    assert.match(paused, /only an active automation can be paused/);
+  });
+});
