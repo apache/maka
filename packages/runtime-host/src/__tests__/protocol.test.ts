@@ -61,6 +61,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'connection.catalog.update',
       'connection.models.fetch',
       'connection.test.run',
+      'context.compact',
+      'context.diagnostics.query',
       'credential.vault.delete',
       'credential.vault.query',
       'credential.vault.set',
@@ -90,6 +92,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.catalog.query',
       'session.configuration.update',
       'session.create',
+      'session.cwd.relocate',
       'session.lifecycle.set',
       'session.metadata.update',
       'session.read_marker.set',
@@ -104,6 +107,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'turn.interrupt',
       'turn.message.submit',
       'turn.query',
+      'turn.regenerate',
       'turn.resume.query',
       'turn.resume.start',
       'turn.start',
@@ -938,6 +942,43 @@ describe('Runtime Host bootstrap protocol', () => {
         ...submitWire,
         input: { ...submitWire.input, content: { text: 'valid' } },
       },
+    );
+  });
+
+  test('decodes a closed regenerate identity without accepting replacement content', () => {
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-regenerate',
+        operation: 'turn.regenerate',
+        input: {
+          sessionId: 'session-1',
+          sourceTurnId: 'turn-source',
+          turnId: 'turn-regenerated',
+        },
+      }),
+      {
+        requestId: 'request-regenerate',
+        operation: 'turn.regenerate',
+        input: {
+          sessionId: 'session-1',
+          sourceTurnId: 'turn-source',
+          turnId: 'turn-regenerated',
+        },
+      },
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-regenerate',
+          operation: 'turn.regenerate',
+          input: {
+            sessionId: 'session-1',
+            sourceTurnId: 'turn-source',
+            turnId: 'turn-regenerated',
+            content: { text: 'replacement' },
+          },
+        }),
+      isInvalidFrame,
     );
   });
 

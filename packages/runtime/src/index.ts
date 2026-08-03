@@ -10,9 +10,11 @@ export {
   BackendRegistry,
   SessionConfigurationRevisionConflictError,
   SessionConfigurationTransitionError,
+  RuntimeRegenerateTurnError,
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
+export { RuntimeContextCompactError } from './runtime-kernel.js';
 export type { ModelMessage, JSONValue } from './model-protocol.js';
 export type {
   CompactSessionInput,
@@ -22,6 +24,7 @@ export type {
   SessionConfigurationStoreUpdate,
   SessionConfigurationTransitionRequest,
   SessionConfigurationTransitionErrorCode,
+  RegenerateTurnSource,
   SessionStore,
   StrictRecoveryAgentRunStore,
   StrictRecoverySessionStore,

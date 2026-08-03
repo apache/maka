@@ -144,7 +144,7 @@ describe('claimed agent graph root admission', () => {
               proposedUserMessageId: null,
             }),
           ),
-        /only linked child provider retry omits UserMessage/,
+        /execution has an invalid UserMessage requirement/,
       );
       await assert.rejects(
         access(join(root, 'sessions', 'session-child', 'turn-admissions', 'turn-next.json')),

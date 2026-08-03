@@ -1009,6 +1009,137 @@ test('Agent Graph context recovery fences competing root turns while compaction 
   }
 });
 
+test('manual context compact uses durable root query, stop, and exact retry authority', async () => {
+  let backend: BlockingContextRecoveryBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new BlockingContextRecoveryBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const turnId = 'turn-manual-context-compact';
+  const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+  try {
+    const started = await fixture.coordinator.handlers['context.compact'](
+      { sessionId: fixture.sessionId, turnId },
+      context,
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.equal(started.result.sessionId, fixture.sessionId);
+    assert.equal(started.result.turnId, turnId);
+    await backend?.compactStarted.promise;
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'active',
+      sessionId: fixture.sessionId,
+      turnId,
+      runId: started.result.runId,
+    });
+
+    const queried = await fixture.coordinator.handlers['turn.query'](
+      { sessionId: fixture.sessionId, turnId },
+      context,
+    );
+    assert.equal(queried.ok, true);
+    if (queried.ok) assert.equal(queried.result.runId, started.result.runId);
+
+    const stopped = await fixture.coordinator.handlers['turn.stop'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        runId: started.result.runId,
+      },
+      context,
+    );
+    assert.equal(stopped.ok, true);
+    if (!stopped.ok) return;
+    assert.equal(stopped.result.status, 'cancelled');
+
+    const retried = await fixture.coordinator.handlers['context.compact'](
+      { sessionId: fixture.sessionId, turnId },
+      context,
+    );
+    assert.deepEqual(retried, stopped);
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      turnId,
+    );
+    assert.deepEqual(admission?.execution, { kind: 'context_compact' });
+    assert.equal(admission?.userMessageId, null);
+    assert.equal(
+      (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
+        (message) => message.type === 'user' && message.turnId === turnId,
+      ),
+      false,
+    );
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    backend?.releaseCompact();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('startup recovery replays an admitted context compact with its exact Run identity', async () => {
+  let backend: BlockingContextRecoveryBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new BlockingContextRecoveryBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const turnId = 'turn-recovered-context-compact';
+  const runId = 'run-recovered-context-compact';
+  let recovery: RootTurnCoordinator | undefined;
+  try {
+    await fixture.coordinator.close();
+    await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: null,
+      execution: { kind: 'context_compact' },
+      previousRootTurnId: null,
+      normalizedInput: null,
+      sourceMessages: [],
+      admittedAt: Date.now(),
+    });
+
+    recovery = fixture.createRecoveryCoordinator();
+    await recovery.prepareRecovery();
+    await recovery.recover();
+    await backend?.compactStarted.promise;
+    assert.deepEqual(recovery.readRootState(fixture.sessionId), {
+      kind: 'active',
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+    });
+
+    const stopped = await recovery.handlers['turn.stop'](
+      { sessionId: fixture.sessionId, turnId, runId },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(stopped.ok, true);
+    if (stopped.ok) assert.equal(stopped.result.status, 'cancelled');
+    assert.equal(
+      (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).filter(
+        (run) => run.turnId === turnId,
+      ).length,
+      1,
+    );
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    backend?.releaseCompact();
+    await recovery?.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('Agent Graph context recovery abort stops compaction and releases Host close', async () => {
   let backend: BlockingContextRecoveryBackend | undefined;
   const fixture = await createFailureFixture({

@@ -133,6 +133,7 @@ export interface RuntimeKernelLike {
     options?: ResumeContinuationOptions,
   ): AsyncIterable<SessionEvent>;
   compactSession(sessionId: string, input?: CompactSessionInput): AsyncIterable<SessionEvent>;
+  preflightContextCompaction(sessionId: string): Promise<void>;
   startChildTurn(
     sessionId: string,
     input: ChildAgentTurnInput,
@@ -180,6 +181,17 @@ export class SessionQuiescentMutationBusyError extends Error {
 
   constructor(readonly sessionIds: readonly string[]) {
     super('Session mutation cannot start while an execution claim is active');
+  }
+}
+
+export class RuntimeContextCompactError extends Error {
+  readonly name = 'RuntimeContextCompactError';
+
+  constructor(
+    readonly code: 'operation_unavailable' | 'session_busy',
+    message: string,
+  ) {
+    super(message);
   }
 }
 
@@ -933,6 +945,23 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
   }
 
+  async preflightContextCompaction(sessionId: string): Promise<void> {
+    const execution = this.takeExecutionClaim(sessionId);
+    try {
+      await this.enterExecutionClaim(execution);
+      if (this.hasActiveRuns(sessionId)) {
+        throw new RuntimeContextCompactError(
+          'session_busy',
+          'Cannot compact while a Turn is running',
+        );
+      }
+      const header = await this.deps.store.readHeader(sessionId);
+      await this.requireContextCompactionBackend(sessionId, header, execution);
+    } finally {
+      this.releaseExecutionClaim(execution);
+    }
+  }
+
   private async *compactSessionClaimed(
     sessionId: string,
     input: CompactSessionInput,
@@ -946,10 +975,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
       throw new Error('Runtime compaction minRecentTurns must be a non-negative safe integer');
     }
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
-      throw new Error('Runtime compaction requires AgentRunStore and RuntimeEventStore');
+      throw new RuntimeContextCompactError(
+        'operation_unavailable',
+        'Runtime compaction requires execution stores',
+      );
     }
     if (this.hasActiveRuns(sessionId)) {
-      throw new Error('Cannot compact while a turn is running; wait for the turn to finish.');
+      throw new RuntimeContextCompactError(
+        'session_busy',
+        'Cannot compact while a Turn is running',
+      );
     }
 
     const header = await this.deps.store.readHeader(sessionId);
@@ -958,6 +993,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       sessionId,
       header,
       userInput: { turnId, text: '' },
+      rootExecutionKind: 'context_compact',
+      ...(input.hostedRoot ? { runId: input.hostedRoot.runId } : {}),
       store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
@@ -989,22 +1026,29 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
 
     this.attachExecutionClaim(execution, run);
+    const owners = this.createRunOwnerScope(run, execution);
     let begin: Awaited<ReturnType<typeof run.beginOperation>>;
     try {
+      if (input.hostedRoot) {
+        owners.bindMessage(this.deps.messageAuthority, {
+          sessionId,
+          turnId,
+          runId: run.runId,
+        });
+      }
       begin = await this.runBackendActivation(() => run.beginOperation());
+      await input.hostedRoot?.onRunStarted?.();
       this.settleReservedExecutionClaim(execution, run, { ok: true });
     } catch (error) {
-      this.settleReservedExecutionClaim(execution, run, { ok: false, error });
-      await run.recordFailure(error);
-      await this.finalizeExecutionClaimRun(execution, run, () => run.finalize());
-      if (run.isStopped() && isExecutionCancellation(error, execution.cancellation)) return;
-      throw error;
+      await this.finalizeFailedRunStart(owners, run, execution, error);
+      return;
     }
 
     try {
       if (run.isStopped()) return;
-      if (!begin.backend.compactHistory)
-        throw new Error(`Backend ${header.backend} does not support runtime compaction`);
+      if (!begin.backend.compactHistory) {
+        throw new Error(`Backend ${header.backend} changed runtime compaction capability`);
+      }
       this.assertRunCanDispatch(run, begin.backend);
       const result = await begin.backend.compactHistory({
         turnId: run.turnId,
@@ -1066,8 +1110,28 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await run.recordFailure(error);
       throw error;
     } finally {
-      await this.finalizeExecutionClaimRun(execution, run, () => run.finalize());
+      const failures = new FailureCollector();
+      await failures.capture(() => owners.finalize());
+      await failures.capture(() => owners.releaseMessage());
+      failures.throwIfAny(`Runtime compaction cleanup failed for ${run.runId}`);
     }
+  }
+
+  private async requireContextCompactionBackend(
+    sessionId: string,
+    header: SessionHeader,
+    execution: PendingExecutionClaim,
+  ): Promise<BackendGeneration> {
+    const active = await this.runBackendActivation(() =>
+      this.ensureActive(sessionId, header, execution),
+    );
+    if (!active.backend.compactHistory) {
+      throw new RuntimeContextCompactError(
+        'operation_unavailable',
+        `Backend ${header.backend} does not support runtime compaction`,
+      );
+    }
+    return active;
   }
 
   async *startChildTurn(

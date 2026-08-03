@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import type { MessageContent } from '@maka/core/events';
+import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
@@ -707,6 +707,45 @@ export class ExecutionFixture {
     content: MessageContent,
   ): Promise<{ runId: string; userMessageId: string }> {
     return this.seedTurnState(turnId, content, true, true);
+  }
+
+  async seedRegenerateAdmissionWithoutRun(
+    sourceTurnId: string,
+    turnId: string,
+  ): Promise<{ runId: string; userMessageId: string }> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for regenerate admission setup');
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const messages = await stores.sessionStore.readMessages(this.sessionId);
+      const source = messages.find(
+        (message): message is Extract<StoredMessage, { type: 'user' }> =>
+          message.type === 'user' && message.turnId === sourceTurnId,
+      );
+      assert.ok(source);
+      if (!source) throw new Error('Regenerate source UserMessage is unavailable');
+      const chain = await stores.agentRunStore.listRootTurnAdmissionsForRecovery(this.sessionId);
+      const result = await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId,
+        proposedRunId: randomUUID(),
+        proposedUserMessageId: randomUUID(),
+        execution: { kind: 'regenerate', sourceTurnId },
+        previousRootTurnId: chain.at(-1)?.turnId ?? null,
+        normalizedInput: normalizeMessageContent(source),
+        sourceMessages: [],
+        admittedAt: Date.now(),
+      });
+      assert.equal(result.kind, 'admitted');
+      assert.ok(result.admission.userMessageId);
+      return {
+        runId: result.admission.runId,
+        userMessageId: result.admission.userMessageId,
+      };
+    } finally {
+      await owner.close();
+    }
   }
 
   private async seedTurnState(

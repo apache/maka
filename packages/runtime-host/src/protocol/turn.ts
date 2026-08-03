@@ -51,6 +51,12 @@ export interface TurnStopInput {
   runId: string;
 }
 
+export interface TurnRegenerateInput {
+  sessionId: string;
+  sourceTurnId: string;
+  turnId: string;
+}
+
 export interface TurnResumeQueryInput {
   sessionId: string;
   sourceRunId?: string;
@@ -172,6 +178,27 @@ export const TURN_OPERATION_SPECS = {
     ] as const,
     decodeInput: decodeTurnStopInput,
     decodeOutput: decodeTurnSnapshot,
+  }),
+  'turn.regenerate': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: [
+      'host_not_ready',
+      'host_draining',
+      'operation_unavailable',
+      'not_found',
+      'session_archived',
+      'session_busy',
+      'operation_conflict',
+      'internal_failure',
+    ] as const,
+    decodeInput: decodeTurnRegenerateInput,
+    decodeOutput: decodeTurnSnapshot,
+    assertOutputForInput: (input, output) => {
+      if (input.sessionId !== output.sessionId || input.turnId !== output.turnId) {
+        throw invalidProtocolFrame('Turn regenerate changed operation identity');
+      }
+    },
   }),
   'turn.resume.query': defineOperation({
     mode: 'query',
@@ -358,6 +385,19 @@ function decodeTurnStopInput(value: unknown): TurnStopInput {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
     runId: requireEntityId(record.runId, 'runId'),
+  };
+}
+
+function decodeTurnRegenerateInput(value: unknown): TurnRegenerateInput {
+  const record = requireExactRecord(value, 'turn.regenerate input', [
+    'sessionId',
+    'sourceTurnId',
+    'turnId',
+  ]);
+  return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    sourceTurnId: requireEntityId(record.sourceTurnId, 'sourceTurnId'),
+    turnId: requireEntityId(record.turnId, 'turnId'),
   };
 }
 

@@ -21,6 +21,7 @@ describe('Session catalog protocol', () => {
             'session.create',
             'session.metadata.update',
             'session.configuration.update',
+            'session.cwd.relocate',
             'session.read_marker.set',
           ] as const
         ).map((operation) => [
@@ -36,6 +37,7 @@ describe('Session catalog protocol', () => {
         'session.create': { mode: 'command', availability: 'ready' },
         'session.metadata.update': { mode: 'command', availability: 'ready' },
         'session.configuration.update': { mode: 'command', availability: 'ready' },
+        'session.cwd.relocate': { mode: 'command', availability: 'ready' },
         'session.read_marker.set': { mode: 'command', availability: 'ready' },
       },
     );
@@ -81,6 +83,27 @@ describe('Session catalog protocol', () => {
           permissionMode: 'ask',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
+        },
+      },
+    );
+
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-3',
+        operation: 'session.cwd.relocate',
+        input: {
+          sessionId: 'session-1',
+          expectedRevision: 2,
+          cwd: '/workspace/next',
+        },
+      }),
+      {
+        requestId: 'request-3',
+        operation: 'session.cwd.relocate',
+        input: {
+          sessionId: 'session-1',
+          expectedRevision: 2,
+          cwd: '/workspace/next',
         },
       },
     );
