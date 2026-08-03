@@ -49,6 +49,8 @@ class FakeUpdater extends EventEmitter {
   logger: unknown = console;
   checkCalls = 0;
   downloadCalls = 0;
+  quitAndInstallCalls = 0;
+  quitAndInstallThrows = false;
   feed: unknown;
   checkResult: Promise<unknown> | undefined;
 
@@ -69,7 +71,10 @@ class FakeUpdater extends EventEmitter {
     return [];
   }
 
-  quitAndInstall(): void {}
+  quitAndInstall(): void {
+    this.quitAndInstallCalls += 1;
+    if (this.quitAndInstallThrows) throw new Error('install failed');
+  }
 }
 
 function updateInfo(version: string) {
@@ -87,6 +92,7 @@ function createHarness(input: {
   updater?: FakeUpdater;
   clock?: FakeClock;
   onStatusChange?: (status: AppUpdateStatus) => void;
+  getActiveTaskCount?: () => number;
 } = {}) {
   const updater = input.updater ?? new FakeUpdater();
   const clock = input.clock ?? new FakeClock();
@@ -99,6 +105,7 @@ function createHarness(input: {
     updater: updater as unknown as AppUpdater,
     clock,
     onStatusChange: input.onStatusChange,
+    getActiveTaskCount: input.getActiveTaskCount ?? (() => 0),
   });
   return { clock, service, updater };
 }
@@ -196,5 +203,63 @@ describe('AppUpdateService', () => {
       releaseName: undefined,
       downloadedFile: '/tmp/maka-update.zip',
     });
+  });
+
+  test('requires explicit authority before interrupting active tasks', async () => {
+    let activeTaskCount = 2;
+    const { service, updater } = createHarness({
+      getActiveTaskCount: () => activeTaskCount,
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+
+    assert.deepEqual(
+      await service.installUpdate({ allowInterruptActiveTasks: false }),
+      { ok: false, reason: 'active_tasks', activeTaskCount: 2 },
+    );
+    assert.equal(updater.quitAndInstallCalls, 0);
+
+    assert.deepEqual(
+      await service.installUpdate({ allowInterruptActiveTasks: true }),
+      { ok: true },
+    );
+    assert.equal(updater.quitAndInstallCalls, 1);
+
+    activeTaskCount = 0;
+    assert.deepEqual(
+      await service.installUpdate({ allowInterruptActiveTasks: false }),
+      { ok: true },
+    );
+    assert.equal(updater.quitAndInstallCalls, 2);
+  });
+
+  test('fails closed when the active-task snapshot is invalid or unreadable', async () => {
+    let snapshot: number | Error = Number.NaN;
+    const { service, updater } = createHarness({
+      getActiveTaskCount: () => {
+        if (snapshot instanceof Error) throw snapshot;
+        return snapshot;
+      },
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+
+    for (const invalid of [Number.NaN, -1, 1.5]) {
+      snapshot = invalid;
+      assert.deepEqual(
+        await service.installUpdate({ allowInterruptActiveTasks: false }),
+        { ok: false, reason: 'install_failed' },
+      );
+    }
+    snapshot = new Error('snapshot unavailable');
+    assert.deepEqual(
+      await service.installUpdate({ allowInterruptActiveTasks: false }),
+      { ok: false, reason: 'install_failed' },
+    );
+    assert.equal(updater.quitAndInstallCalls, 0);
   });
 });

@@ -36,11 +36,20 @@ export type AppUpdateStatus =
     }
   | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
 
+export type AppUpdateInstallRequest = {
+  allowInterruptActiveTasks: boolean;
+};
+
+export type AppUpdateInstallResult =
+  | { ok: true }
+  | { ok: false; reason: 'active_tasks'; activeTaskCount: number }
+  | { ok: false; reason: 'not_downloaded' | 'install_failed' };
+
 export interface AppUpdateService {
   start(): void;
   dispose(): void;
   getStatus(): AppUpdateStatus;
-  installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }>;
+  installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
   openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }>;
 }
 
@@ -54,6 +63,7 @@ interface AppUpdateServiceDeps {
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
+  getActiveTaskCount: () => number;
   clock?: {
     setTimeout(callback: () => void, delayMs: number): unknown;
     clearTimeout(handle: unknown): void;
@@ -286,12 +296,23 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     }
   }
 
-  async function installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }> {
+  async function installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> {
+    if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
+    let activeTaskCount: number;
+    try {
+      activeTaskCount = deps.getActiveTaskCount();
+    } catch {
+      return { ok: false, reason: 'install_failed' };
+    }
+    if (!Number.isSafeInteger(activeTaskCount) || activeTaskCount < 0) {
+      return { ok: false, reason: 'install_failed' };
+    }
+    if (activeTaskCount > 0 && !input.allowInterruptActiveTasks) {
+      return { ok: false, reason: 'active_tasks', activeTaskCount };
+    }
     if (deps.mockLatestVersion) {
-      if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
       return { ok: true };
     }
-    if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
     try {
       updater.quitAndInstall(false, true);
       return { ok: true };

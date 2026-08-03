@@ -402,6 +402,10 @@ type ShellCopy = {
     updateInstallFailedTitle: string;
     updateInstallFailedFallback: string;
     updateInstallManualFallback: string;
+    updateActiveTasksTitle: string;
+    updateActiveTasksDescription(count: number): string;
+    updateActiveTasksConfirm: string;
+    updateActiveTasksCancel: string;
     updateOpenFailedTitle: string;
     updateOpenManualFallback: string;
     loading: string;
@@ -1081,6 +1085,10 @@ const SHELL_COPY_BY_LOCALE = {
       updateInstallFailedTitle: '无法安装更新',
       updateInstallFailedFallback: '请稍后重试。',
       updateInstallManualFallback: '请稍后重试，或手动下载最新版本。',
+      updateActiveTasksTitle: '仍有任务正在运行',
+      updateActiveTasksDescription: (count) => `${count} 个任务仍在运行。更新会中断这些任务，是否继续？`,
+      updateActiveTasksConfirm: '仍然更新',
+      updateActiveTasksCancel: '取消',
       updateOpenFailedTitle: '无法打开更新',
       updateOpenManualFallback: '请稍后重试，或前往 GitHub Releases 下载最新版本。',
       loading: '加载中',
@@ -1588,6 +1596,10 @@ const SHELL_COPY_BY_LOCALE = {
       updateInstallFailedTitle: 'Could not install update',
       updateInstallFailedFallback: 'Try again later.',
       updateInstallManualFallback: 'Try again later, or download the latest version manually.',
+      updateActiveTasksTitle: 'Tasks are still running',
+      updateActiveTasksDescription: (count) => `${count} ${count === 1 ? 'task is' : 'tasks are'} still running. Updating will interrupt ${count === 1 ? 'it' : 'them'}. Continue?`,
+      updateActiveTasksConfirm: 'Update anyway',
+      updateActiveTasksCancel: 'Cancel',
       updateOpenFailedTitle: 'Could not open update',
       updateOpenManualFallback: 'Try again later, or download the latest version from GitHub Releases.',
       loading: 'Loading',

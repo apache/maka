@@ -75,6 +75,7 @@ import {
 import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
+import { requestDownloadedAppUpdate } from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
@@ -238,6 +239,7 @@ function AppShellContent({
 }) {
   const toastApi = useToast();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
+  const updateInstallInFlightRef = useRef(false);
   const {
     sessions,
     authoritativeSessionIds,
@@ -407,10 +409,20 @@ function AppShellContent({
     : undefined;
   const openUpdateDownload = useCallback(() => {
     if (appUpdateStatus?.state === 'downloaded') {
-      void window.maka.app
-        .installUpdate()
-        .then((result) => {
-          if (result.ok) return;
+      if (updateInstallInFlightRef.current) return;
+      updateInstallInFlightRef.current = true;
+      void requestDownloadedAppUpdate({
+        installUpdate: (input) => window.maka.app.installUpdate(input),
+        confirmActiveTasks: (activeTaskCount) => toastApi.confirm({
+          title: shellCopy.updateActiveTasksTitle,
+          description: shellCopy.updateActiveTasksDescription(activeTaskCount),
+          confirmLabel: shellCopy.updateActiveTasksConfirm,
+          cancelLabel: shellCopy.updateActiveTasksCancel,
+          destructive: true,
+        }),
+      })
+        .then((outcome) => {
+          if (outcome.kind !== 'failed') return;
           toastApi.error(
             shellCopy.updateInstallFailedTitle,
             shellCopy.updateInstallManualFallback,
@@ -421,6 +433,9 @@ function AppShellContent({
             shellCopy.updateInstallFailedTitle,
             localizedShellErrorMessage(error, shellCopy.updateInstallFailedFallback, uiLocale),
           );
+        })
+        .finally(() => {
+          updateInstallInFlightRef.current = false;
         });
       return;
     }

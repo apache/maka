@@ -19,13 +19,21 @@ interface SessionActivityState {
 /** Tracks host work without imposing serialization on callers that use reserve(). */
 export class SessionActivityRegistry {
   private readonly states = new Map<string, SessionActivityState>();
+  private readonly taskLeaseCounts = new Map<string, number>();
 
   /** Returns the current shared idle signal, or undefined when already idle. */
   whenIdle(sessionId: string): Promise<void> | undefined {
     return this.states.get(sessionId)?.whenIdle;
   }
 
-  reserve(sessionId: string): SessionActivityLease {
+  /** Counts distinct running tasks, merging any additional host-owned task keys. */
+  activeTaskCount(additionalTaskKeys: Iterable<string> = []): number {
+    const activeTaskKeys = new Set(this.taskLeaseCounts.keys());
+    for (const taskKey of additionalTaskKeys) activeTaskKeys.add(taskKey);
+    return activeTaskKeys.size;
+  }
+
+  reserve(sessionId: string, taskKey = `session:${sessionId}`): SessionActivityLease {
     let state = this.states.get(sessionId);
     if (!state) {
       let resolveIdle!: () => void;
@@ -36,12 +44,17 @@ export class SessionActivityRegistry {
       this.states.set(sessionId, state);
     }
     state.count++;
+    this.taskLeaseCounts.set(taskKey, (this.taskLeaseCounts.get(taskKey) ?? 0) + 1);
 
     let released = false;
     return {
       release: () => {
         if (released) return;
         released = true;
+        const taskLeaseCount = this.taskLeaseCounts.get(taskKey);
+        if (taskLeaseCount === 1) this.taskLeaseCounts.delete(taskKey);
+        else if (taskLeaseCount !== undefined)
+          this.taskLeaseCounts.set(taskKey, taskLeaseCount - 1);
         state.count--;
         if (state.count > 0) return;
         this.states.delete(sessionId);

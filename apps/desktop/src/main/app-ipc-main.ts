@@ -7,7 +7,11 @@ import type { ProjectRootController } from './project-root-controller.js';
 import { resolveOpenPath, type OpenPathResult } from './open-path-guard.js';
 import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
 import type { resolveBuildInfo } from './build-info.js';
-import type { AppUpdateService, AppUpdateStatus } from './app-update-service.js';
+import type {
+  AppUpdateInstallRequest,
+  AppUpdateService,
+  AppUpdateStatus,
+} from './app-update-service.js';
 import type { ProjectManagementService } from './project-management-service.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
@@ -72,7 +76,10 @@ export function registerAppIpc(deps: AppIpcDeps): void {
     };
   });
   ipcMain.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
-  ipcMain.handle('app:installUpdate', () => updateService.installUpdate());
+  ipcMain.handle('app:installUpdate', (_event, input: unknown) => {
+    if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');
+    return updateService.installUpdate(input);
+  });
   ipcMain.handle('app:openUpdateDownload', () => updateService.openUpdateDownload());
   ipcMain.handle('projects:list', () => deps.projectManagement.list());
   ipcMain.handle('projects:add', () => deps.projectManagement.add());
@@ -126,4 +133,11 @@ export function registerAppIpc(deps: AppIpcDeps): void {
     },
   );
   ipcMain.handle('e2eFixture:getState', () => getE2eFixtureState(e2eFixture));
+}
+
+function isAppUpdateInstallRequest(input: unknown): input is AppUpdateInstallRequest {
+  return typeof input === 'object' &&
+    input !== null &&
+    'allowInterruptActiveTasks' in input &&
+    typeof input.allowInterruptActiveTasks === 'boolean';
 }

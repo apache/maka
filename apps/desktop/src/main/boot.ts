@@ -423,6 +423,7 @@ async function closeWorkflowStores(): Promise<void> {
 }
 
 const sessionActivities = new SessionActivityRegistry();
+const automationActivityKey = (automationId: string): string => `automation:${automationId}`;
 
 // Unified Automation — single "Automation" tool for heartbeat + cron.
 // Deps are resolved lazily since runtime/store aren't ready at this point.
@@ -446,6 +447,7 @@ const automationWiring = createMainAutomationWiring({
     const r = await streamEvents(sessionId, iterator, {
       turnId,
       goalBoundary: 'external',
+      activityKey: automationActivityKey(automationId),
     });
     return { runId: turnId, ok: r.ok, ...(r.error ? { error: r.error } : {}) };
   },
@@ -471,6 +473,7 @@ const automationWiring = createMainAutomationWiring({
     const r = await streamEvents(session.id, iterator, {
       turnId,
       goalBoundary: 'external',
+      activityKey: automationActivityKey(automationId),
     });
     // Archive the fresh cron session after its run finalizes so recurring crons
     // do not accumulate an unbounded pile of active sessions. The session (with
@@ -645,6 +648,9 @@ const updateService = createAppUpdateService({
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
   mockState: updateMockState,
   onStatusChange: (status) => safeSendToRenderer('app:updateStatusChanged', status),
+  getActiveTaskCount: () => sessionActivities.activeTaskCount(
+    automationWiring.scheduler.inFlightAutomationIds().map(automationActivityKey),
+  ),
 });
 taskLedgerStore.subscribe((event) => safeSendToRenderer('tasks:changed', event));
 deepResearchStore.subscribe((event) => safeSendToRenderer('deepResearch:changed', event));

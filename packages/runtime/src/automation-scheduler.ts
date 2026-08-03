@@ -111,6 +111,11 @@ export class AutomationScheduler {
     this.inFlight.clear();
   }
 
+  /** Automation ids whose fire has started but not fully settled. */
+  inFlightAutomationIds(): readonly string[] {
+    return [...this.inFlight];
+  }
+
   private scheduleTick(): void {
     if (this.disposed) return;
     this.tickTimer = this.deps.setTimeout(() => {

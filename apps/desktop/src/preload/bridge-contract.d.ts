@@ -203,6 +203,15 @@ export type AppUpdateStatus =
     }
   | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
 
+export type AppUpdateInstallRequest = {
+  allowInterruptActiveTasks: boolean;
+};
+
+export type AppUpdateInstallResult =
+  | { ok: true }
+  | { ok: false; reason: 'active_tasks'; activeTaskCount: number }
+  | { ok: false; reason: 'not_downloaded' | 'install_failed' };
+
 export interface MakaBridge {
 
   tasks: {
@@ -691,7 +700,7 @@ export interface MakaBridge {
     }>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
-    installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }>;
+    installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
     openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }>;
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;
