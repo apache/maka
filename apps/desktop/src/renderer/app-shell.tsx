@@ -2063,8 +2063,8 @@ function AppShellContent({
     >
       {/* Window chrome is frame-level hit-test only (not AppShell topNav): a
           transparent drag overlay so column surfaces paint to the window top.
-          Must precede the shell in document order for Chromium app-region
-          subtraction (see e2e/window-titlebar.spec.ts). */}
+          It precedes the shell so Chromium applies app-region subtraction from
+          one frame-level hit-test surface. */}
       <header
         className="maka-window-titlebar"
         aria-hidden={hasModalOpen ? 'true' : undefined}

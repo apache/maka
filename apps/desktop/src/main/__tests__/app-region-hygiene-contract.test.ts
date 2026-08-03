@@ -3,10 +3,11 @@
  *
  * `.maka-window-titlebar` is the only `-webkit-app-region: drag` surface — a
  * transparent absolute overlay so column surfaces paint to the window top;
- * action clusters carve themselves out with `no-drag`. Live rendered-geometry
- * checks stay in e2e/window-titlebar.spec.ts (Playwright cannot exercise the OS
- * hit test). These contracts pin the declarations that used to be only assumed
- * by comments in main-window.ts — scoped to each rule body, not a cross-`}` scan.
+ * action clusters carve themselves out with `no-drag`. Playwright cannot
+ * exercise the native OS hit test, so a rendered-geometry loop only repeated
+ * CSS values without proving dragging. These contracts pin the declarations
+ * that used to be assumed by comments in main-window.ts — scoped to each rule
+ * body, not a cross-`}` scan.
  */
 import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';

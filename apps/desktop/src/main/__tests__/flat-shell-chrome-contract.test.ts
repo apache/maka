@@ -53,9 +53,8 @@ describe('flat shell chrome CSS contract', () => {
     assert.match(detail!, /min-height:\s*0/);
     // Same rule as the host above, one level in: AppShell paints the content
     // column, so the product's box inside it declares layout and nothing else.
-    // The rendered material is asserted in e2e/sidebar-geometry.spec.ts against
-    // AppShell's own element, which is the only place it can be measured
-    // honestly.
+    // AppShell's theme owns the rendered material; this product box must remain
+    // layout-only instead of becoming a second paint authority.
     assert.doesNotMatch(detail!, /background\s*:/);
     assert.match(detail!, /padding-top:\s*var\(--h-titlebar\)/);
     assert.doesNotMatch(detail!, /background-image\s*:/);

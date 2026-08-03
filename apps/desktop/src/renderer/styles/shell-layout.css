@@ -74,8 +74,7 @@
    and its top 36px lands under the chrome strip. The strip is the topmost hit
    surface across the whole band, so that part of the handle cannot be grabbed at
    all — pointer-down there reaches the OS as a window drag instead. Start the
-   handle below the strip; `inset-block-end: 0` still takes it to the bottom.
-   Locked by the offenders sweep in e2e/window-titlebar.spec.ts. */
+   handle below the strip; `inset-block-end: 0` still takes it to the bottom. */
 .maka-shell-astryx .astryx-resize-handle {
   top: var(--h-titlebar);
 }
@@ -134,8 +133,7 @@
    the nav's sibling one level in), so plain `:has()` reads it.
 
    Separator focus is deliberately NOT part of the gate — it was, and it left
-   the ease dead for every collapse after the handle had once been touched.
-   `sidebar-geometry.spec.ts` holds that as an executable assertion. */
+   the ease dead for every collapse after the handle had once been touched. */
 .maka-shell-astryx .maka-sidenav-motion {
   display: flex;
   min-width: 0;

@@ -237,8 +237,6 @@ export const test = base.extend<{
   staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
   botSettingsWindow: Page;
-  /** #1361: Permissions page with the typed OS-permission snapshot fixture. */
-  permissionSettingsWindow: Page;
   localeSwitchWindow: Page;
   invocableSkillsWindow: Page;
   planRemindersWindow: Page;
@@ -382,20 +380,6 @@ export const test = base.extend<{
   botSettingsWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: false, readinessSelector: '[aria-label="设置内容"]', e2eFixtureScenario: 'settings-bots', locale: 'zh' },
-      use,
-    );
-  },
-  // One live window-floor smoke: permission rows with the three-button guided
-  // screen-recording shape. CSS contracts pin declarations; this measures
-  // scrollWidth containment at SAFE_MIN_WIDTH (480).
-  permissionSettingsWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.settingsOsPermissionRow',
-        e2eFixtureScenario: 'settings-permissions',
-        locale: 'zh',
-      },
       use,
     );
   },

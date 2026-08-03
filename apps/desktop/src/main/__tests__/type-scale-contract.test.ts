@@ -12,10 +12,10 @@
  *   3. the product keeps no name of its own for a size, a family or a
  *      leading, so there is nothing that can drift from the Astryx one.
  *
- * Each is a pure text declaration, so it belongs here rather than in e2e —
- * the same demotion #1854 made for the settings floor layout. What text
- * cannot prove is what the three resolve to together in a live document;
- * `apps/desktop/e2e/type-scale.spec.ts` measures that with computed styles.
+ * Each is a pure text declaration, so it belongs here rather than paying for
+ * an Electron cold start to re-read the same Astryx variables as computed
+ * styles. The renderer build, Storybook, and alignment smoke still exercise
+ * the assembled shell.
  */
 import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';

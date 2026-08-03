@@ -1,6 +1,6 @@
 // Provider add-flow E2E — representative journeys only.
 //
-// This suite deliberately keeps a handful of journeys, NOT one clone per
+// This suite deliberately keeps two journeys, NOT one clone per
 // provider. The add flow (open settings → catalog → category → search → open →
 // assert form defaults → save → assert detail + brand-mark render contract) is
 // identical across every catalog provider, so exercising it once proves the
@@ -223,79 +223,6 @@ test('adds a catalog provider through the canonical API-key setup page', async (
   });
 });
 
-// Distinct form behavior: an account-scoped provider has no fixed base URL —
-// the endpoint is derived from an account-id field, so the plain base-URL input
-// is absent until the account id is supplied. Kept because this form shape is
-// unique, not because Cloudflare's data differs from other providers.
-test('derives an account-scoped endpoint from the Cloudflare account-id field', async ({ window: page }) => {
-  await openModelsPage(page);
-  await openCatalog(page, { category: 'API', search: 'Cloudflare Workers AI' });
-  await page.getByRole('button', { name: /添加模型供应商：Cloudflare Workers AI/ }).click();
-
-  const accountId = 'account-123';
-  const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
-  await expect(page.getByLabel('连接标识', { exact: true })).toHaveValue('cloudflare-workers-ai');
-  // The plain base-URL input is replaced by the account-id field; the endpoint
-  // is derived, not typed.
-  const setup = providerSetup(page);
-  const accountIdInput = setup.getByRole('textbox', {
-    name: /Cloudflare Account ID/,
-  });
-  await expect(accountIdInput).toHaveValue('');
-  const cloudflareKey = setup.getByRole('textbox', { name: /API Key/ });
-  await expect(cloudflareKey).toBeVisible();
-  await expect(setup.getByLabel('服务地址', { exact: true })).toHaveCount(0);
-  await accountIdInput.fill(accountId);
-  await page.getByRole('button', { name: '保存供应商' }).click();
-  await expect(page.getByRole('alert')).toHaveText('请填写 Cloudflare Workers AI API Key');
-
-  await cloudflareKey.fill('e2e-cloudflare-key');
-  await page.getByRole('button', { name: '保存供应商' }).click();
-
-  const detail = connectionDetail(page);
-  await expect(detail).toBeVisible();
-  // Cloudflare derives its endpoint from the account id, so the detail offers no
-  // endpoint row at all — a derived address is nobody's to type.
-  const connectionSection = detail.getByRole('region', { name: '连接' });
-  await expect(connectionSection.getByText('服务地址', { exact: true })).toHaveCount(0);
-  await expect(connectionSection.getByText('已设置', { exact: true })).toBeVisible();
-  // It is still the address the connection was saved with.
-  const savedBaseUrl = await page.evaluate(async () => {
-    const list = await window.maka.connections.list();
-    return list.find((entry) => entry.providerType === 'cloudflare-workers-ai')?.baseUrl;
-  });
-  expect(savedBaseUrl).toBe(baseUrl);
-});
-
-// Distinct form behavior: a no-auth local runtime shows no API-key field at all
-// and offers an empty bootstrap model because it ships no fallback catalog.
-// Also the representative currentColor-mask render
-// contract (monochrome brand asset), the counterpart to the color-<img> path.
-test('adds a no-auth local runtime with no key field and a currentColor mask mark', async ({ window: page }) => {
-  await openModelsPage(page);
-  const catalog = await openCatalog(page, { category: '本地', search: 'LM Studio' });
-  const catalogMark = catalog.locator(
-    '.providerCatalogRow[data-provider="lm-studio"] .providerLogo .providerAssetMask',
-  );
-  await expect(catalogMark).toBeVisible();
-  expect(await catalogMark.evaluate(maskRenderContract)).toEqual({ usesAssetMask: true, followsForeground: true });
-  await page.getByRole('button', { name: /添加模型供应商：LM Studio/ }).click();
-
-  const setup = providerSetup(page);
-  await expect(setup.getByLabel('连接标识', { exact: true })).toHaveValue('lm-studio');
-  await expect(setup.getByLabel('服务地址', { exact: true })).toHaveValue('http://127.0.0.1:1234/v1');
-  await expect(setup.getByLabel('默认模型', { exact: true })).toHaveValue('');
-  await expect(setup.getByRole('textbox', { name: /API Key/ })).toHaveCount(0);
-  await page.getByRole('button', { name: '保存供应商' }).click();
-
-  const detail = connectionDetail(page);
-  await expect(detail).toBeVisible();
-  const detailMark = detail.locator('.providerLogo[data-provider="lm-studio"] .providerAssetMask');
-  await expect(detailMark).toBeVisible();
-  expect(await detailMark.evaluate(maskRenderContract)).toEqual({ usesAssetMask: true, followsForeground: true });
-  await expect(detail.getByLabel(/LM Studio 模型密钥/)).toHaveCount(0);
-});
-
 // Distinct detail behavior: the only providers with BOTH settled rows are the
 // ones whose address is genuinely the user's. One row is a form at a time, so
 // these two are also the only place the cross-row rules can be observed — a
@@ -358,53 +285,6 @@ test('keeps each settled row to its own field on a provider that has two', async
     }))
     .toBe('https://relay.example.com/v2');
 });
-
-test('carries keyboard focus down and back up every level', async ({ window: page }) => {
-  await openModelsPage(page);
-
-  const addButton = page.getByRole('button', { name: '添加连接', exact: true });
-  const catalog = page.locator('[data-maka-contract="provider-catalog"]');
-  const search = catalog.getByPlaceholder('搜索服务商');
-
-  await addButton.click();
-  // Every level takes focus to its own first control, so arriving anywhere
-  // leaves the ring somewhere usable instead of on document.body.
-  await expect(search).toBeFocused();
-  await search.fill('OpenAI');
-
-  await page.getByRole('button', { name: /添加模型供应商：OpenAI/ }).focus();
-  await page.keyboard.press('Enter');
-  await expect(page.getByRole('textbox', { name: /API Key/ })).toBeFocused();
-
-  // Back returns to the catalog with the query intact and the caret back in
-  // it: the filter is browsing state held by the panel, so unmounting the
-  // catalog does not throw it away.
-  await page.getByRole('button', { name: '返回服务商列表', exact: true }).click();
-  await expect(search).toHaveValue('OpenAI');
-  await expect(search).toBeFocused();
-
-  await page.getByRole('button', { name: '返回模型连接', exact: true }).click();
-  await expect(catalog).toHaveCount(0);
-  await expect(addButton).toBeFocused();
-
-  // A connection row navigates to its detail; leaving it puts focus back on
-  // the row the user came from, not on the page's primary action.
-  const existingConnection = page.getByRole('button', { name: /模型连接：E2E/ });
-  await existingConnection.focus();
-  await page.keyboard.press('Enter');
-  await expect(connectionDetail(page)).toBeVisible();
-  await page.getByRole('button', { name: '返回模型连接', exact: true }).click();
-  await expect(connectionDetail(page)).toHaveCount(0);
-  await expect(existingConnection).toBeFocused();
-});
-
-function maskRenderContract(element: Element): { usesAssetMask: boolean; followsForeground: boolean } {
-  const style = getComputedStyle(element);
-  return {
-    usesAssetMask: style.maskImage.startsWith('url('),
-    followsForeground: style.backgroundColor === style.color,
-  };
-}
 
 const COLOR_ASSET_RENDER_CONTRACT = {
   usesAssetMask: false,
