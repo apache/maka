@@ -203,6 +203,13 @@ export class ModelAdapter {
       messages: lowerNativeAudioMessages(input.messages),
       tools: schemaOnlyTools,
       activeTools: input.activeTools,
+      // An empty active set is an authoritative tool-free request (not merely
+      // an empty provider schema).  Some OpenAI-compatible models, including
+      // DeepSeek, otherwise keep emitting their native tool-call envelope as
+      // ordinary text when the SDK leaves toolChoice at its `auto` default.
+      // The child-agent finalization step relies on this boundary to spend its
+      // last budgeted request on a summary instead of one more unusable call.
+      ...(input.activeTools.length === 0 ? { toolChoice: 'none' } : {}),
       repairToolCall: input.repairToolCall,
       ...(input.system ? { instructions: input.system } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),

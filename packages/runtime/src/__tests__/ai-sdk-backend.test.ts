@@ -7123,6 +7123,7 @@ describe('AiSdkBackend usage telemetry', () => {
 
     assert.equal(streamCalls, 2);
     assert.equal(model.doStreamCalls[1]?.tools?.length ?? 0, 0);
+    assert.deepEqual(model.doStreamCalls[1]?.toolChoice, { type: 'none' });
     assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /final budgeted step/i);
     assert.ok(
       events.some(
