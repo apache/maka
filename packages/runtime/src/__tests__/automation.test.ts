@@ -1,8 +1,5 @@
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join } from 'node:path';
 import {
   AutomationManager,
   computeJitter,
@@ -454,154 +451,13 @@ describe('AutomationManager', () => {
 });
 
 describe('computeNextCronFire', () => {
-  describe('validation + named tokens (O(1), no multi-second scan)', () => {
-    test('named weekday, weekday range, and month tokens resolve case-insensitively', () => {
-      const base = new Date('2026-07-06T08:00:00').getTime(); // 2026-07-06 is a Monday
-      const named = computeNextCronFire('0 9 * * MON', base);
-      const numeric = computeNextCronFire('0 9 * * 1', base);
-      assert.ok(named);
-      assert.equal(named, numeric, 'MON must resolve identically to 1');
-      assert.equal(new Date(named!).getDay(), 1);
+  test('keeps Runtime return and compatibility-export contracts', () => {
+    const base = new Date('2026-07-06T08:00:00').getTime();
 
-      const january = new Date(computeNextCronFire('0 0 1 jan *', base)!);
-      assert.equal(january.getMonth(), 0);
-      assert.equal(january.getDate(), 1);
-
-      const dow = new Date(computeNextCronFire('0 9 * * mon-fri', base)!).getDay();
-      assert.ok(dow >= 1 && dow <= 5);
-    });
-
-    test('invalid fields and impossible dates fail fast', () => {
-      const base = Date.now();
-      const start = Date.now();
-      for (const expression of [
-        '0 9 32 * *',
-        '0 25 * * *',
-        '0 9 * 13 *',
-        '0 9 * * BADTOKEN',
-        '0 0 30 2 *',
-        '0 0 31 4 *',
-      ]) {
-        assert.equal(computeNextCronFire(expression, base), null, expression);
-      }
-      assert.ok(Date.now() - start < 100, 'invalid expressions must fail fast');
-    });
-
-    test('impossible dom is NOT rejected when dow is also restricted (Vixie OR)', () => {
-      // `0 0 30 2 5` = Feb 30 (impossible) OR any Friday in Feb (valid) → fires.
-      const base = new Date('2026-01-01T00:00:00').getTime();
-      const next = computeNextCronFire('0 0 30 2 5', base);
-      assert.ok(next, 'must still fire on Fridays in February');
-      const d = new Date(next!);
-      assert.equal(d.getMonth(), 1); // February
-      assert.equal(d.getDay(), 5); // Friday
-    });
-
-    test('DST fall-back: next fire is strictly after fromTime (regression: no re-fire storm)', () => {
-      // Under America/New_York, 2026-11-01T06:30Z is inside the REPEATED (fall-back)
-      // local hour. A local wall-clock round-trip would shift the scan start ~59min
-      // before fromTime, returning a candidate <= fromTime → the scheduler would
-      // re-fire every tick for the whole hour. Run in a child with TZ set; the
-      // snippet exits non-zero (→ execFileSync throws) if strictly-after is violated.
-      const modUrl = pathToFileURL(
-        join(dirname(fileURLToPath(import.meta.url)), '..', 'automation-state.js'),
-      ).href;
-      const snippet =
-        `import(${JSON.stringify(modUrl)}).then(m => {` +
-        `const from = Date.parse('2026-11-01T06:30:00Z');` +
-        `const next = m.computeNextCronFire('30 1 * * *', from);` +
-        `process.exit(typeof next === 'number' && next > from ? 0 : 1);` +
-        `}).catch(() => process.exit(2));`;
-      assert.doesNotThrow(() =>
-        execFileSync(process.execPath, ['--input-type=module', '-e', snippet], {
-          env: { ...process.env, TZ: 'America/New_York' },
-          stdio: 'pipe',
-        }),
-      );
-    });
-  });
-
-  test('range/step 5-15/3 does not match 18,21,24...', () => {
-    // Verify values outside the range don't match
-    assert.equal(matchesCronField('5-15/3', 18, 0, 59), false);
-    assert.equal(matchesCronField('5-15/3', 21, 0, 59), false);
-    assert.equal(matchesCronField('5-15/3', 5, 0, 59), true);
-    assert.equal(matchesCronField('5-15/3', 8, 0, 59), true);
-    assert.equal(matchesCronField('5-15/3', 11, 0, 59), true);
+    assert.equal(computeNextCronFire('0 9 * * MON', base), computeNextCronFire('0 9 * * 1', base));
+    assert.equal(computeNextCronFire('not valid', base), null);
     assert.equal(matchesCronField('5-15/3', 14, 0, 59), true);
-    assert.equal(matchesCronField('5-15/3', 15, 0, 59), false); // 15-5=10, 10%3≠0
-  });
-
-  // --- Bug 1: sparse annual crons must resolve within a bounded window ---
-
-  test('sparse annual cron 0 0 29 2 * resolves to Feb 29 in a leap year (not null)', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    const next = computeNextCronFire('0 0 29 2 *', base);
-    assert.ok(next, 'Feb 29 cron should resolve within the extended search window');
-    const d = new Date(next!);
-    assert.equal(d.getMonth(), 1, 'month should be February (0-indexed 1)');
-    assert.equal(d.getDate(), 29, 'day should be the 29th');
-    assert.equal(d.getHours(), 0);
-    assert.equal(d.getMinutes(), 0);
-    const y = d.getFullYear();
-    const isLeap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
-    assert.ok(isLeap, `${y} should be a leap year`);
-    assert.ok(next! > base);
-  });
-
-  // --- Bug 2: dom + dow are OR (not AND) when BOTH fields are restricted ---
-
-  test('dom+dow OR: 0 0 13 * 5 matches the 13th OR any Friday (not Friday-the-13th)', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    const fires: Date[] = [];
-    let cursor = base;
-    for (let i = 0; i < 8; i++) {
-      const next = computeNextCronFire('0 0 13 * 5', cursor);
-      assert.ok(next);
-      fires.push(new Date(next!));
-      cursor = next!;
-    }
-    // Every fire is at midnight and is either the 13th OR a Friday (dow 5).
-    for (const d of fires) {
-      assert.equal(d.getHours(), 0);
-      assert.equal(d.getMinutes(), 0);
-      assert.ok(
-        d.getDate() === 13 || d.getDay() === 5,
-        `${d.toISOString()} should be the 13th or a Friday`,
-      );
-    }
-    // Proves OR (not AND): a Friday that is NOT the 13th must appear ...
-    assert.ok(
-      fires.some((d) => d.getDay() === 5 && d.getDate() !== 13),
-      'expected at least one Friday that is not the 13th',
-    );
-    // ... and a 13th that is NOT a Friday must appear.
-    assert.ok(
-      fires.some((d) => d.getDate() === 13 && d.getDay() !== 5),
-      'expected at least one 13th that is not a Friday',
-    );
-    assert.equal(new Date(computeNextCronFire('0 0 13 * *', base)!).getDate(), 13);
-    assert.equal(new Date(computeNextCronFire('0 0 * * 5', base)!).getDay(), 5);
-  });
-
-  test('dow=7 matches Sundays (cron allows 0 OR 7 for Sunday)', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime(); // Monday
-    for (const field of ['0 0 * * 7', '0 0 * * 0', '0 0 * * 5-7', '0 0 * * 0,3']) {
-      const next = computeNextCronFire(field, base);
-      assert.ok(next, `${field} should resolve`);
-    }
-    // "* * * * 7" must actually land on a Sunday.
-    const sun = computeNextCronFire('0 0 * * 7', base);
-    assert.equal(new Date(sun!).getDay(), 0, 'dow=7 lands on Sunday (getDay()===0)');
-    // "5-7" (Fri/Sat/Sun) includes Sunday.
-    let cursor = base;
-    let sawSunday = false;
-    for (let i = 0; i < 6; i++) {
-      const n = computeNextCronFire('0 0 * * 5-7', cursor);
-      if (n && new Date(n).getDay() === 0) sawSunday = true;
-      cursor = n ?? cursor;
-    }
-    assert.ok(sawSunday, '5-7 range includes Sunday');
+    assert.equal(matchesCronField('5-15/3', 18, 0, 59), false);
   });
 });
 

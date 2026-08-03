@@ -13,6 +13,9 @@ import type {
   AutomationSchedule,
 } from '@maka/core/automation';
 import { AUTOMATION_LAST_ERROR_LIMIT, truncateAutomationText } from '@maka/core/automation';
+import { compileCronExpression } from '@maka/core/cron-expression';
+
+export { matchesCronField } from '@maka/core/cron-expression';
 
 export type {
   AutomationDefinition,
@@ -473,134 +476,6 @@ export function settleAutomationAttempt(
   }
 }
 
-const MINUTES_PER_DAY = 24 * 60;
-
-/**
- * Upper bound on the minute-by-minute search window.
- *
- * A valid but sparse cron such as `0 0 29 2 *` (Feb 29, leap years only) can be
- * several years out. The maximum gap between two consecutive Feb 29ths is
- * 8 years: a century year that is not divisible by 400 (e.g. 2100, 2200) is NOT
- * a leap year, so the sequence 2096 -> 2104 skips 2100 entirely. Searching a
- * full ~8-year window guarantees every legally-satisfiable expression resolves,
- * while the bound still lets genuinely-impossible expressions (e.g.
- * `0 0 30 2 *`, Feb 30 never exists) terminate and return null instead of
- * looping forever.
- */
-const MAX_SEARCH_MINUTES = 8 * 366 * MINUTES_PER_DAY; // ~8 years, bounded
-
-const CRON_MONTH_ALIASES: Record<string, number> = {
-  jan: 1,
-  feb: 2,
-  mar: 3,
-  apr: 4,
-  may: 5,
-  jun: 6,
-  jul: 7,
-  aug: 8,
-  sep: 9,
-  oct: 10,
-  nov: 11,
-  dec: 12,
-};
-const CRON_DOW_ALIASES: Record<string, number> = {
-  sun: 0,
-  mon: 1,
-  tue: 2,
-  wed: 3,
-  thu: 4,
-  fri: 5,
-  sat: 6,
-};
-// Leap-year max days per month (Feb=29) — used only for impossible-date detection.
-const CRON_MAX_DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-/** Replace alphabetic cron tokens (e.g. MON, JAN) with their numeric value. */
-function translateCronAliases(field: string, aliases: Record<string, number>): string {
-  return field.replace(/[a-zA-Z]+/g, (tok) => {
-    const n = aliases[tok.toLowerCase()];
-    return n === undefined ? tok : String(n);
-  });
-}
-
-/**
- * Expand a numeric cron field to the set of values it matches within [min,max].
- * Returns 'star' for "*", or null if any token is malformed or out of range.
- */
-function expandCronField(field: string, min: number, max: number): number[] | 'star' | null {
-  if (field === '*') return 'star';
-  const values = new Set<number>();
-  for (const part of field.split(',')) {
-    let range = part;
-    let step = 1;
-    if (part.includes('/')) {
-      const [r, s] = part.split('/');
-      step = parseInt(s, 10);
-      if (!Number.isInteger(step) || step <= 0) return null;
-      range = r;
-    }
-    let lo: number;
-    let hi: number;
-    if (range === '*') {
-      lo = min;
-      hi = max;
-    } else if (range.includes('-')) {
-      const [a, b] = range.split('-');
-      lo = parseInt(a, 10);
-      hi = parseInt(b, 10);
-      if (!Number.isInteger(lo) || !Number.isInteger(hi)) return null;
-    } else {
-      lo = parseInt(range, 10);
-      if (!Number.isInteger(lo)) return null;
-      hi = part.includes('/') ? max : lo; // "5/10" means 5,15,25… up to max
-    }
-    if (lo < min || hi > max || lo > hi) return null;
-    for (let v = lo; v <= hi; v += step) values.add(v);
-  }
-  return [...values];
-}
-
-interface NormalizedCron {
-  minuteField: string;
-  hourField: string;
-  domField: string;
-  monthField: string;
-  dowField: string;
-}
-
-/**
- * Validate + normalize a 5-field cron expression in O(1): translate named
- * day/month tokens to numbers, reject out-of-range values, and fast-fail
- * impossible calendar dates (e.g. Feb 30, Apr 31). Returns null for anything
- * malformed or unsatisfiable so the caller skips the expensive minute scan.
- */
-function normalizeCronExpression(expression: string): NormalizedCron | null {
-  const parts = expression.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  const minuteField = parts[0];
-  const hourField = parts[1];
-  const domField = parts[2];
-  const monthField = translateCronAliases(parts[3], CRON_MONTH_ALIASES);
-  const dowField = translateCronAliases(parts[4], CRON_DOW_ALIASES);
-
-  if (expandCronField(minuteField, 0, 59) === null) return null;
-  if (expandCronField(hourField, 0, 23) === null) return null;
-  const domVals = expandCronField(domField, 1, 31);
-  const monthVals = expandCronField(monthField, 1, 12);
-  const dowVals = expandCronField(dowField, 0, 7); // 0 and 7 both = Sunday
-  if (domVals === null || monthVals === null || dowVals === null) return null;
-
-  // Impossible calendar date: only fast-fail when the day is constrained ONLY by
-  // dom+month (dow="*"). If dow is also restricted, Vixie OR-semantics mean a
-  // matching weekday can still fire, so we must NOT reject.
-  if (domVals !== 'star' && monthVals !== 'star' && dowVals === 'star') {
-    const maxDays = Math.max(...monthVals.map((m) => CRON_MAX_DAYS_IN_MONTH[m - 1]));
-    if (Math.min(...domVals) > maxDays) return null; // e.g. Feb 30, Apr 31
-  }
-
-  return { minuteField, hourField, domField, monthField, dowField };
-}
-
 /**
  * Compute the next Unix-ms timestamp at which a 5-field cron expression fires,
  * strictly after `fromTime`. Returns null for a malformed expression or one
@@ -617,91 +492,8 @@ function normalizeCronExpression(expression: string): NormalizedCron | null {
  * intentionally out of scope for this parser.
  */
 export function computeNextCronFire(expression: string, fromTime: number): number | null {
-  // Validate + normalize BEFORE the bounded scan so an unsatisfiable or
-  // unsupported expression fails in O(1) instead of blocking the (main-process)
-  // thread for a multi-second full-window scan. This translates named tokens
-  // (MON-SUN, JAN-DEC), rejects out-of-range values, and fast-fails impossible
-  // calendar dates (e.g. Feb 30).
-  const normalized = normalizeCronExpression(expression);
-  if (!normalized) return null;
-  const { minuteField, hourField, domField, monthField, dowField } = normalized;
-
-  // Vixie-cron day semantics: when BOTH the day-of-month and day-of-week fields
-  // are restricted (neither is "*"), a day matches if it satisfies EITHER field
-  // (OR) — e.g. `0 0 13 * 5` fires on the 13th of any month OR on any Friday,
-  // NOT only on Friday the 13th. When at least one field is "*", that field
-  // matches every value, so the two are combined with AND (the "*" field is a
-  // no-op and only the other constrains).
-  const domIsStar = domField === '*';
-  const dowIsStar = dowField === '*';
-  const bothDayFieldsRestricted = !domIsStar && !dowIsStar;
-
-  // Start the scan at the next whole-minute boundary strictly after fromTime,
-  // computed in EPOCH arithmetic. Using Date.setSeconds() would round-trip the
-  // instant through local wall-clock; during a DST fall-back (a repeated local
-  // hour) V8 re-encodes the ambiguous time to the earlier offset, shifting the
-  // start ~59 min BEFORE fromTime. The scan would then return a candidate
-  // <= fromTime, breaking the strictly-after contract and making the scheduler
-  // re-fire every tick for the whole repeated hour. Epoch math is offset-safe;
-  // candidate wall-clock fields are still read with local getters below.
-  const baseTime = fromTime - (fromTime % 60000) + 60000;
-
-  for (let attempt = 0; attempt < MAX_SEARCH_MINUTES; attempt++) {
-    const candidateTime = baseTime + attempt * 60000;
-    const candidate = new Date(candidateTime);
-
-    // Cheapest, most-selective checks first so most candidates are pruned before
-    // the day-field matching runs.
-    if (!matchesCronField(minuteField, candidate.getMinutes(), 0, 59)) continue;
-    if (!matchesCronField(hourField, candidate.getHours(), 0, 23)) continue;
-    if (!matchesCronField(monthField, candidate.getMonth() + 1, 1, 12)) continue;
-
-    const domMatch = matchesCronField(domField, candidate.getDate(), 1, 31);
-    // Day-of-week: cron allows both 0 and 7 for Sunday, but Date.getDay() only
-    // returns 0-6 (0=Sunday). Match against the raw value, plus the 7-alias when
-    // the day is Sunday, so fields like "7", "5-7", "0,7" all fire on Sundays.
-    const dow = candidate.getDay();
-    const dowMatch =
-      matchesCronField(dowField, dow, 0, 7) || (dow === 0 && matchesCronField(dowField, 7, 0, 7));
-    const dayMatch = bothDayFieldsRestricted
-      ? domMatch || dowMatch // OR when both are constrained
-      : domMatch && dowMatch; // AND when one is "*"
-
-    if (dayMatch) return candidateTime;
-  }
-  return null;
-}
-
-export function matchesCronField(field: string, value: number, min: number, max: number): boolean {
-  if (field === '*') return true;
-
-  for (const part of field.split(',')) {
-    if (part.includes('/')) {
-      const [range, stepStr] = part.split('/');
-      const step = parseInt(stepStr, 10);
-      if (isNaN(step) || step <= 0) continue;
-      let start = min;
-      let end = max;
-      if (range !== '*') {
-        if (range.includes('-')) {
-          const [lo, hi] = range.split('-').map(Number);
-          if (isNaN(lo) || isNaN(hi)) continue;
-          start = lo;
-          end = hi;
-        } else {
-          start = parseInt(range, 10);
-          if (isNaN(start)) continue;
-        }
-      }
-      if (value >= start && value <= end && (value - start) % step === 0) return true;
-    } else if (part.includes('-')) {
-      const [lo, hi] = part.split('-').map(Number);
-      if (!isNaN(lo) && !isNaN(hi) && value >= lo && value <= hi) return true;
-    } else {
-      if (parseInt(part, 10) === value) return true;
-    }
-  }
-  return false;
+  const compiled = compileCronExpression(expression, { profile: 'automation-v1' });
+  return compiled.ok ? compiled.value.nextAfter(fromTime) : null;
 }
 
 export { MAX_AUTOMATIONS_PER_SESSION, MAX_CONSECUTIVE_FAILURES, DEFAULT_EXPIRY_DAYS };
