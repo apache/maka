@@ -36,6 +36,7 @@ import {
   type SubscriptionActionResult,
 } from '@maka/core';
 import {
+  exchangeOAuthAuthorizationCode,
   proxiedFetch,
   refreshAndPersistOAuthSubscriptionTokens,
   refreshOAuthSubscriptionTokens,
@@ -61,14 +62,11 @@ import {
 // like the Claude service (constants at the top, lookups inline).
 const CODEX_CLIENT_ID = CODEX_OAUTH_CONFIG.clientId;
 const CODEX_AUTHORIZE_ENDPOINT = CODEX_OAUTH_CONFIG.authUrl;
-const CODEX_TOKEN_ENDPOINT = CODEX_OAUTH_CONFIG.tokenUrl;
 const CODEX_CALLBACK_HOST = CODEX_OAUTH_CONFIG.callbackHost;
 const CODEX_CALLBACK_PORT = CODEX_OAUTH_CONFIG.callbackPort;
-const CODEX_REDIRECT_URI = CODEX_OAUTH_CONFIG.redirectUri;
+const CODEX_FALLBACK_CALLBACK_PORT = CODEX_OAUTH_CONFIG.fallbackCallbackPort;
 const CODEX_SCOPES = CODEX_OAUTH_CONFIG.scopes;
 const CODEX_EXTRA_PARAMS = CODEX_OAUTH_CONFIG.extras;
-
-const PLAIN_USER_AGENT = 'maka-desktop/0.1.0 (oauth-subscription)';
 
 // =============================================================
 // Persisted tokens — INTERNAL TO THIS MODULE. Never crosses IPC.
@@ -88,6 +86,8 @@ interface PendingAuthorization {
   verifier: string;
   state: string;
   createdAt: number;
+  redirectUri: string;
+  controller: AbortController;
   /**
    * Authorization URL we generated. Kept in-process so the renderer
    * only ever hands us an opaque authRequestId — never a URL.
@@ -164,44 +164,47 @@ export class OpenAiCodexService {
     const state = base64urlEncode(randomBytes(16));
     const authRequestId = randomUUID();
 
-    const challenge = pkceChallengeFromVerifier(verifier);
-    const url = buildCodexAuthorizationUrl({
-      clientId: CODEX_CLIENT_ID,
-      authorizeEndpoint: CODEX_AUTHORIZE_ENDPOINT,
-      redirectUri: CODEX_REDIRECT_URI,
-      scope: CODEX_SCOPES,
-      state,
-      challenge,
-      extras: CODEX_EXTRA_PARAMS,
-    });
-
     let resolveCode!: (value: { code: string; state: string }) => void;
     let rejectCode!: (err: Error) => void;
     const codePromise = new Promise<{ code: string; state: string }>((resolve, reject) => {
       resolveCode = resolve;
       rejectCode = reject;
     });
+    void codePromise.catch(() => undefined);
 
     // Start a single-shot loopback HTTP server. Bound only to
     // 127.0.0.1 so the OS firewall sees a local-only listener; the
     // browser's redirect to http://localhost:1455 hits this socket.
-    let server: Server;
+    let callback: { server: Server; port: number };
     try {
-      server = await this.startCallbackServer(state, resolveCode, rejectCode);
+      callback = await this.startCallbackServer(state, resolveCode, rejectCode);
     } catch (err) {
-      const message = err instanceof Error ? err.message : '回调端口 1455 启动失败。';
+      const message = err instanceof Error ? err.message : 'Codex OAuth 回调端口启动失败。';
       return { ok: false, reason: 'unknown', message };
     }
+    const redirectUri = `http://localhost:${callback.port}/auth/callback`;
+    const challenge = pkceChallengeFromVerifier(verifier);
+    const url = buildCodexAuthorizationUrl({
+      clientId: CODEX_CLIENT_ID,
+      authorizeEndpoint: CODEX_AUTHORIZE_ENDPOINT,
+      redirectUri,
+      scope: CODEX_SCOPES,
+      state,
+      challenge,
+      extras: CODEX_EXTRA_PARAMS,
+    });
 
     this.pending.set(authRequestId, {
       verifier,
       state,
       createdAt: this.now(),
+      redirectUri,
+      controller: new AbortController(),
       url,
       codePromise,
       resolveCode,
       rejectCode,
-      server,
+      server: callback.server,
     });
 
     return {
@@ -226,6 +229,9 @@ export class OpenAiCodexService {
     }
     try {
       await this.openExternal(pending.url);
+      if (this.pending.get(authRequestId) !== pending || pending.controller.signal.aborted) {
+        return { ok: false, reason: 'authorization_cancelled', message: 'Codex 授权已取消。' };
+      }
       this.authorizing = true;
       return { ok: true };
     } catch (err) {
@@ -259,7 +265,7 @@ export class OpenAiCodexService {
         this.authorizing = false;
         return { ok: false, reason: 'invalid_paste_code', message: '回调 state 校验失败，请重新登录。' };
       }
-      const tokens = await this.exchangeCodeForTokens(code, pending.verifier);
+      const tokens = await this.exchangeCodeForTokens(pending, code);
       // Storage failures are not exchange failures: the one-time code
       // was consumed successfully, so tell the user to fix the store
       // instead of implying the code was bad.
@@ -274,6 +280,11 @@ export class OpenAiCodexService {
       this.authorizing = false;
       return { ok: true };
     } catch (err) {
+      if (pending.controller.signal.aborted) {
+        this.disposePending(authRequestId);
+        this.authorizing = false;
+        return { ok: false, reason: 'authorization_cancelled', message: 'Codex 授权已取消。' };
+      }
       this.disposePending(authRequestId);
       this.authorizing = false;
       return this.failureFromError('token_exchange_failed', err);
@@ -485,22 +496,40 @@ export class OpenAiCodexService {
     expectedState: string,
     resolveCode: (value: { code: string; state: string }) => void,
     rejectCode: (err: Error) => void,
-  ): Promise<Server> {
-    return await new Promise<Server>((resolve, reject) => {
+  ): Promise<{ server: Server; port: number }> {
+    try {
+      return await this.listenForCallback(CODEX_CALLBACK_PORT, expectedState, resolveCode, rejectCode);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+      return this.listenForCallback(
+        CODEX_FALLBACK_CALLBACK_PORT,
+        expectedState,
+        resolveCode,
+        rejectCode,
+      );
+    }
+  }
+
+  private async listenForCallback(
+    port: number,
+    expectedState: string,
+    resolveCode: (value: { code: string; state: string }) => void,
+    rejectCode: (err: Error) => void,
+  ): Promise<{ server: Server; port: number }> {
+    return await new Promise<{ server: Server; port: number }>((resolve, reject) => {
       const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         const url = req.url ?? '';
-        if (!url.startsWith('/auth/callback')) {
-          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-          res.end('Not found.');
-          return;
-        }
-        // Parse the query string. We only trust `code` + `state`.
         let parsedUrl: URL;
         try {
-          parsedUrl = new URL(url, `http://${CODEX_CALLBACK_HOST}:${CODEX_CALLBACK_PORT}`);
+          parsedUrl = new URL(url, `http://${CODEX_CALLBACK_HOST}:${port}`);
         } catch {
           res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
           res.end('Invalid callback URL.');
+          return;
+        }
+        if (parsedUrl.pathname !== '/auth/callback') {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Not found.');
           return;
         }
         const code = parsedUrl.searchParams.get('code');
@@ -538,8 +567,8 @@ export class OpenAiCodexService {
       server.setTimeout(10_000, (socket) => {
         try { socket.destroy(); } catch { /* best-effort */ }
       });
-      server.listen(CODEX_CALLBACK_PORT, CODEX_CALLBACK_HOST, () => {
-        resolve(server);
+      server.listen(port, CODEX_CALLBACK_HOST, () => {
+        resolve({ server, port });
       });
     });
   }
@@ -547,6 +576,7 @@ export class OpenAiCodexService {
   private disposePending(authRequestId: string): void {
     const pending = this.pending.get(authRequestId);
     if (!pending) return;
+    pending.controller.abort();
     this.pending.delete(authRequestId);
     if (pending.server) {
       try {
@@ -564,37 +594,26 @@ export class OpenAiCodexService {
     pending.rejectCode(new Error('Authorization cancelled.'));
   }
 
-  private async exchangeCodeForTokens(code: string, verifier: string): Promise<PersistedTokens> {
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      client_id: CODEX_CLIENT_ID,
+  private async exchangeCodeForTokens(
+    pending: PendingAuthorization,
+    code: string,
+  ): Promise<PersistedTokens> {
+    const tokens = await exchangeOAuthAuthorizationCode({
+      provider: 'openai-codex',
       code,
-      code_verifier: verifier,
-      redirect_uri: CODEX_REDIRECT_URI,
+      verifier: pending.verifier,
+      state: pending.state,
+      redirectUri: pending.redirectUri,
+      signal: pending.controller.signal,
+      fetchFn: this.fetchFn,
+      now: this.now,
     });
-    const response = await this.fetchFn(CODEX_TOKEN_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': PLAIN_USER_AGENT,
-      },
-      body: body.toString(),
-    });
-    if (!response.ok) {
-      throw new Error(`Token exchange failed (${response.status}).`);
-    }
-    const payload = (await response.json()) as {
-      access_token: string;
-      refresh_token: string;
-      id_token?: string;
-      expires_in: number;
-    };
-    const claims = extractAccountClaims(payload.access_token, payload.id_token);
+    const claims = extractAccountClaims(tokens.access_token, tokens.id_token);
     return {
-      access_token: payload.access_token,
-      refresh_token: payload.refresh_token,
-      id_token: payload.id_token,
-      expires_at: this.now() + 1000 * payload.expires_in,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      id_token: tokens.id_token,
+      expires_at: tokens.expires_at,
       account_id: claims.accountId,
     };
   }

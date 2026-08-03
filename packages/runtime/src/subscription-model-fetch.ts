@@ -4,12 +4,15 @@ import {
   GITHUB_COPILOT_API_VERSION,
   GITHUB_COPILOT_COMPAT_HEADERS,
 } from './subscription-credentials.js';
+import { openAiCodexHeaders } from './subscription-auth.js';
 
 export interface SubscriptionModelFetchInput {
   connection: RuntimeExecutionConnection;
   sessionId: string;
   modelId: string;
   fetchFn?: typeof fetch;
+  /** Force-refreshes a remotely invalidated OAuth token for one safe 401 replay. */
+  refreshOAuthAccessToken?: () => Promise<string | null>;
   claude?: {
     cloakEnabled?: boolean;
     deviceId: string;
@@ -25,10 +28,17 @@ export function buildSubscriptionModelFetch(
     return buildClaudeSubscriptionCloakedFetch(input, requireClaudeCloakMetadata(input.claude));
   }
   if (input.connection.providerType === 'openai-codex') {
-    return buildOpenAiCodexFetch(input.sessionId, input.fetchFn ?? fetch);
+    return buildOpenAiCodexFetch(
+      input.sessionId,
+      input.fetchFn ?? fetch,
+      input.refreshOAuthAccessToken,
+    );
   }
   if (input.connection.providerType === 'github-copilot') {
     return buildGitHubCopilotFetch(input.fetchFn ?? fetch);
+  }
+  if (input.connection.providerType === 'xai-oauth' && input.refreshOAuthAccessToken) {
+    return buildOAuth401ReplayFetch(input.fetchFn ?? fetch, input.refreshOAuthAccessToken);
   }
   return undefined;
 }
@@ -107,7 +117,11 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function buildOpenAiCodexFetch(sessionId: string, fetchFn: typeof fetch): typeof fetch {
+function buildOpenAiCodexFetch(
+  sessionId: string,
+  fetchFn: typeof fetch,
+  refreshOAuthAccessToken?: () => Promise<string | null>,
+): typeof fetch {
   return async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const headers = new Headers(init?.headers);
     headers.set('OpenAI-Beta', 'responses=experimental');
@@ -118,41 +132,46 @@ function buildOpenAiCodexFetch(sessionId: string, fetchFn: typeof fetch): typeof
 
     const rawBody = init?.body;
     if (typeof rawBody !== 'string') {
-      return checkedOpenAiCodexFetch(fetchFn, url, { ...init, headers });
+      return checkedOpenAiCodexFetch(fetchFn, url, { ...init, headers }, refreshOAuthAccessToken);
     }
 
     let parsedBody: Record<string, unknown>;
     try {
       const parsed = JSON.parse(rawBody) as unknown;
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return checkedOpenAiCodexFetch(fetchFn, url, { ...init, headers });
+        return checkedOpenAiCodexFetch(fetchFn, url, { ...init, headers }, refreshOAuthAccessToken);
       }
       parsedBody = parsed as Record<string, unknown>;
     } catch {
-      return checkedOpenAiCodexFetch(fetchFn, url, { ...init, headers });
+      return checkedOpenAiCodexFetch(fetchFn, url, { ...init, headers }, refreshOAuthAccessToken);
     }
 
-    return checkedOpenAiCodexFetch(fetchFn, url, {
-      ...init,
-      headers,
-      body: JSON.stringify({
-        ...parsedBody,
-        instructions: codexInstructionsFromBody(parsedBody),
-        store: false,
-        parallel_tool_calls: parsedBody.parallel_tool_calls ?? true,
-        text: {
-          ...(parsedBody.text !== null && typeof parsedBody.text === 'object'
-            ? (parsedBody.text as Record<string, unknown>)
-            : {}),
-          verbosity:
-            parsedBody.text !== null &&
-            typeof parsedBody.text === 'object' &&
-            typeof (parsedBody.text as { verbosity?: unknown }).verbosity === 'string'
-              ? (parsedBody.text as { verbosity: string }).verbosity
-              : 'medium',
-        },
-      }),
-    });
+    return checkedOpenAiCodexFetch(
+      fetchFn,
+      url,
+      {
+        ...init,
+        headers,
+        body: JSON.stringify({
+          ...parsedBody,
+          instructions: codexInstructionsFromBody(parsedBody),
+          store: false,
+          parallel_tool_calls: parsedBody.parallel_tool_calls ?? true,
+          text: {
+            ...(parsedBody.text !== null && typeof parsedBody.text === 'object'
+              ? (parsedBody.text as Record<string, unknown>)
+              : {}),
+            verbosity:
+              parsedBody.text !== null &&
+              typeof parsedBody.text === 'object' &&
+              typeof (parsedBody.text as { verbosity?: unknown }).verbosity === 'string'
+                ? (parsedBody.text as { verbosity: string }).verbosity
+                : 'medium',
+          },
+        }),
+      },
+      refreshOAuthAccessToken,
+    );
   };
 }
 
@@ -160,28 +179,77 @@ async function checkedOpenAiCodexFetch(
   fetchFn: typeof fetch,
   url: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1],
+  refreshOAuthAccessToken?: () => Promise<string | null>,
 ): Promise<Response> {
   const edgeRetryDelaysMs = [2_000, 10_000, 30_000] as const;
-  for (let retry = 0; ; retry += 1) {
-    const response = await fetchFn(url, init);
+  let authorizationReplayUsed = false;
+  let edgeRetry = 0;
+  let requestInit = init;
+  for (;;) {
+    const response = await fetchFn(url, requestInit);
     if (response.ok) return response;
     const detail = await response
       .clone()
       .text()
       .catch(() => '');
     if (
-      edgeRetryDelaysMs[retry] !== undefined &&
-      isReplayableOpenAiCodexRequest(url, init) &&
+      response.status === 401 &&
+      !authorizationReplayUsed &&
+      refreshOAuthAccessToken &&
+      isReplayableOpenAiCodexRequest(url, requestInit)
+    ) {
+      authorizationReplayUsed = true;
+      const accessToken = await refreshOAuthAccessToken().catch(() => null);
+      if (accessToken) {
+        await response.body?.cancel().catch(() => undefined);
+        requestInit = withRefreshedOAuthAuthorization(requestInit, accessToken, true);
+        continue;
+      }
+    }
+    if (
+      edgeRetryDelaysMs[edgeRetry] !== undefined &&
+      isReplayableOpenAiCodexRequest(url, requestInit) &&
       isTransientOpenAiCodexEdgeRejection(response, detail)
     ) {
       await abortableDelay(
-        openAiCodexRetryAfterMs(response, edgeRetryDelaysMs[retry] ?? 30_000),
-        effectiveOpenAiCodexRequestSignal(url, init),
+        openAiCodexRetryAfterMs(response, edgeRetryDelaysMs[edgeRetry] ?? 30_000),
+        effectiveOpenAiCodexRequestSignal(url, requestInit),
       );
+      edgeRetry += 1;
       continue;
     }
     throw new Error(formatOpenAiCodexHttpError(response.status, detail));
   }
+}
+
+function buildOAuth401ReplayFetch(
+  fetchFn: typeof fetch,
+  refreshOAuthAccessToken: () => Promise<string | null>,
+): typeof fetch {
+  return async (url, init) => {
+    const response = await fetchFn(url, init);
+    if (response.status !== 401 || !isReplayableOpenAiCodexRequest(url, init)) return response;
+    const accessToken = await refreshOAuthAccessToken().catch(() => null);
+    if (!accessToken) return response;
+    await response.body?.cancel().catch(() => undefined);
+    return fetchFn(url, withRefreshedOAuthAuthorization(init, accessToken, false));
+  };
+}
+
+function withRefreshedOAuthAuthorization(
+  init: RequestInit | undefined,
+  accessToken: string,
+  codex: boolean,
+): RequestInit {
+  const headers = new Headers(init?.headers);
+  headers.set('Authorization', `Bearer ${accessToken}`);
+  if (codex) {
+    headers.delete('ChatGPT-Account-Id');
+    for (const [name, value] of Object.entries(openAiCodexHeaders(accessToken))) {
+      headers.set(name, value);
+    }
+  }
+  return { ...init, headers };
 }
 
 function isReplayableOpenAiCodexRequest(

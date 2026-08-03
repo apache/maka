@@ -20,9 +20,11 @@ export const CODEX_OAUTH_CONFIG = {
   tokenUrl: 'https://auth.openai.com/oauth/token',
   callbackHost: '127.0.0.1',
   callbackPort: 1455,
+  fallbackCallbackPort: 1457,
   redirectUri: 'http://localhost:1455/auth/callback',
-  scopes: 'openid profile email offline_access',
+  scopes: 'openid profile email offline_access api.connectors.read api.connectors.invoke',
   extras: [
+    ['id_token_add_organizations', 'true'],
     ['codex_cli_simplified_flow', 'true'],
     ['originator', 'codex_cli_rs'],
   ] as ReadonlyArray<[string, string]>,

@@ -4,6 +4,7 @@ import {
   buildSubscriptionModelFetch,
   isOAuthSubscriptionProvider,
   openAiCodexHeaders,
+  refreshAndPersistOAuthSubscriptionTokens,
   resolveAndPersistOAuthSubscriptionTokens,
   type OAuthSubscriptionCredentialStore,
   type OAuthSubscriptionProvider,
@@ -47,6 +48,7 @@ interface CredentialState {
   raw: string;
   uncertainCommit?: CredentialCommitCandidate;
   resolving?: Promise<OAuthSubscriptionTokens>;
+  resolvingForceRefresh?: boolean;
 }
 
 interface CredentialCommitCandidate {
@@ -59,6 +61,7 @@ export interface HostOAuthExecutionBinding {
   readonly providerType: OAuthSubscriptionProvider;
   readonly connectionSlug: string;
   resolve(): Promise<OAuthSubscriptionTokens>;
+  forceRefresh?(): Promise<OAuthSubscriptionTokens>;
 }
 
 /** Host-local generation binding over the canonical Runtime Policy OAuth credential. */
@@ -133,44 +136,59 @@ export class HostOAuthExecutionAuthority {
       providerType: bound.providerType,
       connectionSlug: bound.connectionSlug,
       resolve: () => this.#resolve(bound, input.createRefreshTransport),
+      forceRefresh: () => this.#resolve(bound, input.createRefreshTransport, true),
     });
   }
 
   async #resolve(
     state: CredentialState,
     createRefreshTransport: () => ProxiedFetchTransport,
+    forceRefresh = false,
   ): Promise<OAuthSubscriptionTokens> {
     this.#assertCurrent(state);
-    if (state.resolving) return state.resolving;
-    const resolving = this.#resolveUnshared(state, createRefreshTransport);
+    if (state.resolving) {
+      if (!forceRefresh || state.resolvingForceRefresh) return state.resolving;
+      await state.resolving;
+      this.#assertCurrent(state);
+    }
+    if (state.resolving) return this.#resolve(state, createRefreshTransport, forceRefresh);
+    const resolving = this.#resolveUnshared(state, createRefreshTransport, forceRefresh);
     state.resolving = resolving;
+    state.resolvingForceRefresh = forceRefresh;
     try {
       return await resolving;
     } finally {
-      if (state.resolving === resolving) state.resolving = undefined;
+      if (state.resolving === resolving) {
+        state.resolving = undefined;
+        state.resolvingForceRefresh = undefined;
+      }
     }
   }
 
   async #resolveUnshared(
     state: CredentialState,
     createRefreshTransport: () => ProxiedFetchTransport,
+    forceRefresh: boolean,
   ): Promise<OAuthSubscriptionTokens> {
     await this.#reconcileUncertainCommit(state);
     const credentialStore = this.#credentialStore(state);
     let refreshTransport: ProxiedFetchTransport | undefined;
     let result;
     try {
-      result = await resolveAndPersistOAuthSubscriptionTokens({
+      const refreshInput = {
         providerType: state.providerType,
         slug: state.connectionSlug,
         credentialStore,
         now: this.#now,
-        fetchFn: async (url, init) => {
+        fetchFn: async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
           if (!this.#isCurrent(state)) throw new OAuthCredentialSupersededError();
           refreshTransport ??= createRefreshTransport();
           return refreshTransport.fetch(url, init);
         },
-      });
+      } as const;
+      result = forceRefresh
+        ? await refreshAndPersistOAuthSubscriptionTokens(refreshInput)
+        : await resolveAndPersistOAuthSubscriptionTokens(refreshInput);
     } finally {
       await refreshTransport?.close();
     }
@@ -317,14 +335,21 @@ export function createHostOAuthModelFetch(input: {
   return async (url, init) => {
     const signal = effectiveRequestSignal(url, init);
     signal?.throwIfAborted();
-    const tokens = await waitForCaller(input.binding.resolve(), signal);
+    let tokens = await waitForCaller(input.binding.resolve(), signal);
     signal?.throwIfAborted();
-    const authenticatedFetch = authenticatedOAuthFetch(input, tokens);
+    const authenticatedFetch = authenticatedOAuthFetch(input, () => tokens);
     const subscriptionFetch = buildSubscriptionModelFetch({
       connection: input.connection,
       sessionId: input.sessionId,
       modelId: input.modelId,
       fetchFn: authenticatedFetch,
+      ...(input.binding.forceRefresh &&
+      (input.binding.providerType === 'openai-codex' || input.binding.providerType === 'xai-oauth')
+        ? {
+            refreshOAuthAccessToken: async () =>
+              (tokens = await input.binding.forceRefresh!()).access_token,
+          }
+        : {}),
       ...(input.binding.providerType === 'claude-subscription'
         ? {
             claude: {
@@ -362,9 +387,10 @@ async function waitForCaller<T>(pending: Promise<T>, signal?: AbortSignal | null
 
 function authenticatedOAuthFetch(
   input: Pick<Parameters<typeof createHostOAuthModelFetch>[0], 'binding' | 'fetchFn'>,
-  tokens: OAuthSubscriptionTokens,
+  readTokens: () => OAuthSubscriptionTokens,
 ): typeof fetch {
   return async (url, init) => {
+    const tokens = readTokens();
     const headers = mergedHeaders(url, init?.headers);
     headers.delete('api-key');
     headers.delete('x-api-key');

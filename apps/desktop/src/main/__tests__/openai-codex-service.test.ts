@@ -24,9 +24,14 @@ describe('Codex subscription OAuth config (upstream openai-codex-auth pattern)',
     assert.equal(CODEX_OAUTH_CONFIG.authUrl, 'https://auth.openai.com/oauth/authorize');
     assert.equal(CODEX_OAUTH_CONFIG.tokenUrl, 'https://auth.openai.com/oauth/token');
     assert.equal(CODEX_OAUTH_CONFIG.redirectUri, 'http://localhost:1455/auth/callback');
-    assert.equal(CODEX_OAUTH_CONFIG.scopes, 'openid profile email offline_access');
+    assert.equal(
+      CODEX_OAUTH_CONFIG.scopes,
+      'openid profile email offline_access api.connectors.read api.connectors.invoke',
+    );
     assert.equal(CODEX_OAUTH_CONFIG.callbackPort, 1455);
+    assert.equal(CODEX_OAUTH_CONFIG.fallbackCallbackPort, 1457);
     const extrasMap = new Map(CODEX_OAUTH_CONFIG.extras);
+    assert.equal(extrasMap.get('id_token_add_organizations'), 'true');
     assert.equal(extrasMap.get('codex_cli_simplified_flow'), 'true');
     assert.equal(extrasMap.get('originator'), 'codex_cli_rs');
   });
@@ -51,6 +56,7 @@ describe('Codex subscription OAuth config (upstream openai-codex-auth pattern)',
     assert.equal(url.searchParams.get('code_challenge'), 'pinned-challenge');
     assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
     assert.equal(url.searchParams.get('state'), 'pinned-state');
+    assert.equal(url.searchParams.get('id_token_add_organizations'), 'true');
     assert.equal(url.searchParams.get('codex_cli_simplified_flow'), 'true');
     assert.equal(url.searchParams.get('originator'), 'codex_cli_rs');
   });

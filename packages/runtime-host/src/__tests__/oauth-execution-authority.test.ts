@@ -26,6 +26,7 @@ import {
 const CONNECTION_SLUG = 'host-oauth-execution';
 const MODEL_ID = 'gpt-5';
 const CLAUDE_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
+const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const FIXED_NOW = 1_785_600_000_000;
 
 test('one OAuth generation singleflights refresh and persists its lease with canonical CAS', async () => {
@@ -393,6 +394,101 @@ test('Codex request auth and account identity advance from the same token snapsh
   assert.equal(observed[1]?.get('authorization'), `Bearer ${codexAccessToken('account-v2')}`);
   assert.equal(observed[1]?.get('ChatGPT-Account-Id'), 'account-v2');
   assert.equal(observed[1]?.get('session_id'), 'codex-session');
+});
+
+test('a Codex 401 force-refreshes canonical credentials and replays once', async () => {
+  const staleAccess = codexAccessToken('account-v1');
+  const refreshedAccess = codexAccessToken('account-v2');
+  await withSeededOAuthCredential('openai-codex', currentTokens(staleAccess), async (fixture) => {
+    let refreshCalls = 0;
+    const modelHeaders: Headers[] = [];
+    const providerFetch: typeof fetch = async (url, init) => {
+      if (String(url) === CODEX_TOKEN_ENDPOINT) {
+        refreshCalls += 1;
+        return Response.json({
+          access_token: refreshedAccess,
+          refresh_token: 'rotated-refresh',
+          expires_in: 3_600,
+        });
+      }
+      modelHeaders.push(new Headers(init?.headers));
+      return modelHeaders.length === 1
+        ? Response.json({ error: 'token invalidated' }, { status: 401 })
+        : Response.json({ ok: true });
+    };
+    const binding = fixture.authority.bind({
+      providerType: 'openai-codex',
+      connectionSlug: CONNECTION_SLUG,
+      material: fixture.material,
+      createRefreshTransport: () => testRefreshTransport(providerFetch),
+    });
+    const initialTokens = await binding.resolve();
+    const modelFetch = createHostOAuthModelFetch({
+      binding,
+      initialTokens,
+      connection: {
+        slug: CONNECTION_SLUG,
+        providerType: 'openai-codex',
+        defaultModel: 'gpt-5.6-sol',
+      },
+      sessionId: 'codex-401-session',
+      modelId: 'gpt-5.6-sol',
+      claudeDeviceId: 'unused',
+      fetchFn: providerFetch,
+    });
+
+    const response = await modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      body: JSON.stringify({ input: [] }),
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(refreshCalls, 1);
+    assert.equal(modelHeaders.length, 2);
+    assert.equal(modelHeaders[1]?.get('authorization'), `Bearer ${refreshedAccess}`);
+    assert.equal(modelHeaders[1]?.get('ChatGPT-Account-Id'), 'account-v2');
+    const canonical = JSON.parse(
+      (await readMaterial(fixture.stores)).secret,
+    ) as OAuthSubscriptionTokens;
+    assert.equal(canonical.access_token, refreshedAccess);
+    assert.equal(canonical.refresh_token, 'rotated-refresh');
+  });
+});
+
+test('concurrent forced refreshes join one Host credential refresh', async () => {
+  const staleAccess = codexAccessToken('account-v1');
+  const refreshedAccess = codexAccessToken('account-v2');
+  await withSeededOAuthCredential('openai-codex', currentTokens(staleAccess), async (fixture) => {
+    const refreshResponse = deferred<Response>();
+    let refreshCalls = 0;
+    const binding = fixture.authority.bind({
+      providerType: 'openai-codex',
+      connectionSlug: CONNECTION_SLUG,
+      material: fixture.material,
+      createRefreshTransport: () =>
+        testRefreshTransport(async (url) => {
+          assert.equal(String(url), CODEX_TOKEN_ENDPOINT);
+          refreshCalls += 1;
+          return refreshResponse.promise;
+        }),
+    });
+
+    const first = binding.forceRefresh!();
+    await new Promise((resolve) => setImmediate(resolve));
+    const second = binding.forceRefresh!();
+    refreshResponse.resolve(
+      Response.json({
+        access_token: refreshedAccess,
+        refresh_token: 'rotated-refresh',
+        expires_in: 3_600,
+      }),
+    );
+
+    const [firstTokens, secondTokens] = await Promise.all([first, second]);
+    assert.equal(refreshCalls, 1);
+    assert.equal(firstTokens.access_token, refreshedAccess);
+    assert.equal(secondTokens.access_token, refreshedAccess);
+  });
 });
 
 interface CopilotCredentialFixture {

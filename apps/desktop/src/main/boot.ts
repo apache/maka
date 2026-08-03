@@ -305,6 +305,8 @@ const xaiOAuth = new XaiOAuthService({
 });
 const buildSubscriptionModelFetch = createSubscriptionModelFetch({
   claudeSubscription,
+  openAiCodex,
+  xaiOAuth,
 });
 const oauthModelConnections = createOAuthModelConnectionsMainService({
   connectionStore,

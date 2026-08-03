@@ -59,6 +59,40 @@ describe('OAuth login authorization', () => {
     assert.equal(result.presentation, 'loopback');
     assert.equal(url.searchParams.get('redirect_uri'), redirectUri);
     assert.equal(url.searchParams.get('originator'), 'codex_cli_rs');
+    assert.equal(url.searchParams.get('id_token_add_organizations'), 'true');
+    assert.equal(
+      url.searchParams.get('scope'),
+      'openid profile email offline_access api.connectors.read api.connectors.invoke',
+    );
+  });
+
+  it('pins xAI PKCE authorization to the allowlisted Grok CLI redirect', () => {
+    const redirectUri = 'http://127.0.0.1:56121/callback';
+    const result = buildOAuthLoginAuthorization({
+      provider: 'xai-oauth',
+      verifier: VERIFIER,
+      state: STATE,
+      redirectUri,
+    });
+    const url = new URL(result.authorizationUrl);
+    assert.equal(result.presentation, 'loopback');
+    assert.equal(url.origin + url.pathname, 'https://auth.x.ai/oauth2/authorize');
+    assert.equal(url.searchParams.get('redirect_uri'), redirectUri);
+    assert.equal(url.searchParams.get('plan'), 'generic');
+    assert.equal(
+      url.searchParams.get('scope'),
+      'openid profile email offline_access grok-cli:access api:access',
+    );
+    assert.throws(
+      () =>
+        buildOAuthLoginAuthorization({
+          provider: 'xai-oauth',
+          verifier: VERIFIER,
+          state: STATE,
+          redirectUri: 'http://127.0.0.1:56122/callback',
+        }),
+      (error) => assertEndpointError(error, 'invalid_response'),
+    );
   });
 
   it('rejects low-entropy state and non-loopback Codex redirects', () => {

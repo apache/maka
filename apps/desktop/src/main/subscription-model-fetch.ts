@@ -4,9 +4,13 @@ import {
   type ClaudeSubscriptionService,
   isCloakEnabled,
 } from './oauth/claude-subscription-service.js';
+import type { OpenAiCodexService } from './oauth/openai-codex-service.js';
+import type { XaiOAuthService } from './oauth/xai-oauth-service.js';
 
 interface SubscriptionModelFetchDeps {
   claudeSubscription: ClaudeSubscriptionService;
+  openAiCodex: OpenAiCodexService;
+  xaiOAuth: XaiOAuthService;
 }
 
 export function createSubscriptionModelFetch(deps: SubscriptionModelFetchDeps) {
@@ -21,8 +25,24 @@ export function createSubscriptionModelFetch(deps: SubscriptionModelFetchDeps) {
     if (
       connection.providerType === 'openai-codex'
       || connection.providerType === 'github-copilot'
+      || connection.providerType === 'xai-oauth'
     ) {
-      return buildRuntimeSubscriptionModelFetch({ connection, sessionId, modelId });
+      return buildRuntimeSubscriptionModelFetch({
+        connection,
+        sessionId,
+        modelId,
+        ...(connection.providerType === 'openai-codex'
+          ? {
+              refreshOAuthAccessToken: () =>
+                deps.openAiCodex.getAccessTokenInternal({ forceRefresh: true }),
+            }
+          : connection.providerType === 'xai-oauth'
+            ? {
+                refreshOAuthAccessToken: () =>
+                  deps.xaiOAuth.getAccessTokenInternal({ forceRefresh: true }),
+              }
+            : {}),
+      });
     }
     return undefined;
   };

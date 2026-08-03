@@ -8,6 +8,7 @@
 import { strict as assert } from 'node:assert';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import type { SubscriptionActionResult } from '@maka/core';
@@ -454,6 +455,67 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     } finally {
       service.cancelAuthorization(authRequestId);
     }
+  });
+
+  it('Codex login falls back to the official allowlisted port when 1455 is occupied', async () => {
+    const occupyingServer = createServer();
+    await new Promise<void>((resolve, reject) => {
+      occupyingServer.once('error', reject);
+      occupyingServer.listen(1455, '127.0.0.1', resolve);
+    });
+    let service: OpenAiCodexService | undefined;
+    try {
+      let openedUrl: string | undefined;
+      service = new OpenAiCodexService({
+        userDataDir: await makeUserDataDir(),
+        openExternal: async (url) => {
+          openedUrl = url;
+        },
+        credentialStore: createMemoryCredentialStore().store,
+        fetchFn: async () => assert.fail('opening authorization must not exchange tokens'),
+      });
+      const authorization = await service.getAuthorizationUrl();
+      assert.ok('authRequestId' in authorization);
+      await service.openAuthorizationUrl(authorization.authRequestId);
+      const redirectUri = new URL(openedUrl!).searchParams.get('redirect_uri');
+      assert.equal(redirectUri, 'http://localhost:1457/auth/callback');
+      assert.equal(new URL(redirectUri!).port, '1457');
+      service.cancelAuthorization(authorization.authRequestId);
+    } finally {
+      service?.cancelAuthorization();
+      await new Promise<void>((resolve, reject) =>
+        occupyingServer.close((error) => error ? reject(error) : resolve()),
+      );
+    }
+  });
+
+  it('Codex login does not revive an authorization cancelled while the browser opens', async () => {
+    let finishOpening!: () => void;
+    const opening = new Promise<void>((resolve) => {
+      finishOpening = resolve;
+    });
+    const service = new OpenAiCodexService({
+      userDataDir: await makeUserDataDir(),
+      openExternal: async () => opening,
+      credentialStore: createMemoryCredentialStore().store,
+      fetchFn: async () => assert.fail('a cancelled login must not exchange tokens'),
+    });
+    const authorization = await service.getAuthorizationUrl();
+    assert.ok('authRequestId' in authorization);
+
+    const opened = service.openAuthorizationUrl(authorization.authRequestId);
+    service.cancelAuthorization(authorization.authRequestId);
+    finishOpening();
+
+    assert.deepEqual(await opened, {
+      ok: false,
+      reason: 'authorization_cancelled',
+      message: 'Codex 授权已取消。',
+    });
+    assert.deepEqual(await service.getAccountState(), {
+      provider: 'openai-codex',
+      runtimeState: 'not_logged_in',
+    });
   });
 
   it('Cursor login writes the successful poll result to its shared credential', async () => {

@@ -126,6 +126,75 @@ describe('subscription model fetch', () => {
     assert.equal(body.text.verbosity, 'medium');
   });
 
+  test('force-refreshes one Codex 401 without consuming the independent edge retry budget', async () => {
+    const observed: Headers[] = [];
+    let attempts = 0;
+    let refreshes = 0;
+    const refreshedToken = codexToken('account-refreshed');
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-401',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async (_url, init) => {
+        attempts += 1;
+        observed.push(new Headers(init?.headers));
+        if (attempts === 1) {
+          return Response.json({ error: { message: 'token invalidated' } }, { status: 401 });
+        }
+        if (attempts <= 4) {
+          return new Response('<!doctype html><title>Request rejected</title>', {
+            status: 403,
+            headers: { 'retry-after': '0' },
+          });
+        }
+        return Response.json({ ok: true });
+      },
+      refreshOAuthAccessToken: async () => {
+        refreshes += 1;
+        return refreshedToken;
+      },
+    });
+
+    assert.ok(modelFetch);
+    const response = await modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${codexToken('account-stale')}`,
+        'ChatGPT-Account-Id': 'account-stale',
+      },
+      body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(attempts, 5);
+    assert.equal(refreshes, 1);
+    assert.equal(observed[1]?.get('authorization'), `Bearer ${refreshedToken}`);
+    assert.equal(observed[1]?.get('ChatGPT-Account-Id'), 'account-refreshed');
+  });
+
+  test('does not replay a Codex 401 when forced refresh fails', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-401',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        return Response.json({ error: 'invalid token' }, { status: 401 });
+      },
+      refreshOAuthAccessToken: async () => null,
+    });
+    assert.ok(modelFetch);
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [] }),
+      }),
+      /HTTP 401/,
+    );
+    assert.equal(attempts, 1);
+  });
+
   test('retries a transient HTML 403 from the Codex edge', async () => {
     let attempts = 0;
     const modelFetch = buildSubscriptionModelFetch({
@@ -514,6 +583,31 @@ describe('subscription model fetch', () => {
     assert.equal(observed[2]?.headers.get('copilot-vision-request'), 'true');
     assert.equal(observed[2]?.body, responsesBody);
   });
+
+  test('force-refreshes and replays one xAI OAuth request on 401', async () => {
+    const observed: Headers[] = [];
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: xaiOAuthConnection(),
+      sessionId: 'xai-session',
+      modelId: 'grok-4.5',
+      fetchFn: async (_url, init) => {
+        observed.push(new Headers(init?.headers));
+        return observed.length === 1
+          ? Response.json({ error: 'invalid token' }, { status: 401 })
+          : Response.json({ ok: true });
+      },
+      refreshOAuthAccessToken: async () => 'xai-access-refreshed',
+    });
+    assert.ok(modelFetch);
+    const response = await modelFetch('https://api.x.ai/v1/responses', {
+      method: 'POST',
+      headers: { authorization: 'Bearer xai-access-stale' },
+      body: JSON.stringify({ input: [] }),
+    });
+    assert.equal(response.ok, true);
+    assert.equal(observed.length, 2);
+    assert.equal(observed[1]?.get('authorization'), 'Bearer xai-access-refreshed');
+  });
 });
 
 function eventLoopTurn(): Promise<void> {
@@ -555,4 +649,26 @@ function githubCopilotConnection(): LlmConnection {
     createdAt: 1,
     updatedAt: 1,
   };
+}
+
+function xaiOAuthConnection(): LlmConnection {
+  return {
+    slug: 'xai-oauth',
+    name: 'xAI OAuth',
+    providerType: 'xai-oauth',
+    defaultModel: 'grok-4.5',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function codexToken(accountId: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url');
+  const payload = Buffer.from(
+    JSON.stringify({
+      'https://api.openai.com/auth': { chatgpt_account_id: accountId },
+    }),
+  ).toString('base64url');
+  return `${header}.${payload}.signature`;
 }
