@@ -629,7 +629,7 @@ const providerRegistry = {
     signupUrl: 'https://console.anthropic.com/settings/keys',
     readyOrder: 1,
     catalogOrder: 9,
-    recommendedOrder: 2,
+    recommendedOrder: 3,
   },
   'kimi-coding-plan': {
     label: 'Kimi Coding Plan',
@@ -764,7 +764,7 @@ const providerRegistry = {
     signupUrl: 'https://platform.openai.com/api-keys',
     readyOrder: 2,
     catalogOrder: 10,
-    recommendedOrder: 3,
+    recommendedOrder: 2,
   },
   google: {
     label: 'Google Gemini',
@@ -895,7 +895,6 @@ const providerRegistry = {
     modelsDevId: siliconflow.id,
     readyOrder: 9,
     catalogOrder: 8,
-    recommendedOrder: 1,
   },
   vercel: {
     label: vercel.name,
@@ -1199,6 +1198,7 @@ const providerRegistry = {
     modelsDevId: opencodeGo.id,
     readyOrder: 38,
     catalogOrder: 38,
+    recommendedOrder: 1,
   },
   'opencode-free': {
     label: 'OpenCode Free',

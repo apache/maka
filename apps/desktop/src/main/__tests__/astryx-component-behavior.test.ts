@@ -107,6 +107,22 @@ describe('Astryx component behavior', () => {
     assert.equal(markup.match(/<li[^>]*data-provider=/g)?.length, 4);
   });
 
+  it('shows the product-recommended providers first during onboarding', async () => {
+    const { LocaleProvider, OnboardingHero } = await rendererComponents;
+    const markup = renderWithLocale(LocaleProvider, createElement(OnboardingHero, {
+      state: { kind: 'needs_connection' },
+      onOpenSettings: () => undefined,
+      onOpenConnectionDetail: () => undefined,
+      onAddProvider: () => undefined,
+      onBrowseProviders: () => undefined,
+    }));
+
+    const providerTypes = [...markup.matchAll(/<li[^>]*data-provider="([^"]+)"/g)].map(
+      (match) => match[1],
+    );
+    assert.deepEqual(providerTypes, ['opencode-free', 'opencode-go', 'openai', 'anthropic']);
+  });
+
   it('shows the current connection recovery without a progress checklist', async () => {
     const { LocaleProvider, OnboardingHero } = await rendererComponents;
     const markup = renderWithLocale(LocaleProvider, createElement(OnboardingHero, {
