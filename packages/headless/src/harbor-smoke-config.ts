@@ -13,6 +13,9 @@
  * profiles keep producing byte-equivalent configs.
  */
 
+import { lenientPositiveIntEnv } from './headless-run-env.js';
+import { agentPhaseTimeoutSec } from './maka-settlement.js';
+
 export interface SmokeManifestDataset {
   name?: string;
   version?: string;
@@ -174,6 +177,18 @@ export function buildSmokeJobConfig(input: {
 
   if (overrides.maxSteps) agentEnv.MAKA_MAX_STEPS = overrides.maxSteps;
   if (overrides.agentTimeoutSec) agentEnv.MAKA_CELL_TIMEOUT_SEC = overrides.agentTimeoutSec;
+  // Without this, Harbor bounds the agent phase at the task-native budget times
+  // the profile multiplier, which the maka profiles tune to equal the cell
+  // budget exactly — so the cell would be killed at the instant it stops calling
+  // the model and starts writing, and the trial would read as an infra failure
+  // instead of a scored result. Same rule the fixed-prompt runner applies.
+  const smokeModelBudgetSec = profileName.startsWith('maka-')
+    ? lenientPositiveIntEnv(agentEnv.MAKA_CELL_TIMEOUT_SEC)
+    : undefined;
+  const smokeAgentPhaseSec =
+    smokeModelBudgetSec === undefined
+      ? null
+      : agentPhaseTimeoutSec('maka', agentEnv, smokeModelBudgetSec);
   if (profileName.startsWith('maka-') && !agentEnv.MAKA_BENCHMARK_DATASET) {
     agentEnv.MAKA_BENCHMARK_DATASET = overrides.benchmarkDataset || datasetName;
   }
@@ -234,7 +249,7 @@ export function buildSmokeJobConfig(input: {
         skills: [],
         override_timeout_sec: null,
         override_setup_timeout_sec: null,
-        max_timeout_sec: null,
+        max_timeout_sec: smokeAgentPhaseSec,
         extra_allowed_hosts: [],
         kwargs: agent.kwargs ?? {},
         env: agentEnv,

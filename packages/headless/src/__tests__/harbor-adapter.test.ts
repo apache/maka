@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { decodeRuntimeEvent } from '@maka/core';
 import { HARBOR_CELL_CONTEXT_ENV_KEYS } from '../harbor-cell.js';
-import { isBudgetExhaustedTrialException } from '../harbor-task-runner.js';
+import { buildHarborJobConfig, isBudgetExhaustedTrialException } from '../harbor-task-runner.js';
+import { agentPhaseTimeoutSec, MAKA_SETTLEMENT_GRACE_SEC } from '../maka-settlement.js';
 import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '../system-prompts.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
@@ -433,6 +434,69 @@ describe('Harbor adapter contract', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  test('the runners and the Python adapter agree on one model budget', (t: TestContext) => {
+    // The bug this pins: MAKA_CELL_TIMEOUT_SEC used to mean the model budget on
+    // one path and budget-plus-window on another, so TypeScript had to predict
+    // which Python branch would run. Nothing caught a wrong prediction because
+    // each side only ever asserted its own arithmetic. Feed what the runners
+    // actually emit into the adapter that actually consumes it.
+    const budgetSec = 1800;
+    const harborConfig = buildHarborJobConfig(
+      {
+        runId: 'run-1',
+        roundId: 'round-1',
+        task: { id: 'task-1', path: '/tasks/task-1', metadata: { agentTimeoutSec: budgetSec } },
+        config: {
+          id: 'cfg',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+        },
+        systemPrompt: 'PROMPT\n',
+      },
+      {
+        makaRepoPath: '/repo',
+        jobsDir: '/jobs/x',
+        jobName: 'trial',
+        model: 'deepseek/deepseek-v4-flash',
+      },
+    );
+    const harborAgent = (
+      harborConfig.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
+    )[0]!;
+    assert.equal(harborAgent.env.MAKA_CELL_TIMEOUT_SEC, String(budgetSec));
+
+    // Pier reaches the same two numbers through its own deadline model.
+    const pierEnv = {
+      MAKA_HARBOR_MODE: 'task-run',
+      MAKA_CELL_TIMEOUT_SEC: String(budgetSec),
+      MAKA_CELL_SETTLEMENT_GRACE_SEC: String(MAKA_SETTLEMENT_GRACE_SEC),
+    };
+    const pierPhaseSec = agentPhaseTimeoutSec('maka', pierEnv, budgetSec);
+
+    const result = spawnSync(
+      'python3',
+      [
+        '-c',
+        pythonBudgetContractScript(repoRoot, [
+          {
+            label: 'harbor',
+            env: harborAgent.env,
+            agentPhaseSec: harborAgent.max_timeout_sec!,
+          },
+          { label: 'pier', env: pierEnv, agentPhaseSec: pierPhaseSec },
+        ]),
+      ],
+      { cwd: repoRoot, encoding: 'utf8' },
+    );
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /budget contract ok/);
   });
 
   test('maka_agent.py hydrates a valid cell output without Harbor installed', (t: TestContext) => {
@@ -1243,6 +1307,147 @@ finally:
     if process.poll() is None:
         process.kill()
         process.wait()
+`;
+}
+
+/** Harbor is not installed in this repo, so every Python contract script
+ * stubs the parts of its package tree the adapters import. Shared so a stub
+ * that drifts cannot make one script pass while another fails to import. */
+function pythonHarborStubPrelude(root: string): string {
+  return String.raw`
+import json
+import os
+import sys
+import tempfile
+import time
+import types
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+
+def module(name):
+    mod = types.ModuleType(name)
+    sys.modules[name] = mod
+    return mod
+
+module("harbor")
+module("harbor.agents")
+module("harbor.agents.installed")
+base_mod = module("harbor.agents.installed.base")
+
+class BaseInstalledAgent:
+    def __init__(self, logs_dir, *args, **kwargs):
+        self.logs_dir = Path(logs_dir)
+        self._extra_env = kwargs.get("extra_env") or {}
+        self._resolved_flags = {}
+        self.model_name = None
+        self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
+
+    def _get_env(self, key):
+        if key in self._extra_env:
+            return self._extra_env[key]
+        return os.environ.get(key)
+
+    def version(self):
+        return "test"
+
+    async def exec_as_root(self, environment, command, **kwargs):
+        environment.root_commands.append(command)
+        return types.SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+    async def exec_as_agent(self, environment, command, **kwargs):
+        environment.agent_commands.append(command)
+        return types.SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+class CliFlag:
+    def __init__(self, *args, **kwargs):
+        pass
+
+def with_prompt_template(fn):
+    return fn
+
+base_mod.BaseInstalledAgent = BaseInstalledAgent
+base_mod.CliFlag = CliFlag
+base_mod.with_prompt_template = with_prompt_template
+
+module("harbor.environments")
+env_mod = module("harbor.environments.base")
+class BaseEnvironment:
+    pass
+env_mod.BaseEnvironment = BaseEnvironment
+
+module("harbor.models")
+module("harbor.models.agent")
+context_mod = module("harbor.models.agent.context")
+class AgentContext:
+    def __init__(self):
+        self.metadata = {}
+context_mod.AgentContext = AgentContext
+
+traj_mod = module("harbor.models.trajectories")
+class Agent:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+class FinalMetrics:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+class Step:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+class Trajectory:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+    def to_json_dict(self):
+        return {"ok": True}
+traj_mod.Agent = Agent
+traj_mod.FinalMetrics = FinalMetrics
+traj_mod.Step = Step
+traj_mod.Trajectory = Trajectory
+
+module("harbor.models.trial")
+paths_mod = module("harbor.models.trial.paths")
+class EnvironmentPaths:
+    agent_dir = Path("/logs/agent")
+paths_mod.EnvironmentPaths = EnvironmentPaths
+
+module("harbor.utils")
+utils_mod = module("harbor.utils.trajectory_utils")
+utils_mod.format_trajectory_json = lambda value: json.dumps(value)
+
+`;
+}
+
+function pythonBudgetContractScript(
+  root: string,
+  cases: Array<{ label: string; env: Record<string, string>; agentPhaseSec: number }>,
+): string {
+  return `${pythonHarborStubPrelude(root)}
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+from maka_agent import MakaAgent
+
+cases = json.loads(${JSON.stringify(JSON.stringify(cases))})
+with tempfile.TemporaryDirectory() as tmp:
+    for case in cases:
+        env = case["env"]
+        agent = MakaAgent(Path(tmp), extra_env=env)
+        budget_sec = int(env["MAKA_CELL_TIMEOUT_SEC"])
+        # The number that has to be identical across arms: the runner hands the
+        # adapter a model budget, and the adapter must read back exactly that.
+        assert agent._model_budget_ms() == budget_sec * 1000, (case["label"], agent._model_budget_ms())
+        # The deadline the executor was told to kill at must be the same deadline
+        # the adapter derives for itself. If these two drift, the cell is either
+        # killed while settling or given time the other arms never got.
+        assert agent._agent_phase_timeout_sec() == case["agentPhaseSec"], (
+            case["label"],
+            agent._agent_phase_timeout_sec(),
+            case["agentPhaseSec"],
+        )
+        phase_env = dict(env)
+        phase_env.setdefault("MAKA_AGENT_PHASE_TIMEOUT_SEC", str(case["agentPhaseSec"]))
+        remaining = agent._task_run_hard_timeout_sec(phase_env, time.monotonic())
+        assert abs(remaining - float(case["agentPhaseSec"])) < 1.0, (case["label"], remaining)
+
+print("budget contract ok")
 `;
 }
 
@@ -2162,8 +2367,29 @@ with tempfile.TemporaryDirectory() as tmp:
             "MAKA_ECONOMY_TASK_MODE": "true",
         })
         host_process_environment = types.SimpleNamespace(root_commands=[], agent_commands=[])
-        asyncio.run(host_process_agent._run_host_cell(host_process_environment, Path(tmp) / "instruction.txt"))
+        host_cell_walls = []
+        original_wait_for = asyncio.wait_for
+
+        async def recording_wait_for(awaitable, timeout=None, **wait_kwargs):
+            host_cell_walls.append(timeout)
+            return await original_wait_for(awaitable, timeout=timeout, **wait_kwargs)
+
+        asyncio.wait_for = recording_wait_for
+        try:
+            asyncio.run(host_process_agent._run_host_cell(host_process_environment, Path(tmp) / "instruction.txt"))
+        finally:
+            asyncio.wait_for = original_wait_for
         host_cell_process = dict(captured_host_process)
+        # This is the path Terminal-Bench actually takes. The cell stops calling
+        # the model at MAKA_CELL_SOFT_TIMEOUT_MS and then writes its artifacts,
+        # so the wall that kills it has to be a settlement window later — killing
+        # at the model budget would compress that window to nothing.
+        assert host_cell_walls == [930], host_cell_walls
+        assert (
+            host_cell_walls[0] * 1000
+            - int(host_cell_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"])
+            == 30_000
+        ), (host_cell_walls, host_cell_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"])
 
         task_run_agent = MakaAgent(Path(tmp), extra_env={
             "MAKA_BACKEND": "fake",
@@ -3994,7 +4220,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # Exactly one writer: a second command could append settings that re-enable the tools.
     assert len(managed_calls) == 1, install_environment.calls
     managed_command, _, managed_as_root = managed_calls[0]
-    # Only the root-owned managed scope binds a session that cannot be overridden.
+    # Only the managed scope binds nested invocations rather than one process.
     assert managed_as_root is True, managed_calls
     assert redirect_target(managed_command) == "/etc/claude-code/managed-settings.json", managed_command
     # A swallowed failure would leave the tools enabled while install reports

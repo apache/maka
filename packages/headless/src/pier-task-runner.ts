@@ -30,10 +30,10 @@ import {
   resolveNativeTrialTimeoutMs,
   withProviderTelemetryArtifact,
   incompleteTerminalProviderRequest,
-  MAKA_SETTLEMENT_GRACE_SEC,
   modelForOpenCode,
   type HarborTaskPricing,
 } from './harbor-task-runner.js';
+import { agentPhaseTimeoutSec, settlementGraceSec } from './maka-settlement.js';
 import {
   harnessAgentImportPath,
   providerProxyClientAuthMode,
@@ -296,8 +296,8 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
       taskAgentTimeoutSec !== undefined
         ? {
             modelBudgetSec: taskAgentTimeoutSec,
-            settlementGraceSec: MAKA_SETTLEMENT_GRACE_SEC,
-            phaseTimeoutSec: taskAgentTimeoutSec + MAKA_SETTLEMENT_GRACE_SEC,
+            settlementGraceSec: settlementGraceSec(agent, attemptAgentEnv),
+            phaseTimeoutSec: agentPhaseTimeoutSec(agent, attemptAgentEnv, taskAgentTimeoutSec),
           }
         : undefined;
     const jobsDir = join(

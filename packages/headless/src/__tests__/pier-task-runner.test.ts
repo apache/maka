@@ -302,7 +302,6 @@ test('createPierTaskRunner gives Maka a controller-owned settlement tail', async
         agentEnv: {
           MAKA_HARBOR_MODE: 'task-run',
           MAKA_CELL_TIMEOUT_SEC: '1',
-          MAKA_CELL_SETTLEMENT_GRACE_SEC: '1',
           MAKA_AGENT_PHASE_TIMEOUT_SEC: '1',
         },
         runPier: fakePier({ reward: 0, captured }),
@@ -333,7 +332,46 @@ test('createPierTaskRunner gives Maka a controller-owned settlement tail', async
     assert.ok(request.args.includes('MAKA_CELL_TIMEOUT_SEC=5400'));
     assert.ok(request.args.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=30'));
     assert.ok(request.args.includes('MAKA_AGENT_PHASE_TIMEOUT_SEC=5430'));
+
     assert.equal(request.timeoutMs, 13_890_000);
+  });
+});
+
+test('createPierTaskRunner honours an operator-widened settlement window', async () => {
+  // Same contract as the Harbor runner. Pier used to overwrite the operator's
+  // value with the constant, so widening the window worked on one executor and
+  // silently did nothing on the other.
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        makaNodeToolchainPath: '/toolchains/maka-node',
+        agentEnv: {
+          MAKA_HARBOR_MODE: 'task-run',
+          MAKA_CELL_SETTLEMENT_GRACE_SEC: '90',
+        },
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: { agentTimeoutSec: 5_400, buildTimeoutSec: 1_800, verifierTimeoutSec: 1_800 },
+        },
+      }),
+    );
+
+    const request = captured.request;
+    assert.ok(request);
+    assert.ok(request.args.includes('MAKA_CELL_TIMEOUT_SEC=5400'));
+    assert.ok(request.args.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=90'));
+    assert.ok(request.args.includes('MAKA_AGENT_PHASE_TIMEOUT_SEC=5490'));
   });
 });
 

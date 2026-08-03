@@ -485,13 +485,10 @@ class MakaAgent(BaseInstalledAgent):
             if env is not None
             else self._get_env("MAKA_CELL_SETTLEMENT_GRACE_SEC")
         )
-        if not raw:
-            return self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
-        return value if value > 0 else self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
+        # Same accepted syntax as MAKA_CELL_TIMEOUT_SEC so both sides of the
+        # boundary reject exactly the same strings; bare int() would take
+        # "+60"/"060"/" 60 ", which the TypeScript producer never emits.
+        return _positive_int_literal(raw) or self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
 
     def _model_budget_ms(self, env: dict[str, str] | None = None) -> int:
         """Wall-clock the cell may spend calling the model, in milliseconds.
@@ -504,7 +501,7 @@ class MakaAgent(BaseInstalledAgent):
         budget_ms = self._cell_timeout_sec(env) * 1000
         if budget_ms > _MAX_NODE_TIMER_MS:
             raise RuntimeError(
-                "MAKA_CELL_SOFT_TIMEOUT_MS exceeds the Node timer limit "
+                "MAKA_CELL_TIMEOUT_SEC exceeds the Node timer limit "
                 f"of {_MAX_NODE_TIMER_MS}ms"
             )
         return budget_ms
@@ -1885,6 +1882,8 @@ def _runner_env_summary(env: dict[str, str]) -> dict[str, str]:
         "MAKA_CELL_TIMEOUT_SEC",
         "MAKA_CELL_SOFT_TIMEOUT_MS",
         "MAKA_CELL_SETTLEMENT_GRACE_SEC",
+        "MAKA_AGENT_PHASE_TIMEOUT_SEC",
+        "MAKA_CELL_DEADLINE_AT_MS",
     ]
     return {key: env[key] for key in allowed_keys if key in env}
 

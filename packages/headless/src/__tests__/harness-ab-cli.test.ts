@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { TERMINAL_BENCH_2_1_TASK_IDS } from '../harness-ab-manifest.js';
+import { buildHarborJobConfig } from '../harbor-task-runner.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1455,6 +1456,34 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
   // the same window on top of the task-native model budget, so both manifests
   // must record it.
   assert.equal(tbenchManifest.metadata.benchmark.agentSettlementGraceSec, 30);
+  // Anchor the declared window to what the runner actually hands out. Recording
+  // the constant alone would stay green even if every arm got no window at all.
+  const anchorBudgetSec = 1800;
+  const anchorAgent = (
+    buildHarborJobConfig(
+      {
+        runId: 'run-1',
+        roundId: 'round-1',
+        task: {
+          id: 'task-1',
+          path: '/tasks/task-1',
+          metadata: { agentTimeoutSec: anchorBudgetSec },
+        },
+        config: {
+          id: 'cfg',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+        },
+        systemPrompt: 'PROMPT\n',
+      },
+      { makaRepoPath: '/repo', jobsDir: '/jobs/x', jobName: 'trial', model: 'deepseek/v4' },
+    ).agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
+  )[0]!;
+  assert.equal(
+    anchorAgent.max_timeout_sec! - Number(anchorAgent.env.MAKA_CELL_TIMEOUT_SEC),
+    tbenchManifest.metadata.benchmark.agentSettlementGraceSec,
+  );
   // Every arm is handed MAKA_SYSTEM_PROMPT but only the Maka cell applies it, so
   // the arm identity has to say so in a readable field rather than only inside a
   // hash. Asserting both arms keeps the asymmetry itself under test.

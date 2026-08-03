@@ -76,24 +76,13 @@ import {
   CLAUDE_CODE_TOOLCHAIN_SPEC,
 } from './claude-code-toolchain.js';
 
+import { agentPhaseTimeoutSec, settlementGraceSec } from './maka-settlement.js';
+
+export { MAKA_SETTLEMENT_GRACE_SEC } from './maka-settlement.js';
+
 const execFileAsync = promisify(execFile);
 
 const CONTAINER_MAKA_REPO = '/opt/maka-agent';
-/** Wall-clock Maka's cell reserves to settle artifacts after it stops calling
- * the model. Shared with the Pier runner so both executors bound model time the
- * same way. */
-export const MAKA_SETTLEMENT_GRACE_SEC = 30;
-
-/** Seconds this arm spends settling after its model budget runs out. Only the
- * Maka cell has such a window; native CLIs run until Harbor cancels them. Both
- * the job config and the wall-clock watchdog resolve it here so the watchdog can
- * never bound a shorter lifecycle than the one the job config hands out. */
-function settlementGraceSec(adapter: string, agentEnv: Record<string, string> | undefined): number {
-  if (adapter !== 'maka') return 0;
-  return (
-    lenientPositiveIntEnv(agentEnv?.MAKA_CELL_SETTLEMENT_GRACE_SEC) ?? MAKA_SETTLEMENT_GRACE_SEC
-  );
-}
 const TRIAL_CELL_OUTPUT = 'agent/maka-cell-output.json';
 const TRIAL_EXECUTION_IDENTITY = 'agent/maka-cell-execution-identity.json';
 const TRIAL_USAGE_CHECKPOINT = 'agent/maka-cell-usage-checkpoint.json';
@@ -672,7 +661,11 @@ function resolveNativeHarborTimeoutMs(
   );
   return resolveNativeTrialTimeoutMs({
     // The agent phase Harbor is given is the model budget plus Maka's
-    // settlement window, so the watchdog has to bound that same sum.
+    // settlement window, so the watchdog bounds that same sum. It reads the
+    // runner-level env only, while the job config also sees per-attempt env —
+    // the shared setup/teardown grace is far wider than any window an operator
+    // would set, so the watchdog still outlasts the phase either way.
+    // Resolved through the shared rule so the two cannot drift in kind.
     nativePhasesSec:
       agentTimeoutSec +
       settlementGraceSec(options.agent ?? 'maka', options.agentEnv) +
@@ -1116,9 +1109,9 @@ export function buildHarborJobConfig(
   // at — is one window longer. Native CLIs have nothing to settle and get the
   // budget itself, which is how every arm ends up with the same model time.
   const graceSec = settlementGraceSec(adapter, agentEnv);
-  let agentPhaseTimeoutSec: number | undefined;
+  let agentPhaseSec: number | undefined;
   if (modelBudgetSec !== undefined) {
-    agentPhaseTimeoutSec = modelBudgetSec + graceSec;
+    agentPhaseSec = agentPhaseTimeoutSec(adapter, agentEnv, modelBudgetSec);
     agentEnv.MAKA_CELL_TIMEOUT_SEC = String(modelBudgetSec);
     if (adapter === 'maka') {
       agentEnv.MAKA_CELL_SETTLEMENT_GRACE_SEC = String(graceSec);
@@ -1176,7 +1169,7 @@ export function buildHarborJobConfig(
                 }
               : {},
         env: agentEnv,
-        ...(agentPhaseTimeoutSec !== undefined ? { max_timeout_sec: agentPhaseTimeoutSec } : {}),
+        ...(agentPhaseSec !== undefined ? { max_timeout_sec: agentPhaseSec } : {}),
       },
     ],
     datasets: [],

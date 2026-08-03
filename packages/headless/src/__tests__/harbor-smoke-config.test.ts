@@ -8,6 +8,7 @@ import {
   resolveSmokeRunTargets,
   type SmokeManifest,
 } from '../harbor-smoke-config.js';
+import { MAKA_SETTLEMENT_GRACE_SEC } from '../maka-settlement.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 
@@ -66,6 +67,39 @@ describe('harbor smoke config generation', () => {
     assert.equal(env.MAKA_CELL_TIMEOUT_SEC, '7200');
     assert.equal(env.MAKA_HARBOR_AGENT_TIMEOUT_SEC, undefined);
     assert.equal(config.agent_timeout_multiplier, 8);
+  });
+
+  test('the smoke agent phase outlasts the cell budget by the settlement window', async () => {
+    // The maka profiles tune agent_timeout_multiplier so the task-native budget
+    // times the multiplier equals the cell budget. Leaving max_timeout_sec null
+    // therefore makes Harbor kill the cell at the exact moment it stops calling
+    // the model and starts writing, turning a scored result into an infra failure.
+    const manifest = await loadManifest();
+    for (const profileName of ['maka-basic', 'maka-heavy']) {
+      const { config } = buildSmokeJobConfig({
+        manifest,
+        profileName,
+        overrides: { jobName: 'job' },
+      });
+      const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
+      const env = agent.env as Record<string, string>;
+      assert.equal(
+        agent.max_timeout_sec,
+        Number(env.MAKA_CELL_TIMEOUT_SEC) + MAKA_SETTLEMENT_GRACE_SEC,
+        profileName,
+      );
+    }
+  });
+
+  test('a non-maka smoke profile gets no settlement window', async () => {
+    const manifest = await loadManifest();
+    const { config } = buildSmokeJobConfig({
+      manifest,
+      profileName: 'oracle',
+      overrides: { jobName: 'job' },
+    });
+    const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
+    assert.equal(agent.max_timeout_sec, null);
   });
 
   test('--model override targets MAKA_MODEL for maka and model_name for non-maka', async () => {

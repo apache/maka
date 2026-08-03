@@ -82,6 +82,12 @@ class MakaClaudeCodeAgent(ClaudeCode):
         # policy cannot stop it. Managed settings bind nested `claude` invocations
         # too; --disallowedTools would only bind the one process the harness starts.
         # bypassPermissions still honors explicit deny rules.
+        #
+        # This removes the tools from what the model is offered; it is not an
+        # adversarial control. CLAUDE_CODE_MANAGED_SETTINGS_PATH redirects this
+        # file, and many task images run the agent as root, so a model that set
+        # out to defeat it could. The benchmark claim is that no arm reaches the
+        # web by accident, not that the sandbox is escape-proof.
         settings = json.dumps(_MANAGED_SETTINGS, sort_keys=True)
         await self.exec_as_root(
             environment,
