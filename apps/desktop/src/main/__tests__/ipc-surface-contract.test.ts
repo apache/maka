@@ -7,6 +7,16 @@ const desktopRoot = process.cwd().endsWith(join('apps', 'desktop'))
   ? process.cwd()
   : join(process.cwd(), 'apps', 'desktop');
 
+// Temporary Main-only Usage/Pricing routes; coordinate Host replacement in #2010 and #2015.
+const RETAINED_MAIN_ONLY_CHANNELS = new Set([
+  'usage:summary',
+  'usage:buckets',
+  'usage:logs',
+  'usage:pricing:list',
+  'usage:pricing:put',
+  'usage:pricing:reset',
+]);
+
 async function findTypeScriptFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = await Promise.all(
@@ -27,7 +37,7 @@ function extractChannels(source: string, pattern: RegExp): Set<string> {
 }
 
 describe('IPC surface contract', () => {
-  it('keeps main handlers and preload invocations in parity', async () => {
+  it('keeps preload parity except for the retained Usage authority handlers', async () => {
     const mainFiles = await findTypeScriptFiles(join(desktopRoot, 'src', 'main'));
     const [mainSources, preloadSource] = await Promise.all([
       Promise.all(mainFiles.map((file) => readFile(file, 'utf8'))),
@@ -42,6 +52,22 @@ describe('IPC surface contract', () => {
       /ipcRenderer\.invoke\(\s*['"]([^'"]+)['"]/g,
     );
 
-    assert.deepEqual([...mainChannels].sort(), [...preloadChannels].sort());
+    const retainedMainChannels = new Set(
+      [...mainChannels].filter((channel) => RETAINED_MAIN_ONLY_CHANNELS.has(channel)),
+    );
+    const exposedMainChannels = new Set(
+      [...mainChannels].filter((channel) => !RETAINED_MAIN_ONLY_CHANNELS.has(channel)),
+    );
+
+    assert.deepEqual(
+      [...retainedMainChannels].sort(),
+      [...RETAINED_MAIN_ONLY_CHANNELS].sort(),
+      'every approved Main-only Usage handler must remain registered',
+    );
+    assert.deepEqual(
+      [...exposedMainChannels].sort(),
+      [...preloadChannels].sort(),
+      'all other Main handlers and preload invocations must stay in exact parity',
+    );
   });
 });

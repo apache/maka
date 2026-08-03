@@ -79,14 +79,6 @@ import type {
   DeepResearchRun,
   LocalMemoryEntryPreview,
 } from '@maka/core';
-import type {
-  PricingConfig,
-  UsageBucket,
-  UsageGroupBy,
-  UsageLogRow,
-  UsageQuery,
-  UsageSummaryV2,
-} from '@maka/core/usage-stats/types';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
@@ -586,14 +578,6 @@ export interface MakaBridge {
   inspector: {
     /** Read-only per-session causal trace (#1625). */
     trace(sessionId: string): Promise<Result<SessionTrace>>;
-  };
-  usage: {
-    summary(query: UsageQuery): Promise<Result<UsageSummaryV2>>;
-    buckets(query: UsageQuery & { groupBy: UsageGroupBy }): Promise<Result<UsageBucket[]>>;
-    logs(query: UsageQuery & { offset?: number; limit?: number }): Promise<Result<{ rows: UsageLogRow[]; total: number }>>;
-    listPricing(): Promise<Result<PricingConfig[]>>;
-    putPricing(pricing: PricingConfig): Promise<Result<PricingConfig>>;
-    resetPricing(modelKey: string): Promise<Result<void>>;
   };
   webSearch: {
     query(input: {
