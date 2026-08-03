@@ -15,9 +15,27 @@ test('command palette follows the Astryx keyboard journey and dismisses', async 
 
   await openPalette();
   await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveClass(/maka-command-palette/);
+  await expect(dialog).toHaveCSS('border-radius', '16px');
+  await expect(dialog).not.toHaveCSS('box-shadow', 'none');
+  const backdrop = await dialog.evaluate((element) => {
+    const style = getComputedStyle(element, '::backdrop');
+    return {
+      backgroundColor: style.backgroundColor,
+      backdropFilter: style.backdropFilter,
+    };
+  });
+  expect(backdrop.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+  expect(backdrop.backdropFilter).toContain('blur(8px)');
   const input = dialog.getByRole('combobox', {
     name: '命令面板搜索',
   });
+  await expect(input).toHaveClass(/maka-command-palette-search/);
+  await expect(input).toHaveCSS('appearance', 'none');
+  await expect(input).toHaveCSS('border-style', 'none');
+  await expect(input).toHaveCSS('outline-style', 'none');
+  await expect(input).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(input).toHaveCSS('box-shadow', 'none');
   await expect(
     dialog.getByRole('listbox', { name: '命令面板结果' }),
   ).toBeVisible();
