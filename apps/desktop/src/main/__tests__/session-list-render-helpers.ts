@@ -24,6 +24,7 @@ export function makeSessionSummary(overrides: Partial<SessionSummary> = {}): Ses
 export function renderSessionListPanel(options: {
   session?: Partial<SessionSummary>;
   sessions?: SessionSummary[];
+  activeId?: string;
   rowActions?: Parameters<typeof SessionListPanel>[0]['rowActions'];
   groups?: Parameters<typeof SessionListPanel>[0]['groups'];
   projectActions?: Parameters<typeof SessionListPanel>[0]['projectActions'];
@@ -47,6 +48,7 @@ export function renderSessionListPanel(options: {
     children: createElement(SessionListPanel, {
       selection: { section: 'sessions', filter: 'chats' },
       sessions: options.sessions ?? [makeSessionSummary(options.session)],
+      activeId: options.activeId,
       groups: options.groups,
       projectActions: options.projectActions,
       worktreeSessionIds: options.worktreeSessionIds,

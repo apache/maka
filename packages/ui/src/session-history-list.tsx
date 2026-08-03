@@ -1,6 +1,7 @@
 import {
   memo,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type Dispatch,
@@ -167,6 +168,10 @@ function SessionListGroups(props: {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const activeAncestorIds = useMemo(
+    () => resolveActiveSessionAncestorIds(props.activeId, props.childSessionsByParentId),
+    [props.activeId, props.childSessionsByParentId],
+  );
 
   function commitProjectRename(project: ProjectRecord, name: string) {
     setEditingProjectId(null);
@@ -178,10 +183,6 @@ function SessionListGroups(props: {
 
   function renderSessionTree(session: SessionSummary, nested: boolean): ReactNode {
     const childSessions = props.childSessionsByParentId?.get(session.id);
-    const childNodes =
-      childSessions && childSessions.length > 0
-        ? childSessions.map((child) => renderSessionTree(child, true))
-        : undefined;
     return (
       <SessionNavRow
         key={session.id}
@@ -195,9 +196,10 @@ function SessionListGroups(props: {
         onSelectSession={props.onSelectSession}
         actions={props.rowActions}
         setEditingSessionId={setEditingSessionId}
-      >
-        {childNodes}
-      </SessionNavRow>
+        childSessions={childSessions}
+        expandedForActiveDescendant={activeAncestorIds.has(session.id)}
+        renderChildSession={(child) => renderSessionTree(child, true)}
+      />
     );
   }
 
@@ -340,16 +342,20 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
   setEditingSessionId: Dispatch<SetStateAction<string | null>>;
-  children?: ReactNode;
+  childSessions?: readonly SessionSummary[];
+  expandedForActiveDescendant: boolean;
+  renderChildSession(session: SessionSummary): ReactNode;
 }) {
   const locale = useUiLocale();
   const metaTitle = formatSessionMeta(props.session, locale);
-  const childArray = props.children
-    ? Array.isArray(props.children)
-      ? props.children
-      : [props.children]
-    : [];
-  const hasChildren = childArray.some(Boolean);
+  const hasChildren = Boolean(props.childSessions?.length);
+  const [userCollapsed, setUserCollapsed] = useState<boolean | null>(null);
+  // A tree should not pay to mount every descendant before the user opens it.
+  // Keep the active session visible by forcing only its ancestor chain open;
+  // the active node itself may stay collapsed when it owns a large Swarm.
+  const isCollapsed = props.expandedForActiveDescendant
+    ? false
+    : (userCollapsed ?? true);
 
   if (props.editing) {
     return (
@@ -383,7 +389,14 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         icon={props.nested ? Bot : undefined}
         size="md"
         isSelected={props.active}
-        collapsible={hasChildren ? { defaultIsCollapsed: false } : undefined}
+        collapsible={
+          hasChildren
+            ? {
+                isCollapsed,
+                onCollapsedChange: setUserCollapsed,
+              }
+            : undefined
+        }
         onClick={(event) => {
           if (event.detail > 1 && props.actions) {
             props.setEditingSessionId(props.session.id);
@@ -403,11 +416,42 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           />
         }
       >
-        {hasChildren ? props.children : undefined}
+        {hasChildren ? (
+          isCollapsed ? (
+            // Astryx derives disclosure chrome from `Boolean(children)`.
+            // A zero-layout sentinel preserves the chevron without mounting
+            // the expensive descendant tree while this node is collapsed.
+            <span className="maka-session-lazy-children-sentinel" aria-hidden="true" />
+          ) : (
+            props.childSessions?.map(props.renderChildSession)
+          )
+        ) : undefined}
       </SideNavItem>
     </div>
   );
 });
+
+function resolveActiveSessionAncestorIds(
+  activeId: string | undefined,
+  childSessionsByParentId: ReadonlyMap<string, readonly SessionSummary[]> | undefined,
+): ReadonlySet<string> {
+  const ancestors = new Set<string>();
+  if (!activeId || !childSessionsByParentId) return ancestors;
+
+  const parentByChildId = new Map<string, string>();
+  for (const [parentId, children] of childSessionsByParentId) {
+    for (const child of children) parentByChildId.set(child.id, parentId);
+  }
+
+  const visited = new Set<string>([activeId]);
+  let parentId = parentByChildId.get(activeId);
+  while (parentId && !visited.has(parentId)) {
+    ancestors.add(parentId);
+    visited.add(parentId);
+    parentId = parentByChildId.get(parentId);
+  }
+  return ancestors;
+}
 
 function SessionRenameRow(props: {
   session: SessionSummary;

@@ -218,6 +218,12 @@
   -webkit-app-region: no-drag;
 }
 
+/* SideNavItem needs a truthy child to retain its disclosure control. Collapsed
+ * session trees provide this sentinel instead of mounting every Swarm child. */
+.maka-session-lazy-children-sentinel {
+  display: none;
+}
+
 /*
  * Dim only this row's SideNavItem. Child combinators stop before [role=group]
  * nests, so a stale parent never mutes healthy subagent rows underneath.
