@@ -96,6 +96,26 @@ export function openAiAdapterApiProtocol(
  * metadata entry) resolves to false,
  * keeping the send path fail-closed for text-only models.
  */
+/**
+ * Anthropic model families whose every member reads images.
+ *
+ * The generated table is a snapshot of models.dev, so a Claude released after
+ * that snapshot is simply absent from it — `lookupModelMetadata('anthropic',
+ * 'claude-opus-5')` returns `{}` today. Absent used to resolve to "no vision",
+ * which is the wrong default for this provider: every Claude in these families
+ * accepts image input, and the fail-closed rule was written for text-only
+ * models, not for models nobody has listed yet.
+ *
+ * The two mistakes are not symmetrical. Sending an image to a Claude that
+ * turned out not to read it costs one turn and produces a message. Withholding
+ * it silently drops the user's attachment and downgrades an image tool result
+ * to a sentence, with nothing on screen to explain why, until someone
+ * regenerates the table.
+ *
+ * A connection that reports `vision` still wins over this, in both directions.
+ */
+const VISION_BY_DEFAULT = /^claude-(?:opus|sonnet|haiku|fable)\b/;
+
 export function resolveModelVisionSupport(
   providerType: ProviderType,
   models: readonly ModelInfo[] | undefined,
@@ -105,7 +125,11 @@ export function resolveModelVisionSupport(
   if (stored?.capabilities?.vision !== undefined) {
     return stored.capabilities.vision === true;
   }
-  return lookupModelMetadata(providerType, modelId).capabilities?.vision === true;
+  const metadata = lookupModelMetadata(providerType, modelId);
+  if (metadata.capabilities?.vision !== undefined) {
+    return metadata.capabilities.vision === true;
+  }
+  return providerType === 'anthropic' && VISION_BY_DEFAULT.test(modelId.trim());
 }
 
 export function curatedCatalogFallbackModelsForProvider(

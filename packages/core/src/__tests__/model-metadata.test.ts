@@ -8,6 +8,24 @@ import {
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '../llm-connections.js';
 
 describe('model-metadata vision capability', () => {
+  it('treats a Claude newer than the generated snapshot as able to read images', () => {
+    // The generated table is a snapshot of models.dev, so a Claude released
+    // after it is absent from the table rather than listed as text-only.
+    // Resolving absent to "no vision" silently drops the user's attachment and
+    // turns an image tool result into a sentence about the model.
+    assert.deepEqual(lookupModelMetadata('anthropic', 'claude-opus-5'), {});
+    assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-5'), true);
+    assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-fable-1'), true);
+  });
+
+  it('does not guess for other providers, and yields to what a connection reports', () => {
+    assert.equal(resolveModelVisionSupport('openai', undefined, 'some-unlisted-model'), false);
+    // A connection that declares the capability wins over the default, in both
+    // directions.
+    const declared: ModelInfo[] = [{ id: 'claude-opus-5', capabilities: { vision: false } }];
+    assert.equal(resolveModelVisionSupport('anthropic', declared, 'claude-opus-5'), false);
+  });
+
   it('publishes the Kimi K3 Coding Plan limits and sole supported effort', () => {
     assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3'), {
       displayName: 'Kimi K3',
