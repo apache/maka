@@ -4,92 +4,37 @@
 }
 
 .maka-mcp-workspace {
-  width: min(100%, 900px);
+  width: min(100%, 960px);
   min-height: 0;
   margin-inline: auto;
   display: grid;
-  grid-template-rows: auto auto auto;
   align-self: start;
   align-content: start;
   gap: var(--space-4);
 }
 
-.maka-mcp-hero {
-  min-height: 116px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-8);
-  padding: var(--space-5) var(--space-6);
-  overflow: hidden;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-}
-
-.maka-mcp-hero > div:first-child {
-  max-width: 520px;
+.maka-mcp-browser {
+  min-height: 0;
   display: grid;
-  gap: var(--space-2);
-}
-
-.maka-mcp-hero strong {
-  font: var(--maka-text-heading-3);
-  color: var(--foreground);
-}
-
-.maka-mcp-hero span {
-  font: var(--maka-text-body);
-  color: var(--foreground-secondary);
-}
-
-.maka-mcp-hero-signal {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
+  align-content: start;
   gap: var(--space-3);
 }
 
-/* Labeled pictogram cluster — the same "framed glyph + caption" tiles the
-   skills featured banner uses, so the two extension pages read as siblings.
-   Icons ride the @maka/ui library (Task A); no inline SVG here. */
-.maka-mcp-hero-signal span {
-  width: 76px;
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: var(--space-3) var(--space-2);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground-secondary);
-}
-
-.maka-mcp-hero-signal svg {
-  width: 22px;
-  height: 22px;
-}
-
-.maka-mcp-hero-signal small {
-  font: var(--maka-text-supporting);
-  color: var(--muted-foreground);
-}
-
-/* Tab row rhythm mirrors the skills page (.maka-skill-tabs-bar): an
-   underline TabsList on the left, the search field pinned to the right,
-   so the two extension pages read as siblings. */
-.maka-mcp-tabs-bar {
+.maka-mcp-command-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 
 .maka-mcp-search {
-  width: min(300px, 38vw);
+  width: min(320px, 38vw);
   margin-bottom: var(--space-2);
+  margin-inline-start: auto;
   flex: 0 0 auto;
+}
+
+.maka-mcp-tabs {
+  min-width: 0;
 }
 
 .maka-mcp-tab-panel {
@@ -99,35 +44,20 @@
 .maka-mcp-market-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   align-content: start;
   gap: var(--space-3);
   overflow: auto;
-  padding: var(--space-0-5);
 }
 
 .maka-mcp-market-card {
   min-width: 0;
-  min-height: 112px;
-  display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background);
-  transition: border-color var(--duration-base) var(--ease-out-strong), background-color var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-mcp-market-card:hover {
-  border-color: oklch(from var(--foreground) l c h / 0.16);
-  background: var(--background-elevated);
+  overflow: hidden;
 }
 
 .maka-mcp-market-icon {
-  width: 52px;
-  height: 52px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   border-radius: var(--radius-control);
@@ -175,68 +105,26 @@
   gap: var(--space-1);
 }
 
-.maka-mcp-market-copy strong {
-  font: var(--maka-text-heading-3);
-  color: var(--foreground);
-}
-
 .maka-mcp-market-copy small {
-  font: var(--maka-text-supporting);
+  font: inherit;
   color: var(--muted-foreground);
 }
 
-.maka-mcp-market-copy p {
-  font: var(--maka-text-body);
+.maka-mcp-market-copy > span {
   display: -webkit-box;
-  margin: 0;
   overflow: hidden;
-  color: var(--foreground-secondary);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
-/* #1879: was a bare 34px square — one of the off-ruler literals
-   (22/26/30/34/38) the control ruler exists to end, named as such in
-   maka-tokens.css. It is the install branch of a slot whose other branch
-   renders `<Button size="sm">` (mcp-page.tsx), i.e. an Astryx control at
-   `--size-element-sm` = 28px, so the row changed height depending on whether
-   a server was installed. `--h-control-md` resolves to that same
-   `--size-element-sm`: the two branches now agree by deriving from one token
-   rather than by two rules happening to match. Square icon control, so width
-   and height take the same tier. */
-.maka-mcp-install-button {
+.maka-mcp-install-icon {
   position: relative;
-  width: var(--h-control-md);
-  height: var(--h-control-md);
   display: grid;
-  flex: 0 0 auto;
   place-items: center;
-  padding: 0;
-  border: var(--border-width-hairline) solid transparent;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--foreground);
-  transition:
-    background-color var(--duration-quick) var(--ease-out-strong),
-    border-color var(--duration-quick) var(--ease-out-strong),
-    color var(--duration-quick) var(--ease-out-strong);
 }
 
-.maka-mcp-install-button:hover,
-.maka-mcp-install-button:focus-visible {
-  border-color: var(--border);
-  background: var(--state-hover-bg);
-}
-
-.maka-mcp-install-button:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-mcp-install-button svg {
+.maka-mcp-install-icon svg {
   position: absolute;
-  width: 19px;
-  height: 19px;
 }
 
 .maka-mcp-install-spinner { animation: maka-spin 1s linear infinite; }
@@ -245,41 +133,31 @@
   opacity: 0;
   color: var(--destructive-text);
   transform: scale(var(--scale-press));
-  transition:
-    opacity var(--duration-quick) var(--ease-out-strong),
-    transform var(--duration-quick) var(--ease-out-strong);
+  transition: transform var(--duration-quick) var(--ease-out-strong);
 }
 
-.maka-mcp-install-button[data-phase="installing"]:hover .maka-mcp-install-spinner,
-.maka-mcp-install-button[data-phase="installing"]:focus-visible .maka-mcp-install-spinner {
+.maka-mcp-install-button:hover .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-spinner,
+.maka-mcp-install-button:focus-visible .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-spinner {
   opacity: 0;
 }
 
-.maka-mcp-install-button[data-phase="installing"]:hover .maka-mcp-install-cancel,
-.maka-mcp-install-button[data-phase="installing"]:focus-visible .maka-mcp-install-cancel,
-.maka-mcp-install-button[data-phase="cancelling"] .maka-mcp-install-cancel {
+.maka-mcp-install-button:hover .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-cancel,
+.maka-mcp-install-button:focus-visible .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-cancel,
+.maka-mcp-install-icon[data-phase="cancelling"] .maka-mcp-install-cancel {
   opacity: 1;
   transform: scale(1);
 }
 
-.maka-mcp-install-button[data-phase="cancelling"] .maka-mcp-install-spinner {
+.maka-mcp-install-icon[data-phase="cancelling"] .maka-mcp-install-spinner {
   opacity: 0;
 }
 
-.maka-mcp-install-button:disabled {
-  cursor: wait;
-}
-
 .maka-mcp-server-list {
-  margin: 0;
-  padding: 0;
   min-height: 0;
   display: grid;
   align-self: start;
   align-content: start;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background);
+  overflow: hidden;
 }
 
 .maka-mcp-server-row {
@@ -332,9 +210,7 @@
 }
 
 .maka-mcp-server-error {
-  font: var(--maka-text-body);
   margin: 0 var(--space-3) var(--space-3);
-  color: var(--destructive-text);
 }
 
 .maka-mcp-server-details {
@@ -438,17 +314,36 @@
 }
 
 @media (max-width: 760px) {
-  .maka-mcp-hero-signal {
-    display: none;
+  .maka-mcp-command-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
   }
 
-  .maka-mcp-tabs-bar {
-    flex-wrap: wrap;
-    align-items: stretch;
+  .maka-mcp-tabs {
+    grid-column: 1 / -1;
   }
 
   .maka-mcp-search {
+    grid-column: 1;
+    grid-row: 2;
     width: 100%;
+    margin-inline-start: 0;
+  }
+
+  .maka-mcp-refresh {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .maka-mcp-server-summary {
+    flex-wrap: wrap;
+  }
+
+  .maka-mcp-server-summary > span:last-child {
+    width: 100%;
+    margin-inline-start: 0;
+    justify-content: flex-end;
   }
 
   .maka-mcp-server-controls {
@@ -462,15 +357,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .maka-mcp-market-card {
-    transition-duration: 0.01ms;
-  }
-
   .maka-mcp-install-spinner {
     animation: none;
   }
 
-  .maka-mcp-install-button,
   .maka-mcp-install-cancel {
     transition-duration: 0.01ms;
   }

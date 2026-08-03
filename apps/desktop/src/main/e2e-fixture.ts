@@ -136,10 +136,9 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-health',
   'module-skills',
   'composer-skill-invocation',
-  // MCP module page (SVG-governance + polish campaign): opens the 扩展 → MCP
-  // surface with a seeded mcp.json so the market grid, tab row, hero banner,
-  // and the installed server list all render for the alignment auditor
-  // (light).
+  // MCP module page: opens the 扩展 → MCP surface with a seeded mcp.json so
+  // the marketplace, command bar, and configured server list all render
+  // through the same production path for the alignment auditor (light).
   'module-mcp',
   'module-daily-review',
   // PR109b: workstation-statuses — seed one session per SessionStatus
@@ -567,7 +566,7 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       };
     case 'module-mcp':
       // Open the 扩展 → MCP module directly so the alignment audit reaches the
-      // real market grid, tab row, hero banner, and installed server list.
+      // real marketplace, command bar, and configured server list.
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'mcp', sidebarCollapsed: false };
     case 'module-daily-review':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'daily-review', sidebarCollapsed: false };

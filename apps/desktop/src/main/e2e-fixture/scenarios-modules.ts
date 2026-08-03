@@ -4,7 +4,7 @@ import { writeJson } from './seed-helpers.js';
 
 /**
  * MCP module fixture: seeds an mcp.json with a couple of installed servers so
- * the 已安装 tab and the server rows render for the alignment auditor.
+ * the configured tab and its server rows render for the alignment auditor.
  * Both are `enabled: false` so no real `npx` / HTTP connection is
  * attempted in e2e-fixture mode — the rows render deterministically in the
  * neutral 已停用 state (exception-only status: no color unless a real failure).

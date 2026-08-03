@@ -56,9 +56,49 @@
     "mcp": {
       "storyId": "product-module-hubs--extensions-mcp-configured",
       "productionHost": "AppShellDetailPanel > McpPage",
-      "state": "Healthy and failed installed MCP servers",
+      "state": "Connected and disabled configured MCP servers",
       "viewports": ["wide", "compact", "floor"],
       "colorSchemes": ["light", "dark"]
+    },
+    "mcpSetupRequired": {
+      "storyId": "product-module-hubs--extensions-mcp-setup-required",
+      "productionHost": "AppShellDetailPanel > McpPage",
+      "state": "No MCP servers configured and setup guidance visible",
+      "viewports": ["wide"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "compact": "The marketplace reference covers compact browser geometry.",
+        "floor": "The dedicated narrow reference covers the minimum-width setup geometry."
+      }
+    },
+    "mcpMarketplace": {
+      "storyId": "product-module-hubs--extensions-mcp-marketplace",
+      "productionHost": "AppShellDetailPanel > McpPage",
+      "state": "Marketplace with configured servers and no setup guidance",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
+    "mcpConnectionFailed": {
+      "storyId": "product-module-hubs--extensions-mcp-connection-failed",
+      "productionHost": "AppShellDetailPanel > McpPage",
+      "state": "Enabled remote server with actionable connection diagnostics",
+      "viewports": ["wide"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "compact": "The configured reference covers compact server-row geometry.",
+        "floor": "The dedicated narrow reference covers minimum-width server-row geometry."
+      }
+    },
+    "mcpNarrow": {
+      "storyId": "product-module-hubs--extensions-mcp-narrow",
+      "productionHost": "AppShellDetailPanel > McpPage",
+      "state": "Configured MCP servers at the minimum desktop width",
+      "viewports": ["floor"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "wide": "The configured reference covers the wide server list.",
+        "compact": "The configured reference covers the compact server list."
+      }
     },
     "planReminders": {
       "storyId": "product-module-hubs--scheduled-plan-reminders-configured",

@@ -40,6 +40,9 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   const mcp = page.getByRole('main', { name: '扩展' });
   await expect(mcp.getByRole('heading', { name: '扩展' })).toBeVisible();
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：MCP');
+  await expect(mcp.getByText('把 Maka 连接到你的工作环境')).toBeVisible();
+  await expect(mcp.locator('[data-maka-contract="module-actions"]').getByRole('button')).toHaveCount(1);
+  await expect(mcp.getByRole('button', { name: '刷新' })).toBeVisible();
 
   // Each hub restores its last module when the user returns from another
   // sidebar destination.
@@ -48,7 +51,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：MCP');
 
-  const dingtalkCard = mcp.getByRole('article').filter({ hasText: '钉钉' });
+  const dingtalkCard = mcp.locator('[data-maka-contract="mcp-market-card"]').filter({ hasText: '钉钉' });
   const installDingtalk = dingtalkCard.getByRole('button', { name: '安装 钉钉' });
   await installDingtalk.click();
   const cancelDingtalk = dingtalkCard.getByRole('button', { name: '取消安装 钉钉' });
@@ -84,6 +87,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await editor.getByRole('button', { name: '保存并连接' }).click();
 
   await expect(mcp.getByText('e2e-fixture', { exact: true })).toBeVisible();
+  await expect(mcp.getByText('把 Maka 连接到你的工作环境')).toHaveCount(0);
   await expect(mcp.getByText(/^本地 stdio ·/)).toBeVisible();
   await expect(mcp.getByText('4 个工具', { exact: true }).first()).toBeVisible();
   await mcp.getByText('4 个工具', { exact: true }).last().click();
@@ -121,7 +125,8 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
     return next.mcpServers['e2e-fixture'];
   }).toBeUndefined();
 
-  await mcp.getByRole('button', { name: 'JSON 导入' }).click();
+  await mcp.getByRole('button', { name: '添加 MCP' }).click();
+  await page.getByRole('dialog', { name: '添加 MCP' }).getByRole('radio', { name: '粘贴 JSON' }).click();
   const jsonEditor = page.getByRole('dialog', { name: '通过 JSON 导入' });
   await jsonEditor.getByLabel('JSON 配置').fill(JSON.stringify({
     mcpServers: {

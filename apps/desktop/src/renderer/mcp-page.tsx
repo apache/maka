@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
 import { isMcpStdioConfig } from '@maka/core/mcp';
-import { Collapsible, EmptyState, Item, Tab, TabList } from '@astryxdesign/core';
+import { Banner, Card, Collapsible, EmptyState, Item, Tab, TabList } from '@astryxdesign/core';
 import {
   Button,
   Badge,
@@ -318,56 +318,43 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             role="group"
             aria-label={copy.page.actionsAria}
           >
-            <Button
-              variant="secondary"
-              onClick={() => void reload()}
-              isDisabled={busy === 'load'}
-              icon={<RefreshCcw aria-hidden="true" />}
-              label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
-            />
-            <Button
-              variant="secondary"
-              onClick={() => openEditor({ mode: 'json', source: exampleJson() })}
-              icon={<FileCode aria-hidden="true" />}
-              label={copy.page.importJson}
-            />
             <Button variant="primary" onClick={() => openManual()} icon={<Plus aria-hidden="true" />} label={copy.page.add} />
           </div>
         }
       />
 
       <section className="maka-mcp-workspace" aria-label={copy.page.workspaceAria}>
-        <div className="maka-mcp-hero">
-          <div>
-            <strong>{copy.page.heroTitle}</strong>
-            <span>{copy.page.heroDescription}</span>
-          </div>
-          <div className="maka-mcp-hero-signal" aria-hidden="true">
-            <span><Terminal /><small>{copy.page.localStdio}</small></span>
-            <span><Plug /><small>{copy.page.connections}</small></span>
-            <span><Globe /><small>{copy.page.remoteHttp}</small></span>
-          </div>
-        </div>
+        {busy !== 'load' && entries.length === 0 ? (
+          <Banner
+            className="maka-mcp-setup"
+            status="info"
+            icon={<Plug aria-hidden="true" />}
+            title={copy.page.setupTitle}
+            description={copy.page.setupDescription}
+          />
+        ) : null}
 
-        <div>
-          <div className="maka-mcp-tabs-bar">
-            <TabList
-              value={activeTab}
-              onChange={(value) => setActiveTab(value as typeof activeTab)}
-              hasDivider
-              aria-label={copy.page.categoriesAria}
-            >
-              <Tab
-                value="market"
-                label={copy.page.market}
-                endContent={<span>{catalog.length}</span>}
-              />
-              <Tab
-                value="installed"
-                label={copy.page.installed}
-                endContent={<span>{entries.length}</span>}
-              />
-            </TabList>
+        <div className="maka-mcp-browser">
+          <div className="maka-mcp-command-bar">
+            <div className="maka-mcp-tabs">
+              <TabList
+                value={activeTab}
+                onChange={(value) => setActiveTab(value as typeof activeTab)}
+                hasDivider
+                aria-label={copy.page.categoriesAria}
+              >
+                <Tab
+                  value="market"
+                  label={copy.page.market}
+                  endContent={<span>{catalog.length}</span>}
+                />
+                <Tab
+                  value="installed"
+                  label={copy.page.installed}
+                  endContent={<span>{entries.length}</span>}
+                />
+              </TabList>
+            </div>
             <div className="maka-mcp-search">
               <TextInput
                 value={query}
@@ -379,12 +366,21 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 width="100%"
               />
             </div>
+            <IconButton
+              className="maka-mcp-refresh"
+              variant="ghost"
+              label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
+              tooltip={copy.page.refresh}
+              onClick={() => void reload()}
+              isDisabled={busy === 'load'}
+              icon={<RefreshCcw aria-hidden="true" />}
+            />
           </div>
 
           {activeTab === 'market' ? (
             <div className="maka-mcp-tab-panel">
               {marketEntries.length > 0 ? (
-              <div className="maka-mcp-market-grid">
+              <div className="maka-mcp-market-grid" role="list">
                 {marketEntries.map((entry) => (
                   <McpCatalogCard
                     key={entry.id}
@@ -426,7 +422,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 className="maka-mcp-empty"
               />
             ) : installedEntries.length > 0 ? (
-              <ul className="maka-mcp-server-list">
+              <Card className="maka-mcp-server-list" padding={0} role="list">
                 {installedEntries.map(([serverId, server]) => (
                   <McpServerRow
                     key={serverId}
@@ -441,7 +437,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                     onRemove={() => void remove(serverId)}
                   />
                 ))}
-              </ul>
+              </Card>
             ) : (
               <EmptyState
                 icon={<Search />}
@@ -515,48 +511,59 @@ function McpCatalogCard(props: {
   const installing = props.phase === 'installing';
   const cancelling = props.phase === 'cancelling';
   return (
-    <article
+    <Card
       className="maka-mcp-market-card"
+      minHeight={104}
+      padding={0}
+      role="listitem"
       data-maka-contract="mcp-market-card"
     >
-      <div
-        className="maka-mcp-market-icon"
-        data-brand={props.entry.id}
-        data-logo={hasMcpBrandMark(props.entry.id) ? 'true' : undefined}
-        aria-hidden="true"
-      >
-        <McpBrandMark entry={props.entry} />
-      </div>
-      <div className="maka-mcp-market-copy">
-        <strong>{props.entry.name}</strong>
-        <p>{props.entry.description}</p>
-        <small>
-          {props.entry.category}
-          {props.entry.platform === 'darwin' ? ` · ${props.copy.card.macOnly}` : ''}
-          {props.entry.setupLabel ? ` · ${props.entry.setupLabel}` : ''}
-        </small>
-      </div>
-      {props.installed ? (
-        <Button size="sm" variant="secondary" onClick={props.onManage} label={props.copy.card.manage} />
-      ) : (
-        <button
-          type="button"
-          className="maka-mcp-install-button"
-          data-phase={props.phase ?? 'idle'}
-          aria-label={cancelling ? props.copy.card.cancellingAria(props.entry.name) : installing ? props.copy.card.cancelAria(props.entry.name) : props.copy.card.installAria(props.entry.name)}
-          title={cancelling ? props.copy.card.cancelling : installing ? props.copy.card.cancel : props.copy.card.install}
-          onClick={installing ? props.onCancel : props.onInstall}
-          disabled={cancelling}
-        >
-          {props.phase ? (
-            <>
-              <Loader2 className="maka-mcp-install-spinner" aria-hidden="true" />
-              <X className="maka-mcp-install-cancel" aria-hidden="true" />
-            </>
-          ) : <Plus aria-hidden="true" />}
-        </button>
-      )}
-    </article>
+      <Item
+        className="maka-mcp-market-item"
+        align="start"
+        density="spacious"
+        startContent={(
+          <div
+            className="maka-mcp-market-icon"
+            data-brand={props.entry.id}
+            data-logo={hasMcpBrandMark(props.entry.id) ? 'true' : undefined}
+            aria-hidden="true"
+          >
+            <McpBrandMark entry={props.entry} />
+          </div>
+        )}
+        label={props.entry.name}
+        description={(
+          <span className="maka-mcp-market-copy">
+            <span>{props.entry.description}</span>
+            <small>
+              {props.entry.category}
+              {props.entry.platform === 'darwin' ? ` · ${props.copy.card.macOnly}` : ''}
+              {props.entry.setupLabel ? ` · ${props.entry.setupLabel}` : ''}
+            </small>
+          </span>
+        )}
+        endContent={props.installed ? (
+          <Button size="sm" variant="secondary" onClick={props.onManage} label={props.copy.card.manage} />
+        ) : (
+          <IconButton
+            className="maka-mcp-install-button"
+            size="sm"
+            variant="ghost"
+            label={cancelling ? props.copy.card.cancellingAria(props.entry.name) : installing ? props.copy.card.cancelAria(props.entry.name) : props.copy.card.installAria(props.entry.name)}
+            tooltip={cancelling ? props.copy.card.cancelling : installing ? props.copy.card.cancel : props.copy.card.install}
+            onClick={installing ? props.onCancel : props.onInstall}
+            isDisabled={cancelling}
+            icon={props.phase ? (
+              <span className="maka-mcp-install-icon" data-phase={props.phase}>
+                <Loader2 className="maka-mcp-install-spinner" aria-hidden="true" />
+                <X className="maka-mcp-install-cancel" aria-hidden="true" />
+              </span>
+            ) : <Plus aria-hidden="true" />}
+          />
+        )}
+      />
+    </Card>
   );
 }
 
@@ -577,10 +584,11 @@ function McpServerRow(props: {
     ? props.copy.page.localStdio
     : props.server.transport ?? 'auto';
   return (
-    <li className="maka-mcp-server-row">
+    <div className="maka-mcp-server-row" role="listitem">
       <Item
         className="maka-mcp-server-summary"
         align="start"
+        density="spacious"
         label={(
           <span className="maka-mcp-server-heading">
             <span>{props.serverId}</span>
@@ -620,7 +628,14 @@ function McpServerRow(props: {
           </div>
         )}
       />
-      {props.status?.error && <div className="maka-mcp-server-error" role="alert">{props.status.error}</div>}
+      {props.status?.error ? (
+        <Banner
+          className="maka-mcp-server-error"
+          status="error"
+          title={state.label}
+          description={props.status.error}
+        />
+      ) : null}
       {(props.status?.tools.length || props.status?.stderrTail?.length) ? (
         <Collapsible
           className="maka-mcp-server-details"
@@ -633,7 +648,7 @@ function McpServerRow(props: {
           {props.status?.stderrTail?.length ? <pre>{props.status.stderrTail.join('\n')}</pre> : null}
         </Collapsible>
       ) : null}
-    </li>
+    </div>
   );
 }
 
