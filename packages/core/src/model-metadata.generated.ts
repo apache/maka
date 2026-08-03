@@ -57,6 +57,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-haiku-4-5': {
       displayName: 'Claude Haiku 4.5 (latest)',
@@ -65,6 +67,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-haiku-4-5-20251001': {
       displayName: 'Claude Haiku 4.5',
@@ -73,6 +76,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-1': {
       displayName: 'Claude Opus 4.1 (latest)',
@@ -81,6 +85,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-1-20250805': {
       displayName: 'Claude Opus 4.1',
@@ -89,6 +94,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-5': {
       displayName: 'Claude Opus 4.5 (latest)',
@@ -97,6 +103,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-5-20251101': {
       displayName: 'Claude Opus 4.5',
@@ -105,6 +113,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-6': {
       displayName: 'Claude Opus 4.6',
@@ -113,6 +123,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-7': {
       displayName: 'Claude Opus 4.7',
@@ -121,6 +133,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-8': {
       displayName: 'Claude Opus 4.8',
@@ -129,6 +143,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'claude-opus-5': {
+      displayName: 'Claude Opus 5',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.anthropic.com/en/docs/about-claude/models',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4-5': {
       displayName: 'Claude Sonnet 4.5 (latest)',
@@ -137,6 +163,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4-5-20250929': {
       displayName: 'Claude Sonnet 4.5',
@@ -145,6 +172,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4-6': {
       displayName: 'Claude Sonnet 4.6',
@@ -153,6 +181,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-5': {
       displayName: 'Claude Sonnet 5',
@@ -161,6 +191,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   alibaba: {
@@ -171,6 +203,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen-flash': {
       displayName: 'Qwen Flash',
@@ -179,6 +212,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-max': {
       displayName: 'Qwen Max',
@@ -187,6 +222,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-mt-plus': {
       displayName: 'Qwen-MT Plus',
@@ -195,6 +231,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16384,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-mt-turbo': {
       displayName: 'Qwen-MT Turbo',
@@ -203,6 +240,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16384,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-omni-turbo': {
       displayName: 'Qwen-Omni Turbo',
@@ -211,6 +249,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 2048,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] },
     },
     'qwen-omni-turbo-realtime': {
       displayName: 'Qwen-Omni Turbo Realtime',
@@ -219,6 +258,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 2048,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] },
     },
     'qwen-plus': {
       displayName: 'Qwen Plus',
@@ -227,6 +267,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-plus-character-ja': {
       displayName: 'Qwen Plus Character (Japanese)',
@@ -235,6 +277,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 512,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-turbo': {
       displayName: 'Qwen Turbo',
@@ -243,6 +286,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-vl-max': {
       displayName: 'Qwen-VL Max',
@@ -251,6 +296,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen-vl-ocr': {
       displayName: 'Qwen-VL OCR',
@@ -259,6 +305,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 34096,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen-vl-plus': {
       displayName: 'Qwen-VL Plus',
@@ -267,6 +314,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen2-5-14b-instruct': {
       displayName: 'Qwen2.5 14B Instruct',
@@ -275,6 +323,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen2-5-32b-instruct': {
       displayName: 'Qwen2.5 32B Instruct',
@@ -283,6 +332,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen2-5-72b-instruct': {
       displayName: 'Qwen2.5 72B Instruct',
@@ -291,6 +341,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen2-5-7b-instruct': {
       displayName: 'Qwen2.5 7B Instruct',
@@ -299,6 +350,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen2-5-omni-7b': {
       displayName: 'Qwen2.5-Omni 7B',
@@ -307,6 +359,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 2048,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] },
     },
     'qwen2-5-vl-72b-instruct': {
       displayName: 'Qwen2.5-VL 72B Instruct',
@@ -315,6 +368,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen2-5-vl-7b-instruct': {
       displayName: 'Qwen2.5-VL 7B Instruct',
@@ -323,6 +377,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3-14b': {
       displayName: 'Qwen3 14B',
@@ -331,6 +386,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-235b-a22b': {
       displayName: 'Qwen3 235B-A22B',
@@ -339,6 +396,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-32b': {
       displayName: 'Qwen3 32B',
@@ -347,6 +406,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-8b': {
       displayName: 'Qwen3 8B',
@@ -355,6 +416,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-asr-flash': {
       displayName: 'Qwen3-ASR Flash',
@@ -363,6 +426,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 53248,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'qwen3-coder-30b-a3b-instruct': {
       displayName: 'Qwen3-Coder 30B-A3B Instruct',
@@ -371,6 +435,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-coder-480b-a35b-instruct': {
       displayName: 'Qwen3-Coder 480B-A35B Instruct',
@@ -379,6 +444,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-coder-flash': {
       displayName: 'Qwen3 Coder Flash',
@@ -387,6 +453,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-coder-plus': {
       displayName: 'Qwen3 Coder Plus',
@@ -395,6 +462,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-livetranslate-flash-realtime': {
       displayName: 'Qwen3-LiveTranslate Flash Realtime',
@@ -403,6 +471,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 53248,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] },
     },
     'qwen3-max': {
       displayName: 'Qwen3 Max',
@@ -411,6 +480,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-next-80b-a3b-instruct': {
       displayName: 'Qwen3-Next 80B-A3B Instruct',
@@ -419,6 +489,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-next-80b-a3b-thinking': {
       displayName: 'Qwen3-Next 80B-A3B (Thinking)',
@@ -427,6 +498,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-omni-flash': {
       displayName: 'Qwen3-Omni Flash',
@@ -435,6 +507,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] },
     },
     'qwen3-omni-flash-realtime': {
       displayName: 'Qwen3-Omni Flash Realtime',
@@ -443,6 +517,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] },
     },
     'qwen3-vl-235b-a22b': {
       displayName: 'Qwen3-VL 235B-A22B',
@@ -451,6 +526,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3-vl-30b-a3b': {
       displayName: 'Qwen3-VL 30B-A3B',
@@ -459,6 +535,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3-vl-plus': {
       displayName: 'Qwen3-VL Plus',
@@ -467,6 +544,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.5-122b-a10b': {
       displayName: 'Qwen3.5 122B-A10B',
@@ -475,6 +554,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'qwen3.5-27b': {
       displayName: 'Qwen3.5 27B',
@@ -483,6 +564,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'qwen3.5-35b-a3b': {
       displayName: 'Qwen3.5 35B-A3B',
@@ -491,6 +574,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'qwen3.5-397b-a17b': {
       displayName: 'Qwen3.5 397B-A17B',
@@ -499,6 +584,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'qwen3.5-plus': {
       displayName: 'Qwen3.5 Plus',
@@ -507,6 +594,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-27b': {
       displayName: 'Qwen3.6 27B',
@@ -515,6 +604,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'qwen3.6-35b-a3b': {
       displayName: 'Qwen3.6 35B-A3B',
@@ -523,6 +614,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'qwen3.6-flash': {
       displayName: 'Qwen3.6 Flash',
@@ -531,6 +624,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-max-preview': {
       displayName: 'Qwen3.6 Max Preview',
@@ -539,6 +634,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.6-plus': {
       displayName: 'Qwen3.6 Plus',
@@ -547,6 +644,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.7-max': {
       displayName: 'Qwen3.7 Max',
@@ -555,6 +654,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.7-plus': {
       displayName: 'Qwen3.7 Plus',
@@ -563,6 +664,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwq-plus': {
       displayName: 'QwQ Plus',
@@ -571,6 +674,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'alibaba-coding-plan-cn': {
@@ -581,6 +685,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5': {
       displayName: 'GLM-5',
@@ -589,6 +695,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2.5': {
       displayName: 'Kimi K2.5',
@@ -597,6 +705,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'MiniMax-M2.5': {
       displayName: 'MiniMax-M2.5',
@@ -605,6 +715,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 196608,
       maxOutputTokens: 24576,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-coder-next': {
       displayName: 'Qwen3 Coder Next',
@@ -613,6 +724,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-coder-plus': {
       displayName: 'Qwen3 Coder Plus',
@@ -621,6 +733,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-max-2026-01-23': {
       displayName: 'Qwen3 Max',
@@ -629,6 +742,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.5-plus': {
       displayName: 'Qwen3.5 Plus',
@@ -637,6 +751,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-flash': {
       displayName: 'Qwen3.6 Flash',
@@ -645,6 +761,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-plus': {
       displayName: 'Qwen3.6 Plus',
@@ -653,6 +771,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.7-max': {
       displayName: 'Qwen3.7 Max',
@@ -661,6 +781,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.7-plus': {
       displayName: 'Qwen3.7 Plus',
@@ -669,6 +791,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   'alibaba-coding-plan': {
@@ -679,6 +803,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5': {
       displayName: 'GLM-5',
@@ -687,6 +813,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2.5': {
       displayName: 'Kimi K2.5',
@@ -695,6 +823,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'MiniMax-M2.5': {
       displayName: 'MiniMax-M2.5',
@@ -703,6 +833,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 196608,
       maxOutputTokens: 24576,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-coder-next': {
       displayName: 'Qwen3 Coder Next',
@@ -711,6 +842,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-coder-plus': {
       displayName: 'Qwen3 Coder Plus',
@@ -719,6 +851,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-max-2026-01-23': {
       displayName: 'Qwen3 Max',
@@ -727,6 +860,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.5-plus': {
       displayName: 'Qwen3.5 Plus',
@@ -735,6 +869,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-flash': {
       displayName: 'Qwen3.6 Flash',
@@ -743,6 +879,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-plus': {
       displayName: 'Qwen3.6 Plus',
@@ -751,6 +889,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.7-max': {
       displayName: 'Qwen3.7 Max',
@@ -759,6 +899,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.7-plus': {
       displayName: 'Qwen3.7 Plus',
@@ -767,6 +909,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   'alibaba-token-plan-cn': {
@@ -777,6 +921,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -785,6 +931,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'deepseek-v4-flash-0731': {
+      displayName: 'DeepSeek V4 Flash 0731',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
+      contextWindow: 1000000,
+      maxOutputTokens: 384000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -793,6 +951,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5': {
       displayName: 'GLM-5',
@@ -801,6 +961,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.1': {
       displayName: 'GLM-5.1',
@@ -809,6 +971,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.2': {
       displayName: 'GLM-5.2',
@@ -817,22 +981,55 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'happyhorse-1.1-i2v': {
+      displayName: 'HappyHorse 1.1 Image-to-Video',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: [] },
+    },
+    'happyhorse-1.1-r2v': {
+      displayName: 'HappyHorse 1.1 Reference-to-Video',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: [] },
+    },
+    'happyhorse-1.1-t2v': {
+      displayName: 'HappyHorse 1.1 Text-to-Video',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'kimi-k2.5': {
       displayName: 'Kimi K2.5',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
       contextWindow: 262144,
-      maxOutputTokens: 32768,
+      maxOutputTokens: 98304,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.6': {
       displayName: 'Kimi K2.6',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
       contextWindow: 262144,
-      maxOutputTokens: 16384,
+      maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -841,14 +1038,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'MiniMax-M2.5': {
       displayName: 'MiniMax-M2.5',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
       contextWindow: 196608,
-      maxOutputTokens: 24576,
+      maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-image-2.0': {
       displayName: 'Qwen Image 2.0',
@@ -857,6 +1057,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'qwen-image-2.0-pro': {
       displayName: 'Qwen Image 2.0 Pro',
@@ -865,6 +1066,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'qwen3.6-flash': {
       displayName: 'Qwen3.6 Flash',
@@ -873,6 +1075,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-plus': {
       displayName: 'Qwen3.6 Plus',
@@ -881,22 +1085,48 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.7-max': {
       displayName: 'Qwen3.7 Max',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
       contextWindow: 1000000,
-      maxOutputTokens: 65536,
+      maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.7-plus': {
       displayName: 'Qwen3.7 Plus',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
       contextWindow: 1000000,
-      maxOutputTokens: 64000,
+      maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'qwen3.8-max': {
+      displayName: 'Qwen3.8 Max',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'xhigh'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'qwen3.8-max-preview': {
+      displayName: 'Qwen3.8 Max Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/zh/model-studio/token-plan-overview',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'wan2.7-image': {
       displayName: 'Wan2.7 Image',
@@ -905,6 +1135,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'wan2.7-image-pro': {
       displayName: 'Wan2.7 Image Pro',
@@ -913,6 +1144,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
   },
   'alibaba-token-plan': {
@@ -923,6 +1155,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -931,6 +1165,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'deepseek-v4-flash-0731': {
+      displayName: 'DeepSeek V4 Flash 0731',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
+      contextWindow: 1000000,
+      maxOutputTokens: 384000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -939,6 +1185,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5': {
       displayName: 'GLM-5',
@@ -947,6 +1195,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.1': {
       displayName: 'GLM-5.1',
@@ -955,6 +1205,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.2': {
       displayName: 'GLM-5.2',
@@ -963,22 +1215,55 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'happyhorse-1.1-i2v': {
+      displayName: 'HappyHorse 1.1 Image-to-Video',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: [] },
+    },
+    'happyhorse-1.1-r2v': {
+      displayName: 'HappyHorse 1.1 Reference-to-Video',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: [] },
+    },
+    'happyhorse-1.1-t2v': {
+      displayName: 'HappyHorse 1.1 Text-to-Video',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'kimi-k2.5': {
       displayName: 'Kimi K2.5',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
       contextWindow: 262144,
-      maxOutputTokens: 32768,
+      maxOutputTokens: 98304,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.6': {
       displayName: 'Kimi K2.6',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
       contextWindow: 262144,
-      maxOutputTokens: 16384,
+      maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -987,14 +1272,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'MiniMax-M2.5': {
       displayName: 'MiniMax-M2.5',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
       contextWindow: 196608,
-      maxOutputTokens: 24576,
+      maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen-image-2.0': {
       displayName: 'Qwen Image 2.0',
@@ -1003,6 +1291,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'qwen-image-2.0-pro': {
       displayName: 'Qwen Image 2.0 Pro',
@@ -1011,6 +1300,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'qwen3.6-flash': {
       displayName: 'Qwen3.6 Flash',
@@ -1019,6 +1309,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-plus': {
       displayName: 'Qwen3.6 Plus',
@@ -1027,22 +1319,48 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.7-max': {
       displayName: 'Qwen3.7 Max',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
       contextWindow: 1000000,
-      maxOutputTokens: 65536,
+      maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.7-plus': {
       displayName: 'Qwen3.7 Plus',
       lifecycle: 'active',
       docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
       contextWindow: 1000000,
-      maxOutputTokens: 64000,
+      maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'qwen3.8-max': {
+      displayName: 'Qwen3.8 Max',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'xhigh'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'qwen3.8-max-preview': {
+      displayName: 'Qwen3.8 Max Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/token-plan-overview',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'wan2.7-image': {
       displayName: 'Wan2.7 Image',
@@ -1051,6 +1369,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'wan2.7-image-pro': {
       displayName: 'Wan2.7 Image Pro',
@@ -1059,6 +1378,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
   },
   cerebras: {
@@ -1069,6 +1389,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 40960,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -1077,6 +1399,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 40960,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-glm-4.7': {
       displayName: 'Z.AI GLM-4.7',
@@ -1085,6 +1409,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 40960,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   cohere: {
@@ -1095,6 +1421,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'c4ai-aya-expanse-8b': {
       displayName: 'Aya Expanse 8B',
@@ -1103,6 +1430,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'c4ai-aya-vision-32b': {
       displayName: 'Aya Vision 32B',
@@ -1111,6 +1439,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16000,
       maxOutputTokens: 4000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'c4ai-aya-vision-8b': {
       displayName: 'Aya Vision 8B',
@@ -1119,6 +1448,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16000,
       maxOutputTokens: 4000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'command-a-03-2025': {
       displayName: 'Command A',
@@ -1127,6 +1457,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'command-a-plus-05-2026': {
       displayName: 'Command A Plus',
@@ -1135,6 +1466,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'command-a-reasoning-08-2025': {
       displayName: 'Command A Reasoning',
@@ -1143,6 +1476,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'command-a-translate-08-2025': {
       displayName: 'Command A Translate',
@@ -1151,6 +1486,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8000,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'command-a-vision-07-2025': {
       displayName: 'Command A Vision',
@@ -1159,6 +1495,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'command-r-08-2024': {
       displayName: 'Command R',
@@ -1167,6 +1504,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'command-r-plus-08-2024': {
       displayName: 'Command R+',
@@ -1175,6 +1513,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'command-r7b-12-2024': {
       displayName: 'Command R7B',
@@ -1183,6 +1522,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'command-r7b-arabic-02-2025': {
       displayName: 'Command R7B Arabic',
@@ -1191,6 +1531,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'north-mini-code-1-0': {
       displayName: 'North Mini Code',
@@ -1199,6 +1540,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'cloudflare-workers-ai': {
@@ -1209,6 +1552,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b': {
       displayName: 'Deepseek R1 Distill Qwen 32B',
@@ -1217,6 +1561,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 80000,
       maxOutputTokens: 80000,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/google/gemma-4-26b-a4b-it': {
       displayName: 'Gemma 4 26B A4B IT',
@@ -1225,6 +1570,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '@cf/ibm-granite/granite-4.0-h-micro': {
       displayName: 'Granite 4.0 H Micro',
@@ -1233,6 +1580,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/meta/llama-3.1-8b-instruct-fp8': {
       displayName: 'Llama 3.1 8B Instruct fp8',
@@ -1241,6 +1589,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/meta/llama-3.2-11b-vision-instruct': {
       displayName: 'Llama 3.2 11B Vision Instruct',
@@ -1249,6 +1598,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '@cf/meta/llama-3.2-1b-instruct': {
       displayName: 'Llama 3.2 1B Instruct',
@@ -1257,6 +1607,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 60000,
       maxOutputTokens: 60000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/meta/llama-3.2-3b-instruct': {
       displayName: 'Llama 3.2 3B Instruct',
@@ -1265,6 +1616,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 80000,
       maxOutputTokens: 80000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/meta/llama-3.3-70b-instruct-fp8-fast': {
       displayName: 'Llama 3.3 70B Instruct fp8 Fast',
@@ -1273,6 +1625,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 24000,
       maxOutputTokens: 24000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/meta/llama-4-scout-17b-16e-instruct': {
       displayName: 'Llama 4 Scout 17B 16E Instruct',
@@ -1281,6 +1634,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '@cf/meta/llama-guard-3-8b': {
       displayName: 'Llama Guard 3 8B',
@@ -1289,6 +1643,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/mistralai/mistral-small-3.1-24b-instruct': {
       displayName: 'Mistral Small 3.1 24B Instruct',
@@ -1297,6 +1652,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/moonshotai/kimi-k2.6': {
       displayName: 'Kimi K2.6',
@@ -1305,6 +1661,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '@cf/moonshotai/kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -1313,6 +1671,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '@cf/nvidia/nemotron-3-120b-a12b': {
       displayName: 'Nemotron 3 Super 120B',
@@ -1321,6 +1681,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/openai/gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -1329,6 +1691,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/openai/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -1337,6 +1701,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/qwen/qwen2.5-coder-32b-instruct': {
       displayName: 'Qwen2.5 Coder 32B Instruct',
@@ -1345,6 +1710,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/qwen/qwen3-30b-a3b-fp8': {
       displayName: 'Qwen3 30B A3b fp8',
@@ -1353,6 +1719,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/qwen/qwq-32b': {
       displayName: 'Qwq 32B',
@@ -1361,6 +1728,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 24000,
       maxOutputTokens: 24000,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/zai-org/glm-4.7-flash': {
       displayName: 'GLM-4.7-Flash',
@@ -1369,6 +1737,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '@cf/zai-org/glm-5.2': {
       displayName: 'Glm 5.2',
@@ -1377,6 +1747,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   deepinfra: {
@@ -1387,6 +1759,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3.2': {
       displayName: 'DeepSeek-V3.2',
@@ -1395,6 +1768,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V4-Flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -1403,6 +1778,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'deepseek-ai/DeepSeek-V4-Flash-0731': {
+      displayName: 'DeepSeek V4 Flash 0731',
+      lifecycle: 'active',
+      docsUrl: 'https://deepinfra.com/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 384000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V4-Pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -1411,6 +1798,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-4-26B-A4B-it': {
       displayName: 'Gemma 4 26B A4B IT',
@@ -1419,6 +1808,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-4-31B-it': {
       displayName: 'Gemma 4 31B IT',
@@ -1427,6 +1818,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'google/gemma-4-E4B-it': {
+      displayName: 'Gemma 4 E4B IT',
+      lifecycle: 'active',
+      docsUrl: 'https://deepinfra.com/models',
+      contextWindow: 131072,
+      maxOutputTokens: 8192,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'meta-llama/Llama-3.3-70B-Instruct-Turbo': {
       displayName: 'Llama 3.3 70B Turbo',
@@ -1435,6 +1838,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8': {
       displayName: 'Llama 4 Maverick 17B FP8',
@@ -1443,6 +1847,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta-llama/Llama-4-Scout-17B-16E-Instruct': {
       displayName: 'Llama 4 Scout 17B',
@@ -1451,14 +1856,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 327680,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2.5': {
       displayName: 'MiniMax M2.5',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://deepinfra.com/models',
       contextWindow: 196608,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2.7': {
       displayName: 'MiniMax-M2.7',
@@ -1467,6 +1874,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 196608,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M3': {
       displayName: 'MiniMax-M3',
@@ -1475,6 +1883,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 524288,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.5': {
       displayName: 'Kimi K2.5',
@@ -1483,6 +1892,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.6': {
       displayName: 'Kimi K2.6',
@@ -1491,6 +1902,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.7-Code': {
       displayName: 'Kimi K2.7 Code',
@@ -1499,14 +1912,27 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'moonshotai/Kimi-K3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://deepinfra.com/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/Llama-3.3-Nemotron-Super-49B-v1.5': {
       displayName: 'Llama 3.3 Nemotron Super 49B v1.5',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://deepinfra.com/models',
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/Nemotron-3-Nano-30B-A3B': {
       displayName: 'Nemotron 3 Nano 30B A3B',
@@ -1515,14 +1941,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning': {
       displayName: 'Nemotron 3 Nano Omni 30B A3B Reasoning',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://deepinfra.com/models',
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'openai/gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -1531,6 +1960,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -1539,6 +1970,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-32B': {
       displayName: 'Qwen3 32B',
@@ -1547,6 +1980,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 40960,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo': {
       displayName: 'Qwen3 Coder 480B A35B Instruct Turbo',
@@ -1555,6 +1989,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 66536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Max': {
       displayName: 'Qwen3 Max',
@@ -1563,6 +1998,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Next-80B-A3B-Instruct': {
       displayName: 'Qwen3-Next 80B-A3B Instruct',
@@ -1571,6 +2007,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.5-122B-A10B': {
       displayName: 'Qwen3.5 122B-A10B',
@@ -1579,6 +2016,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'Qwen/Qwen3.5-27B': {
       displayName: 'Qwen3.5 27B',
@@ -1587,6 +2025,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'Qwen/Qwen3.5-35B-A3B': {
       displayName: 'Qwen 3.5 35B A3B',
@@ -1595,6 +2034,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 81920,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.5-397B-A17B': {
       displayName: 'Qwen 3.5 397B A17B',
@@ -1603,6 +2043,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 81920,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.5-9B': {
       displayName: 'Qwen3.5 9B',
@@ -1611,6 +2052,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.6-27B': {
       displayName: 'Qwen3.6 27B',
@@ -1619,6 +2061,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'Qwen/Qwen3.6-35B-A3B': {
       displayName: 'Qwen3.6 35B A3B',
@@ -1627,6 +2070,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 81920,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.7-Max': {
       displayName: 'Qwen3.7 Max',
@@ -1635,6 +2079,52 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'Qwen/Qwen3.8-Max': {
+      displayName: 'Qwen3.8 Max',
+      lifecycle: 'active',
+      docsUrl: 'https://deepinfra.com/models',
+      contextWindow: 256000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'stepfun-ai/Step-3.7-Flash': {
+      displayName: 'Step 3.7 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://deepinfra.com/models',
+      contextWindow: 262144,
+      maxOutputTokens: 256000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'tencent/Hy3': {
+      displayName: 'Hy3',
+      lifecycle: 'active',
+      docsUrl: 'https://deepinfra.com/models',
+      contextWindow: 262144,
+      maxOutputTokens: 64000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'thinkingmachines/Inkling': {
+      displayName: 'Inkling',
+      lifecycle: 'active',
+      docsUrl: 'https://deepinfra.com/models',
+      contextWindow: 524288,
+      maxOutputTokens: 1048576,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'thinkingmachines/Inkling-Small': {
+      displayName: 'Inkling Small',
+      lifecycle: 'active',
+      docsUrl: 'https://deepinfra.com/models',
+      contextWindow: 524288,
+      maxOutputTokens: 1048576,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'XiaomiMiMo/MiMo-V2.5': {
       displayName: 'MiMo-V2.5',
@@ -1643,6 +2133,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'XiaomiMiMo/MiMo-V2.5-Pro': {
       displayName: 'MiMo-V2.5-Pro',
@@ -1651,6 +2143,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'audio'], output: ['text'] },
     },
     'zai-org/GLM-4.6': {
       displayName: 'GLM-4.6',
@@ -1659,6 +2153,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-4.7': {
       displayName: 'GLM-4.7',
@@ -1667,6 +2163,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-4.7-Flash': {
       displayName: 'GLM-4.7-Flash',
@@ -1675,6 +2173,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5': {
       displayName: 'GLM-5',
@@ -1683,6 +2182,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5.1': {
       displayName: 'GLM-5.1',
@@ -1691,6 +2192,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5.2': {
       displayName: 'GLM-5.2',
@@ -1699,6 +2202,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   deepseek: {
@@ -1709,6 +2214,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-reasoner': {
       displayName: 'DeepSeek Reasoner',
@@ -1717,6 +2223,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -1725,6 +2232,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -1733,6 +2242,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'fireworks-ai': {
@@ -1743,6 +2254,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'accounts/fireworks/models/deepseek-v4-flash-0731': {
+      displayName: 'DeepSeek V4 Flash 0731',
+      lifecycle: 'active',
+      docsUrl: 'https://fireworks.ai/docs/',
+      contextWindow: 1000000,
+      maxOutputTokens: 384000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'accounts/fireworks/models/deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -1751,14 +2274,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'accounts/fireworks/models/glm-5p1': {
-      displayName: 'GLM 5.1',
-      lifecycle: 'active',
-      docsUrl: 'https://fireworks.ai/docs/',
-      contextWindow: 202800,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'accounts/fireworks/models/glm-5p2': {
       displayName: 'GLM 5.2',
@@ -1767,6 +2284,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048575,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'accounts/fireworks/models/gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -1775,6 +2294,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'accounts/fireworks/models/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -1783,6 +2304,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'accounts/fireworks/models/kimi-k2p6': {
       displayName: 'Kimi K2.6',
@@ -1791,6 +2314,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'accounts/fireworks/models/kimi-k2p7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -1799,6 +2324,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'accounts/fireworks/models/kimi-k3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://fireworks.ai/docs/',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'accounts/fireworks/models/minimax-m2p7': {
       displayName: 'MiniMax-M2.7',
@@ -1807,6 +2344,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 196608,
       maxOutputTokens: 196608,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'accounts/fireworks/models/minimax-m3': {
       displayName: 'MiniMax-M3',
@@ -1814,7 +2353,9 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       docsUrl: 'https://fireworks.ai/docs/',
       contextWindow: 512000,
       maxOutputTokens: 512000,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'accounts/fireworks/models/qwen3p7-plus': {
       displayName: 'Qwen 3.7 Plus',
@@ -1823,14 +2364,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'accounts/fireworks/routers/glm-5p1-fast': {
-      displayName: 'GLM 5.1 Fast',
-      lifecycle: 'active',
-      docsUrl: 'https://fireworks.ai/docs/',
-      contextWindow: 202800,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'accounts/fireworks/routers/glm-5p2-fast': {
       displayName: 'GLM 5.2 Fast',
@@ -1839,6 +2374,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048575,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'accounts/fireworks/routers/kimi-k2p6-fast': {
       displayName: 'Kimi K2.6 Fast',
@@ -1847,6 +2384,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'accounts/fireworks/routers/kimi-k2p6-turbo': {
       displayName: 'Kimi K2.6 Turbo',
@@ -1855,6 +2394,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'accounts/fireworks/routers/kimi-k2p7-code-fast': {
       displayName: 'Kimi K2.7 Code Fast',
@@ -1863,6 +2404,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'accounts/fireworks/routers/kimi-k3-fast': {
+      displayName: 'Kimi K3 Fast',
+      lifecycle: 'active',
+      docsUrl: 'https://fireworks.ai/docs/',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   'github-copilot': {
@@ -1873,6 +2426,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-haiku-4.5': {
       displayName: 'Claude Haiku 4.5 (latest)',
@@ -1881,6 +2436,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4.5': {
       displayName: 'Claude Opus 4.5 (latest)',
@@ -1889,6 +2445,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4.6': {
       displayName: 'Claude Opus 4.6',
@@ -1897,6 +2454,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4.7': {
       displayName: 'Claude Opus 4.7',
@@ -1905,6 +2464,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4.8': {
       displayName: 'Claude Opus 4.8',
@@ -1913,6 +2474,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'claude-opus-5': {
+      displayName: 'Claude Opus 5',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.github.com/en/copilot',
+      contextWindow: 1000000,
+      maxOutputTokens: 64000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4': {
       displayName: 'Claude Sonnet 4 (latest)',
@@ -1921,6 +2494,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 216000,
       maxOutputTokens: 16000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4.5': {
       displayName: 'Claude Sonnet 4.5 (latest)',
@@ -1929,6 +2503,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4.6': {
       displayName: 'Claude Sonnet 4.6',
@@ -1937,6 +2512,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-5': {
       displayName: 'Claude Sonnet 5',
@@ -1945,22 +2522,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gemini-2.5-pro': {
-      displayName: 'Gemini 2.5 Pro',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.github.com/en/copilot',
-      contextWindow: 128000,
-      maxOutputTokens: 64000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gemini-3-flash-preview': {
-      displayName: 'Gemini 3 Flash Preview',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.github.com/en/copilot',
-      contextWindow: 128000,
-      maxOutputTokens: 64000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gemini-3.1-pro-preview': {
       displayName: 'Gemini 3.1 Pro Preview',
@@ -1969,6 +2532,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-3.5-flash': {
       displayName: 'Gemini 3.5 Flash',
@@ -1977,6 +2542,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.6-flash': {
+      displayName: 'Gemini 3.6 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.github.com/en/copilot',
+      contextWindow: 1000000,
+      maxOutputTokens: 64000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4.1': {
       displayName: 'GPT-4.1',
@@ -1985,6 +2562,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5-mini': {
       displayName: 'GPT-5 Mini',
@@ -1993,6 +2571,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 264000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.2': {
       displayName: 'GPT-5.2',
@@ -2001,6 +2581,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.2-codex': {
       displayName: 'GPT-5.2 Codex',
@@ -2009,6 +2590,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.3-codex': {
       displayName: 'GPT-5.3 Codex',
@@ -2017,6 +2599,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4': {
       displayName: 'GPT-5.4',
@@ -2025,6 +2609,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4-mini': {
       displayName: 'GPT-5.4 mini',
@@ -2033,6 +2619,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4-nano': {
       displayName: 'GPT-5.4 nano',
@@ -2041,6 +2629,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.5': {
       displayName: 'GPT-5.5',
@@ -2049,6 +2638,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-luna': {
       displayName: 'GPT-5.6 Luna',
@@ -2057,6 +2648,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-sol': {
       displayName: 'GPT-5.6 Sol',
@@ -2065,6 +2658,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-terra': {
       displayName: 'GPT-5.6 Terra',
@@ -2073,6 +2668,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'grok-4.5': {
+      displayName: 'Grok 4.5',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.github.com/en/copilot',
+      contextWindow: 500000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -2081,6 +2688,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mai-code-1-flash-picker': {
       displayName: 'MAI-Code-1-Flash',
@@ -2089,9 +2697,29 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   google: {
+    'deep-research-max-preview-04-2026': {
+      displayName: 'Deep Research Max Preview (Apr-21-2026)',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'image'] },
+    },
+    'deep-research-preview-04-2026': {
+      displayName: 'Deep Research Preview (Apr-21-2026)',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'image'] },
+    },
     'gemini-2.0-flash': {
       displayName: 'Gemini 2.0 Flash',
       lifecycle: 'deprecated',
@@ -2099,6 +2727,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-2.0-flash-lite': {
       displayName: 'Gemini 2.0 Flash-Lite',
@@ -2107,6 +2736,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-2.5-computer-use-preview-10-2025': {
+      displayName: 'Gemini 2.5 Computer Use Preview 10-2025',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gemini-2.5-flash': {
       displayName: 'Gemini 2.5 Flash',
@@ -2115,6 +2754,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-2.5-flash-image': {
       displayName: 'Nano Banana',
@@ -2123,6 +2764,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-2.5-flash-lite': {
       displayName: 'Gemini 2.5 Flash-Lite',
@@ -2131,6 +2773,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-2.5-flash-preview-tts': {
       displayName: 'Gemini 2.5 Flash Preview TTS',
@@ -2139,6 +2783,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'gemini-2.5-pro': {
       displayName: 'Gemini 2.5 Pro',
@@ -2147,6 +2792,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-2.5-pro-preview-tts': {
       displayName: 'Gemini 2.5 Pro Preview TTS',
@@ -2155,6 +2801,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'gemini-3-flash-preview': {
       displayName: 'Gemini 3 Flash Preview',
@@ -2163,6 +2810,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3-pro-image': {
+      displayName: 'Nano Banana Pro',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 32768,
+      capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3-pro-image-preview': {
       displayName: 'Nano Banana Pro',
@@ -2171,6 +2830,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3-pro-preview': {
       displayName: 'Gemini 3 Pro Preview',
@@ -2179,6 +2839,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.1-flash-image': {
+      displayName: 'Nano Banana 2',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 65536,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3.1-flash-image-preview': {
       displayName: 'Nano Banana 2',
@@ -2187,6 +2859,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3.1-flash-lite': {
       displayName: 'Gemini 3.1 Flash Lite',
@@ -2195,6 +2869,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.1-flash-lite-image': {
+      displayName: 'Nano Banana 2 Lite',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 65536,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3.1-flash-lite-preview': {
       displayName: 'Gemini 3.1 Flash Lite Preview',
@@ -2203,6 +2889,27 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.1-flash-live-preview': {
+      displayName: 'Gemini 3.1 Flash Live Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] },
+    },
+    'gemini-3.1-flash-tts-preview': {
+      displayName: 'Gemini 3.1 Flash TTS Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 8192,
+      maxOutputTokens: 16384,
+      capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'gemini-3.1-pro-preview': {
       displayName: 'Gemini 3.1 Pro Preview',
@@ -2211,6 +2918,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-3.1-pro-preview-customtools': {
       displayName: 'Gemini 3.1 Pro Preview Custom Tools',
@@ -2219,6 +2928,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-3.5-flash': {
       displayName: 'Gemini 3.5 Flash',
@@ -2227,6 +2938,37 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.5-flash-lite': {
+      displayName: 'Gemini 3.5 Flash Lite',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.5-live-translate-preview': {
+      displayName: 'Gemini 3.5 Live Translate Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 16384,
+      maxOutputTokens: 32768,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['audio', 'text'] },
+    },
+    'gemini-3.6-flash': {
+      displayName: 'Gemini 3.6 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-embedding-001': {
       displayName: 'Gemini Embedding 001',
@@ -2235,6 +2977,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2048,
       maxOutputTokens: 1,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'gemini-embedding-2': {
+      displayName: 'Gemini Embedding 2',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 8192,
+      maxOutputTokens: 1,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-flash-latest': {
       displayName: 'Gemini Flash Latest',
@@ -2243,6 +2995,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-flash-lite-latest': {
       displayName: 'Gemini Flash-Lite Latest',
@@ -2251,6 +3005,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-omni-flash-preview': {
       displayName: 'Gemini Omni Flash Preview',
@@ -2259,6 +3015,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
+    },
+    'gemini-robotics-er-1.6-preview': {
+      displayName: 'Gemini Robotics-ER 1.6 Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemma-4-26b-a4b-it': {
       displayName: 'Gemma 4 26B A4B IT',
@@ -2267,6 +3034,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gemma-4-31b-it': {
       displayName: 'Gemma 4 31B IT',
@@ -2275,9 +3044,74 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'lyria-3-clip-preview': {
+      displayName: 'Lyria 3 Clip Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'audio'] },
+    },
+    'lyria-3-pro-preview': {
+      displayName: 'Lyria 3 Pro Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'audio'] },
+    },
+    'veo-3.1-fast-generate-preview': {
+      displayName: 'Veo 3.1 fast',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 480,
+      maxOutputTokens: 8192,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
+    },
+    'veo-3.1-generate-preview': {
+      displayName: 'Veo 3.1',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 480,
+      maxOutputTokens: 8192,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
+    },
+    'veo-3.1-lite-generate-preview': {
+      displayName: 'Veo 3.1 lite',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 480,
+      maxOutputTokens: 8192,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
     },
   },
   'gemini-cli': {
+    'deep-research-max-preview-04-2026': {
+      displayName: 'Deep Research Max Preview (Apr-21-2026)',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'image'] },
+    },
+    'deep-research-preview-04-2026': {
+      displayName: 'Deep Research Preview (Apr-21-2026)',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'image'] },
+    },
     'gemini-2.0-flash': {
       displayName: 'Gemini 2.0 Flash',
       lifecycle: 'deprecated',
@@ -2285,6 +3119,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-2.0-flash-lite': {
       displayName: 'Gemini 2.0 Flash-Lite',
@@ -2293,6 +3128,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-2.5-computer-use-preview-10-2025': {
+      displayName: 'Gemini 2.5 Computer Use Preview 10-2025',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gemini-2.5-flash': {
       displayName: 'Gemini 2.5 Flash',
@@ -2301,6 +3146,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-2.5-flash-image': {
       displayName: 'Nano Banana',
@@ -2309,6 +3156,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-2.5-flash-lite': {
       displayName: 'Gemini 2.5 Flash-Lite',
@@ -2317,6 +3165,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-2.5-flash-preview-tts': {
       displayName: 'Gemini 2.5 Flash Preview TTS',
@@ -2325,6 +3175,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'gemini-2.5-pro': {
       displayName: 'Gemini 2.5 Pro',
@@ -2333,6 +3184,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-2.5-pro-preview-tts': {
       displayName: 'Gemini 2.5 Pro Preview TTS',
@@ -2341,6 +3193,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'gemini-3-flash-preview': {
       displayName: 'Gemini 3 Flash Preview',
@@ -2349,6 +3202,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3-pro-image': {
+      displayName: 'Nano Banana Pro',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 32768,
+      capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3-pro-image-preview': {
       displayName: 'Nano Banana Pro',
@@ -2357,6 +3222,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3-pro-preview': {
       displayName: 'Gemini 3 Pro Preview',
@@ -2365,6 +3231,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.1-flash-image': {
+      displayName: 'Nano Banana 2',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 65536,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3.1-flash-image-preview': {
       displayName: 'Nano Banana 2',
@@ -2373,6 +3251,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3.1-flash-lite': {
       displayName: 'Gemini 3.1 Flash Lite',
@@ -2381,6 +3261,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.1-flash-lite-image': {
+      displayName: 'Nano Banana 2 Lite',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 65536,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gemini-3.1-flash-lite-preview': {
       displayName: 'Gemini 3.1 Flash Lite Preview',
@@ -2389,6 +3281,27 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.1-flash-live-preview': {
+      displayName: 'Gemini 3.1 Flash Live Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'audio'] },
+    },
+    'gemini-3.1-flash-tts-preview': {
+      displayName: 'Gemini 3.1 Flash TTS Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 8192,
+      maxOutputTokens: 16384,
+      capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'gemini-3.1-pro-preview': {
       displayName: 'Gemini 3.1 Pro Preview',
@@ -2397,6 +3310,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-3.1-pro-preview-customtools': {
       displayName: 'Gemini 3.1 Pro Preview Custom Tools',
@@ -2405,6 +3320,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-3.5-flash': {
       displayName: 'Gemini 3.5 Flash',
@@ -2413,6 +3330,37 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.5-flash-lite': {
+      displayName: 'Gemini 3.5 Flash Lite',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.5-live-translate-preview': {
+      displayName: 'Gemini 3.5 Live Translate Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 16384,
+      maxOutputTokens: 32768,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['audio', 'text'] },
+    },
+    'gemini-3.6-flash': {
+      displayName: 'Gemini 3.6 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-embedding-001': {
       displayName: 'Gemini Embedding 001',
@@ -2421,6 +3369,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2048,
       maxOutputTokens: 1,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'gemini-embedding-2': {
+      displayName: 'Gemini Embedding 2',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 8192,
+      maxOutputTokens: 1,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-flash-latest': {
       displayName: 'Gemini Flash Latest',
@@ -2429,6 +3387,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-flash-lite-latest': {
       displayName: 'Gemini Flash-Lite Latest',
@@ -2437,6 +3397,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-omni-flash-preview': {
       displayName: 'Gemini Omni Flash Preview',
@@ -2445,6 +3407,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
+    },
+    'gemini-robotics-er-1.6-preview': {
+      displayName: 'Gemini Robotics-ER 1.6 Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemma-4-26b-a4b-it': {
       displayName: 'Gemma 4 26B A4B IT',
@@ -2453,6 +3426,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gemma-4-31b-it': {
       displayName: 'Gemma 4 31B IT',
@@ -2461,6 +3436,53 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'lyria-3-clip-preview': {
+      displayName: 'Lyria 3 Clip Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'audio'] },
+    },
+    'lyria-3-pro-preview': {
+      displayName: 'Lyria 3 Pro Preview',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'audio'] },
+    },
+    'veo-3.1-fast-generate-preview': {
+      displayName: 'Veo 3.1 fast',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 480,
+      maxOutputTokens: 8192,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
+    },
+    'veo-3.1-generate-preview': {
+      displayName: 'Veo 3.1',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 480,
+      maxOutputTokens: 8192,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
+    },
+    'veo-3.1-lite-generate-preview': {
+      displayName: 'Veo 3.1 lite',
+      lifecycle: 'active',
+      docsUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      contextWindow: 480,
+      maxOutputTokens: 8192,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
     },
   },
   groq: {
@@ -2471,6 +3493,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 4000,
       maxOutputTokens: 50000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'canopylabs/orpheus-v1-english': {
       displayName: 'Canopy Labs Orpheus V1 English',
@@ -2479,6 +3502,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 4000,
       maxOutputTokens: 50000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'groq/compound': {
       displayName: 'Compound',
@@ -2487,6 +3511,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'groq/compound-mini': {
       displayName: 'Compound Mini',
@@ -2495,6 +3520,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'llama-3.1-8b-instant': {
       displayName: 'Llama 3.1 8B',
@@ -2503,6 +3529,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'llama-3.3-70b-versatile': {
       displayName: 'Llama 3.3 70B',
@@ -2511,6 +3538,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/llama-4-scout-17b-16e-instruct': {
       displayName: 'Llama 4 Scout 17B 16E',
@@ -2519,6 +3547,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta-llama/llama-prompt-guard-2-22m': {
       displayName: 'Llama Prompt Guard 2 22M',
@@ -2527,6 +3556,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 512,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/llama-prompt-guard-2-86m': {
       displayName: 'Prompt Guard 2 86M',
@@ -2535,6 +3565,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 512,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -2543,6 +3574,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -2551,6 +3584,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-safeguard-20b': {
       displayName: 'Safety GPT OSS 20B',
@@ -2559,6 +3594,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-32b': {
       displayName: 'Qwen3-32B',
@@ -2567,6 +3604,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 40960,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'default'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'whisper-large-v3': {
       displayName: 'Whisper',
@@ -2575,6 +3614,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'whisper-large-v3-turbo': {
       displayName: 'Whisper Large V3 Turbo',
@@ -2583,6 +3623,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
   },
   huggingface: {
@@ -2593,6 +3634,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 64000,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-R1-0528': {
       displayName: 'DeepSeek-R1-0528',
@@ -2601,6 +3643,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 163840,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3.2': {
       displayName: 'DeepSeek-V3.2',
@@ -2609,6 +3652,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V4-Flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -2617,6 +3661,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'deepseek-ai/DeepSeek-V4-Flash-0731': {
+      displayName: 'DeepSeek V4 Flash 0731',
+      lifecycle: 'active',
+      docsUrl: 'https://huggingface.co/docs/inference-providers',
+      contextWindow: 1048576,
+      maxOutputTokens: 384000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V4-Pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -2625,6 +3680,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 393216,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-4-26B-A4B-it': {
       displayName: 'Gemma 4 26B A4B IT',
@@ -2633,6 +3690,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-4-31B-it': {
       displayName: 'Gemma 4 31B IT',
@@ -2641,6 +3699,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta-llama/Llama-3.3-70B-Instruct': {
       displayName: 'Llama-3.3-70B-Instruct',
@@ -2649,6 +3708,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2': {
       displayName: 'MiniMax-M2',
@@ -2657,6 +3717,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2.1': {
       displayName: 'MiniMax-M2.1',
@@ -2665,6 +3726,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2.5': {
       displayName: 'MiniMax-M2.5',
@@ -2673,6 +3735,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2.7': {
       displayName: 'MiniMax-M2.7',
@@ -2681,6 +3744,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M3': {
       displayName: 'MiniMax-M3',
@@ -2689,6 +3753,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 524288,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2-Instruct': {
       displayName: 'Kimi-K2-Instruct',
@@ -2697,6 +3762,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/Kimi-K2-Instruct-0905': {
       displayName: 'Kimi-K2-Instruct-0905',
@@ -2705,6 +3771,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/Kimi-K2-Thinking': {
       displayName: 'Kimi-K2-Thinking',
@@ -2713,6 +3780,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.5': {
       displayName: 'Kimi-K2.5',
@@ -2721,6 +3789,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.6': {
       displayName: 'Kimi-K2.6',
@@ -2729,6 +3798,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.7-Code': {
       displayName: 'Kimi K2.7 Code',
@@ -2737,6 +3807,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'moonshotai/Kimi-K3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://huggingface.co/docs/inference-providers',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -2745,6 +3826,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -2753,6 +3836,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-235B-A22B': {
       displayName: 'Qwen3 235B-A22B',
@@ -2761,6 +3846,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 40960,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-235B-A22B-Thinking-2507': {
       displayName: 'Qwen3-235B-A22B-Thinking-2507',
@@ -2769,6 +3855,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-32B': {
       displayName: 'Qwen3 32B',
@@ -2777,6 +3864,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Coder-30B-A3B-Instruct': {
       displayName: 'Qwen3-Coder 30B-A3B Instruct',
@@ -2785,6 +3873,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Coder-480B-A35B-Instruct': {
       displayName: 'Qwen3-Coder-480B-A35B-Instruct',
@@ -2793,6 +3882,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 66536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Coder-Next': {
       displayName: 'Qwen3-Coder-Next',
@@ -2801,6 +3891,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Embedding-4B': {
       displayName: 'Qwen 3 Embedding 4B',
@@ -2809,6 +3900,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 2048,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Embedding-8B': {
       displayName: 'Qwen 3 Embedding 8B',
@@ -2817,6 +3909,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Next-80B-A3B-Instruct': {
       displayName: 'Qwen3-Next-80B-A3B-Instruct',
@@ -2825,6 +3918,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 66536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Next-80B-A3B-Thinking': {
       displayName: 'Qwen3-Next-80B-A3B-Thinking',
@@ -2833,6 +3927,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.5-122B-A10B': {
       displayName: 'Qwen3.5 122B-A10B',
@@ -2841,6 +3936,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.5-27B': {
       displayName: 'Qwen3.5 27B',
@@ -2849,6 +3945,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.5-35B-A3B': {
       displayName: 'Qwen3.5 35B-A3B',
@@ -2857,6 +3954,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.5-397B-A17B': {
       displayName: 'Qwen3.5-397B-A17B',
@@ -2865,6 +3963,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.5-9B': {
       displayName: 'Qwen3.5 9B',
@@ -2873,6 +3973,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.6-27B': {
       displayName: 'Qwen3.6 27B',
@@ -2881,6 +3982,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.6-35B-A3B': {
       displayName: 'Qwen3.6 35B-A3B',
@@ -2889,6 +3991,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'stepfun-ai/Step-3.5-Flash': {
       displayName: 'Step 3.5 Flash',
@@ -2897,6 +4000,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'stepfun-ai/Step-3.7-Flash': {
       displayName: 'Step 3.7 Flash',
@@ -2905,6 +4009,37 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'tencent/Hy3': {
+      displayName: 'Hy3',
+      lifecycle: 'active',
+      docsUrl: 'https://huggingface.co/docs/inference-providers',
+      contextWindow: 262144,
+      maxOutputTokens: 64000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'thinkingmachines/Inkling': {
+      displayName: 'Inkling',
+      lifecycle: 'active',
+      docsUrl: 'https://huggingface.co/docs/inference-providers',
+      contextWindow: 1048576,
+      maxOutputTokens: 1048576,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'thinkingmachines/Inkling-Small': {
+      displayName: 'Inkling Small',
+      lifecycle: 'active',
+      docsUrl: 'https://huggingface.co/docs/inference-providers',
+      contextWindow: 524288,
+      maxOutputTokens: 1048576,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'XiaomiMiMo/MiMo-V2-Flash': {
       displayName: 'MiMo-V2-Flash',
@@ -2913,6 +4048,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'XiaomiMiMo/MiMo-V2.5': {
+      displayName: 'MiMo-V2.5',
+      lifecycle: 'active',
+      docsUrl: 'https://huggingface.co/docs/inference-providers',
+      contextWindow: 262144,
+      maxOutputTokens: 131072,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'XiaomiMiMo/MiMo-V2.5-Pro': {
       displayName: 'MiMo-V2.5-Pro',
@@ -2921,6 +4067,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-4.5': {
       displayName: 'GLM-4.5',
@@ -2929,6 +4077,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 98304,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-4.5-Air': {
       displayName: 'GLM-4.5-Air',
@@ -2937,6 +4086,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 98304,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-4.5V': {
       displayName: 'GLM-4.5V',
@@ -2945,6 +4095,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'zai-org/GLM-4.6': {
       displayName: 'GLM-4.6',
@@ -2953,6 +4104,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-4.7': {
       displayName: 'GLM-4.7',
@@ -2961,6 +4113,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-4.7-Flash': {
       displayName: 'GLM-4.7-Flash',
@@ -2969,6 +4122,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5': {
       displayName: 'GLM-5',
@@ -2977,6 +4131,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5.1': {
       displayName: 'GLM-5.1',
@@ -2985,6 +4140,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5.2': {
       displayName: 'GLM-5.2',
@@ -2993,6 +4149,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   MiniMax: {
@@ -3003,6 +4160,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 196608,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.1': {
       displayName: 'MiniMax-M2.1',
@@ -3011,6 +4169,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.5': {
       displayName: 'MiniMax-M2.5',
@@ -3019,6 +4178,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.5-highspeed': {
       displayName: 'MiniMax-M2.5-highspeed',
@@ -3027,6 +4187,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.7': {
       displayName: 'MiniMax-M2.7',
@@ -3035,6 +4196,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.7-highspeed': {
       displayName: 'MiniMax-M2.7-highspeed',
@@ -3043,6 +4205,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M3': {
       displayName: 'MiniMax-M3',
@@ -3051,6 +4214,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   'MiniMax-cn': {
@@ -3061,6 +4226,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 196608,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.1': {
       displayName: 'MiniMax-M2.1',
@@ -3069,6 +4235,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.5': {
       displayName: 'MiniMax-M2.5',
@@ -3077,6 +4244,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.5-highspeed': {
       displayName: 'MiniMax-M2.5-highspeed',
@@ -3085,6 +4253,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.7': {
       displayName: 'MiniMax-M2.7',
@@ -3093,6 +4262,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M2.7-highspeed': {
       displayName: 'MiniMax-M2.7-highspeed',
@@ -3101,6 +4271,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMax-M3': {
       displayName: 'MiniMax-M3',
@@ -3109,6 +4280,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   mistral: {
@@ -3119,6 +4292,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'devstral-2512': {
       displayName: 'Devstral 2',
@@ -3127,6 +4301,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'devstral-latest': {
       displayName: 'Devstral 2',
@@ -3135,6 +4310,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'devstral-medium-2507': {
       displayName: 'Devstral Medium',
@@ -3143,6 +4319,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'devstral-medium-latest': {
       displayName: 'Devstral 2 (latest)',
@@ -3151,6 +4328,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'devstral-small-2505': {
       displayName: 'Devstral Small 2505',
@@ -3159,6 +4337,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'devstral-small-2507': {
       displayName: 'Devstral Small',
@@ -3167,6 +4346,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'labs-devstral-small-2512': {
       displayName: 'Devstral Small 2',
@@ -3175,6 +4355,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'magistral-medium-latest': {
       displayName: 'Magistral Medium (latest)',
@@ -3183,6 +4364,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'magistral-small': {
       displayName: 'Magistral Small',
@@ -3191,6 +4373,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'ministral-3b-latest': {
       displayName: 'Ministral 3B (latest)',
@@ -3199,6 +4382,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'ministral-8b-latest': {
       displayName: 'Ministral 8B (latest)',
@@ -3207,6 +4391,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral-embed': {
       displayName: 'Mistral Embed',
@@ -3215,6 +4400,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8000,
       maxOutputTokens: 3072,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral-large-2411': {
       displayName: 'Mistral Large 2.1',
@@ -3223,6 +4409,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral-large-2512': {
       displayName: 'Mistral Large 3',
@@ -3231,6 +4418,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-large-latest': {
       displayName: 'Mistral Large (latest)',
@@ -3239,6 +4427,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-medium-2505': {
       displayName: 'Mistral Medium 3',
@@ -3247,6 +4436,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-medium-2508': {
       displayName: 'Mistral Medium 3.1',
@@ -3255,6 +4445,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-medium-2604': {
       displayName: 'Mistral Medium 3.5',
@@ -3263,6 +4454,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-medium-latest': {
       displayName: 'Mistral Medium (latest)',
@@ -3271,6 +4464,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-nemo': {
       displayName: 'Mistral Nemo',
@@ -3279,6 +4474,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral-small-2506': {
       displayName: 'Mistral Small 3.2',
@@ -3287,6 +4483,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-small-2603': {
       displayName: 'Mistral Small 4',
@@ -3295,6 +4492,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-small-latest': {
       displayName: 'Mistral Small (latest)',
@@ -3303,6 +4502,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'open-mistral-7b': {
       displayName: 'Mistral 7B',
@@ -3311,6 +4512,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8000,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'open-mistral-nemo': {
       displayName: 'Open Mistral Nemo',
@@ -3319,6 +4521,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'open-mixtral-8x22b': {
       displayName: 'Mixtral 8x22B',
@@ -3327,6 +4530,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 64000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'open-mixtral-8x7b': {
       displayName: 'Mixtral 8x7B',
@@ -3335,6 +4539,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'pixtral-12b': {
       displayName: 'Pixtral 12B',
@@ -3343,6 +4548,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'pixtral-large-latest': {
       displayName: 'Pixtral Large (latest)',
@@ -3351,6 +4557,34 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'voxtral-mini-latest': {
+      displayName: 'Voxtral Mini (latest)',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.mistral.ai/getting-started/models/',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
+    },
+    'voxtral-mini-tts-latest': {
+      displayName: 'Voxtral Mini TTS (latest)',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.mistral.ai/getting-started/models/',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
+    },
+    'voxtral-small-latest': {
+      displayName: 'Voxtral Small (latest)',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.mistral.ai/getting-started/models/',
+      contextWindow: 32000,
+      maxOutputTokens: 32000,
+      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'audio'], output: ['text'] },
     },
   },
   moonshot: {
@@ -3361,6 +4595,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2-0905-preview': {
       displayName: 'Kimi K2 0905',
@@ -3369,6 +4604,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2-thinking': {
       displayName: 'Kimi K2 Thinking',
@@ -3377,6 +4613,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2-thinking-turbo': {
       displayName: 'Kimi K2 Thinking Turbo',
@@ -3385,6 +4622,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2-turbo-preview': {
       displayName: 'Kimi K2 Turbo',
@@ -3393,6 +4631,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2.5': {
       displayName: 'Kimi K2.5',
@@ -3401,6 +4640,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.6': {
       displayName: 'Kimi K2.6',
@@ -3409,6 +4650,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -3417,6 +4660,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.7-code-highspeed': {
       displayName: 'Kimi K2.7 Code HighSpeed',
@@ -3425,16 +4669,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'kimi-k3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.moonshot.cn/docs/api/chat',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   nvidia: {
-    'abacusai/dracarys-llama-3_1-70b-instruct': {
+    'abacusai/dracarys-llama-3.1-70b-instruct': {
       displayName: 'dracarys-llama-3.1-70b-instruct',
       lifecycle: 'active',
       docsUrl: 'https://docs.api.nvidia.com/nim/',
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'baai/bge-m3': {
       displayName: 'BGE M3',
@@ -3443,6 +4699,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1024,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'black-forest-labs/flux_1-kontext-dev': {
       displayName: 'FLUX.1-Kontext-dev',
@@ -3451,6 +4708,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 40960,
       maxOutputTokens: 40960,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['image'] },
     },
     'black-forest-labs/flux_1-schnell': {
       displayName: 'FLUX.1-schnell',
@@ -3459,6 +4717,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 77,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'black-forest-labs/flux_2-klein-4b': {
       displayName: 'FLUX.2 Klein 4B',
@@ -3467,6 +4726,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 40960,
       maxOutputTokens: 40960,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: ['image'] },
     },
     'black-forest-labs/flux.1-dev': {
       displayName: 'FLUX.1-dev',
@@ -3475,6 +4735,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 4096,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bytedance/seed-oss-36b-instruct': {
       displayName: 'ByteDance-Seed/Seed-OSS-36B-Instruct',
@@ -3483,6 +4744,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/deepseek-v4-flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -3491,6 +4753,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 393216,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -3499,6 +4763,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 393216,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-2-2b-it': {
       displayName: 'Gemma 2 2b It',
@@ -3507,6 +4773,25 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'google/gemma-3-12b-it': {
+      displayName: 'Gemma 3 12B IT',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 131072,
+      maxOutputTokens: 16384,
+      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'google/gemma-3-4b-it': {
+      displayName: 'Gemma 3 4B IT',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 131072,
+      maxOutputTokens: 16384,
+      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-3n-e2b-it': {
       displayName: 'Gemma 3n E2b It',
@@ -3515,6 +4800,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-3n-e4b-it': {
       displayName: 'Gemma 3n E4b It',
@@ -3523,6 +4809,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-4-31b-it': {
       displayName: 'Gemma-4-31B-IT',
@@ -3531,6 +4818,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/google-paligemma': {
       displayName: 'paligemma',
@@ -3539,6 +4828,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta/esm2-650m': {
       displayName: 'esm2-650m',
@@ -3547,6 +4837,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/esmfold': {
       displayName: 'esmfold',
@@ -3555,6 +4846,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-3.1-70b-instruct': {
       displayName: 'Llama 3.1 70b Instruct',
@@ -3563,6 +4855,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-3.1-8b-instruct': {
       displayName: 'Llama 3.1 8B Instruct',
@@ -3571,6 +4864,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-3.2-11b-vision-instruct': {
       displayName: 'Llama 3.2 11b Vision Instruct',
@@ -3579,6 +4873,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta/llama-3.2-1b-instruct': {
       displayName: 'Llama 3.2 1b Instruct',
@@ -3587,6 +4882,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-3.2-3b-instruct': {
       displayName: 'Llama 3.2 3B Instruct',
@@ -3595,6 +4891,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-3.2-90b-vision-instruct': {
       displayName: 'Llama-3.2-90B-Vision-Instruct',
@@ -3603,6 +4900,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta/llama-3.3-70b-instruct': {
       displayName: 'Llama 3.3 70b Instruct',
@@ -3611,6 +4909,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-4-maverick-17b-128e-instruct': {
       displayName: 'Llama 4 Maverick 17b 128e Instruct',
@@ -3619,6 +4918,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta/llama-guard-4-12b': {
       displayName: 'Llama Guard 4 12B',
@@ -3627,6 +4927,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'microsoft/phi-4-mini-instruct': {
       displayName: 'Phi-4-Mini',
@@ -3635,6 +4936,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'microsoft/phi-4-multimodal-instruct': {
       displayName: 'Phi 4 Multimodal',
@@ -3643,6 +4945,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimaxai/minimax-m2.7': {
       displayName: 'MiniMax-M2.7',
@@ -3651,6 +4954,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimaxai/minimax-m3': {
       displayName: 'MiniMax-M3',
@@ -3659,6 +4963,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/magistral-small-2506': {
       displayName: 'Magistral Small 2506',
@@ -3667,14 +4973,25 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
-    'mistralai/mistral-7b-instruct-v03': {
+    'mistralai/ministral-14b-instruct-2512': {
+      displayName: 'Ministral 3 14B Instruct 2512',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 262144,
+      maxOutputTokens: 16384,
+      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'mistralai/mistral-7b-instruct-v0.3': {
       displayName: 'Mistral-7B-Instruct-v0.3',
       lifecycle: 'active',
       docsUrl: 'https://docs.api.nvidia.com/nim/',
       contextWindow: 65536,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/mistral-large-3-675b-instruct-2512': {
       displayName: 'Mistral Large 3 675B Instruct 2512',
@@ -3683,6 +5000,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-medium-3-instruct': {
       displayName: 'Mistral Medium 3',
@@ -3691,6 +5009,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'mistralai/mistral-medium-3.5-128b': {
+      displayName: 'Mistral Medium 3.5',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 262144,
+      maxOutputTokens: 32768,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-nemotron': {
       displayName: 'mistral-nemotron',
@@ -3699,6 +5028,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/mistral-small-4-119b-2603': {
       displayName: 'mistral-small-4-119b-2603',
@@ -3707,6 +5037,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mixtral-8x22b-instruct': {
       displayName: 'Mistral: Mixtral 8x22B Instruct',
@@ -3715,6 +5047,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 13108,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/mixtral-8x7b-instruct': {
       displayName: 'Mistral: Mixtral 8x7B Instruct',
@@ -3723,6 +5056,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2-instruct-0905': {
       displayName: 'Kimi K2 0905',
@@ -3731,6 +5065,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2.6': {
       displayName: 'Kimi K2.6',
@@ -3739,6 +5074,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/active-speaker-detection': {
       displayName: 'Active Speaker Detection',
@@ -3747,6 +5084,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: [], output: ['text'] },
     },
     'nvidia/bevformer': {
       displayName: 'bevformer',
@@ -3755,6 +5093,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: [], output: ['text'] },
     },
     'nvidia/cosmos-predict1-5b': {
       displayName: 'cosmos-predict1-5b',
@@ -3763,6 +5102,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
+    },
+    'nvidia/cosmos-reason2-8b': {
+      displayName: 'Cosmos Reason2 8B',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 131072,
+      maxOutputTokens: 16384,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/cosmos-transfer1-7b': {
       displayName: 'cosmos-transfer1-7b',
@@ -3771,6 +5120,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
     },
     'nvidia/cosmos-transfer2_5-2b': {
       displayName: 'cosmos-transfer2.5-2b',
@@ -3779,6 +5129,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
     },
     'nvidia/gliner-pii': {
       displayName: 'gliner-pii',
@@ -3787,14 +5138,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'nvidia/llama-3_1-nemotron-safety-guard-8b-v3': {
-      displayName: 'llama-3.1-nemotron-safety-guard-8b-v3',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.api.nvidia.com/nim/',
-      contextWindow: 128000,
-      maxOutputTokens: 4096,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/llama-3_2-nemoretriever-300m-embed-v1': {
       displayName: 'llama-3_2-nemoretriever-300m-embed-v1',
@@ -3803,6 +5147,74 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 2048,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'nvidia/llama-3.1-nemotron-70b-instruct': {
+      displayName: 'Llama 3.1 Nemotron 70B Instruct',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 128000,
+      maxOutputTokens: 8192,
+      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'nvidia/llama-3.1-nemotron-nano-8b-v1': {
+      displayName: 'Llama 3.1 Nemotron Nano 8B v1',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 131072,
+      maxOutputTokens: 16384,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'nvidia/llama-3.1-nemotron-nano-vl-8b-v1': {
+      displayName: 'Llama 3.1 Nemotron Nano VL 8B v1',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 32768,
+      maxOutputTokens: 16384,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'nvidia/llama-3.1-nemotron-safety-guard-8b-v3': {
+      displayName: 'llama-3.1-nemotron-safety-guard-8b-v3',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 128000,
+      maxOutputTokens: 4096,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'nvidia/llama-3.1-nemotron-ultra-253b-v1': {
+      displayName: 'Llama 3.1 Nemotron Ultra 253B',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 128000,
+      maxOutputTokens: 16384,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'nvidia/llama-3.3-nemotron-super-49b-v1': {
+      displayName: 'Llama 3.3 Nemotron Super 49B v1',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'nvidia/llama-3.3-nemotron-super-49b-v1.5': {
+      displayName: 'Llama 3.3 Nemotron Super 49B v1.5',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 131072,
+      maxOutputTokens: 65536,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/llama-nemotron-embed-vl-1b-v2': {
       displayName: 'llama-nemotron-embed-vl-1b-v2',
@@ -3811,6 +5223,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 2048,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/llama-nemotron-rerank-vl-1b-v2': {
       displayName: 'llama-nemotron-rerank-vl-1b-v2',
@@ -3819,6 +5232,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/magpie-tts-zeroshot': {
       displayName: 'magpie-tts-zeroshot',
@@ -3827,6 +5241,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'audio'], output: ['audio'] },
     },
     'nvidia/nemotron-3-content-safety': {
       displayName: 'nemotron-3-content-safety',
@@ -3835,6 +5250,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-nano-30b-a3b': {
       displayName: 'nemotron-3-nano-30b-a3b',
@@ -3843,6 +5259,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning': {
       displayName: 'Nemotron 3 Nano Omni',
@@ -3851,6 +5269,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'nvidia/nemotron-3-super-120b-a12b': {
       displayName: 'Nemotron 3 Super',
@@ -3859,6 +5279,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-ultra-550b-a55b': {
       displayName: 'Nemotron 3 Ultra 550B A55B',
@@ -3867,6 +5289,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-content-safety-reasoning-4b': {
       displayName: 'nemotron-content-safety-reasoning-4b',
@@ -3875,6 +5299,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-mini-4b-instruct': {
       displayName: 'nemotron-mini-4b-instruct',
@@ -3883,6 +5308,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'nvidia/nemotron-nano-12b-v2-vl': {
+      displayName: 'Nemotron Nano 12B v2 VL',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 128000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/nemotron-voicechat': {
       displayName: 'nemotron-voicechat',
@@ -3891,6 +5326,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'audio'], output: ['text'] },
     },
     'nvidia/nv-embed-v1': {
       displayName: 'nv-embed-v1',
@@ -3899,6 +5335,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 2048,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nv-embedcode-7b-v1': {
       displayName: 'nv-embedcode-7b-v1',
@@ -3907,6 +5344,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 2048,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nvidia-nemotron-nano-9b-v2': {
       displayName: 'nvidia-nemotron-nano-9b-v2',
@@ -3915,6 +5353,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/rerank-qa-mistral-4b': {
       displayName: 'rerank-qa-mistral-4b',
@@ -3923,14 +5363,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
-    'nvidia/riva-translate-4b-instruct-v1_1': {
+    'nvidia/riva-translate-4b-instruct-v1.1': {
       displayName: 'riva-translate-4b-instruct-v1_1',
       lifecycle: 'active',
       docsUrl: 'https://docs.api.nvidia.com/nim/',
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/sparsedrive': {
       displayName: 'sparsedrive',
@@ -3939,6 +5381,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: [], output: ['text'] },
     },
     'nvidia/streampetr': {
       displayName: 'streampetr',
@@ -3947,6 +5390,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: [], output: ['text'] },
     },
     'nvidia/studiovoice': {
       displayName: 'studiovoice',
@@ -3955,6 +5399,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/synthetic-video-detector': {
       displayName: 'synthetic-video-detector',
@@ -3963,6 +5408,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: [], output: ['text'] },
     },
     'nvidia/usdcode': {
       displayName: 'usdcode',
@@ -3971,6 +5417,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/usdvalidate': {
       displayName: 'usdvalidate',
@@ -3979,6 +5426,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-120b': {
       displayName: 'GPT-OSS-120B',
@@ -3987,6 +5435,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -3995,6 +5445,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/whisper-large-v3': {
       displayName: 'Whisper Large v3',
@@ -4003,6 +5455,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
+    },
+    'poolside/laguna-xs-2.1': {
+      displayName: 'Laguna XS 2.1',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 262144,
+      maxOutputTokens: 16384,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen-image': {
       displayName: 'Qwen Image',
@@ -4011,6 +5473,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['image'] },
     },
     'qwen/qwen-image-edit': {
       displayName: 'Qwen Image Edit',
@@ -4019,6 +5482,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['image'] },
     },
     'qwen/qwen2.5-coder-32b-instruct': {
       displayName: 'Qwen2.5 Coder 32b Instruct',
@@ -4027,6 +5491,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-coder-480b-a35b-instruct': {
       displayName: 'Qwen3 Coder 480B A35B Instruct',
@@ -4035,6 +5500,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 66536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-next-80b-a3b-instruct': {
       displayName: 'Qwen3-Next-80B-A3B-Instruct',
@@ -4043,6 +5509,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3.5-122b-a10b': {
       displayName: 'Qwen3.5 122B-A10B',
@@ -4051,6 +5518,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'qwen/qwen3.5-397b-a17b': {
       displayName: 'Qwen3.5-397B-A17B',
@@ -4059,6 +5528,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'sarvamai/sarvam-m': {
       displayName: 'sarvam-m',
@@ -4067,6 +5538,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'stepfun-ai/step-3.5-flash': {
       displayName: 'Step 3.5 Flash',
@@ -4075,6 +5547,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'stepfun-ai/step-3.7-flash': {
       displayName: 'Step 3.7 Flash',
@@ -4083,14 +5557,26 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
-    'upstage/solar-10_7b-instruct': {
+    'thinkingmachines/inkling': {
+      displayName: 'Inkling',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.api.nvidia.com/nim/',
+      contextWindow: 1048576,
+      maxOutputTokens: 16384,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'upstage/solar-10.7b-instruct': {
       displayName: 'solar-10.7b-instruct',
       lifecycle: 'active',
       docsUrl: 'https://docs.api.nvidia.com/nim/',
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5.2': {
       displayName: 'GLM-5.2',
@@ -4099,33 +5585,11 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'ollama-cloud': {
-    'cogito-2.1:671b': {
-      displayName: 'cogito-2.1:671b',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 163840,
-      maxOutputTokens: 32000,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'deepseek-v3.1:671b': {
-      displayName: 'deepseek-v3.1:671b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 163840,
-      maxOutputTokens: 163840,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'deepseek-v3.2': {
-      displayName: 'deepseek-v3.2',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 163840,
-      maxOutputTokens: 65536,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
     'deepseek-v4-flash': {
       displayName: 'deepseek-v4-flash',
       lifecycle: 'active',
@@ -4133,6 +5597,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 1048576,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'deepseek-v4-flash:0731': {
+      displayName: 'DeepSeek V4 Flash 0731',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.ollama.com/cloud',
+      contextWindow: 1048576,
+      maxOutputTokens: 1048576,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-pro': {
       displayName: 'deepseek-v4-pro',
@@ -4141,54 +5617,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 1048576,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'devstral-2:123b': {
-      displayName: 'devstral-2:123b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 262144,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'devstral-small-2:24b': {
-      displayName: 'devstral-small-2:24b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 262144,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
-    },
-    'gemini-3-flash-preview': {
-      displayName: 'gemini-3-flash-preview',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 1048576,
-      maxOutputTokens: 65536,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gemma3:12b': {
-      displayName: 'gemma3:12b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 131072,
-      maxOutputTokens: 131072,
-      capabilities: { vision: true, reasoning: false, functionCalling: false },
-    },
-    'gemma3:27b': {
-      displayName: 'gemma3:27b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 131072,
-      maxOutputTokens: 131072,
-      capabilities: { vision: true, reasoning: false, functionCalling: false },
-    },
-    'gemma3:4b': {
-      displayName: 'gemma3:4b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 131072,
-      maxOutputTokens: 131072,
-      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'gemma4:31b': {
       displayName: 'gemma4:31b',
@@ -4197,30 +5627,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'glm-4.6': {
-      displayName: 'glm-4.6',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 202752,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'glm-4.7': {
-      displayName: 'glm-4.7',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 202752,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'glm-5': {
-      displayName: 'glm-5',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 202752,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'glm-5.1': {
       displayName: 'glm-5.1',
@@ -4229,6 +5637,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.2': {
       displayName: 'GLM-5.2',
@@ -4237,6 +5647,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 976000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'gpt-oss:120b': {
       displayName: 'gpt-oss:120b',
@@ -4245,6 +5657,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'gpt-oss:20b': {
       displayName: 'gpt-oss:20b',
@@ -4253,22 +5667,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'kimi-k2-thinking': {
-      displayName: 'kimi-k2-thinking',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 262144,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'kimi-k2:1t': {
-      displayName: 'kimi-k2:1t',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 262144,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2.5': {
       displayName: 'kimi-k2.5',
@@ -4277,6 +5677,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.6': {
       displayName: 'kimi-k2.6',
@@ -4285,6 +5687,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.7-code': {
       displayName: 'kimi-k2.7-code',
@@ -4293,22 +5697,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
-    'minimax-m2': {
-      displayName: 'minimax-m2',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 204800,
-      maxOutputTokens: 128000,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'minimax-m2.1': {
-      displayName: 'minimax-m2.1',
+    'kimi-k3': {
+      displayName: 'kimi-k3',
       lifecycle: 'active',
       docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 204800,
+      contextWindow: 1048576,
       maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'minimax-m2.5': {
       displayName: 'minimax-m2.5',
@@ -4317,6 +5717,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m2.7': {
       displayName: 'minimax-m2.7',
@@ -4325,6 +5726,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 196608,
       maxOutputTokens: 196608,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m3': {
       displayName: 'minimax-m3',
@@ -4333,30 +5736,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512000,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'ministral-3:14b': {
-      displayName: 'ministral-3:14b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
-    },
-    'ministral-3:3b': {
-      displayName: 'ministral-3:3b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
-    },
-    'ministral-3:8b': {
-      displayName: 'ministral-3:8b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral-large-3:675b': {
       displayName: 'mistral-large-3:675b',
@@ -4365,6 +5746,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nemotron-3-nano:30b': {
       displayName: 'nemotron-3-nano:30b',
@@ -4373,6 +5755,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nemotron-3-super': {
       displayName: 'nemotron-3-super',
@@ -4381,6 +5765,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nemotron-3-ultra': {
       displayName: 'nemotron-3-ultra',
@@ -4389,46 +5775,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'qwen3-coder-next': {
-      displayName: 'qwen3-coder-next',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 65536,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'qwen3-coder:480b': {
-      displayName: 'qwen3-coder:480b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 65536,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'qwen3-next:80b': {
-      displayName: 'qwen3-next:80b',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 32768,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'qwen3-vl:235b': {
-      displayName: 'qwen3-vl:235b',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 32768,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'qwen3-vl:235b-instruct': {
-      displayName: 'qwen3-vl:235b-instruct',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 262144,
-      maxOutputTokens: 131072,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.5:397b': {
       displayName: 'qwen3.5:397b',
@@ -4437,14 +5785,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'rnj-1:8b': {
-      displayName: 'rnj-1:8b',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.ollama.com/cloud',
-      contextWindow: 32768,
-      maxOutputTokens: 4096,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   openai: {
@@ -4455,30 +5797,34 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gpt-3.5-turbo': {
       displayName: 'GPT-3.5-turbo',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 16385,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'gpt-4': {
       displayName: 'GPT-4',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'gpt-4-turbo': {
       displayName: 'GPT-4 Turbo',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4.1': {
       displayName: 'GPT-4.1',
@@ -4487,6 +5833,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4.1-mini': {
       displayName: 'GPT-4.1 mini',
@@ -4495,14 +5842,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4.1-nano': {
       displayName: 'GPT-4.1 nano',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4o': {
       displayName: 'GPT-4o',
@@ -4511,14 +5860,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4o-2024-05-13': {
       displayName: 'GPT-4o (2024-05-13)',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4o-2024-08-06': {
       displayName: 'GPT-4o (2024-08-06)',
@@ -4527,6 +5878,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4o-2024-11-20': {
       displayName: 'GPT-4o (2024-11-20)',
@@ -4535,6 +5887,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-4o-mini': {
       displayName: 'GPT-4o mini',
@@ -4543,6 +5896,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5': {
       displayName: 'GPT-5',
@@ -4551,22 +5905,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gpt-5-chat-latest': {
-      displayName: 'GPT-5 Chat (latest)',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 400000,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: true, functionCalling: false },
-    },
-    'gpt-5-codex': {
-      displayName: 'GPT-5-Codex',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 400000,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5-mini': {
       displayName: 'GPT-5 Mini',
@@ -4575,6 +5915,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5-nano': {
       displayName: 'GPT-5 Nano',
@@ -4583,6 +5925,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5-pro': {
       displayName: 'GPT-5 Pro',
@@ -4591,6 +5935,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 272000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.1': {
       displayName: 'GPT-5.1',
@@ -4599,38 +5945,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gpt-5.1-chat-latest': {
-      displayName: 'GPT-5.1 Chat',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 128000,
-      maxOutputTokens: 16384,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gpt-5.1-codex': {
-      displayName: 'GPT-5.1 Codex',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 400000,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gpt-5.1-codex-max': {
-      displayName: 'GPT-5.1 Codex Max',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 400000,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gpt-5.1-codex-mini': {
-      displayName: 'GPT-5.1 Codex mini',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 400000,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.2': {
       displayName: 'GPT-5.2',
@@ -4639,6 +5955,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.2-chat-latest': {
       displayName: 'GPT-5.2 Chat',
@@ -4647,14 +5965,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'gpt-5.2-codex': {
-      displayName: 'GPT-5.2 Codex',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 400000,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.2-pro': {
       displayName: 'GPT-5.2 Pro',
@@ -4663,6 +5975,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.3-chat-latest': {
       displayName: 'GPT-5.3 Chat (latest)',
@@ -4671,6 +5985,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.3-codex': {
       displayName: 'GPT-5.3 Codex',
@@ -4679,6 +5994,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.3-codex-spark': {
       displayName: 'GPT-5.3 Codex Spark',
@@ -4687,6 +6004,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4': {
       displayName: 'GPT-5.4',
@@ -4695,6 +6014,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4-mini': {
       displayName: 'GPT-5.4 mini',
@@ -4703,6 +6024,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4-nano': {
       displayName: 'GPT-5.4 nano',
@@ -4711,6 +6034,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4-pro': {
       displayName: 'GPT-5.4 Pro',
@@ -4719,6 +6044,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.5': {
       displayName: 'GPT-5.5',
@@ -4727,6 +6054,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.5-pro': {
       displayName: 'GPT-5.5 Pro',
@@ -4735,6 +6064,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6': {
       displayName: 'GPT-5.6',
@@ -4743,6 +6074,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-luna': {
       displayName: 'GPT-5.6 Luna',
@@ -4751,6 +6084,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-sol': {
       displayName: 'GPT-5.6 Sol',
@@ -4759,6 +6094,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-terra': {
       displayName: 'GPT-5.6 Terra',
@@ -4767,14 +6104,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-image-1': {
       displayName: 'gpt-image-1',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['image'] },
     },
     'gpt-image-1-mini': {
       displayName: 'gpt-image-1-mini',
@@ -4783,6 +6123,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gpt-image-1.5': {
       displayName: 'gpt-image-1.5',
@@ -4791,6 +6132,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'gpt-image-2': {
       displayName: 'gpt-image-2',
@@ -4799,6 +6141,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['image'] },
     },
     'gpt-realtime-2.1': {
       displayName: 'GPT-Realtime-2.1',
@@ -4807,22 +6150,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'audio', 'image'], output: ['text', 'audio'] },
     },
     o1: {
       displayName: 'o1',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'o1-pro': {
       displayName: 'o1-pro',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     o3: {
       displayName: 'o3',
@@ -4831,22 +6180,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'o3-deep-research': {
-      displayName: 'o3-deep-research',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 200000,
-      maxOutputTokens: 100000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'o3-mini': {
       displayName: 'o3-mini',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'o3-pro': {
       displayName: 'o3-pro',
@@ -4855,22 +6200,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'o4-mini': {
       displayName: 'o4-mini',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://platform.openai.com/docs/models',
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'o4-mini-deep-research': {
-      displayName: 'o4-mini-deep-research',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.openai.com/docs/models',
-      contextWindow: 200000,
-      maxOutputTokens: 100000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'text-embedding-3-large': {
       displayName: 'text-embedding-3-large',
@@ -4879,6 +6220,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8191,
       maxOutputTokens: 3072,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'text-embedding-3-small': {
       displayName: 'text-embedding-3-small',
@@ -4887,6 +6229,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8191,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'text-embedding-ada-002': {
       displayName: 'text-embedding-ada-002',
@@ -4895,6 +6238,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   opencode: {
@@ -4905,6 +6249,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'claude-3-5-haiku': {
       displayName: 'Claude Haiku 3.5',
@@ -4913,6 +6258,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-fable-5': {
       displayName: 'Claude Fable 5',
@@ -4921,6 +6267,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-haiku-4-5': {
       displayName: 'Claude Haiku 4.5',
@@ -4929,6 +6277,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-1': {
       displayName: 'Claude Opus 4.1',
@@ -4937,6 +6286,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-5': {
       displayName: 'Claude Opus 4.5',
@@ -4945,6 +6295,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-6': {
       displayName: 'Claude Opus 4.6',
@@ -4953,6 +6305,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-7': {
       displayName: 'Claude Opus 4.7',
@@ -4961,6 +6315,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-opus-4-8': {
       displayName: 'Claude Opus 4.8',
@@ -4969,6 +6325,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'claude-opus-5': {
+      displayName: 'Claude Opus 5',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4': {
       displayName: 'Claude Sonnet 4',
@@ -4977,6 +6345,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4-5': {
       displayName: 'Claude Sonnet 4.5',
@@ -4985,6 +6354,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-4-6': {
       displayName: 'Claude Sonnet 4.6',
@@ -4993,6 +6363,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'claude-sonnet-5': {
       displayName: 'Claude Sonnet 5',
@@ -5001,22 +6373,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'deepseek-v4-flash': {
-      displayName: 'DeepSeek V4 Flash',
+      displayName: 'DeepSeek V4 Flash 0731',
       lifecycle: 'active',
       docsUrl: 'https://opencode.ai/docs/zen',
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-flash-free': {
-      displayName: 'DeepSeek V4 Flash Free',
+      displayName: 'DeepSeek V4 Flash Free (New)',
       lifecycle: 'active',
       docsUrl: 'https://opencode.ai/docs/zen',
       contextWindow: 200000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -5025,6 +6403,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'gemini-3-flash': {
       displayName: 'Gemini 3 Flash',
@@ -5033,6 +6413,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-3-pro': {
       displayName: 'Gemini 3 Pro',
@@ -5041,6 +6423,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-3.1-pro': {
       displayName: 'Gemini 3.1 Pro Preview',
@@ -5049,6 +6433,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'gemini-3.5-flash': {
       displayName: 'Gemini 3.5 Flash',
@@ -5057,6 +6443,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.5-flash-lite': {
+      displayName: 'Gemini 3.5 Flash Lite',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'gemini-3.6-flash': {
+      displayName: 'Gemini 3.6 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'glm-4.6': {
       displayName: 'GLM-4.6',
@@ -5065,6 +6473,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-4.7': {
       displayName: 'GLM-4.7',
@@ -5073,6 +6483,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-4.7-free': {
       displayName: 'GLM-4.7 Free',
@@ -5081,6 +6493,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5': {
       displayName: 'GLM-5',
@@ -5089,6 +6503,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5-free': {
       displayName: 'GLM-5 Free',
@@ -5097,6 +6513,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.1': {
       displayName: 'GLM-5.1',
@@ -5105,6 +6523,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.2': {
       displayName: 'GLM-5.2',
@@ -5113,6 +6533,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'gpt-5': {
       displayName: 'GPT-5',
@@ -5121,6 +6543,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5-codex': {
       displayName: 'GPT-5 Codex',
@@ -5129,6 +6553,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5-nano': {
       displayName: 'GPT-5 Nano',
@@ -5137,6 +6563,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.1': {
       displayName: 'GPT-5.1',
@@ -5145,6 +6573,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.1-codex': {
       displayName: 'GPT-5.1 Codex',
@@ -5153,6 +6583,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.1-codex-max': {
       displayName: 'GPT-5.1 Codex Max',
@@ -5161,6 +6593,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.1-codex-mini': {
       displayName: 'GPT-5.1 Codex Mini',
@@ -5169,6 +6603,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.2': {
       displayName: 'GPT-5.2',
@@ -5177,6 +6613,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.2-codex': {
       displayName: 'GPT-5.2 Codex',
@@ -5185,6 +6623,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.3-codex': {
       displayName: 'GPT-5.3 Codex',
@@ -5193,6 +6633,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.3-codex-spark': {
       displayName: 'GPT-5.3 Codex Spark',
@@ -5201,6 +6643,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'gpt-5.4': {
       displayName: 'GPT-5.4',
@@ -5209,6 +6653,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4-mini': {
       displayName: 'GPT-5.4 Mini',
@@ -5217,6 +6663,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4-nano': {
       displayName: 'GPT-5.4 Nano',
@@ -5225,6 +6673,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.4-pro': {
       displayName: 'GPT-5.4 Pro',
@@ -5233,6 +6683,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.5': {
       displayName: 'GPT-5.5',
@@ -5241,6 +6693,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.5-pro': {
       displayName: 'GPT-5.5 Pro',
@@ -5249,6 +6703,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-luna': {
       displayName: 'GPT-5.6 Luna',
@@ -5257,6 +6713,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-sol': {
       displayName: 'GPT-5.6 Sol',
@@ -5265,6 +6723,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'gpt-5.6-terra': {
       displayName: 'GPT-5.6 Terra',
@@ -5273,6 +6733,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-4.5': {
       displayName: 'Grok 4.5',
@@ -5281,6 +6743,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 500000,
       maxOutputTokens: 500000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-build-0.1': {
       displayName: 'Grok Build 0.1',
@@ -5289,6 +6753,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-code': {
       displayName: 'Grok Code Fast 1',
@@ -5297,14 +6762,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'hy3-free': {
       displayName: 'Hy3 Free',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://opencode.ai/docs/zen',
       contextWindow: 190000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'hy3-preview-free': {
       displayName: 'Hy3 preview Free',
@@ -5313,6 +6780,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2': {
       displayName: 'Kimi K2',
@@ -5321,6 +6789,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2-thinking': {
       displayName: 'Kimi K2 Thinking',
@@ -5329,6 +6798,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2.5': {
       displayName: 'Kimi K2.5',
@@ -5337,6 +6807,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.5-free': {
       displayName: 'Kimi K2.5 Free',
@@ -5345,6 +6817,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.6': {
       displayName: 'Kimi K2.6',
@@ -5353,6 +6827,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -5361,6 +6837,27 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'kimi-k3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'laguna-s-2.1-free': {
+      displayName: 'Laguna S 2.1 Free',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 256000,
+      maxOutputTokens: 32000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'ling-2.6-flash-free': {
       displayName: 'Ling 2.6 Flash Free',
@@ -5369,6 +6866,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262100,
       maxOutputTokens: 32800,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'ling-3.0-flash-free': {
+      displayName: 'Ling-3.0-flash Free',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 262144,
+      maxOutputTokens: 32768,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2-flash-free': {
       displayName: 'MiMo V2 Flash Free',
@@ -5377,6 +6885,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2-omni-free': {
       displayName: 'MiMo V2 Omni Free',
@@ -5385,6 +6894,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'mimo-v2-pro-free': {
       displayName: 'MiMo V2 Pro Free',
@@ -5393,6 +6903,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2.5-free': {
       displayName: 'MiMo V2.5 Free',
@@ -5401,6 +6912,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'minimax-m2.1': {
       displayName: 'MiniMax-M2.1',
@@ -5409,6 +6921,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m2.1-free': {
       displayName: 'MiniMax-M2.1 Free',
@@ -5417,6 +6930,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m2.5': {
       displayName: 'MiniMax-M2.5',
@@ -5425,6 +6939,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m2.5-free': {
       displayName: 'MiniMax-M2.5 Free',
@@ -5433,6 +6948,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m2.7': {
       displayName: 'MiniMax-M2.7',
@@ -5441,6 +6957,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m3': {
       displayName: 'MiniMax-M3',
@@ -5449,6 +6966,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'minimax-m3-free': {
       displayName: 'MiniMax-M3 Free',
@@ -5457,6 +6975,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nemotron-3-super-free': {
       displayName: 'Nemotron 3 Super Free',
@@ -5465,6 +6985,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nemotron-3-ultra-free': {
       displayName: 'Nemotron 3 Ultra Free',
@@ -5473,6 +6994,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'north-mini-code-free': {
       displayName: 'North Mini Code Free',
@@ -5481,6 +7003,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3-coder': {
       displayName: 'Qwen3 Coder',
@@ -5489,6 +7013,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.5-plus': {
       displayName: 'Qwen3.5 Plus',
@@ -5497,6 +7022,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-plus': {
       displayName: 'Qwen3.6 Plus',
@@ -5505,6 +7032,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-plus-free': {
       displayName: 'Qwen3.6 Plus Free',
@@ -5513,6 +7042,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'ring-2.6-1t-free': {
       displayName: 'Ring 2.6 1T Free',
@@ -5521,6 +7052,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 66000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'trinity-large-preview-free': {
       displayName: 'Trinity Large Preview',
@@ -5529,16 +7061,19 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'opencode-go': {
     'deepseek-v4-flash': {
-      displayName: 'DeepSeek V4 Flash',
+      displayName: 'DeepSeek V4 Flash (New)',
       lifecycle: 'active',
       docsUrl: 'https://opencode.ai/docs/zen',
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -5547,6 +7082,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5': {
       displayName: 'GLM-5',
@@ -5555,6 +7092,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.1': {
       displayName: 'GLM-5.1',
@@ -5563,6 +7101,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.2': {
       displayName: 'GLM-5.2',
@@ -5571,6 +7110,38 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'gpt-5.6-luna': {
+      displayName: 'GPT-5.6 Luna (2x usage)',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 1050000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'grok-4.5': {
+      displayName: 'Grok 4.5',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 500000,
+      maxOutputTokens: 500000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    hy3: {
+      displayName: 'Hy3',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 256000,
+      maxOutputTokens: 64000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2.5': {
       displayName: 'Kimi K2.5',
@@ -5579,6 +7150,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.6': {
       displayName: 'Kimi K2.6',
@@ -5587,6 +7159,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -5595,6 +7168,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'kimi-k3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mimo-v2-omni': {
       displayName: 'MiMo V2 Omni',
@@ -5603,6 +7187,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'mimo-v2-pro': {
       displayName: 'MiMo V2 Pro',
@@ -5611,6 +7196,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2.5': {
       displayName: 'MiMo V2.5',
@@ -5619,6 +7205,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'mimo-v2.5-pro': {
       displayName: 'MiMo V2.5 Pro',
@@ -5627,6 +7214,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m2.5': {
       displayName: 'MiniMax-M2.5',
@@ -5635,6 +7223,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m2.7': {
       displayName: 'MiniMax-M2.7',
@@ -5643,6 +7232,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax-m3': {
       displayName: 'MiniMax-M3',
@@ -5651,6 +7241,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.5-plus': {
       displayName: 'Qwen3.5 Plus',
@@ -5659,6 +7251,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.6-plus': {
       displayName: 'Qwen3.6 Plus',
@@ -5667,6 +7261,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen3.7-max': {
       displayName: 'Qwen3.7 Max',
@@ -5675,6 +7271,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen3.7-plus': {
       displayName: 'Qwen3.7 Plus',
@@ -5683,6 +7281,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'qwen3.8-max': {
+      displayName: 'Qwen3.8 Max',
+      lifecycle: 'active',
+      docsUrl: 'https://opencode.ai/docs/zen',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   openrouter: {
@@ -5693,6 +7303,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '~anthropic/claude-haiku-latest': {
       displayName: 'Anthropic Claude Haiku Latest',
@@ -5701,6 +7313,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '~anthropic/claude-opus-latest': {
       displayName: 'Claude Opus Latest',
@@ -5709,6 +7323,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '~anthropic/claude-sonnet-latest': {
       displayName: 'Anthropic Claude Sonnet Latest',
@@ -5717,6 +7333,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    '~deepseek/deepseek-v4-flash-latest': {
+      displayName: 'DeepSeek V4 Flash Latest',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     '~google/gemini-flash-latest': {
       displayName: 'Google Gemini Flash Latest',
@@ -5725,6 +7353,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     '~google/gemini-pro-latest': {
       displayName: 'Google Gemini Pro Latest',
@@ -5733,14 +7363,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['audio', 'image', 'text'], output: ['text'] },
     },
     '~moonshotai/kimi-latest': {
       displayName: 'MoonshotAI Kimi Latest',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 262144,
-      maxOutputTokens: 262144,
+      contextWindow: 1048576,
+      maxOutputTokens: 1048576,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     '~openai/gpt-latest': {
       displayName: 'OpenAI GPT Latest',
@@ -5749,6 +7383,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     '~openai/gpt-mini-latest': {
       displayName: 'OpenAI GPT Mini Latest',
@@ -5757,6 +7393,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     '~x-ai/grok-latest': {
       displayName: 'Grok Latest',
@@ -5765,6 +7403,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 500000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'ai21/jamba-large-1.7': {
       displayName: 'Jamba Large 1.7',
@@ -5773,6 +7413,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'aion-labs/aion-2.0': {
       displayName: 'Aion-2.0',
@@ -5781,6 +7422,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'aion-labs/aion-3.0': {
       displayName: 'Aion-3.0',
@@ -5789,6 +7431,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'aion-labs/aion-3.0-mini': {
       displayName: 'Aion-3.0-Mini',
@@ -5797,6 +7440,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'aion-labs/aion-rp-llama-3.1-8b': {
       displayName: 'Aion-RP 1.0 (8B)',
@@ -5805,6 +7449,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'allenai/olmo-3-32b-think': {
       displayName: 'Olmo 3 32B Think',
@@ -5813,6 +7458,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'amazon/nova-2-lite-v1': {
       displayName: 'Nova 2 Lite',
@@ -5821,6 +7467,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65535,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'amazon/nova-lite-v1': {
       displayName: 'Nova Lite 1.0',
@@ -5829,6 +7476,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 300000,
       maxOutputTokens: 5120,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'amazon/nova-micro-v1': {
       displayName: 'Nova Micro 1.0',
@@ -5837,6 +7485,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 5120,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'amazon/nova-premier-v1': {
       displayName: 'Nova Premier 1.0',
@@ -5845,6 +7494,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'amazon/nova-pro-v1': {
       displayName: 'Nova Pro 1.0',
@@ -5853,14 +7503,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 300000,
       maxOutputTokens: 5120,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthracite-org/magnum-v4-72b': {
       displayName: 'Magnum v4 72B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 32768,
+      contextWindow: 16384,
       maxOutputTokens: 2048,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'anthropic/claude-3-haiku': {
       displayName: 'Claude 3 Haiku',
@@ -5869,6 +7521,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-fable-5': {
       displayName: 'Claude Fable 5',
@@ -5877,6 +7530,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-haiku-4.5': {
       displayName: 'Claude Haiku 4.5 (latest)',
@@ -5885,6 +7540,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4': {
       displayName: 'Claude Opus 4',
@@ -5893,6 +7550,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'anthropic/claude-opus-4.1': {
       displayName: 'Claude Opus 4.1 (latest)',
@@ -5901,6 +7560,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.5': {
       displayName: 'Claude Opus 4.5 (latest)',
@@ -5909,6 +7570,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.6': {
       displayName: 'Claude Opus 4.6',
@@ -5917,6 +7580,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.7': {
       displayName: 'Claude Opus 4.7',
@@ -5925,6 +7590,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.7-fast': {
       displayName: 'Claude Opus 4.7 (Fast)',
@@ -5933,6 +7600,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.8': {
       displayName: 'Claude Opus 4.8',
@@ -5941,6 +7610,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.8-fast': {
       displayName: 'Claude Opus 4.8 (Fast)',
@@ -5949,6 +7620,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'anthropic/claude-opus-5': {
+      displayName: 'Claude Opus 5',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'anthropic/claude-opus-5-fast': {
+      displayName: 'Claude Opus 5 (Fast)',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4': {
       displayName: 'Claude Sonnet 4',
@@ -5957,6 +7650,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4.5': {
       displayName: 'Claude Sonnet 4.5 (latest)',
@@ -5965,6 +7660,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4.6': {
       displayName: 'Claude Sonnet 4.6',
@@ -5973,6 +7670,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-5': {
       displayName: 'Claude Sonnet 5',
@@ -5981,22 +7680,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'arcee-ai/coder-large': {
-      displayName: 'Coder Large',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 32768,
-      maxOutputTokens: 32768,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'arcee-ai/trinity-large-thinking': {
       displayName: 'Trinity Large Thinking',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 80000,
+      maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'arcee-ai/virtuoso-large': {
       displayName: 'Virtuoso Large',
@@ -6005,14 +7699,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'baidu/ernie-4.5-vl-424b-a47b': {
       displayName: 'ERNIE 4.5 VL 424B A47B ',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 123000,
       maxOutputTokens: 16000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'bytedance-seed/seed-1.6': {
       displayName: 'Seed 1.6',
@@ -6021,6 +7717,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'bytedance-seed/seed-1.6-flash': {
       displayName: 'Seed 1.6 Flash',
@@ -6029,6 +7726,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'bytedance-seed/seed-2.0-lite': {
       displayName: 'Seed-2.0-Lite',
@@ -6037,6 +7735,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'bytedance-seed/seed-2.0-mini': {
       displayName: 'Seed-2.0-Mini',
@@ -6045,6 +7745,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'bytedance/ui-tars-1.5-7b': {
       displayName: 'UI-TARS 7B ',
@@ -6053,6 +7755,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 2048,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'cognitivecomputations/dolphin-mistral-24b-venice-edition': {
       displayName: 'Uncensored',
@@ -6061,14 +7764,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'cognitivecomputations/dolphin-mistral-24b-venice-edition:free': {
-      displayName: 'Uncensored (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 32768,
-      maxOutputTokens: 32768,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/command-a': {
       displayName: 'Command A',
@@ -6077,6 +7773,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/command-r-08-2024': {
       displayName: 'Command R',
@@ -6085,6 +7782,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/command-r-plus-08-2024': {
       displayName: 'Command R+',
@@ -6093,6 +7791,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/command-r7b-12-2024': {
       displayName: 'Command R7B',
@@ -6101,6 +7800,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/north-mini-code:free': {
       displayName: 'North Mini Code (free)',
@@ -6109,6 +7809,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepcogito/cogito-v2.1-671b': {
       displayName: 'Cogito v2.1 671B',
@@ -6117,22 +7818,25 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-chat': {
       displayName: 'DeepSeek Chat',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 163840,
       maxOutputTokens: 16000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-chat-v3-0324': {
       displayName: 'DeepSeek V3 0324',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 163840,
-      maxOutputTokens: 16384,
+      maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-chat-v3.1': {
       displayName: 'DeepSeek V3.1',
@@ -6141,6 +7845,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-r1': {
       displayName: 'DeepSeek-R1',
@@ -6149,6 +7855,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 16000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-r1-0528': {
       displayName: 'R1 0528',
@@ -6157,14 +7864,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-r1-distill-llama-70b': {
       displayName: 'R1 Distill Llama 70B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 128000,
+      contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.1-terminus': {
       displayName: 'DeepSeek V3.1 Terminus',
@@ -6173,14 +7882,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.2': {
       displayName: 'DeepSeek V3.2',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 64000,
+      contextWindow: 163840,
+      maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.2-exp': {
       displayName: 'DeepSeek V3.2 Exp',
@@ -6189,14 +7902,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v4-flash': {
       displayName: 'DeepSeek V4 Flash',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 1048576,
+      maxOutputTokens: 393216,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh'] },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'deepseek/deepseek-v4-flash-0731': {
+      displayName: 'DeepSeek V4 Flash 0731',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -6205,6 +7932,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemini-2.5-flash': {
       displayName: 'Gemini 2.5 Flash',
@@ -6213,14 +7942,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65535,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-2.5-flash-image': {
       displayName: 'Nano Banana',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 32768,
-      maxOutputTokens: 32768,
+      maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-2.5-flash-lite': {
       displayName: 'Gemini 2.5 Flash-Lite',
@@ -6229,6 +7961,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65535,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-2.5-pro': {
       displayName: 'Gemini 2.5 Pro',
@@ -6237,6 +7971,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-2.5-pro-preview': {
       displayName: 'Gemini 2.5 Pro Preview 06-05',
@@ -6245,6 +7980,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['image', 'text', 'audio'], output: ['text'] },
     },
     'google/gemini-2.5-pro-preview-05-06': {
       displayName: 'Gemini 2.5 Pro Preview 05-06',
@@ -6253,6 +7989,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65535,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3-flash-preview': {
       displayName: 'Gemini 3 Flash Preview',
@@ -6261,14 +7998,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65535,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3-pro-image': {
       displayName: 'Nano Banana Pro',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 65536,
+      contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-3-pro-image-preview': {
       displayName: 'Nano Banana Pro',
@@ -6277,6 +8017,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-3.1-flash-image': {
       displayName: 'Nano Banana 2',
@@ -6285,14 +8026,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-3.1-flash-image-preview': {
       displayName: 'Nano Banana 2',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 32768,
+      contextWindow: 65536,
+      maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text', 'image'] },
     },
     'google/gemini-3.1-flash-lite': {
       displayName: 'Gemini 3.1 Flash Lite',
@@ -6301,14 +8046,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3.1-flash-lite-image': {
-      displayName: 'Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)',
+      displayName: 'Nano Banana 2 Lite',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 65536,
-      maxOutputTokens: 66000,
+      maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-3.1-flash-lite-preview': {
       displayName: 'Gemini 3.1 Flash Lite Preview',
@@ -6317,6 +8066,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3.1-pro-preview': {
       displayName: 'Gemini 3.1 Pro Preview',
@@ -6325,14 +8076,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3.1-pro-preview-customtools': {
       displayName: 'Gemini 3.1 Pro Preview Custom Tools',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 1048756,
+      contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3.5-flash': {
       displayName: 'Gemini 3.5 Flash',
@@ -6341,6 +8096,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'google/gemini-3.5-flash-lite': {
+      displayName: 'Gemini 3.5 Flash Lite',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'google/gemini-3.6-flash': {
+      displayName: 'Gemini 3.6 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemma-2-27b-it': {
       displayName: 'Gemma 2 27B',
@@ -6349,6 +8126,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 2048,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-3-12b-it': {
       displayName: 'Gemma 3 12B',
@@ -6357,14 +8135,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-3-27b-it': {
       displayName: 'Gemma 3 27B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 16384,
+      contextWindow: 262144,
+      maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-3-4b-it': {
       displayName: 'Gemma 3 4B',
@@ -6373,6 +8153,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-3n-e4b-it': {
       displayName: 'Gemma 3n 4B',
@@ -6381,14 +8162,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-4-26b-a4b-it': {
       displayName: 'Gemma 4 26B A4B IT',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 262144,
+      maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'google/gemma-4-26b-a4b-it:free': {
       displayName: 'Gemma 4 26B A4B  (free)',
@@ -6397,6 +8181,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'google/gemma-4-31b-it': {
       displayName: 'Gemma 4 31B IT',
@@ -6405,14 +8191,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'google/gemma-4-31b-it:free': {
       displayName: 'Gemma 4 31B (free)',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'google/lyria-3-clip-preview': {
       displayName: 'Lyria 3 Clip Preview',
@@ -6421,6 +8211,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'audio'] },
     },
     'google/lyria-3-pro-preview': {
       displayName: 'Lyria 3 Pro Preview',
@@ -6429,14 +8220,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'audio'] },
     },
     'gryphe/mythomax-l2-13b': {
       displayName: 'MythoMax 13B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 4096,
+      contextWindow: 8192,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'ibm-granite/granite-4.0-h-micro': {
       displayName: 'Granite 4.0 Micro',
@@ -6445,6 +8238,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'ibm-granite/granite-4.1-8b': {
       displayName: 'Granite 4.1 8B',
@@ -6453,6 +8247,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'inception/mercury-2': {
       displayName: 'Mercury 2',
@@ -6461,6 +8256,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 50000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'inclusionai/ling-2.6-1t': {
       displayName: 'Ling-2.6-1T',
@@ -6469,6 +8266,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'inclusionai/ling-2.6-flash': {
       displayName: 'Ling-2.6-flash',
@@ -6477,6 +8275,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'inclusionai/ling-3.0-flash:free': {
+      displayName: 'Ling-3.0-flash (free)',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 262144,
+      maxOutputTokens: 32768,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'inclusionai/ring-2.6-1t': {
       displayName: 'Ring-2.6-1T',
@@ -6485,46 +8294,35 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
-    'inflection/inflection-3-pi': {
-      displayName: 'Inflection 3 Pi',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 8000,
-      maxOutputTokens: 1024,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'inflection/inflection-3-productivity': {
-      displayName: 'Inflection 3 Productivity',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 8000,
-      maxOutputTokens: 1024,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'kwaipilot/kat-coder-pro-v2': {
-      displayName: 'KAT-Coder-Pro V2',
+    'kwaipilot/kat-coder-air-v2.5': {
+      displayName: 'KAT-Coder-Air V2.5',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 256000,
       maxOutputTokens: 80000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
-    'liquid/lfm-2.5-1.2b-instruct:free': {
-      displayName: 'LFM2.5-1.2B-Instruct (free)',
+    'kwaipilot/kat-coder-pro-v2': {
+      displayName: 'KAT-Coder-Pro V2',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 32768,
-      maxOutputTokens: 32768,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      contextWindow: 262144,
+      maxOutputTokens: 80000,
+      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
-    'liquid/lfm-2.5-1.2b-thinking:free': {
-      displayName: 'LFM2.5-1.2B-Thinking (free)',
+    'kwaipilot/kat-coder-pro-v2.5': {
+      displayName: 'KAT-Coder-Pro V2.5',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 32768,
-      maxOutputTokens: 32768,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      contextWindow: 256000,
+      maxOutputTokens: 80000,
+      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mancer/weaver': {
       displayName: 'Weaver (alpha)',
@@ -6533,6 +8331,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8000,
       maxOutputTokens: 2000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'meituan/longcat-2.0': {
+      displayName: 'LongCat 2.0',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048756,
+      maxOutputTokens: 262144,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/llama-3.1-70b-instruct': {
       displayName: 'Llama 3.1 70B Instruct',
@@ -6541,30 +8349,25 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/llama-3.1-8b-instruct': {
       displayName: 'Llama 3.1 8B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 131072,
-      maxOutputTokens: 16384,
+      maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'meta-llama/llama-3.2-11b-vision-instruct': {
-      displayName: 'Llama 3.2 11B Vision Instruct',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 16384,
-      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/llama-3.2-1b-instruct': {
       displayName: 'Llama 3.2 1B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 60000,
       maxOutputTokens: 60000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/llama-3.2-3b-instruct': {
       displayName: 'Llama 3.2 3B Instruct',
@@ -6573,30 +8376,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'meta-llama/llama-3.2-3b-instruct:free': {
-      displayName: 'Llama 3.2 3B Instruct (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/llama-3.3-70b-instruct': {
       displayName: 'Llama-3.3-70B-Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 131072,
-      maxOutputTokens: 16384,
+      maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'meta-llama/llama-3.3-70b-instruct:free': {
-      displayName: 'Llama 3.3 70B Instruct (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/llama-4-maverick': {
       displayName: 'Llama 4 Maverick',
@@ -6605,22 +8394,35 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta-llama/llama-4-scout': {
       displayName: 'Llama 4 Scout',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 10000000,
+      contextWindow: 1310720,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta-llama/llama-guard-4-12b': {
       displayName: 'Llama Guard 4 12B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 163840,
+      contextWindow: 1048576,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: ['text'] },
+    },
+    'meta/muse-spark-1.1': {
+      displayName: 'Muse Spark 1.1',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 1048576,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'microsoft/phi-4': {
       displayName: 'Phi 4',
@@ -6629,14 +8431,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16384,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'microsoft/wizardlm-2-8x22b': {
       displayName: 'WizardLM-2 8x22B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 65536,
+      contextWindow: 65535,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-01': {
       displayName: 'MiniMax-01',
@@ -6645,6 +8449,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000192,
       maxOutputTokens: 1000192,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'minimax/minimax-m1': {
       displayName: 'MiniMax M1',
@@ -6653,6 +8458,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 40000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2': {
       displayName: 'MiniMax-M2',
@@ -6661,6 +8467,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2-her': {
       displayName: 'MiniMax M2-her',
@@ -6669,6 +8476,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 2048,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.1': {
       displayName: 'MiniMax-M2.1',
@@ -6677,6 +8485,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.5': {
       displayName: 'MiniMax-M2.5',
@@ -6685,22 +8494,25 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 196608,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.7': {
       displayName: 'MiniMax-M2.7',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 204800,
-      maxOutputTokens: 196608,
+      maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m3': {
       displayName: 'MiniMax-M3',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 1048576,
-      maxOutputTokens: 131072,
+      maxOutputTokens: 512000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/codestral-2508': {
       displayName: 'Codestral 2508',
@@ -6709,14 +8521,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'mistralai/devstral-2512': {
-      displayName: 'Devstral 2',
-      lifecycle: 'deprecated',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 262144,
-      maxOutputTokens: 262144,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/ministral-14b-2512': {
       displayName: 'Ministral 3 14B 2512',
@@ -6725,6 +8530,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/ministral-3b-2512': {
       displayName: 'Ministral 3 3B 2512',
@@ -6733,6 +8539,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/ministral-8b-2512': {
       displayName: 'Ministral 3 8B 2512',
@@ -6741,6 +8548,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-large': {
       displayName: 'Mistral Large',
@@ -6749,6 +8557,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/mistral-large-2407': {
       displayName: 'Mistral Large 2407',
@@ -6757,6 +8566,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/mistral-large-2512': {
       displayName: 'Mistral Large 3',
@@ -6765,6 +8575,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-medium-3': {
       displayName: 'Mistral Medium 3',
@@ -6773,6 +8584,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-medium-3-5': {
       displayName: 'Mistral Medium 3.5',
@@ -6781,6 +8593,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-medium-3.1': {
       displayName: 'Mistral Medium 3.1',
@@ -6789,14 +8603,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-nemo': {
       displayName: 'Mistral Nemo',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 131072,
-      maxOutputTokens: 131072,
+      maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/mistral-saba': {
       displayName: 'Saba',
@@ -6805,6 +8621,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/mistral-small-24b-instruct-2501': {
       displayName: 'Mistral Small 3',
@@ -6813,6 +8630,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/mistral-small-2603': {
       displayName: 'Mistral Small 4',
@@ -6821,6 +8639,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-small-3.1-24b-instruct': {
       displayName: 'Mistral Small 3.1 24B',
@@ -6829,14 +8649,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistralai/mistral-small-3.2-24b-instruct': {
       displayName: 'Mistral Small 3.2 24B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 128000,
+      contextWindow: 256000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'mistralai/mixtral-8x22b-instruct': {
       displayName: 'Mixtral 8x22B Instruct',
@@ -6845,6 +8667,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistralai/voxtral-small-24b-2507': {
       displayName: 'Voxtral Small 24B 2507',
@@ -6853,6 +8676,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'audio'], output: ['text'] },
     },
     'moonshotai/kimi-k2': {
       displayName: 'Kimi K2 0711',
@@ -6861,6 +8685,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 100352,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2-0905': {
       displayName: 'Kimi K2 0905',
@@ -6869,6 +8694,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 100352,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2-thinking': {
       displayName: 'Kimi K2 Thinking',
@@ -6877,14 +8703,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 100352,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2.5': {
       displayName: 'Kimi K2.5',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 256000,
+      maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2.6': {
       displayName: 'Kimi K2.6',
@@ -6893,6 +8721,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -6901,6 +8730,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'moonshotai/kimi-k3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 1048576,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'morph/morph-v3-fast': {
       displayName: 'Morph V3 Fast',
@@ -6909,6 +8749,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 81920,
       maxOutputTokens: 38000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'morph/morph-v3-large': {
       displayName: 'Morph V3 Large',
@@ -6917,6 +8758,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nex-agi/nex-n2-mini': {
       displayName: 'Nex-N2-Mini',
@@ -6925,6 +8767,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nex-agi/nex-n2-pro': {
       displayName: 'Nex-N2-Pro',
@@ -6933,6 +8776,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nousresearch/hermes-3-llama-3.1-405b': {
       displayName: 'Hermes 3 405B Instruct',
@@ -6941,14 +8785,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'nousresearch/hermes-3-llama-3.1-405b:free': {
-      displayName: 'Hermes 3 405B Instruct (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nousresearch/hermes-3-llama-3.1-70b': {
       displayName: 'Hermes 3 70B Instruct',
@@ -6957,6 +8794,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nousresearch/hermes-4-405b': {
       displayName: 'Hermes 4 405B',
@@ -6965,6 +8803,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nousresearch/hermes-4-70b': {
       displayName: 'Hermes 4 70B',
@@ -6973,22 +8813,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
-    },
-    'nvidia/llama-3.3-nemotron-super-49b-v1.5': {
-      displayName: 'Llama 3.3 Nemotron Super 49B v1.5',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 16384,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-nano-30b-a3b': {
       displayName: 'Nemotron 3 Nano 30B A3B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 228000,
+      maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-nano-30b-a3b:free': {
       displayName: 'Nemotron 3 Nano 30B A3B (free)',
@@ -6997,6 +8832,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free': {
       displayName: 'Nemotron 3 Nano Omni (free)',
@@ -7005,6 +8841,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'nvidia/nemotron-3-super-120b-a12b': {
       displayName: 'Nemotron 3 Super 120B A12B',
@@ -7013,22 +8850,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-super-120b-a12b:free': {
       displayName: 'Nemotron 3 Super (free)',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 1000000,
+      contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-ultra-550b-a55b': {
       displayName: 'Nemotron 3 Ultra 550B A55B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 1000000,
+      contextWindow: 512288,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-ultra-550b-a55b:free': {
       displayName: 'Nemotron 3 Ultra (free)',
@@ -7037,6 +8880,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3.5-content-safety:free': {
       displayName: 'Nemotron 3.5 Content Safety (free)',
@@ -7045,6 +8890,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/nemotron-nano-12b-v2-vl:free': {
       displayName: 'Nemotron Nano 12B 2 VL (free)',
@@ -7053,6 +8899,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/nemotron-nano-9b-v2:free': {
       displayName: 'Nemotron Nano 9B V2 (free)',
@@ -7061,6 +8908,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-3.5-turbo': {
       displayName: 'GPT-3.5-turbo',
@@ -7069,6 +8917,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16385,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-3.5-turbo-0613': {
       displayName: 'GPT-3.5 Turbo (older v0613)',
@@ -7077,6 +8926,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 4095,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-3.5-turbo-16k': {
       displayName: 'GPT-3.5 Turbo 16k',
@@ -7085,6 +8935,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16385,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-3.5-turbo-instruct': {
       displayName: 'GPT-3.5 Turbo Instruct',
@@ -7093,6 +8944,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 4095,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-4': {
       displayName: 'GPT-4',
@@ -7101,6 +8953,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8191,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-4-turbo': {
       displayName: 'GPT-4 Turbo',
@@ -7109,6 +8962,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4-turbo-preview': {
       displayName: 'GPT-4 Turbo Preview',
@@ -7117,6 +8971,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-4.1': {
       displayName: 'GPT-4.1',
@@ -7125,6 +8980,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4.1-mini': {
       displayName: 'GPT-4.1 mini',
@@ -7133,6 +8989,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4.1-nano': {
       displayName: 'GPT-4.1 nano',
@@ -7141,6 +8998,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-4o': {
       displayName: 'GPT-4o',
@@ -7149,6 +9007,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4o-2024-05-13': {
       displayName: 'GPT-4o (2024-05-13)',
@@ -7157,6 +9016,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4o-2024-08-06': {
       displayName: 'GPT-4o (2024-08-06)',
@@ -7165,6 +9025,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4o-2024-11-20': {
       displayName: 'GPT-4o (2024-11-20)',
@@ -7173,6 +9034,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4o-mini': {
       displayName: 'GPT-4o mini',
@@ -7181,6 +9043,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4o-mini-2024-07-18': {
       displayName: 'GPT-4o-mini (2024-07-18)',
@@ -7189,22 +9052,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
-    },
-    'openai/gpt-4o-mini-search-preview': {
-      displayName: 'GPT-4o-mini Search Preview',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 128000,
-      maxOutputTokens: 16384,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'openai/gpt-4o-search-preview': {
-      displayName: 'GPT-4o Search Preview',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 128000,
-      maxOutputTokens: 16384,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5': {
       displayName: 'GPT-5',
@@ -7213,22 +9061,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'openai/gpt-5-chat': {
-      displayName: 'GPT-5 Chat',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 128000,
-      maxOutputTokens: 16384,
-      capabilities: { vision: true, reasoning: false, functionCalling: false },
-    },
-    'openai/gpt-5-codex': {
-      displayName: 'GPT-5-Codex',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 400000,
-      maxOutputTokens: 128000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5-image': {
       displayName: 'GPT-5 Image',
@@ -7237,6 +9071,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: ['image', 'text'] },
     },
     'openai/gpt-5-image-mini': {
       displayName: 'GPT-5 Image Mini',
@@ -7245,6 +9080,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['image', 'text'], output: ['image', 'text'] },
     },
     'openai/gpt-5-mini': {
       displayName: 'GPT-5 Mini',
@@ -7253,6 +9089,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5-nano': {
       displayName: 'GPT-5 Nano',
@@ -7261,6 +9099,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5-pro': {
       displayName: 'GPT-5 Pro',
@@ -7269,6 +9109,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.1': {
       displayName: 'GPT-5.1',
@@ -7277,14 +9119,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'openai/gpt-5.1-chat': {
-      displayName: 'GPT-5.1 Chat',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 128000,
-      maxOutputTokens: 32000,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.1-codex': {
       displayName: 'GPT-5.1 Codex',
@@ -7293,6 +9129,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1-codex-max': {
       displayName: 'GPT-5.1 Codex Max',
@@ -7301,14 +9139,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1-codex-mini': {
       displayName: 'GPT-5.1 Codex mini',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 400000,
-      maxOutputTokens: 100000,
+      maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.2': {
       displayName: 'GPT-5.2',
@@ -7317,6 +9159,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.2-chat': {
       displayName: 'GPT-5.2 Chat',
@@ -7325,6 +9169,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.2-codex': {
       displayName: 'GPT-5.2 Codex',
@@ -7333,6 +9178,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.2-pro': {
       displayName: 'GPT-5.2 Pro',
@@ -7341,6 +9188,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.3-chat': {
       displayName: 'GPT-5.3 Chat',
@@ -7349,6 +9198,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.3-codex': {
       displayName: 'GPT-5.3 Codex',
@@ -7357,6 +9207,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.4': {
       displayName: 'GPT-5.4',
@@ -7365,6 +9217,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.4-image-2': {
       displayName: 'GPT-5.4 Image 2',
@@ -7373,6 +9227,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 272000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['image', 'text'], output: ['image', 'text'] },
     },
     'openai/gpt-5.4-mini': {
       displayName: 'GPT-5.4 mini',
@@ -7381,6 +9237,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.4-nano': {
       displayName: 'GPT-5.4 nano',
@@ -7389,6 +9247,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.4-pro': {
       displayName: 'GPT-5.4 Pro',
@@ -7397,6 +9257,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.5': {
       displayName: 'GPT-5.5',
@@ -7405,6 +9267,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.5-pro': {
       displayName: 'GPT-5.5 Pro',
@@ -7413,6 +9277,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-luna': {
       displayName: 'GPT-5.6 Luna',
@@ -7421,6 +9287,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-luna-pro': {
       displayName: 'GPT-5.6 Luna Pro',
@@ -7429,6 +9297,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-sol': {
       displayName: 'GPT-5.6 Sol',
@@ -7437,6 +9307,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-sol-pro': {
       displayName: 'GPT-5.6 Sol Pro',
@@ -7445,6 +9317,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-terra': {
       displayName: 'GPT-5.6 Terra',
@@ -7453,6 +9327,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-terra-pro': {
       displayName: 'GPT-5.6 Terra Pro',
@@ -7461,6 +9337,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-audio': {
       displayName: 'GPT Audio',
@@ -7469,6 +9347,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
     },
     'openai/gpt-audio-mini': {
       displayName: 'GPT Audio Mini',
@@ -7477,6 +9356,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
     },
     'openai/gpt-chat-latest': {
       displayName: 'GPT Chat Latest',
@@ -7485,6 +9365,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -7493,14 +9374,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'openai/gpt-oss-120b:free': {
-      displayName: 'gpt-oss-120b (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -7509,6 +9384,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b:free': {
       displayName: 'gpt-oss-20b (free)',
@@ -7517,6 +9394,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-safeguard-20b': {
       displayName: 'gpt-oss-safeguard-20b',
@@ -7525,6 +9404,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/o1': {
       displayName: 'o1',
@@ -7533,6 +9414,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/o1-pro': {
       displayName: 'o1-pro',
@@ -7541,6 +9424,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/o3': {
       displayName: 'o3',
@@ -7549,14 +9433,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'openai/o3-deep-research': {
-      displayName: 'o3-deep-research',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 200000,
-      maxOutputTokens: 100000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/o3-mini': {
       displayName: 'o3-mini',
@@ -7565,6 +9443,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/o3-mini-high': {
       displayName: 'o3 Mini High',
@@ -7573,6 +9453,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/o3-pro': {
       displayName: 'o3-pro',
@@ -7581,6 +9463,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/o4-mini': {
       displayName: 'o4-mini',
@@ -7589,14 +9473,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'openai/o4-mini-deep-research': {
-      displayName: 'o4-mini-deep-research',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 200000,
-      maxOutputTokens: 100000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/o4-mini-high': {
       displayName: 'o4 Mini High',
@@ -7605,6 +9483,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openrouter/auto': {
       displayName: 'Auto Router',
@@ -7613,6 +9493,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text', 'image'] },
     },
     'openrouter/bodybuilder': {
       displayName: 'Body Builder (beta)',
@@ -7621,6 +9502,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openrouter/free': {
       displayName: 'Free Models Router',
@@ -7629,6 +9511,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 8000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openrouter/fusion': {
       displayName: 'Fusion',
@@ -7637,6 +9520,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openrouter/pareto-code': {
       displayName: 'Pareto Code Router',
@@ -7645,6 +9529,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 200000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'perceptron/perceptron-mk1': {
       displayName: 'Perceptron Mk1',
@@ -7653,6 +9538,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'perplexity/sonar': {
       displayName: 'Sonar',
@@ -7661,6 +9547,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 127072,
       maxOutputTokens: 127072,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'perplexity/sonar-deep-research': {
       displayName: 'Sonar Deep Research',
@@ -7669,6 +9556,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'perplexity/sonar-pro': {
       displayName: 'Sonar Pro',
@@ -7677,6 +9565,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 8000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'perplexity/sonar-pro-search': {
       displayName: 'Sonar Pro Search',
@@ -7685,6 +9574,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 8000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'perplexity/sonar-reasoning-pro': {
       displayName: 'Sonar Reasoning Pro',
@@ -7693,22 +9583,25 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
-    'poolside/laguna-m.1': {
-      displayName: 'Laguna M.1',
+    'poolside/laguna-s-2.1': {
+      displayName: 'Laguna S 2.1',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'poolside/laguna-s-2.1:free': {
+      displayName: 'Laguna S 2.1 (free)',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'poolside/laguna-m.1:free': {
-      displayName: 'Laguna M.1 (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 262144,
-      maxOutputTokens: 32768,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'poolside/laguna-xs-2.1': {
       displayName: 'Laguna XS 2.1',
@@ -7717,6 +9610,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'poolside/laguna-xs-2.1:free': {
       displayName: 'Laguna XS 2.1 (free)',
@@ -7725,30 +9619,34 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen-2.5-72b-instruct': {
       displayName: 'Qwen2.5 72B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 32768,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen-2.5-7b-instruct': {
       displayName: 'Qwen2.5 7B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen-2.5-coder-32b-instruct': {
       displayName: 'Qwen2.5 Coder 32B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 128000,
+      contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen-plus': {
       displayName: 'Qwen Plus',
@@ -7757,6 +9655,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen-plus-2025-07-28': {
       displayName: 'Qwen Plus 0728',
@@ -7765,6 +9664,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen-plus-2025-07-28:thinking': {
       displayName: 'Qwen Plus 0728 (thinking)',
@@ -7773,22 +9673,26 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen2.5-vl-72b-instruct': {
       displayName: 'Qwen2.5 VL 72B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3-14b': {
       displayName: 'Qwen3 14B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131702,
-      maxOutputTokens: 40960,
+      contextWindow: 131072,
+      maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-235b-a22b': {
       displayName: 'Qwen3 235B-A22B',
@@ -7797,22 +9701,26 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-235b-a22b-2507': {
       displayName: 'Qwen3 235B A22B Instruct 2507',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 16384,
+      maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-235b-a22b-thinking-2507': {
       displayName: 'Qwen3 235B A22B Thinking 2507',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 262144,
+      maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-30b-a3b': {
       displayName: 'Qwen3 30B A3B',
@@ -7821,22 +9729,26 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-30b-a3b-instruct-2507': {
       displayName: 'Qwen3 30B A3B Instruct 2507',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 262144,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-30b-a3b-thinking-2507': {
       displayName: 'Qwen3 30B A3B Thinking 2507',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 81920,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-32b': {
       displayName: 'Qwen3 32B',
@@ -7845,6 +9757,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-8b': {
       displayName: 'Qwen3 8B',
@@ -7853,22 +9767,26 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-coder': {
       displayName: 'Qwen3 Coder 480B A35B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 1048576,
+      contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-coder-30b-a3b-instruct': {
       displayName: 'Qwen3-Coder 30B-A3B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 160000,
-      maxOutputTokens: 32768,
+      contextWindow: 262144,
+      maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-coder-flash': {
       displayName: 'Qwen3 Coder Flash',
@@ -7877,6 +9795,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-coder-next': {
       displayName: 'Qwen3 Coder Next',
@@ -7885,6 +9804,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-coder-plus': {
       displayName: 'Qwen3 Coder Plus',
@@ -7893,46 +9813,34 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'qwen/qwen3-coder:free': {
-      displayName: 'Qwen3 Coder 480B A35B (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 1048576,
-      maxOutputTokens: 262000,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-max': {
       displayName: 'Qwen3 Max',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 32768,
+      maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-max-thinking': {
       displayName: 'Qwen3 Max Thinking',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 32768,
+      maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-next-80b-a3b-instruct': {
       displayName: 'Qwen3-Next 80B-A3B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 16384,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'qwen/qwen3-next-80b-a3b-instruct:free': {
-      displayName: 'Qwen3 Next 80B A3B Instruct (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-next-80b-a3b-thinking': {
       displayName: 'Qwen3-Next 80B-A3B (Thinking)',
@@ -7941,14 +9849,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-vl-235b-a22b-instruct': {
       displayName: 'Qwen3 VL 235B A22B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 16384,
+      maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3-vl-235b-a22b-thinking': {
       displayName: 'Qwen3 VL 235B A22B Thinking',
@@ -7957,6 +9867,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3-vl-30b-a3b-instruct': {
       displayName: 'Qwen3 VL 30B A3B Instruct',
@@ -7965,46 +9876,53 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3-vl-30b-a3b-thinking': {
       displayName: 'Qwen3 VL 30B A3B Thinking',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 131072,
+      contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3-vl-32b-instruct': {
       displayName: 'Qwen3 VL 32B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 262144,
+      contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3-vl-8b-instruct': {
       displayName: 'Qwen3 VL 8B Instruct',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 256000,
+      contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'qwen/qwen3-vl-8b-thinking': {
       displayName: 'Qwen3 VL 8B Thinking',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 256000,
+      contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'qwen/qwen3.5-122b-a10b': {
       displayName: 'Qwen3.5 122B-A10B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 262144,
+      maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.5-27b': {
       displayName: 'Qwen3.5 27B',
@@ -8013,22 +9931,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.5-35b-a3b': {
       displayName: 'Qwen3.5 35B-A3B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 81920,
+      maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.5-397b-a17b': {
       displayName: 'Qwen3.5 397B-A17B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 256000,
-      maxOutputTokens: 64000,
+      contextWindow: 262144,
+      maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.5-9b': {
       displayName: 'Qwen3.5 9B',
@@ -8037,6 +9961,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.5-flash-02-23': {
       displayName: 'Qwen3.5-Flash',
@@ -8045,6 +9971,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.5-plus-02-15': {
       displayName: 'Qwen3.5 Plus 2026-02-15',
@@ -8053,6 +9981,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.5-plus-20260420': {
       displayName: 'Qwen3.5 Plus 2026-04-20',
@@ -8061,14 +9991,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.6-27b': {
       displayName: 'Qwen3.6 27B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 262140,
+      maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.6-35b-a3b': {
       displayName: 'Qwen3.6 35B-A3B',
@@ -8077,6 +10011,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.6-flash': {
       displayName: 'Qwen3.6 Flash',
@@ -8085,6 +10021,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.6-max-preview': {
       displayName: 'Qwen3.6 Max Preview',
@@ -8093,6 +10031,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3.6-plus': {
       displayName: 'Qwen3.6 Plus',
@@ -8101,22 +10041,47 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'qwen/qwen3.7-flash': {
+      displayName: 'Qwen3.7 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1000000,
+      maxOutputTokens: 65536,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.7-max': {
       displayName: 'Qwen3.7 Max',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 1000000,
-      maxOutputTokens: 65536,
+      maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3.7-plus': {
       displayName: 'Qwen3.7 Plus',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 1000000,
-      maxOutputTokens: 65536,
+      maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'qwen/qwen3.8-max': {
+      displayName: 'Qwen3.8 Max',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'rekaai/reka-edge': {
       displayName: 'Reka Edge',
@@ -8125,6 +10090,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16384,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'rekaai/reka-flash-3': {
       displayName: 'Reka Flash 3',
@@ -8133,6 +10099,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'relace/relace-apply-3': {
       displayName: 'Relace Apply 3',
@@ -8141,6 +10108,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'relace/relace-search': {
       displayName: 'Relace Search',
@@ -8149,6 +10117,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'sakana/fugu-ultra': {
       displayName: 'Fugu Ultra',
@@ -8157,6 +10126,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'sao10k/l3-lunaris-8b': {
       displayName: 'Llama 3 8B Lunaris',
@@ -8165,14 +10136,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'sao10k/l3.1-70b-hanami-x1': {
-      displayName: 'Llama 3.1 70B Hanami x1',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 16000,
-      maxOutputTokens: 16000,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'sao10k/l3.1-euryale-70b': {
       displayName: 'Llama 3.1 Euryale 70B v2.2',
@@ -8181,6 +10145,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'sao10k/l3.3-euryale-70b': {
       displayName: 'Llama 3.3 Euryale 70B',
@@ -8189,6 +10154,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'stepfun/step-3.5-flash': {
       displayName: 'Step 3.5 Flash',
@@ -8197,14 +10163,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'stepfun/step-3.7-flash': {
       displayName: 'Step 3.7 Flash',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 256000,
+      contextWindow: 262144,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'tencent/hunyuan-a13b-instruct': {
       displayName: 'Hunyuan A13B Instruct',
@@ -8213,14 +10182,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'tencent/hy3': {
       displayName: 'Hy3',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 131072,
+      maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'tencent/hy3-preview': {
       displayName: 'Hy3 preview',
@@ -8229,14 +10201,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'tencent/hy3:free': {
-      displayName: 'Hy3 (free)',
-      lifecycle: 'active',
-      docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 262144,
-      maxOutputTokens: 262144,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'thedrummer/cydonia-24b-v4.1': {
       displayName: 'Cydonia 24B V4.1',
@@ -8245,6 +10211,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'thedrummer/rocinante-12b': {
       displayName: 'Rocinante 12B',
@@ -8253,6 +10220,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'thedrummer/skyfall-36b-v2': {
       displayName: 'Skyfall 36B V2',
@@ -8261,22 +10229,45 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'thedrummer/unslopnemo-12b': {
       displayName: 'UnslopNemo 12B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 32768,
-      maxOutputTokens: 32768,
+      contextWindow: 1024000,
+      maxOutputTokens: 1024000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'thinkingmachines/inkling': {
+      displayName: 'Inkling',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 1048576,
+      maxOutputTokens: 1048576,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'minimal', 'low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+    },
+    'thinkingmachines/inkling-small': {
+      displayName: 'Inkling Small',
+      lifecycle: 'active',
+      docsUrl: 'https://openrouter.ai/models',
+      contextWindow: 524288,
+      maxOutputTokens: 262144,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'minimal', 'low', 'medium', 'high', 'max'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'undi95/remm-slerp-l2-13b': {
       displayName: 'ReMM SLERP 13B',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 6144,
-      maxOutputTokens: 4096,
+      maxOutputTokens: 2048,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'upstage/solar-pro-3': {
       displayName: 'Solar Pro 3',
@@ -8285,6 +10276,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'writer/palmyra-x5': {
       displayName: 'Palmyra X5',
@@ -8293,6 +10285,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1040000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'x-ai/grok-4.20': {
       displayName: 'Grok 4.20',
@@ -8301,6 +10294,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.20-multi-agent': {
       displayName: 'Grok 4.20 Multi-Agent',
@@ -8309,6 +10303,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.3': {
       displayName: 'Grok 4.3',
@@ -8317,6 +10313,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.5': {
       displayName: 'Grok 4.5',
@@ -8325,6 +10323,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 500000,
       maxOutputTokens: 500000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-build-0.1': {
       displayName: 'Grok Build 0.1',
@@ -8333,22 +10333,27 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xiaomi/mimo-v2.5': {
       displayName: 'MiMo-V2.5',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 1048576,
+      contextWindow: 1050000,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'xiaomi/mimo-v2.5-pro': {
       displayName: 'MiMo-V2.5-Pro',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 1048576,
+      contextWindow: 1050000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.5': {
       displayName: 'GLM-4.5',
@@ -8357,6 +10362,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 98304,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.5-air': {
       displayName: 'GLM-4.5-Air',
@@ -8365,6 +10372,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 98304,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.5v': {
       displayName: 'GLM-4.5V',
@@ -8373,14 +10382,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'z-ai/glm-4.6': {
       displayName: 'GLM-4.6',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 200000,
-      maxOutputTokens: 16384,
+      contextWindow: 204800,
+      maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.6v': {
       displayName: 'GLM-4.6V',
@@ -8389,14 +10401,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'z-ai/glm-4.7': {
       displayName: 'GLM-4.7',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 202752,
+      contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.7-flash': {
       displayName: 'GLM-4.7-Flash',
@@ -8405,38 +10419,44 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5': {
       displayName: 'GLM-5',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 202752,
-      maxOutputTokens: 128000,
+      contextWindow: 204800,
+      maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5-turbo': {
       displayName: 'GLM-5-Turbo',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 262144,
+      contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5.1': {
       displayName: 'GLM-5.1',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
-      contextWindow: 202752,
+      contextWindow: 204800,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5.2': {
       displayName: 'GLM-5.2',
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 1048576,
-      maxOutputTokens: 32768,
+      maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5v-turbo': {
       displayName: 'GLM-5V-Turbo',
@@ -8445,6 +10465,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
   },
   siliconflow: {
@@ -8455,6 +10476,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'ByteDance-Seed/Seed-OSS-36B-Instruct': {
       displayName: 'ByteDance-Seed/Seed-OSS-36B-Instruct',
@@ -8463,6 +10485,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-R1': {
       displayName: 'deepseek-ai/DeepSeek-R1',
@@ -8471,6 +10494,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 164000,
       maxOutputTokens: 164000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3': {
       displayName: 'deepseek-ai/DeepSeek-V3',
@@ -8479,6 +10503,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 164000,
       maxOutputTokens: 164000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3.1': {
       displayName: 'deepseek-ai/DeepSeek-V3.1',
@@ -8487,6 +10512,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 164000,
       maxOutputTokens: 164000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3.1-Terminus': {
       displayName: 'deepseek-ai/DeepSeek-V3.1-Terminus',
@@ -8495,6 +10522,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 164000,
       maxOutputTokens: 164000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3.2': {
       displayName: 'deepseek-ai/DeepSeek-V3.2',
@@ -8503,6 +10532,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 164000,
       maxOutputTokens: 164000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3.2-Exp': {
       displayName: 'deepseek-ai/DeepSeek-V3.2-Exp',
@@ -8511,6 +10542,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 164000,
       maxOutputTokens: 164000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V4-Flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -8519,6 +10552,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V4-Pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -8527,6 +10561,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-4-26B-A4B-it': {
       displayName: 'Gemma 4 26B A4B IT',
@@ -8535,6 +10570,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-4-31B-it': {
       displayName: 'Gemma 4 31B IT',
@@ -8543,6 +10579,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'inclusionAI/Ling-flash-2.0': {
       displayName: 'inclusionAI/Ling-flash-2.0',
@@ -8551,6 +10588,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2.5': {
       displayName: 'MiniMaxAI/MiniMax-M2.5',
@@ -8559,6 +10597,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 197000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.5': {
       displayName: 'moonshotai/Kimi-K2.5',
@@ -8567,6 +10606,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.6': {
       displayName: 'moonshotai/Kimi-K2.6',
@@ -8575,6 +10615,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-oss-120b': {
       displayName: 'openai/gpt-oss-120b',
@@ -8583,6 +10624,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b': {
       displayName: 'openai/gpt-oss-20b',
@@ -8591,6 +10633,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen2.5-72B-Instruct': {
       displayName: 'Qwen/Qwen2.5-72B-Instruct',
@@ -8599,6 +10642,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 33000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen2.5-7B-Instruct': {
       displayName: 'Qwen/Qwen2.5-7B-Instruct',
@@ -8607,6 +10651,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 33000,
       maxOutputTokens: 4000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-14B': {
       displayName: 'Qwen/Qwen3-14B',
@@ -8615,6 +10660,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-235B-A22B-Thinking-2507': {
       displayName: 'Qwen/Qwen3-235B-A22B-Thinking-2507',
@@ -8623,6 +10670,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-30B-A3B-Instruct-2507': {
       displayName: 'Qwen/Qwen3-30B-A3B-Instruct-2507',
@@ -8631,6 +10679,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-32B': {
       displayName: 'Qwen/Qwen3-32B',
@@ -8639,6 +10688,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-8B': {
       displayName: 'Qwen/Qwen3-8B',
@@ -8647,6 +10698,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Coder-30B-A3B-Instruct': {
       displayName: 'Qwen/Qwen3-Coder-30B-A3B-Instruct',
@@ -8655,6 +10708,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Coder-480B-A35B-Instruct': {
       displayName: 'Qwen/Qwen3-Coder-480B-A35B-Instruct',
@@ -8663,6 +10717,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-VL-235B-A22B-Instruct': {
       displayName: 'Qwen/Qwen3-VL-235B-A22B-Instruct',
@@ -8671,6 +10726,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3-VL-235B-A22B-Thinking': {
       displayName: 'Qwen/Qwen3-VL-235B-A22B-Thinking',
@@ -8679,6 +10735,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3-VL-30B-A3B-Instruct': {
       displayName: 'Qwen/Qwen3-VL-30B-A3B-Instruct',
@@ -8687,6 +10744,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3-VL-30B-A3B-Thinking': {
       displayName: 'Qwen/Qwen3-VL-30B-A3B-Thinking',
@@ -8695,6 +10753,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3-VL-32B-Instruct': {
       displayName: 'Qwen/Qwen3-VL-32B-Instruct',
@@ -8703,6 +10762,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3-VL-32B-Thinking': {
       displayName: 'Qwen/Qwen3-VL-32B-Thinking',
@@ -8711,6 +10771,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3-VL-8B-Instruct': {
       displayName: 'Qwen/Qwen3-VL-8B-Instruct',
@@ -8719,6 +10780,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.5-122B-A10B': {
       displayName: 'Qwen3.5 122B-A10B',
@@ -8727,6 +10789,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.5-27B': {
       displayName: 'Qwen3.5 27B',
@@ -8735,6 +10798,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.5-35B-A3B': {
       displayName: 'Qwen3.5 35B-A3B',
@@ -8743,6 +10807,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.5-397B-A17B': {
       displayName: 'Qwen3.5 397B-A17B',
@@ -8751,6 +10816,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.5-9B': {
       displayName: 'Qwen/Qwen3.5-9B',
@@ -8759,6 +10825,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.6-27B': {
       displayName: 'Qwen3.6 27B',
@@ -8767,6 +10834,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.6-35B-A3B': {
       displayName: 'Qwen3.6 35B-A3B',
@@ -8775,6 +10843,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'stepfun-ai/Step-3.5-Flash': {
       displayName: 'stepfun-ai/Step-3.5-Flash',
@@ -8783,6 +10852,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'tencent/Hunyuan-A13B-Instruct': {
       displayName: 'tencent/Hunyuan-A13B-Instruct',
@@ -8791,6 +10861,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'tencent/Hy3-preview': {
       displayName: 'Hy3 preview',
@@ -8799,6 +10871,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-4.5-Air': {
       displayName: 'zai-org/GLM-4.5-Air',
@@ -8807,6 +10880,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5': {
       displayName: 'zai-org/GLM-5',
@@ -8815,6 +10889,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 205000,
       maxOutputTokens: 205000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5.1': {
       displayName: 'zai-org/GLM-5.1',
@@ -8823,6 +10898,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 205000,
       maxOutputTokens: 205000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5.2': {
       displayName: 'GLM-5.2',
@@ -8831,6 +10907,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1049000,
       maxOutputTokens: 262000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5V-Turbo': {
       displayName: 'zai-org/GLM-5V-Turbo',
@@ -8839,6 +10917,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   stepfun: {
@@ -8849,6 +10929,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-2-16k': {
       displayName: 'Step 2 (16K)',
@@ -8857,6 +10938,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16384,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-3.5-flash': {
       displayName: 'Step 3.5 Flash',
@@ -8865,6 +10947,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-3.5-flash-2603': {
       displayName: 'Step 3.5 Flash 2603',
@@ -8873,6 +10957,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-3.7-flash': {
       displayName: 'Step 3.7 Flash',
@@ -8881,6 +10967,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'step-tts-2': {
       displayName: 'Step TTS 2',
@@ -8889,6 +10977,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'stepaudio-2.5-asr': {
       displayName: 'StepAudio 2.5 ASR',
@@ -8897,6 +10986,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'stepaudio-2.5-tts': {
       displayName: 'StepAudio 2.5 TTS',
@@ -8905,6 +10995,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
   },
   'stepfun-ai': {
@@ -8915,6 +11006,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-2-16k': {
       displayName: 'Step 2 (16K)',
@@ -8923,6 +11015,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16384,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-3.5-flash': {
       displayName: 'Step 3.5 Flash',
@@ -8931,6 +11024,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-3.5-flash-2603': {
       displayName: 'Step 3.5 Flash 2603',
@@ -8939,6 +11034,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-3.7-flash': {
       displayName: 'Step 3.7 Flash',
@@ -8947,6 +11044,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'step-tts-2': {
       displayName: 'Step TTS 2',
@@ -8955,6 +11054,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'stepaudio-2.5-asr': {
       displayName: 'StepAudio 2.5 ASR',
@@ -8963,6 +11063,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'stepaudio-2.5-tts': {
       displayName: 'StepAudio 2.5 TTS',
@@ -8971,6 +11072,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
   },
   'stepfun-ai-step-plan': {
@@ -8981,6 +11083,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-3.5-flash-2603': {
       displayName: 'Step 3.5 Flash 2603',
@@ -8989,6 +11093,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'step-3.7-flash': {
       displayName: 'Step 3.7 Flash',
@@ -8997,6 +11103,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   togetherai: {
@@ -9007,6 +11115,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 163840,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-R1': {
       displayName: 'DeepSeek-R1',
@@ -9015,6 +11125,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163839,
       maxOutputTokens: 163839,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3': {
       displayName: 'DeepSeek-V3',
@@ -9023,6 +11134,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V3-1': {
       displayName: 'DeepSeek V3.1',
@@ -9031,6 +11143,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek-ai/DeepSeek-V4-Pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -9039,14 +11153,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'essentialai/Rnj-1-Instruct': {
       displayName: 'Rnj-1 Instruct',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://docs.together.ai/docs/serverless-models',
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-3n-E4B-it': {
       displayName: 'Gemma 3N E4B Instruct',
@@ -9055,6 +11172,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemma-4-31B-it': {
       displayName: 'Gemma 4 31B Instruct',
@@ -9063,6 +11181,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'LiquidAI/LFM2-24B-A2B': {
       displayName: 'LFM2-24B-A2B',
@@ -9071,6 +11190,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/Llama-3.3-70B-Instruct-Turbo': {
       displayName: 'Llama 3.3 70B',
@@ -9079,6 +11199,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta-llama/Meta-Llama-3-8B-Instruct-Lite': {
       displayName: 'Meta Llama 3 8B Instruct Lite',
@@ -9087,6 +11208,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2.5': {
       displayName: 'MiniMax-M2.5',
@@ -9095,6 +11217,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M2.7': {
       displayName: 'MiniMax-M2.7',
@@ -9103,6 +11226,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'MiniMaxAI/MiniMax-M3': {
       displayName: 'MiniMax-M3',
@@ -9111,6 +11235,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 524288,
       maxOutputTokens: 250000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.5': {
       displayName: 'Kimi K2.5',
@@ -9119,6 +11244,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.6': {
       displayName: 'Kimi K2.6',
@@ -9127,6 +11254,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/Kimi-K2.7-Code': {
       displayName: 'Kimi K2.7 Code',
@@ -9135,6 +11264,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'moonshotai/Kimi-K3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.together.ai/docs/serverless-models',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/nemotron-3-ultra-550b-a55b': {
       displayName: 'Nemotron 3 Ultra 550B A55B',
@@ -9143,6 +11283,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512300,
       maxOutputTokens: 512300,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -9151,6 +11293,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -9159,6 +11303,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'pearl-ai/gemma-4-31b-it': {
       displayName: 'Pearl AI Gemma 4 31B Instruct',
@@ -9167,6 +11313,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen2.5-7B-Instruct-Turbo': {
       displayName: 'Qwen 2.5 7B Instruct Turbo',
@@ -9175,14 +11322,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-235B-A22B-Instruct-2507-tput': {
       displayName: 'Qwen3 235B A22B Instruct 2507 FP8',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://docs.together.ai/docs/serverless-models',
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8': {
       displayName: 'Qwen3 Coder 480B A35B Instruct',
@@ -9191,6 +11340,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3-Coder-Next-FP8': {
       displayName: 'Qwen3 Coder Next FP8',
@@ -9199,14 +11349,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.5-397B-A17B': {
       displayName: 'Qwen3.5 397B A17B',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://docs.together.ai/docs/serverless-models',
       contextWindow: 262144,
       maxOutputTokens: 130000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.5-9B': {
       displayName: 'Qwen3.5 9B',
@@ -9215,6 +11368,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'Qwen/Qwen3.6-Plus': {
       displayName: 'Qwen3.6 Plus',
@@ -9223,6 +11378,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 500000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'Qwen/Qwen3.7-Max': {
       displayName: 'Qwen3.7 Max',
@@ -9231,22 +11388,37 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 500000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'thinkingmachines/Inkling': {
+      displayName: 'Inkling',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.together.ai/docs/serverless-models',
+      contextWindow: 524288,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['max', 'xhigh', 'high', 'medium', 'low', 'none'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'zai-org/GLM-5': {
       displayName: 'GLM-5',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://docs.together.ai/docs/serverless-models',
       contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5.1': {
       displayName: 'GLM-5.1',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl: 'https://docs.together.ai/docs/serverless-models',
       contextWindow: 202752,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai-org/GLM-5.2': {
       displayName: 'GLM-5.2',
@@ -9255,6 +11427,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 164000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'tencent-coding-plan': {
@@ -9265,6 +11439,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202752,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'hunyuan-2.0-instruct': {
       displayName: 'Tencent HY 2.0 Instruct',
@@ -9273,6 +11449,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'hunyuan-2.0-thinking': {
       displayName: 'Tencent HY 2.0 Think',
@@ -9281,6 +11458,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'hunyuan-t1': {
       displayName: 'Hunyuan-T1',
@@ -9289,6 +11467,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'hunyuan-turbos': {
       displayName: 'Hunyuan-TurboS',
@@ -9297,6 +11476,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kimi-k2.5': {
       displayName: 'Kimi-K2.5',
@@ -9305,6 +11485,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'minimax-m2.5': {
       displayName: 'MiniMax-M2.5',
@@ -9313,6 +11495,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'tc-code-latest': {
       displayName: 'Auto',
@@ -9321,6 +11504,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'tencent-token-plan': {
@@ -9331,6 +11515,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'tencent-tokenhub': {
@@ -9341,6 +11527,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'hy3-preview': {
       displayName: 'Hy3 preview',
@@ -9349,6 +11537,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   vercel: {
@@ -9360,6 +11550,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 40960,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen-3-235b': {
       displayName: 'Qwen3 235B A22B Instruct 2507',
@@ -9369,6 +11561,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen-3-30b': {
       displayName: 'Qwen3-30B-A3B',
@@ -9378,6 +11571,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 40960,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen-3-32b': {
       displayName: 'Qwen 3.32B',
@@ -9387,6 +11582,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen-3.6-max-preview': {
       displayName: 'Qwen 3.6 Max Preview',
@@ -9396,6 +11593,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 240000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-235b-a22b-thinking': {
       displayName: 'Qwen3 235B A22B Thinking 2507',
@@ -9405,6 +11604,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/qwen3-coder': {
       displayName: 'Qwen3 Coder 480B A35B Instruct',
@@ -9414,6 +11614,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-coder-30b-a3b': {
       displayName: 'Qwen 3 Coder 30B A3B Instruct',
@@ -9423,6 +11624,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-coder-next': {
       displayName: 'Qwen3 Coder Next',
@@ -9432,6 +11634,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-coder-plus': {
       displayName: 'Qwen3 Coder Plus',
@@ -9441,6 +11644,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-embedding-0.6b': {
       displayName: 'Qwen3 Embedding 0.6B',
@@ -9450,6 +11654,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-embedding-4b': {
       displayName: 'Qwen3 Embedding 4B',
@@ -9459,6 +11664,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-embedding-8b': {
       displayName: 'Qwen3 Embedding 8B',
@@ -9468,6 +11674,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32768,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-max': {
       displayName: 'Qwen3 Max',
@@ -9477,6 +11684,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-max-preview': {
       displayName: 'Qwen3 Max Preview',
@@ -9486,6 +11694,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-max-thinking': {
       displayName: 'Qwen 3 Max Thinking',
@@ -9495,6 +11704,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-next-80b-a3b-instruct': {
       displayName: 'Qwen3 Next 80B A3B Instruct',
@@ -9504,6 +11714,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-next-80b-a3b-thinking': {
       displayName: 'Qwen3 Next 80B A3B Thinking',
@@ -9513,6 +11724,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3-vl-235b-a22b-instruct': {
       displayName: 'Qwen3 VL 235B A22B Instruct',
@@ -9522,6 +11734,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 129024,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/qwen3-vl-instruct': {
       displayName: 'Qwen3 VL Instruct',
@@ -9531,6 +11744,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 129024,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/qwen3-vl-thinking': {
       displayName: 'Qwen3 VL Thinking',
@@ -9540,6 +11754,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/qwen3.5-flash': {
       displayName: 'Qwen 3.5 Flash',
@@ -9549,6 +11764,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/qwen3.5-plus': {
       displayName: 'Qwen 3.5 Plus',
@@ -9558,6 +11775,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/qwen3.6-27b': {
       displayName: 'Qwen 3.6 27B',
@@ -9567,6 +11786,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/qwen3.6-plus': {
       displayName: 'Qwen 3.6 Plus',
@@ -9576,6 +11797,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'alibaba/qwen3.7-flash': {
+      displayName: 'Qwen 3.7 Flash',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 991000,
+      maxOutputTokens: 64000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/qwen3.7-max': {
       displayName: 'Qwen 3.7 Max',
@@ -9585,6 +11818,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 991000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'alibaba/qwen3.7-plus': {
       displayName: 'Qwen 3.7 Plus',
@@ -9594,6 +11829,19 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'alibaba/qwen3.8-max': {
+      displayName: 'Qwen 3.8 Max',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'alibaba/wan-v2.5-t2v-preview': {
       displayName: 'Wan v2.5 Text-to-Video Preview',
@@ -9603,6 +11851,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'alibaba/wan-v2.6-i2v': {
       displayName: 'Wan v2.6 Image-to-Video',
@@ -9612,6 +11861,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'alibaba/wan-v2.6-i2v-flash': {
       displayName: 'Wan v2.6 Image-to-Video Flash',
@@ -9621,6 +11871,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'alibaba/wan-v2.6-r2v': {
       displayName: 'Wan v2.6 Reference-to-Video',
@@ -9630,6 +11881,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'alibaba/wan-v2.6-r2v-flash': {
       displayName: 'Wan v2.6 Reference-to-Video Flash',
@@ -9639,6 +11891,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'alibaba/wan-v2.6-t2v': {
       displayName: 'Wan v2.6 Text-to-Video',
@@ -9648,6 +11901,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'alibaba/wan-v2.7-r2v': {
       displayName: 'Wan v2.7 Reference-to-Video',
@@ -9657,6 +11911,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'alibaba/wan-v2.7-t2v': {
       displayName: 'Wan v2.7 Text-to-Video',
@@ -9666,6 +11921,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'amazon/nova-2-lite': {
       displayName: 'Nova 2 Lite',
@@ -9675,6 +11931,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'amazon/nova-lite': {
       displayName: 'Nova Lite',
@@ -9684,6 +11942,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 300000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'amazon/nova-micro': {
       displayName: 'Nova Micro',
@@ -9693,6 +11952,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'amazon/nova-pro': {
       displayName: 'Nova Pro',
@@ -9702,6 +11962,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 300000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'amazon/titan-embed-text-v2': {
       displayName: 'Titan Text Embeddings V2',
@@ -9711,6 +11972,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'anthropic/claude-3-haiku': {
       displayName: 'Claude Haiku 3',
@@ -9720,6 +11982,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-fable-5': {
       displayName: 'Claude Fable 5',
@@ -9729,6 +11992,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-haiku-4.5': {
       displayName: 'Claude Haiku 4.5',
@@ -9738,6 +12003,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4': {
       displayName: 'Claude Opus 4',
@@ -9747,6 +12014,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.1': {
       displayName: 'Claude Opus 4.1',
@@ -9756,6 +12024,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.5': {
       displayName: 'Claude Opus 4.5',
@@ -9765,6 +12034,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.6': {
       displayName: 'Claude Opus 4.6',
@@ -9774,6 +12045,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.7': {
       displayName: 'Claude Opus 4.7',
@@ -9783,6 +12056,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.8': {
       displayName: 'Claude Opus 4.8',
@@ -9792,6 +12067,41 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'anthropic/claude-opus-4.8-fast': {
+      displayName: 'Claude Opus 4.8 (Fast)',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'anthropic/claude-opus-5': {
+      displayName: 'Claude Opus 5',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'anthropic/claude-opus-5-fast': {
+      displayName: 'Claude Opus 5 (Fast)',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4': {
       displayName: 'Claude Sonnet 4',
@@ -9801,6 +12111,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 8192,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4.5': {
       displayName: 'Claude Sonnet 4.5',
@@ -9810,6 +12121,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4.6': {
       displayName: 'Claude Sonnet 4.6',
@@ -9819,6 +12131,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-5': {
       displayName: 'Claude Sonnet 5',
@@ -9828,6 +12142,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'arcee-ai/trinity-large-thinking': {
       displayName: 'Trinity Large Thinking',
@@ -9837,6 +12153,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262100,
       maxOutputTokens: 80000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'arcee-ai/trinity-mini': {
       displayName: 'Trinity Mini',
@@ -9846,6 +12163,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'bfl/flux-2-flex': {
       displayName: 'FLUX.2 [flex]',
@@ -9855,6 +12173,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-2-klein-4b': {
       displayName: 'FLUX.2 [klein] 4B',
@@ -9864,6 +12183,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-2-klein-9b': {
       displayName: 'FLUX.2 [klein] 9B',
@@ -9873,6 +12193,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-2-max': {
       displayName: 'FLUX.2 [max]',
@@ -9882,6 +12203,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 67300,
       maxOutputTokens: 67300,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-2-pro': {
       displayName: 'FLUX.2 [pro]',
@@ -9891,6 +12213,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 67300,
       maxOutputTokens: 67300,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-kontext-max': {
       displayName: 'FLUX.1 Kontext Max',
@@ -9900,6 +12223,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-kontext-pro': {
       displayName: 'FLUX.1 Kontext Pro',
@@ -9909,6 +12233,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-pro-1.0-fill': {
       displayName: 'FLUX.1 Fill [pro]',
@@ -9918,6 +12243,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-pro-1.1': {
       displayName: 'FLUX1.1 [pro]',
@@ -9927,6 +12253,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bfl/flux-pro-1.1-ultra': {
       displayName: 'FLUX1.1 [pro] Ultra',
@@ -9936,6 +12263,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bytedance/seed-1.6': {
       displayName: 'Seed 1.6',
@@ -9945,6 +12273,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'bytedance/seed-1.8': {
       displayName: 'Seed 1.8',
@@ -9954,6 +12284,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'bytedance/seedance-2.0': {
       displayName: 'Seedance 2.0',
@@ -9963,6 +12295,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
     },
     'bytedance/seedance-2.0-fast': {
       displayName: 'Seedance 2.0 Fast',
@@ -9972,6 +12305,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
     },
     'bytedance/seedance-v1.0-pro': {
       displayName: 'Seedance v1.0 Pro',
@@ -9981,6 +12315,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'bytedance/seedance-v1.0-pro-fast': {
       displayName: 'Seedance v1.0 Pro Fast',
@@ -9990,6 +12325,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'bytedance/seedance-v1.5-pro': {
       displayName: 'Seedance v1.5 Pro',
@@ -9999,6 +12335,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'bytedance/seedream-4.0': {
       displayName: 'Seedream 4.0',
@@ -10008,6 +12345,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bytedance/seedream-4.5': {
       displayName: 'Seedream 4.5',
@@ -10017,6 +12355,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bytedance/seedream-5.0-lite': {
       displayName: 'Seedream 5.0 Lite',
@@ -10026,6 +12365,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'bytedance/seedream-5.0-pro': {
       displayName: 'Seedream 5.0 Pro',
@@ -10035,6 +12375,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'cohere/command-a': {
       displayName: 'Command A',
@@ -10044,6 +12385,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/embed-v4.0': {
       displayName: 'Embed v4.0',
@@ -10053,6 +12395,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/rerank-v3.5': {
       displayName: 'Cohere Rerank 3.5',
@@ -10062,6 +12405,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 4096,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/rerank-v4-fast': {
       displayName: 'Cohere Rerank 4 Fast',
@@ -10071,6 +12415,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'cohere/rerank-v4-pro': {
       displayName: 'Cohere Rerank 4 Pro',
@@ -10080,6 +12425,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-r1': {
       displayName: 'DeepSeek-R1',
@@ -10089,6 +12435,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3': {
       displayName: 'DeepSeek V3 0324',
@@ -10098,6 +12445,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 163840,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.1': {
       displayName: 'DeepSeek-V3.1',
@@ -10107,6 +12455,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163840,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.1-terminus': {
       displayName: 'DeepSeek V3.1 Terminus',
@@ -10116,6 +12466,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.2': {
       displayName: 'DeepSeek V3.2',
@@ -10125,6 +12477,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.2-thinking': {
       displayName: 'DeepSeek V3.2 Thinking',
@@ -10134,6 +12487,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v4-flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -10143,6 +12497,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'deepseek/deepseek-v4-flash-0731': {
+      displayName: 'DeepSeek V4 Flash 0731',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 384000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -10152,6 +12518,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemini-2.5-flash': {
       displayName: 'Gemini 2.5 Flash',
@@ -10161,6 +12529,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-2.5-flash-image': {
       displayName: 'Nano Banana (Gemini 2.5 Flash Image)',
@@ -10169,7 +12539,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 32768,
       maxOutputTokens: 65536,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-2.5-flash-lite': {
       displayName: 'Gemini 2.5 Flash Lite',
@@ -10179,6 +12550,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemini-2.5-pro': {
       displayName: 'Gemini 2.5 Pro',
@@ -10188,6 +12561,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3-flash': {
       displayName: 'Gemini 3 Flash',
@@ -10197,6 +12571,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemini-3-pro-image': {
       displayName: 'Nano Banana Pro',
@@ -10205,16 +12581,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 65536,
       maxOutputTokens: 32768,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'google/gemini-3-pro-preview': {
-      displayName: 'Gemini 3 Pro Preview',
-      lifecycle: 'active',
-      docsUrl:
-        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 1000000,
-      maxOutputTokens: 64000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-3.1-flash-image': {
       displayName: 'Nano Banana 2',
@@ -10224,6 +12592,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-3.1-flash-image-preview': {
       displayName: 'Gemini 3.1 Flash Image Preview (Nano Banana 2)',
@@ -10233,6 +12603,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-3.1-flash-lite': {
       displayName: 'Gemini 3.1 Flash Lite',
@@ -10242,6 +12614,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemini-3.1-flash-lite-image': {
       displayName: 'Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)',
@@ -10251,15 +12625,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
-    },
-    'google/gemini-3.1-flash-lite-preview': {
-      displayName: 'Gemini 3.1 Flash Lite Preview',
-      lifecycle: 'active',
-      docsUrl:
-        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 1000000,
-      maxOutputTokens: 65000,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'google/gemini-3.1-pro-preview': {
       displayName: 'Gemini 3.1 Pro Preview',
@@ -10269,6 +12635,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemini-3.5-flash': {
       displayName: 'Gemini 3.5 Flash',
@@ -10278,6 +12646,30 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'google/gemini-3.5-flash-lite': {
+      displayName: 'Gemini 3.5 Flash Lite',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 65000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'google/gemini-3.6-flash': {
+      displayName: 'Gemini 3.6 Flash',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 64000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemini-embedding-001': {
       displayName: 'Gemini Embedding 001',
@@ -10287,6 +12679,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemini-embedding-2': {
       displayName: 'Gemini Embedding 2',
@@ -10296,6 +12689,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemini-omni-flash-preview': {
       displayName: 'Gemini Omni Flash Preview',
@@ -10305,6 +12699,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 57920,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-4-26b-a4b-it': {
       displayName: 'Gemma 4 26B A4B IT',
@@ -10314,6 +12709,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/gemma-4-31b-it': {
       displayName: 'Gemma 4 31B IT',
@@ -10323,6 +12719,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'google/imagen-4.0-fast-generate-001': {
       displayName: 'Imagen 4 Fast',
@@ -10332,6 +12729,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 480,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'google/imagen-4.0-generate-001': {
       displayName: 'Imagen 4',
@@ -10341,6 +12739,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 480,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'google/imagen-4.0-ultra-generate-001': {
       displayName: 'Imagen 4 Ultra',
@@ -10350,6 +12749,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 480,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'google/text-embedding-005': {
       displayName: 'Text Embedding 005',
@@ -10359,6 +12759,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/text-multilingual-embedding-002': {
       displayName: 'Text Multilingual Embedding 002',
@@ -10368,6 +12769,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/veo-3.0-fast-generate-001': {
       displayName: 'Veo 3.0 Fast Generate',
@@ -10377,6 +12779,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'google/veo-3.0-generate-001': {
       displayName: 'Veo 3.0',
@@ -10386,6 +12789,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'google/veo-3.1-fast-generate-001': {
       displayName: 'Veo 3.1 Fast Generate',
@@ -10395,6 +12799,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'google/veo-3.1-generate-001': {
       displayName: 'Veo 3.1',
@@ -10404,6 +12809,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
+    },
+    'google/veo-3.1-lite-generate-001': {
+      displayName: 'Veo 3.1 Lite Generate',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'inception/mercury-2': {
       displayName: 'Mercury 2',
@@ -10413,6 +12829,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'inception/mercury-coder-small': {
       displayName: 'Mercury Coder Small Beta',
@@ -10422,6 +12840,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'inclusionai/ling-3.0-flash-free': {
+      displayName: 'Ling 3.0 Flash',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 256000,
+      maxOutputTokens: 256000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'interfaze/interfaze-beta': {
       displayName: 'Interfaze Beta',
@@ -10431,6 +12860,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'klingai/kling-v2.5-turbo-i2v': {
       displayName: 'Kling v2.5 Turbo Image-to-Video',
@@ -10440,6 +12871,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'klingai/kling-v2.5-turbo-t2v': {
       displayName: 'Kling v2.5 Turbo Text-to-Video',
@@ -10449,6 +12881,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'klingai/kling-v2.6-i2v': {
       displayName: 'Kling v2.6 Image-to-Video',
@@ -10458,6 +12891,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'klingai/kling-v2.6-motion-control': {
       displayName: 'Kling v2.6 Motion Control',
@@ -10467,6 +12901,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'klingai/kling-v2.6-t2v': {
       displayName: 'Kling v2.6 Text-to-Video',
@@ -10476,6 +12911,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'klingai/kling-v3.0-i2v': {
       displayName: 'Kling v3.0 Image-to-Video',
@@ -10485,6 +12921,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'klingai/kling-v3.0-motion-control': {
       displayName: 'Kling v3.0 Motion Control',
@@ -10494,6 +12931,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'klingai/kling-v3.0-t2v': {
       displayName: 'Kling v3.0 Text-to-Video',
@@ -10503,6 +12941,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'kwaipilot/kat-coder-air-v2.5': {
       displayName: 'Kat Coder Air V2.5',
@@ -10511,7 +12950,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 256000,
       maxOutputTokens: 80000,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'kwaipilot/kat-coder-pro-v1': {
       displayName: 'KAT-Coder-Pro V1',
@@ -10521,6 +12961,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kwaipilot/kat-coder-pro-v2': {
       displayName: 'Kat Coder Pro V2',
@@ -10530,6 +12971,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kwaipilot/kat-coder-pro-v2.5': {
       displayName: 'Kat Coder Pro V2.5',
@@ -10538,7 +12980,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 256000,
       maxOutputTokens: 80000,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta/llama-3.1-70b': {
       displayName: 'Llama 3.1 70B Instruct',
@@ -10548,6 +12991,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-3.1-8b': {
       displayName: 'Llama 3.1 8B Instruct',
@@ -10557,42 +13001,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
-    },
-    'meta/llama-3.2-11b': {
-      displayName: 'Llama 3.2 11B Vision Instruct',
-      lifecycle: 'active',
-      docsUrl:
-        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 128000,
-      maxOutputTokens: 8192,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
-    },
-    'meta/llama-3.2-1b': {
-      displayName: 'Llama 3.2 1B Instruct',
-      lifecycle: 'active',
-      docsUrl:
-        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 128000,
-      maxOutputTokens: 8192,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'meta/llama-3.2-3b': {
-      displayName: 'Llama 3.2 3B Instruct',
-      lifecycle: 'active',
-      docsUrl:
-        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 128000,
-      maxOutputTokens: 8192,
-      capabilities: { vision: false, reasoning: false, functionCalling: false },
-    },
-    'meta/llama-3.2-90b': {
-      displayName: 'Llama 3.2 90B Vision Instruct',
-      lifecycle: 'active',
-      docsUrl:
-        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 128000,
-      maxOutputTokens: 8192,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-3.3-70b': {
       displayName: 'Llama-3.3-70B-Instruct',
@@ -10602,6 +13011,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'meta/llama-4-maverick': {
       displayName: 'Llama-4-Maverick-17B-128E-Instruct-FP8',
@@ -10611,6 +13021,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta/llama-4-scout': {
       displayName: 'Llama-4-Scout-17B-16E-Instruct-FP8',
@@ -10620,6 +13031,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'meta/muse-spark-1.1': {
       displayName: 'Muse Spark 1.1',
@@ -10629,6 +13041,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 1048576,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'minimax/minimax-h3': {
+      displayName: 'MiniMax H3',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
     },
     'minimax/minimax-m2': {
       displayName: 'MiniMax M2',
@@ -10638,6 +13062,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 205000,
       maxOutputTokens: 205000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.1': {
       displayName: 'MiniMax M2.1',
@@ -10647,6 +13072,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.1-lightning': {
       displayName: 'MiniMax M2.1 Lightning',
@@ -10656,6 +13082,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.5': {
       displayName: 'MiniMax M2.5',
@@ -10665,6 +13092,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.5-highspeed': {
       displayName: 'MiniMax M2.5 High Speed',
@@ -10674,6 +13102,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.7': {
       displayName: 'Minimax M2.7',
@@ -10683,6 +13112,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.7-highspeed': {
       displayName: 'MiniMax M2.7 High Speed',
@@ -10692,6 +13122,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131100,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m3': {
       displayName: 'MiniMax M3',
@@ -10701,6 +13132,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral/codestral': {
       displayName: 'Codestral (latest)',
@@ -10710,6 +13143,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral/codestral-embed': {
       displayName: 'Codestral Embed',
@@ -10719,6 +13153,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral/devstral-2': {
       displayName: 'Devstral 2',
@@ -10728,6 +13163,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral/devstral-small-2': {
       displayName: 'Devstral Small 2',
@@ -10737,6 +13173,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral/magistral-medium': {
       displayName: 'Magistral Medium (latest)',
@@ -10746,6 +13183,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral/magistral-small': {
       displayName: 'Magistral Small',
@@ -10755,6 +13193,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral/ministral-14b': {
       displayName: 'Ministral 14B',
@@ -10764,6 +13203,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral/ministral-3b': {
       displayName: 'Ministral 3B (latest)',
@@ -10773,6 +13213,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral/ministral-8b': {
       displayName: 'Ministral 8B (latest)',
@@ -10782,6 +13223,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral/mistral-embed': {
       displayName: 'Mistral Embed',
@@ -10791,6 +13233,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mistral/mistral-large-3': {
       displayName: 'Mistral Large 3',
@@ -10800,6 +13243,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral/mistral-medium': {
       displayName: 'Mistral Medium 3.1',
@@ -10809,6 +13253,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral/mistral-medium-3.5': {
       displayName: 'Mistral Medium Latest',
@@ -10818,6 +13263,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral/mistral-nemo': {
       displayName: 'Mistral Nemo',
@@ -10826,7 +13273,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 128000,
       maxOutputTokens: 128000,
-      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral/mistral-small': {
       displayName: 'Mistral Small (latest)',
@@ -10836,6 +13284,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 4000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'mistral/pixtral-12b': {
       displayName: 'Pixtral 12B',
@@ -10845,6 +13294,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2': {
       displayName: 'Kimi K2 Instruct',
@@ -10854,6 +13304,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2-thinking': {
       displayName: 'Kimi K2 Thinking',
@@ -10863,6 +13314,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 216144,
       maxOutputTokens: 216144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2.5': {
       displayName: 'Kimi K2.5',
@@ -10872,6 +13324,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262114,
       maxOutputTokens: 262114,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2.6': {
       displayName: 'Kimi K2.6',
@@ -10881,6 +13335,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 262000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -10890,6 +13346,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2.7-code-highspeed': {
       displayName: 'Kimi K2.7 Code High Speed',
@@ -10899,6 +13356,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'moonshotai/kimi-k3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'moonshotai/kimi-k3-fast': {
+      displayName: 'Kimi K3 Fast',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'morph/morph-v3-fast': {
       displayName: 'Morph v3 Fast',
@@ -10908,6 +13387,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16000,
       maxOutputTokens: 16000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'morph/morph-v3-large': {
       displayName: 'Morph v3 Large',
@@ -10917,6 +13397,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-nano-30b-a3b': {
       displayName: 'Nemotron 3 Nano 30B A3B',
@@ -10926,6 +13407,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-super-120b-a12b': {
       displayName: 'NVIDIA Nemotron 3 Super 120B A12B',
@@ -10935,6 +13418,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-3-ultra-550b-a55b': {
       displayName: 'Nemotron 3 Ultra',
@@ -10944,6 +13429,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'nvidia/nemotron-nano-12b-v2-vl': {
       displayName: 'Nvidia Nemotron Nano 12B V2 VL',
@@ -10953,6 +13440,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'nvidia/nemotron-nano-9b-v2': {
       displayName: 'Nvidia Nemotron Nano 9B V2',
@@ -10962,6 +13451,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-3.5-turbo': {
       displayName: 'GPT-3.5 Turbo',
@@ -10971,15 +13462,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 16385,
       maxOutputTokens: 4096,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-4-turbo': {
       displayName: 'GPT-4 Turbo',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl:
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 128000,
       maxOutputTokens: 4096,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4.1': {
       displayName: 'GPT-4.1',
@@ -10989,6 +13482,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4.1-mini': {
       displayName: 'GPT-4.1 mini',
@@ -10998,15 +13492,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4.1-nano': {
       displayName: 'GPT-4.1 nano',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl:
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 1047576,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4o': {
       displayName: 'GPT-4o',
@@ -11016,6 +13512,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4o-mini': {
       displayName: 'GPT-4o mini',
@@ -11025,6 +13522,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-4o-mini-search-preview': {
       displayName: 'GPT 4o Mini Search Preview',
@@ -11034,6 +13532,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-4o-mini-transcribe': {
       displayName: 'GPT-4o mini Transcribe',
@@ -11043,6 +13542,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'openai/gpt-4o-transcribe': {
       displayName: 'GPT-4o Transcribe',
@@ -11052,6 +13552,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'openai/gpt-5': {
       displayName: 'GPT-5',
@@ -11061,15 +13562,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'openai/gpt-5-chat': {
-      displayName: 'GPT-5 Chat',
-      lifecycle: 'active',
-      docsUrl:
-        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 128000,
-      maxOutputTokens: 16384,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5-codex': {
       displayName: 'GPT-5-Codex',
@@ -11079,6 +13573,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5-mini': {
       displayName: 'GPT-5 Mini',
@@ -11088,6 +13583,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5-nano': {
       displayName: 'GPT-5 Nano',
@@ -11097,6 +13594,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5-pro': {
       displayName: 'GPT-5 pro',
@@ -11106,6 +13605,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 272000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1-codex': {
       displayName: 'GPT-5.1-Codex',
@@ -11115,6 +13616,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1-codex-max': {
       displayName: 'GPT 5.1 Codex Max',
@@ -11124,6 +13627,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1-codex-mini': {
       displayName: 'GPT-5.1 Codex mini',
@@ -11133,6 +13638,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1-instant': {
       displayName: 'GPT-5.1 Instant',
@@ -11142,6 +13649,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1-thinking': {
       displayName: 'GPT 5.1 Thinking',
@@ -11151,6 +13659,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text', 'image'] },
     },
     'openai/gpt-5.2': {
       displayName: 'GPT-5.2',
@@ -11160,15 +13670,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
-    },
-    'openai/gpt-5.2-chat': {
-      displayName: 'GPT-5.2 Chat',
-      lifecycle: 'active',
-      docsUrl:
-        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 128000,
-      maxOutputTokens: 16384,
-      capabilities: { vision: true, reasoning: false, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.2-codex': {
       displayName: 'GPT-5.2-Codex',
@@ -11178,6 +13681,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.2-pro': {
       displayName: 'GPT 5.2 ',
@@ -11187,6 +13692,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.3-chat': {
       displayName: 'GPT-5.3 Chat',
@@ -11196,6 +13703,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.3-codex': {
       displayName: 'GPT 5.3 Codex',
@@ -11205,6 +13713,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.4': {
       displayName: 'GPT 5.4',
@@ -11214,6 +13724,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.4-mini': {
       displayName: 'GPT 5.4 Mini',
@@ -11223,6 +13735,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.4-nano': {
       displayName: 'GPT 5.4 Nano',
@@ -11232,6 +13746,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.4-pro': {
       displayName: 'GPT 5.4 Pro',
@@ -11241,6 +13757,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.5': {
       displayName: 'GPT 5.5',
@@ -11250,6 +13768,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.5-pro': {
       displayName: 'GPT 5.5 Pro',
@@ -11259,6 +13779,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-luna': {
       displayName: 'GPT 5.6 Luna',
@@ -11268,6 +13790,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-sol': {
       displayName: 'GPT 5.6 Sol',
@@ -11277,6 +13801,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-terra': {
       displayName: 'GPT 5.6 Terra',
@@ -11286,6 +13812,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-image-1': {
       displayName: 'GPT Image 1',
@@ -11295,6 +13823,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'openai/gpt-image-1-mini': {
       displayName: 'GPT Image 1 Mini',
@@ -11304,6 +13833,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'openai/gpt-image-1.5': {
       displayName: 'GPT Image 1.5',
@@ -11313,6 +13843,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'openai/gpt-image-2': {
       displayName: 'GPT Image 2',
@@ -11322,6 +13853,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'openai/gpt-oss-120b': {
       displayName: 'GPT OSS 120B',
@@ -11331,6 +13863,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-20b': {
       displayName: 'GPT OSS 20B',
@@ -11340,6 +13874,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-oss-safeguard-20b': {
       displayName: 'gpt-oss-safeguard-20b',
@@ -11349,6 +13885,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-realtime-1.5': {
       displayName: 'GPT-Realtime-1.5',
@@ -11358,6 +13896,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
     },
     'openai/gpt-realtime-2': {
       displayName: 'gpt-realtime-2',
@@ -11367,6 +13906,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
     },
     'openai/gpt-realtime-2.1': {
       displayName: 'gpt-realtime-2.1',
@@ -11376,6 +13916,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
     },
     'openai/gpt-realtime-mini': {
       displayName: 'GPT-Realtime mini',
@@ -11385,15 +13927,28 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
+    },
+    'openai/gpt-realtime-whisper': {
+      displayName: 'gpt-realtime-whisper',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'openai/o1': {
       displayName: 'o1',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl:
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/o3': {
       displayName: 'o3',
@@ -11403,6 +13958,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/o3-deep-research': {
       displayName: 'o3-deep-research',
@@ -11412,15 +13969,19 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/o3-mini': {
       displayName: 'o3-mini',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl:
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/o3-pro': {
       displayName: 'o3 Pro',
@@ -11430,15 +13991,19 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/o4-mini': {
       displayName: 'o4-mini',
-      lifecycle: 'active',
+      lifecycle: 'deprecated',
       docsUrl:
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 200000,
       maxOutputTokens: 100000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/text-embedding-3-large': {
       displayName: 'text-embedding-3-large',
@@ -11448,6 +14013,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/text-embedding-3-small': {
       displayName: 'text-embedding-3-small',
@@ -11457,6 +14023,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/text-embedding-ada-002': {
       displayName: 'text-embedding-ada-002',
@@ -11466,6 +14033,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/tts-1': {
       displayName: 'TTS-1',
@@ -11475,6 +14043,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'openai/tts-1-hd': {
       displayName: 'TTS-1 HD',
@@ -11484,6 +14053,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'openai/whisper-1': {
       displayName: 'Whisper',
@@ -11493,6 +14063,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'perplexity/sonar': {
       displayName: 'Sonar',
@@ -11502,6 +14073,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 127000,
       maxOutputTokens: 8000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'perplexity/sonar-pro': {
       displayName: 'Sonar Pro',
@@ -11511,6 +14083,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 8000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'perplexity/sonar-reasoning-pro': {
       displayName: 'Sonar Reasoning Pro',
@@ -11519,7 +14092,31 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 127000,
       maxOutputTokens: 8000,
-      capabilities: { vision: false, reasoning: true, functionCalling: false },
+      capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'poolside/laguna-s-2.1': {
+      displayName: 'Laguna S 2.1',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'poolside/laguna-s-2.1-free': {
+      displayName: 'Laguna S 2.1 Free',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 256000,
+      maxOutputTokens: 32768,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'prodia/flux-fast-schnell': {
       displayName: 'Flux Schnell',
@@ -11529,6 +14126,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'quiverai/arrow-1.1': {
       displayName: 'Arrow 1.1',
@@ -11538,6 +14136,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'recraft/recraft-v2': {
       displayName: 'Recraft V2',
@@ -11547,6 +14146,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'recraft/recraft-v3': {
       displayName: 'Recraft V3',
@@ -11556,6 +14156,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'recraft/recraft-v4': {
       displayName: 'Recraft V4',
@@ -11565,6 +14166,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'recraft/recraft-v4-pro': {
       displayName: 'Recraft V4 Pro',
@@ -11574,6 +14176,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'recraft/recraft-v4.1': {
       displayName: 'Recraft V4.1',
@@ -11583,6 +14186,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'recraft/recraft-v4.1-pro': {
       displayName: 'Recraft V4.1 Pro',
@@ -11592,6 +14196,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'recraft/recraft-v4.1-utility': {
       displayName: 'Recraft V4.1 Utility',
@@ -11601,6 +14206,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'recraft/recraft-v4.1-utility-pro': {
       displayName: 'Recraft V4.1 Utility Pro',
@@ -11610,6 +14216,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['image'] },
     },
     'sakana/fugu-ultra': {
       displayName: 'Fugu Ultra',
@@ -11619,6 +14226,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'stepfun/step-3.5-flash': {
       displayName: 'StepFun 3.5 Flash',
@@ -11627,7 +14235,9 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
       contextWindow: 262114,
       maxOutputTokens: 262114,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'stepfun/step-3.7-flash': {
       displayName: 'Step 3.7 Flash',
@@ -11637,6 +14247,41 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'tencent/hy3': {
+      displayName: 'Hy3',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 262144,
+      maxOutputTokens: 262144,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'thinkingmachines/inkling': {
+      displayName: 'Inkling',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 256000,
+      maxOutputTokens: 256000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'thinkingmachines/inkling-small': {
+      displayName: 'Inkling Small',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 1000000,
+      maxOutputTokens: 1000000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'voyage/rerank-2.5': {
       displayName: 'Voyage Rerank 2.5',
@@ -11646,6 +14291,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/rerank-2.5-lite': {
       displayName: 'Voyage Rerank 2.5 Lite',
@@ -11655,6 +14301,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-3-large': {
       displayName: 'voyage-3-large',
@@ -11664,6 +14311,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-3.5': {
       displayName: 'voyage-3.5',
@@ -11673,6 +14321,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-3.5-lite': {
       displayName: 'voyage-3.5-lite',
@@ -11682,6 +14331,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-4': {
       displayName: 'voyage-4',
@@ -11691,6 +14341,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-4-large': {
       displayName: 'voyage-4-large',
@@ -11700,6 +14351,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-4-lite': {
       displayName: 'voyage-4-lite',
@@ -11709,6 +14361,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 32000,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-code-2': {
       displayName: 'voyage-code-2',
@@ -11718,6 +14371,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-code-3': {
       displayName: 'voyage-code-3',
@@ -11727,6 +14381,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-finance-2': {
       displayName: 'voyage-finance-2',
@@ -11736,6 +14391,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'voyage/voyage-law-2': {
       displayName: 'voyage-law-2',
@@ -11745,6 +14401,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 1536,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'xai/grok-4.1-fast-non-reasoning': {
       displayName: 'Grok 4.1 Fast Non-Reasoning',
@@ -11754,6 +14411,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.1-fast-reasoning': {
       displayName: 'Grok 4.1 Fast Reasoning',
@@ -11763,6 +14421,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.20-multi-agent': {
       displayName: 'Grok 4.20 Multi-Agent',
@@ -11772,6 +14431,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.20-multi-agent-beta': {
       displayName: 'Grok 4.20 Multi Agent Beta',
@@ -11781,6 +14442,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.20-non-reasoning': {
       displayName: 'Grok 4.20 Non-Reasoning',
@@ -11790,6 +14453,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.20-non-reasoning-beta': {
       displayName: 'Grok 4.20 Beta Non-Reasoning',
@@ -11799,6 +14463,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.20-reasoning': {
       displayName: 'Grok 4.20 Reasoning',
@@ -11808,6 +14473,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.20-reasoning-beta': {
       displayName: 'Grok 4.20 Beta Reasoning',
@@ -11817,6 +14483,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 2000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.3': {
       displayName: 'Grok 4.3',
@@ -11826,6 +14493,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-4.5': {
       displayName: 'Grok 4.5',
@@ -11835,6 +14504,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 500000,
       maxOutputTokens: 500000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-build-0.1': {
       displayName: 'Grok Build 0.1',
@@ -11844,6 +14515,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xai/grok-imagine-image': {
       displayName: 'Grok Imagine Image',
@@ -11853,6 +14525,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text', 'image'] },
     },
     'xai/grok-imagine-video': {
       displayName: 'Grok Imagine',
@@ -11862,6 +14535,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'xai/grok-imagine-video-1.5': {
       displayName: 'Grok Imagine Video 1.5',
@@ -11871,6 +14545,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'xai/grok-imagine-video-1.5-preview': {
       displayName: 'Grok Imagine Video 1.5 Preview',
@@ -11880,6 +14555,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: [] },
     },
     'xai/grok-stt': {
       displayName: 'Grok STT',
@@ -11889,6 +14565,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['audio'], output: ['text'] },
     },
     'xai/grok-tts': {
       displayName: 'Grok TTS',
@@ -11898,6 +14575,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'xai/grok-voice-think-fast-1.0': {
       displayName: 'Grok Voice Think Fast 1.0',
@@ -11907,6 +14585,17 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
+    },
+    'xai/grok-voice-think-fast-2.0': {
+      displayName: 'Grok Voice Think Fast 2.0',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
     },
     'xiaomi/mimo-v2.5': {
       displayName: 'MiMo M2.5',
@@ -11916,6 +14605,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 131100,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'xiaomi/mimo-v2.5-pro': {
       displayName: 'MiMo V2.5 Pro',
@@ -11925,6 +14616,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-4.5': {
       displayName: 'GLM 4.5',
@@ -11934,6 +14627,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 96000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-4.5-air': {
       displayName: 'GLM 4.5 Air',
@@ -11943,6 +14638,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 96000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-4.5v': {
       displayName: 'GLM 4.5V',
@@ -11952,6 +14649,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 66000,
       maxOutputTokens: 16000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'zai/glm-4.6': {
       displayName: 'GLM 4.6',
@@ -11961,6 +14660,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 96000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-4.6v': {
       displayName: 'GLM-4.6V',
@@ -11970,6 +14671,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 24000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'zai/glm-4.6v-flash': {
       displayName: 'GLM-4.6V-Flash',
@@ -11979,6 +14682,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 24000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'zai/glm-4.7': {
       displayName: 'GLM 4.7',
@@ -11988,6 +14693,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 120000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-4.7-flash': {
       displayName: 'GLM 4.7 Flash',
@@ -11997,6 +14704,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-4.7-flashx': {
       displayName: 'GLM 4.7 FlashX',
@@ -12006,6 +14715,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-5': {
       displayName: 'GLM-5',
@@ -12015,6 +14726,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202800,
       maxOutputTokens: 131100,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-5-turbo': {
       displayName: 'GLM 5 Turbo',
@@ -12024,6 +14737,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202800,
       maxOutputTokens: 131100,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-5.1': {
       displayName: 'GLM 5.1',
@@ -12033,15 +14748,19 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 202000,
       maxOutputTokens: 202000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-5.2': {
       displayName: 'GLM 5.2',
       lifecycle: 'active',
       docsUrl:
         'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
-      contextWindow: 1040000,
+      contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-5.2-fast': {
       displayName: 'GLM 5.2 Fast',
@@ -12051,6 +14770,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'xhigh'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'zai/glm-5v-turbo': {
       displayName: 'GLM 5V Turbo',
@@ -12060,6 +14781,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   xai: {
@@ -12070,6 +14793,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 30000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-4.20-0309-reasoning': {
       displayName: 'Grok 4.20 (Reasoning)',
@@ -12078,6 +14802,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 30000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-4.20-multi-agent-0309': {
       displayName: 'Grok 4.20 Multi-Agent',
@@ -12086,6 +14811,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 30000,
       capabilities: { vision: true, reasoning: true, functionCalling: false },
+      thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-4.3': {
       displayName: 'Grok 4.3',
@@ -12094,6 +14821,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 30000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-4.5': {
       displayName: 'Grok 4.5',
@@ -12102,6 +14831,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 500000,
       maxOutputTokens: 500000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-build-0.1': {
       displayName: 'Grok Build 0.1',
@@ -12110,6 +14841,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'grok-imagine-image': {
       displayName: 'Grok Imagine Image',
@@ -12118,6 +14850,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8000,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['image'] },
     },
     'grok-imagine-image-quality': {
       displayName: 'Grok Imagine Image Quality',
@@ -12126,6 +14859,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8000,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: ['image'] },
     },
     'grok-imagine-video': {
       displayName: 'Grok Imagine Video',
@@ -12134,6 +14868,16 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1024,
       maxOutputTokens: 0,
       capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image'], output: [] },
+    },
+    'grok-imagine-video-1.5': {
+      displayName: 'Grok Imagine Video 1.5',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.x.ai/docs/models',
+      contextWindow: 1024,
+      maxOutputTokens: 0,
+      capabilities: { vision: true, reasoning: false, functionCalling: false },
+      modalities: { input: ['text', 'image', 'audio'], output: [] },
     },
   },
   xiaomi: {
@@ -12144,6 +14888,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2-omni': {
       displayName: 'MiMo-V2-Omni',
@@ -12152,6 +14898,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'mimo-v2-pro': {
       displayName: 'MiMo-V2-Pro',
@@ -12160,6 +14908,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2.5': {
       displayName: 'MiMo-V2.5',
@@ -12168,6 +14918,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'mimo-v2.5-pro': {
       displayName: 'MiMo-V2.5-Pro',
@@ -12176,6 +14928,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2.5-pro-ultraspeed': {
       displayName: 'MiMo-V2.5-Pro-UltraSpeed',
@@ -12184,6 +14938,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   'xiaomi-token-plan-cn': {
@@ -12194,6 +14950,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2-tts': {
       displayName: 'MiMo-V2-TTS',
@@ -12202,6 +14960,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5': {
       displayName: 'MiMo-V2.5',
@@ -12210,6 +14969,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'mimo-v2.5-pro': {
       displayName: 'MiMo-V2.5-Pro',
@@ -12218,6 +14979,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2.5-tts': {
       displayName: 'MiMo-V2.5-TTS',
@@ -12226,6 +14989,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5-tts-voiceclone': {
       displayName: 'MiMo-V2.5-TTS-VoiceClone',
@@ -12234,6 +14998,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5-tts-voicedesign': {
       displayName: 'MiMo-V2.5-TTS-VoiceDesign',
@@ -12242,6 +15007,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
   },
   'xiaomi-token-plan-sgp': {
@@ -12252,6 +15018,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2-tts': {
       displayName: 'MiMo-V2-TTS',
@@ -12260,6 +15028,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5': {
       displayName: 'MiMo-V2.5',
@@ -12268,6 +15037,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'mimo-v2.5-pro': {
       displayName: 'MiMo-V2.5-Pro',
@@ -12276,6 +15047,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2.5-tts': {
       displayName: 'MiMo-V2.5-TTS',
@@ -12284,6 +15057,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5-tts-voiceclone': {
       displayName: 'MiMo-V2.5-TTS-VoiceClone',
@@ -12292,6 +15066,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5-tts-voicedesign': {
       displayName: 'MiMo-V2.5-TTS-VoiceDesign',
@@ -12300,6 +15075,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
   },
   'xiaomi-token-plan-ams': {
@@ -12310,6 +15086,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2-tts': {
       displayName: 'MiMo-V2-TTS',
@@ -12318,6 +15096,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5': {
       displayName: 'MiMo-V2.5',
@@ -12326,6 +15105,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'mimo-v2.5-pro': {
       displayName: 'MiMo-V2.5-Pro',
@@ -12334,6 +15115,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'mimo-v2.5-tts': {
       displayName: 'MiMo-V2.5-TTS',
@@ -12342,6 +15125,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5-tts-voiceclone': {
       displayName: 'MiMo-V2.5-TTS-VoiceClone',
@@ -12350,6 +15134,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
     'mimo-v2.5-tts-voicedesign': {
       displayName: 'MiMo-V2.5-TTS-VoiceDesign',
@@ -12358,6 +15143,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 8192,
       maxOutputTokens: 8192,
       capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['audio'] },
     },
   },
   zai: {
@@ -12368,6 +15154,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 98304,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-4.5-air': {
       displayName: 'GLM-4.5-Air',
@@ -12376,6 +15164,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 98304,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-4.5-flash': {
       displayName: 'GLM-4.5-Flash',
@@ -12384,6 +15174,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 131072,
       maxOutputTokens: 98304,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-4.5v': {
       displayName: 'GLM-4.5V',
@@ -12392,6 +15184,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 64000,
       maxOutputTokens: 16384,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'glm-4.6': {
       displayName: 'GLM-4.6',
@@ -12400,6 +15194,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-4.6v': {
       displayName: 'GLM-4.6V',
@@ -12408,6 +15204,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 32768,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'glm-4.7': {
       displayName: 'GLM-4.7',
@@ -12416,6 +15214,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-4.7-flash': {
       displayName: 'GLM-4.7-Flash',
@@ -12424,6 +15224,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-4.7-flashx': {
       displayName: 'GLM-4.7-FlashX',
@@ -12432,6 +15234,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5': {
       displayName: 'GLM-5',
@@ -12440,6 +15244,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5-turbo': {
       displayName: 'GLM-5-Turbo',
@@ -12448,6 +15254,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.1': {
       displayName: 'GLM-5.1',
@@ -12456,6 +15264,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.2': {
       displayName: 'GLM-5.2',
@@ -12464,6 +15274,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5v-turbo': {
       displayName: 'GLM-5V-Turbo',
@@ -12472,17 +15284,11 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   'zai-coding-plan': {
-    'glm-4.5-air': {
-      displayName: 'GLM-4.5-Air',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.z.ai/devpack/overview',
-      contextWindow: 131072,
-      maxOutputTokens: 98304,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
     'glm-4.7': {
       displayName: 'GLM-4.7',
       lifecycle: 'active',
@@ -12490,6 +15296,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5-turbo': {
       displayName: 'GLM-5-Turbo',
@@ -12498,14 +15306,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-    'glm-5.1': {
-      displayName: 'GLM-5.1',
-      lifecycle: 'active',
-      docsUrl: 'https://docs.z.ai/devpack/overview',
-      contextWindow: 200000,
-      maxOutputTokens: 131072,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'glm-5.2': {
       displayName: 'GLM-5.2',
@@ -12514,14 +15316,18 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
-    'glm-5v-turbo': {
-      displayName: 'GLM-5V-Turbo',
+    'glm-5.2-highspeed': {
+      displayName: 'GLM-5.2 Highspeed',
       lifecycle: 'active',
       docsUrl: 'https://docs.z.ai/devpack/overview',
-      contextWindow: 200000,
+      contextWindow: 1000000,
       maxOutputTokens: 131072,
-      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
   },
   zenmux: {
@@ -12532,6 +15338,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-3.7-sonnet': {
       displayName: 'Claude 3.7 Sonnet',
@@ -12540,6 +15347,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-fable-5': {
       displayName: 'Claude Fable 5',
@@ -12548,6 +15357,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-haiku-4.5': {
       displayName: 'Claude Haiku 4.5',
@@ -12556,6 +15367,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'anthropic/claude-opus-4': {
       displayName: 'Claude Opus 4',
@@ -12564,6 +15376,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 32000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'anthropic/claude-opus-4.1': {
       displayName: 'Claude Opus 4.1',
@@ -12572,6 +15386,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'anthropic/claude-opus-4.5': {
       displayName: 'Claude Opus 4.5',
@@ -12580,6 +15396,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'anthropic/claude-opus-4.6': {
       displayName: 'Claude Opus 4.6',
@@ -12588,6 +15406,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'anthropic/claude-opus-4.7': {
       displayName: 'Claude Opus 4.7',
@@ -12596,6 +15416,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-opus-4.8': {
       displayName: 'Claude Opus 4.8',
@@ -12604,6 +15426,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4': {
       displayName: 'Claude Sonnet 4',
@@ -12612,6 +15436,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4.5': {
       displayName: 'Claude Sonnet 4.5',
@@ -12620,6 +15446,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-4.6': {
       displayName: 'Claude Sonnet 4.6',
@@ -12628,6 +15456,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-5': {
       displayName: 'Claude Sonnet 5',
@@ -12636,6 +15466,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'anthropic/claude-sonnet-5-free': {
       displayName: 'Claude Sonnet 5 (Free)',
@@ -12644,6 +15476,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'baidu/ernie-5.0-thinking-preview': {
       displayName: 'ERNIE 5.0',
@@ -12652,6 +15486,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'deepseek/deepseek-chat': {
       displayName: 'DeepSeek-V3.2 (Non-thinking Mode)',
@@ -12660,6 +15495,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.2': {
       displayName: 'DeepSeek V3.2',
@@ -12668,6 +15504,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v3.2-exp': {
       displayName: 'DeepSeek-V3.2-Exp',
@@ -12676,6 +15514,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 163000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v4-flash': {
       displayName: 'DeepSeek V4 Flash',
@@ -12684,6 +15524,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'deepseek/deepseek-v4-pro': {
       displayName: 'DeepSeek V4 Pro',
@@ -12692,6 +15534,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 384000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'], toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'google/gemini-2.5-flash': {
       displayName: 'Gemini 2.5 Flash',
@@ -12700,6 +15544,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text', 'audio'], output: ['text'] },
     },
     'google/gemini-2.5-flash-lite': {
       displayName: 'Gemini 2.5 Flash Lite',
@@ -12708,6 +15554,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['image', 'text', 'audio'], output: ['text'] },
     },
     'google/gemini-2.5-pro': {
       displayName: 'Gemini 2.5 Pro',
@@ -12716,6 +15563,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text', 'audio'], output: ['text'] },
     },
     'google/gemini-3-flash-preview': {
       displayName: 'Gemini 3 Flash Preview',
@@ -12724,6 +15573,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3.1-flash-lite': {
       displayName: 'Gemini 3.1 Flash Lite',
@@ -12732,6 +15583,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3.1-flash-lite-preview': {
       displayName: 'Gemini 3.1 Flash Lite Preview',
@@ -12740,6 +15593,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 65530,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3.1-pro-preview': {
       displayName: 'Gemini 3.1 Pro Preview',
@@ -12748,6 +15602,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'google/gemini-3.5-flash': {
       displayName: 'Gemini 3.5 Flash',
@@ -12756,6 +15612,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'inclusionai/ling-1t': {
       displayName: 'Ling-1T',
@@ -12764,6 +15622,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'inclusionai/ring-1t': {
       displayName: 'Ring-1T',
@@ -12772,6 +15631,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'inclusionai/ring-2.6-1t': {
       displayName: 'inclusionAI: Ring-2.6-1T',
@@ -12780,6 +15640,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 65000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'kuaishou/kat-coder-pro-v2': {
       displayName: 'KAT-Coder-Pro-V2',
@@ -12788,6 +15649,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 80000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2': {
       displayName: 'MiniMax M2',
@@ -12796,6 +15658,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.1': {
       displayName: 'MiniMax M2.1',
@@ -12804,6 +15667,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.5': {
       displayName: 'MiniMax M2.5',
@@ -12812,6 +15676,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.5-lightning': {
       displayName: 'MiniMax M2.5 highspeed',
@@ -12820,6 +15685,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.7': {
       displayName: 'MiniMax M2.7',
@@ -12828,6 +15694,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131070,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m2.7-highspeed': {
       displayName: 'MiniMax M2.7 highspeed',
@@ -12836,6 +15703,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 204800,
       maxOutputTokens: 131070,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'minimax/minimax-m3': {
       displayName: 'MiniMax-M3',
@@ -12844,6 +15712,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 512000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2-0905': {
       displayName: 'Kimi K2 0905',
@@ -12852,6 +15722,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2-thinking': {
       displayName: 'Kimi K2 Thinking',
@@ -12860,6 +15731,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2-thinking-turbo': {
       displayName: 'Kimi K2 Thinking Turbo',
@@ -12868,6 +15740,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'moonshotai/kimi-k2.5': {
       displayName: 'Kimi K2.5',
@@ -12876,6 +15749,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2.6': {
       displayName: 'Kimi K2.6',
@@ -12884,6 +15759,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262140,
       maxOutputTokens: 262140,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2.7-code': {
       displayName: 'Kimi K2.7 Code',
@@ -12892,6 +15769,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'moonshotai/kimi-k2.7-code-free': {
       displayName: 'Kimi K2.7 Code (Free)',
@@ -12900,6 +15778,27 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 262144,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'moonshotai/kimi-k3': {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.zenmux.ai',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'moonshotai/kimi-k3-free': {
+      displayName: 'Kimi K3 (Free)',
+      lifecycle: 'active',
+      docsUrl: 'https://docs.zenmux.ai',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5': {
       displayName: 'GPT-5',
@@ -12908,6 +15807,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5-codex': {
       displayName: 'GPT-5 Codex',
@@ -12916,6 +15817,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1': {
       displayName: 'GPT-5.1',
@@ -12924,6 +15827,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.1-chat': {
       displayName: 'GPT-5.1 Chat',
@@ -12932,6 +15837,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.1-codex': {
       displayName: 'GPT-5.1-Codex',
@@ -12940,6 +15846,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.1-codex-mini': {
       displayName: 'GPT-5.1-Codex-Mini',
@@ -12948,6 +15856,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.2': {
       displayName: 'GPT-5.2',
@@ -12956,6 +15866,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'openai/gpt-5.2-codex': {
       displayName: 'GPT-5.2-Codex',
@@ -12964,6 +15876,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.2-pro': {
       displayName: 'GPT-5.2-Pro',
@@ -12972,6 +15886,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.3-chat': {
       displayName: 'GPT-5.3 Chat',
@@ -12980,6 +15896,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 16380,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-5.3-codex': {
       displayName: 'GPT-5.3 Codex',
@@ -12988,6 +15905,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-5.4': {
       displayName: 'GPT-5.4',
@@ -12996,6 +15915,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.4-mini': {
       displayName: 'GPT-5.4 Mini',
@@ -13004,6 +15925,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-5.4-nano': {
       displayName: 'GPT-5.4 Nano',
@@ -13012,6 +15934,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'openai/gpt-5.4-pro': {
       displayName: 'GPT-5.4 Pro',
@@ -13020,6 +15943,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.5': {
       displayName: 'GPT-5.5',
@@ -13028,6 +15953,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.5-instant': {
       displayName: 'GPT-5.5 Instant',
@@ -13036,6 +15963,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 400000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.5-pro': {
       displayName: 'GPT-5.5 Pro',
@@ -13044,6 +15973,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['medium', 'high', 'xhigh'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-luna': {
       displayName: 'GPT-5.6 Luna',
@@ -13052,6 +15983,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-sol': {
       displayName: 'GPT-5.6 Sol',
@@ -13060,6 +15993,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'openai/gpt-5.6-terra': {
       displayName: 'GPT-5.6 Terra',
@@ -13068,6 +16003,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1050000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3-coder-plus': {
       displayName: 'Qwen3-Coder-Plus',
@@ -13076,6 +16013,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3-max': {
       displayName: 'Qwen3-Max-Thinking',
@@ -13084,6 +16022,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3.5-flash': {
       displayName: 'Qwen3.5 Flash',
@@ -13092,6 +16031,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1020000,
       maxOutputTokens: 1020000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.5-plus': {
       displayName: 'Qwen3.5 Plus',
@@ -13100,6 +16040,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'qwen/qwen3.6-plus': {
       displayName: 'Qwen3.6-Plus',
@@ -13108,6 +16050,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3.7-max': {
       displayName: 'Qwen3.7 Max',
@@ -13116,6 +16060,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'qwen/qwen3.7-plus': {
       displayName: 'Qwen3.7 Plus',
@@ -13124,6 +16070,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'sapiens-ai/agnes-1.5-lite': {
       displayName: 'Agnes 1.5 Lite',
@@ -13132,6 +16080,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'sapiens-ai/agnes-1.5-pro': {
       displayName: 'Agnes 1.5 Pro',
@@ -13140,6 +16089,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'stepfun/step-3': {
       displayName: 'Step-3',
@@ -13148,6 +16098,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 65536,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'stepfun/step-3.5-flash': {
       displayName: 'Step 3.5 Flash',
@@ -13156,6 +16107,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'stepfun/step-3.7-flash': {
       displayName: 'Step 3.7 Flash',
@@ -13164,6 +16116,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'stepfun/step-3.7-flash-free': {
       displayName: 'Step 3.7 Flash (Free)',
@@ -13172,6 +16126,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'tencent/hy3-preview': {
       displayName: 'Hy3 preview',
@@ -13180,6 +16136,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'volcengine/doubao-seed-1.8': {
       displayName: 'Doubao-Seed-1.8',
@@ -13188,6 +16146,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'volcengine/doubao-seed-2.0-code': {
       displayName: 'Doubao Seed 2.0 Code',
@@ -13196,6 +16156,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 32000,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'volcengine/doubao-seed-2.0-lite': {
       displayName: 'Doubao-Seed-2.0-lite',
@@ -13204,6 +16165,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'volcengine/doubao-seed-2.0-mini': {
       displayName: 'Doubao-Seed-2.0-mini',
@@ -13212,6 +16175,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'volcengine/doubao-seed-2.0-pro': {
       displayName: 'Doubao-Seed-2.0-pro',
@@ -13220,6 +16185,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'volcengine/doubao-seed-code': {
       displayName: 'Doubao-Seed-Code',
@@ -13228,6 +16195,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4': {
       displayName: 'Grok 4',
@@ -13236,6 +16205,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['image', 'text'], output: ['text'] },
     },
     'x-ai/grok-4-fast': {
       displayName: 'Grok 4 Fast',
@@ -13244,6 +16214,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.1-fast': {
       displayName: 'Grok 4.1 Fast',
@@ -13252,6 +16224,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.1-fast-non-reasoning': {
       displayName: 'Grok 4.1 Fast Non Reasoning',
@@ -13260,6 +16234,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.2-fast': {
       displayName: 'Grok 4.2 Fast',
@@ -13268,6 +16243,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 30000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.2-fast-non-reasoning': {
       displayName: 'Grok 4.2 Fast Non Reasoning',
@@ -13276,6 +16252,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 2000000,
       maxOutputTokens: 30000,
       capabilities: { vision: true, reasoning: false, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.3': {
       displayName: 'Grok 4.3',
@@ -13284,6 +16261,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 1000000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-4.5': {
       displayName: 'Grok 4.5',
@@ -13292,6 +16271,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 500000,
       maxOutputTokens: 500000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-build-0.1': {
       displayName: 'Grok Build 0.1',
@@ -13300,6 +16281,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 256000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'x-ai/grok-code-fast-1': {
       displayName: 'Grok Code Fast 1',
@@ -13308,6 +16290,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 256000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'xiaomi/mimo-v2-flash': {
       displayName: 'MiMo-V2-Flash',
@@ -13316,6 +16299,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 262144,
       maxOutputTokens: 65536,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'xiaomi/mimo-v2-omni': {
       displayName: 'MiMo V2 Omni',
@@ -13324,6 +16309,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 265000,
       maxOutputTokens: 265000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'xiaomi/mimo-v2-pro': {
       displayName: 'MiMo V2 Pro',
@@ -13332,6 +16319,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 256000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'xiaomi/mimo-v2.5': {
       displayName: 'MiMo-V2.5',
@@ -13340,6 +16329,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
     },
     'xiaomi/mimo-v2.5-pro': {
       displayName: 'MiMo-V2.5-Pro',
@@ -13348,6 +16339,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1048576,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.5': {
       displayName: 'GLM 4.5',
@@ -13356,6 +16349,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.5-air': {
       displayName: 'GLM 4.5 Air',
@@ -13364,6 +16359,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 128000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.6': {
       displayName: 'GLM 4.6',
@@ -13372,6 +16369,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.6v': {
       displayName: 'GLM 4.6V',
@@ -13380,6 +16378,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'z-ai/glm-4.6v-flash': {
       displayName: 'GLM 4.6V FlashX',
@@ -13388,6 +16387,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'z-ai/glm-4.6v-flash-free': {
       displayName: 'GLM 4.6V Flash (Free)',
@@ -13396,6 +16396,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'z-ai/glm-4.7': {
       displayName: 'GLM 4.7',
@@ -13404,6 +16405,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.7-flash-free': {
       displayName: 'GLM 4.7 Flash (Free)',
@@ -13412,6 +16414,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-4.7-flashx': {
       displayName: 'GLM 4.7 FlashX',
@@ -13420,6 +16423,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 64000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5': {
       displayName: 'GLM 5',
@@ -13428,6 +16432,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5-turbo': {
       displayName: 'GLM 5 Turbo',
@@ -13436,6 +16441,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 128000,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5.1': {
       displayName: 'GLM-5.1',
@@ -13444,6 +16450,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5.2': {
       displayName: 'GLM 5.2',
@@ -13452,6 +16460,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5.2-free': {
       displayName: 'GLM 5.2 (Free)',
@@ -13460,6 +16470,8 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 1000000,
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['high', 'max'] },
+      modalities: { input: ['text'], output: ['text'] },
     },
     'z-ai/glm-5v-turbo': {
       displayName: 'GLM 5V Turbo',
@@ -13468,6 +16480,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       contextWindow: 200000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
 };
@@ -13557,6 +16570,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
     'claude-opus-4-6': { npm: '@ai-sdk/anthropic' },
     'claude-opus-4-7': { npm: '@ai-sdk/anthropic' },
     'claude-opus-4-8': { npm: '@ai-sdk/anthropic' },
+    'claude-opus-5': { npm: '@ai-sdk/anthropic' },
     'claude-sonnet-4': { npm: '@ai-sdk/anthropic' },
     'claude-sonnet-4-5': { npm: '@ai-sdk/anthropic' },
     'claude-sonnet-4-6': { npm: '@ai-sdk/anthropic' },
@@ -13565,6 +16579,8 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
     'gemini-3-pro': { npm: '@ai-sdk/google' },
     'gemini-3.1-pro': { npm: '@ai-sdk/google' },
     'gemini-3.5-flash': { npm: '@ai-sdk/google' },
+    'gemini-3.5-flash-lite': { npm: '@ai-sdk/google' },
+    'gemini-3.6-flash': { npm: '@ai-sdk/google' },
     'gpt-5': { npm: '@ai-sdk/openai' },
     'gpt-5-codex': { npm: '@ai-sdk/openai' },
     'gpt-5-nano': { npm: '@ai-sdk/openai' },
@@ -13585,6 +16601,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
     'gpt-5.6-luna': { npm: '@ai-sdk/openai' },
     'gpt-5.6-sol': { npm: '@ai-sdk/openai' },
     'gpt-5.6-terra': { npm: '@ai-sdk/openai' },
+    'grok-4.5': { npm: '@ai-sdk/openai' },
     'minimax-m2.1-free': { npm: '@ai-sdk/anthropic' },
     'minimax-m2.5-free': { npm: '@ai-sdk/anthropic' },
     'minimax-m3-free': { npm: '@ai-sdk/anthropic' },
@@ -13593,6 +16610,8 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
     'qwen3.6-plus-free': { npm: '@ai-sdk/anthropic' },
   },
   'opencode-go': {
+    'gpt-5.6-luna': { npm: '@ai-sdk/openai' },
+    'grok-4.5': { npm: '@ai-sdk/openai' },
     'minimax-m2.5': { npm: '@ai-sdk/anthropic' },
     'minimax-m2.7': { npm: '@ai-sdk/anthropic' },
     'minimax-m3': { npm: '@ai-sdk/anthropic' },
@@ -13600,6 +16619,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
     'qwen3.6-plus': { npm: '@ai-sdk/anthropic' },
     'qwen3.7-max': { npm: '@ai-sdk/anthropic' },
     'qwen3.7-plus': { npm: '@ai-sdk/anthropic' },
+    'qwen3.8-max': { npm: '@ai-sdk/anthropic' },
   },
   openrouter: {},
   siliconflow: {},

@@ -12,6 +12,7 @@ import {
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
 import { type ProviderType, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { thinkingOptionsForModel, thinkingVariantsForModel } from '@maka/core/model-thinking';
@@ -121,13 +122,12 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       if (adapter.supportsOpenAiResponses === true && resolvedApiProtocol === 'openai-responses') {
         return createOpenAI({ apiKey, baseURL, fetch }).responses(modelId);
       }
-      const name = adapter.name === 'connection' ? connection.slug : connection.providerType;
       const kimiTransport =
         connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
           ? createKimiOpenAiTransport(fetch ?? globalThis.fetch, kimiOpenAiTransportState)
           : undefined;
       const model = createOpenAICompatible({
-        name,
+        name: openAiCompatibleProviderOptionsName(adapter, connection),
         apiKey,
         baseURL,
         includeUsage: adapter.includeUsage,
@@ -382,14 +382,23 @@ export function buildProviderOptions(
       };
     case 'xai':
     case 'xai-oauth':
-      return modelId === 'grok-4.5'
+      if (modelId === 'grok-4.5') {
+        return {
+          openai: {
+            store: false,
+            forceReasoning: true,
+            reasoningSummary: null,
+            include: ['reasoning.encrypted_content'],
+            ...(level ? { reasoningEffort: level } : {}),
+          },
+        };
+      }
+      // Other xAI models serve the OpenAI-compatible chat wire, so their
+      // declared efforts ride the shared compatible fallback shape.
+      return level
         ? {
-            openai: {
-              store: false,
-              forceReasoning: true,
-              reasoningSummary: null,
-              include: ['reasoning.encrypted_content'],
-              ...(level ? { reasoningEffort: level } : {}),
+            [openaiCompatibleNamespace(connection.providerType)]: {
+              reasoningEffort: level === 'off' ? 'none' : level,
             },
           }
         : {};
@@ -446,10 +455,12 @@ export function buildProviderOptions(
                 : { reasoningEffort: level },
           }
         : {};
-    // DeepInfra and OpenRouter document `none` as their real off wire. Other
-    // compatible providers below expose only their confirmed non-off effort values.
+    // DeepInfra, OpenRouter, and Groq document `none` as their real off wire
+    // (Groq only for the Qwen3 family; gpt-oss declares no `none` effort and
+    // therefore never reaches this case with an off level).
     case 'deepinfra':
     case 'openrouter':
+    case 'groq':
       return level
         ? {
             [openaiCompatibleNamespace(connection.providerType)]: {
@@ -457,11 +468,7 @@ export function buildProviderOptions(
             },
           }
         : {};
-    // Groq accepts `reasoning_effort` for gpt-oss-120b / gpt-oss-20b only, with
-    // low/medium/high (no `none`). Per-model thinkingOptions constrain which
-    // levels reach this case, so Groq only ever receives a non-off effort here
-    // and shares the non-off branch below.
-    case 'groq':
+    // Compatible providers below expose only their confirmed non-off effort values.
     case 'deepseek':
     case 'moonshot':
     case 'tencent-token-plan':
@@ -471,9 +478,63 @@ export function buildProviderOptions(
       return level && level !== 'off'
         ? { [openaiCompatibleNamespace(connection.providerType)]: { reasoningEffort: level } }
         : {};
-    default:
-      return {};
+    // Every remaining path resolves to one of a handful of wire families.
+    // Keying the fallback on the resolved adapter — the same object
+    // `getAIModel` switches on, including per-model models.dev package
+    // overrides — keeps declaration and wire in one seam. The variant gate
+    // above (level is defined only when metadata declares it) is what makes
+    // this safe to generalize: undeclared models never reach the wire.
+    default: {
+      if (!level) return {};
+      const { adapter } = resolveModelRuntime(connection, modelId);
+      const reasoningEffort = level === 'off' ? 'none' : level;
+      switch (adapter.kind) {
+        case 'openai-compatible':
+          return {
+            [openAiCompatibleProviderOptionsName(adapter, connection)]: { reasoningEffort },
+          };
+        case 'openai':
+          return { openai: { reasoningEffort } };
+        case 'anthropic':
+          // Anthropic-protocol models declare no `none` effort, so an off
+          // choice only exists where an explicit case wires it.
+          return level !== 'off' ? { anthropic: { effort: level } } : {};
+        case 'google':
+          return level !== 'off'
+            ? { google: { thinkingConfig: { includeThoughts: true, thinkingLevel: level } } }
+            : {};
+        case 'github-copilot': {
+          // Copilot routes per account-declared model protocol (mirrors the
+          // getAIModel case), defaulting to its OpenAI-compatible chat wire.
+          const copilotProtocol = connection.models?.find(
+            (model) => model.id === modelId,
+          )?.apiProtocol;
+          if (copilotProtocol === 'anthropic-messages') {
+            return level !== 'off' ? { anthropic: { effort: level } } : {};
+          }
+          if (copilotProtocol === 'openai-responses') {
+            return { openai: { reasoningEffort } };
+          }
+          return { 'github-copilot': { reasoningEffort } };
+        }
+        default:
+          return {};
+      }
+    }
   }
+}
+
+/**
+ * providerOptions namespace matches the `name` passed to `createOpenAICompatible`
+ * in `getAIModel`; both derive it from this one rule so the two can never drift.
+ */
+function openAiCompatibleProviderOptionsName(
+  adapter: ProviderRuntimeAdapter,
+  connection: RuntimeExecutionConnection,
+): string {
+  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
+    ? connection.slug
+    : connection.providerType;
 }
 
 /** providerOptions namespace matches the `name` passed to `createOpenAICompatible` in `getAIModel`. */

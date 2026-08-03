@@ -165,8 +165,11 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('deepinfra'), 'moonshotai/Kimi-K2.7-Code', 'off'), {
       deepinfra: { reasoningEffort: 'none' },
     });
-    // Groq reasoning_effort: only gpt-oss-120b / gpt-oss-20b accept it, with
-    // low/medium/high (no `none`). qwen/qwen3-32b does not accept reasoning_effort.
+    // Groq reasoning_effort: gpt-oss-120b / gpt-oss-20b declare low/medium/high
+    // (no `none`), so an off choice never reaches the wire. qwen3-32b now
+    // declares `["none","default"]` upstream: only the `none` effort survives
+    // deriveThinkingChoices ("default" is not a ThinkingLevel), so the sole
+    // knob is off, wired as reasoning_effort "none".
     assert.deepEqual(
       [...thinkingVariantsForModel('groq', 'openai/gpt-oss-120b')],
       ['low', 'medium', 'high'],
@@ -175,8 +178,16 @@ describe('buildProviderOptions: thinking level', () => {
       groq: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('groq'), 'openai/gpt-oss-120b', 'off'), {});
-    assert.deepEqual([...thinkingVariantsForModel('groq', 'qwen/qwen3-32b')], []);
-    assert.deepEqual([...thinkingVariantsForModel('groq', 'openai/gpt-oss-safeguard-20b')], []);
+    assert.deepEqual([...thinkingVariantsForModel('groq', 'qwen/qwen3-32b')], ['off']);
+    assert.deepEqual(buildProviderOptions(conn('groq'), 'qwen/qwen3-32b', 'off'), {
+      groq: { reasoningEffort: 'none' },
+    });
+    // gpt-oss-safeguard-20b declares the same low/medium/high effort set as
+    // the rest of the Groq gpt-oss family in the current snapshot.
+    assert.deepEqual(
+      [...thinkingVariantsForModel('groq', 'openai/gpt-oss-safeguard-20b')],
+      ['low', 'medium', 'high'],
+    );
     assert.deepEqual([...thinkingVariantsForModel('groq', 'llama-3.3-70b-versatile')], []);
     // OpenRouter accepts the same `reasoning_effort` shorthand (none disables).
     assert.deepEqual(

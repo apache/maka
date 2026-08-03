@@ -423,6 +423,12 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     'command-a-reasoning-08-2025': {
       thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
     },
+    // Cohere's wire has no effort field (thinking enabled/disabled only), so
+    // the upstream-declared effort list for north-mini-code collapses to the
+    // one choice Maka can actually send: off.
+    'north-mini-code-1-0': {
+      thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
+    },
   },
   'gemini-cli': GOOGLE_MODEL_OVERRIDES,
   'openai-codex': OPENAI_OAUTH_MODEL_METADATA,
