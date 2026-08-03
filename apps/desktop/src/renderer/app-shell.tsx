@@ -75,7 +75,10 @@ import {
 import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
-import { requestDownloadedAppUpdate } from './app-update-install';
+import {
+  isAppUpdateInstallFailure,
+  requestDownloadedAppUpdate,
+} from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
@@ -240,6 +243,7 @@ function AppShellContent({
   const toastApi = useToast();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const updateInstallInFlightRef = useRef(false);
+  const notifiedInstallErrorRef = useRef<string | null>(null);
   const {
     sessions,
     authoritativeSessionIds,
@@ -281,6 +285,7 @@ function AppShellContent({
     const epochs = sandboxBoundaryInteractionEpochRef.current;
     epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   }, []);
+
   const attachmentDraftKey = activeId ?? 'new-session';
   const {
     pendingAttachments,
@@ -378,6 +383,18 @@ function AppShellContent({
   const shellCopy = getShellCopy(uiLocale).app;
   const voiceCopy = getDesktopConversationCopy(uiLocale).voice;
   useEffect(() => {
+    if (!isAppUpdateInstallFailure(appUpdateStatus)) {
+      notifiedInstallErrorRef.current = null;
+      return;
+    }
+    if (notifiedInstallErrorRef.current === appUpdateStatus.message) return;
+    notifiedInstallErrorRef.current = appUpdateStatus.message;
+    toastApi.error(
+      shellCopy.updateInstallFailedTitle,
+      shellCopy.updateInstallManualFallback,
+    );
+  }, [appUpdateStatus, shellCopy, toastApi]);
+  useEffect(() => {
     let cancelled = false;
     let receivedPush = false;
     const unsubscribeUpdateStatus = window.maka.app.subscribeUpdateStatus((next) => {
@@ -413,9 +430,9 @@ function AppShellContent({
       updateInstallInFlightRef.current = true;
       void requestDownloadedAppUpdate({
         installUpdate: (input) => window.maka.app.installUpdate(input),
-        confirmActiveTasks: (activeTaskCount) => toastApi.confirm({
+        confirmActiveTasks: () => toastApi.confirm({
           title: shellCopy.updateActiveTasksTitle,
-          description: shellCopy.updateActiveTasksDescription(activeTaskCount),
+          description: shellCopy.updateActiveTasksDescription,
           confirmLabel: shellCopy.updateActiveTasksConfirm,
           cancelLabel: shellCopy.updateActiveTasksCancel,
           destructive: true,
@@ -423,6 +440,7 @@ function AppShellContent({
       })
         .then((outcome) => {
           if (outcome.kind !== 'failed') return;
+          if (outcome.reason === 'install_failed') return;
           toastApi.error(
             shellCopy.updateInstallFailedTitle,
             shellCopy.updateInstallManualFallback,
@@ -439,7 +457,26 @@ function AppShellContent({
         });
       return;
     }
-    if (appUpdateStatus?.state === 'available' || appUpdateStatus?.state === 'downloading') {
+    if (
+      appUpdateStatus?.state === 'available' ||
+      appUpdateStatus?.state === 'downloading' ||
+      appUpdateStatus?.state === 'error'
+    ) {
+      void window.maka.app
+        .retryUpdateDownload()
+        .then((next) => {
+          if (next.state !== 'error') return;
+          toastApi.error(
+            shellCopy.updateRetryFailedTitle,
+            shellCopy.updateRetryFailedFallback,
+          );
+        })
+        .catch((error) => {
+          toastApi.error(
+            shellCopy.updateRetryFailedTitle,
+            localizedShellErrorMessage(error, shellCopy.updateRetryFailedFallback, uiLocale),
+          );
+        });
       return;
     }
     void window.maka.app

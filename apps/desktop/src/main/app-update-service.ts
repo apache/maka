@@ -1,5 +1,5 @@
 import electronUpdater from 'electron-updater';
-import type { AppUpdater } from 'electron-updater';
+import type { AppUpdater, UpdateCheckResult } from 'electron-updater';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 
 export type AppUpdateProgress = {
@@ -34,21 +34,30 @@ export type AppUpdateStatus =
       releaseName?: string;
       downloadedFile?: string;
     }
-  | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
+  | { state: 'installing'; currentVersion: string; latestVersion: string }
+  | {
+      state: 'error';
+      currentVersion: string;
+      message: string;
+      operation: 'check' | 'download' | 'install';
+      latestVersion?: string;
+    };
 
 export type AppUpdateInstallRequest = {
-  maxInterruptibleActiveTasks: number;
+  /** User consent from the trusted desktop renderer; this is a UX boundary, not a security boundary. */
+  allowInterruptActiveTasks: boolean;
 };
 
 export type AppUpdateInstallResult =
   | { ok: true }
-  | { ok: false; reason: 'active_tasks'; activeTaskCount: number }
+  | { ok: false; reason: 'active_tasks' }
   | { ok: false; reason: 'not_downloaded' | 'install_failed' };
 
 export interface AppUpdateService {
   start(): void;
   dispose(): void;
   getStatus(): AppUpdateStatus;
+  retryUpdateDownload(): Promise<AppUpdateStatus>;
   installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
   openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }>;
 }
@@ -56,14 +65,12 @@ export interface AppUpdateService {
 interface AppUpdateServiceDeps {
   currentVersion: string;
   isPackaged: boolean;
-  platform: NodeJS.Platform;
-  arch: string;
   openExternal(url: string): Promise<void>;
   updater?: AppUpdater;
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
-  getActiveTaskCount: () => number;
+  hasActiveTasks: () => boolean;
   clock?: {
     setTimeout(callback: () => void, delayMs: number): unknown;
     clearTimeout(handle: unknown): void;
@@ -163,6 +170,11 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   let status: AppUpdateStatus = { state: 'idle', currentVersion: deps.currentVersion };
   let latestInfo: UpdateInfo | undefined;
   let checkInFlight: Promise<AppUpdateStatus> | null = null;
+  let activeDownload: {
+    promise: Promise<string[]>;
+    cancellationToken?: UpdateCheckResult['cancellationToken'];
+    cancelledForRetry: boolean;
+  } | undefined;
   let checkTimer: unknown;
   let started = false;
   let disposed = false;
@@ -179,11 +191,47 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     deps.onStatusChange?.(next);
     return next;
   };
+  const currentStatus = (): AppUpdateStatus => status;
 
   const latestVersion = () =>
-    status.state === 'available' || status.state === 'downloading' || status.state === 'downloaded' || status.state === 'error'
+    status.state === 'available' || status.state === 'downloading' || status.state === 'downloaded' ||
+    status.state === 'installing' || status.state === 'error'
       ? status.latestVersion
       : updateInfoVersion(latestInfo);
+
+  const publishError = (
+    operation: Extract<AppUpdateStatus, { state: 'error' }>['operation'],
+    error: unknown,
+  ): AppUpdateStatus => publish({
+    state: 'error',
+    currentVersion: deps.currentVersion,
+    latestVersion: latestVersion(),
+    operation,
+    message: error instanceof Error ? error.message : String(error),
+  });
+
+  const trackAutoDownload = (result: UpdateCheckResult | null): void => {
+    if (!result?.downloadPromise) return;
+    const tracked = {
+      promise: result.downloadPromise,
+      cancellationToken: result.cancellationToken,
+      cancelledForRetry: false,
+    };
+    activeDownload = tracked;
+    void tracked.promise
+      .catch((error) => {
+        if (
+          activeDownload === tracked &&
+          !tracked.cancelledForRetry &&
+          status.state !== 'error'
+        ) {
+          publishError('download', error);
+        }
+      })
+      .finally(() => {
+        if (activeDownload === tracked) activeDownload = undefined;
+      });
+  };
 
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
@@ -238,32 +286,32 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     });
   });
   updater.on('error', (error) => {
-    publish({
-      state: 'error',
-      currentVersion: deps.currentVersion,
-      latestVersion: latestVersion(),
-      message: error instanceof Error ? error.message : String(error),
-    });
+    const operation = status.state === 'installing'
+      ? 'install'
+      : status.state === 'available' || status.state === 'downloading'
+        ? 'download'
+        : 'check';
+    publishError(operation, error);
   });
 
-  async function checkForUpdates(): Promise<AppUpdateStatus> {
+  async function checkForUpdates(allowDuringDownload = false): Promise<AppUpdateStatus> {
     if (deps.mockLatestVersion) {
       return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, deps.mockState ?? 'downloading'));
     }
     if (!deps.isPackaged) {
       return publish({ state: 'not-available', currentVersion: deps.currentVersion });
     }
-    if (status.state === 'downloaded' || status.state === 'downloading') return status;
+    if (status.state === 'downloaded' || status.state === 'installing') return status;
+    if (status.state === 'downloading' && !allowDuringDownload) return status;
+    if (activeDownload && !allowDuringDownload) return status;
     if (checkInFlight) return checkInFlight;
     checkInFlight = updater
       .checkForUpdates()
-      .then(() => status)
-      .catch((error) => publish({
-        state: 'error',
-        currentVersion: deps.currentVersion,
-        latestVersion: latestVersion(),
-        message: error instanceof Error ? error.message : String(error),
-      }))
+      .then((result) => {
+        trackAutoDownload(result);
+        return status;
+      })
+      .catch((error) => status.state === 'error' ? status : publishError('check', error))
       .finally(() => {
         checkInFlight = null;
       });
@@ -296,27 +344,55 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     }
   }
 
+  async function retryUpdateDownload(): Promise<AppUpdateStatus> {
+    if (deps.mockLatestVersion) {
+      return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, 'downloaded'));
+    }
+    if (!deps.isPackaged || status.state === 'downloaded' || status.state === 'installing') {
+      return status;
+    }
+    if (checkInFlight) await checkInFlight;
+    const download = activeDownload;
+    if (download) {
+      download.cancelledForRetry = true;
+      download.cancellationToken?.cancel();
+      await download.promise.catch(() => undefined);
+      const settled = currentStatus();
+      if (settled.state === 'downloaded' || settled.state === 'installing') return settled;
+    }
+    return checkForUpdates(true);
+  }
+
   async function installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> {
     if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
-    let activeTaskCount: number;
+    let hasActiveTasks: boolean;
     try {
-      activeTaskCount = deps.getActiveTaskCount();
-    } catch {
+      hasActiveTasks = deps.hasActiveTasks();
+    } catch (error) {
+      publishError('install', error);
       return { ok: false, reason: 'install_failed' };
     }
-    if (!Number.isSafeInteger(activeTaskCount) || activeTaskCount < 0) {
+    if (typeof hasActiveTasks !== 'boolean') {
+      publishError('install', new Error('Active task status is unavailable'));
       return { ok: false, reason: 'install_failed' };
     }
-    if (activeTaskCount > input.maxInterruptibleActiveTasks) {
-      return { ok: false, reason: 'active_tasks', activeTaskCount };
+    if (hasActiveTasks && !input.allowInterruptActiveTasks) {
+      return { ok: false, reason: 'active_tasks' };
     }
     if (deps.mockLatestVersion) {
       return { ok: true };
     }
+    const version = latestVersion() ?? deps.currentVersion;
+    publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
     try {
       updater.quitAndInstall(false, true);
+      const installStatus = currentStatus();
+      if (installStatus.state === 'error' && installStatus.operation === 'install') {
+        return { ok: false, reason: 'install_failed' };
+      }
       return { ok: true };
-    } catch {
+    } catch (error) {
+      publishError('install', error);
       return { ok: false, reason: 'install_failed' };
     }
   }
@@ -337,7 +413,8 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   return {
     start,
     dispose,
-    getStatus: () => status,
+    getStatus: currentStatus,
+    retryUpdateDownload,
     installUpdate,
     openUpdateDownload,
   };

@@ -335,7 +335,7 @@ describe('AutomationScheduler', () => {
     assert.equal(t.timers.length, 0);
   });
 
-  test('exposes stable task keys until an in-flight fire settles', async () => {
+  test('reports activity until an in-flight fire settles', async () => {
     const t = createTestSetup();
     const automation = t.manager.create({
       kind: 'heartbeat',
@@ -356,10 +356,10 @@ describe('AutomationScheduler', () => {
     t.scheduler.start();
     await t.runTick();
 
-    assert.deepEqual(t.scheduler.inFlightAutomationIds(), [automation.id]);
+    assert.equal(t.scheduler.hasInFlight(), true);
     settle({ runId: 'run-1', ok: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.deepEqual(t.scheduler.inFlightAutomationIds(), []);
+    assert.equal(t.scheduler.hasInFlight(), false);
   });
 
   test('does not fire expired automations', async () => {

@@ -76,6 +76,7 @@ export function registerAppIpc(deps: AppIpcDeps): void {
     };
   });
   ipcMain.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
+  ipcMain.handle('app:retryUpdateDownload', () => updateService.retryUpdateDownload());
   ipcMain.handle('app:installUpdate', (_event, input: unknown) => {
     if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');
     return updateService.installUpdate(input);
@@ -138,8 +139,6 @@ export function registerAppIpc(deps: AppIpcDeps): void {
 function isAppUpdateInstallRequest(input: unknown): input is AppUpdateInstallRequest {
   return typeof input === 'object' &&
     input !== null &&
-    'maxInterruptibleActiveTasks' in input &&
-    typeof input.maxInterruptibleActiveTasks === 'number' &&
-    Number.isSafeInteger(input.maxInterruptibleActiveTasks) &&
-    input.maxInterruptibleActiveTasks >= 0;
+    'allowInterruptActiveTasks' in input &&
+    typeof input.allowInterruptActiveTasks === 'boolean';
 }

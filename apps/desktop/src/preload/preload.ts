@@ -1085,6 +1085,9 @@ const makaBridge = {
     updateStatus(): Promise<AppUpdateStatus> {
       return ipcRenderer.invoke('app:updateStatus');
     },
+    retryUpdateDownload(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:retryUpdateDownload');
+    },
     installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> {
       return ipcRenderer.invoke('app:installUpdate', input);
     },

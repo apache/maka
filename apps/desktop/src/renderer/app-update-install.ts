@@ -1,6 +1,7 @@
 import type {
   AppUpdateInstallRequest,
   AppUpdateInstallResult,
+  AppUpdateStatus,
 } from '../preload/bridge-contract.js';
 
 export type AppUpdateInstallOutcome =
@@ -8,21 +9,23 @@ export type AppUpdateInstallOutcome =
   | { kind: 'cancelled' }
   | { kind: 'failed'; reason: 'not_downloaded' | 'install_failed' };
 
+export function isAppUpdateInstallFailure(
+  status: AppUpdateStatus | null,
+): status is Extract<AppUpdateStatus, { state: 'error' }> {
+  return status?.state === 'error' && status.operation === 'install';
+}
+
 export async function requestDownloadedAppUpdate(input: {
   installUpdate(request: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
-  confirmActiveTasks(activeTaskCount: number): Promise<boolean>;
+  confirmActiveTasks(): Promise<boolean>;
 }): Promise<AppUpdateInstallOutcome> {
-  let maxInterruptibleActiveTasks = 0;
-  for (;;) {
-    const result = await input.installUpdate({ maxInterruptibleActiveTasks });
-    if (result.ok) return { kind: 'install-started' };
-    if (result.reason !== 'active_tasks') return { kind: 'failed', reason: result.reason };
-    if (result.activeTaskCount <= maxInterruptibleActiveTasks) {
-      return { kind: 'failed', reason: 'install_failed' };
-    }
+  const guarded = await input.installUpdate({ allowInterruptActiveTasks: false });
+  if (guarded.ok) return { kind: 'install-started' };
+  if (guarded.reason !== 'active_tasks') return { kind: 'failed', reason: guarded.reason };
+  if (!await input.confirmActiveTasks()) return { kind: 'cancelled' };
 
-    const confirmed = await input.confirmActiveTasks(result.activeTaskCount);
-    if (!confirmed) return { kind: 'cancelled' };
-    maxInterruptibleActiveTasks = result.activeTaskCount;
-  }
+  const authorized = await input.installUpdate({ allowInterruptActiveTasks: true });
+  return authorized.ok
+    ? { kind: 'install-started' }
+    : { kind: 'failed', reason: authorized.reason === 'active_tasks' ? 'install_failed' : authorized.reason };
 }

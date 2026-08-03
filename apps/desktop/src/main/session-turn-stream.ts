@@ -16,7 +16,6 @@ export interface StartDesktopSessionTurnInput {
   goalBoundary: SessionGoalBoundary;
   activities: SessionActivityRegistry;
   activity?: SessionActivityLease;
-  activityKey?: string;
   beginObservedTurn: (sessionId: string, turnId: string) => GoalObservedTurnStart;
   onEvent: (event: SessionEvent) => void | Promise<void>;
   onStreamError: (error: unknown) => void | Promise<void>;
@@ -44,7 +43,7 @@ export function startDesktopSessionTurn(
     };
   }
 
-  const activity = input.activity ?? input.activities.reserve(input.sessionId, input.activityKey);
+  const activity = input.activity ?? input.activities.reserve(input.sessionId);
   return {
     kind: 'started',
     completion: drainGoalTurn({

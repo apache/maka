@@ -438,7 +438,6 @@ interface StreamEventsOptions {
   turnId: string;
   goalBoundary: SessionGoalBoundary;
   activity?: SessionActivityLease;
-  activityKey?: string;
   observeEvent?: (event: SessionEvent) => void;
 }
 
@@ -547,7 +546,6 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
       goalBoundary: options.goalBoundary,
       activities: sessionActivities,
       ...(options.activity ? { activity: options.activity } : {}),
-      ...(options.activityKey ? { activityKey: options.activityKey } : {}),
       beginObservedTurn: (externalSessionId, externalTurnId) =>
         goalWiring.coordinator.beginObservedTurn(externalSessionId, externalTurnId),
       onEvent: (event) => {

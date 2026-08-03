@@ -403,9 +403,11 @@ type ShellCopy = {
     updateInstallFailedFallback: string;
     updateInstallManualFallback: string;
     updateActiveTasksTitle: string;
-    updateActiveTasksDescription(count: number): string;
+    updateActiveTasksDescription: string;
     updateActiveTasksConfirm: string;
     updateActiveTasksCancel: string;
+    updateRetryFailedTitle: string;
+    updateRetryFailedFallback: string;
     updateOpenFailedTitle: string;
     updateOpenManualFallback: string;
     loading: string;
@@ -1086,9 +1088,11 @@ const SHELL_COPY_BY_LOCALE = {
       updateInstallFailedFallback: '请稍后重试。',
       updateInstallManualFallback: '请稍后重试，或手动下载最新版本。',
       updateActiveTasksTitle: '仍有任务正在运行',
-      updateActiveTasksDescription: (count) => `${count} 个任务仍在运行。更新会中断这些任务，是否继续？`,
+      updateActiveTasksDescription: '仍有任务正在运行。更新会中断这些任务，是否继续？',
       updateActiveTasksConfirm: '仍然更新',
       updateActiveTasksCancel: '取消',
+      updateRetryFailedTitle: '无法重新下载更新',
+      updateRetryFailedFallback: '请稍后重试，或手动下载最新版本。',
       updateOpenFailedTitle: '无法打开更新',
       updateOpenManualFallback: '请稍后重试，或前往 GitHub Releases 下载最新版本。',
       loading: '加载中',
@@ -1597,9 +1601,11 @@ const SHELL_COPY_BY_LOCALE = {
       updateInstallFailedFallback: 'Try again later.',
       updateInstallManualFallback: 'Try again later, or download the latest version manually.',
       updateActiveTasksTitle: 'Tasks are still running',
-      updateActiveTasksDescription: (count) => `${count} ${count === 1 ? 'task is' : 'tasks are'} still running. Updating will interrupt ${count === 1 ? 'it' : 'them'}. Continue?`,
+      updateActiveTasksDescription: 'Tasks are still running. Updating will interrupt them. Continue?',
       updateActiveTasksConfirm: 'Update anyway',
       updateActiveTasksCancel: 'Cancel',
+      updateRetryFailedTitle: 'Could not retry update download',
+      updateRetryFailedFallback: 'Try again later, or download the latest version manually.',
       updateOpenFailedTitle: 'Could not open update',
       updateOpenManualFallback: 'Try again later, or download the latest version from GitHub Releases.',
       loading: 'Loading',

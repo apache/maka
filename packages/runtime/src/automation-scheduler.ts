@@ -111,9 +111,9 @@ export class AutomationScheduler {
     this.inFlight.clear();
   }
 
-  /** Automation ids whose fire has started but not fully settled. */
-  inFlightAutomationIds(): readonly string[] {
-    return [...this.inFlight];
+  /** Whether an Automation fire has started but not fully settled. */
+  hasInFlight(): boolean {
+    return this.inFlight.size > 0;
   }
 
   private scheduleTick(): void {

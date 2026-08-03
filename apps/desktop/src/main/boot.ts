@@ -120,6 +120,7 @@ import { registerWebSearchIpc } from './web-search-ipc-main.js';
 import { registerNotificationsIpc } from './notifications-ipc-main.js';
 import { registerAppIpc } from './app-ipc-main.js';
 import { createAppUpdateService } from './app-update-service.js';
+import { hasInterruptibleUpdateWork } from './app-update-activity.js';
 import { registerGitIpc } from './git-ipc-main.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
 import { registerWorkspaceInstructionsIpc } from './workspace-instructions-ipc-main.js';
@@ -423,7 +424,6 @@ async function closeWorkflowStores(): Promise<void> {
 }
 
 const sessionActivities = new SessionActivityRegistry();
-const automationActivityKey = (automationId: string): string => `automation:${automationId}`;
 
 // Unified Automation — single "Automation" tool for heartbeat + cron.
 // Deps are resolved lazily since runtime/store aren't ready at this point.
@@ -447,7 +447,6 @@ const automationWiring = createMainAutomationWiring({
     const r = await streamEvents(sessionId, iterator, {
       turnId,
       goalBoundary: 'external',
-      activityKey: automationActivityKey(automationId),
     });
     return { runId: turnId, ok: r.ok, ...(r.error ? { error: r.error } : {}) };
   },
@@ -473,7 +472,6 @@ const automationWiring = createMainAutomationWiring({
     const r = await streamEvents(session.id, iterator, {
       turnId,
       goalBoundary: 'external',
-      activityKey: automationActivityKey(automationId),
     });
     // Archive the fresh cron session after its run finalizes so recurring crons
     // do not accumulate an unbounded pile of active sessions. The session (with
@@ -639,19 +637,6 @@ const updateMockState = process.env.MAKA_UPDATE_MOCK_STATE === 'available' ||
   process.env.MAKA_UPDATE_MOCK_STATE === 'downloaded'
   ? process.env.MAKA_UPDATE_MOCK_STATE
   : undefined;
-const updateService = createAppUpdateService({
-  currentVersion: app.getVersion(),
-  isPackaged: app.isPackaged,
-  platform: process.platform,
-  arch: process.arch,
-  openExternal: (url) => shell.openExternal(url),
-  mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
-  mockState: updateMockState,
-  onStatusChange: (status) => safeSendToRenderer('app:updateStatusChanged', status),
-  getActiveTaskCount: () => sessionActivities.activeTaskCount(
-    automationWiring.scheduler.inFlightAutomationIds().map(automationActivityKey),
-  ),
-});
 taskLedgerStore.subscribe((event) => safeSendToRenderer('tasks:changed', event));
 deepResearchStore.subscribe((event) => safeSendToRenderer('deepResearch:changed', event));
 const deepResearchTools = buildDeepResearchTools({
@@ -667,6 +652,19 @@ const shellRuns = new ShellRunProcessManager({
   onShellRunUpdate: (update) => {
     safeSendToRenderer('shell-runs:update', update);
   },
+});
+const updateService = createAppUpdateService({
+  currentVersion: app.getVersion(),
+  isPackaged: app.isPackaged,
+  openExternal: (url) => shell.openExternal(url),
+  mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
+  mockState: updateMockState,
+  onStatusChange: (status) => safeSendToRenderer('app:updateStatusChanged', status),
+  hasActiveTasks: () => hasInterruptibleUpdateWork({
+    sessionActivities,
+    automationScheduler: automationWiring.scheduler,
+    shellRuns,
+  }),
 });
 const {
   persistToolArtifacts,
