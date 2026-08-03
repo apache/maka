@@ -37,7 +37,7 @@ type CapturedSubscriptions = {
   connectionSubscribeCount: number;
   planDue?: (reminder: PlanReminder) => void;
   planDueSubscribeCount: number;
-  sessionChange?: (event: { reason: string; sessionId?: string; ts: number }) => void;
+  sessionChange?: (event: { reason: string; sessionId?: string; ts: number; turnId?: string }) => void;
   settingsExternalChanged?: () => void;
   settingsGet?(): Promise<{ system: { keepSystemAwake: boolean } }>;
 };
@@ -68,7 +68,7 @@ type RendererMakaStub = {
   };
   sessions: {
     readMessages(sessionId: string): Promise<StoredMessage[]>;
-    subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number }) => void): () => void;
+    subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number; turnId?: string }) => void): () => void;
     subscribeEvents(sessionId: string, callback: (event: SessionEvent) => void): () => void;
   };
   settings: {
@@ -178,6 +178,62 @@ describe('AppShell effect stability contract', () => {
     });
 
     assert.equal(projectRefreshes, 1);
+  });
+
+  // The wiring that answers a send: `onRunStarted` broadcasts a `sessions:changed`
+  // naming the turn, and it must reach the arm through the real subscription
+  // handler. Without it the arm stays unconfirmed and a stale session list
+  // retires it, taking the Stop affordance and the first-token wait with it.
+  it('confirms the armed turn a session change names', async () => {
+    const effects = await appShellEffects;
+    const refs = createBootstrapRefs();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    const confirmed: Array<[string, string]> = [];
+
+    await render(
+      root,
+      createElement(BootstrapSubscriptionProbe, {
+        effects,
+        onConnectionEvent: () => {},
+        onConfirmLiveTurn: (sessionId: string, turnId: string) => confirmed.push([sessionId, turnId]),
+        refs,
+      }),
+    );
+
+    await act(async () => {
+      captured.sessionChange?.({ reason: 'status-change', sessionId: 'session-1', ts: 1, turnId: 'turn-1' });
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(confirmed, [['session-1', 'turn-1']]);
+  });
+
+  // A change with no turn to name is a plain catalog invalidation. Treating it
+  // as an answer would confirm whatever arm happened to be in flight.
+  it('does not confirm anything for a change that names no turn', async () => {
+    const effects = await appShellEffects;
+    const refs = createBootstrapRefs();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    const confirmed: Array<[string, string]> = [];
+
+    await render(
+      root,
+      createElement(BootstrapSubscriptionProbe, {
+        effects,
+        onConnectionEvent: () => {},
+        onConfirmLiveTurn: (sessionId: string, turnId: string) => confirmed.push([sessionId, turnId]),
+        refs,
+      }),
+    );
+
+    await act(async () => {
+      captured.sessionChange?.({ reason: 'message-appended', sessionId: 'session-1', ts: 1 });
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(confirmed, []);
   });
 
   it('keeps bootstrap subscriptions stable while invoking the latest connection handler', async () => {
@@ -572,6 +628,7 @@ function BootstrapSubscriptionProbe(props: {
   onProjectRefresh?(): void;
   onNavSelection?(selection: { section: string }): void;
   onToastAction?(onClick: (() => void) | undefined): void;
+  onConfirmLiveTurn?(sessionId: string, turnId: string): void;
   refs: ReturnType<typeof createBootstrapRefs>;
 }) {
   props.effects.useAppShellBootstrapSubscriptions({
@@ -580,6 +637,7 @@ function BootstrapSubscriptionProbe(props: {
     applyE2eFixture: async () => {},
     bootstrapSessions: async () => {},
     clearPendingTurnActionsForSession: () => {},
+    confirmLiveTurn: (sessionId: string, turnId: string) => props.onConfirmLiveTurn?.(sessionId, turnId),
     clearSessionRendererState: () => {},
     createSession: () => {},
     handleConnectionEvent: props.onConnectionEvent,
@@ -885,7 +943,7 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
     },
     sessions: {
       readMessages: async () => [],
-      subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number }) => void) {
+      subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number; turnId?: string }) => void) {
         captured.sessionChange = callback;
         return noop;
       },

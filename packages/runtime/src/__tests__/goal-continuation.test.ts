@@ -280,7 +280,12 @@ describe('GoalContinuationCoordinator settlement', () => {
       await set.impl({ condition: 'replacement' }, goalToolContext('turn-old')),
     );
 
-    assert.match(output, /no longer owns Goal activation/);
+    // A real race: another turn armed and cleared a goal, so the generation
+    // this turn observed is gone. Reading the current goal is worth doing and
+    // can change what the model does next, so this is where a look-again
+    // instruction is honest.
+    assert.match(output, /the session goal changed while this turn was running/);
+    assert.match(output, /Call GoalStatus/);
     assert.equal(manager.get(SESSION)?.status, 'cleared');
     assert.equal(manager.get(SESSION)?.condition, 'first');
   });
@@ -302,7 +307,7 @@ describe('GoalContinuationCoordinator settlement', () => {
       await set.impl({ condition: 'replacement' }, goalToolContext('turn-old')),
     );
 
-    assert.match(output, /no longer owns Goal activation/);
+    assert.match(output, /the session goal changed while this turn was running/);
     assert.equal(manager.get(SESSION)?.condition, 'paused goal');
     assert.equal(manager.get(SESSION)?.status, 'cleared');
   });
@@ -326,11 +331,11 @@ describe('GoalContinuationCoordinator settlement', () => {
 
     assert.match(
       String(await pause.impl({}, goalToolContext('turn-old'))),
-      /no longer owns Goal control/,
+      /the session goal changed while this turn was running/,
     );
     assert.match(
       String(await clear.impl({}, goalToolContext('turn-old'))),
-      /no longer owns Goal control/,
+      /the session goal changed while this turn was running/,
     );
     assert.equal(manager.get(SESSION)?.condition, 'replacement');
     assert.equal(manager.get(SESSION)?.status, 'active');
@@ -352,7 +357,14 @@ describe('GoalContinuationCoordinator settlement', () => {
         await set.impl({ condition: 'must not exist' }, goalToolContext('turn-deleted')),
       );
 
-      assert.match(output, /no longer owns Goal activation/);
+      // The loop this replaced: the session was closed and removed, so this
+      // turn has no registration and never will. Told to call GoalStatus and
+      // retry "if there is still no active goal", the model gets "No goal set
+      // for this session", satisfies the condition, retries, and receives the
+      // identical refusal forever. The refusal must not ask for that.
+      assert.match(output, /does not run under the session goal boundary/);
+      assert.match(output, /Do not call this tool again in this turn/);
+      assert.doesNotMatch(output, /call GoalSet again/i);
       assert.equal(manager.get(SESSION), undefined);
     });
 
@@ -374,9 +386,107 @@ describe('GoalContinuationCoordinator settlement', () => {
       manager.pause(SESSION);
       const output = String(await resume.impl({}, goalToolContext('turn-archived')));
 
-      assert.match(output, /no longer owns Goal activation/);
+      assert.match(output, /does not run under the session goal boundary/);
+      assert.match(output, /Do not call this tool again in this turn/);
+      assert.doesNotMatch(output, /call GoalResume again/i);
       assert.equal(manager.get(SESSION)?.condition, 'replacement');
       assert.equal(manager.get(SESSION)?.status, 'paused');
+    });
+  });
+
+  /**
+   * Every cause the refusal text can name, produced by the real coordinator.
+   *
+   * The refusal-text suite drives these through a fake whose `activationStanding`
+   * and `mutationStanding` return whatever they are handed, which proves the
+   * sentences and nothing about whether the coordinator can reach them. Three of
+   * the five had no test that it can, and one of those three could not: the
+   * shutdown sentence was written for a branch that `dispose()` had already made
+   * unreachable, and the turn read a different sentence that was false about it.
+   */
+  describe('every decline cause is reachable from the real coordinator', () => {
+    test('a shut-down coordinator says so, instead of denying the turn was registered', async () => {
+      const { manager, coordinator } = setup();
+      registerObservedTurn(coordinator, SESSION, 'turn-live');
+      const tools = goalToolsFor(manager, coordinator);
+      const set = tools.find((tool) => tool.name === GOAL_SET_TOOL_NAME);
+      const clear = tools.find((tool) => tool.name === GOAL_CLEAR_TOOL_NAME);
+      assert.ok(set);
+      assert.ok(clear);
+      await set.impl({ condition: 'ship' }, goalToolContext('turn-live'));
+
+      coordinator.dispose();
+      const output = String(await clear.impl({}, goalToolContext('turn-live')));
+
+      assert.match(output, /the goal system is shutting down/);
+      // The sentence this turn used to get. It was registered under the Goal
+      // boundary — it armed the goal it is now trying to clear.
+      assert.doesNotMatch(output, /does not run under the session goal boundary/);
+    });
+
+    test('a turn already bound to a goal is not told it tried to arm a second one', async () => {
+      const { manager, coordinator } = setup();
+      // Two things have to hold at once, and neither involves the model arming
+      // anything. `beginObservedTurn` binds the lease by itself when a goal is
+      // already active, and only `mutateGoal` releases it — so the pause has to
+      // come from somewhere that is not a Goal tool. The autonomous evaluation
+      // loop and the host-side pause control are both exactly that.
+      manager.create(SESSION, 'ship');
+      registerObservedTurn(coordinator, SESSION, 'turn-inherited');
+      manager.pause(SESSION);
+
+      const resume = goalToolsFor(manager, coordinator).find(
+        (tool) => tool.name === GOAL_RESUME_TOOL_NAME,
+      );
+      assert.ok(resume);
+      const output = String(await resume.impl({}, goalToolContext('turn-inherited')));
+
+      assert.equal(manager.get(SESSION)?.status, 'paused');
+      // GoalResume asked to arm nothing, and this turn armed nothing.
+      assert.doesNotMatch(output, /arm a second one/);
+      assert.doesNotMatch(output, /already armed/);
+      assert.match(output, /already bound to a goal/);
+      assert.match(output, /Do not call GoalResume again in this turn/);
+    });
+
+    test('GoalSet on a turn that is still bound to a finished goal is refused as a second arming', async () => {
+      const { manager, coordinator } = setup();
+      manager.create(SESSION, 'first');
+      registerObservedTurn(coordinator, SESSION, 'turn-inherited');
+      // Same shape: the goal reaches a terminal status without passing through
+      // `mutateGoal`, so the turn keeps the lease it was bound to at
+      // registration and GoalSet gets past its own unfinished-goal guard.
+      manager.clear(SESSION);
+
+      const set = goalToolsFor(manager, coordinator).find(
+        (tool) => tool.name === GOAL_SET_TOOL_NAME,
+      );
+      assert.ok(set);
+      const output = String(
+        await set.impl({ condition: 'second' }, goalToolContext('turn-inherited')),
+      );
+
+      assert.match(output, /cannot arm a second one/);
+      assert.match(output, /Call GoalStatus/);
+      assert.equal(manager.get(SESSION)?.status, 'cleared');
+    });
+
+    test('a turn that started before the goal existed is told that, not that it is unregistered', async () => {
+      const { manager, coordinator } = setup();
+      registerObservedTurn(coordinator, SESSION, 'turn-early');
+      registerObservedTurn(coordinator, SESSION, 'turn-later');
+      const tools = goalToolsFor(manager, coordinator);
+      const set = tools.find((tool) => tool.name === GOAL_SET_TOOL_NAME);
+      const clear = tools.find((tool) => tool.name === GOAL_CLEAR_TOOL_NAME);
+      assert.ok(set);
+      assert.ok(clear);
+
+      await set.impl({ condition: 'later goal' }, goalToolContext('turn-later'));
+      const output = String(await clear.impl({}, goalToolContext('turn-early')));
+
+      assert.match(output, /began before the current goal existed/);
+      assert.match(output, /Do not call this tool again in this turn/);
+      assert.equal(manager.get(SESSION)?.status, 'active');
     });
   });
 

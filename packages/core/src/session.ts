@@ -267,6 +267,26 @@ export interface SessionSummary {
   status: SessionStatus;
   blockedReason?: SessionBlockedReason;
   statusUpdatedAt?: number;
+  /**
+   * The turns the runtime is running for this session right now. Omitted when
+   * there are none.
+   *
+   * Projected from the live runs, never persisted: "a run is in flight" is a
+   * fact about the running process, so it must read false again after a crash.
+   * `status` cannot serve that purpose — it is written to storage, so a crash
+   * between a turn's end and its status write leaves `running` behind forever,
+   * and it carries no turn identity, reading the same before a turn starts and
+   * after it ends.
+   *
+   * A set rather than one turn because a session can carry concurrent runs: a
+   * client asking "is anything OTHER than the turn I sent still running" cannot
+   * answer that from an arbitrary one of them.
+   *
+   * Only populated where the runtime is in a position to know: session LISTS
+   * come from the authority holding the runs. A summary returned by a mutation
+   * (rename, model change) describes the header alone and omits it.
+   */
+  runningTurnIds?: string[];
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagentParent?: SubagentSessionParent;
@@ -612,6 +632,24 @@ export interface SessionChangedEvent {
   sessionId?: string;
   connectionSlug?: string;
   modelId?: string;
+  /**
+   * The turn this change is ABOUT, when the change has a turn to name.
+   *
+   * Naming the turn is what makes a notification a causal answer to a specific
+   * send rather than a bare invalidation: the session fields alone carry no
+   * turn identity, and `status` reads the same before a turn starts and after
+   * it ends.
+   *
+   * Emitter obligation, and its exact edge: a change about a turn some CLIENT
+   * may be waiting on — one it submitted, so it holds a local claim until it
+   * hears back — must name that turn. Its start, its refusal to start, and its
+   * end all qualify. Changes with no single turn behind them (a rename, a
+   * catalog migration) leave it unset, as do turns no client submitted and none
+   * is waiting on — a linked child agent's own turns, for instance, which are
+   * reported by `SessionSummary.runningTurnIds` instead. A client must never
+   * read an unset change as an answer about a turn it is waiting on.
+   */
+  turnId?: string;
   ts: number;
 }
 

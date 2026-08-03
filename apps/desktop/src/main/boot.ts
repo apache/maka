@@ -656,12 +656,17 @@ const {
   browserTools,
   computerUse,
   computerUseOverlay,
+  computerUsePip,
   computerUseTools,
   desktopProductToolSurface,
   builtinTools,
   childAgentTools,
   sandboxDiagnosticsProvider,
 } = assembleDesktopTools({
+  // The mirror anchors to the app window and becomes its child; without this
+  // it falls back to floating above every application on the primary display,
+  // with no pointer to hover-test against and so no controls at all.
+  mainWindow: mainWindowController,
   isComputerUseRealModelE2e,
   workspaceRoot,
   taskLedgerStore,
@@ -692,7 +697,12 @@ const desktopBackendToolSurfaceDeps = {
     agentGraphCoordinator.toolsForSession(sessionId),
 };
 // Cursor-overlay teardown assigns a module-scoped `let`, so it stays in boot.ts.
-onMainWindowClose = () => computerUseOverlay.destroyAll();
+onMainWindowClose = () => {
+  computerUseOverlay.destroyAll();
+  // The mirror is a child of the window that just closed; without this it
+  // outlives its parent, still polling the pointer at 20Hz.
+  computerUsePip.destroyAll();
+};
 const systemPromptService = createSystemPromptMainService({
   settingsStore,
   workspaceRoot,
@@ -1072,6 +1082,7 @@ function registerIpc(): void {
     goalWiring,
     automationManager: automationWiring.manager,
     computerUseOverlay,
+    computerUsePip,
     computerUseTools,
     artifactStore,
     attachmentApprovals,
@@ -1232,6 +1243,7 @@ const streamEvents = createSessionStreamer({
   sessionActivities,
   goalWiring,
   computerUseOverlay,
+  computerUsePip,
   computerUseTools,
   safeSendToRenderer,
   emitSessionsChanged,
@@ -1381,7 +1393,7 @@ function emitConnectionListChanged(): void {
 function emitSessionsChanged(
   reason: SessionChangedReason,
   sessionId?: string,
-  extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId'>,
+  extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
 ): void {
   const event: SessionChangedEvent = {
     type: 'sessions_changed',
@@ -1391,6 +1403,7 @@ function emitSessionsChanged(
   if (sessionId) event.sessionId = sessionId;
   if (extra?.connectionSlug) event.connectionSlug = extra.connectionSlug;
   if (extra?.modelId) event.modelId = extra.modelId;
+  if (extra?.turnId) event.turnId = extra.turnId;
   safeSendToRenderer('sessions:changed', event);
 }
 
@@ -1417,6 +1430,7 @@ wireAppLifecycle({
   goalWiring,
   computerUse,
   computerUseOverlay,
+  computerUsePip,
   shellRuns,
   mcpManager,
   runtimePersistence,
@@ -1436,9 +1450,15 @@ wireAppLifecycle({
 });
 
 function computerUseCapabilityInput() {
-  const serviceState = computerUse.backend?.serviceState?.();
+  // Whichever executor was selected reports its own shape: cua-driver an
+  // action/capture role pair, maka-cu (§11) a single supervised child. Reading
+  // only `serviceState` meant a ready maka-cu backend produced `undefined`
+  // here, and the card said "not available" while its own availability half
+  // said the opposite.
+  const executorState =
+    computerUse.backend?.serviceState?.() ?? computerUse.backend?.executorState?.();
   return {
     backendId: computerUse.backendId,
-    health: computerUseServiceHealth(computerUse.backendId, serviceState),
+    health: computerUseServiceHealth(computerUse.backendId, executorState),
   };
 }

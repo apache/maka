@@ -23,21 +23,34 @@ export interface SummarizeAbComparisonInput {
   nonInferiorityMargin?: number;
 }
 
-export interface RunAbComparisonInput {
+export interface RunArmCohortInput {
   runId: string;
-  arms: readonly [AbArmSpec, AbArmSpec];
+  arms: readonly AbArmSpec[];
   evaluationTasks: readonly FixedPromptTask[];
   reps?: number;
   maxConcurrency?: number;
   armExecution?: 'parallel' | 'sequential';
   observedCostStopUsd?: number;
   roundIdPrefix?: string;
-  budgetMs?: number;
-  nonInferiorityMargin?: number;
   /** Events already present when this invocation began. They remain
    * in the summary but must not re-trigger live stop guards on explicit resume. */
   preexistingEventIds?: ReadonlySet<string>;
   runArm: AbArmRunner;
+}
+
+export interface RunAbComparisonInput extends Omit<RunArmCohortInput, 'arms'> {
+  arms: readonly [AbArmSpec, AbArmSpec];
+  budgetMs?: number;
+  nonInferiorityMargin?: number;
+}
+
+export interface ArmCohortResult {
+  runId: string;
+  armIds: readonly string[];
+  evaluationTaskIds: readonly string[];
+  reps: number;
+  runsByArmId: Readonly<Record<string, readonly (readonly FixedPromptTaskWalEvent[])[]>>;
+  stopReason?: 'observed_cost_stop_reached' | 'systemic_provider_failure';
 }
 
 export interface AbArmRunInput {
@@ -271,7 +284,7 @@ export interface AbComparisonSummary {
 
 export interface AbRunManifestInput {
   experimentKind: AbExperimentKind;
-  arms: readonly [AbArmSpec, AbArmSpec];
+  arms: readonly AbArmSpec[];
   metadata?: Record<string, unknown>;
   taskBudgetSec: number | null;
   harborTimeoutMs: number | null;
@@ -295,7 +308,7 @@ export interface AbRunManifestInput {
 export type AbRunManifest = AbRunManifestInput & {
   schemaVersion: 'maka.ab.run_manifest.v1';
   fingerprint: string;
-  arms: [AbArmSpec, AbArmSpec];
+  arms: AbArmSpec[];
   evaluationTaskIds: string[];
   candidateTaskIds?: string[];
   pilotTaskIds?: string[];

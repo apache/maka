@@ -1,4 +1,4 @@
-import { app, nativeImage, powerMonitor } from 'electron';
+import { app, nativeImage, powerMonitor, screen } from 'electron';
 import {
   buildAskUserQuestionTool,
   buildRequestSandboxBoundaryTool,
@@ -29,6 +29,10 @@ import {
   createDesktopPhysicalInputGuard,
 } from './computer-use-host.js';
 import { createCursorOverlayController } from './computer-use/cursor-overlay-window.js';
+import {
+  createComputerUsePipController,
+  withComputerUsePip,
+} from './computer-use/pip-window.js';
 import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,
@@ -65,6 +69,20 @@ export interface DesktopToolAssemblyDeps {
   readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   resolveDesktopSkillHost: HostCapabilitiesResolver;
+  /**
+   * The app's own window, so the mirror can be its child.
+   *
+   * A panel that moves itself chases the window it belongs to and trails
+   * behind every drag. Made a child window it sits below everything else,
+   * belongs to the app, and is carried along by the app's own moves instead of
+   * following them. Optional: the tool surface is assembled in contexts that
+   * have no window at all.
+   */
+  mainWindow?: {
+    windowBounds(): { x: number; y: number; width: number; height: number } | undefined;
+    onWindowGeometryChanged(cb: () => void): () => void;
+    browserWindow(): { isDestroyed(): boolean } | undefined;
+  };
 }
 
 /**
@@ -80,6 +98,7 @@ export interface DesktopToolAssemblyDeps {
  */
 export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   const {
+    mainWindow,
     isComputerUseRealModelE2e,
     workspaceRoot,
     taskLedgerStore,
@@ -132,6 +151,22 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   // outside the app (no host) they report the browser as unavailable.
   const browserTools: MakaTool[] = buildBrowserTools();
   const computerUseOverlay = createCursorOverlayController();
+  // Mirrors the driven window so background work is watchable at all — the
+  // cursor can only be seen when its target is.
+  const computerUsePip = createComputerUsePipController(
+    mainWindow
+      ? {
+          resolveAnchorRect: () => mainWindow.windowBounds(),
+          subscribeAnchorChanges: (cb) => mainWindow.onWindowGeometryChanged(cb),
+          resolveParentWindow: () => mainWindow.browserWindow(),
+          // The drag reads the pointer here rather than trusting the
+          // renderer's `screenX`: the window is moved in screen points, so
+          // the pointer is read in screen points and nothing converts.
+          cursorPoint: () => screen.getCursorScreenPoint(),
+          workAreaFor: (rect) => screen.getDisplayMatching(rect).workArea,
+        }
+      : {},
+  );
   const computerUseHost = createComputerUseHost({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
@@ -165,7 +200,10 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
           },
         }
       : {}),
-    overlay: createComputerUseOverlayHook(computerUseOverlay),
+    overlay: withComputerUsePip(
+      createComputerUseOverlayHook(computerUseOverlay),
+      computerUsePip,
+    ),
   });
   const computerUse = computerUseHost.selected;
   const computerUseTools = applyComputerUseRealModelPolicy(
@@ -286,6 +324,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     browserTools,
     computerUse,
     computerUseOverlay,
+    computerUsePip,
     computerUseTools,
     desktopProductToolSurface,
     builtinTools: [...desktopProductToolSurface.tools],

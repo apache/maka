@@ -104,6 +104,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'turn.interrupt',
       'turn.message.submit',
       'turn.query',
+      'turn.resume.query',
+      'turn.resume.start',
       'turn.start',
       'turn.stop',
       'usage.query',
@@ -660,6 +662,120 @@ describe('Runtime Host bootstrap protocol', () => {
           ok: false,
           error: { code: 'host_draining', message: 'draining' },
           trace: 'private',
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('keeps safe-boundary continuation plans closed and bounded', () => {
+    const query = {
+      requestId: 'resume-query-1',
+      operation: 'turn.resume.query' as const,
+      input: {
+        sessionId: 'session-1',
+        sourceRunId: 'run-source-1',
+        expectedRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeClientFrame(query), query);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...query,
+          input: { sessionId: 'session-1', expectedRuntimeEventHighWater: 2 },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...query,
+          input: { ...query.input, expectedRuntimeEventHighWater: 0 },
+        }),
+      isInvalidFrame,
+    );
+
+    const ready = {
+      requestId: query.requestId,
+      operation: query.operation,
+      ok: true as const,
+      result: {
+        sessionId: 'session-1',
+        disposition: 'ready' as const,
+        sourceRunId: 'run-source-1',
+        sourceTurnId: 'turn-source-1',
+        sourceRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(ready), ready);
+    assert.throws(
+      () =>
+        HOST_OPERATION_SPECS['turn.resume.query'].assertOutputForInput?.(query.input, {
+          ...ready.result,
+          sourceRuntimeEventHighWater: 3,
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...ready,
+          result: { ...ready.result, diagnostics: ['private runtime detail'] },
+        }),
+      isInvalidFrame,
+    );
+
+    const parked = {
+      requestId: query.requestId,
+      operation: query.operation,
+      ok: true as const,
+      result: {
+        sessionId: 'session-1',
+        disposition: 'parked' as const,
+        reason: 'safety_check_failed' as const,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(parked), parked);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...parked,
+          result: { ...parked.result, reason: 'workspace_identity_mismatch' },
+        }),
+      isInvalidFrame,
+    );
+
+    const start = {
+      requestId: 'resume-start-1',
+      operation: 'turn.resume.start' as const,
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-resume-1',
+        sourceRunId: 'run-source-1',
+        sourceRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeClientFrame(start), start);
+    const started = {
+      requestId: start.requestId,
+      operation: start.operation,
+      ok: true as const,
+      result: {
+        kind: 'started' as const,
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'turn-resume-1',
+          runId: 'run-resume-1',
+          status: 'running' as const,
+        },
+      },
+    };
+    assert.deepEqual(decodeHostFrame(started), started);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...started,
+          result: { kind: 'parked', plan: ready.result },
         }),
       isInvalidFrame,
     );

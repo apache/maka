@@ -46,6 +46,7 @@ _TREE = "pier" if IS_PIER else "harbor"
 # Symbol -> submodule path, identical in both package trees.
 _SYMBOL_MODULES = {
     "BaseInstalledAgent": "agents.installed.base",
+    "ClaudeCode": "agents.installed.claude_code",
     "Codex": "agents.installed.codex",
     "OpenCode": "agents.installed.opencode",
     "CliFlag": "agents.installed.base",

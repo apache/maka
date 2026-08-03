@@ -66,6 +66,7 @@ export type {
 export {
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
+  TURN_RESUME_PARK_REASONS,
 } from './turn.js';
 export type {
   InFlightMessageSnapshot,
@@ -84,6 +85,11 @@ export type {
 } from './message.js';
 export type {
   TurnQueryInput,
+  TurnResumeParkReason,
+  TurnResumePlan,
+  TurnResumeQueryInput,
+  TurnResumeStartInput,
+  TurnResumeStartResult,
   TurnRunStatus,
   TurnSnapshot,
   TurnStartInput,

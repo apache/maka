@@ -3,11 +3,87 @@ import { describe, it } from 'node:test';
 import {
   applyLiveTurnEvent,
   armLiveTurn,
+  confirmLiveTurn,
   reconcileTerminalLiveTurn,
   settleLiveTurnStep,
   type LiveTurnProjection,
 } from '../live-turn-projection.js';
 import { overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
+
+// A client that just sent cannot read "has my turn started" off session status:
+// it is the same before the turn starts and after it ends. The arm carries
+// `unconfirmed` until the authority says something about THAT turn, which is
+// what stops a snapshot taken before the send landed from retiring it.
+describe('the unconfirmed claim an arm carries', () => {
+  it('is set at arm and dropped by an answer naming the same turn', () => {
+    const armed = armLiveTurn('turn-1');
+    assert.equal(armed.unconfirmed, true);
+
+    const confirmed = confirmLiveTurn(armed, 'turn-1');
+    assert.equal(confirmed?.unconfirmed, undefined);
+    assert.equal(confirmed?.turnId, 'turn-1');
+    assert.equal(confirmed?.phase, 'waiting', 'confirming is not the same as streaming');
+  });
+
+  // Another client's turn, or an automation's, says nothing about this send.
+  it('survives an answer that names a different turn', () => {
+    const armed = armLiveTurn('turn-mine');
+
+    assert.equal(confirmLiveTurn(armed, 'turn-theirs'), armed);
+  });
+
+  // A late answer about a turn this arm has already replaced must not confirm
+  // the newer send.
+  it('survives a late answer about the turn the arm moved past', () => {
+    const rearmed = armLiveTurn('turn-2');
+
+    assert.equal(confirmLiveTurn(rearmed, 'turn-1'), rearmed);
+  });
+
+  it('is identity-preserving when there is nothing to confirm', () => {
+    const confirmed = confirmLiveTurn(armLiveTurn('turn-1'), 'turn-1')!;
+
+    assert.equal(confirmLiveTurn(confirmed, 'turn-1'), confirmed);
+  });
+
+  // Any event about the turn is itself the authority answering, so the claim
+  // must not outlive the first one — otherwise a turn that ended while its
+  // stream wasn't followed could never be settled.
+  it('is dropped by the turn\'s own events, not just by an explicit answer', () => {
+    const streamed = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+      type: 'text_delta',
+      id: 'event-1',
+      turnId: 'turn-1',
+      messageId: 'step-1',
+      ts: 100,
+      text: '你',
+    });
+
+    assert.equal(streamed.unconfirmed, undefined);
+  });
+
+  it('is dropped when the turn terminates', () => {
+    const streamed = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+      type: 'text_delta',
+      id: 'event-1',
+      turnId: 'turn-1',
+      messageId: 'step-1',
+      ts: 100,
+      text: '你',
+    });
+    const rearmed = { ...streamed, unconfirmed: true as const };
+    const done = applyLiveTurnEvent(rearmed, {
+      type: 'complete',
+      id: 'event-2',
+      turnId: 'turn-1',
+      ts: 200,
+      stopReason: 'end_turn',
+    });
+
+    assert.equal(done?.terminal, true);
+    assert.equal(done?.unconfirmed, undefined);
+  });
+});
 
 describe('applyLiveTurnEvent', () => {
   it('moves an armed turn from waiting to streamed on its first content event', () => {

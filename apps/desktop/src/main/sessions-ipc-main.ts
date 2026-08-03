@@ -28,7 +28,7 @@ import type { PreparedSkillInvocationMessage, SessionManager } from '@maka/runti
 import type { ArtifactStore, createSessionStore } from '@maka/storage';
 import type { ConnectionStore, SettingsStore } from '@maka/storage';
 import { runThreadSearch } from './search/thread-search.js';
-import { resolveSessionSend } from './session-send-resolve.js';
+import { createRunStartedHook, resolveSessionSend, stoppedTurnBroadcasts } from './session-send-resolve.js';
 import { resizeImageForAttachment } from './attachment-resize-native.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
@@ -79,6 +79,16 @@ export interface SessionsIpcDeps {
   goalWiring: MainGoalWiring;
   automationManager: MainAutomationWiring['manager'];
   computerUseOverlay: SessionOverlayCleanup;
+  /**
+   * Picture-in-picture mirror of the driven window; torn down with its session.
+   *
+   * Its stop control is pointed back at the same `stopSession` the in-app stop
+   * button runs, so stopping from the mirror and stopping from the window
+   * cannot drift apart.
+   */
+  computerUsePip?: SessionOverlayCleanup & {
+    setStopHandler(handler: (sessionId: string) => void): void;
+  };
   computerUseTools: SessionToolCleanup;
   artifactStore: ArtifactStore;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -89,7 +99,7 @@ export interface SessionsIpcDeps {
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId'>,
+    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
   ) => void;
   ensureSessionCanSend: (sessionId: string) => Promise<void>;
   prepareSkillInvocation?: (
@@ -196,6 +206,7 @@ export function registerSessionsIpc(
     goalWiring,
     automationManager,
     computerUseOverlay,
+    computerUsePip,
     computerUseTools,
     artifactStore,
     attachmentApprovals,
@@ -228,6 +239,8 @@ export function registerSessionsIpc(
   });
   const removeSession = async (sessionId: string): Promise<void> => {
     computerUseOverlay.clearForSession(sessionId);
+    // The mirror is per-session too, and dies with it.
+    computerUsePip?.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await goalWiring.removeSession(sessionId, () => runtime.remove(sessionId));
     invalidateSessionBindings?.(sessionId);
@@ -358,16 +371,35 @@ export function registerSessionsIpc(
       getPrivacyContext: getWorkspacePrivacyContext,
     });
   });
-  ipcMain.handle('sessions:stop', async (_event, sessionId: string, input?: { source?: 'stop_button' }) => {
+  // Named rather than inline so the mirror's own stop control can be pointed at
+  // it. Two places that stop a run must stop it identically.
+  async function stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
     computerUseOverlay.clearForSession(sessionId);
+    computerUsePip?.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await stopAgentGraph?.(sessionId);
+    // Read before stopping, while the runs are still registered: ending a turn
+    // is a change about that turn, and this is the one end a client can be
+    // waiting on without having seen the turn start — Stop pressed during the
+    // send→run-start window. Unnamed, it would leave that client's claim with
+    // nothing to release it, making Stop the one control unable to undo Stop.
+    const stoppedTurnIds = runtime.runningTurnIds(sessionId);
     await runtime.stopSession(sessionId, normalizeStopSessionInput(input));
     await runtime.interruptActivePlanExecution(sessionId, 'user_stopped_execution').catch(() => null);
-    emitSessionsChanged('status-change', sessionId);
-    emitSessionsChanged('turn-status-change', sessionId);
-    emitSessionsChanged('message-appended', sessionId);
+    for (const broadcast of stoppedTurnBroadcasts(stoppedTurnIds)) {
+      emitSessionsChanged(
+        broadcast.reason,
+        sessionId,
+        ...(broadcast.turnId ? [{ turnId: broadcast.turnId }] : []),
+      );
+    }
+  }
+  computerUsePip?.setStopHandler((sessionId) => {
+    void stopSession(sessionId, { source: 'stop_button' });
   });
+  ipcMain.handle('sessions:stop', async (_event, sessionId: string, input?: { source?: 'stop_button' }) =>
+    stopSession(sessionId, input),
+  );
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
   );
@@ -479,11 +511,12 @@ export function registerSessionsIpc(
         inlineReferences,
       },
       {
-        onRunStarted: async (_runId, header) => {
-          if (header.revisionState === 'preparing') {
-            await runtime.commitRevisionVersion(sessionId);
-          }
-        },
+        onRunStarted: createRunStartedHook({
+          sessionId,
+          turnId,
+          emitSessionsChanged: (id, turn) => emitSessionsChanged('status-change', id, { turnId: turn }),
+          commitRevisionVersion: (id) => runtime.commitRevisionVersion(id),
+        }),
       },
     );
     void streamEvents(sessionId, iterator, { turnId, goalBoundary: 'external' });
@@ -551,6 +584,7 @@ export function registerSessionsIpc(
   ipcMain.handle('sessions:archive', async (_event, sessionId: string, options?: unknown) => {
     for (const id of await resolveSessionActionIds(runtime, sessionId, options)) {
       computerUseOverlay.clearForSession(id);
+      computerUsePip?.clearForSession(id);
       computerUseTools.clearSession(id);
       await stopAgentGraph?.(id);
       await goalWiring.archiveSession(id, () => runtime.archive(id));

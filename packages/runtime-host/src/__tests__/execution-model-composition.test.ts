@@ -306,7 +306,7 @@ test('production backend creation continues after a Session Client Capability is
   assert.deepEqual(await coordinator.bindSession('backend-creation-session', 'provider-a'), {
     ok: true,
   });
-  provider.close();
+  await provider.close();
 
   const backend = await createHostAiSdkBackend(
     backendCreationFixture({
@@ -320,7 +320,7 @@ test('production backend creation continues after a Session Client Capability is
     assert.equal(coordinator.snapshotForSession('backend-creation-session'), undefined);
   } finally {
     await backend.dispose();
-    coordinator.close();
+    await coordinator.close();
   }
 });
 
@@ -488,9 +488,9 @@ test('production backend preserves coordinator Client Capability semantics acros
     assert.ok(providerToolSets[1]?.includes(tool.name));
     assert.ok(providerToolSets[2]?.includes(tool.name));
   } finally {
-    connection?.close();
+    await connection?.close();
     await backend?.dispose();
-    coordinator.close();
+    await coordinator.close();
     store.close();
     await provider.close();
   }

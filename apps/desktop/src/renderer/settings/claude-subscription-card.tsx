@@ -1,16 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { type SubscriptionAccountState, type UiLocale } from '@maka/core';
-import { FieldStatus, ProgressBar } from '@astryxdesign/core';
+import { FieldStatus, ProgressBar, StatusDot } from '@astryxdesign/core';
 import {
-  Badge,
   Banner,
   Button,
-  Card,
   Divider,
   HStack,
   RelativeTime,
-  SectionHeader,
-  StackItem,
   Text,
   TextArea,
   VStack,
@@ -19,7 +15,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { statusBadgeVariant, type StatusTone } from './settings-status-badge';
+import { statusDotVariant, type StatusTone } from './settings-status-badge';
 import {
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
@@ -312,27 +308,21 @@ export function ClaudeSubscriptionCard() {
   const claudeLoginPending = authRequestId !== null || state?.runtimeState === 'authorizing';
   const actionBusy = pendingAction !== null;
 
-  // Astryx convergence (task #136): the hand-rolled
-  // `.settingsConnectionRow[data-status]` card (9 tinted variants) sat inside
-  // the otherwise fully Astryx Providers surface. Default Card chrome now;
-  // status is carried by the Badge + detail line only (status-color
-  // restraint), and the quota numbers gained a real ProgressBar gauge.
+  // Deep-review fix: this panel renders under ProvidersPanel's RouteHeader,
+  // which already says 连接 Claude + subtitle — the SectionHeader + full-width
+  // Card + repeated title made it the one OAuth panel with its own chrome.
+  // It is a bare VStack now, the same shape as its sibling login panels, and
+  // runtime state reads as the shared StatusDot + text idiom.
   return (
-    <VStack gap={2}>
-    <SectionHeader as="h3" title={copy.section} />
-    <Card padding={4}>
-      <VStack gap={2}>
-      <HStack gap={3} vAlign="start">
-        <StackItem size="fill">
-          <VStack gap={0.5}>
-            <Text weight="semibold">{copy.title}</Text>
-            <Text type="supporting" color="secondary">
-              {copy.subtitle}
-              {state?.profile?.email ? ` · ${state.profile.email}` : ''}
-            </Text>
-          </VStack>
-        </StackItem>
-        <Badge variant={statusBadgeVariant(presentation.tone)} label={presentation.label} />
+    <VStack gap={3}>
+      <HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
+        <span className="settingsStatus">
+          <StatusDot variant={statusDotVariant(presentation.tone)} label={presentation.label} />
+          <span>{presentation.label}</span>
+        </span>
+        {state?.profile?.email ? (
+          <Text type="supporting" color="secondary">{state.profile.email}</Text>
+        ) : null}
       </HStack>
       <Text as="p" type="supporting" color="secondary">{presentation.detail}</Text>
       {pasteError && !authRequestId && (
@@ -348,7 +338,7 @@ export function ClaudeSubscriptionCard() {
               label={copy.fiveHour}
               value={state.quota.fiveHour.utilization}
               hasValueLabel
-              formatValueLabel={(value) => `${value}%`}
+              formatValueLabel={(value) => `${Math.round(value)}%`}
               variant={quotaVariant(state.quota.fiveHour.utilization)}
             />
           )}
@@ -357,7 +347,7 @@ export function ClaudeSubscriptionCard() {
               label={copy.sevenDay}
               value={state.quota.sevenDay.utilization}
               hasValueLabel
-              formatValueLabel={(value) => `${value}%`}
+              formatValueLabel={(value) => `${Math.round(value)}%`}
               variant={quotaVariant(state.quota.sevenDay.utilization)}
             />
           )}
@@ -435,8 +425,6 @@ export function ClaudeSubscriptionCard() {
         </VStack>
         </>
       )}
-      </VStack>
-    </Card>
     </VStack>
   );
 }

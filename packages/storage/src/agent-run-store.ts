@@ -71,7 +71,7 @@ export interface RootTurnAdmission {
   userMessageId: string | null;
   execution: RootExecutionDescriptor;
   previousRootTurnId: string | null;
-  normalizedInput: MessageContent;
+  normalizedInput: MessageContent | null;
   turnOrchestration?: TurnOrchestration;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
@@ -84,7 +84,7 @@ export interface AdmitRootTurnInput {
   proposedUserMessageId: string | null;
   execution: RootExecutionDescriptor;
   previousRootTurnId: string | null;
-  normalizedInput: MessageContent;
+  normalizedInput: MessageContent | null;
   turnOrchestration?: TurnOrchestration;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
@@ -1080,13 +1080,40 @@ function isValidRootTurnAttachment(attachment: AttachmentRef): boolean {
 }
 
 export function normalizeRootTurnAdmissionPayload(
-  normalizedInputValue: unknown,
+  normalizedInputValue: MessageContent,
   sourceMessagesValue: unknown,
 ): {
   normalizedInput: MessageContent;
   sourceMessages: readonly RootTurnSourceMessage[];
+};
+export function normalizeRootTurnAdmissionPayload(
+  normalizedInputValue: null,
+  sourceMessagesValue: unknown,
+): {
+  normalizedInput: null;
+  sourceMessages: readonly RootTurnSourceMessage[];
+};
+export function normalizeRootTurnAdmissionPayload(
+  normalizedInputValue: unknown,
+  sourceMessagesValue: unknown,
+): {
+  normalizedInput: MessageContent | null;
+  sourceMessages: readonly RootTurnSourceMessage[];
+};
+export function normalizeRootTurnAdmissionPayload(
+  normalizedInputValue: unknown,
+  sourceMessagesValue: unknown,
+): {
+  normalizedInput: MessageContent | null;
+  sourceMessages: readonly RootTurnSourceMessage[];
 } {
   const sourceMessages = normalizeRootTurnSourceMessages(sourceMessagesValue);
+  if (normalizedInputValue === null) {
+    if (sourceMessages.length > 0) {
+      throw new Error('Root turn admission without input cannot have source messages');
+    }
+    return { normalizedInput: null, sourceMessages };
+  }
   const normalizedInputMaxAttachments =
     sourceMessages.length > 1
       ? ROOT_TURN_ADMISSION_MAX_AGGREGATED_ATTACHMENTS
@@ -1176,7 +1203,9 @@ function rootTurnAdmissionPayloadsEqual(
   return (
     isDeepStrictEqual(left.execution, right.execution) &&
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
-    messageContentsEqual(left.normalizedInput, right.normalizedInput) &&
+    (left.normalizedInput === null || right.normalizedInput === null
+      ? left.normalizedInput === right.normalizedInput
+      : messageContentsEqual(left.normalizedInput, right.normalizedInput)) &&
     left.sourceMessages.length === right.sourceMessages.length &&
     left.sourceMessages.every((source, index) => {
       const other = right.sourceMessages[index];
@@ -1204,6 +1233,7 @@ function assertRootTurnAdmissionSerializedSize(serialized: string): void {
 function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const execution = admission.execution;
   const providerRetry = execution.kind === 'linked_child_provider_retry';
+  const safeBoundaryContinuation = execution.kind === 'safe_boundary_continuation';
   if (execution.kind === 'agent_graph_supervisor_wake') {
     if (
       admission.turnOrchestration?.mode !== 'graph' ||
@@ -1218,9 +1248,19 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
       'Invalid root turn admission contract: orchestration override is not authorized for this execution',
     );
   }
-  if ((admission.userMessageId === null) !== providerRetry) {
+  if (safeBoundaryContinuation && admission.userMessageId !== null) {
+    throw new Error(
+      'Invalid root turn admission contract: safe-boundary continuation omits UserMessage',
+    );
+  }
+  if (!safeBoundaryContinuation && (admission.userMessageId === null) !== providerRetry) {
     throw new Error(
       'Invalid root turn admission contract: only linked child provider retry omits UserMessage',
+    );
+  }
+  if ((admission.normalizedInput === null) !== safeBoundaryContinuation) {
+    throw new Error(
+      'Invalid root turn admission contract: execution has an invalid input requirement',
     );
   }
   if (execution.kind !== 'external_message' && admission.sourceMessages.length !== 0) {
@@ -1254,6 +1294,17 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
     );
   }
   if (
+    execution.kind === 'safe_boundary_continuation' &&
+    (execution.sourceRunId === admission.runId ||
+      execution.sourceTurnId === admission.turnId ||
+      execution.sourceInvocationId === execution.targetInvocationId ||
+      admission.normalizedInput !== null)
+  ) {
+    throw new Error(
+      'Invalid root turn admission contract: safe-boundary continuation identity is invalid',
+    );
+  }
+  if (
     execution.kind === 'external_message' &&
     admission.sourceMessages.some(
       (source) =>
@@ -1272,7 +1323,7 @@ function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootTurnAdmi
   }
   Object.freeze(admission.execution);
   if (admission.turnOrchestration) Object.freeze(admission.turnOrchestration);
-  deepFreezeRootTurnMessageContent(admission.normalizedInput);
+  if (admission.normalizedInput) deepFreezeRootTurnMessageContent(admission.normalizedInput);
   for (const sourceMessage of admission.sourceMessages) {
     deepFreezeRootTurnMessageContent(sourceMessage.content);
     Object.freeze(sourceMessage);
@@ -1358,6 +1409,52 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
       attemptId: value.attemptId,
     });
   }
+  if (value.kind === 'safe_boundary_continuation') {
+    const keys = [
+      'kind',
+      'sourceInvocationId',
+      'sourceRunId',
+      'sourceTurnId',
+      'sourceRuntimeEventHighWater',
+      'claimId',
+      'boundaryDigest',
+      'providerReplayDigest',
+      'safetyDigest',
+      'targetInvocationId',
+    ];
+    if (
+      !hasExactKeys(value, keys) ||
+      typeof value.sourceInvocationId !== 'string' ||
+      !isSafeId(value.sourceInvocationId) ||
+      typeof value.sourceRunId !== 'string' ||
+      !isSafeId(value.sourceRunId) ||
+      typeof value.sourceTurnId !== 'string' ||
+      !isSafeId(value.sourceTurnId) ||
+      !Number.isSafeInteger(value.sourceRuntimeEventHighWater) ||
+      (value.sourceRuntimeEventHighWater as number) < 1 ||
+      typeof value.claimId !== 'string' ||
+      !isSafeId(value.claimId) ||
+      !isSha256Digest(value.boundaryDigest) ||
+      !isSha256Digest(value.providerReplayDigest) ||
+      !isSha256Digest(value.safetyDigest) ||
+      typeof value.targetInvocationId !== 'string' ||
+      !isSafeId(value.targetInvocationId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({
+      kind: value.kind,
+      sourceInvocationId: value.sourceInvocationId,
+      sourceRunId: value.sourceRunId,
+      sourceTurnId: value.sourceTurnId,
+      sourceRuntimeEventHighWater: value.sourceRuntimeEventHighWater as number,
+      claimId: value.claimId,
+      boundaryDigest: value.boundaryDigest,
+      providerReplayDigest: value.providerReplayDigest,
+      safetyDigest: value.safetyDigest,
+      targetInvocationId: value.targetInvocationId,
+    });
+  }
   if (value.kind === 'claimed_agent_graph_intent') {
     if (
       !hasExactKeys(value, ['kind', 'claim', 'agentId', 'agentName']) ||
@@ -1437,6 +1534,10 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function isSha256Digest(value: unknown): value is `sha256:${string}` {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 function hasExactKeys(record: Record<string, unknown>, expected: readonly string[]): boolean {

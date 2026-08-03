@@ -277,7 +277,7 @@ export function PlanReminderPanel(props: {
   }
 
   return (
-    <div className="maka-plan-panel">
+    <div className="maka-plan-panel" data-form-open={formDialogOpen ? 'true' : undefined}>
       <div className="maka-plan-shell agents-inner-view-clamp">
         <PageHeader
           as_wrapper="div"

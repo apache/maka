@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
 import type {
   ConnectionEvent,
   PlanReminder,
+  SessionChangedEvent,
   SessionEvent,
   SessionEventStreamSnapshot,
   SessionSummary,
@@ -182,6 +183,8 @@ export function useAppShellBootstrapSubscriptions(options: {
   applyE2eFixture: () => Promise<void>;
   bootstrapSessions: () => Promise<void>;
   clearPendingTurnActionsForSession: (sessionId: string) => void;
+  /** Releases a send's pending claim once the authority names that turn. */
+  confirmLiveTurn: (sessionId: string, turnId: string) => void;
   clearSessionRendererState: (sessionId: string) => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
@@ -223,7 +226,13 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.handleConnectionEvent(event);
   });
   const handleSessionChange = useEffectEvent(
-    (event: { reason: string; sessionId?: string; ts: number; modelId?: string }) => {
+    (event: SessionChangedEvent) => {
+      // The authority has spoken about a specific turn — whether it started,
+      // failed to start, or ended. That confirms the send's arm, and the
+      // session's status becomes readable as an answer about it again.
+      if (event.sessionId && event.turnId) {
+        options.confirmLiveTurn(event.sessionId, event.turnId);
+      }
       void options.refreshSessions();
       if (event.reason === 'created' || event.reason === 'migrated') {
         void options.refreshProjects();
@@ -592,6 +601,12 @@ export function useSessionEventHealthPolling(options: {
 // settles, drop the turn transient of every session that is no longer running /
 // waiting_for_user. Because it keys off the status landing in `sessions`, it closes
 // the hole regardless of which path or timing delivers that status.
+//
+// Except while a send is still awaiting its answer: an arm carries `unconfirmed`
+// until a `sessions:changed` names its turn back, and the pre-send status is
+// indistinguishable from the post-turn one. Reading a list refreshed in that
+// window as a settle would drop the arm the send just created
+// (settled-session-transients.ts).
 //
 // An active terminal projection is left to its text handoff callback, so this
 // reconcile cannot cut in front of the committed message landing. Background

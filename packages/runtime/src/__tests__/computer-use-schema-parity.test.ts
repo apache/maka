@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { computerUseApprovalSummary } from '@maka/core';
+import {
+  computerUseApprovalSummary,
+  COMPUTER_USE_SEMANTIC_ACTIONS,
+  CU_ACTION_TYPES,
+} from '@maka/core';
 import { computerParams } from '../computer-use-codec.js';
 import { computerWireParams } from '../computer-use-tools.js';
 
@@ -78,6 +82,14 @@ function unreachableFields(
     .filter(({ missing }) => missing.length > 0);
 }
 
+/**
+ * The same comparison the catalog check runs, so its negative control exercises
+ * the real comparator rather than a hand-built copy of it.
+ */
+function catalogNotOnWire(catalog: ReadonlySet<string>, wire: ReadonlySet<string>): string[] {
+  return [...catalog].filter((action) => !wire.has(action));
+}
+
 describe('the two argument schemas describe the same tool', () => {
   test('every field an action accepts can reach it through the wire', () => {
     assert.deepEqual(
@@ -124,6 +136,34 @@ describe('the two argument schemas describe the same tool', () => {
     );
   });
 
+  test('the approval catalog names exactly the actions the wire carries', () => {
+    // The check above walks from the schemas to the catalog and catches a name
+    // the catalog is missing. This walks the other way, and catches a name the
+    // catalog has that the schemas do not.
+    //
+    // That direction is quieter and costs more. `COMPUTER_USE_SEMANTIC_ACTIONS`
+    // feeds `APPROVAL_ACTIONS`, which is what decides `knownAction`. A name
+    // listed there and absent from the wire enum makes the approval summary and
+    // the model-facing record of the call report an action the SDK rejects
+    // before the tool ever runs, as though it were a call that had been taken —
+    // and makes `rememberForTurnAllowed` true for it. Nothing fails; a person
+    // reads an approval for an action that did not happen, and the model reads
+    // its own history as proof that the name works.
+    const wire = new Set(wireActions());
+    const catalog = new Set<string>([...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES]);
+
+    assert.deepEqual(
+      catalogNotOnWire(catalog, wire),
+      [],
+      'the approval catalog names actions the tool will reject',
+    );
+    assert.deepEqual(
+      [...wire].filter((action) => !catalog.has(action)),
+      [],
+      'the wire carries actions the approval catalog records as "unknown"',
+    );
+  });
+
   test('the check would fail if a field were missing', () => {
     // A test that cannot fail is not a check. This runs the same comparator the
     // real check uses, against the shape of the bug it exists to catch.
@@ -133,6 +173,20 @@ describe('the two argument schemas describe the same tool', () => {
       ]),
       [{ action: 'window_action', missing: ['position'] }],
     );
+  });
+
+  test('the catalog check would fail on a name the wire does not carry', () => {
+    // The negative control for the check above, in the direction that has no
+    // natural failure to point at. It runs the same comparator over a fixed
+    // catalog rather than the real one, so it keeps proving the comparator can
+    // return something even on the day the real catalog is correct.
+    // `element_sequence` is the real case: it exists on the branch that adds
+    // the executor and nowhere in this schema.
+    assert.deepEqual(
+      catalogNotOnWire(new Set(['observe', 'element_sequence']), new Set(['observe'])),
+      ['element_sequence'],
+    );
+    assert.deepEqual(catalogNotOnWire(new Set(['observe']), new Set(['observe'])), []);
   });
 
   test('the introspection reads real schemas, not just the objects it built', () => {

@@ -43,6 +43,18 @@ const AGENT_SPAWN_ISOLATION_MODES = [
 ] as const;
 const CHILD_PROGRESS_ERROR_MAX_CHARS = 1_000;
 
+/**
+ * Which schema fields each `agent_output` locator needs. A rejection that only
+ * says "its matching identity fields" leaves the model guessing which of the
+ * four optional id fields to add, so name them.
+ */
+const LOCATOR_REQUIRED_FIELDS = {
+  child_session_latest: 'child_session_id',
+  child_session_run: 'child_session_id and run_id',
+  legacy_run: 'run_id',
+  legacy_turn: 'turn_id',
+} as const satisfies Record<string, string>;
+
 type SubagentToolResult = Extract<ToolResultContent, { kind: 'subagent' }>;
 
 export function buildChildAgentTools(tools: readonly MakaTool[]): MakaTool[] {
@@ -168,7 +180,13 @@ export function buildSubagentSpawnTool(
         );
       }
       if (!ctx.spawnChildSession) {
-        throw new Error('spawnChildSession capability is unavailable in this runtime context');
+        throw new Error(
+          'agent_spawn is not available in this session, so no child agent was started. ' +
+            'Retrying agent_spawn will fail the same way — do the task yourself with the tools you already have.',
+          {
+            cause: new Error('spawnChildSession capability is unavailable in this runtime context'),
+          },
+        );
       }
       const boundTask = input.task_id
         ? await deps.taskLedger?.get(ctx.sessionId, input.task_id)
@@ -349,8 +367,18 @@ export function buildSubagentListTool(): MakaTool<Record<string, never>, unknown
     parameters: z.object({}),
     categoryHint: 'read',
     impl: async (_input, ctx) => {
+      // Not reachable from the desktop app or the CLI: both pass
+      // `listChildAgents` to ToolRuntime unconditionally
+      // (`session-stream.ts`, `runtime-bootstrap.ts`), and ToolRuntime hands
+      // it straight to the tool context. `harbor-cell.ts` passes it only when
+      // its own context carries one, so a headless embedder can still land
+      // here — which is why this stays a sentence rather than being deleted.
       if (!ctx.listChildAgents) {
-        throw new Error('listChildAgents capability is unavailable in this runtime context');
+        throw new Error(
+          'agent_list is not available in this session, so no agent catalog or child run list could be read. ' +
+            'Retrying agent_list will fail the same way — pick a child agent profile from the agent_spawn schema instead.',
+          { cause: new Error('listChildAgents capability is unavailable in this runtime context') },
+        );
       }
       return await ctx.listChildAgents();
     },
@@ -410,7 +438,7 @@ export function buildSubagentOutputTool(): MakaTool<
           if (!valid) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              message: `locator=${input.locator} requires its matching identity fields`,
+              message: `locator=${input.locator} requires ${LOCATOR_REQUIRED_FIELDS[input.locator]}.`,
             });
           }
           return;
@@ -435,7 +463,16 @@ export function buildSubagentOutputTool(): MakaTool<
     categoryHint: 'read',
     impl: async (input, ctx) => {
       if (!ctx.readChildAgentOutput) {
-        throw new Error('readChildAgentOutput capability is unavailable in this runtime context');
+        // Same reachability as `agent_list` above.
+        throw new Error(
+          'agent_output is not available in this session, so no child output could be read. ' +
+            'Retrying agent_output will fail the same way — use the summary the agent_spawn or agent_swarm call already returned for that child.',
+          {
+            cause: new Error(
+              'readChildAgentOutput capability is unavailable in this runtime context',
+            ),
+          },
+        );
       }
       const explicitLocator =
         input.locator === 'child_session_latest'

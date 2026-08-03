@@ -591,6 +591,7 @@ export type {
   ComputerUseBoundAction,
   ComputerUseFrameIdentity,
   ComputerUseFrameSourceKind,
+  ComputerUseModelCallArgs,
   ComputerUseObservationIdentity,
   ComputerUsePageIdentity,
   ComputerUseRect,
@@ -605,6 +606,7 @@ export type {
 export {
   COMPUTER_USE_ACTION_TYPES,
   COMPUTER_USE_APPROVAL_CLASSES,
+  COMPUTER_USE_SEMANTIC_ACTIONS,
   COMPUTER_USE_DISPATCH_TIERS,
   COMPUTER_USE_EFFECTS,
   COMPUTER_USE_ERROR_CODES,
@@ -613,6 +615,7 @@ export {
   CU_SCROLL_DIRECTIONS,
   computerUseApprovalScopeKey,
   computerUseApprovalSummary,
+  computerUseModelCallArgs,
   isComputerUseErrorCode,
 } from './computer-use.js';
 

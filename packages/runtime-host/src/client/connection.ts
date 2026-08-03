@@ -30,6 +30,10 @@ import {
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type TurnQueryInput,
+  type TurnResumePlan,
+  type TurnResumeQueryInput,
+  type TurnResumeStartInput,
+  type TurnResumeStartResult,
   type TurnSnapshot,
   type TurnStartInput,
   type TurnStopInput,
@@ -121,6 +125,8 @@ export interface RuntimeHostConnection {
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
+  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
@@ -292,6 +298,14 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot> {
     return this.request('turn.stop', input, timeoutMs);
+  }
+
+  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
+    return this.request('turn.resume.query', input, timeoutMs);
+  }
+
+  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult> {
+    return this.request('turn.resume.start', input, timeoutMs);
   }
 
   openSessionSubscription(

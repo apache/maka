@@ -41,12 +41,6 @@
   max-width: 560px;
 }
 
-.maka-plan-eyebrow {
-  font: var(--maka-text-heading-5);
-  margin: 0;
-  color: var(--muted-foreground);
-  letter-spacing: var(--tracking-normal);
-}
 
 .maka-plan-heading h2 {
   font: var(--maka-text-display-2);
@@ -173,13 +167,68 @@
   border: 0;
   border-radius: 0;
   background: var(--background);
-  padding: var(--space-3);
+  gap: var(--space-5);
+  padding: var(--space-2) var(--space-5) var(--space-4);
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 
+/* Split view (reference layout): with the form open the page becomes two
+   columns — the list keeps flowing in the first, the form panel sits FLUSH
+   against it in the second, separated by one hairline. No overlay, no dead
+   band between list and panel. */
+.maka-plan-panel[data-form-open="true"] {
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 460px);
+  align-items: start;
+}
+
+@keyframes maka-plan-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.maka-plan-form-aside {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: calc(100dvh - var(--h-titlebar));
+  border-inline-start: var(--border-width-hairline) solid var(--border);
+  background: var(--background);
+  animation: maka-plan-sheet-in var(--duration-base) var(--ease-out-strong);
+}
+
+/* The reference wraps each group's rows in an inset rounded container.
+   Deep-review: the fill makes it genuinely inset — a border on the same
+   surface color read as a bare outlined rectangle. */
+.maka-plan-rows {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--muted);
+  padding-inline: var(--space-3);
+  overflow: hidden;
+}
+
+.maka-plan-form-footer {
+  justify-content: flex-end;
+  width: 100%;
+  padding: var(--space-2) var(--space-5) var(--space-4);
+}
+
 .maka-plan-form-header {
-  align-items: flex-start;
-  padding-bottom: var(--space-0-5);
+  align-items: center;
+  width: 100%;
+  padding: var(--space-3) var(--space-5) var(--space-1);
 }
 
 .maka-plan-form-header-actions {
@@ -188,16 +237,76 @@
   gap: var(--space-1);
 }
 
-.maka-plan-form-title {
-  font: var(--maka-text-heading-4);
+.maka-plan-form-kicker {
+  font: var(--maka-text-supporting);
   margin: 0;
+  color: var(--muted-foreground);
+}
+
+/* The large borderless title — the form's one display element. A raw input
+   wrapped in Astryx Field (label + status stay accessible); chrome-free so
+   the dialog opens straight into naming the task, like the reference panel. */
+.maka-plan-title-input {
+  font: var(--maka-text-heading-2);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+}
+
+.maka-plan-title-input::placeholder {
+  color: var(--color-text-secondary, var(--foreground-secondary));
+}
+
+/* Deep-review: a chrome-free control still owes a focus cue (DESIGN §5).
+   Keyboard focus draws the ring; mouse focus stays quiet. */
+.maka-plan-title-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+  border-radius: var(--radius-control);
+}
+
+/* One labeled group: quiet label over hairline-divided label/control rows —
+   the settings open-row idiom, scoped to the dialog. */
+.maka-plan-group {
+  display: grid;
+  gap: var(--space-1-5);
+}
+
+.maka-plan-group-label {
+  font: var(--maka-text-label);
+  margin: 0;
+  color: var(--foreground-secondary);
+}
+
+
+.maka-plan-rows > * + * {
+  border-block-start: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-plan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  min-height: 44px;
+  padding-block: var(--space-1-5);
+}
+
+.maka-plan-row-label {
+  font: var(--maka-text-body);
   color: var(--foreground);
 }
 
 .maka-plan-presets {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-1);
+  padding-block: var(--space-1-5);
 }
 
 .maka-plan-preset {

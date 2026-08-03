@@ -680,7 +680,9 @@ describe('AgentSwarm adapter', () => {
 
     await assert.rejects(
       Promise.resolve(tool.impl({ items: [swarmItem(0)] }, context())),
-      /spawnChildSession capability is unavailable/,
+      // The sentence names the tool and what to do instead, rather than a host
+      // capability the model has no way to provide.
+      /agent_swarm cannot start new child agents in this session/,
     );
   });
 

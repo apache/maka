@@ -83,22 +83,33 @@ test('renders a settled Mermaid fence as a diagram', async ({ window: page }) =>
   await expect(diagram.locator('.maka-mermaid-source')).toContainText('flowchart TB');
   await viewSource.click();
 
-  const toolbar = diagram.locator('.maka-mermaid-toolbar');
-  const toolbarBeforeZoom = await toolbar.boundingBox();
-  const diagramBeforeZoom = await diagram.boundingBox();
-  const viewportHeightBeforeZoom = await viewport.evaluate((element) => element.getBoundingClientRect().height);
+  // Zoom moves the diagram's content, never its chrome. Read the toolbar
+  // offset and the viewport height inside one evaluate: the transcript is a
+  // bottom-pinned scroller that re-pins on every ResizeObserver update, so two
+  // separate boundingBox() round-trips sample the same element at two scroll
+  // positions and turn that drift into a phantom offset change (#2000).
+  const readChrome = () => diagram.evaluate((element) => {
+    const diagramTop = element.getBoundingClientRect().top;
+    const toolbarTop = element.querySelector('.maka-mermaid-toolbar')?.getBoundingClientRect().top;
+    const viewportHeight = element.querySelector('.maka-mermaid-viewport')?.getBoundingClientRect().height;
+    return { toolbarOffset: (toolbarTop ?? 0) - diagramTop, viewportHeight: viewportHeight ?? 0 };
+  });
+  const chromeBeforeZoom = await readChrome();
   const zoomIn = diagram.getByRole('button', { name: '放大图表' });
   await zoomIn.click();
   await expect(diagram).toHaveAttribute('data-maka-mermaid-zoom', '1.25');
   await zoomIn.click();
   await expect(diagram).toHaveAttribute('data-maka-mermaid-zoom', '1.50');
-  const toolbarAfterZoom = await toolbar.boundingBox();
-  const diagramAfterZoom = await diagram.boundingBox();
-  const viewportHeightAfterZoom = await viewport.evaluate((element) => element.getBoundingClientRect().height);
-  const toolbarOffsetBeforeZoom = (toolbarBeforeZoom?.y ?? 0) - (diagramBeforeZoom?.y ?? 0);
-  const toolbarOffsetAfterZoom = (toolbarAfterZoom?.y ?? 0) - (diagramAfterZoom?.y ?? 0);
-  expect(Math.abs(toolbarOffsetAfterZoom - toolbarOffsetBeforeZoom)).toBeLessThanOrEqual(1);
-  expect(Math.abs(viewportHeightAfterZoom - viewportHeightBeforeZoom)).toBeLessThanOrEqual(1);
+  // Poll for the steady state: the zoomed layout settles over a rAF, a
+  // ResizeObserver pass, and the scroller's re-pin, so a single instantaneous
+  // read asserts a frame the user never sees.
+  await expect.poll(async () => {
+    const chrome = await readChrome();
+    return Math.max(
+      Math.abs(chrome.toolbarOffset - chromeBeforeZoom.toolbarOffset),
+      Math.abs(chrome.viewportHeight - chromeBeforeZoom.viewportHeight),
+    );
+  }).toBeLessThanOrEqual(1);
   await expect.poll(() => viewport.evaluate((element) =>
     element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight)).toBe(true);
   const zoomedBounds = await diagram.evaluate((element) => {

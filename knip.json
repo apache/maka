@@ -10,6 +10,8 @@
         "src/overlay/cursor-overlay-preload.ts",
         "src/overlay/permission-overlay.ts",
         "src/overlay/permission-overlay-preload.ts",
+        "src/overlay/pip.ts",
+        "src/overlay/pip-preload.ts",
         "src/main/**/*.test.ts",
         "e2e/**/*.spec.ts",
         ".storybook/preview.@(ts|tsx)",

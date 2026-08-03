@@ -108,6 +108,66 @@ import {
 } from '../stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
 
+/**
+ * "A turn is running" is a fact about the live process, so the read model takes
+ * it from the run rather than from the persisted status. The status cannot
+ * serve: it is written only at the END of `AgentRun.begin`, it reads the same
+ * before a turn starts and after it ends, and a crash between a turn's end and
+ * its status write leaves `running` in storage forever.
+ */
+describe('SessionManager running-turn projection', () => {
+  test('names the turn a session is running, without persisting it', async () => {
+    const store = new MemorySessionStore();
+    const runningTurnBySession = new Map<string, string[]>();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(1),
+      runtimeKernel: {
+        runningTurnIds: (sessionId: string) => runningTurnBySession.get(sessionId) ?? [],
+      } as never,
+    });
+    const idle = await manager.createSession(makeInput({ name: 'Idle' }));
+    const busy = await manager.createSession(makeInput({ name: 'Busy' }));
+    runningTurnBySession.set(busy.id, ['turn-live']);
+
+    const listed = await manager.listSessions();
+    const byId = new Map(listed.map((session) => [session.id, session]));
+
+    expect(byId.get(busy.id)?.runningTurnIds).toEqual(['turn-live']);
+    expect(byId.get(idle.id)?.runningTurnIds).toEqual(undefined);
+
+    // Nothing about it reached storage, which is what makes a restart honest.
+    expect(
+      ((await store.readHeader(busy.id)) as unknown as Record<string, unknown>).runningTurnId,
+    ).toEqual(undefined);
+
+    // The run ends; the very next list stops naming it, with no status write
+    // and no crash-recovery pass in between.
+    runningTurnBySession.delete(busy.id);
+    const after = await manager.listSessions();
+    expect(after.find((session) => session.id === busy.id)?.runningTurnIds).toEqual(undefined);
+  });
+
+  test('lists sessions unchanged when the kernel cannot report runs', async () => {
+    const store = new MemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(1),
+      runtimeKernel: {} as never,
+    });
+    const session = await manager.createSession(makeInput({ name: 'Only' }));
+
+    const listed = await manager.listSessions();
+
+    expect(listed.map((entry) => entry.id)).toEqual([session.id]);
+    expect(listed[0]?.runningTurnIds).toEqual(undefined);
+  });
+});
+
 describe('SessionManager child-session read model', () => {
   test('lists typed child sessions without treating branches as children', async () => {
     const store = new MemorySessionStore();
@@ -5559,6 +5619,45 @@ describe('SessionManager permission mode updates', () => {
     });
   });
 
+  test('parks when authoritative continuation safety inspection fails', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      safeBoundaryResumeEnabled: true,
+      inspectContinuationSafety: async () => {
+        throw new Error('safety authority unavailable');
+      },
+      newId: nextId(),
+      now: nextNow(6_535),
+    });
+    const session = await manager.createSession(makeInput());
+    const header = await store.readHeader(session.id);
+    await runStore.createRun(
+      makeRunHeader({
+        runId: 'source-run-safety-failure',
+        sessionId: session.id,
+        turnId: 'source-turn-safety-failure',
+        status: 'failed',
+        cwd: header.cwd,
+        workspaceIdentity: 'workspace-safety-failure',
+        completedAt: 2,
+        failureClass: 'app_restarted',
+      }),
+    );
+
+    const plan = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
+      sourceRunId: 'source-run-safety-failure',
+    });
+
+    expect(plan.disposition).toBe('park');
+    expect(plan.rejectionReasons).toEqual(['safety_observation_unavailable']);
+  });
+
   test('keeps the authoritative continuation entry disabled unless the host enables it', async () => {
     const store = new MemorySessionStore();
     const backends = new BackendRegistry();
@@ -7280,6 +7379,115 @@ describe('SessionManager permission mode updates', () => {
       );
       expect(backendCalls).toBe(0);
     }
+  });
+
+  test('revalidates continuation safety inside the backend activation barrier', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let backendCalls = 0;
+    let availableToolNames: readonly string[] = ['Write'];
+    backends.register(
+      'fake',
+      (ctx) =>
+        new CountingFinalTextBackend(ctx, () => {
+          backendCalls += 1;
+        }),
+    );
+    const newId = nextId();
+    const now = nextNow(6_599);
+    const runtimeKernel = new RuntimeKernel({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames,
+      }),
+      runBackendActivation: async (operation) => {
+        availableToolNames = ['Read', 'Write'];
+        return operation();
+      },
+      newId,
+      now,
+      runtimeSource: 'test',
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      runtimeKernel,
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames,
+      }),
+      newId,
+      now,
+      runtimeSource: 'test',
+    });
+    const session = await manager.createSession(makeInput());
+    const header = await store.readHeader(session.id);
+    const sourceRunId = 'source-run-activation-safety-race';
+    const sourceTurnId = 'source-turn-activation-safety-race';
+    const sourceInvocationId = 'source-invocation-activation-safety-race';
+    await seedRuntimeRun(
+      runStore,
+      makeRunHeader({
+        runId: sourceRunId,
+        sessionId: session.id,
+        turnId: sourceTurnId,
+        status: 'failed',
+        cwd: header.cwd,
+        createdAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        failureClass: 'app_restarted',
+      }),
+      [
+        runtimeEvent({
+          id: 'source-user-activation-safety-race',
+          invocationId: sourceInvocationId,
+          runId: sourceRunId,
+          sessionId: session.id,
+          turnId: sourceTurnId,
+          ts: 1,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue under one activation snapshot' },
+        }),
+        runtimeEvent({
+          id: 'source-terminal-activation-safety-race',
+          invocationId: sourceInvocationId,
+          runId: sourceRunId,
+          sessionId: session.id,
+          turnId: sourceTurnId,
+          ts: 2,
+          status: 'failed',
+          actions: { endInvocation: true, stateDelta: { failureClass: 'app_restarted' } },
+        }),
+      ],
+    );
+    const plan = await manager.planSafeBoundaryContinuation(session.id, {
+      sourceRunId,
+      currentCwd: header.cwd,
+      sourceWorkspaceIdentity: 'workspace-1',
+      currentWorkspaceIdentity: 'workspace-1',
+      backgroundOperationsSettled: true,
+      availableToolNames,
+    });
+    if (!plan.continuation) throw new Error('expected continuation');
+
+    await expectRejects(
+      collectSessionEvents(manager.resumeSafeBoundaryContinuation(plan.continuation)),
+      /tool catalog changed/i,
+    );
+
+    expect(backendCalls).toBe(0);
+    await expectRejects(runStore.readRun(session.id, plan.continuation.runId), /Unknown run/);
   });
 
   test('fails closed when continuation execution has no authoritative safety inspector', async () => {

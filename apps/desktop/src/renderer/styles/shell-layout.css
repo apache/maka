@@ -68,6 +68,19 @@
   border-inline-end-color: transparent;
 }
 
+/* WAWQAQ msg `9f313715` (2026-08-03): the content column is a rounded floating
+   plate flush to the sidebar — its edge is the ONE boundary on that seam. The
+   theme's full-height sidenav hairline (`.astryx-app-shell-sidenav.elevated`
+   in the built maka.css) ran on the same seam, so beside the plate's top-left
+   corner radius both lines showed and read as a doubled border. The collapsed
+   rail already dropped this edge (rule above); drop it expanded too — column
+   separation is tonal (the plate's fill against the canvas), per DESIGN.md's
+   One Working Plane rule. Override lives here because maka.css is a generated
+   artifact (`npm run astryx:theme`), not a hand-edited file. */
+.maka-shell-astryx .astryx-app-shell-sidenav {
+  border-inline-end-color: transparent;
+}
+
 
 /* The column resize handle is the one control positioned against the column BOX
    rather than flowing inside it (Astryx gives it `position:absolute; top:0;

@@ -1,6 +1,6 @@
-import { useReducer, useRef } from 'react';
+import { useRef } from 'react';
 import type { SessionEventStreamSnapshot } from '@maka/core';
-import type { InteractionQueues, LiveTurnProjection } from '@maka/ui';
+import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -99,21 +99,31 @@ export function clearAppShellTurnTransientForSession(
 
 export function createAppShellSessionUiStateController(
   initialState: AppShellSessionUiState = createInitialAppShellSessionUiState(),
-  onChange: (state: AppShellSessionUiState) => void = () => {},
 ) {
   let currentState = initialState;
   const liveTurnBySessionRef = { current: currentState.liveTurnBySession };
   // Written by the event-health probes and read back by them alone. Kept off
-  // `currentState` so a probe never notifies `onChange`.
+  // `currentState` so a probe never notifies a subscriber.
   const sessionEventHealthBySessionRef: { current: Record<string, SessionEventStreamSnapshot> } = {
     current: {},
   };
+  const listeners = new Set<() => void>();
 
   function replaceState(next: AppShellSessionUiState): void {
     if (next === currentState) return;
     currentState = next;
     liveTurnBySessionRef.current = next.liveTurnBySession;
-    onChange(next);
+    // Synchronous, immediately after the swap. Never schedule this: the
+    // terminal-turn handoff reads the state it announces (#1985).
+    for (const listener of [...listeners]) listener();
+  }
+
+  /** Subscribe to state replacements. Stable identity, for `useSyncExternalStore`. */
+  function subscribe(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   }
 
   function updateMap<K extends AppShellSessionUiStateMapKey>(
@@ -132,6 +142,7 @@ export function createAppShellSessionUiStateController(
 
   return {
     getState: () => currentState,
+    subscribe,
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
@@ -145,6 +156,20 @@ export function createAppShellSessionUiStateController(
     }) satisfies StateUpdater<Record<string, SessionEventStreamSnapshot>>,
     setPendingPermissionModeBySession: createMapSetter('pendingPermissionModeBySession'),
     setPendingSessionModelBySession: createMapSetter('pendingSessionModelBySession'),
+    /**
+     * The authority said something about `turnId` — it started, failed to
+     * start, or ended. Drop that arm's `unconfirmed` claim so a session list
+     * may settle it again. An answer about a turn this session is not on says
+     * nothing, and leaves the state untouched.
+     */
+    confirmLiveTurn: (sessionId: string, turnId: string) => {
+      updateMap('liveTurnBySession', (current) => {
+        const armed = current[sessionId];
+        if (!armed) return current;
+        const confirmed = confirmLiveTurn(armed, turnId);
+        return confirmed === armed ? current : { ...current, [sessionId]: confirmed! };
+      });
+    },
     clearSessionUiState: (sessionId: string) => {
       sessionEventHealthBySessionRef.current = omitSessionKey(
         sessionEventHealthBySessionRef.current,
@@ -158,21 +183,25 @@ export function createAppShellSessionUiStateController(
   };
 }
 
+export type AppShellSessionUiStateController = ReturnType<typeof createAppShellSessionUiStateController>;
+
+/**
+ * Owns the controller for the component's lifetime. Deliberately does NOT
+ * subscribe: readers select what they need through
+ * `useAppShellSessionUiSelector`, so no single component re-renders for every
+ * write to the store (#1985).
+ */
 export function useAppShellSessionUiState() {
-  const [, forceRender] = useReducer((version: number) => version + 1, 0);
-  const controllerRef = useRef<ReturnType<typeof createAppShellSessionUiStateController> | null>(null);
+  const controllerRef = useRef<AppShellSessionUiStateController | null>(null);
 
   if (!controllerRef.current) {
-    controllerRef.current = createAppShellSessionUiStateController(
-      createInitialAppShellSessionUiState(),
-      () => forceRender(),
-    );
+    controllerRef.current = createAppShellSessionUiStateController();
   }
 
   const controller = controllerRef.current;
 
   return {
-    state: controller.getState(),
+    controller,
     liveTurnBySessionRef: controller.liveTurnBySessionRef,
     sessionEventHealthBySessionRef: controller.sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: controller.setMessageLoadErrorBySession,
@@ -184,6 +213,7 @@ export function useAppShellSessionUiState() {
     setSessionEventHealthBySession: controller.setSessionEventHealthBySession,
     setPendingPermissionModeBySession: controller.setPendingPermissionModeBySession,
     setPendingSessionModelBySession: controller.setPendingSessionModelBySession,
+    confirmLiveTurn: controller.confirmLiveTurn,
     clearSessionUiState: controller.clearSessionUiState,
     clearTurnTransientState: controller.clearTurnTransientState,
   };

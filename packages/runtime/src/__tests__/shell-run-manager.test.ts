@@ -1104,7 +1104,12 @@ describe('ShellRunProcessManager', () => {
           'maka://runtime/background-tasks/%2Funsafe',
           NO_ABORT,
         ),
-      /Unsupported runtime resource ref/,
+      // Same reply as the other two ref-parse sites: the canonical form and
+      // where to get it, and no echo of the rejected string.
+      (error: unknown) =>
+        error instanceof Error &&
+        /maka:\/\/runtime\/background-tasks\/<id>/.test(error.message) &&
+        !error.message.includes('%2Funsafe'),
     );
   });
 
@@ -2144,7 +2149,12 @@ describe('ShellRunProcessManager', () => {
               pty: true,
             }),
           ),
-        /Live PTY capacity is full \(1\)/,
+        // Names no tool at all. The counters are manager-wide, and the caller
+        // that most often hits this cap is a child agent, whose tool list is a
+        // strict allowlist that carries Bash but not StopBackgroundTask. The
+        // sentence describes the move instead; `non-cu-tool-refusal-text.test`
+        // asserts that against the real child tool set.
+        /No free interactive \(PTY\) background task slot: the runtime is at its limit of 1 .*Run this command as a non-interactive background task/s,
       );
 
       const pipeRun = await manager.runBackgroundBash(
@@ -2165,7 +2175,7 @@ describe('ShellRunProcessManager', () => {
               command: waitForeverCommand(),
             }),
           ),
-        /Live background task capacity is full \(2\)/,
+        /No free background task slot: the runtime is at its limit of 2 .*Wait for a running background task to finish and try again/s,
       );
 
       await manager.stopBackgroundTask('session-1', ptyRun.ref, NO_ABORT);

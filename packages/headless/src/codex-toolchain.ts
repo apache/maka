@@ -6,6 +6,8 @@ import {
 } from './node-cli-toolchain.js';
 
 export const CODEX_TOOLCHAIN_CONTAINER_PATH = '/opt/maka-codex-toolchain';
+export const CODEX_DEEPSEEK_MODEL_CATALOG_FINGERPRINT =
+  'sha256:faac5d862e0ce0bf5bcaccd515de04cf2dcd33cd38a53f0332fe2e8620ab7caa';
 
 export const CODEX_TOOLCHAIN_SPEC = {
   schemaVersion: 1,

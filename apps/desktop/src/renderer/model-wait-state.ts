@@ -36,13 +36,41 @@ export const MODEL_CONTINUING_DELAY_MS = 600;
  */
 export type TurnPhase = 'waiting' | 'streamed';
 
+/**
+ * Whether a turn is running for the active session — the Stop affordance, and
+ * the composer lock that rides with it.
+ *
+ * Two witnesses, ORed. They must never be ANDed: the local arm is the only
+ * instant one, and gating it on a session-level witness meant a send opened
+ * nothing until a status round-trip landed, then had it retracted by any list
+ * refresh that resolved before the runtime's `running` write.
+ *
+ * `runningTurnIds` is read only for turns OTHER than the arm's. For the arm's
+ * own turn the local projection knows more — it sees the terminal event first —
+ * so a snapshot taken before that event must not light Stop back up. For any
+ * other turn (another client, an automation, one still running across a reload)
+ * it is the only witness there is. It is a set because a session can run
+ * concurrent turns, and the arm's own turn lingering in it must not hide a
+ * sibling that is genuinely still running.
+ */
+export function deriveTurnActive(input: {
+  /** The active session's live projection, if this renderer has one. */
+  turnPhase: TurnPhase | undefined;
+  armedTurnId: string | undefined;
+  /** The turns the authority is running for this session. */
+  runningTurnIds: readonly string[] | undefined;
+}): boolean {
+  if (input.turnPhase !== undefined) return true;
+  return input.runningTurnIds?.some((turnId) => turnId !== input.armedTurnId) === true;
+}
+
 export interface ModelWaitInputs {
   /** Turn phase, or undefined when no turn is in flight. */
   turnPhase: TurnPhase | undefined;
-  /** Active session's live assistant answer buffer. */
-  streamingText: string;
-  /** Active session's live reasoning buffer. */
-  thinkingText: string;
+  /** Whether the active assistant answer buffer has any content. */
+  hasStreamingText: boolean;
+  /** Whether the active reasoning buffer has any content. */
+  hasThinkingText: boolean;
   /** Whether any live tool is still pending / running / awaiting permission. */
   hasInFlightTools: boolean;
 }
@@ -58,10 +86,7 @@ export type ModelWaitKind = 'none' | 'processing' | 'continuing';
  * `'continuing'`.
  */
 export function deriveModelWait(input: ModelWaitInputs): ModelWaitKind {
-  const idle =
-    input.streamingText.length === 0 &&
-    input.thinkingText.length === 0 &&
-    !input.hasInFlightTools;
+  const idle = !input.hasStreamingText && !input.hasThinkingText && !input.hasInFlightTools;
   if (!idle || input.turnPhase === undefined) return 'none';
   return input.turnPhase === 'waiting' ? 'processing' : 'continuing';
 }

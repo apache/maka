@@ -39,7 +39,7 @@ import type {
   UserQuestionResponse,
   UserQuestionResult,
 } from '@maka/core/user-question';
-import { computerUseApprovalSummary } from '@maka/core';
+import { computerUseModelCallArgs } from '@maka/core';
 import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
@@ -66,6 +66,7 @@ import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
 import { normalizeSandboxBoundaryExpansion } from './sandbox-boundary-path.js';
+import { SANDBOX_BOUNDARY_UNAVAILABLE } from './sandbox-boundary-tool.js';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
@@ -789,9 +790,29 @@ export class ToolRuntime {
     } catch (error) {
       permissionArgsError = error;
     }
+    // The args written into the `tool_start` event, the persisted `tool_call`
+    // message and the durable ledger — that is, the record of the call the
+    // model reads back on its next turn (`model-history.ts` replays
+    // `event.content.args`).
+    //
+    // Computer Use used the host's approval summary here. That projection
+    // exists to decide and display a permission: it renames `window_id` to
+    // `windowId`, adds `approvalClass` and `rememberForTurnAllowed`, and drops
+    // every argument it does not need. On the real ToolRuntime a model that
+    // sent {action:'press_key', app, window_id, observation_id, element_id,
+    // text:'cmd+s'} read back {action, approvalClass, rememberForTurnAllowed,
+    // app, windowId, observationId} — a key the tool rejects, two fields it
+    // never sent, no element, and a press_key with no key. It then went on
+    // calling it that way.
+    //
+    // The permission prompt still reads `permissionArgs`, and the approval
+    // scope key is still computed from the raw call, so this only changes what
+    // is written down. `computerUseModelCallArgs` keeps the same privacy rule
+    // — screen-derived and user-typed values are reduced to a shape — and
+    // speaks the tool's own argument names.
     const persistedArgs =
       tool.categoryHint === 'computer_use'
-        ? snapshotToolArgs(computerUseApprovalSummary(permissionArgs))
+        ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
         : permissionArgs;
     const now = this.input.now();
     const toolIntent = describeToolIntent(tool, persistedArgs);
@@ -1851,7 +1872,16 @@ export class ToolRuntime {
       !hostedRun &&
       (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest)
     ) {
-      throw new Error('Sandbox boundary expansion is unavailable on this surface');
+      // This is the sentence a model actually reads. `sandbox-boundary-tool.ts`
+      // guards the same condition, but ToolRuntime injects the callback
+      // unconditionally a few lines above, so that guard answers only an
+      // embedder that builds its own context — never a production tool call.
+      //
+      // This one does fire in production. The desktop app supplies both store
+      // callbacks unconditionally (`session-stream.ts`), but the CLI supplies
+      // them only on the `tui` surface (`runtime-bootstrap.ts`), so every
+      // non-TUI CLI surface reaches here for any call that is not a hosted run.
+      throw new Error(SANDBOX_BOUNDARY_UNAVAILABLE);
     }
     const normalized = await normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd);
     const normalizedJustification = justification.trim();

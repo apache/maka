@@ -28,6 +28,49 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   ).toBe(true);
 });
 
+test('subagent presets can be reviewed and edited in desktop settings', async ({ window: page }) => {
+  await page.evaluate(async () => {
+    const connections = await window.maka.connections.list();
+    const connection = connections[0];
+    if (!connection) throw new Error('E2E subagent settings requires a seeded connection');
+    await window.maka.settings.update({
+      subagents: {
+        presets: [{
+          id: 'e2e-fast-reader',
+          name: 'E2E 快速阅读',
+          description: '快速阅读大型代码仓库。',
+          profile: 'local_read',
+          connectionSlug: connection.slug,
+          model: connection.enabledModelIds?.[0] ?? connection.defaultModel,
+          enabled: true,
+        }],
+      },
+    });
+  });
+
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('button', { name: '设置' }).click();
+  await settingsNavigation(page).getByRole('button', { name: '子 Agent', exact: true }).click();
+
+  const settings = page.getByRole('main', { name: '设置内容' });
+  await expect(settings.getByRole('heading', { name: '子 Agent', exact: true })).toBeVisible();
+  await expect(settings.getByText('E2E 快速阅读', { exact: true })).toBeVisible();
+  await expect(settings.getByText('可用', { exact: true })).toBeVisible();
+
+  await settings.getByRole('button', { name: '编辑', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '编辑子 Agent' });
+  const description = dialog.getByRole('textbox', { name: '适用场景' });
+  await description.fill('快速阅读代码，并总结关键调用链。');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(settings.getByText('快速阅读代码，并总结关键调用链。', { exact: true })).toBeVisible();
+  await expect.poll(async () => page.evaluate(async () => {
+    const current = await window.maka.settings.get();
+    return current.subagents.presets[0]?.description;
+  })).toBe('快速阅读代码，并总结关键调用链。');
+});
+
 test('remote access prioritizes a configured channel that needs attention', async ({ window: page }) => {
   const runtimeError = 'runtime-diagnostic-'.repeat(10);
   await page.evaluate(async (lastError) => {

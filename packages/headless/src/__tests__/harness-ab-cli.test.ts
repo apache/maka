@@ -448,7 +448,6 @@ test('harness A/B defaults to pinned Kimi Code and keeps OpenCode selectable', a
       defaultConnectionSlug: 'codex-subscription',
     },
   });
-  assert.equal(codexProfile.config.adapter, 'codex_agent:MakaCodexAgent');
   assert.equal(codexProfile.config.permissions, 'container-full-access');
   assert.equal(codexProfile.config.transport, 'responses-http');
   assert.equal('armExecution' in codexProfile, false);
@@ -460,6 +459,7 @@ test('harness A/B defaults to pinned Kimi Code and keeps OpenCode selectable', a
     composition: codexComposition,
   });
   assert.deepEqual(codexManifest.metadata.execution, { armExecution: 'sequential' });
+  assert.equal(codexManifest.arms[1]?.metadata?.config.adapter, 'codex_agent:MakaCodexAgent');
   assert.equal(codexManifest.maxConcurrency, 1);
   assert.equal(codexManifest.maxConcurrentAttempts, 1);
   assert.throws(() => resolveHarnessCompetitorProfile('unknown'), /MAKA_HARNESS_AB_COMPETITOR/);
@@ -679,6 +679,55 @@ test('harness A/B composition defaults preserve existing routes and reject unsup
       env: { MAKA_HARNESS_AB_KEY_FILE: '/secrets/zai.key' },
     }),
     /composition must come from resolveHarnessComposition/,
+  );
+});
+
+test('harness CLI freezes the synchronized DeepSeek three-way composition', async () => {
+  const {
+    buildHarnessAbManifest,
+    resolveHarnessAbRunId,
+    resolveHarnessComposition,
+    resolveHarnessCompetitorToolchain,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const composition = resolveHarnessComposition({ competitors: 'codex,claude-code' });
+  assert.equal(composition.runtimeProfile.id, 'deepseek-v4-flash-max');
+  assert.deepEqual(
+    composition.competitorProfiles.map((profile: { id: string }) => profile.id),
+    ['codex', 'claude-code'],
+  );
+  assert.equal(
+    resolveHarnessAbRunId(composition),
+    'deepseek-v4-flash-maka-vs-codex-vs-claude-code-tbench-2.1-full-v1',
+  );
+  const manifest = buildHarnessAbManifest({
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition,
+    taskIds: ['a', 'b', 'c', 'd', 'e'],
+    pairConcurrency: 2,
+    armExecution: 'parallel',
+  });
+  assert.deepEqual(
+    manifest.arms.map((arm: { id: string }) => arm.id),
+    ['maka', 'codex', 'claude-code'],
+  );
+  assert.equal(
+    manifest.arms[1]?.metadata?.config.modelCatalogFingerprint,
+    'sha256:faac5d862e0ce0bf5bcaccd515de04cf2dcd33cd38a53f0332fe2e8620ab7caa',
+  );
+  assert.deepEqual(
+    manifest.arms.map(
+      (arm: { metadata?: { config?: { transport?: string } } }) => arm.metadata?.config?.transport,
+    ),
+    ['openai-chat', 'openai-responses', 'anthropic-messages'],
+  );
+  assert.equal(manifest.maxConcurrentAttempts, 6);
+  assert.equal(
+    resolveHarnessCompetitorToolchain('/run', composition.competitorProfiles[1], {
+      MAKA_HARNESS_AB_CLAUDE_CODE_TOOLCHAIN: '/prepared/claude-code',
+    }).path,
+    '/prepared/claude-code',
   );
 });
 

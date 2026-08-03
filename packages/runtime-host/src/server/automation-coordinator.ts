@@ -217,6 +217,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       fire.turnId !== admission.turnId ||
       fire.runId !== admission.runId ||
       fire.userMessageId !== admission.userMessageId ||
+      admission.normalizedInput === null ||
       !messageContentsEqual(fireContent(fire), admission.normalizedInput)
     ) {
       throw new AutomationAuthorityInvariantError(

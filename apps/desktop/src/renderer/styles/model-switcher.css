@@ -33,6 +33,22 @@
   gap: var(--space-1);
   min-width: 0;
   max-width: 100%;
+
+  /* The Astryx neutral theme lives on the app Theme wrapper, closer to these
+     controls than Maka's palette tokens on <html>. Rebind the color tokens at
+     this product seam so both selector triggers and their popovers follow the
+     currently selected Maka palette instead of staying neutral white/gray. */
+  --color-background-surface: var(--background);
+  --color-background-popover: var(--background-elevated);
+  --color-text-primary: var(--foreground);
+  --color-text-secondary: var(--muted-foreground);
+  --color-text-disabled: var(--muted-foreground);
+  --color-icon-primary: var(--foreground);
+  --color-icon-secondary: var(--muted-foreground);
+  --color-border-emphasized: var(--border-strong);
+  --color-overlay-hover: var(--state-hover-bg);
+  --color-accent: var(--accent);
+  --color-accent-muted: oklch(from var(--accent) l c h / 0.12);
 }
 
 .maka-model-picker-root {

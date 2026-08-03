@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CuaDriverRoleSnapshot } from '@maka/computer-use';
 import type { CuaDriverBackendOptions } from '@maka/computer-use';
+import type { MakaCuServiceSnapshot } from '@maka/computer-use';
 import {
   selectComputerUseBackend,
   type SelectedComputerUseBackend,
@@ -118,12 +119,37 @@ export function createDesktopPhysicalInputGuard(
   return () => getSystemIdleTime() < 1;
 }
 
+/**
+ * The health half of the Computer Use capability card, for whichever executor
+ * was selected.
+ *
+ * This used to take the cua-driver role pair and nothing else, while the card's
+ * `available` half had already been widened to "any selected executor". With a
+ * genuinely ready maka-cu backend the two halves disagreed, and executing the
+ * built desktop module against one showed exactly how:
+ *
+ *   executorState()      = {"state":"ready","generation":1}
+ *   serviceState (boot)  = undefined
+ *   health               = {"state":"not_available","reason":"未找到通过完整性检查且可分发的 cua-driver artifact。"}
+ *   artifactAvailable    = true
+ *
+ * — available, state not_available, and a reason naming an executor that is not
+ * the one running. cua-driver supervises an action/capture role pair; maka-cu
+ * supervises one child (§11) and reports its own shape. Both are read here as a
+ * list of role states, so the card is right for either, and neither is selected
+ * by being described.
+ */
+export type ComputerUseExecutorState =
+  | { action: CuaDriverRoleSnapshot; capture: CuaDriverRoleSnapshot }
+  | MakaCuServiceSnapshot;
+
+function roleStates(state: ComputerUseExecutorState): Array<CuaDriverRoleSnapshot['state']> {
+  return 'action' in state ? [state.action.state, state.capture.state] : [state.state];
+}
+
 export function computerUseServiceHealth(
   backendId: SelectedComputerUseBackend['backendId'],
-  state: {
-    action: CuaDriverRoleSnapshot;
-    capture: CuaDriverRoleSnapshot;
-  } | undefined,
+  state: ComputerUseExecutorState | undefined,
 ): {
   state: 'not_available' | 'not_run' | 'healthy' | 'degraded';
   reason: string;
@@ -131,40 +157,38 @@ export function computerUseServiceHealth(
   if (backendId === 'none' || !state) {
     return {
       state: 'not_available',
-      reason: '未找到通过完整性检查且可分发的 cua-driver artifact。',
+      reason: '未找到通过完整性检查且可分发的 Computer Use 执行器 artifact。',
     };
   }
-  const roles = [state.action, state.capture];
-  if (roles.some((role) =>
-    role.state === 'unavailable' || role.state === 'disposed')) {
+  const roles = roleStates(state);
+  if (roles.some((role) => role === 'unavailable' || role === 'disposed')) {
     return {
       state: 'not_available',
-      reason: roles.some((role) => role.state === 'disposed')
-        ? 'cua-driver service 已停止。'
-        : 'cua-driver service 启动失败或已退出。',
+      reason: roles.some((role) => role === 'disposed')
+        ? `${backendId} service 已停止。`
+        : `${backendId} service 启动失败或已退出。`,
     };
   }
-  if (roles.some((role) =>
-    role.state === 'starting' || role.state === 'backing_off')) {
+  if (roles.some((role) => role === 'starting' || role === 'backing_off')) {
     return {
       state: 'degraded',
-      reason: 'cua-driver service 正在启动或恢复。',
+      reason: `${backendId} service 正在启动或恢复。`,
     };
   }
-  if (roles.every((role) => role.state === 'ready')) {
+  if (roles.every((role) => role === 'ready')) {
     return {
       state: 'healthy',
-      reason: 'cua-driver 操作与截图服务已就绪。',
+      reason: `${backendId} 操作与截图服务已就绪。`,
     };
   }
-  if (roles.some((role) => role.state === 'ready')) {
+  if (roles.some((role) => role === 'ready')) {
     return {
       state: 'not_run',
-      reason: 'cua-driver 部分服务已启动，其余服务将在需要时启动。',
+      reason: `${backendId} 部分服务已启动，其余服务将在需要时启动。`,
     };
   }
   return {
     state: 'not_run',
-    reason: 'cua-driver 已可用，将在首次调用时启动。',
+    reason: `${backendId} 已可用，将在首次调用时启动。`,
   };
 }

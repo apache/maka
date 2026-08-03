@@ -145,7 +145,7 @@
 /* Nested `.settingsPageStack` (merged pages like 外观 stack two
    sub-pages, each wrapping in their own SettingsPage):
    the inner one just passes through. */
-.settingsPage .settingsPageStack {
+.settingsPageStack .settingsPageStack {
   gap: var(--space-8);
 }
 

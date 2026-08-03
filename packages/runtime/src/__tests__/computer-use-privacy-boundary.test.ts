@@ -10,7 +10,37 @@ import type {
 } from '@maka/core';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
-test('Computer Use snapshots execution args and persists only the privacy summary', async () => {
+/**
+ * What crosses the Computer Use privacy boundary, and what does not.
+ *
+ * The rule is about values, not keys: a value that came off the screen or out
+ * of a person's head is reduced to its shape, and every key the model sent is
+ * kept, in the names the tool accepts. That second half is new. The persisted
+ * args used to be the host's approval summary, which renames `window_id` to
+ * `windowId`, adds two host-only fields and drops every argument it does not
+ * need — and this record is what `model-history.ts` replays to the model as
+ * its own call. The model read a dialect the tool rejects and went on using
+ * it.
+ *
+ * Two things now cross that did not:
+ *
+ * `element_id` — an index the model chose into an observation it had already
+ * read (`e12`). Not screen content; it is admitted only when it is a stable
+ * identifier, so an accessibility label arriving under that key is dropped.
+ *
+ * `coordinate`, `start_coordinate`, `region` — geometry the model wrote into
+ * the call itself. Not read off the screen; integers only, so a mistyped value
+ * still degrades to a shape. Withholding them left a model that clicked a
+ * point and missed unable to tell that it had already tried that point.
+ *
+ * What still does not cross: the value of `text` for `type` and `select_text`,
+ * the value of `set_value`, and anything else whose value is screen content or
+ * something a person asked to have typed. `text` for `press_key`, `key`,
+ * `hold_key` and `secondary_action` is a name from a closed set the executor
+ * publishes, so it is carried — that is one argument name meaning six things,
+ * and only two of the six come from outside the model.
+ */
+test('Computer Use snapshots execution args and persists the model-facing projection', async () => {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
   const invocations: ToolInvocationRecord[] = [];
@@ -82,20 +112,108 @@ test('Computer Use snapshots execution args and persists only the privacy summar
       coordinate: [123, 456],
     },
   ]);
-  const expectedSummary = {
+  const expectedArgs = {
     action: 'type',
-    approvalClass: 'keyboard_mutation',
-    rememberForTurnAllowed: true,
     app: 'Example',
-    observationId: 'frame-1',
+    observation_id: 'frame-1',
+    // The typed value never crosses; the key does, or the model reads back a
+    // `type` call it never made.
+    text: '<text>',
+    // The model's own four digits, so it can see that it already tried here.
+    coordinate: [123, 456],
   };
   const call = messages.find((message) => message.type === 'tool_call');
-  assert.deepEqual(call?.type === 'tool_call' ? call.args : undefined, expectedSummary);
+  assert.deepEqual(call?.type === 'tool_call' ? call.args : undefined, expectedArgs);
   const start = events.find((event) => event.type === 'tool_start');
-  assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, expectedSummary);
+  assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, expectedArgs);
   assert.equal(invocations.length, 1);
-  assert.match(invocations[0]!.argsSummary ?? '', /keyboard_mutation/);
-  assert.doesNotMatch(invocations[0]!.argsSummary ?? '', /secret|123|456/);
+  assert.doesNotMatch(invocations[0]!.argsSummary ?? '', /secret/);
+  // Host-only fields that the approval summary added and the model never sent.
+  assert.doesNotMatch(invocations[0]!.argsSummary ?? '', /approvalClass|rememberForTurnAllowed/);
+  // The dialect the tool actually accepts, not the approval summary's.
+  assert.doesNotMatch(invocations[0]!.argsSummary ?? '', /windowId|observationId/);
+});
+
+/**
+ * The seam. `computer-use.test.ts` covers the projection as a function, but the
+ * defect was not in the projection — it was in which projection this line
+ * called, and only the runtime decides that. A model reads its history back
+ * through `model-history.ts`, which replays `event.content.args`, so the
+ * `tool_start` event is the exact surface to assert on: a test that calls
+ * `computerUseModelCallArgs` directly stays green while the runtime writes the
+ * approval summary, which is how this survived being fixed once already in a
+ * backend the desktop app never instantiates.
+ */
+test('the record a model reads back is the call it made, in the names the tool accepts', async () => {
+  const messages: StoredMessage[] = [];
+  const events: SessionEvent[] = [];
+  const runtime = createTestToolRuntime({
+    sessionId: 'session-1',
+    header: header(),
+    connection: connection(),
+    modelId: 'mock-model',
+    appendMessage: async (message) => {
+      messages.push(message);
+    },
+    newId: nextId(),
+    now: () => 1,
+    getPermissionPauseTarget: () => null,
+  });
+  const tool: MakaTool = {
+    name: 'maka_computer',
+    description: 'test',
+    parameters: {},
+    categoryHint: 'computer_use',
+    // What the real Computer Use tool does: resolves the model's element_id
+    // against the live observation and attaches the host's own identity.
+    permissionArgs: (args) => ({
+      ...(args as Record<string, unknown>),
+      element_identity: { role: 'AXButton', label: 'Customer SSN 123-45-6789' },
+    }),
+    impl: async () => ({ ok: true }),
+  };
+
+  await runtime.settleToolCall({
+    tool,
+    turnId: 'turn-1',
+    toolCallId: 'tool-1',
+    input: {
+      action: 'press_key',
+      app: 'TextEdit',
+      window_id: 41,
+      observation_id: 'obs-7',
+      element_id: 'e12',
+      text: 'cmd+s',
+    },
+    abortSignal: new AbortController().signal,
+    eventSink: {
+      push: (event) => events.push(event),
+      pushAndWaitUntilConsumed: async (event) => {
+        events.push(event);
+      },
+    },
+  });
+
+  const start = events.find((event) => event.type === 'tool_start');
+  const persisted = start?.type === 'tool_start' ? start.args : undefined;
+  assert.deepEqual(persisted, {
+    action: 'press_key',
+    app: 'TextEdit',
+    // `window_id`, not `windowId`: the key the tool accepts.
+    window_id: 41,
+    observation_id: 'obs-7',
+    // Which control, so ten element actions in a turn are ten distinct rows.
+    element_id: 'e12',
+    // The key that was pressed. Under the approval summary this was a
+    // `press_key` with no key at all.
+    text: 'cmd+s',
+  });
+  // The host's resolution of that element is not something the model can send,
+  // and its label is screen content.
+  assert.doesNotMatch(JSON.stringify({ messages, events }), /element_identity|Customer SSN/);
+  // The two surfaces a reader can see must agree.
+  const call = messages.find((message) => message.type === 'tool_call');
+  assert.deepEqual(call?.type === 'tool_call' ? call.args : undefined, persisted);
 });
 
 test('Computer Use validation failures still persist a redacted call and result', async () => {
@@ -150,7 +268,19 @@ test('Computer Use validation failures still persist a redacted call and result'
 
   assert.equal((result as { error?: string }).error, 'Computer Use arguments failed validation');
   const serialized = JSON.stringify({ messages, events, invocations });
-  assert.doesNotMatch(serialized, /Customer SSN|123-45-6789|private text|123|456/);
+  // The AX label thrown by `permissionArgs` and the value the model asked to
+  // have typed both stay out. `123|456` is no longer part of this pattern: it
+  // matched the model's own coordinate, which now crosses on purpose, and it
+  // also matched the first three digits of the SSN, so the two could not be
+  // told apart. The SSN is asserted in full instead.
+  assert.doesNotMatch(serialized, /Customer SSN|123-45-6789|private text/);
+  // A rejected call is exactly when the model most needs to see what it sent.
+  const start = events.find((event) => event.type === 'tool_start');
+  assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, {
+    action: 'type',
+    text: '<text>',
+    coordinate: [123, 456],
+  });
   assert.equal(
     messages.some((message) => message.type === 'tool_call'),
     true,

@@ -169,6 +169,7 @@ import {
   type BackendActivationBoundary,
   type RuntimeExecutionClaim,
   type RuntimeKernelLike,
+  type ResumeContinuationOptions,
   type TurnStartOptions,
 } from './runtime-kernel.js';
 import { fallbackSessionTitle, sessionTitleSource } from './session-title.js';
@@ -877,8 +878,31 @@ export class SessionManager {
     return headerToSummary(header);
   }
 
+  /**
+   * Sessions plus the turn each one is running right now. The persisted status
+   * cannot carry that: it is written only at the END of `AgentRun.begin`, it
+   * reads the same before a turn starts and after it ends, and a crash between
+   * a turn's end and its status write leaves `running` behind for good. The
+   * live run is the fact, so a client can name what is running and — because
+   * nothing survives the process — a restart reports the truth by itself.
+   */
+  /**
+   * The turns this session is running right now. Same live fact `listSessions`
+   * projects, for callers that need it about one session — notably to name the
+   * turns a change is about.
+   */
+  runningTurnIds(sessionId: string): string[] {
+    return this.runtimeKernel.runningTurnIds?.(sessionId) ?? [];
+  }
+
   async listSessions(filter?: SessionListFilter): Promise<SessionSummary[]> {
-    return this.deps.store.list(filter);
+    const sessions = await this.deps.store.list(filter);
+    const runningTurnIds = this.runtimeKernel.runningTurnIds?.bind(this.runtimeKernel);
+    if (!runningTurnIds) return sessions;
+    return sessions.map((session) => {
+      const turnIds = runningTurnIds(session.id);
+      return turnIds.length === 0 ? session : { ...session, runningTurnIds: turnIds };
+    });
   }
 
   async listChildSessions(parentSessionId: string): Promise<SessionSummary[]> {
@@ -1954,10 +1978,24 @@ export class SessionManager {
       this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
       return plan;
     }
-    const [header, observation] = await Promise.all([
-      this.deps.store.readHeader(sessionId),
-      this.deps.inspectContinuationSafety(sessionId),
-    ]);
+    const header = await this.deps.store.readHeader(sessionId);
+    let observation: RuntimeContinuationSafetyObservation;
+    try {
+      observation = await this.deps.inspectContinuationSafety(sessionId);
+    } catch {
+      const plan: SafeBoundaryContinuationPlan = {
+        disposition: 'park',
+        rejectionReasons: ['safety_observation_unavailable'],
+        diagnostics: [
+          {
+            code: 'safety_observation_unavailable',
+            message: 'authoritative continuation safety inspection failed',
+          },
+        ],
+      };
+      this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
+      return plan;
+    }
     return this.planSafeBoundaryContinuation(sessionId, {
       sourceRunId: input.sourceRunId,
       currentCwd: header.cwd,
@@ -2024,6 +2062,7 @@ export class SessionManager {
 
   async *resumeSafeBoundaryContinuation(
     continuation: RuntimeContinuation,
+    options: ResumeContinuationOptions = {},
   ): AsyncIterable<SessionEvent> {
     const resume = this.runtimeKernel.resumeContinuation;
     if (!resume) throw new Error('RuntimeKernel does not support safe-boundary continuation');
@@ -2034,7 +2073,7 @@ export class SessionManager {
       targetRunId: continuation.runId,
     });
     try {
-      yield* resume.call(this.runtimeKernel, continuation);
+      yield* resume.call(this.runtimeKernel, continuation, options);
       this.recordContinuationLifecycleEvent({
         type: 'execution_completed',
         sessionId: continuation.sessionId,
@@ -4375,7 +4414,7 @@ export class SessionManager {
     admittedAt: number;
     execution: Exclude<
       RootExecutionDescriptor,
-      { kind: 'external_message' } | { kind: 'automation' }
+      { kind: 'external_message' } | { kind: 'automation' } | { kind: 'safe_boundary_continuation' }
     >;
   }): Promise<void> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {

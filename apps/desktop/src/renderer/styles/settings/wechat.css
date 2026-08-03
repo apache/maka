@@ -9,8 +9,13 @@
 .settingsWechatQrBody {
   display: grid;
   place-items: center;
+  align-content: center;
   gap: var(--space-3);
   text-align: center;
+  /* Deep-review fix: the retired `.settingsWechatQrState` pane carried a
+     180px floor; without one the dialog collapses in the generating/expired/
+     error states and snaps taller when the QR (224px frame) arrives. */
+  min-height: 224px;
 }
 
 .settingsWechatQrFrame {

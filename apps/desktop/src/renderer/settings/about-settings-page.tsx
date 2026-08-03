@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { List, ListItem } from '@astryxdesign/core';
+import { Badge, List, ListItem } from '@astryxdesign/core';
 import { Sparkles } from '@maka/ui/icons';
 import {
   Banner,
@@ -136,14 +136,15 @@ export function AboutSettingsPage() {
         title="Maka"
         badge={
           <>
-            <span className="settingsAboutVersion">v{info.appVersion}</span>
-            <span className="settingsAboutChannel">
-              {info.buildMode === 'dev'
+            <Badge variant="neutral" label={`v${info.appVersion}`} />
+            <Badge
+              variant="blue"
+              label={info.buildMode === 'dev'
                 ? info.buildCommit
                   ? `${copy.devBuild} · ${info.buildCommit}`
                   : copy.devBuild
                 : copy.packagedBuild}
-            </span>
+            />
           </>
         }
         subtitle={copy.subtitle}

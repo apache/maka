@@ -20,6 +20,8 @@ from harness_compat import (
     AgentContext,
     BaseEnvironment,
     Codex,
+)
+from harness_compat import (
     NetworkAllowlist as _NetworkAllowlist,
 )
 from process_scope import cleanup_process_scope, scoped_command
@@ -36,6 +38,13 @@ _DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 _OUTPUT_FILENAME = "codex.txt"
 _REMOTE_OUTPUT_PATH = Path("/logs/agent") / _OUTPUT_FILENAME
 _REMOTE_SESSIONS_DIR = Path("/logs/agent/sessions")
+# Flash entry from DeepSeek's official codex-deepseek-setup.sh. Keeping the
+# catalog in the read-only repo mount preserves the provider's native Codex
+# instructions and model capabilities without downloading configuration in a
+# benchmark task.
+_DEEPSEEK_MODELS_PATH = Path(
+    "/opt/maka-agent/packages/headless/harbor/deepseek-codex-models.json"
+)
 
 
 class MakaCodexAgent(Codex):
@@ -190,9 +199,16 @@ class MakaCodexAgent(Codex):
     ) -> None:
         codex_home = self._REMOTE_CODEX_HOME.as_posix()
         config_path = (self._REMOTE_CODEX_HOME / "config.toml").as_posix()
+        model = self._get_env("MAKA_MODEL") or self.model_name
+        deepseek_catalog = model == "deepseek-v4-flash"
         config = "\n".join(
             (
                 'model_provider = "maka-http"',
+                *(
+                    (f'model_catalog_json = "{_DEEPSEEK_MODELS_PATH.as_posix()}"',)
+                    if deepseek_catalog
+                    else ()
+                ),
                 "",
                 "[model_providers.maka-http]",
                 'name = "Maka HTTP"',
@@ -354,7 +370,7 @@ class MakaCodexAgent(Codex):
         error_class = getattr(self, "_failure_class", None)
         if failed and error_class is None:
             error_class = _classify_failure(
-                RuntimeError(json.dumps(events, ensure_ascii=False)), events
+                RuntimeError("Codex exited without a turn.completed event"), events
             )
         totals = self._token_totals(context)
         started_at = getattr(self, "_started_at_ms", int(time.time() * 1000))

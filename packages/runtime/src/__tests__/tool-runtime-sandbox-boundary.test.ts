@@ -17,7 +17,10 @@ import type {
 } from '@maka/core/backend-types';
 import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 
-import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
+import {
+  buildRequestSandboxBoundaryTool,
+  SANDBOX_BOUNDARY_UNAVAILABLE,
+} from '../sandbox-boundary-tool.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
@@ -725,6 +728,48 @@ describe('ToolRuntime session sandbox boundary', () => {
       kind: 'text',
       text: 'Command sandbox failed: requires_bypass.',
       sandboxFailure: { reason: 'requires_bypass' },
+    });
+  });
+
+  test('a surface without boundary storage refuses with the same sentence the tool carries', async () => {
+    // The tool's own guard on `context.requestSandboxBoundary` cannot fire
+    // here: ToolRuntime injects that callback unconditionally. This is the
+    // branch a model actually reaches, and it used to say something different
+    // from the tool the model called.
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+
+    const settlement = await runtime.settleToolCall({
+      tool: buildRequestSandboxBoundaryTool() as unknown as MakaTool,
+      turnId: 'turn-1',
+      toolCallId: 'call-boundary-unavailable',
+      input: {
+        expansion: { kind: 'path', path: join(process.cwd(), 'x'), access: 'write' },
+        justification: 'need it',
+      },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    assert.deepEqual(settlement.modelOutput, {
+      type: 'error-text',
+      value: `Error: ${SANDBOX_BOUNDARY_UNAVAILABLE}`,
     });
   });
 });

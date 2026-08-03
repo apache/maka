@@ -60,6 +60,9 @@ export function SettingsPage(props: {
 export function SettingsSection(props: {
   /** Group label. Omit only for a page's single unlabeled lead group. */
   title?: ReactNode;
+  /** id for the title Heading; the section wires `aria-labelledby` to it so
+   *  the landmark is named (remote-access e2e relies on these headings). */
+  titleId?: string;
   /** One quiet line under the title explaining what the group governs. */
   description?: ReactNode;
   /** Group-level action cluster (refresh, add, filter), right-aligned. */
@@ -72,7 +75,7 @@ export function SettingsSection(props: {
 }) {
   const hasHeader = props.title != null || props.description != null || props.action != null;
   return (
-    <section className={cn('settingsSection', props.className)}>
+    <section className={cn('settingsSection', props.className)} aria-labelledby={props.titleId}>
       {hasHeader ? (
         /* The header is Astryx's own settings idiom — `Heading level={3}` over
            a `Text type="supporting" color="secondary"` lede — as used by the
@@ -82,9 +85,12 @@ export function SettingsSection(props: {
            font-semibold`, a caption-sized subtitle). Deferring to Astryx means
            section typography now moves with the theme instead of with a copy
            of the theme's values. */
-        <HStack gap={3} align="start" justify="between">
+        /* wrap: at the 480px window floor a multi-button action cluster
+           must drop under the title instead of crushing it (the old
+           bot-runtime header carried a media query for this). */
+        <HStack gap={3} align="start" justify="between" wrap="wrap">
           <VStack gap={0.5}>
-            {props.title != null ? <Heading level={3}>{props.title}</Heading> : null}
+            {props.title != null ? <Heading level={3} id={props.titleId}>{props.title}</Heading> : null}
             {props.description != null ? (
               <Text type="supporting" size="sm" color="secondary">{props.description}</Text>
             ) : null}

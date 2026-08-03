@@ -34,7 +34,10 @@ export type OperationHandlerMap = {
 };
 
 export type DomainOperationKey = Exclude<OperationKey, 'host.status'>;
-export type TurnOperationKey = Extract<OperationKey, 'turn.start' | 'turn.query' | 'turn.stop'>;
+export type TurnOperationKey = Extract<
+  OperationKey,
+  'turn.start' | 'turn.query' | 'turn.stop' | 'turn.resume.query' | 'turn.resume.start'
+>;
 export type RuntimePolicyOperationKey = Extract<
   OperationKey,
   `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`

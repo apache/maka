@@ -72,6 +72,64 @@ import {
 // watchdog is paused during tool execution.
 const GREP_TIMEOUT_MS = 120_000;
 
+/**
+ * The filesystem worker answered with a well-formed result of a different
+ * operation than the one that was requested.
+ *
+ * Naming the worker told the model about an internal component it cannot
+ * address, and the original wording read like an argument complaint — on Edit
+ * the likeliest reaction was another `old_string` guess, which can never fix
+ * this. But the replacement has to be careful about two things it cannot say.
+ *
+ * It cannot say the write did not land. Real failures throw; this branch fires
+ * on a mislabelled success, and a mislabelled success is still a success as far
+ * as the disk is concerned. "Nothing was written to disk" is a claim about a
+ * file this code did not look at.
+ *
+ * And it cannot phrase a failed read as an empty one. "Grep could not be
+ * completed inside Maka, so no matches were produced" reads as a search that
+ * ran and found nothing, and a model that takes it that way concludes the
+ * pattern is absent from the repository — the opposite of what happened.
+ *
+ * So a read says no result came back, and says what that does not mean. A write
+ * says Maka cannot tell what happened to the file, and sends the model to look
+ * rather than to retry a call that may have already taken effect.
+ *
+ * Neither may name Bash. Read, Glob and Grep are the entire tool set of a
+ * `local_read` child (`agent-catalog.ts`), and `buildToolsForAgentDefinition`
+ * hands that child those three tools and nothing else. "Use Bash to do the same
+ * work" is, for the caller most likely to be running a bare Grep, an
+ * instruction it cannot carry out — a dead end dressed as a way out. The
+ * fallback is therefore offered on a condition the model can check for itself,
+ * and the sentence ends on a move that is available to every caller.
+ *
+ * The worker-protocol violation itself still has to reach an operator, so it
+ * travels as the `cause`: out of the model's sight, in every log and stack.
+ */
+function mismatchedWorkerResult(tool: string): Error {
+  return new Error(`Filesystem worker returned a mismatched ${tool} result.`);
+}
+
+function internalFilesystemReadFailure(tool: string, missing: string, notMeaning: string): Error {
+  return new Error(
+    `${tool} could not be completed inside Maka, so ${missing}. ` +
+      `This is an internal failure, not a problem with your arguments, and it does not mean ${notMeaning}. ` +
+      `Retry the same ${tool} call once. If it fails again, stop calling ${tool}: do the same ` +
+      `work with a shell tool if you have one, and otherwise report that ${tool} is failing inside Maka.`,
+    { cause: mismatchedWorkerResult(tool) },
+  );
+}
+
+function internalFilesystemWriteFailure(tool: string, subject: string, extra?: string): Error {
+  return new Error(
+    `${tool} could not be completed inside Maka. Maka cannot tell whether ${subject}, ` +
+      `so treat the file as being in an unknown state. ` +
+      `This is an internal failure, not a problem with your arguments${extra ? ` — ${extra}` : ''}. ` +
+      `Read the file to find out what it now contains before writing to it again.`,
+    { cause: mismatchedWorkerResult(tool) },
+  );
+}
+
 export interface BuildBuiltinToolsOptions {
   shellRuns?: ShellRunLauncher;
   runtimeResources?: RuntimeResourceReader;
@@ -276,7 +334,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             return { kind: 'image' as const, mimeType: result.mimeType, ref };
           }
           if (result.kind !== 'read')
-            throw new Error('Filesystem worker returned a mismatched Read result.');
+            throw internalFilesystemReadFailure(
+              'Read',
+              'no file content came back',
+              'the file is empty or missing',
+            );
           return { content: result.content };
         }
         const { path: resolvedPath } = await executor.resolveExistingPath({
@@ -340,7 +402,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'write')
-              throw new Error('Filesystem worker returned a mismatched Write result.');
+              throw internalFilesystemWriteFailure('Write', 'the file was written');
             return { ok: result.ok, path: result.path, bytes: result.bytes };
           }
           const { path: resolvedPath } = await executor.resolveWritablePath({
@@ -392,7 +454,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'edit')
-              throw new Error('Filesystem worker returned a mismatched Edit result.');
+              throw internalFilesystemWriteFailure(
+                'Edit',
+                'the edit was applied',
+                'a different old_string will not help',
+              );
             return {
               ok: result.ok,
               path: result.path,
@@ -465,7 +531,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'format_json') {
-              throw new Error('Filesystem worker returned a mismatched FormatJson result.');
+              throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
             }
             return result;
           }
@@ -545,7 +611,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
           });
           if (result.kind !== 'glob')
-            throw new Error('Filesystem worker returned a mismatched Glob result.');
+            throw internalFilesystemReadFailure(
+              'Glob',
+              'no file list came back',
+              'no files match the pattern',
+            );
           return { files: result.files };
         }
         const { path: base } = await executor.resolveExistingPath({
@@ -588,7 +658,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             ...(abortSignal ? { abortSignal } : {}),
           });
           if (result.kind !== 'grep')
-            throw new Error('Filesystem worker returned a mismatched Grep result.');
+            throw internalFilesystemReadFailure(
+              'Grep',
+              'no search result came back',
+              'the pattern is absent',
+            );
           return { matches: result.matches };
         }
         const { path: searchPath } = await executor.resolveExistingPath({

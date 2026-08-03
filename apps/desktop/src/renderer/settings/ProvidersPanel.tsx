@@ -10,6 +10,7 @@ import {
   List,
   ListItem,
   Skeleton,
+  StatusDot,
   Text,
   Toolbar,
   VStack,
@@ -21,7 +22,7 @@ import {
 } from '@maka/core';
 import { useMountedRef, useUiLocale, useToast } from '@maka/ui';
 import { connectionChipStatus } from './provider-connection-status';
-import { statusBadgeVariant } from './settings-status-badge';
+import { statusDotVariant } from './settings-status-badge';
 import {
   CATALOG_INITIAL_FILTER,
   ProviderCatalogPage,
@@ -407,7 +408,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                     description={connectionSubtitle(connection, locale)}
                     endContent={(
                       <HStack gap={2} vAlign="center">
-                        {status && <Badge variant={statusBadgeVariant(status.tone)} label={status.label} />}
+                        {status && (
+                          <span className="settingsStatus">
+                            <StatusDot variant={statusDotVariant(status.tone)} label={status.label} />
+                            <span>{status.label}</span>
+                          </span>
+                        )}
                         <ChevronRight size={16} aria-hidden="true" />
                       </HStack>
                     )}

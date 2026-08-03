@@ -1216,9 +1216,19 @@ describe('runHarborCell', () => {
       const fallback = new Promise<IsolatedCommandResult>((resolve) => {
         releaseFallback = () => resolve({ exitCode: 0, stdout: '', stderr: '' });
       });
-      const fallbackTimer = setTimeout(releaseFallback, 5_000);
+      // The deadline is a wall-clock timer started when the cell is set up, so
+      // it races the cell's own storage/session/first-send cost before the turn
+      // ever reaches the tool. Lose that race and the run is still cancelled by
+      // `benchmark.deadline` while the backend is never stopped — the empty
+      // `stopModes` seen in CI. Budget the setup generously and name the race,
+      // so a future loss reports itself instead of a bare deepEqual mismatch.
+      const settleAfterMs = 3_000;
+      const startedAt = Date.now();
+      let toolActiveAfterMs: number | undefined;
+      const fallbackTimer = setTimeout(releaseFallback, settleAfterMs + 5_000);
       const executor: IsolatedToolExecutor = {
         exec: async (_input, control) => {
+          toolActiveAfterMs ??= Date.now() - startedAt;
           const signal = control?.abortSignal;
           if (!signal) return await fallback;
           return await new Promise<IsolatedCommandResult>((_resolve, reject) => {
@@ -1233,7 +1243,7 @@ describe('runHarborCell', () => {
           cwd: workspaceDir,
           outputDir,
           storageRoot,
-          settleAfterMs: 1_000,
+          settleAfterMs,
           realBackendIsolation: {
             kind: 'external',
             label: 'cancellable test executor',
@@ -1247,11 +1257,17 @@ describe('runHarborCell', () => {
             });
           },
         }),
-        3_000,
+        settleAfterMs + 10_000,
         'Harbor cell did not cancel its active isolated tool',
       );
       clearTimeout(fallbackTimer);
 
+      assert.ok(
+        toolActiveAfterMs !== undefined && toolActiveAfterMs < settleAfterMs,
+        toolActiveAfterMs === undefined
+          ? `the isolated tool must be active when the deadline fires, but it never started within the ${settleAfterMs}ms budget`
+          : `the isolated tool must be active when the deadline fires, but it started ${toolActiveAfterMs}ms in, past the ${settleAfterMs}ms budget`,
+      );
       assert.equal(result.settledByDeadline, true);
       assert.deepEqual(backend?.stopModes, ['immediate']);
       assert.equal(result.output.tokenSummary?.total, 18);
