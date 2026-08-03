@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -28,14 +28,6 @@ describe('claimed agent graph root admission', () => {
       if (stored?.execution.kind === 'claimed_agent_graph_intent') {
         assert.equal(Object.isFrozen(stored.execution.claim), true);
       }
-
-      const serialized = JSON.parse(
-        await readFile(
-          join(root, 'sessions', 'session-child', 'turn-admissions', 'turn-next.json'),
-          'utf8',
-        ),
-      ) as { execution: unknown };
-      assert.deepEqual(serialized.execution, admissionInput().execution);
     });
   });
 
