@@ -783,11 +783,8 @@ function buildPierAgentEnv(
   Object.assign(env, providerAgentEnv);
   Object.assign(env, mergeAgentEnv(options.agentEnv, input.agentEnv) ?? {});
   if (makaDeadline) {
-    // Container task-run drops MAKA_CELL_SOFT_TIMEOUT_MS and derives the model
-    // deadline straight from the cell budget (maka_agent.py
-    // _container_task_run_env), so this budget already is the model budget and
-    // the settlement window lives in the agent phase. Harbor's cell mode instead
-    // subtracts the grace from the budget, which is why only that runner adds it.
+    // The budget is the model budget and the settlement window is added around
+    // it, so the agent phase Pier is given is one window longer.
     env.MAKA_CELL_TIMEOUT_SEC = String(makaDeadline.modelBudgetSec);
     env.MAKA_CELL_SETTLEMENT_GRACE_SEC = String(makaDeadline.settlementGraceSec);
     env.MAKA_AGENT_PHASE_TIMEOUT_SEC = String(makaDeadline.phaseTimeoutSec);

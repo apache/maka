@@ -1110,17 +1110,16 @@ export function buildHarborJobConfig(
   // fall back (metadata, then the adapter's default) rather than fail the run.
   const modelBudgetSec =
     lenientPositiveIntEnv(agentEnv.MAKA_CELL_TIMEOUT_SEC) ?? input.task.metadata?.agentTimeoutSec;
-  // Maka's cell stops calling the model one grace window before its cell budget
-  // runs out (maka_agent.py _cell_soft_timeout_ms). Native CLIs have no such
-  // window: they run until Harbor cancels at the task-native deadline. Give the
-  // grace on top of the budget, not out of it, so every arm gets the same model
-  // time and only Maka's extra settlement lands outside it. An operator that
-  // widens the window keeps it — the budget then carries the wider window too.
+  // MAKA_CELL_TIMEOUT_SEC is the model budget on every path, so it is passed
+  // through untouched. Maka's cell stops calling the model when it runs out and
+  // then settles its artifacts, so its agent phase — the deadline Harbor kills
+  // at — is one window longer. Native CLIs have nothing to settle and get the
+  // budget itself, which is how every arm ends up with the same model time.
   const graceSec = settlementGraceSec(adapter, agentEnv);
   let agentPhaseTimeoutSec: number | undefined;
   if (modelBudgetSec !== undefined) {
     agentPhaseTimeoutSec = modelBudgetSec + graceSec;
-    agentEnv.MAKA_CELL_TIMEOUT_SEC = String(agentPhaseTimeoutSec);
+    agentEnv.MAKA_CELL_TIMEOUT_SEC = String(modelBudgetSec);
     if (adapter === 'maka') {
       agentEnv.MAKA_CELL_SETTLEMENT_GRACE_SEC = String(graceSec);
     }

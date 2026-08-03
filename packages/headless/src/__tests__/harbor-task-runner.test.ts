@@ -2569,12 +2569,13 @@ describe('buildHarborJobConfig', () => {
 
     const maka = agentFor('maka');
     assert.equal(maka.max_timeout_sec, 1800 + MAKA_SETTLEMENT_GRACE_SEC);
-    assert.equal(maka.env.MAKA_CELL_TIMEOUT_SEC, String(1800 + MAKA_SETTLEMENT_GRACE_SEC));
+    // The budget the cell is handed is the model budget itself, on every path.
+    assert.equal(maka.env.MAKA_CELL_TIMEOUT_SEC, '1800');
     assert.equal(maka.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, String(MAKA_SETTLEMENT_GRACE_SEC));
-    // Model time = cell budget - grace, which is the task-native budget itself.
+    // Harbor kills at the agent phase, which is that budget plus the window.
     assert.equal(
-      Number(maka.env.MAKA_CELL_TIMEOUT_SEC) - Number(maka.env.MAKA_CELL_SETTLEMENT_GRACE_SEC),
-      1800,
+      maka.max_timeout_sec! - Number(maka.env.MAKA_CELL_TIMEOUT_SEC),
+      MAKA_SETTLEMENT_GRACE_SEC,
     );
 
     const codex = agentFor('codex');
@@ -2603,7 +2604,7 @@ describe('buildHarborJobConfig', () => {
       config.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
     )[0]!;
     assert.equal(agent.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, String(widened));
-    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, String(1800 + widened));
+    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, '1800');
     assert.equal(agent.max_timeout_sec, 1800 + widened);
   });
 
@@ -2655,11 +2656,7 @@ describe('buildHarborJobConfig', () => {
       const metadataAgent = (
         withMetadata.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
       )[0]!;
-      assert.equal(
-        metadataAgent.env.MAKA_CELL_TIMEOUT_SEC,
-        String((parsed ?? 1234) + MAKA_SETTLEMENT_GRACE_SEC),
-        label,
-      );
+      assert.equal(metadataAgent.env.MAKA_CELL_TIMEOUT_SEC, String(parsed ?? 1234), label);
       assert.equal(
         metadataAgent.env.MAKA_STREAM_CONNECT_TIMEOUT_MS,
         String((parsed ?? 1234) * 1_000),
@@ -2689,7 +2686,7 @@ describe('buildHarborJobConfig', () => {
       )[0]!;
       assert.equal(
         agent.env.MAKA_CELL_TIMEOUT_SEC,
-        parsed !== undefined ? String(parsed + MAKA_SETTLEMENT_GRACE_SEC) : raw,
+        parsed !== undefined ? String(parsed) : raw,
         label,
       );
       assert.equal(
@@ -2720,7 +2717,7 @@ describe('buildHarborJobConfig', () => {
     const agent = (
       config.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
     )[0]!;
-    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, String(1234 + MAKA_SETTLEMENT_GRACE_SEC));
+    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, '1234');
     assert.equal(agent.env.MAKA_STREAM_CONNECT_TIMEOUT_MS, '1234000');
     assert.equal(agent.env.MAKA_STREAM_IDLE_TIMEOUT_MS, '1234000');
     assert.equal(agent.max_timeout_sec, 1234 + MAKA_SETTLEMENT_GRACE_SEC);
@@ -2743,7 +2740,7 @@ describe('buildHarborJobConfig', () => {
       },
     );
     const env = (config.agents as Array<{ env: Record<string, string> }>)[0]!.env;
-    assert.equal(env.MAKA_CELL_TIMEOUT_SEC, String(1800 + MAKA_SETTLEMENT_GRACE_SEC));
+    assert.equal(env.MAKA_CELL_TIMEOUT_SEC, '1800');
     assert.equal(env.MAKA_CONTEXT_BUDGET, 'off');
     assert.equal(env.MAKA_CONTEXT_STALE_TOOL_RESULT_PRUNE, 'on');
   });

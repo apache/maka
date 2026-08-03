@@ -103,7 +103,7 @@ describe('Harbor adapter contract', () => {
     );
     const template = source.match(/f"(Maka host cell exceeded [^"]+)"/)?.[1];
     assert.ok(template, 'host-cell timeout message template');
-    const message = template.replace('{self._cell_timeout_sec()}', '1800');
+    const message = template.replace('{self._agent_phase_timeout_sec()}', '1800');
 
     assert.equal(isBudgetExhaustedTrialException(`RuntimeError: ${message}`), true);
   });
@@ -1629,7 +1629,10 @@ with tempfile.TemporaryDirectory() as tmp:
     assert container_env["MAKA_OUTPUT_DIR"] == "/logs/agent/maka-task-run", container_env
     assert container_env["MAKA_CELL_ARTIFACT_DIR"] == "/logs/agent", container_env
     assert container_env["MAKA_STORAGE_ROOT"] == "/logs/agent/maka-task-run/runs", container_env
-    assert container_kwargs["timeout_sec"] == 7200, container_kwargs
+    # No MAKA_AGENT_PHASE_TIMEOUT_SEC here, so the hard process deadline falls
+    # back to the model budget plus the settlement window rather than the budget
+    # itself — killing at the budget would cut the cell off as it starts writing.
+    assert container_kwargs["timeout_sec"] == 7230, container_kwargs
     assert "/logs/agent/maka-task-run" in container_environment.download_dirs
     assert "/logs/agent/maka-cell-output.json" in container_environment.downloads
     assert json.loads(
@@ -1958,15 +1961,29 @@ with tempfile.TemporaryDirectory() as tmp:
     assert MakaAgent(Path(tmp), extra_env={"MAKA_CELL_TIMEOUT_SEC": "01800"})._cell_timeout_sec() == 900
     assert MakaAgent(Path(tmp), extra_env={"MAKA_CELL_TIMEOUT_SEC": "1٢"})._cell_timeout_sec() == 900
     assert MakaAgent(Path(tmp), extra_env={"MAKA_CELL_TIMEOUT_SEC": "9" * 5000})._cell_timeout_sec() == 900
-    assert MakaAgent(Path(tmp))._cell_soft_timeout_ms() == 870000
-    assert MakaAgent(Path(tmp), extra_env={
+    # MAKA_CELL_TIMEOUT_SEC is the model budget verbatim on every path, and the
+    # settlement window is added around it. Benchmark arms are only comparable
+    # while the model budget stays exactly the task-native budget.
+    assert MakaAgent(Path(tmp))._model_budget_ms() == 900000
+    assert MakaAgent(Path(tmp))._agent_phase_timeout_sec() == 930
+    graced = MakaAgent(Path(tmp), extra_env={
         "MAKA_CELL_TIMEOUT_SEC": "1800",
         "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
-    })._cell_soft_timeout_ms() == 1740000
+    })
+    assert graced._model_budget_ms() == 1800000
+    assert graced._agent_phase_timeout_sec() == 1860
+    # A window wider than the budget is not a contradiction any more: it just
+    # buys more settlement time, and the model budget is untouched.
+    wide = MakaAgent(Path(tmp), extra_env={
+        "MAKA_CELL_TIMEOUT_SEC": "60",
+        "MAKA_CELL_SETTLEMENT_GRACE_SEC": "600",
+    })
+    assert wide._model_budget_ms() == 60000
+    assert wide._agent_phase_timeout_sec() == 660
     try:
         MakaAgent(Path(tmp), extra_env={
             "MAKA_CELL_TIMEOUT_SEC": "2147514",
-        })._cell_soft_timeout_ms()
+        })._model_budget_ms()
     except RuntimeError as exc:
         assert "Node timer limit" in str(exc), str(exc)
     else:
@@ -1979,7 +1996,7 @@ with tempfile.TemporaryDirectory() as tmp:
         url="http://127.0.0.1:1",
         token="test-token",
     ))
-    assert host_deadline_env["MAKA_CELL_SOFT_TIMEOUT_MS"] == "870000", host_deadline_env
+    assert host_deadline_env["MAKA_CELL_SOFT_TIMEOUT_MS"] == "900000", host_deadline_env
 
     copilot_host_env = MakaAgent(Path(tmp), extra_env={
         "MAKA_HOST_API_KEY": "copilot-token",
@@ -2174,7 +2191,9 @@ with tempfile.TemporaryDirectory() as tmp:
         )
         task_run_env = captured_host_process["kwargs"]["env"]
         assert "MAKA_MAX_STEPS" not in task_run_env, task_run_env.get("MAKA_MAX_STEPS")
-        assert task_run_timeouts[-1] == 7200, task_run_timeouts
+            # The hard process deadline is the model budget plus the settlement
+        # window, never the budget itself: the cell is still writing at 7200.
+        assert task_run_timeouts[-1] == 7230, task_run_timeouts
 
         host_repo_root = Path(tmp) / "different-host-repo"
         relative_task_run_agent = MakaAgent(Path(tmp), extra_env={
@@ -2222,7 +2241,7 @@ with tempfile.TemporaryDirectory() as tmp:
             )
         finally:
             maka_agent_mod._DEFAULT_RUNNER_ENV = original_runner_env
-        assert task_run_timeouts[-1] == 4321, task_run_timeouts
+        assert task_run_timeouts[-1] == 4351, task_run_timeouts
 
         capped_task_run_agent = MakaAgent(Path(tmp), extra_env={
             "MAKA_BACKEND": "fake",
@@ -2271,7 +2290,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 AgentContext(),
             )
         )
-        assert captured_host_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"] == "50000"
+        assert captured_host_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"] == "60000"
         assert FakeToolExecutor.instances[-1].reclaim_active_commands
         assert not FakeToolExecutor.instances[-1].reclaim_scoped_processes
 
