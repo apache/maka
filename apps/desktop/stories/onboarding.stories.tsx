@@ -13,6 +13,14 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+const MAKA_WINDOW_FLOOR_VIEWPORT = {
+  makaWindowFloor: {
+    name: 'Maka window floor',
+    styles: { width: '480px', height: '900px' },
+    type: 'desktop' as const,
+  },
+};
+
 function makeConnection(input: {
   slug: string;
   name: string;
@@ -174,11 +182,15 @@ export const ReadyEmpty: Story = {
 
 // Real path: the desktop window is at its 480px width floor during first run.
 export const NarrowWindow: Story = {
-  parameters: { viewport: { defaultViewport: 'mobile1' } },
-  globals: { viewport: { value: 'mobile1' } },
+  parameters: { viewport: { options: MAKA_WINDOW_FLOOR_VIEWPORT } },
+  globals: { viewport: { value: 'makaWindowFloor', isRotated: false } },
   render: () => (
     <DetailPane>
       <OnboardingHero {...heroProps({ kind: 'needs_connection' })} />
     </DetailPane>
   ),
+  play: async ({ canvasElement }) => {
+    const documentElement = canvasElement.ownerDocument.documentElement;
+    await expect(documentElement.scrollWidth).toBe(documentElement.clientWidth);
+  },
 };
