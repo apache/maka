@@ -5,6 +5,8 @@ import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
   AutomationsPage,
   DailyReviewPage,
+  formatDailyReviewArchiveTitle,
+  getDailyReviewCopy,
   getSharedUiCopy,
   ModuleHubSelector,
   SkillsPage,
@@ -712,7 +714,18 @@ export const ScheduledDailyReviewReport: Story = {
     await waitForStoryText(output, 'markdown');
     const input = JSON.parse(output.textContent ?? '') as Record<string, unknown>;
     await expect(input.day).toEqual(DAILY_REVIEW_ARCHIVE.day);
+    await expect(input.range).toBe(DAILY_REVIEW_ARCHIVE.range);
     await expect(input.totals).toEqual(DAILY_REVIEW_ARCHIVE.totals);
+    const archiveCopy = getDailyReviewCopy('zh');
+    const expectedMarkdown = [
+      `# ${formatDailyReviewArchiveTitle(DAILY_REVIEW_ARCHIVE, 'zh')}`,
+      ...(['summary', 'gaps', 'usage', 'code'] as const).flatMap((key) => [
+        '',
+        `## ${archiveCopy.archive.section[key]}`,
+        DAILY_REVIEW_ARCHIVE.sections[key],
+      ]),
+    ].join('\n');
+    await expect(input.markdown).toBe(expectedMarkdown);
   },
 };
 
