@@ -26,11 +26,11 @@
  * The payload occupies `default_app.asar` rather than `Resources/app` so it
  * cannot shadow a real packaged app laid down at the standard location.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -52,11 +52,29 @@ const DEV_USER_DATA_DIR = join(
   `Maka Dev-${WORKTREE_ID}`,
 );
 
-const DEV_BUNDLE_ID = 'com.maka.dev';
-const RUNTIME_SCHEMA_VERSION = 6;
+/**
+ * Per-worktree, and deliberately so. An ad-hoc signature designates a bare
+ * `cdhash`, and TCC keys its rows on the bundle identifier — so a shared
+ * identifier would make every worktree overwrite the previous one's stored
+ * requirement and silently break it. Scoping the identifier gives each worktree
+ * its own durable, independently revocable grant.
+ *
+ * There is no explicit `designated => identifier` requirement here. It would
+ * survive rebuilds, but it is forgeable by construction: `codesign --sign -` is
+ * available to every unprivileged process, so any binary anywhere on the disk
+ * can claim this identifier and satisfy the requirement. TCC rows outlive the
+ * code they were granted to, so that would leave a permanently redeemable
+ * Accessibility and Screen Recording token behind even after this repository is
+ * deleted. The cdhash requirement costs a re-grant when the bundle is rebuilt —
+ * which happens only on an Electron bump or a repository move, not on an
+ * ordinary `npm run dev` — and that is the cheaper side of the trade.
+ */
+const DEV_BUNDLE_ID = `com.maka.dev.${WORKTREE_ID}`;
+const RUNTIME_SCHEMA_VERSION = 7;
 const DEV_ENV_SCHEMA_VERSION = 1;
 
 export const developmentAppPath = DEV_APP;
+export const developmentExecutablePath = DEV_EXECUTABLE;
 
 export async function resolveMacosDevelopmentLaunch(env = process.env) {
   if (!shouldUseMacosDevelopmentApp(process.platform, env)) return null;
@@ -157,10 +175,20 @@ export async function ensureNoRunningDevelopmentApp(options = {}) {
   const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
   const attempts = options.attempts ?? 10;
   const pollMs = options.pollMs ?? 200;
-  if (!running(options)) return false;
-  await quit(options);
+  // Forward each callee only what it accepts. Passing this whole object through
+  // would make `delay` double as the SIGTERM grace period, and would let a
+  // caller that stubs `probe` still fall through to a real `pkill`.
+  const liveness = { executable: options.executable, probe: options.probe };
+  const shutdown = {
+    platform: options.platform,
+    executable: options.executable,
+    graceMs: options.graceMs,
+    signal: options.signal,
+  };
+  if (!running(liveness)) return false;
+  await quit(shutdown);
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (!running(options)) return true;
+    if (!running(liveness)) return true;
     await delay(pollMs);
   }
   throw new Error(
@@ -251,6 +279,130 @@ export function writeDevelopmentEnvironment(content, options = {}) {
   renameSync(temporary, file);
 }
 
+/**
+ * The Vite URL a previous launcher published, if any.
+ *
+ * `npm start` does not run a dev server, but it may be reclaiming an app from a
+ * live `npm run dev`. Republishing without the URL would drop the app to the
+ * prebuilt renderer on disk — stale, or absent entirely on a fresh checkout.
+ */
+export function readPublishedViteUrl(file = DEV_ENV_FILE) {
+  try {
+    const published = JSON.parse(readFileSync(file, 'utf8'));
+    if (published.schemaVersion !== DEV_ENV_SCHEMA_VERSION) return undefined;
+    return published.env?.VITE_DEV_SERVER_URL;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveElectronBinary() {
+  for (let dir = DESKTOP_DIR; ; dir = dirname(dir)) {
+    const executable =
+      process.platform === 'win32'
+        ? join(dir, 'node_modules', 'electron', 'dist', 'electron.exe')
+        : join(dir, 'node_modules', '.bin', 'electron');
+    if (existsSync(executable)) return executable;
+    if (dirname(dir) === dir) return 'electron';
+  }
+}
+
+/**
+ * The single way to start the app, on every platform and both entry points.
+ *
+ * `npm run dev` and `npm start` previously each carried their own copy of
+ * this — publish the environment, launch, follow the log, shut down — and the
+ * copies drifted into different bugs rather than different behaviour.
+ *
+ * Returns a handle rather than a child process because the two paths are not
+ * comparable: on the macOS bundle path `open` exits at the LaunchServices
+ * handoff, so its exit code says nothing about the app.
+ */
+export async function startDevelopmentApp(options = {}) {
+  const argv = options.argv ?? [];
+  // Read before preparing: a rebuild republishes the runtime directory and
+  // takes the previous environment file with it.
+  const viteUrl = options.viteUrl ?? readPublishedViteUrl();
+  const launch = await resolveMacosDevelopmentLaunch();
+  if (!launch) {
+    const child = spawn(resolveElectronBinary(), [DESKTOP_DIR, ...argv], {
+      cwd: DESKTOP_DIR,
+      stdio: 'inherit',
+      env: viteUrl ? { ...process.env, VITE_DEV_SERVER_URL: viteUrl } : process.env,
+    });
+    return { child, isMacosBundle: false, stop: () => terminateProcessTree(child) };
+  }
+
+  writeDevelopmentEnvironment(
+    createDevelopmentEnvironmentFile({ argv, env: process.env, viteUrl }),
+  );
+  // LaunchServices detaches the app from this terminal's stdio, so `open`
+  // redirects its output here and we follow it. The log carries whatever the
+  // app prints, so it gets the same mode as the environment file beside it.
+  writeFileSync(developmentLogFile, '', { mode: 0o600 });
+  const logStream = spawn('tail', ['-n', '+1', '-F', developmentLogFile], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  const child = spawn(launch.command, launch.args, {
+    cwd: DESKTOP_DIR,
+    stdio: 'inherit',
+    env: process.env,
+  });
+  return {
+    child,
+    isMacosBundle: true,
+    stop: async () => {
+      logStream.kill();
+      await quitMacosDevelopmentApp();
+    },
+  };
+}
+
+function terminateProcessTree(child) {
+  if (child.exitCode !== null || child.killed) return Promise.resolve();
+  if (process.platform === 'win32' && child.pid) {
+    return new Promise((done) => {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      killer.on('exit', () => done());
+      killer.on('error', () => done());
+    });
+  }
+  child.kill('SIGTERM');
+  return Promise.resolve();
+}
+
+/**
+ * Watches the detached bundle for the whole session, because `open` exits 0 at
+ * the handoff and reports nothing afterwards.
+ *
+ * Waiting a fixed interval and checking once cannot work in either direction: a
+ * first launch of the freshly signed bundle can still be starting, and quitting
+ * the app is a normal thing to do at any moment. So this waits for the app to
+ * appear, then reports the eventual disappearance as an ordinary session end.
+ */
+export async function monitorDevelopmentApp(options = {}) {
+  const isRunning = options.isRunning ?? isDevelopmentAppRunning;
+  const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
+  const stopped = options.stopped ?? (() => false);
+  const pollMs = options.pollMs ?? 250;
+  const startupAttempts = options.startupAttempts ?? 120;
+  let appeared = false;
+  for (let attempt = 0; attempt < startupAttempts && !appeared; attempt += 1) {
+    if (stopped()) return 'stopped';
+    if (isRunning()) appeared = true;
+    else await delay(pollMs);
+  }
+  if (!appeared) return 'never-started';
+  while (!stopped()) {
+    await delay(pollMs);
+    if (stopped()) break;
+    if (!isRunning()) return 'exited';
+  }
+  return 'stopped';
+}
+
 export async function prepareDevelopmentApp() {
   if (process.platform !== 'darwin') {
     throw new Error('Maka Dev.app is only available on macOS');
@@ -266,72 +418,73 @@ export async function prepareDevelopmentApp() {
   // and deletes the environment file it would read on relaunch.
   await ensureNoRunningDevelopmentApp();
 
-  await rebuildDevelopmentRuntime({
-    reset: () => {
-      rmSync(STAGING_DIR, { recursive: true, force: true });
-      mkdirSync(STAGING_DIR, { recursive: true });
-    },
-    build: () => {
-      run('ditto', [SOURCE_APP, STAGING_APP]);
-      const plist = join(STAGING_APP, 'Contents', 'Info.plist');
-      setPlistString(plist, 'CFBundleIdentifier', DEV_BUNDLE_ID);
-      setPlistString(plist, 'CFBundleName', 'Maka Dev');
-      setPlistString(plist, 'CFBundleDisplayName', 'Maka Dev');
-      // Stock Electron seals a SHA256 of its own default_app.asar here. We
-      // replace that payload, so the record would describe a file that no
-      // longer exists — inert today only because the integrity fuse is off.
-      spawnSync('plutil', ['-remove', 'ElectronAsarIntegrity', plist]);
-      installBootstrap(STAGING_APP);
-      // `ditto` preserves quarantine by default (`--qtn`), so clear it from the
-      // whole tree rather than the bundle root alone.
-      run('xattr', ['-cr', STAGING_APP]);
-      // No --identifier: `plutil` already set CFBundleIdentifier, and codesign
-      // derives it per bundle. Passing it with --deep stamps the outer app's
-      // identifier onto all four nested helper bundles.
-      //
-      // The explicit designated requirement is the point of the exercise. An
-      // ad-hoc signature otherwise yields a bare `cdhash` DR, which no TCC
-      // grant survives — every rebuild, Electron bump, or repository move
-      // invalidates it. An identifier-based DR is not weaker in any way that
-      // matters here: the bundle loads dist/main/main.js from OUTSIDE the
-      // seal, so anyone who can write the repository already inherits the
-      // grant without forging anything.
-      // Sign inside-out. A single `--deep` pass carrying the requirement would
-      // stamp it onto the nested helpers too, whose own identifier is
-      // com.github.Electron.helper — codesign then rejects them as
-      // "nested code is modified or invalid".
-      run('codesign', ['--force', '--deep', '--sign', '-', STAGING_APP]);
-      run('codesign', [
-        '--force',
-        '--sign',
-        '-',
-        // `-r=<text>`: a separate argument would be read as a file path.
-        `-r=designated => identifier "${DEV_BUNDLE_ID}"`,
-        STAGING_APP,
-      ]);
-      run('codesign', ['--verify', '--deep', '--strict', STAGING_APP]);
-      // Publish atomically so a concurrent launcher never observes a partial
-      // bundle, and a losing racer simply overwrites with identical bytes.
-      rmSync(DEV_RUNTIME_DIR, { recursive: true, force: true });
-      renameSync(STAGING_DIR, DEV_RUNTIME_DIR);
-    },
-    writeMarker: () => {
-      writeFileSync(
-        MARKER,
-        `${JSON.stringify(
-          {
-            schemaVersion: RUNTIME_SCHEMA_VERSION,
-            electronVersion,
-            bundleId: DEV_BUNDLE_ID,
-            desktopDir: DESKTOP_DIR,
-          },
-          null,
-          2,
-        )}\n`,
-      );
-    },
-  });
+  try {
+    await rebuildDevelopmentRuntime({
+      reset: () => {
+        rmSync(STAGING_DIR, { recursive: true, force: true });
+        mkdirSync(STAGING_DIR, { recursive: true });
+      },
+      build: () => {
+        run('ditto', [SOURCE_APP, STAGING_APP]);
+        const plist = join(STAGING_APP, 'Contents', 'Info.plist');
+        setPlistString(plist, 'CFBundleIdentifier', DEV_BUNDLE_ID);
+        setPlistString(plist, 'CFBundleName', 'Maka Dev');
+        setPlistString(plist, 'CFBundleDisplayName', 'Maka Dev');
+        // Stock Electron seals a SHA256 of its own default_app.asar here. We
+        // replace that payload, so the record would describe a file that no
+        // longer exists — inert today only because the integrity fuse is off.
+        spawnSync('plutil', ['-remove', 'ElectronAsarIntegrity', plist]);
+        installBootstrap(STAGING_APP);
+        // `ditto` preserves quarantine by default (`--qtn`), so clear it from
+        // the whole tree rather than the bundle root alone.
+        run('xattr', ['-cr', STAGING_APP]);
+        // No --identifier: `plutil` already set CFBundleIdentifier, and
+        // codesign derives it per bundle. Passing it with --deep would stamp
+        // the outer app's identifier onto all four nested helper bundles,
+        // whose own identifier is com.github.Electron.helper.
+        //
+        // `--deep` is load-bearing rather than gratuitous here: the npm source
+        // is linker-signed with no bundle seal, so without it the result does
+        // not verify at all. Apple's deprecation concerns distribution
+        // signing, where --deep discards per-target entitlements; this build
+        // has none.
+        run('codesign', ['--force', '--deep', '--sign', '-', STAGING_APP]);
+        run('codesign', ['--verify', '--deep', '--strict', STAGING_APP]);
+        // Publish by rename so a launcher never observes a partial bundle.
+        // This does not make concurrent *builders* safe — they share one
+        // staging path — but two rebuilds in one worktree is not a case worth
+        // locking for.
+        rmSync(DEV_RUNTIME_DIR, { recursive: true, force: true });
+        renameSync(STAGING_DIR, DEV_RUNTIME_DIR);
+      },
+      writeMarker: () => {
+        writeFileSync(
+          MARKER,
+          `${JSON.stringify(createRuntimeMarker(electronVersion), null, 2)}\n`,
+        );
+      },
+    });
+  } finally {
+    // A failed build otherwise leaves a ~250 MB copy of Electron.app behind
+    // with no message. Publishing already moved the directory away.
+    rmSync(STAGING_DIR, { recursive: true, force: true });
+  }
   return DEV_APP;
+}
+
+/**
+ * The cache key this build commits, and the one `isDevelopmentRuntimeCurrent`
+ * validates. Both sides must read from here: a field renamed on one side alone
+ * would silently force a rebuild on every launch, churning the very bundle the
+ * TCC grant is anchored to.
+ */
+export function createRuntimeMarker(electronVersion) {
+  return {
+    schemaVersion: RUNTIME_SCHEMA_VERSION,
+    electronVersion,
+    bundleId: DEV_BUNDLE_ID,
+    desktopDir: DESKTOP_DIR,
+  };
 }
 
 /**
@@ -389,31 +542,23 @@ export function createBootstrapSource(desktopDir, defaultUserDataDir, envFile) {
 function isCurrentRuntime(electronVersion) {
   if (!existsSync(DEV_EXECUTABLE) || !existsSync(MARKER)) return false;
   try {
-    return isDevelopmentRuntimeCurrent({
-      marker: JSON.parse(readFileSync(MARKER, 'utf8')),
-      schemaVersion: RUNTIME_SCHEMA_VERSION,
-      electronVersion,
-      bundleId: DEV_BUNDLE_ID,
-      desktopDir: DESKTOP_DIR,
-      signatureValid:
-        spawnSync('codesign', ['--verify', '--deep', '--strict', DEV_APP]).status === 0,
-    });
+    const marker = JSON.parse(readFileSync(MARKER, 'utf8'));
+    // Compare the cheap marker before paying for a full bundle verification.
+    if (!isDevelopmentRuntimeCurrent(marker, createRuntimeMarker(electronVersion))) return false;
+    return spawnSync('codesign', ['--verify', '--deep', '--strict', DEV_APP]).status === 0;
   } catch {
     return false;
   }
 }
 
-export function isDevelopmentRuntimeCurrent(input) {
-  const marker = input.marker;
-  return (
-    marker !== null &&
-    typeof marker === 'object' &&
-    marker.schemaVersion === input.schemaVersion &&
-    marker.electronVersion === input.electronVersion &&
-    marker.bundleId === input.bundleId &&
-    marker.desktopDir === input.desktopDir &&
-    input.signatureValid
-  );
+/**
+ * Every field the build committed must still hold. Comparing against a marker
+ * built by `createRuntimeMarker` rather than against a hand-listed set means a
+ * new cache input is covered the moment it is added there.
+ */
+export function isDevelopmentRuntimeCurrent(marker, expected) {
+  if (marker === null || typeof marker !== 'object') return false;
+  return Object.entries(expected).every(([key, value]) => marker[key] === value);
 }
 
 export async function rebuildDevelopmentRuntime(deps) {

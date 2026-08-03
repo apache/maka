@@ -14,8 +14,8 @@ Set `MAKA_DEV_TCC=1` to launch through a generated, ad-hoc-signed
 MAKA_DEV_TCC=1 npm run dev
 ```
 
-The bundle gives TCC a stable identity (`com.maka.dev`), a verifiable
-signature, and a responsible process that is the app rather than the terminal.
+The bundle gives TCC a stable identity (`com.maka.dev.<worktree-id>`), a
+verifiable signature, and a responsible process that is the app, not the terminal.
 It is launched through LaunchServices for the same reason — running its inner
 binary directly puts the terminal back in the responsibility chain. The
 generated app is ignored by Git and rebuilt when the installed Electron version
@@ -39,14 +39,26 @@ Reopen” launch work, since those have no parent shell at all. `PATH` is not
 recorded in it: a stored `PATH` goes stale, and `shell-env.ts` resolves the
 login-shell `PATH` in the main process for exactly this case.
 
-The bundle is signed with an explicit designated requirement of
-`identifier "com.maka.dev"`. An ad-hoc signature otherwise designates a bare
-`cdhash`, which no grant survives — every rebuild, Electron bump, or repository
-move would invalidate it, and each worktree would silently overwrite the
-others' TCC row. Anchoring on the identifier is not a weaker boundary in any
-way that matters: the bundle loads `dist/main/main.js` from outside the
-signature seal, so anyone able to write this repository already inherits the
-grant without forging anything.
+The bundle identifier is scoped to the worktree because TCC keys its rows on
+that identifier: a shared one would make each worktree overwrite the previous
+one's stored requirement and silently break it. Scoping it gives every worktree
+its own durable, independently revocable grant.
+
+The ad-hoc signature keeps its default designated requirement, a bare `cdhash`.
+That means a rebuild costs a re-grant — but a rebuild happens only on an
+Electron bump or a repository move, not on an ordinary `npm run dev`. Pinning
+the identifier instead would survive rebuilds, and it is tempting for exactly
+that reason, but `codesign --sign -` is available to every unprivileged process:
+any binary anywhere on the disk could claim the identifier and satisfy the
+requirement. Since TCC rows outlive the code they were granted to, that would
+leave a permanently redeemable Accessibility and Screen Recording token behind
+even after this repository is deleted. Re-granting after an Electron bump is the
+cheaper side of that trade.
+
+Note that the payload at `dist/main/main.js` is loaded from outside the
+signature seal. Write access to this repository is therefore a deliberate trust
+assumption of the development workflow — a separate matter from who may claim
+the bundle's identity.
 
 The default profile is `~/Library/Application Support/Maka Dev-<worktree-id>`,
 which keeps development isolated from the packaged Maka profile; an explicit
@@ -58,7 +70,9 @@ its old, dead Vite URL.
 
 Known limitation: `dev-env.json` outlives the session, so launching from the
 Dock long after `npm run dev` has stopped points the app at a Vite URL that is
-no longer served, and the window stays blank. Start a dev session first.
+no longer served, and the window stays blank. Start a dev session first. If
+another worktree has since taken that port, the window loads *its* renderer
+instead, which looks like it worked.
 
 Grant permissions to **Maka Dev**, not a generic Electron entry. Screen
 Recording changes require restarting the development app. Without
