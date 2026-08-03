@@ -3,6 +3,7 @@ import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
   AgentGraphCoordinator,
   AgentGraphSupervisorWakeCoordinator,
+  agentGraphIdForRootSession,
   BackendRegistry,
   createBuiltinSandboxManager,
   createFilesystemWorkerLaunchSpecProvider,
@@ -567,6 +568,11 @@ export async function createExecutionRuntimeHostComposition(
       artifacts: openedArtifactStore,
       taskLedger: taskLedgerStore,
       purgeOperationalState: (sessionId) => stores.purgeConversationOperationalState(sessionId),
+      purgeAgentGraphState: async (sessionId) => {
+        await openedGraphControlStore.purgeAgentGraphControlState(
+          agentGraphIdForRootSession(sessionId),
+        );
+      },
       worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,
     });
@@ -604,13 +610,13 @@ export async function createExecutionRuntimeHostComposition(
         await requireMemory(memory).recover();
         await skills.recover();
         await openedArtifactStore.recover();
+        await sessionRetirement.recover();
         const sessions = await stores.sessionStore.listForRecovery();
         await worktreeChildExecutor.recover(
           sessions.flatMap((session) =>
             session.subagentWorkspace ? [session.subagentWorkspace] : [],
           ),
         );
-        await sessionRetirement.recover();
         await sessionRevisions.recover();
         for (const session of sessions) {
           await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
@@ -697,11 +703,6 @@ export async function createExecutionRuntimeHostComposition(
           }
         }
         try {
-          openedGraphControlStore.close();
-        } catch (error) {
-          errors.push(error);
-        }
-        try {
           await messages.close();
         } catch (error) {
           errors.push(error);
@@ -748,6 +749,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           await sessionRetirement.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          openedGraphControlStore.close();
         } catch (error) {
           errors.push(error);
         }

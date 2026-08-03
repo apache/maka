@@ -10,6 +10,7 @@ import {
 } from './sqlite-runtime-schema.js';
 import {
   migrateSqliteSessionMetadataDatabase,
+  SQLITE_AGENT_GRAPH_CONTROL_TABLES,
   SQLITE_SESSION_METADATA_SCHEMA_VERSION,
 } from './sqlite-session-metadata-schema.js';
 import {
@@ -40,15 +41,7 @@ const SESSION_METADATA_TABLES = [
   'session_metadata_import_sources',
   'session_metadata_tombstones',
   'subagent_spawns',
-  'agent_graph_intent_claims',
-  'agent_graph_schedule_updates',
-  'agent_graph_operator_provisions',
-  'agent_graph_client_projections',
-  'agent_graph_client_operator_projections',
-  'agent_graph_client_terminal_activity',
-  'agent_graph_client_applied_records',
-  'agent_graph_supervisor_wakes',
-  'agent_graph_supervisor_wake_attempts',
+  ...SQLITE_AGENT_GRAPH_CONTROL_TABLES,
   'sandbox_boundary_log',
 ] as const;
 

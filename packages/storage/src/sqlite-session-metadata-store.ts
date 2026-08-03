@@ -73,6 +73,7 @@ import {
   configureSqliteSessionMetadataDatabase,
   migrateSqliteSessionMetadataDatabase,
   readSqliteSessionMetadataSchemaVersion,
+  SQLITE_AGENT_GRAPH_CONTROL_TABLES,
 } from './sqlite-session-metadata-schema.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import {
@@ -83,6 +84,7 @@ import {
 export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
 
 const require = createRequire(import.meta.url);
+const AGENT_GRAPH_CONTROL_DELETE_TABLES = [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].reverse();
 
 function loadSqliteModule(): typeof import('node:sqlite') {
   const emitWarning = process.emitWarning;
@@ -1006,6 +1008,100 @@ export class SqliteSessionMetadataStore {
     return (rows as unknown as Array<{ readonly sessionId: string }>).map((row) => row.sessionId);
   }
 
+  async reconcileOrphanedAgentGraphRetirements(): Promise<string[]> {
+    this.assertOpen();
+    return this.transaction(() => {
+      const rows = this.db
+        .prepare(`
+          SELECT
+            child.session_id,
+            child.payload_json,
+            child.metadata_version,
+            child.committed_at,
+            child.subagent_parent_session_id AS parent_session_id,
+            provision.graph_id,
+            provision.work_id,
+            provision.operator_id,
+            parent_tombstone.retirement_unit_id
+          FROM agent_graph_operator_provisions provision
+          JOIN session_metadata child
+            ON child.session_id = provision.target_session_id
+          JOIN session_metadata_tombstones parent_tombstone
+            ON parent_tombstone.session_id = child.subagent_parent_session_id
+          LEFT JOIN session_metadata live_parent
+            ON live_parent.session_id = child.subagent_parent_session_id
+          WHERE live_parent.session_id IS NULL
+          ORDER BY child.session_id
+        `)
+        .all() as unknown as OrphanedAgentGraphOperatorRow[];
+      const deletedAt = this.now();
+      const reconciled: string[] = [];
+      for (const row of rows) {
+        const record = decodeRecord(row);
+        const parent = record.header.subagentParent;
+        if (
+          !parent?.graph ||
+          parent.parentSessionId !== row.parent_session_id ||
+          parent.graph.graphId !== row.graph_id ||
+          parent.graph.workId !== row.work_id ||
+          parent.graph.operatorId !== row.operator_id ||
+          !row.retirement_unit_id
+        ) {
+          throw new SessionMetadataConflictError(
+            `Cannot reconcile invalid graph operator Session ${row.session_id}`,
+          );
+        }
+        const deleted = this.db
+          .prepare('DELETE FROM session_metadata WHERE session_id = ?')
+          .run(row.session_id);
+        if (deleted.changes !== 1) {
+          throw new SessionMetadataConflictError(
+            `Agent Graph retirement reconciliation lost Session ${row.session_id}`,
+          );
+        }
+        this.db
+          .prepare(`
+            INSERT INTO session_metadata_tombstones(
+              session_id,
+              deleted_at,
+              retirement_unit_id,
+              cleanup_pending
+            )
+            VALUES (?, ?, ?, 1)
+          `)
+          .run(row.session_id, deletedAt, row.retirement_unit_id);
+        this.db
+          .prepare(`
+            UPDATE session_metadata_tombstones
+            SET cleanup_pending = 1
+            WHERE session_id = ?
+          `)
+          .run(row.parent_session_id);
+        reconciled.push(row.session_id);
+      }
+      this.db
+        .prepare(`
+          WITH graph_roots(root_session_id) AS (
+            SELECT root_session_id
+            FROM agent_graph_client_projections
+            UNION
+            SELECT source_session_id
+            FROM agent_graph_schedule_updates
+            UNION
+            SELECT root_session_id
+            FROM agent_graph_supervisor_wakes
+          )
+          UPDATE session_metadata_tombstones
+          SET cleanup_pending = 1
+          WHERE cleanup_pending = 0
+            AND session_id IN (SELECT root_session_id FROM graph_roots)
+            AND session_id NOT IN (SELECT session_id FROM session_metadata)
+        `)
+        .run();
+      return reconciled;
+    });
+  }
+
   async listTombstonedSessionIdsAmong(sessionIds: readonly string[]): Promise<string[]> {
     this.assertOpen();
     const unique = [...new Set(sessionIds)].sort();
@@ -1724,6 +1820,19 @@ export class SqliteSessionMetadataStore {
     );
   }
 
+  async purgeAgentGraphControlState(graphId: string): Promise<number> {
+    this.assertOpen();
+    assertGraphLookupIdentity(graphId, 'graph id');
+    return this.transaction(() =>
+      AGENT_GRAPH_CONTROL_DELETE_TABLES.reduce(
+        (removed, table) =>
+          removed +
+          Number(this.db.prepare(`DELETE FROM ${table} WHERE graph_id = ?`).run(graphId).changes),
+        0,
+      ),
+    );
+  }
+
   async readAgentGraphTimelineMetadata(
     graphId: string,
   ): Promise<AgentGraphTimelineMetadataSnapshot> {
@@ -1858,6 +1967,9 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertAgentGraphClientProjectionRequest(request);
     return this.transaction(() => {
+      if (!this.readRecordSync(request.rootSessionId)) {
+        throw new SessionNotFoundError(request.rootSessionId);
+      }
       const current = this.db
         .prepare(`
           SELECT
@@ -2265,6 +2377,7 @@ export class SqliteSessionMetadataStore {
   async removeVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]> {
     this.assertOpen();
     const identities = uniqueVersionedSessionIdentities(sessions);
+    const retirementSessionIds = new Set(identities.map(({ sessionId }) => sessionId));
     const retirementUnitId = identities[0]!.sessionId;
     return this.transaction(() => {
       const present: VersionedSessionIdentity[] = [];
@@ -2281,7 +2394,7 @@ export class SqliteSessionMetadataStore {
             record.metadataVersion,
           );
         }
-        this.assertSessionCanBeRemoved(identity.sessionId);
+        this.assertSessionCanBeRemoved(identity.sessionId, retirementSessionIds);
         present.push(identity);
       }
       const deletedAt = this.now();
@@ -3420,18 +3533,65 @@ export class SqliteSessionMetadataStore {
     );
   }
 
-  private assertSessionCanBeRemoved(sessionId: string): void {
+  private assertSessionCanBeRemoved(
+    sessionId: string,
+    retirementSessionIds?: ReadonlySet<string>,
+  ): void {
     const graphOwner = this.db
       .prepare(`
-        SELECT graph_id AS graphId, work_id AS workId
+        SELECT graph_id AS graphId, work_id AS workId, operator_id AS operatorId
         FROM agent_graph_operator_provisions
         WHERE target_session_id = ?
       `)
-      .get(sessionId) as { graphId: string; workId: string } | undefined;
+      .get(sessionId) as { graphId: string; workId: string; operatorId: string } | undefined;
     if (graphOwner) {
-      throw new SessionMetadataConflictError(
-        `Cannot remove graph operator Session ${sessionId}; owned by ${graphOwner.graphId}/${graphOwner.workId}`,
-      );
+      const parent = this.readRecordSync(sessionId)?.header.subagentParent;
+      if (
+        !retirementSessionIds?.has(parent?.parentSessionId ?? '') ||
+        parent?.graph?.graphId !== graphOwner.graphId ||
+        parent.graph.workId !== graphOwner.workId ||
+        parent.graph.operatorId !== graphOwner.operatorId
+      ) {
+        throw new SessionMetadataConflictError(
+          `Cannot remove graph operator Session ${sessionId}; owned by ${graphOwner.graphId}/${graphOwner.workId}`,
+        );
+      }
+    }
+    const ownedOperators = this.db
+      .prepare(`
+        SELECT
+          child.session_id,
+          child.payload_json,
+          child.metadata_version,
+          child.committed_at,
+          provision.graph_id,
+          provision.work_id,
+          provision.operator_id
+        FROM agent_graph_operator_provisions provision
+        JOIN session_metadata child
+          ON child.session_id = provision.target_session_id
+        WHERE child.subagent_parent_session_id = ?
+        ORDER BY child.session_id
+      `)
+      .all(sessionId) as unknown as OwnedAgentGraphOperatorRow[];
+    for (const row of ownedOperators) {
+      const parent = decodeRecord(row).header.subagentParent;
+      if (
+        !parent?.graph ||
+        parent.parentSessionId !== sessionId ||
+        parent.graph.graphId !== row.graph_id ||
+        parent.graph.workId !== row.work_id ||
+        parent.graph.operatorId !== row.operator_id
+      ) {
+        throw new SessionMetadataConflictError(
+          `Cannot remove Session ${sessionId}; graph operator ${row.session_id} has invalid ownership`,
+        );
+      }
+      if (!retirementSessionIds?.has(row.session_id)) {
+        throw new SessionMetadataConflictError(
+          `Cannot remove Session ${sessionId}; graph operator ${row.session_id} is outside the retirement unit`,
+        );
+      }
     }
   }
 
@@ -3495,6 +3655,17 @@ interface SessionMetadataRow {
   payload_json: string;
   metadata_version: number;
   committed_at: number;
+}
+
+interface OwnedAgentGraphOperatorRow extends SessionMetadataRow {
+  graph_id: string;
+  work_id: string;
+  operator_id: string;
+}
+
+interface OrphanedAgentGraphOperatorRow extends OwnedAgentGraphOperatorRow {
+  parent_session_id: string;
+  retirement_unit_id: string | null;
 }
 
 interface SessionMetadataCatalogRow extends SessionMetadataRow {

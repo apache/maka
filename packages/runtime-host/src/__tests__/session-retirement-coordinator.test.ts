@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import type { CreateSessionInput } from '@maka/core';
+import type { AgentGraphOperatorProvisionRequest, CreateSessionInput } from '@maka/core';
+import { agentGraphIdForRootSession } from '@maka/runtime';
 import { createSessionStore } from '@maka/storage';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
   HostAutomationSessionBusyError,
   type HostAutomationSessionRetirement,
@@ -95,6 +98,199 @@ describe('Host Session retirement coordinator', () => {
         removed,
       );
       assert.equal(harness.actions.disposed.length, disposeCount);
+    });
+  });
+
+  test('retires graph operators with their root family and purges graph sidecars', async () => {
+    await withHarness(async (harness) => {
+      const childSessionIds = [
+        await createClosedGraphOperator(harness, harness.rootId, 'a'),
+        await createClosedGraphOperator(harness, harness.revisionId, 'b'),
+      ];
+
+      const child = await harness.store.readHeaderRecordSnapshot(childSessionIds[0]!);
+      for (const outcome of [
+        await harness.coordinator.handlers['session.lifecycle.set'](
+          { sessionId: child.header.id, state: 'archived' },
+          CONNECTION_CONTEXT,
+        ),
+        await harness.coordinator.handlers['session.remove'](
+          { sessionId: child.header.id, expectedRevision: child.revision },
+          CONNECTION_CONTEXT,
+        ),
+      ]) {
+        assert.equal(outcome.ok, false);
+        if (!outcome.ok) assert.equal(outcome.error.code, 'operation_conflict');
+      }
+      assert.equal((await harness.store.readHeaderSnapshot(child.header.id)).status, 'active');
+
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.revisionId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, true);
+      for (const childSessionId of childSessionIds) {
+        assert.equal((await harness.store.readHeaderSnapshot(childSessionId)).status, 'archived');
+      }
+
+      const restored = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.revisionId, state: 'active' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(restored.ok, true);
+      for (const childSessionId of childSessionIds) {
+        assert.equal((await harness.store.readHeaderSnapshot(childSessionId)).status, 'active');
+      }
+
+      const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
+      const removed = await harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.revisionId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(removed, {
+        ok: true,
+        result: { kind: 'removed', sessionId: harness.revisionId },
+      });
+      for (const sessionId of [...harness.familyIds, ...childSessionIds]) {
+        assert.deepEqual(await harness.store.probeSessionRemoval(sessionId), { kind: 'removed' });
+      }
+      const graphIds = harness.familyIds.map(agentGraphIdForRootSession);
+      await waitFor(
+        async () =>
+          (
+            await Promise.all(
+              graphIds.map((graphId) => harness.graphStore.listAgentGraphScheduleUpdates(graphId)),
+            )
+          ).every((updates) => updates.length === 0),
+        'Agent Graph sidecar cleanup did not run',
+      );
+      for (const graphId of graphIds) {
+        assert.deepEqual(await harness.graphStore.listAgentGraphOperatorProvisions(graphId), []);
+      }
+      assert.ok(harness.actions.purgedAgentGraphs.includes(harness.rootId));
+      assert.ok(harness.actions.purgedAgentGraphs.includes(harness.revisionId));
+    });
+  });
+
+  test('recovers graph operators orphaned by legacy root-only retirement', async () => {
+    await withHarness(async (harness) => {
+      const childSessionId = await createClosedGraphOperator(harness, harness.rootId, 'a');
+      const database = new DatabaseSync(join(harness.workspaceRoot, 'runtime.sqlite'));
+      try {
+        database.exec('BEGIN IMMEDIATE');
+        for (const sessionId of harness.familyIds) {
+          database.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(sessionId);
+          database
+            .prepare(`
+              INSERT INTO session_metadata_tombstones(
+                session_id,
+                deleted_at,
+                retirement_unit_id,
+                cleanup_pending
+              )
+              VALUES (?, ?, ?, 0)
+            `)
+            .run(sessionId, 1, harness.rootId);
+        }
+        database.exec('COMMIT');
+      } catch (error) {
+        database.exec('ROLLBACK');
+        throw error;
+      } finally {
+        database.close();
+      }
+      for (const sessionId of harness.familyIds) {
+        await harness.store.purgeRemovedSessionTranscript(sessionId);
+      }
+
+      await harness.coordinator.recover();
+
+      await waitFor(
+        async () =>
+          (await harness.store.probeSessionRemoval(childSessionId)).kind === 'removed' &&
+          (await harness.store.listPendingSessionRetirementCleanupIds()).length === 0,
+        'Legacy Agent Graph retirement did not converge',
+      );
+      const graphId = agentGraphIdForRootSession(harness.rootId);
+      assert.deepEqual(await harness.graphStore.listAgentGraphScheduleUpdates(graphId), []);
+      assert.deepEqual(await harness.graphStore.listAgentGraphOperatorProvisions(graphId), []);
+      assert.ok(harness.actions.purgedAgentGraphs.includes(harness.rootId));
+    });
+  });
+
+  test('recovers legacy graph sidecars without operator provisions', async () => {
+    await withHarness(async (harness) => {
+      const projectionGraphId = agentGraphIdForRootSession(harness.rootId);
+      const finishedGraphId = agentGraphIdForRootSession(harness.revisionId);
+      await harness.graphStore.commitAgentGraphClientProjection({
+        schemaVersion: 1,
+        graphId: projectionGraphId,
+        rootSessionId: harness.rootId,
+        expectedSnapshotVersion: null,
+        snapshotVersion: 'projection-only-snapshot',
+        snapshot: { status: 'idle' },
+        replaceOperators: true,
+        operators: [],
+        terminalActivities: [],
+        activityRecords: [],
+      });
+      await harness.graphStore.commitAgentGraphScheduleUpdate({
+        schemaVersion: 1,
+        updateId: `graph_update_${'7'.repeat(32)}`,
+        updateFingerprint: `sha256:${'8'.repeat(64)}`,
+        graphId: finishedGraphId,
+        source: {
+          sessionId: harness.revisionId,
+          runId: 'legacy-finish-run',
+          turnId: 'legacy-finish-turn',
+          toolCallId: 'legacy-finish-call',
+        },
+        addWork: [],
+        stop: [],
+        finish: { resultIds: ['legacy-result'], reason: 'The result is complete.' },
+      });
+
+      const database = new DatabaseSync(join(harness.workspaceRoot, 'runtime.sqlite'));
+      try {
+        database.exec('BEGIN IMMEDIATE');
+        for (const sessionId of harness.familyIds) {
+          database.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(sessionId);
+          database
+            .prepare(`
+              INSERT INTO session_metadata_tombstones(
+                session_id,
+                deleted_at,
+                retirement_unit_id,
+                cleanup_pending
+              )
+              VALUES (?, ?, ?, 0)
+            `)
+            .run(sessionId, 1, harness.rootId);
+        }
+        database.exec('COMMIT');
+      } catch (error) {
+        database.exec('ROLLBACK');
+        throw error;
+      } finally {
+        database.close();
+      }
+      for (const sessionId of harness.familyIds) {
+        await harness.store.purgeRemovedSessionTranscript(sessionId);
+      }
+
+      await harness.coordinator.recover();
+
+      await waitFor(
+        async () => (await harness.store.listPendingSessionRetirementCleanupIds()).length === 0,
+        'Legacy Agent Graph sidecar cleanup did not converge',
+      );
+      assert.equal(
+        await harness.graphStore.readAgentGraphClientProjection(projectionGraphId),
+        undefined,
+      );
+      assert.deepEqual(await harness.graphStore.listAgentGraphScheduleUpdates(finishedGraphId), []);
+      assert.ok(harness.actions.purgedAgentGraphs.includes(harness.rootId));
+      assert.ok(harness.actions.purgedAgentGraphs.includes(harness.revisionId));
     });
   });
 
@@ -417,6 +613,11 @@ describe('Host Session retirement coordinator', () => {
         { ok: true, result: { kind: 'removed', sessionId: harness.rootId } },
       );
       assert.equal(harness.actions.drains, 1);
+      await waitFor(
+        async () => (await harness.store.listPendingSessionRetirementCleanupIds()).length === 0,
+        'tombstone retry did not recover the retirement-unit cleanup',
+      );
+      assert.deepEqual(new Set(harness.actions.purgedArtifacts), new Set(harness.familyIds));
     });
   });
 
@@ -450,6 +651,7 @@ interface RetirementActions {
   readonly purgedArtifacts: string[];
   readonly purgedTasks: string[];
   readonly purgedOperationalState: string[];
+  readonly purgedAgentGraphs: string[];
   readonly retiredWorktrees: string[];
   readonly finalizedWorkspacePatches: string[];
   readonly retiredGraphWakes: string[];
@@ -465,6 +667,7 @@ async function withHarness(
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-retirement-'));
   const store = createSessionStore(root);
+  const graphStore = createAgentGraphControlStore(root);
   let coordinator: HostSessionRetirementCoordinator | undefined;
   try {
     const rootSession = await store.create(sessionInput('Revision root'));
@@ -486,6 +689,7 @@ async function withHarness(
       purgedArtifacts: [],
       purgedTasks: [],
       purgedOperationalState: [],
+      purgedAgentGraphs: [],
       retiredWorktrees: [],
       finalizedWorkspacePatches: [],
       retiredGraphWakes: [],
@@ -506,7 +710,9 @@ async function withHarness(
       automation: new Set<string>(),
     };
     const harness: RetirementHarness = {
+      workspaceRoot: root,
       store,
+      graphStore,
       rootId: rootSession.id,
       revisionId: revision.id,
       familyIds: [rootSession.id, revision.id],
@@ -535,6 +741,8 @@ async function withHarness(
         probeSessionRemoval: (sessionId) => store.probeSessionRemoval(sessionId),
         readCatalogRecord: (sessionId) => store.readCatalogRecord(sessionId),
         readHeaderRecordSnapshot: (sessionId) => store.readHeaderRecordSnapshot(sessionId),
+        reconcileOrphanedAgentGraphRetirements: () =>
+          store.reconcileOrphanedAgentGraphRetirements(),
         listPendingSessionRetirementCleanupIds: (sessionId) =>
           store.listPendingSessionRetirementCleanupIds(sessionId),
         purgeRemovedSessionTranscript: (sessionId) =>
@@ -637,6 +845,10 @@ async function withHarness(
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
       },
+      purgeAgentGraphState: async (sessionId) => {
+        actions.purgedAgentGraphs.push(sessionId);
+        await graphStore.purgeAgentGraphControlState(agentGraphIdForRootSession(sessionId));
+      },
       worktrees: {
         retire: async (binding) => {
           if (harness.retireWorktree) return harness.retireWorktree(binding);
@@ -651,13 +863,16 @@ async function withHarness(
     await operation(harness);
   } finally {
     await coordinator?.close();
+    graphStore.close();
     await store.close?.();
     await rm(root, { recursive: true, force: true });
   }
 }
 
 interface RetirementHarness {
+  readonly workspaceRoot: string;
   readonly store: ReturnType<typeof createSessionStore>;
+  readonly graphStore: ReturnType<typeof createAgentGraphControlStore>;
   readonly rootId: string;
   readonly revisionId: string;
   readonly familyIds: readonly string[];
@@ -741,4 +956,100 @@ function sessionInput(
     labels: [],
     ...overrides,
   };
+}
+
+async function createClosedGraphOperator(
+  harness: RetirementHarness,
+  rootSessionId: string,
+  seed: 'a' | 'b',
+): Promise<string> {
+  const identity = (suffix: string) => `${seed.repeat(31)}${suffix}`;
+  const graphId = agentGraphIdForRootSession(rootSessionId);
+  const workId = `graph_work_${identity('1')}`;
+  const operatorId = `graph_operator_${identity('2')}`;
+  const rootRunId = `root-run-${seed}`;
+  const rootTurnId = `root-turn-${seed}`;
+  await harness.graphStore.commitAgentGraphScheduleUpdate({
+    schemaVersion: 1,
+    updateId: `graph_update_${identity('3')}`,
+    updateFingerprint: `sha256:${seed.repeat(63)}4`,
+    graphId,
+    source: {
+      sessionId: rootSessionId,
+      runId: rootRunId,
+      turnId: rootTurnId,
+      toolCallId: 'schedule-call',
+    },
+    addWork: [
+      {
+        workId,
+        target: { kind: 'agent', agentId: 'implementation' },
+        instruction: 'Implement the assigned task.',
+        inputIds: [],
+      },
+    ],
+    stop: [],
+  });
+  const request: AgentGraphOperatorProvisionRequest = {
+    schemaVersion: 1,
+    provisionId: `graph_provision_${identity('5')}`,
+    provisionFingerprint: `sha256:${seed.repeat(63)}6`,
+    graphId,
+    workId,
+    agentId: 'implementation',
+    operatorId,
+    initialTurnId: `operator-turn-${seed}`,
+    initialRunId: `operator-run-${seed}`,
+    edges: [],
+  };
+  const child = await harness.store.createAgentGraphOperator(
+    sessionInput('Graph operator', {
+      permissionMode: 'execute',
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: rootSessionId,
+        spawnedBy: {
+          parentRunId: rootRunId,
+          parentTurnId: rootTurnId,
+          toolCallId: 'schedule-call',
+        },
+        graph: { graphId, workId, operatorId },
+        lifecycle: 'foreground',
+      },
+      subagentRuntime: {
+        schemaVersion: 1,
+        definitionVersion: 1,
+        agentId: 'implementation',
+        agentName: 'Implementation',
+        profile: 'implementation',
+        systemPrompt: 'Implement the assigned task.',
+        toolNames: ['Read', 'Write'],
+        categoryPolicy: {},
+      },
+      subagentSpawn: {
+        schemaVersion: 1,
+        requestFingerprint: seed.repeat(64),
+        initialTurnId: request.initialTurnId,
+        initialRunId: request.initialRunId,
+      },
+    }),
+    request,
+    1,
+  );
+  await harness.graphStore.commitAgentGraphScheduleUpdate({
+    schemaVersion: 1,
+    updateId: `graph_update_${identity('8')}`,
+    updateFingerprint: `sha256:${seed.repeat(63)}9`,
+    graphId,
+    source: {
+      sessionId: rootSessionId,
+      runId: rootRunId,
+      turnId: rootTurnId,
+      toolCallId: 'finish-call',
+    },
+    addWork: [],
+    stop: [],
+    finish: { resultIds: ['operator-result'], reason: 'complete' },
+  });
+  return child.header.id;
 }

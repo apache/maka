@@ -2,6 +2,18 @@ import type { DatabaseSync } from 'node:sqlite';
 
 export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 19;
 
+export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
+  'agent_graph_intent_claims',
+  'agent_graph_schedule_updates',
+  'agent_graph_operator_provisions',
+  'agent_graph_client_projections',
+  'agent_graph_client_operator_projections',
+  'agent_graph_client_terminal_activity',
+  'agent_graph_client_applied_records',
+  'agent_graph_supervisor_wakes',
+  'agent_graph_supervisor_wake_attempts',
+] as const;
+
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     1,
