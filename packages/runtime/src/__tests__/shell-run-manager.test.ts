@@ -2094,10 +2094,23 @@ describe('ShellRunProcessManager', () => {
 
   test('releases failed startup slots and enforces total and PTY capacities independently', async () => {
     const cwd = await workspace();
-    const storageRoot = await workspace();
-    const sessionsPath = join(storageRoot, 'sessions');
-    await writeFile(sessionsPath, 'blocks durable ShellRun creation', 'utf8');
-    const store = createSqliteShellRunStore(storageRoot);
+    // Durable ShellRun creation fails once (the SQLite authority has no
+    // filesystem seam to block on), then succeeds; the manager must release
+    // the reserved slot on the failed startup.
+    const backingStore = createSqliteShellRunStore(cwd);
+    let durableFailureArmed = true;
+    const store: ShellRunStore = {
+      async createShellRun(record) {
+        if (durableFailureArmed) {
+          durableFailureArmed = false;
+          throw new Error('durable ShellRun creation failed');
+        }
+        return backingStore.createShellRun(record);
+      },
+      updateShellRun: (...args) => backingStore.updateShellRun(...args),
+      readShellRun: (...args) => backingStore.readShellRun(...args),
+      listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
+    };
     const manager = createManager(store, undefined, { maxLiveShellRuns: 2, maxLivePtyRuns: 1 });
     try {
       await assert.rejects(() =>
@@ -2111,7 +2124,6 @@ describe('ShellRunProcessManager', () => {
       );
       assert.equal(manager.liveCount(), 0);
       assert.equal(manager.livePtyCount(), 0);
-      await rm(sessionsPath, { force: true });
       assert.deepEqual(await store.listSessionShellRuns('session-1'), []);
 
       const ptyRun = await manager.runBackgroundBash(
