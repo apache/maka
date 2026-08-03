@@ -214,18 +214,26 @@ test('a result carrying a fresh tree is recognised by protocol, not by prose', (
 test('the observing and mutating vocabularies are the product enum, not a copy', () => {
   // The regexes that used to stand in for this matched none of `left_click`,
   // `type`, `key`, `wait` or `zoom`, and did match `click`, `type_text`,
-  // `drag`, `launch_app`, `window_action`, `element_sequence` and
-  // `wait_for_text` — seven names with zero occurrences on the wire. Every
-  // action the tool accepts has to be a name this file recognises, and an
-  // action nobody has heard of has to be refused rather than counted.
+  // `drag` and `wait_for_text` — names with zero occurrences on the wire.
+  // Every action the tool accepts has to be a name this file recognises, and
+  // an action nobody has heard of has to be refused rather than counted.
+  //
+  // The invented name below is deliberately one of those regex ghosts rather
+  // than a plausible next action: `launch_app`, `window_action` and
+  // `element_sequence` stood here once and are on the wire now, so a name that
+  // reads like a real action is a test that expires the day the action ships.
   for (const action of CU_TOOL_ACTION_TYPES) {
     const [call] = parseTrace(line({ action, app: 'a', window_id: 1 }, observed('a')));
     assert.deepEqual(call.malformed, [], `${action} is on the wire and must classify`);
     assert.equal(call.action, action);
   }
-  const [invented] = parseTrace(line({ action: 'launch_app', app: 'a' }, observed('a')));
+  assert.ok(
+    !CU_TOOL_ACTION_TYPES.includes('type_text'),
+    'the invented action is on the wire, so this case no longer tests anything',
+  );
+  const [invented] = parseTrace(line({ action: 'type_text', app: 'a' }, observed('a')));
   assert.deepEqual(invented.malformed, [
-    'action "launch_app" is not on the maka_computer wire enum',
+    'action "type_text" is not on the maka_computer wire enum',
   ]);
 });
 
