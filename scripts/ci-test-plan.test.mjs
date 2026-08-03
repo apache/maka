@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
+import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
 
 const graph = loadWorkspaceGraph();
 
@@ -98,6 +98,36 @@ test('sandbox is flagged whenever the cli workspace runs in the closure', () => 
   ]) {
     assert.equal(planTests([path], { graph }).runtimeSandbox, true, path);
   }
+});
+
+test('heavy workspaces are projected onto dedicated CI lanes', () => {
+  const runtimeHost = planTests(['packages/runtime-host/src/server/index.ts'], { graph });
+  assert.equal(runtimeHost.runtimeHost, true);
+  assert.equal(runtimeHost.headless, false);
+  assert.deepEqual(runtimeHost.standardWorkspaces, ['packages/cli']);
+
+  const runtime = planTests(['packages/runtime/src/index.ts'], { graph });
+  assert.equal(runtime.runtimeHost, true);
+  assert.equal(runtime.headless, true);
+  assert.deepEqual(runtime.standardWorkspaces, [
+    'packages/runtime',
+    'packages/computer-use',
+    'packages/cli',
+    'apps/desktop',
+  ]);
+
+  const full = planTests([], { graph, forceFull: true });
+  assert.equal(full.runtimeHost, true);
+  assert.equal(full.headless, true);
+  assert.deepEqual(
+    full.standardWorkspaces,
+    graph.dirs.filter((dir) => dir !== 'packages/runtime-host' && dir !== 'packages/headless'),
+  );
+
+  const outputs = formatGitHubOutputs(runtimeHost).split('\n');
+  assert.ok(outputs.includes('runtime_host=true'));
+  assert.ok(outputs.includes('headless=false'));
+  assert.ok(outputs.includes('standard_workspaces=packages/cli'));
 });
 
 test('global and unknown production changes fail safe to the complete suite', () => {

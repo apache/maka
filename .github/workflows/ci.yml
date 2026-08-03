@@ -17,8 +17,10 @@ jobs:
       code: ${{ steps.plan.outputs.code }}
       e2e: ${{ steps.plan.outputs.e2e }}
       headless: ${{ steps.plan.outputs.headless }}
+      runtime_host: ${{ steps.plan.outputs.runtime_host }}
       runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
       script_mode: ${{ steps.plan.outputs.script_mode }}
+      standard_workspaces: ${{ steps.plan.outputs.standard_workspaces }}
       storage_stress: ${{ steps.plan.outputs.storage_stress }}
       storybook: ${{ steps.plan.outputs.storybook }}
       unit: ${{ steps.plan.outputs.unit }}
@@ -81,9 +83,9 @@ jobs:
       - name: Story annotations
         run: node scripts/check-story-annotations.mjs
 
-  test:
+  test_workspaces:
     needs: changes
-    if: needs.changes.outputs.unit == 'true' || needs.changes.outputs.script_mode != 'none'
+    if: needs.changes.outputs.standard_workspaces != '' || needs.changes.outputs.script_mode != 'none'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,15 +93,8 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - uses: astral-sh/setup-uv@v6
-        if: needs.changes.outputs.headless == 'true'
-      - name: Install pinned Harbor contract runtime
-        if: needs.changes.outputs.headless == 'true'
-        run: |
-          uv tool install "harbor==0.13.2"
-          uv tool dir --bin >> "$GITHUB_PATH"
       - name: Install Linux runtime dependencies
-        if: needs.changes.outputs.headless == 'true' || needs.changes.outputs.runtime_sandbox == 'true'
+        if: needs.changes.outputs.runtime_sandbox == 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
       # AppArmor, which otherwise makes bwrap fail while configuring loopback.
@@ -117,7 +112,6 @@ jobs:
       # tsc outputs (dist/main + dist/renderer side-files), never the vite
       # bundle. e2e builds its own renderer in a separate job.
       - run: npm run build:test
-        if: needs.changes.outputs.unit == 'true' || needs.changes.outputs.script_mode != 'none'
       - name: Linux sandbox smoke
         if: needs.changes.outputs.runtime_sandbox == 'true'
         env:
@@ -132,20 +126,98 @@ jobs:
       # Workspaces consume the dist built above. Selection includes reverse
       # dependencies, while bounded concurrency avoids both the old serial
       # critical path and an unbounded process stampede on two-core runners.
-      - name: Run affected workspace tests
-        if: needs.changes.outputs.unit == 'true'
+      - name: Run affected standard workspace tests
+        if: needs.changes.outputs.standard_workspaces != ''
         env:
-          HEADLESS_AFFECTED: ${{ needs.changes.outputs.headless }}
           STORAGE_STRESS: ${{ needs.changes.outputs.storage_stress }}
-          WORKSPACES: ${{ needs.changes.outputs.workspaces }}
+          WORKSPACES: ${{ needs.changes.outputs.standard_workspaces }}
         run: |
-          if [[ "$HEADLESS_AFFECTED" == "true" ]]; then
-            export MAKA_REQUIRE_HARBOR_CONTRACT=1
-          fi
           if [[ "$STORAGE_STRESS" == "true" ]]; then
             export MAKA_STORAGE_STRESS=1
           fi
           node scripts/run-workspace-tests-parallel.mjs --concurrency=3 --workspaces="$WORKSPACES"
+
+  test_runtime_host:
+    needs: changes
+    if: needs.changes.outputs.runtime_host == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:test
+      - name: Run Runtime Host tests
+        run: npm --workspace @maka/runtime-host run test:dist
+
+  test_headless:
+    needs: changes
+    if: needs.changes.outputs.headless == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+      - name: Install pinned Harbor contract runtime
+        run: |
+          uv tool install "harbor==0.13.2"
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - name: Install Linux runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
+      - run: npm ci
+      - run: npm run build:test
+      - name: Run Headless tests
+        env:
+          MAKA_REQUIRE_HARBOR_CONTRACT: '1'
+        run: npm --workspace @maka/headless run test:dist
+
+  # Preserve one stable required check while letting independent heavy suites
+  # occupy their own runners. The aggregator waits for every selected lane.
+  test:
+    needs: [changes, test_workspaces, test_runtime_host, test_headless]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful test lanes
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          HEADLESS_RESULT: ${{ needs.test_headless.result }}
+          HEADLESS_SELECTED: ${{ needs.changes.outputs.headless }}
+          RUNTIME_HOST_RESULT: ${{ needs.test_runtime_host.result }}
+          RUNTIME_HOST_SELECTED: ${{ needs.changes.outputs.runtime_host }}
+          SCRIPT_MODE: ${{ needs.changes.outputs.script_mode }}
+          STANDARD_WORKSPACES: ${{ needs.changes.outputs.standard_workspaces }}
+          WORKSPACES_RESULT: ${{ needs.test_workspaces.result }}
+        run: |
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "changes failed: $CHANGES_RESULT" >&2
+            exit 1
+          fi
+          require_lane() {
+            local name="$1"
+            local selected="$2"
+            local result="$3"
+            local expected="skipped"
+            if [[ "$selected" == "true" ]]; then
+              expected="success"
+            fi
+            if [[ "$result" != "$expected" ]]; then
+              echo "$name expected $expected but was $result" >&2
+              exit 1
+            fi
+          }
+          workspaces_selected="false"
+          if [[ -n "$STANDARD_WORKSPACES" || "$SCRIPT_MODE" != "none" ]]; then
+            workspaces_selected="true"
+          fi
+          require_lane "workspace tests" "$workspaces_selected" "$WORKSPACES_RESULT"
+          require_lane "Runtime Host tests" "$RUNTIME_HOST_SELECTED" "$RUNTIME_HOST_RESULT"
+          require_lane "Headless tests" "$HEADLESS_SELECTED" "$HEADLESS_RESULT"
 
   e2e:
     needs: changes
