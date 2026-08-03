@@ -11,6 +11,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
+  InlineReference,
   PlanReminder,
   QuoteRef,
   SessionSummary,
@@ -1574,7 +1575,10 @@ function AppShellContent({
     upsertSessionSummary,
   });
 
-  async function sendWithAttachments(text: string): Promise<boolean | void> {
+  async function sendWithAttachments(
+    text: string,
+    metadata?: { inlineReferences?: readonly InlineReference[] },
+  ): Promise<boolean | void> {
     const revision = revisionDraftRef.current;
     const revisionSend = Boolean(
       revision && activeIdRef.current === revision.draftSessionId,
@@ -1650,6 +1654,9 @@ function AppShellContent({
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
+        ...(metadata?.inlineReferences?.length
+          ? { inlineReferences: metadata.inlineReferences }
+          : {}),
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
       if (ok !== false && quotes) clearQuotes();
@@ -1683,6 +1690,9 @@ function AppShellContent({
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
+        ...(metadata?.inlineReferences?.length
+          ? { inlineReferences: metadata.inlineReferences }
+          : {}),
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
       if (ok !== false && quotes) clearQuotes();
@@ -1695,6 +1705,9 @@ function AppShellContent({
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       ...(quotes ? { quotes } : {}),
+      ...(metadata?.inlineReferences?.length
+        ? { inlineReferences: metadata.inlineReferences }
+        : {}),
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);
     if (ok !== false && quotes) clearQuotes();

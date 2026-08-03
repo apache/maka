@@ -33,13 +33,17 @@ test('a picked file mention becomes an inline token and sends as its path', asyn
   await composer.press('Enter');
   const bubble = page.getByLabel('你发送的消息').first();
   await expect(bubble).toBeVisible();
-  // Read the raw text, never a text matcher: Playwright normalizes whitespace,
-  // so `getByText` and `toHaveText` match a U+00A0 against a plain space and
-  // cannot see the character this asserts. The chip is anchored with a NO-BREAK
-  // SPACE, and an unnormalized draft carries it to the backend.
-  const wire = await bubble.evaluate((element) => element.textContent ?? '');
-  expect(wire).toContain('看一下 @.maka/skills/agent-write/SKILL.md 里的说明');
-  expect(wire).not.toContain('\u00a0');
+  await expect(
+    bubble.locator('.maka-chat-message-bubble-user .astryx-badge'),
+  ).toHaveText('SKILL.md');
+  await expect(bubble).toContainText('看一下 SKILL.md 里的说明');
+  // The transcript replays the selected token's label, while the model still
+  // receives the exact serialized path with normalized spacing.
+  await expect(
+    page.getByText(
+      'Fake backend received: 看一下 @.maka/skills/agent-write/SKILL.md 里的说明',
+    ),
+  ).toBeVisible();
 });
 
 /**

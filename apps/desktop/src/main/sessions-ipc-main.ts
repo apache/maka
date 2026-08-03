@@ -56,6 +56,7 @@ import { prepareSessionSendSkillPlan } from './session-send-skill-plan.js';
 import type { DesktopCreateSessionInput } from './new-session-project.js';
 import { registerSessionExecutionIpc } from './session-execution-ipc-main.js';
 import { createQuoteCompanionCleanupAuthority } from './quote-companion-cleanup.js';
+import { mergeSentInlineReferences } from './session-send-inline-references.js';
 
 type SessionStore = ReturnType<typeof createSessionStore>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
@@ -442,6 +443,11 @@ export function registerSessionsIpc(
         : skillInvocation.skillInvocation.loaded
             .map((skill) => `/skill:${skill.id}`)
             .join(' '));
+    const inlineReferences = mergeSentInlineReferences({
+      displayText,
+      rendererReferences: sendCommand.inlineReferences,
+      receipts: skillInvocation.skillInvocation.receipts,
+    });
     const voiceTargetHeader = sendCommand.voiceOperationId
       ? await store.readHeader(sessionId)
       : undefined;
@@ -470,6 +476,7 @@ export function registerSessionsIpc(
           : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(sendCommand.quotes ? { quotes: sendCommand.quotes } : {}),
+        ...(inlineReferences.length > 0 ? { inlineReferences } : {}),
       },
       {
         onRunStarted: async (_runId, header) => {
@@ -484,6 +491,7 @@ export function registerSessionsIpc(
       ok: true as const,
       turnId,
       attachments,
+      inlineReferences,
       skillInvocation: skillInvocation.skillInvocation,
     };
   });

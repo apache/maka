@@ -1,3 +1,4 @@
+import type { InlineReference } from '@maka/core';
 import type { LoadedSkillInstructions, LoadSkillInstructionsResult } from './skills.js';
 
 export type SkillInvocationMode = 'explicit' | 'model_tool';
@@ -58,6 +59,23 @@ export function loadedSkillInvocationReceipt(
     source: skill.source,
     truncated: skill.truncated,
   };
+}
+
+/** Freeze successful user-authored Skill tokens for transcript rendering. */
+export function skillInvocationInlineReferences(
+  receipts: readonly SkillInvocationReceipt[],
+): InlineReference[] {
+  return receipts.flatMap((receipt) =>
+    receipt.success && receipt.invocation === 'explicit'
+      ? [
+          {
+            kind: 'skill' as const,
+            value: `/skill:${receipt.request}`,
+            label: receipt.name,
+          },
+        ]
+      : [],
+  );
 }
 
 export function failedSkillInvocationReceipt(

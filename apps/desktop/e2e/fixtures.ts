@@ -16,7 +16,8 @@ const DESKTOP_ROOT = process.cwd();
  * `toHaveText` and type with `fill` / `pressSequentially`.
  *
  * `toHaveText` reads an inline token's rendered label, not the value it
- * serializes to on send. Assert a mention's wire form on the sent message.
+ * serializes to on send. Assert a mention's wire form through the fake
+ * backend echo and its display form on the sent message.
  */
 export const COMPOSER_INPUT = '.maka-composer-editor [contenteditable="true"]';
 

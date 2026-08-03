@@ -426,7 +426,7 @@ const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
 );
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
-  ['displayText', 'origin', 'attachments', 'quotes', 'steering'],
+  ['displayText', 'origin', 'attachments', 'quotes', 'inlineReferences', 'steering'],
 );
 const THINKING_CONTENT_SHAPE = defineObjectShape<RuntimeEventThinkingContent>()(
   ['kind', 'text'],
@@ -636,6 +636,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         ...(value.displayText !== undefined ? { displayText: value.displayText } : {}),
         ...(value.attachments !== undefined ? { attachments: value.attachments } : {}),
         ...(value.quotes !== undefined ? { quotes: value.quotes } : {}),
+        ...(value.inlineReferences !== undefined
+          ? { inlineReferences: value.inlineReferences }
+          : {}),
       });
     case 'thinking':
       return (

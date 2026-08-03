@@ -199,6 +199,42 @@ describe('continuation-start protocol', () => {
 });
 
 describe('RuntimeEvent content variants', () => {
+  test('preserves sent inline references as message identity', () => {
+    const inlineReferences = [
+      { kind: 'skill', value: '/skill:writer', label: 'Writer' },
+      {
+        kind: 'workspace_file',
+        value: '@packages/ui/src/chat turn.tsx',
+        label: 'chat turn.tsx',
+      },
+    ] as const;
+    const decoded = decodeMessageContent({
+      text: 'Inspect /skill:writer @packages/ui/src/chat turn.tsx',
+      inlineReferences: [...inlineReferences],
+    });
+
+    assert.deepEqual(decoded.inlineReferences, inlineReferences);
+    assert.notEqual(decoded.inlineReferences, inlineReferences);
+    assert.notEqual(decoded.inlineReferences?.[0], inlineReferences[0]);
+    assert.equal(
+      messageContentsEqual(decoded, {
+        text: 'Inspect /skill:writer @packages/ui/src/chat turn.tsx',
+        inlineReferences: [...inlineReferences],
+      }),
+      true,
+    );
+    assert.equal(
+      messageContentsEqual(decoded, {
+        text: 'Inspect /skill:writer @packages/ui/src/chat turn.tsx',
+        inlineReferences: [
+          { ...inlineReferences[0]!, label: 'Renamed Writer' },
+          inlineReferences[1]!,
+        ],
+      }),
+      false,
+    );
+  });
+
   test('owns canonical MessageContent decoding, copying, and equality', () => {
     const attachments = [
       {

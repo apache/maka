@@ -219,15 +219,26 @@ describe('storedMessageToRuntimeEvent', () => {
   test('user message displayText round-trips through RuntimeEvent draft projection', () => {
     const typed = '/skill:alpha 帮我整理';
     const envelope = 'The user explicitly invoked…\n\n<user-message>\n帮我整理\n</user-message>';
+    const inlineReferences = [{ kind: 'skill' as const, value: '/skill:alpha', label: 'Alpha' }];
     const e = storedMessageToRuntimeEvent(
-      { ...user('u-skill', envelope), displayText: typed },
+      { ...user('u-skill', envelope), displayText: typed, inlineReferences },
       ctx,
     );
     expect(e).not.toBeNull();
     if (!e) return;
-    expect(e.content).toEqual({ kind: 'text', text: envelope, displayText: typed });
+    expect(e.content).toEqual({
+      kind: 'text',
+      text: envelope,
+      displayText: typed,
+      inlineReferences,
+    });
     const draft = runtimeEventToStoredMessageDraft(e);
-    expect(draft).toMatchObject({ type: 'user', text: envelope, displayText: typed });
+    expect(draft).toMatchObject({
+      type: 'user',
+      text: envelope,
+      displayText: typed,
+      inlineReferences,
+    });
   });
 
   test('assistant message (text only) → role model, text content; thinking dropped', () => {

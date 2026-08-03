@@ -104,6 +104,34 @@ describe('FileSessionStore CRUD', () => {
     });
   });
 
+  test('round-trips frozen inline references with the user message', async () => {
+    await withStore(async (store) => {
+      const header = await store.create(makeInput({ name: 'Inline references' }));
+      const inlineReferences = [
+        { kind: 'skill' as const, value: '/skill:writer', label: 'Writer' },
+        {
+          kind: 'workspace_file' as const,
+          value: '@docs/my plan.md',
+          label: 'my plan.md',
+        },
+      ];
+      await store.appendMessage(header.id, {
+        type: 'user',
+        id: 'user-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: 'Use /skill:writer on @docs/my plan.md',
+        inlineReferences,
+      });
+
+      const message = (await store.readMessages(header.id))[0];
+      assert.deepEqual(
+        message?.type === 'user' ? message.inlineReferences : undefined,
+        inlineReferences,
+      );
+    });
+  });
+
   test('list summary carries thinkingLevel when set and omits it when cleared', async () => {
     await withStore(async (store) => {
       // No level on create: the summary omits the field (UI shows 默认).

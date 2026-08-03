@@ -2190,6 +2190,7 @@ export function createUserMessage(input: {
   text: string;
   displayText?: string;
   attachments?: UserMessage['attachments'];
+  inlineReferences?: UserMessage['inlineReferences'];
 }): UserMessage {
   return {
     type: 'user',
@@ -2199,5 +2200,6 @@ export function createUserMessage(input: {
     text: input.text,
     ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
     attachments: input.attachments,
+    ...(input.inlineReferences !== undefined ? { inlineReferences: input.inlineReferences } : {}),
   };
 }

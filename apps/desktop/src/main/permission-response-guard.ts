@@ -1,5 +1,6 @@
 import type {
   BranchFromTurnInput,
+  InlineReference,
   QuoteRef,
   RegenerateTurnInput,
   ReviseBeforeTurnInput,
@@ -7,7 +8,11 @@ import type {
   UserQuestionResponse,
 } from '@maka/core';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { isOrchestrationMode, isTurnOrchestrationSource } from '@maka/core';
+import {
+  isCanonicalStorageRef,
+  isOrchestrationMode,
+  isTurnOrchestrationSource,
+} from '@maka/core';
 
 const MAX_PERMISSION_REQUEST_ID_LENGTH = 128;
 const MAX_TURN_ID_LENGTH = 128;
@@ -16,6 +21,9 @@ const MAX_SESSION_SEND_TEXT_LENGTH = 128_000;
 const MAX_QUOTE_COUNT = 16;
 const MAX_QUOTE_TEXT_LENGTH = 32_000;
 const MAX_QUOTE_LABEL_LENGTH = 200;
+const MAX_INLINE_REFERENCE_COUNT = 32;
+const MAX_INLINE_REFERENCE_VALUE_LENGTH = 4_096;
+const MAX_INLINE_REFERENCE_LABEL_LENGTH = 200;
 
 interface NormalizedSendSessionCommand {
   type: 'send';
@@ -27,6 +35,7 @@ interface NormalizedSendSessionCommand {
   attachmentItems?: unknown;
   turnOrchestration?: TurnOrchestration;
   quotes?: QuoteRef[];
+  inlineReferences?: InlineReference[];
 }
 type NormalizedStopSessionInput = { source?: 'stop_button' };
 
@@ -130,7 +139,46 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
     ...normalizeOptionalQuotes(value.quotes),
+    ...normalizeOptionalInlineReferences(value.inlineReferences),
   };
+}
+
+function normalizeOptionalInlineReferences(input: unknown): { inlineReferences?: InlineReference[] } {
+  if (input === undefined) return {};
+  if (!Array.isArray(input) || input.length > MAX_INLINE_REFERENCE_COUNT) {
+    throw new Error('Invalid send inline references');
+  }
+  const inlineReferences = input.map((entry) => {
+    const value = requireObject(entry, 'Invalid send inline reference');
+    if (value.kind !== 'workspace_file') {
+      // Skill references are accepted only after main has resolved them. The
+      // renderer is authoritative solely for file-token boundaries.
+      throw new Error('Invalid send inline reference kind');
+    }
+    const tokenValue = normalizeRequiredString(
+      value.value,
+      'Invalid send inline reference value',
+      MAX_INLINE_REFERENCE_VALUE_LENGTH,
+    );
+    if (
+      !tokenValue.startsWith('@') ||
+      tokenValue.length === 1 ||
+      !isCanonicalStorageRef({
+        kind: 'workspace_file',
+        relativePath: tokenValue.slice(1),
+      })
+    ) {
+      throw new Error('Invalid send inline reference value');
+    }
+    const label = normalizeOptionalString(
+      value.label,
+      'Invalid send inline reference label',
+      MAX_INLINE_REFERENCE_LABEL_LENGTH,
+    );
+    if (!label) throw new Error('Invalid send inline reference label');
+    return { kind: 'workspace_file' as const, value: tokenValue, label };
+  });
+  return inlineReferences.length > 0 ? { inlineReferences } : {};
 }
 
 function normalizeVoiceOperationId(input: unknown): string {

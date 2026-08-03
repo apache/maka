@@ -189,7 +189,7 @@ export const ImageThumbnails: Story = {
 };
 
 // Real path: send one prompt with every durable reference kind → file tokens sit
-// above the bubble, while the Skill token, quote and image keep their own hierarchy.
+// above the bubble, while inline Skill/file tokens, quote and image keep their own hierarchy.
 // The narrow frame verifies wrapping without inventing a second product layout.
 export const SentReferenceHierarchy: Story = {
   render: () => (
@@ -202,9 +202,17 @@ export const SentReferenceHierarchy: Story = {
           turnId: 't3',
           ts: NOW,
           text: '请用 /skill:writer 对照 @packages/ui/src/chat-turn.tsx 检查这些材料。',
+          inlineReferences: [
+            { kind: 'skill', value: '/skill:writer', label: 'writer' },
+            {
+              kind: 'workspace_file',
+              value: '@packages/ui/src/chat-turn.tsx',
+              label: 'chat-turn.tsx',
+            },
+          ],
           attachments: [pdfAttachment, codeAttachment, imageAttachment],
           quotes: [{
-            text: 'Workspace mentions stay plain text until they have a durable reference contract.',
+            text: 'Inline references preserve the exact Composer token after send and reload.',
             label: 'Architecture note',
             sourceTurnId: 't2',
           }],

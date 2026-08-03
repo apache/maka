@@ -24,6 +24,7 @@ import { Tooltip } from '@astryxdesign/core/Tooltip';
 import {
   SKILL_INVOCATION_TOKEN_SOURCE,
   type AttachmentRef,
+  type InlineReference,
   type ProviderRetryEvent,
   type QuoteRef,
 } from '@maka/core';
@@ -37,6 +38,7 @@ import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
+import { inlineReferenceTokens } from './inline-reference.js';
 
 function LocalizedChatMessage({
   accessibleLabel,
@@ -68,7 +70,7 @@ export type ReadAttachmentBytes = (
   relativePath: string,
 ) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
 
-function sentSkillTokens(text: string) {
+function legacySentSkillTokens(text: string) {
   const values = new Set(
     [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
   );
@@ -136,6 +138,7 @@ const MessageBody = memo(function MessageBody(props: {
   ts?: number;
   attachments?: readonly AttachmentRef[];
   quotes?: readonly QuoteRef[];
+  inlineReferences?: readonly InlineReference[];
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /** When set on a user message, show an edit affordance that starts a revision draft. */
   onEditUserMessage?: () => void;
@@ -225,7 +228,15 @@ const MessageBody = memo(function MessageBody(props: {
           className="maka-chat-message-bubble maka-chat-message-bubble-user"
           metadata={userMetadata}
         >
-          <ChatTokenizedText tokens={sentSkillTokens(props.text)}>{props.text}</ChatTokenizedText>
+          <ChatTokenizedText
+            tokens={
+              props.inlineReferences
+                ? inlineReferenceTokens(props.inlineReferences)
+                : legacySentSkillTokens(props.text)
+            }
+          >
+            {props.text}
+          </ChatTokenizedText>
         </ChatMessageBubble>
       </>
     );
@@ -452,6 +463,7 @@ export const TurnView = memo(function TurnView(props: {
             ts={turn.user.ts}
             attachments={turn.user.attachments}
             quotes={turn.user.quotes}
+            inlineReferences={turn.user.inlineReferences}
             onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
               props.onEditUserMessage && !turn.user.hostOrigin

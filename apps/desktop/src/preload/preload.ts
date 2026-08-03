@@ -120,6 +120,7 @@ import type {
 } from '@maka/core/mcp';
 import type {
   AttachmentRef,
+  InlineReference,
   OnboardingMilestoneId,
   QuoteRef,
 } from '@maka/core';
@@ -207,12 +208,14 @@ const makaBridge = {
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
+            inlineReferences?: InlineReference[];
           },
     ): Promise<
       | {
           ok: true;
           turnId: string;
           attachments: AttachmentRef[];
+          inlineReferences: InlineReference[];
           skillInvocation: import('@maka/runtime').SkillInvocationResult;
         }
       | {

@@ -25,6 +25,31 @@ const codeAttachment: AttachmentRef = {
 };
 
 describe('materializeChat attachments', () => {
+  test('projects frozen inline references onto chat and turn user messages', () => {
+    const inlineReferences = [
+      { kind: 'skill' as const, value: '/skill:writer', label: 'Writer' },
+      {
+        kind: 'workspace_file' as const,
+        value: '@docs/my plan.md',
+        label: 'my plan.md',
+      },
+    ];
+    const messages: StoredMessage[] = [
+      {
+        type: 'user',
+        id: 'm1',
+        turnId: 't1',
+        ts: 1,
+        text: 'model envelope',
+        displayText: 'Use /skill:writer on @docs/my plan.md',
+        inlineReferences,
+      },
+    ];
+
+    assert.deepEqual(materializeChat(messages)[0]?.inlineReferences, inlineReferences);
+    assert.deepEqual(materializeTurns(messages)[0]?.user?.inlineReferences, inlineReferences);
+  });
+
   test('projects user message attachments onto the chat item', () => {
     const messages: StoredMessage[] = [
       { type: 'user', id: 'm1', turnId: 't1', ts: 1, text: 'see this', attachments: [imageAttachment, codeAttachment] },

@@ -80,6 +80,20 @@ export interface QuoteRef {
   sourceTurnId?: string;
 }
 
+/**
+ * Frozen display metadata for one token embedded in a sent message's visible
+ * text. The model-facing authority remains {@link MessageContent.text}; this
+ * record only lets clients replay the token the user actually sent without
+ * consulting a mutable Skill catalog or guessing file-path boundaries.
+ */
+export interface InlineReference {
+  kind: 'skill' | 'workspace_file';
+  /** Exact serialized token value present in `displayText ?? text`. */
+  value: string;
+  /** Display label captured when the message was accepted. */
+  label: string;
+}
+
 /** Canonical user-authored content shared by storage, runtime, and Host wire. */
 export interface MessageContent {
   /**
@@ -93,17 +107,20 @@ export interface MessageContent {
   attachments?: AttachmentRef[];
   /** Ordered inline excerpts; omit when empty. Provenance remains part of content identity. */
   quotes?: QuoteRef[];
+  /** Sent inline tokens; omit when empty. This metadata never enters model context. */
+  inlineReferences?: InlineReference[];
 }
 
 const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
-  ['displayText', 'attachments', 'quotes'],
+  ['displayText', 'attachments', 'quotes', 'inlineReferences'],
 );
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
   [],
 );
 const QUOTE_REF_SHAPE = defineObjectShape<QuoteRef>()(['text'], ['label', 'sourceTurnId']);
+const INLINE_REFERENCE_SHAPE = defineObjectShape<InlineReference>()(['kind', 'value', 'label'], []);
 const SESSION_FILE_REF_SHAPE = defineObjectShape<Extract<StorageRef, { kind: 'session_file' }>>()(
   ['kind', 'sessionId', 'relativePath'],
   [],
@@ -140,6 +157,11 @@ export function normalizeMessageContent(content: MessageContent): MessageContent
           })),
         }
       : {}),
+    ...(content.inlineReferences !== undefined && content.inlineReferences.length > 0
+      ? {
+          inlineReferences: content.inlineReferences.map((reference) => ({ ...reference })),
+        }
+      : {}),
   };
 }
 
@@ -156,7 +178,20 @@ export function isMessageContent(value: unknown): value is MessageContent {
     (value.displayText === undefined || typeof value.displayText === 'string') &&
     (value.attachments === undefined ||
       (Array.isArray(value.attachments) && value.attachments.every(isAttachmentRef))) &&
-    (value.quotes === undefined || (Array.isArray(value.quotes) && value.quotes.every(isQuoteRef)))
+    (value.quotes === undefined ||
+      (Array.isArray(value.quotes) && value.quotes.every(isQuoteRef))) &&
+    (value.inlineReferences === undefined ||
+      (Array.isArray(value.inlineReferences) && value.inlineReferences.every(isInlineReference)))
+  );
+}
+
+export function isInlineReference(value: unknown): value is InlineReference {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, INLINE_REFERENCE_SHAPE) &&
+    (value.kind === 'skill' || value.kind === 'workspace_file') &&
+    typeof value.value === 'string' &&
+    typeof value.label === 'string'
   );
 }
 
@@ -251,6 +286,8 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
   const rightAttachments = right.attachments?.length ? right.attachments : undefined;
   const leftQuotes = left.quotes?.length ? left.quotes : undefined;
   const rightQuotes = right.quotes?.length ? right.quotes : undefined;
+  const leftInlineReferences = left.inlineReferences?.length ? left.inlineReferences : undefined;
+  const rightInlineReferences = right.inlineReferences?.length ? right.inlineReferences : undefined;
   return (
     left.text === right.text &&
     leftDisplayText === rightDisplayText &&
@@ -265,8 +302,19 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
       (leftQuotes !== undefined &&
         rightQuotes !== undefined &&
         leftQuotes.length === rightQuotes.length &&
-        leftQuotes.every((quote, index) => quoteRefsEqual(quote, rightQuotes[index]!))))
+        leftQuotes.every((quote, index) => quoteRefsEqual(quote, rightQuotes[index]!)))) &&
+    ((leftInlineReferences === undefined && rightInlineReferences === undefined) ||
+      (leftInlineReferences !== undefined &&
+        rightInlineReferences !== undefined &&
+        leftInlineReferences.length === rightInlineReferences.length &&
+        leftInlineReferences.every((reference, index) =>
+          inlineReferencesEqual(reference, rightInlineReferences[index]!),
+        )))
   );
+}
+
+function inlineReferencesEqual(left: InlineReference, right: InlineReference): boolean {
+  return left.kind === right.kind && left.value === right.value && left.label === right.label;
 }
 
 function quoteRefsEqual(left: QuoteRef, right: QuoteRef): boolean {

@@ -49,7 +49,7 @@ import {
 } from './chat-input-behavior.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
-import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
+import type { AttachmentRef, InlineReference, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import {
   Button as UiButton,
   ChatComposer as AstryxChatComposer,
@@ -70,6 +70,12 @@ import {
   DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { PermissionModeSelect } from './permission-mode-menu.js';
+import {
+  inlineReferenceFileBasename,
+  inlineReferenceToken,
+  workspaceFileInlineReference,
+  workspaceFileInlineReferencesFromTokenValues,
+} from './inline-reference.js';
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -112,12 +118,6 @@ function skillTokenValue(id: string): string {
  */
 const COMPOSER_MAX_ROWS = 10;
 
-/** Last path segment of a POSIX-style relative path — the mention row's primary label. */
-function fileBasename(relativePath: string): string {
-  const segments = relativePath.split('/').filter(Boolean);
-  return segments[segments.length - 1] ?? relativePath;
-}
-
 /**
  * PR-UI-15 (@yuejing 2026-05-22): Composer copy is locale-aware.
  *
@@ -141,6 +141,10 @@ export interface ComposerHandle {
   appendDraft?(draftKey: string, text: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
+}
+
+export interface ComposerSendMetadata {
+  inlineReferences?: readonly InlineReference[];
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -170,7 +174,10 @@ export const Composer = forwardRef<
     stopPending?: boolean;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
     draftKey?: string;
-    onSend(text: string): boolean | void | Promise<boolean | void>;
+    onSend(
+      text: string,
+      metadata?: ComposerSendMetadata,
+    ): boolean | void | Promise<boolean | void>;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
@@ -503,11 +510,9 @@ export const Composer = forwardRef<
       range.setEnd(node, end);
       selection.removeAllRanges();
       selection.addRange(range);
-      inputHandleRef.current?.insertToken({
-        value: match[0],
-        label: skill.name,
-        icon: <Sparkles size={12} aria-hidden="true" />,
-      });
+      inputHandleRef.current?.insertToken(
+        inlineReferenceToken({ kind: 'skill', value: match[0], label: skill.name }),
+      );
       redrew = true;
     }
     return redrew;
@@ -692,7 +697,7 @@ export const Composer = forwardRef<
           <>
             <FileText size={14} aria-hidden="true" className="maka-composer-mention-icon" />
             <span className="maka-composer-mention-text">
-              <span className="maka-composer-mention-name">{fileBasename(item.id)}</span>
+              <span className="maka-composer-mention-name">{inlineReferenceFileBasename(item.id)}</span>
               <span className="maka-composer-mention-secondary">{item.id}</span>
             </span>
           </>
@@ -708,7 +713,8 @@ export const Composer = forwardRef<
         // '\n' as a trigger boundary, so typing `@` directly after a chip
         // opens no menu until the user types a space. That boundary set is
         // internal to `useTriggerMenu`; the fix belongs upstream.
-        onSelect: (item): ChatComposerToken => ({ value: `@${item.id}`, label: fileBasename(item.id) }),
+        onSelect: (item): ChatComposerToken =>
+          inlineReferenceToken(workspaceFileInlineReference(item.id)),
       });
     }
     if (props.mentionSkills !== undefined) {
@@ -756,11 +762,12 @@ export const Composer = forwardRef<
         //
         // No colour: Maka blue is the single product accent, and a staged
         // Skill is identified by its sparkle and its label.
-        onSelect: (item): ChatComposerToken => ({
-          value: skillTokenValue(item.id),
-          label: (item.auxiliaryData as ComposerSkillOption).name,
-          icon: <Sparkles size={12} aria-hidden="true" />,
-        }),
+        onSelect: (item): ChatComposerToken =>
+          inlineReferenceToken({
+            kind: 'skill',
+            value: skillTokenValue(item.id),
+            label: (item.auxiliaryData as ComposerSkillOption).name,
+          }),
       });
     }
     return list;
@@ -878,17 +885,26 @@ export const Composer = forwardRef<
 
   async function sendCurrent() {
     if (props.disabled || sendPendingRef.current || importActionOwnerRef.current?.pending) return;
-    // One argument, because there is one draft: staged Skills ride inside the
-    // text as `/skill:<id>` tokens, and Runtime resolves and strips them before
-    // the model sees the message.
+    // There is one authoritative draft: staged Skills and files serialize into
+    // `text`. The optional metadata below is a send-time rendering snapshot of
+    // file chips that still exist in the editor, not a second draft state.
     const text = composerWireText(textPort.getValue());
     if (!text) return;
+    const inlineReferences = workspaceFileInlineReferencesFromTokenValues(
+      Array.from(
+        editableNode()?.querySelectorAll<HTMLElement>('[data-astryx-token]') ?? [],
+        (token) => token.getAttribute('data-astryx-token-value'),
+      ),
+    );
     const submittedDraftKey = activeDraftKey();
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
     try {
-      sent = await props.onSend(text);
+      sent = await props.onSend(
+        text,
+        inlineReferences.length > 0 ? { inlineReferences } : undefined,
+      );
     } finally {
       sendPendingRef.current = false;
       if (composerMountedRef.current) setSendPending(false);

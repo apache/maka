@@ -1640,6 +1640,7 @@ export type {
   SkillInvocationMode,
   SkillInvocationReceipt,
 } from './skill-invocation-receipt.js';
+export { skillInvocationInlineReferences } from './skill-invocation-receipt.js';
 export { isPathInside, isSafeSkillId, toRelative } from './path-containment.js';
 export type { PathInsideApi } from './path-containment.js';
 export type {

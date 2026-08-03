@@ -822,7 +822,7 @@ export interface SystemNoteMessage {
 
 const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text'],
-  ['displayText', 'attachments', 'quotes', 'origin'],
+  ['displayText', 'attachments', 'quotes', 'inlineReferences', 'origin'],
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
@@ -934,11 +934,17 @@ function decodeStoredMessage(
         hasMessageEnvelope(message, true) &&
         (message.origin === undefined || isMessageOrigin(message.origin))
       ) {
-        const { displayText, attachments, quotes, origin, ...envelope } = message;
+        const { displayText, attachments, quotes, inlineReferences, origin, ...envelope } = message;
         try {
           return {
             ...envelope,
-            ...decodeMessageContent({ text: message.text, displayText, attachments, quotes }),
+            ...decodeMessageContent({
+              text: message.text,
+              displayText,
+              attachments,
+              quotes,
+              inlineReferences,
+            }),
             ...(origin !== undefined ? { origin } : {}),
           } as unknown as UserMessage;
         } catch {

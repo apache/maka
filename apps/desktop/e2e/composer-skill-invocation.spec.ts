@@ -226,9 +226,9 @@ test('staged Skills come back as chips after leaving and returning', async ({
 
   await composer.click();
   await composer.press('Enter');
-  await expect(page.getByLabel('你发送的消息').last()).toContainText(
-    '/skill:project-only run it /skill:workspace-only',
-  );
+  await expect(
+    page.getByLabel('你发送的消息').last().locator('.astryx-badge'),
+  ).toHaveText(['Project Only', 'Workspace Only']);
 });
 
 test('chip-only send renders a readable user message', async ({ window: page }) => {
@@ -239,10 +239,10 @@ test('chip-only send renders a readable user message', async ({ window: page }) 
   await composer.press('Enter');
 
   const sentMessage = page.getByLabel('你发送的消息').first();
-  await expect(sentMessage).toContainText('/skill:starter-skill');
+  await expect(sentMessage).toContainText('示例技能');
   await expect(
     sentMessage.locator('.maka-chat-message-bubble-user .astryx-badge'),
-  ).toHaveText('/skill:starter-skill');
+  ).toHaveText('示例技能');
 });
 
 test('a blocked Skill invocation keeps the complete composer draft', async ({

@@ -86,6 +86,14 @@ describe('permission response IPC boundary', () => {
         quotes: [
           { text: 'the excerpt', label: '  Assistant  ', sourceTurnId: 'turn-9', extra: true },
         ],
+        inlineReferences: [
+          {
+            kind: 'workspace_file',
+            value: '@packages/ui/src/chat turn.tsx',
+            label: '  chat turn.tsx  ',
+            extra: true,
+          },
+        ],
         extra: true,
       }),
       {
@@ -97,6 +105,13 @@ describe('permission response IPC boundary', () => {
         attachmentItems: [{ approvalId: 'a', name: 'n' }],
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         quotes: [{ text: 'the excerpt', label: 'Assistant', sourceTurnId: 'turn-9' }],
+        inlineReferences: [
+          {
+            kind: 'workspace_file',
+            value: '@packages/ui/src/chat turn.tsx',
+            label: 'chat turn.tsx',
+          },
+        ],
       },
     );
     assert.equal(normalizeSessionSendCommand({ type: 'stop' }), undefined);
@@ -119,6 +134,24 @@ describe('permission response IPC boundary', () => {
       { type: 'send', text: 'hello', quotes: Array(17).fill({ text: 'x' }) },
       { type: 'send', text: 'hello', quotes: [{ text: '' }] },
       { type: 'send', text: 'hello', quotes: [{ text: 'x', sourceTurnId: 1 }] },
+      { type: 'send', text: 'hello', inlineReferences: {} },
+      {
+        type: 'send',
+        text: 'hello',
+        inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer' }],
+      },
+      {
+        type: 'send',
+        text: 'hello',
+        inlineReferences: [{ kind: 'file', value: '@a.ts', label: 'a.ts' }],
+      },
+      {
+        type: 'send',
+        text: 'hello',
+        inlineReferences: [
+          { kind: 'workspace_file', value: '@../secret', label: 'secret' },
+        ],
+      },
     ];
     for (const command of invalidCommands) {
       assert.throws(() => normalizeSessionSendCommand(command), /Invalid/);

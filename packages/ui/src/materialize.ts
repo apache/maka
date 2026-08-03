@@ -6,7 +6,7 @@ import {
   STEP_LIMIT_NOTICE_TEXT,
   toolResultActivityStatus,
 } from '@maka/core';
-import type { AttachmentRef, QuoteRef, ShellRunUpdate, StoredMessage, ToolActivityKind, ToolResultContent, TurnRecord, TurnStatus, UserMessage } from '@maka/core';
+import type { AttachmentRef, InlineReference, QuoteRef, ShellRunUpdate, StoredMessage, ToolActivityKind, ToolResultContent, TurnRecord, TurnStatus, UserMessage } from '@maka/core';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 
 export { isCancelledToolResultContent, toolResultActivityStatus } from '@maka/core';
@@ -21,6 +21,8 @@ export interface ChatItem {
   attachments?: AttachmentRef[];
   /** Inline quoted excerpts projected from StoredMessage; user rows only. */
   quotes?: QuoteRef[];
+  /** Frozen inline token metadata projected from StoredMessage; user rows only. */
+  inlineReferences?: InlineReference[];
   /** Present when the Host authored this message instead of the user. */
   hostOrigin?: NonNullable<UserMessage['origin']>;
 }
@@ -115,6 +117,9 @@ export function materializeChat(messages: StoredMessage[]): ChatItem[] {
         ts: message.ts,
         ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
         ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
+        ...(message.inlineReferences && message.inlineReferences.length > 0
+          ? { inlineReferences: message.inlineReferences }
+          : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),
       });
     }
@@ -479,6 +484,9 @@ export function materializeTurns(messages: StoredMessage[]): TurnViewModel[] {
         ts: message.ts,
         ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
         ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
+        ...(message.inlineReferences && message.inlineReferences.length > 0
+          ? { inlineReferences: message.inlineReferences }
+          : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),
       };
     } else if (message.type === 'assistant') {

@@ -4587,6 +4587,7 @@ export class SessionManager {
           ...(user.displayText !== undefined ? { displayText: user.displayText } : {}),
           ...(user.attachments ? { attachments: user.attachments } : {}),
           ...(user.quotes ? { quotes: user.quotes } : {}),
+          ...(user.inlineReferences ? { inlineReferences: user.inlineReferences } : {}),
           parentTurnId: source.turnId,
           regeneratedFromTurnId: source.turnId,
         },
