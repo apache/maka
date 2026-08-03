@@ -3,6 +3,7 @@ import type {
   ComputerUseBoundAction,
   ComputerUseFrameIdentity,
   ComputerUseObservationIdentity,
+  ComputerUseRect,
   ComputerUseWindowIdentity,
   CuAction,
   CuPoint,
@@ -148,15 +149,49 @@ export function fingerprintCuaSemanticAction(
   return JSON.stringify([type, elementId, value]);
 }
 
+/**
+ * Where the cursor should be shown for an element action, from the element's
+ * own observed frame.
+ *
+ * Element frames arrive in the same screen coordinates as the window's bounds
+ * — `validateSemanticElementVisibility` compares one against the other
+ * directly — so the centre needs no transform, only the containment check that
+ * validator applies. Outside the window the frame is stale or the element has
+ * moved, and no point at all is better than sending the cursor somewhere the
+ * action will be refused from anyway.
+ */
+function elementPresentationPoint(
+  observation: CuaObservation,
+  frame: ComputerUseRect | undefined,
+): CuPoint | undefined {
+  const bounds = observation.target.bounds;
+  if (!frame || !bounds) return undefined;
+  if (frame.width <= 0 || frame.height <= 0) return undefined;
+  const point = { x: frame.x + frame.width / 2, y: frame.y + frame.height / 2 };
+  if (point.x < bounds.x || point.x >= bounds.x + bounds.width) return undefined;
+  if (point.y < bounds.y || point.y >= bounds.y + bounds.height) return undefined;
+  return point;
+}
+
 export function bindCuaSemanticActionToObservation(
   observation: CuaObservation,
-  input: { type: string; elementId?: string; value?: string },
+  input: {
+    type: string;
+    elementId?: string;
+    value?: string;
+    /** The observed frame of `elementId`, when the observation reported one. */
+    elementFrame?: ComputerUseRect;
+  },
 ): CuaBoundAction {
+  const presentationScreenPoint = elementPresentationPoint(observation, input.elementFrame);
   return bindCuaAction(
     observation,
     fingerprintCuaSemanticAction(input.type, input.elementId, input.value),
     observation.target,
-    input.elementId ? { elementId: input.elementId } : {},
+    {
+      ...(input.elementId ? { elementId: input.elementId } : {}),
+      ...(presentationScreenPoint ? { presentationScreenPoint } : {}),
+    },
   );
 }
 

@@ -62,15 +62,18 @@ function resize(): void {
   watchDevicePixelRatio();
 }
 
-// `resize` is not enough on its own. The overlay spans the union of every
-// display, so dragging it onto a screen with a different scale factor changes
-// `devicePixelRatio` without changing `innerWidth`/`innerHeight` — no resize
-// event, and the backing store stays at the old ratio, which is a blurry glyph
-// (the drawn point stays correct; only the resolution is wrong). Tearing the
-// window down used to hide this, because any `display-metrics-changed` rebuilt
-// it; the union rect is now compared before rebuilding, and a scale-factor-only
-// change leaves that rect identical. A resolution media query is the one signal
-// that fires for it, and it fires while the render loop is idle.
+// `resize` is not enough on its own. The overlay is `movable: false` and
+// `resizable: false` and already spans the union of every display, so it is
+// never dragged anywhere and never resized by a person — the only way its
+// `devicePixelRatio` changes is a display's scale factor changing underneath
+// it. When that happens without moving any display, the union rect is
+// identical, so `innerWidth`/`innerHeight` do not change and no resize event
+// fires, while the backing store stays at the old ratio — a blurry glyph (the
+// drawn point stays correct; only the resolution is wrong). Tearing the window
+// down used to hide this, because any `display-metrics-changed` rebuilt it; the
+// union rect is now compared before rebuilding, which is exactly the case that
+// comparison suppresses. A resolution media query is the one signal that fires
+// for it, and it fires while the render loop is idle.
 let dprQuery: MediaQueryList | undefined;
 function onDevicePixelRatioChange(): void {
   resize();

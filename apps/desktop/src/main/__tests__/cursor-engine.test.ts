@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
+import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime';
+
 import {
   CODEX_CURSOR_GLYPH,
   CODEX_CURSOR_MOTION,
@@ -270,6 +272,93 @@ test('the presentation deadline covers the slowest release the gate can ask for'
   );
   // And not so generous that a dead renderer hangs the turn.
   assert.ok(deadlineMs < 5_000, `deadline ${deadlineMs}ms is an unreasonable backstop`);
+});
+
+test('the deadline holds at every frame rate the overlay can paint at', () => {
+  // The test above integrates its own spring at a fixed 1/240 and measures
+  // simulated time, so it says nothing about `CursorEngine.tick` — which is
+  // where the wall clock actually enters. `tick` clamped its step to the
+  // integrator's stability bound and dropped the rest, so a frame longer than
+  // that advanced the simulation by less time than had passed: measured, the
+  // gate opened at 1950ms at 20fps and 3900ms at 10fps, against a 2402ms
+  // deadline. The docstring claimed the bound did not depend on the frame rate;
+  // below 20fps it did, and 17ms of headroom covers one dropped frame rather
+  // than sustained throttling.
+  const deadlineMs = cursorPresentationReadyDeadlineMs();
+  // The overlay's own release gate, from apps/desktop/src/overlay/cursor-overlay.ts.
+  const gateOpen = (engine: CursorEngine): boolean =>
+    !engine.hasMotionPath()
+    || engine.motionProgress() >= CURSOR_CLOSE_ENOUGH.progress
+    || engine.motionDistanceRemaining() <= CURSOR_CLOSE_ENOUGH.distance;
+
+  for (const fps of [240, 120, 60, 30, 20, 15, 10, 5, 1]) {
+    const engine = new CursorEngine();
+    engine.setViewport(3840, 1600);
+    // The first move only fades the glyph in at its hotspot; settle that before
+    // asking for the move whose deadline is under test.
+    engine.moveTo(20, 20);
+    for (let i = 0; i < 200; i++) engine.tick(1 / 240);
+    // A cross-display move, long enough to clamp at springResponseMax, which is
+    // the worst case the deadline is derived from.
+    engine.moveTo(3800, 1500);
+    assert.equal(gateOpen(engine), false, `${fps}fps: the move has a path to begin with`);
+
+    const step = 1 / fps;
+    let wallClockMs = 0;
+    while (!gateOpen(engine) && wallClockMs < 30_000) {
+      engine.tick(step);
+      wallClockMs += step * 1000;
+    }
+    assert.ok(
+      gateOpen(engine),
+      `${fps}fps: the gate never opened within 30s of wall clock`,
+    );
+    assert.ok(
+      wallClockMs <= deadlineMs,
+      `${fps}fps: the gate opened after ${Math.round(wallClockMs)}ms of wall clock, `
+        + `past the ${deadlineMs}ms the runtime waits`,
+    );
+  }
+});
+
+test('the landing the runtime waits for fits in the backstop it waits with', () => {
+  // `presentationFinishedTimeoutMs` looks like `readyTimeoutMs` chosen a second
+  // time and smaller. It is not: the two bound sequential intervals. The ready
+  // deadline covers the whole motion, up to the release gate; the finished
+  // backstop starts only after `onActionEnd`, so all it has to cover is the
+  // tail left after the gate opened. Nothing related the two numbers and
+  // nothing measured the tail, which is the part worth fixing.
+  const gateOpen = (engine: CursorEngine): boolean =>
+    !engine.hasMotionPath()
+    || engine.motionProgress() >= CURSOR_CLOSE_ENOUGH.progress
+    || engine.motionDistanceRemaining() <= CURSOR_CLOSE_ENOUGH.distance;
+
+  const engine = new CursorEngine();
+  engine.setViewport(3840, 1600);
+  engine.moveTo(20, 20);
+  for (let i = 0; i < 200; i++) engine.tick(1 / 240);
+  // The worst case again: a cross-display move at springResponseMax.
+  engine.moveTo(3800, 1500);
+
+  const dt = 1 / 60;
+  let elapsedMs = 0;
+  let gateMs: number | null = null;
+  while (engine.hasMotionPath() && elapsedMs < 30_000) {
+    engine.tick(dt);
+    elapsedMs += dt * 1000;
+    if (gateMs === null && gateOpen(engine)) gateMs = elapsedMs;
+  }
+  assert.notEqual(gateMs, null, 'the gate opens');
+  assert.equal(engine.hasMotionPath(), false, 'the motion settles');
+  // The upper bound on the tail: in practice `complete()` truncates it the
+  // moment the dispatch returns, so the real wait is shorter than this.
+  const tailMs = elapsedMs - (gateMs as number);
+  assert.ok(
+    tailMs <= DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS,
+    `the longest tail after the release gate is ${Math.round(tailMs)}ms, past the `
+      + `${DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS}ms the runtime waits for a presentation `
+      + 'to report it has finished',
+  );
 });
 
 test('an interrupted move may still honour the heading it is already carrying', () => {  const start: Vec = [400, 400];

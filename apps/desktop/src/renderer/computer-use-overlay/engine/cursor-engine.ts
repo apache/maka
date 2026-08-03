@@ -70,6 +70,26 @@ export const CURSOR_CLOSE_ENOUGH = {
 } as const;
 
 /**
+ * The longest single step the spring integrator is advanced by.
+ *
+ * A semi-implicit step is only stable while `dt` is small relative to the
+ * spring's response; one frame of a stalled compositor fed in whole would
+ * throw the glyph across the screen. A frame longer than this is split into
+ * sub-steps of this size or less, so the bound is on each step and not on how
+ * much time the simulation is allowed to account for.
+ */
+const MAX_INTEGRATION_STEP = 0.05;
+
+/**
+ * The most wall clock one `tick` will account for, in seconds.
+ *
+ * Below one frame per second the overlay is not painting slowly, it has
+ * stopped, and replaying the whole gap as motion nobody saw buys nothing. The
+ * presentation fence's backstop is what covers that case.
+ */
+const MAX_CATCH_UP = 1;
+
+/**
  * The longest a motion can take to open the `closeEnough` gate, in milliseconds.
  *
  * The progress spring is a unit step response with damping ratio
@@ -81,9 +101,16 @@ export const CURSOR_CLOSE_ENOUGH = {
  *
  * `response` is `clamp(distance/1000 · scaler, min, max)`, so the worst case is
  * `springResponseMax`. The bound is the envelope rather than the measured first
- * crossing (which is earlier, ≈0.88·response) so it holds without depending on
- * the integrator or the frame rate; one frame at 60Hz is added on top because
- * the gate is only evaluated once per painted frame.
+ * crossing (which is earlier, ≈0.88·response) so it does not depend on where
+ * the integrator happens to land; one frame at 60Hz is added on top because the
+ * gate is only evaluated once per painted frame.
+ *
+ * It is a bound on simulated time, and `tick` is what makes simulated time
+ * equal wall clock: it sub-steps a long frame instead of truncating it, down to
+ * {@link MAX_CATCH_UP}. Truncating is what made this bound frame-rate dependent
+ * — measured, the gate opened at 1950ms at 20fps but 3900ms at 10fps, against
+ * the 2402ms declared here, and 17ms of headroom covers one dropped frame, not
+ * sustained throttling.
  *
  * This is the number the runtime's presentation fence has to be at least as
  * long as. Two independently chosen constants is how the fence came to cut a
@@ -601,6 +628,17 @@ export class CursorEngine {
     // `heading` is parked at the rest angle between moves, so it is only a real
     // departure direction while a move is still in flight. Feeding the rest
     // angle back in launched every fresh move up-and-right, target be damned.
+    // `heading` is parked at the rest angle between moves, so it is only a real
+    // departure direction while a move is still in flight.
+    //
+    // It is not what stops a fresh move launching up-and-right: measured
+    // through this method, removing this line leaves the departure alignment at
+    // 1.0000 and every test in `cursor-engine.test.ts` green, because the odd
+    // candidate grid and the scorer already deliver the direct departure even
+    // when the rest angle is handed to them. What it does still decide is the
+    // candidate budget — see `DEPARTURE_FAN`: a non-null heading spends the 20
+    // candidates on a 5-way departure fan instead of on arc, which from rest is
+    // a fan across directions the cursor is not travelling in.
     const incomingHeading = this.path !== null && Number.isFinite(this.heading)
       ? this.heading
       : null;
@@ -688,8 +726,32 @@ export class CursorEngine {
     return this.path !== null;
   }
 
+  /**
+   * Advance the presentation by `dtIn` seconds of wall clock.
+   *
+   * The integrator is only stable up to {@link MAX_INTEGRATION_STEP}, so a
+   * longer frame is walked in sub-steps rather than truncated to one. Truncating
+   * is what made `cursorPresentationReadyDeadlineMs` a claim about frame rate
+   * instead of about the spring: with a single clamped step, a frame longer
+   * than 50ms advanced the simulation by less time than had actually passed, so
+   * the gate opened later in wall clock the slower the overlay painted —
+   * 1950ms at 20fps, 2600ms at 15fps, 3900ms at 10fps against a 2402ms
+   * deadline. Sub-stepping keeps simulated time equal to wall clock at any
+   * frame rate down to {@link MAX_CATCH_UP}, below which the presentation has
+   * stopped rather than slowed and the fence's own backstop is what covers it.
+   */
   tick(dtIn: number): void {
-    const dt = clamp(dtIn, 0, 0.05);
+    const total = clamp(dtIn, 0, MAX_CATCH_UP);
+    if (total === 0) {
+      this.step(0);
+      return;
+    }
+    const steps = Math.ceil(total / MAX_INTEGRATION_STEP);
+    const step = total / steps;
+    for (let i = 0; i < steps; i++) this.step(step);
+  }
+
+  private step(dt: number): void {
     if (this.fadingIn) {
       this.opacity = Math.min(1, this.opacity + dt / 0.16);
       if (this.opacity >= 1) this.fadingIn = false;

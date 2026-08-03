@@ -434,7 +434,11 @@ export type {
   ToolResultArchiveResourceReadInput,
   ToolResultArchiveResourceRequest,
 } from './tool-result-archive-resource.js';
-export { buildComputerUseTools, adaptToCuAction } from './computer-use-tools.js';
+export {
+  buildComputerUseTools,
+  adaptToCuAction,
+  DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS,
+} from './computer-use-tools.js';
 export {
   convertOpenAIComputerAction,
   openAIComputerActionSchema,

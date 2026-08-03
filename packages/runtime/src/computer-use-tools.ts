@@ -238,6 +238,24 @@ function persistedObservationText(observation: CuObservation): string {
   });
 }
 
+/**
+ * How long the runtime waits for a presentation to say it has finished, after
+ * the action has already been dispatched.
+ *
+ * This is not a second opinion on `CuPresentationFence.readyTimeoutMs`, and it
+ * is deliberately much shorter than one. The two bound different, sequential
+ * intervals: `readyTimeoutMs` covers the whole motion, from the moment the
+ * cursor is sent until the release gate opens and the action is allowed to
+ * dispatch. This one starts only after `onActionEnd`, so all it has to cover is
+ * the landing — the tail of a motion the completion has already truncated, plus
+ * the click pulse.
+ *
+ * Nothing said so, and nothing checked it, which is why it read as a constant
+ * chosen twice. `apps/desktop/src/main/__tests__/cursor-engine.test.ts` now
+ * measures the longest tail the real engine can leave and asserts it fits here.
+ */
+export const DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS = 1_500;
+
 export function buildComputerUseTools(deps: {
   backend: CuDispatchBackend;
   overlay?: CuOverlayHook;
@@ -265,7 +283,8 @@ export function buildComputerUseTools(deps: {
   presentationFinishedTimeoutMs?: number;
 }): ComputerUseToolSet {
   const presentationReadyTimeoutMs = deps.presentationReadyTimeoutMs ?? 1_000;
-  const presentationFinishedTimeoutMs = deps.presentationFinishedTimeoutMs ?? 1_500;
+  const presentationFinishedTimeoutMs =
+    deps.presentationFinishedTimeoutMs ?? DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS;
   const invocationQueues = new Map<string, Promise<void>>();
   const presentationWaiters = new Map<string, Set<() => void>>();
   const presentationQueueWaiters = new Map<string, Set<() => void>>();
@@ -540,6 +559,9 @@ export function buildComputerUseTools(deps: {
           type: semanticAction.type,
           elementId,
           value: semanticValue,
+          ...(elementId && record.elements?.get(elementId)?.frame
+            ? { elementFrame: record.elements.get(elementId)!.frame! }
+            : {}),
         })
       : bindCuaActionToObservation(active, action as CuAction);
     if (!bound) return { rejection: 'target_missing' };
@@ -616,6 +638,10 @@ export function buildComputerUseTools(deps: {
   }
 
   function presentationScreenPoint(boundAction: CuaBoundAction | undefined): CuPoint | undefined {
+    // An element action is aimed at an element, not at a coordinate, so it
+    // carries the point directly. Only a coordinate action has a screenshot
+    // pixel to map back onto the screen.
+    if (boundAction?.presentationScreenPoint) return boundAction.presentationScreenPoint;
     const source = boundAction?.sourceStartCoordinate ?? boundAction?.sourceCoordinate;
     const sourceBounds = boundAction?.target.sourceBoundsPx;
     const windowBounds = boundAction?.target.bounds;

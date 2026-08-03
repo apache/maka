@@ -127,6 +127,23 @@ export interface ComputerUseBoundAction extends ComputerUseFrameIdentity {
   windowCoordinate?: CuPoint;
   windowStartCoordinate?: CuPoint;
   coordinateSpace?: 'window-screenshot-local';
+  /**
+   * Where on screen this action is aimed, for presentation only.
+   *
+   * A coordinate action carries its target as `sourceCoordinate`, in the
+   * observation screenshot's own pixels, and the point on screen is recovered
+   * from it. A semantic action has no such coordinate — it names an element —
+   * so nothing recovered one, and the presentation layer had nowhere to send
+   * the cursor: it stayed where it was and the action was then wiped from the
+   * overlay, which is an arrow that never touches what it clicked.
+   *
+   * This is the observed element's own centre, in the same screen coordinates
+   * as `target.bounds`, set only when that centre lies inside the target
+   * window — the same condition the executor validates before dispatching. It
+   * is never used to dispatch anything: `boundWindowPoint` refuses any binding
+   * without `coordinateSpace`, and a semantic binding does not set one.
+   */
+  presentationScreenPoint?: CuPoint;
 }
 
 export const CU_SCROLL_DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
