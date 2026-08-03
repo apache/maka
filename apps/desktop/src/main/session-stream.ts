@@ -460,7 +460,11 @@ export interface SessionStreamerDeps {
   computerUseOverlay: AssembledTools['computerUseOverlay'];
   computerUseTools: AssembledTools['computerUseTools'];
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
-  emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
+  emitSessionsChanged: (
+    reason: SessionChangedReason,
+    sessionId?: string,
+    extra?: { turnId?: string },
+  ) => void;
   interruptActivePlanExecution?: (sessionId: string, reason: string) => Promise<unknown>;
 }
 
@@ -511,15 +515,15 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
         goalWiring.coordinator.beginObservedTurn(externalSessionId, externalTurnId),
       onEvent: (event) => {
         if (!userAppendBroadcasted) {
-          emitSessionsChanged('message-appended', sessionId);
+          emitSessionsChanged('message-appended', sessionId, { turnId });
           userAppendBroadcasted = true;
         }
         safeSendToRenderer(`sessions:event:${sessionId}`, event);
         if (isStatusChangingSessionEvent(event)) {
-          emitSessionsChanged('status-change', sessionId);
+          emitSessionsChanged('status-change', sessionId, { turnId });
         }
         if (isTurnStatusChangingSessionEvent(event)) {
-          emitSessionsChanged('turn-status-change', sessionId);
+          emitSessionsChanged('turn-status-change', sessionId, { turnId });
           computerUseOverlay.clearForSession(sessionId);
           computerUseTools.clearSession(sessionId);
         }
@@ -537,13 +541,13 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
           message: errorMessage(error),
         } satisfies SessionEvent;
         safeSendToRenderer(`sessions:event:${sessionId}`, event);
-        emitSessionsChanged('status-change', sessionId);
-        emitSessionsChanged('turn-status-change', sessionId);
+        emitSessionsChanged('status-change', sessionId, { turnId });
+        emitSessionsChanged('turn-status-change', sessionId, { turnId });
         computerUseOverlay.clearForSession(sessionId);
         computerUseTools.clearSession(sessionId);
       },
       onDrained: async (outcome) => {
-        emitSessionsChanged('message-appended', sessionId);
+        emitSessionsChanged('message-appended', sessionId, { turnId });
         if (
           interruptActivePlanExecution &&
           (outcome.kind === 'aborted' || outcome.kind === 'errored')

@@ -267,6 +267,21 @@ export interface SessionSummary {
   status: SessionStatus;
   blockedReason?: SessionBlockedReason;
   statusUpdatedAt?: number;
+  /**
+   * The turn the runtime is running for this session right now, if any.
+   *
+   * Projected from the live run, never persisted: "a run is in flight" is a
+   * fact about the running process, so it must read false again after a crash.
+   * `status` cannot serve that purpose — it is written to storage, so a crash
+   * between a turn's end and its status write leaves `running` behind forever,
+   * and it carries no turn identity, reading the same before a turn starts and
+   * after it ends.
+   *
+   * Only populated where the runtime is in a position to know: session LISTS
+   * come from the authority holding the runs. A summary returned by a mutation
+   * (rename, model change) describes the header alone and omits it.
+   */
+  runningTurnId?: string;
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagentParent?: SubagentSessionParent;
@@ -612,6 +627,20 @@ export interface SessionChangedEvent {
   sessionId?: string;
   connectionSlug?: string;
   modelId?: string;
+  /**
+   * The turn this change is ABOUT, when the change has a turn to name.
+   *
+   * Naming the turn is what makes a notification a causal answer to a specific
+   * send rather than a bare invalidation: the session fields alone carry no
+   * turn identity, and `status` reads the same before a turn starts and after
+   * it ends.
+   *
+   * Emitter obligation: any change caused by ONE turn — its start, its failure
+   * to start, its end — must name it. Changes with no single turn behind them
+   * (a rename, a catalog migration, a session-wide setting) leave it unset, and
+   * a client must not read them as an answer about any turn.
+   */
+  turnId?: string;
   ts: number;
 }
 

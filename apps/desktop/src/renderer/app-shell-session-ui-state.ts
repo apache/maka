@@ -1,6 +1,6 @@
 import { useReducer, useRef } from 'react';
 import type { SessionEventStreamSnapshot } from '@maka/core';
-import type { InteractionQueues, LiveTurnProjection } from '@maka/ui';
+import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -145,6 +145,20 @@ export function createAppShellSessionUiStateController(
     }) satisfies StateUpdater<Record<string, SessionEventStreamSnapshot>>,
     setPendingPermissionModeBySession: createMapSetter('pendingPermissionModeBySession'),
     setPendingSessionModelBySession: createMapSetter('pendingSessionModelBySession'),
+    /**
+     * The authority said something about `turnId` — it started, failed to
+     * start, or ended. Drop that arm's `unconfirmed` claim so a session list
+     * may settle it again. An answer about a turn this session is not on says
+     * nothing, and leaves the state untouched.
+     */
+    confirmLiveTurn: (sessionId: string, turnId: string) => {
+      updateMap('liveTurnBySession', (current) => {
+        const armed = current[sessionId];
+        if (!armed) return current;
+        const confirmed = confirmLiveTurn(armed, turnId);
+        return confirmed === armed ? current : { ...current, [sessionId]: confirmed! };
+      });
+    },
     clearSessionUiState: (sessionId: string) => {
       sessionEventHealthBySessionRef.current = omitSessionKey(
         sessionEventHealthBySessionRef.current,
@@ -184,6 +198,7 @@ export function useAppShellSessionUiState() {
     setSessionEventHealthBySession: controller.setSessionEventHealthBySession,
     setPendingPermissionModeBySession: controller.setPendingPermissionModeBySession,
     setPendingSessionModelBySession: controller.setPendingSessionModelBySession,
+    confirmLiveTurn: controller.confirmLiveTurn,
     clearSessionUiState: controller.clearSessionUiState,
     clearTurnTransientState: controller.clearTurnTransientState,
   };

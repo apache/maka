@@ -28,7 +28,7 @@ import type { PreparedSkillInvocationMessage, SessionManager } from '@maka/runti
 import type { ArtifactStore, createSessionStore } from '@maka/storage';
 import type { ConnectionStore, SettingsStore } from '@maka/storage';
 import { runThreadSearch } from './search/thread-search.js';
-import { resolveSessionSend } from './session-send-resolve.js';
+import { createRunStartedHook, resolveSessionSend } from './session-send-resolve.js';
 import { resizeImageForAttachment } from './attachment-resize-native.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
@@ -89,7 +89,7 @@ export interface SessionsIpcDeps {
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId'>,
+    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
   ) => void;
   ensureSessionCanSend: (sessionId: string) => Promise<void>;
   prepareSkillInvocation?: (
@@ -479,11 +479,12 @@ export function registerSessionsIpc(
         inlineReferences,
       },
       {
-        onRunStarted: async (_runId, header) => {
-          if (header.revisionState === 'preparing') {
-            await runtime.commitRevisionVersion(sessionId);
-          }
-        },
+        onRunStarted: createRunStartedHook({
+          sessionId,
+          turnId,
+          emitSessionsChanged: (id, turn) => emitSessionsChanged('status-change', id, { turnId: turn }),
+          commitRevisionVersion: (id) => runtime.commitRevisionVersion(id),
+        }),
       },
     );
     void streamEvents(sessionId, iterator, { turnId, goalBoundary: 'external' });

@@ -50,3 +50,33 @@ export async function resolveSessionSend(input: {
   }
   return { turnId: input.command.turnId || randomUUID(), attachments };
 }
+/**
+ * What a send does the moment its run goes live.
+ *
+ * No SessionEvent marks a turn's START — only its end — and the runtime writes
+ * `status: 'running'` at the end of `AgentRun.begin`, announcing it to nobody.
+ * Without this broadcast the earliest a client learns its turn is running is
+ * the `message-appended` riding the FIRST content event, so the whole backend
+ * start-up ahead of it looks idle.
+ *
+ * The broadcast carries the turn id, which is what makes it an ANSWER to a
+ * particular send rather than a bare catalog invalidation: a session's status
+ * reads the same before a turn starts and after it ends, so a client that just
+ * sent cannot otherwise tell "not yet" from "already over".
+ *
+ * It is emitted BEFORE the revision commit. Nothing in the answer depends on
+ * that write, so it must neither be delayed by it nor lost when it throws.
+ */
+export function createRunStartedHook(input: {
+  sessionId: string;
+  turnId: string;
+  emitSessionsChanged: (sessionId: string, turnId: string) => void;
+  commitRevisionVersion: (sessionId: string) => Promise<unknown>;
+}): (runId: string, header: { revisionState?: string }) => Promise<void> {
+  return async (_runId, header) => {
+    input.emitSessionsChanged(input.sessionId, input.turnId);
+    if (header.revisionState === 'preparing') {
+      await input.commitRevisionVersion(input.sessionId);
+    }
+  };
+}

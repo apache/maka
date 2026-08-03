@@ -108,6 +108,66 @@ import {
 } from '../stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
 
+/**
+ * "A turn is running" is a fact about the live process, so the read model takes
+ * it from the run rather than from the persisted status. The status cannot
+ * serve: it is written only at the END of `AgentRun.begin`, it reads the same
+ * before a turn starts and after it ends, and a crash between a turn's end and
+ * its status write leaves `running` in storage forever.
+ */
+describe('SessionManager running-turn projection', () => {
+  test('names the turn a session is running, without persisting it', async () => {
+    const store = new MemorySessionStore();
+    const runningTurnBySession = new Map<string, string>();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(1),
+      runtimeKernel: {
+        runningTurnId: (sessionId: string) => runningTurnBySession.get(sessionId),
+      } as never,
+    });
+    const idle = await manager.createSession(makeInput({ name: 'Idle' }));
+    const busy = await manager.createSession(makeInput({ name: 'Busy' }));
+    runningTurnBySession.set(busy.id, 'turn-live');
+
+    const listed = await manager.listSessions();
+    const byId = new Map(listed.map((session) => [session.id, session]));
+
+    expect(byId.get(busy.id)?.runningTurnId).toEqual('turn-live');
+    expect(byId.get(idle.id)?.runningTurnId).toEqual(undefined);
+
+    // Nothing about it reached storage, which is what makes a restart honest.
+    expect(
+      ((await store.readHeader(busy.id)) as unknown as Record<string, unknown>).runningTurnId,
+    ).toEqual(undefined);
+
+    // The run ends; the very next list stops naming it, with no status write
+    // and no crash-recovery pass in between.
+    runningTurnBySession.delete(busy.id);
+    const after = await manager.listSessions();
+    expect(after.find((session) => session.id === busy.id)?.runningTurnId).toEqual(undefined);
+  });
+
+  test('lists sessions unchanged when the kernel cannot report runs', async () => {
+    const store = new MemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(1),
+      runtimeKernel: {} as never,
+    });
+    const session = await manager.createSession(makeInput({ name: 'Only' }));
+
+    const listed = await manager.listSessions();
+
+    expect(listed.map((entry) => entry.id)).toEqual([session.id]);
+    expect(listed[0]?.runningTurnId).toEqual(undefined);
+  });
+});
+
 describe('SessionManager child-session read model', () => {
   test('lists typed child sessions without treating branches as children', async () => {
     const store = new MemorySessionStore();

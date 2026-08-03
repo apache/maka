@@ -5,8 +5,73 @@ import {
   MODEL_PROCESSING_DELAY_MS,
   createDelayedFlag,
   deriveModelWait,
+  deriveTurnActive,
   type DelayedFlagScheduler,
 } from '../../renderer/model-wait-state.js';
+
+// The gate this whole change exists for: a send must show Stop at once and must
+// not lose it mid-turn. Both regressions came from letting a session-level
+// witness speak for the local arm, which is why these read as one suite.
+describe('is a turn running', () => {
+  it('opens on the local arm alone, with no session-level confirmation', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: 'waiting',
+      armedTurnId: 'turn-1',
+      runningTurnId: undefined,
+    }), true);
+  });
+
+  // The runtime writes `status: 'running'` only at the END of `AgentRun.begin`,
+  // so every list refreshed between the send and that write still describes an
+  // idle session. ANDing such a witness in — the shape this replaced — is what
+  // made Stop appear late and flicker off mid-turn.
+  it('stays open across a session snapshot that predates the run', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: 'streamed',
+      armedTurnId: 'turn-1',
+      runningTurnId: undefined,
+    }), true);
+  });
+
+  it('closes when neither witness reports a turn', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: undefined,
+      runningTurnId: undefined,
+    }), false);
+  });
+
+  // A turn this renderer did not send: another client, an automation, or one
+  // still running across a reload. There is no local arm to speak for it.
+  it('opens for a running turn this renderer never armed', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: undefined,
+      runningTurnId: 'turn-elsewhere',
+    }), true);
+  });
+
+  // The arm saw its own terminal event; a list fetched just before it did not.
+  // Reading that snapshot as authority would light Stop back up after the turn
+  // visibly ended.
+  it('does not let a stale snapshot revive the arm\'s own finished turn', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: 'turn-1',
+      runningTurnId: 'turn-1',
+    }), false);
+  });
+
+  // A new turn started elsewhere while this renderer still holds the previous
+  // one's terminal projection.
+  it('opens when the authority names a turn other than the settled arm', () => {
+    assert.equal(deriveTurnActive({
+      turnPhase: undefined,
+      armedTurnId: 'turn-1',
+      runningTurnId: 'turn-2',
+    }), true);
+  });
+});
 
 const HEAD = {
   turnPhase: 'waiting',

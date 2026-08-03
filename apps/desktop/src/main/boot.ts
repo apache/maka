@@ -1381,7 +1381,7 @@ function emitConnectionListChanged(): void {
 function emitSessionsChanged(
   reason: SessionChangedReason,
   sessionId?: string,
-  extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId'>,
+  extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
 ): void {
   const event: SessionChangedEvent = {
     type: 'sessions_changed',
@@ -1391,6 +1391,7 @@ function emitSessionsChanged(
   if (sessionId) event.sessionId = sessionId;
   if (extra?.connectionSlug) event.connectionSlug = extra.connectionSlug;
   if (extra?.modelId) event.modelId = extra.modelId;
+  if (extra?.turnId) event.turnId = extra.turnId;
   safeSendToRenderer('sessions:changed', event);
 }
 

@@ -154,6 +154,12 @@ export interface RuntimeKernelLike {
   /** Take back every queued message (both queues) as one `\n\n`-joined string. */
   retractQueue(sessionId: string): string;
   hasActiveRuns(sessionId: string): boolean;
+  /**
+   * The turn of a run in flight for this session, if any. The same fact
+   * `hasActiveRuns` reports, named — which is what lets a client tell a turn
+   * that has not started yet from one that already ended.
+   */
+  runningTurnId?(sessionId: string): string | undefined;
   hasActiveRun?(sessionId: string, runId: string, turnId?: string): boolean;
   updateCachedHeader(sessionId: string, header: SessionHeader): void;
   invalidateBackend(sessionId: string): Promise<void>;
@@ -2396,6 +2402,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   hasActiveRuns(sessionId: string): boolean {
     return this.backendGenerationsFor(sessionId).some((active) => active.activeRuns.size > 0);
+  }
+
+  runningTurnId(sessionId: string): string | undefined {
+    for (const active of this.backendGenerationsFor(sessionId)) {
+      for (const run of active.activeRuns.values()) return run.turnId;
+    }
+    return undefined;
   }
 
   hasActiveRun(sessionId: string, runId: string, turnId?: string): boolean {
