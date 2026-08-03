@@ -1,5 +1,6 @@
 import type { ProjectCatalog } from './project-catalog.js';
-import type { SessionStore } from './session-store.js';
+import type { SessionAuthorityStore } from './session-store.js';
+import { SessionMetadataVersionConflictError } from './sqlite-session-metadata-store.js';
 
 export interface ProjectSessionBackfillResult {
   resolved: number;
@@ -18,23 +19,28 @@ export interface ProjectSessionBackfillResult {
  * subprocess plus a catalog write each time. Each directory carries the latest
  * activity of the sessions that share it, so the rebuilt catalog keeps its real
  * recency order rather than collapsing every project to the upgrade's timestamp.
+ *
+ * Each assignment is fenced by the metadata revision the session was listed at.
+ * This runs during startup while a window is already open, so a user detaching
+ * a session mid-resolution would otherwise be overwritten by a plan made before
+ * they decided; the fenced write simply loses instead.
  */
 export async function backfillSessionProjects(input: {
   sessions: Pick<
-    SessionStore,
-    'listSessionsWithUnresolvedProject' | 'updateHeader' | 'readHeaderSnapshot'
+    SessionAuthorityStore,
+    'listSessionsWithUnresolvedProject' | 'updateHeaderVersioned'
   >;
   catalog: Pick<ProjectCatalog, 'resolveHistoricalPath'>;
 }): Promise<ProjectSessionBackfillResult> {
   const pending = await input.sessions.listSessionsWithUnresolvedProject();
-  const byDirectory = new Map<string, { usedAt: number; sessionIds: string[] }>();
+  const byDirectory = new Map<string, { usedAt: number; sessions: UnresolvedSession[] }>();
   for (const session of pending) {
     const group = byDirectory.get(session.cwd);
     if (group) {
       group.usedAt = Math.max(group.usedAt, session.usedAt);
-      group.sessionIds.push(session.id);
+      group.sessions.push(session);
     } else {
-      byDirectory.set(session.cwd, { usedAt: session.usedAt, sessionIds: [session.id] });
+      byDirectory.set(session.cwd, { usedAt: session.usedAt, sessions: [session] });
     }
   }
 
@@ -49,14 +55,15 @@ export async function backfillSessionProjects(input: {
       failures.push({ cwd, reason: error instanceof Error ? error.message : String(error) });
       continue;
     }
-    for (const sessionId of group.sessionIds) {
+    for (const session of group.sessions) {
       try {
-        // Re-check instead of writing blind: the user can detach a session
-        // while this runs, and that decision must win over a stale plan.
-        if ((await input.sessions.readHeaderSnapshot(sessionId)).projectId !== undefined) continue;
-        await input.sessions.updateHeader(sessionId, { projectId });
+        await input.sessions.updateHeaderVersioned(session.id, { projectId }, session.revision);
         resolved += 1;
       } catch (error) {
+        // Someone changed the session first. Whatever they decided outranks a
+        // plan formed before it, and a still-unresolved session is retried on
+        // the next start, so this is not a failure to report.
+        if (error instanceof SessionMetadataVersionConflictError) continue;
         failures.push({ cwd, reason: error instanceof Error ? error.message : String(error) });
       }
     }
@@ -64,3 +71,7 @@ export async function backfillSessionProjects(input: {
 
   return { resolved, failures };
 }
+
+type UnresolvedSession = Awaited<
+  ReturnType<SessionAuthorityStore['listSessionsWithUnresolvedProject']>
+>[number];

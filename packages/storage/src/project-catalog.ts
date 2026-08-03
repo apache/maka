@@ -30,6 +30,22 @@ export function isProjectPathMismatchError(error: unknown): error is ProjectPath
   return error instanceof ProjectPathMismatchError;
 }
 
+/**
+ * The catalog changed underneath a relink while its `beforeCommit` callback was
+ * still reassigning sessions, so the merge the caller was told to prepare is no
+ * longer the merge that would be committed. Relink is already retryable — its
+ * callback throwing leaves the catalog untouched — so failing here hands the
+ * decision back rather than committing a half-true one.
+ */
+export class ProjectRelinkContentionError extends Error {
+  readonly name = 'ProjectRelinkContentionError';
+  readonly code = 'project_relink_contention';
+
+  constructor(readonly projectId: string) {
+    super(`Project changed while relinking, retry: ${projectId}`);
+  }
+}
+
 export interface ProjectRelinkContext {
   projectId: string;
   projectAliases: string[];
@@ -128,10 +144,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async list(): Promise<ProjectRecord[]> {
-    let projects: PersistedProject[] = [];
-    await this.withQueue(async () => {
-      projects = (await this.read()).projects;
-    });
+    const projects = (await this.read()).projects;
     projects.sort(
       (a, b) =>
         Number(a.archivedAt !== undefined) - Number(b.archivedAt !== undefined) ||
@@ -151,12 +164,12 @@ class SqliteProjectCatalog implements ProjectCatalog {
     try {
       resolved = await resolveProjectLocation({ path });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!isUnreachablePathError(error)) throw error;
       let pathIsMissing = false;
       try {
         await stat(path);
       } catch (pathError) {
-        pathIsMissing = (pathError as NodeJS.ErrnoException).code === 'ENOENT';
+        pathIsMissing = isUnreachablePathError(pathError);
       }
       if (!pathIsMissing) throw error;
       const canonicalPath = await canonicalizeMissingPath(path);
@@ -173,47 +186,41 @@ class SqliteProjectCatalog implements ProjectCatalog {
     resolved: ResolvedProjectLocation,
     timestamp: number,
   ): Promise<ProjectRecord> {
-    let registered: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      registered = await this.mutate((file) => {
-        const locationPath =
-          resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
-        const existing = file.projects.find((project) => project.identity === resolved.identity);
-        if (existing) {
-          const location = existing.locations.find((item) => item.path === locationPath);
-          if (location) {
-            location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
-            location.isWorktree = resolved.git?.isWorktree ?? false;
-          } else {
-            existing.locations.push({
-              path: locationPath,
-              isWorktree: resolved.git?.isWorktree ?? false,
-              lastUsedAt: timestamp,
-            });
-          }
-          existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
-          return existing;
+    const registered = await this.mutate((file) => {
+      const locationPath =
+        resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
+      const existing = file.projects.find((project) => project.identity === resolved.identity);
+      if (existing) {
+        const location = existing.locations.find((item) => item.path === locationPath);
+        if (location) {
+          location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
+          location.isWorktree = resolved.git?.isWorktree ?? false;
+        } else {
+          existing.locations.push({
+            path: locationPath,
+            isWorktree: resolved.git?.isWorktree ?? false,
+            lastUsedAt: timestamp,
+          });
         }
-        const project: PersistedProject = {
-          id: this.createId(),
-          name: defaultProjectName(resolved),
-          identity: resolved.identity,
-          locations: [
-            {
-              path: locationPath,
-              isWorktree: resolved.git?.isWorktree ?? false,
-              lastUsedAt: timestamp,
-            },
-          ],
-          lastUsedAt: timestamp,
-        };
-        file.projects.push(project);
-        return project;
-      });
+        existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
+        return existing;
+      }
+      const project: PersistedProject = {
+        id: this.createId(),
+        name: defaultProjectName(resolved),
+        identity: resolved.identity,
+        locations: [
+          {
+            path: locationPath,
+            isWorktree: resolved.git?.isWorktree ?? false,
+            lastUsedAt: timestamp,
+          },
+        ],
+        lastUsedAt: timestamp,
+      };
+      file.projects.push(project);
+      return project;
     });
-    if (!registered) {
-      throw new Error(`Failed to register project: ${resolved.canonicalPath}`);
-    }
     return this.present(registered);
   }
 
@@ -261,26 +268,22 @@ class SqliteProjectCatalog implements ProjectCatalog {
         ? resolved.git!.worktreeRoot
         : resolved.canonicalPath
       : undefined;
-    let touched: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      touched = await this.mutate((file) => {
-        const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
-        const location = resolvedPath
-          ? project.locations.find((item) => item.path === resolvedPath)
-          : [...project.locations].sort(
-              (a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path),
-            )[0];
-        if (resolvedPath && !location) {
-          throw new ProjectPathMismatchError(projectId, resolvedPath);
-        }
-        const timestamp = this.now();
-        if (location) location.lastUsedAt = timestamp;
-        project.lastUsedAt = timestamp;
-        return project;
-      });
+    const touched = await this.mutate((file) => {
+      const project = findProjectById(file.projects, projectId);
+      if (!project) throw new Error(`No such project: ${projectId}`);
+      const location = resolvedPath
+        ? project.locations.find((item) => item.path === resolvedPath)
+        : [...project.locations].sort(
+            (a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path),
+          )[0];
+      if (resolvedPath && !location) {
+        throw new ProjectPathMismatchError(projectId, resolvedPath);
+      }
+      const timestamp = this.now();
+      if (location) location.lastUsedAt = timestamp;
+      project.lastUsedAt = timestamp;
+      return project;
     });
-    if (!touched) throw new Error(`Failed to touch project: ${projectId}`);
     return this.present(touched);
   }
 
@@ -295,9 +298,11 @@ class SqliteProjectCatalog implements ProjectCatalog {
     const locationPath =
       resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
     await this.withQueue(async () => {
-      // `beforeCommit` moves real directories, so it cannot run inside the
-      // write transaction. It is given the state it will act on, and the
-      // commit below re-derives everything from the catalog as it stands then.
+      // `beforeCommit` reassigns the sessions of the project being merged away,
+      // so it cannot run inside the write transaction. It is shown the state it
+      // will act on, and the commit below refuses to proceed if that state no
+      // longer holds: re-deriving instead would leave the catalog consistent
+      // while the sessions the callback already moved point at the wrong owner.
       const preview = await this.read();
       const previewProject = findProjectById(preview.projects, projectId);
       if (!previewProject) throw new Error(`No such project: ${projectId}`);
@@ -328,6 +333,9 @@ class SqliteProjectCatalog implements ProjectCatalog {
         if (conflict && !beforeCommit) {
           throw new Error(`Project path already belongs to project: ${conflict.id}`);
         }
+        if (conflict?.id !== previewConflict?.id) {
+          throw new ProjectRelinkContentionError(projectId);
+        }
         if (conflict) {
           project.aliases = [
             ...new Set([...(project.aliases ?? []), conflict.id, ...(conflict.aliases ?? [])]),
@@ -356,45 +364,36 @@ class SqliteProjectCatalog implements ProjectCatalog {
   async rename(projectId: string, name: string): Promise<ProjectRecord> {
     const trimmed = name.trim();
     if (!trimmed) throw new TypeError('Project name cannot be empty.');
-    let renamed: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      renamed = await this.mutate((file) => {
+    return this.present(
+      await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
         if (!project) throw new Error(`No such project: ${projectId}`);
         project.name = trimmed;
         return project;
-      });
-    });
-    if (!renamed) throw new Error(`Failed to rename project: ${projectId}`);
-    return this.present(renamed);
+      }),
+    );
   }
 
   async archive(projectId: string): Promise<ProjectRecord> {
-    let archived: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      archived = await this.mutate((file) => {
+    return this.present(
+      await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
         if (!project) throw new Error(`No such project: ${projectId}`);
         project.archivedAt = this.now();
         return project;
-      });
-    });
-    if (!archived) throw new Error(`Failed to archive project: ${projectId}`);
-    return this.present(archived);
+      }),
+    );
   }
 
   async restore(projectId: string): Promise<ProjectRecord> {
-    let restored: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      restored = await this.mutate((file) => {
+    return this.present(
+      await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
         if (!project) throw new Error(`No such project: ${projectId}`);
         delete project.archivedAt;
         return project;
-      });
-    });
-    if (!restored) throw new Error(`Failed to restore project: ${projectId}`);
-    return this.present(restored);
+      }),
+    );
   }
 
   private async present(project: PersistedProject): Promise<ProjectRecord> {
@@ -714,13 +713,23 @@ async function canonicalizeMissingPath(path: string): Promise<string> {
     try {
       return normalize(join(await realpath(candidate), ...missingSegments));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!isUnreachablePathError(error)) throw error;
     }
     const parent = dirname(candidate);
     if (parent === candidate) return absolute;
     missingSegments.unshift(basename(candidate));
     candidate = parent;
   }
+}
+
+/**
+ * A path that cannot be reached, whether because a segment is gone (`ENOENT`)
+ * or because one of its ancestors is now a plain file (`ENOTDIR`). Both mean
+ * the same thing to a historical working directory: keep walking up.
+ */
+function isUnreachablePathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 async function isDirectory(path: string): Promise<boolean> {

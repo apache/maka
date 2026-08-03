@@ -163,14 +163,19 @@ export interface VersionedSessionIdentity {
 }
 
 /**
- * A session whose project membership was never decided, carried together with
- * the moment it was last active so that resolving it later reconstructs the
+ * A session whose project membership was never decided.
+ *
+ * `usedAt` is the moment it was last active, so resolving it later rebuilds the
  * catalog's real recency order instead of collapsing every project to "now".
+ * `revision` is the metadata version this row was read at, so the write that
+ * assigns a project can fence itself against anything that touched the session
+ * in between — including a user detaching it while resolution is still running.
  */
 export interface UnresolvedProjectSession {
   readonly id: string;
   readonly cwd: string;
   readonly usedAt: number;
+  readonly revision: number;
 }
 
 export type SessionRemovalProbe =
@@ -1194,19 +1199,21 @@ export class SqliteSessionMetadataStore {
         SELECT
           session_id AS id,
           json_extract(payload_json, '$.cwd') AS cwd,
-          COALESCE(last_message_at, last_used_at) AS used_at
+          COALESCE(last_message_at, last_used_at) AS used_at,
+          metadata_version AS revision
         FROM session_metadata
         WHERE json_type(payload_json, '$.projectId') IS NULL
           AND subagent_parent_session_id IS NULL
         ORDER BY used_at, session_id
       `)
-      .all() as Array<{ id?: unknown; cwd?: unknown; used_at?: unknown }>;
+      .all() as Array<{ id?: unknown; cwd?: unknown; used_at?: unknown; revision?: unknown }>;
     return rows.flatMap((row) =>
       typeof row.id === 'string' &&
       typeof row.cwd === 'string' &&
       row.cwd.length > 0 &&
-      typeof row.used_at === 'number'
-        ? [{ id: row.id, cwd: row.cwd, usedAt: row.used_at }]
+      typeof row.used_at === 'number' &&
+      typeof row.revision === 'number'
+        ? [{ id: row.id, cwd: row.cwd, usedAt: row.used_at, revision: row.revision }]
         : [],
     );
   }

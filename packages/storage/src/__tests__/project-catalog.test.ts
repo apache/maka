@@ -257,6 +257,56 @@ test('two catalogs changing one project at the same time keep both changes', asy
   }
 });
 
+test('a relink whose merge target changes mid-flight fails instead of half-committing', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-race-'));
+  try {
+    const storage = join(base, 'storage');
+    const home = join(base, 'home');
+    const shared = join(base, 'shared');
+    const elsewhere = join(base, 'elsewhere');
+    await Promise.all([mkdir(home), mkdir(shared), mkdir(elsewhere)]);
+    const first = createProjectCatalog(storage);
+    const second = createProjectCatalog(storage);
+    const moving = await first.register(home);
+    const target = await first.register(shared);
+    await Promise.all([first.list(), second.list()]);
+
+    let releaseCallback!: () => void;
+    let callbackStarted!: () => void;
+    const gate = new Promise<void>((release) => {
+      releaseCallback = release;
+    });
+    const started = new Promise<void>((resolve) => {
+      callbackStarted = resolve;
+    });
+    let observed: string | undefined;
+    const relink = first.relink(moving.id, shared, async (context) => {
+      observed = context.conflictingProjectId;
+      callbackStarted();
+      await gate;
+    });
+    await started;
+
+    // The callback was told to move `target`'s sessions onto `moving`. While it
+    // is doing that, the other window moves `target` somewhere else entirely.
+    await second.relink(target.id, elsewhere);
+    releaseCallback();
+
+    assert.equal(observed, target.id, 'precondition: the callback planned a merge');
+    await assert.rejects(() => relink, /retry/);
+    const projects = await first.list();
+    assert.deepEqual(
+      projects.map((project) => project.id).sort(),
+      [moving.id, target.id].sort(),
+      'neither project may be merged away after the plan went stale',
+    );
+    first.close();
+    second.close();
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('relinking an unavailable project preserves its id and adopts the new directory', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-'));
   try {

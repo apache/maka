@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -191,6 +191,54 @@ test('a subagent worktree never becomes one of the user project locations', asyn
       'a subagent scratch worktree is not a place the user works',
     );
     assert.equal(projects[0]!.preferredPath, await realpath(repository));
+  });
+});
+
+test('a session detached while resolution is running keeps the user decision', async () => {
+  await withWorkspace(async ({ sessions, catalog, projectPath }) => {
+    const session = await sessions.create({ ...sessionInput(projectPath), name: 'session' });
+
+    const result = await backfillSessionProjects({
+      sessions,
+      catalog: {
+        // Resolution is where the real work — a git probe — happens, so this is
+        // exactly the window in which a user can still act on the session.
+        resolveHistoricalPath: async (path, usedAt) => {
+          await sessions.updateHeader(session.id, { projectId: null });
+          return catalog.resolveHistoricalPath(path, usedAt);
+        },
+      },
+    });
+
+    assert.deepEqual(result, { resolved: 0, failures: [] });
+    assert.equal(
+      (await sessions.readHeaderSnapshot(session.id)).projectId,
+      null,
+      'a detach made after the plan was formed must still win',
+    );
+  });
+});
+
+test('a working directory reachable through a replaced ancestor still resolves', async () => {
+  await withWorkspace(async ({ sessions, catalog, base }) => {
+    const ancestor = join(base, 'ancestor');
+    const cwd = join(ancestor, 'project');
+    await mkdir(cwd, { recursive: true });
+    const before = await catalog.register(cwd);
+    const session = await sessions.create({ ...sessionInput(cwd), name: 'session' });
+    // The directory is gone and something else now occupies its parent, so
+    // walking up reports ENOTDIR rather than ENOENT.
+    await rm(ancestor, { recursive: true, force: true });
+    await writeFile(ancestor, 'not a directory', 'utf8');
+
+    const result = await backfillSessionProjects({ sessions, catalog });
+
+    assert.deepEqual(result, { resolved: 1, failures: [] });
+    assert.equal(
+      (await sessions.readHeaderSnapshot(session.id)).projectId,
+      before.id,
+      'a replaced ancestor must not strand the session outside its project',
+    );
   });
 });
 
