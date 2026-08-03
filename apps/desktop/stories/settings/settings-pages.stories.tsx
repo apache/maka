@@ -795,7 +795,9 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
   );
   selector.click();
   await waitForStoryCondition(
-    () => document.querySelector<HTMLElement>('[role="listbox"]')?.offsetParent !== null,
+    () => document.querySelector<HTMLElement>('[role="listbox"]')
+      ?.closest<HTMLElement>('[popover]')
+      ?.matches(':popover-open') === true,
     'Daily Review model selector did not open',
   );
   return selector;
@@ -827,6 +829,8 @@ function assertDailyReviewSettingsBounds(
   const valid =
     withinHorizontally(timeRect, timeForm.getBoundingClientRect())
     && withinHorizontally(selectorRect, selectorForm.getBoundingClientRect())
+    && popoverRect.width > 0
+    && popoverRect.height > 0
     && withinHorizontally(popoverRect, pageRect)
     && popoverRect.left >= -1
     && popoverRect.right <= window.innerWidth + 1
