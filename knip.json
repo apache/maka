@@ -20,10 +20,7 @@
         "src/renderer/astryx-theme/makaTheme.ts"
       ],
       "project": ["src/**/*.{ts,tsx}", "e2e/**/*.ts", "stories/**/*.{ts,tsx}", "scripts/**/*.mjs"],
-      "ignoreDependencies": [
-        "@fontsource-variable/geist",
-        "@fontsource-variable/geist-mono"
-      ],
+      "ignoreDependencies": ["@fontsource-variable/geist", "@fontsource-variable/geist-mono"],
       "ignoreBinaries": ["taskkill", "plutil"]
     },
     "packages/ui": {
