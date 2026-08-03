@@ -29,6 +29,14 @@
   overscroll-behavior: contain;
 }
 
+/* ChatLayout always paints its frosted composer dock, even when the Composer
+   itself is hidden. Onboarding owns the whole empty surface, so that dock has
+   no content to support and would blur the card actions behind it. Derive the
+   opt-out from the mounted surface instead of duplicating onboarding state. */
+.maka-chat-layout:has(.maka-onboarding-surface) > :last-child {
+  display: none;
+}
+
 /* The snapshot slot blocks the ordinary empty-chat hero while main resolves
    onboarding state. Its shape previews the single card that will replace it. */
 .maka-onboarding-loading {

@@ -106,6 +106,11 @@ export const NeedsConnection: Story = {
     await expect(style.paddingTop).toBe('8px');
     await expect(style.paddingRight).toBe('8px');
     await expect(canvasElement.querySelectorAll('[data-maka-contract="onboarding-card"]')).toHaveLength(1);
+
+    const chatLayout = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    const composerDock = chatLayout?.lastElementChild;
+    await expect(composerDock).toBeInstanceOf(HTMLElement);
+    await expect(getComputedStyle(composerDock as HTMLElement).display).toBe('none');
   },
 };
 
