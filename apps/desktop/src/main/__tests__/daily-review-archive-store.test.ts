@@ -8,6 +8,10 @@ import type { DailyReviewArchive } from '@maka/core';
 import { createDailyReviewArchiveStore } from '../daily-review-archive-store.js';
 
 const roots: string[] = [];
+const DAY = {
+  fromMs: new Date(2026, 7, 3, 0, 0, 0, 0).getTime(),
+  toMs: new Date(2026, 7, 4, 0, 0, 0, 0).getTime(),
+};
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -22,7 +26,7 @@ async function aRoot(): Promise<string> {
 function anArchive(id = '2026-08-03-1d'): DailyReviewArchive {
   return {
     id,
-    day: { fromMs: 1, toMs: 2 },
+    day: DAY,
     range: 1,
     status: 'ok',
     generatedAt: 3,
@@ -42,7 +46,7 @@ describe('Daily Review archive migration', () => {
       join(archiveRoot, '2026-08-03-deep.json'),
       JSON.stringify({
         id: '2026-08-03-deep',
-        day: { fromMs: 1, toMs: 2 },
+        day: DAY,
         mode: 'deep',
         status: 'ok',
         generatedAt: 3,

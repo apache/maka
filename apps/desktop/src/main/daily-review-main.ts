@@ -128,7 +128,14 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
     const summary = await buildSummaryForRange(input.offsetDays ?? 0, range);
     const archiveId = dailyReviewArchiveId(summary.day, range);
     const existingArchive = await deps.archiveStore.getArchive(archiveId);
-    if (existingArchive?.status === 'ok') return { archiveId };
+    if (
+      existingArchive?.status === 'ok'
+      && existingArchive.range === range
+      && existingArchive.day.fromMs === summary.day.fromMs
+      && existingArchive.day.toMs === summary.day.toMs
+    ) {
+      return { archiveId };
+    }
 
     const inFlight = inFlightRuns.get(archiveId);
     if (inFlight) return inFlight;
@@ -336,19 +343,24 @@ function dailyReviewUserPrompt(
   });
 }
 
-function parseDailyReviewSections(text: string): DailyReviewArchiveSectionContent {
+export function parseDailyReviewSections(text: string): DailyReviewArchiveSectionContent {
   const trimmed = text.trim();
+  let sections: DailyReviewArchiveSectionContent;
   try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    return {
-      ...(typeof parsed.summary === 'string' ? { summary: parsed.summary.trim() } : {}),
-      ...(typeof parsed.gaps === 'string' ? { gaps: parsed.gaps.trim() } : {}),
-      ...(typeof parsed.usage === 'string' ? { usage: parsed.usage.trim() } : {}),
-      ...(typeof parsed.code === 'string' ? { code: parsed.code.trim() } : {}),
-    };
+    const parsed: unknown = JSON.parse(trimmed);
+    sections = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? {
+          ...('summary' in parsed && typeof parsed.summary === 'string' ? { summary: parsed.summary.trim() } : {}),
+          ...('gaps' in parsed && typeof parsed.gaps === 'string' ? { gaps: parsed.gaps.trim() } : {}),
+          ...('usage' in parsed && typeof parsed.usage === 'string' ? { usage: parsed.usage.trim() } : {}),
+          ...('code' in parsed && typeof parsed.code === 'string' ? { code: parsed.code.trim() } : {}),
+        }
+      : {};
   } catch {
-    return { summary: trimmed };
+    sections = { summary: trimmed };
   }
+  if (Object.values(sections).some((content) => content.length > 0)) return sections;
+  throw new Error('Daily Review model returned no usable sections');
 }
 
 function buildRuleBasedDailyReviewSections(

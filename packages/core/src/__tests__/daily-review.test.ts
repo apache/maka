@@ -255,11 +255,22 @@ describe('Daily Review range contract', () => {
       { ...valid, modelKey: 42 },
       { ...valid, sections: { summary: 42 } },
       { ...valid, totals: { requestCount: 2 } },
+      { ...valid, range: 7 },
+      { ...valid, id: '2026-02-30-1d' },
     ];
 
     for (const archive of invalid) {
       assert.throws(() => normalizeDailyReviewArchive(archive));
     }
+
+    const { range: _range, ...legacy } = valid;
+    assert.throws(() =>
+      normalizeDailyReviewArchive({
+        ...legacy,
+        id: '2026-08-03-daily',
+        mode: 'deep',
+      }),
+    );
   });
 
   it('keeps only the three settings that control real behavior', () => {

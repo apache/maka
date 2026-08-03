@@ -311,13 +311,16 @@ export function dailyReviewArchiveId(day: DayRangeMs, range: DailyReviewRange): 
 export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive {
   if (!isRecord(input)) throw invalidDailyReviewArchive('record');
   let range: DailyReviewRange;
+  let expectedIdSuffix: string;
   if ('range' in input) {
     if (!DAILY_REVIEW_RANGES.includes(input.range as DailyReviewRange)) {
       throw invalidDailyReviewArchive('range');
     }
     range = input.range as DailyReviewRange;
+    expectedIdSuffix = `${range}d`;
   } else if (input.mode === 'daily' || input.mode === 'deep') {
     range = input.mode === 'deep' ? 7 : 1;
+    expectedIdSuffix = input.mode;
   } else {
     throw invalidDailyReviewArchive('range');
   }
@@ -332,6 +335,10 @@ export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive 
     input.day.toMs <= input.day.fromMs
   ) {
     throw invalidDailyReviewArchive('day');
+  }
+  const day = { fromMs: input.day.fromMs, toMs: input.day.toMs };
+  if (!hasValidDailyReviewArchiveId(input.id, expectedIdSuffix)) {
+    throw invalidDailyReviewArchive('id');
   }
   if (!DAILY_REVIEW_ARCHIVE_STATUSES.includes(input.status as DailyReviewArchiveStatus)) {
     throw invalidDailyReviewArchive('status');
@@ -349,7 +356,7 @@ export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive 
 
   return {
     id: input.id,
-    day: { fromMs: input.day.fromMs, toMs: input.day.toMs },
+    day,
     range,
     status: input.status as DailyReviewArchiveStatus,
     generatedAt: input.generatedAt,
@@ -400,6 +407,18 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return isFiniteNumber(value) && Number.isInteger(value) && value >= 0;
+}
+
+function hasValidDailyReviewArchiveId(id: string, suffix: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})-(1d|7d|30d|daily|deep)$/.exec(id);
+  if (!match || match[4] !== suffix) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
 }
 
 function invalidDailyReviewArchive(field: string): Error {

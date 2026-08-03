@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createDailyReviewMainService } from '../daily-review-main.js';
+import {
+  createDailyReviewMainService,
+  parseDailyReviewSections,
+} from '../daily-review-main.js';
 
 const emptyUsageSummary = {
   range: { from: 0, to: 0 },
@@ -43,11 +46,27 @@ function createService(archiveStore: Record<string, unknown>) {
   } as unknown as Parameters<typeof createDailyReviewMainService>[0]);
 }
 
+test('Daily Review rejects model output without a usable section', () => {
+  for (const output of ['', '{}', '[]', 'null', '{"summary":42}', '{"summary":"  "}']) {
+    assert.throws(() => parseDailyReviewSections(output));
+  }
+  assert.deepEqual(parseDailyReviewSections('plain text fallback'), {
+    summary: 'plain text fallback',
+  });
+});
+
 test('Daily Review run reuses an existing archive', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 7, 3, 9, 0, 0).getTime() });
   let writes = 0;
   const service = createService({
-    getArchive: async () => ({ status: 'ok' }),
+    getArchive: async () => ({
+      status: 'ok',
+      range: 1,
+      day: {
+        fromMs: new Date(2026, 7, 3, 0, 0, 0, 0).getTime(),
+        toMs: new Date(2026, 7, 4, 0, 0, 0, 0).getTime(),
+      },
+    }),
     putArchive: async () => {
       writes += 1;
     },
@@ -78,6 +97,28 @@ test('Daily Review run retries every non-success archive status', async (t) => {
       await service.run({ range: 1, trigger: 'manual' });
       assert.equal(writes, 1, `${status} should remain retryable`);
     }
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test('Daily Review run replaces an ok archive for a different resolved day', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 7, 3, 9, 0, 0).getTime() });
+  let writes = 0;
+  const service = createService({
+    getArchive: async () => ({
+      status: 'ok',
+      range: 1,
+      day: { fromMs: 1, toMs: 2 },
+    }),
+    putArchive: async () => {
+      writes += 1;
+    },
+  });
+
+  try {
+    await service.run({ range: 1, trigger: 'manual' });
+    assert.equal(writes, 1);
   } finally {
     t.mock.timers.reset();
   }
