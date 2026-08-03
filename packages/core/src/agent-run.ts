@@ -262,6 +262,13 @@ export const AGENT_RUN_EVENT_TYPES = [
   'sandbox_denial_detected',
   'provider_request_captured',
   'provider_request_attempt_recorded',
+  // Token-usage checkpoints are written by the agent runtime after each
+  // provider request completes. They were missing from this enum, which made
+  // strict AgentRun ledger reads fail at app startup with
+  // "Invalid AgentRun event schema" (desktop would not launch).
+  // https://github.com/maka-agent/maka-agent/issues/1942
+  // Signed: pi + deepseek-v4-flash
+  'usage_recorded',
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
   'active_full_compact_block_recorded',
