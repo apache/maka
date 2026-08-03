@@ -1007,6 +1007,7 @@ export {
   validateHistoryCompactBlockShape,
   validateSynthesisCacheBlockShape,
 } from './context-budget.js';
+export { stableToolResultArchiveArtifactId } from './tool-result-archive.js';
 export type {
   ArchivedToolResultReason,
   BudgetedRuntimeContext,
@@ -1663,6 +1664,7 @@ export {
   composeSkillInvocationMessage,
   parseSkillInvocationTokens,
   prepareSkillInvocationMessage,
+  prepareSkillInvocationMessageFromInventory,
   SKILL_INVOCATION_TOKEN_SOURCE,
   stripSkillInvocationTokens,
 } from './skill-invocation.js';

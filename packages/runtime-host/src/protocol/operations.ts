@@ -41,6 +41,8 @@ export type {
 } from './operation-spec.js';
 export {
   ARTIFACT_CURSOR_MAX_BYTES,
+  ARTIFACT_INGEST_CHUNK_MAX_BYTES,
+  ARTIFACT_INGEST_MIME_TYPE_MAX_BYTES,
   ARTIFACT_MIME_TYPE_MAX_BYTES,
   ARTIFACT_NAME_MAX_BYTES,
   ARTIFACT_PAGE_MAX_ITEMS,
@@ -49,12 +51,16 @@ export {
   ARTIFACT_SUMMARY_MAX_BYTES,
   decodeArtifactDeleteInput,
   decodeArtifactDeleteResult,
+  decodeArtifactIngestInput,
+  decodeArtifactIngestResult,
   decodeArtifactQueryInput,
   decodeArtifactQueryResult,
   encodeArtifactDeleteResult,
   encodeArtifactQueryResult,
 } from './artifact.js';
 export type {
+  ArtifactIngestInput,
+  ArtifactIngestResult,
   ArtifactBinaryPreview,
   ArtifactDeleteInput,
   ArtifactDeleteResult,

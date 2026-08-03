@@ -8,6 +8,8 @@ import {
   type CreateArtifactInput,
   type DurableArtifactAttachmentReader,
 } from './artifact-store.js';
+
+export { sanitizeArtifactName } from './artifact-store.js';
 import {
   assertStorageRootLease,
   createStorageRootLeaseIdentityGuard,

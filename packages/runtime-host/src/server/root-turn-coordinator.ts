@@ -7,8 +7,10 @@ import {
   type RootExecutionDescriptor,
 } from '@maka/core/agent-run';
 import {
+  INLINE_REFERENCE_MAX_COUNT,
   messageContentsEqual,
   normalizeMessageContent,
+  type AttachmentRef,
   type MessageContent,
   type SessionEvent,
 } from '@maka/core/events';
@@ -26,7 +28,10 @@ import {
   RuntimeMessageAuthorityInvariantError,
   RuntimeRegenerateTurnError,
   RuntimeOwnerCleanupError,
+  parseSkillInvocationTokens,
+  skillInvocationInlineReferences,
   recoverAgentGraphSupervisorContextOverflow,
+  type PreparedSkillInvocationMessage,
   type RuntimeContinuation,
   type SafeBoundaryContinuationPlan,
   type RuntimeHostedRootExecutionInput,
@@ -44,6 +49,7 @@ import {
 import {
   authenticateExecutionStoresWriter,
   isSessionNotFoundError,
+  normalizeRootTurnAdmissionPayload,
   type ExecutionStoresWriter,
   type RootTurnAdmission,
 } from '@maka/storage/execution-stores';
@@ -135,13 +141,24 @@ type RootMessageStartRequest =
       readonly turnOrchestration?: TurnStartInput['turnOrchestration'];
     })
   | (RootMessageStartRequestBase & {
+      readonly execution: Extract<RootMessageExecution, { kind: 'external_message' }>;
+      readonly turnOrchestration?: TurnStartInput['turnOrchestration'];
+      prepareFreshContent(): Promise<RootMessageContentPreparation>;
+    })
+  | (RootMessageStartRequestBase & {
       readonly execution: Extract<RootMessageExecution, { kind: 'regenerate' }>;
       readonly turnOrchestration?: undefined;
       prepareContent(): Promise<MessageContent>;
     });
 
 type RootMessageContentPreparation =
-  | { readonly kind: 'ready'; readonly content: MessageContent }
+  | {
+      readonly kind: 'ready';
+      readonly content: MessageContent;
+      readonly commitCapabilityBinding?: () => Promise<
+        { readonly ok: true } | { readonly ok: false; readonly message: string }
+      >;
+    }
   | { readonly kind: 'rejected'; readonly outcome: TurnStartOutcome };
 
 type RootTurnActivationInput =
@@ -262,6 +279,22 @@ interface RecoverySessionPlan {
   pendingRecoveryClosures: readonly RootTurnAdmission[];
 }
 
+interface HostSkillInvocationPreparer {
+  (input: {
+    sessionId: string;
+    turnId: string;
+    text: string;
+    skillIds: readonly string[];
+  }): Promise<PreparedSkillInvocationMessage>;
+}
+
+interface HostTurnAttachmentValidator {
+  validateTurnAttachments(
+    sessionId: string,
+    attachments: readonly AttachmentRef[],
+  ): Promise<string | undefined>;
+}
+
 export class RootTurnCoordinator {
   readonly handlers: TurnOperationHandlerMap & ContextOperationHandlerMap = {
     'turn.start': (input, context) => this.startTurn(input, context),
@@ -278,6 +311,8 @@ export class RootTurnCoordinator {
   readonly #reservationsBySession = new Map<string, SessionRootReservation>();
   readonly #recoveryAdmissionsBySession = new Map<string, readonly RootTurnAdmission[]>();
   private readonly stores: ExecutionStoresWriter<'interactive'>;
+  private readonly attachmentValidator: HostTurnAttachmentValidator | undefined;
+  private readonly prepareSkillInvocation: HostSkillInvocationPreparer | undefined;
   #draining = false;
 
   constructor(
@@ -293,8 +328,12 @@ export class RootTurnCoordinator {
     private readonly clientCapabilities: HostClientCapabilityCoordinator | undefined,
     private readonly resolveGoal: () => HostGoalRootAuthority,
     private readonly assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+    attachmentValidator?: HostTurnAttachmentValidator,
+    prepareSkillInvocation?: HostSkillInvocationPreparer,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
+    this.attachmentValidator = attachmentValidator;
+    this.prepareSkillInvocation = prepareSkillInvocation;
   }
 
   async prepareRecovery(): Promise<void> {
@@ -1537,6 +1576,33 @@ export class RootTurnCoordinator {
 
   private startTurn(input: TurnStartInput, context: ConnectionContext): Promise<TurnStartOutcome> {
     const content = normalizeMessageContent(input.content);
+    const skillIds = input.skillIds ?? [];
+    const hasSkillInvocation =
+      skillIds.length > 0 || parseSkillInvocationTokens(content.text).length > 0;
+    if (hasSkillInvocation) {
+      const execution = {
+        kind: 'external_message' as const,
+        inputDigest: skillInvocationInputDigest(content, skillIds),
+      };
+      return this.startRootMessage(
+        {
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          execution,
+          ...(input.turnOrchestration ? { turnOrchestration: { ...input.turnOrchestration } } : {}),
+          archivedMessage: 'Cannot start a new Turn in an archived Session',
+          prepareFreshContent: () =>
+            this.prepareHostedSkillInvocationContent(
+              input.sessionId,
+              input.turnId,
+              content,
+              skillIds,
+              context.connectionId,
+            ),
+        },
+        context,
+      );
+    }
     return this.startRootMessage(
       {
         sessionId: input.sessionId,
@@ -1548,6 +1614,38 @@ export class RootTurnCoordinator {
       },
       context,
     );
+  }
+
+  private async prepareHostedSkillInvocationContent(
+    sessionId: string,
+    turnId: string,
+    content: MessageContent,
+    skillIds: readonly string[],
+    connectionId: string,
+  ): Promise<RootMessageContentPreparation> {
+    if (!this.prepareSkillInvocation) {
+      return {
+        kind: 'rejected',
+        outcome: operationUnavailable('Hosted Skill invocation authority is unavailable'),
+      };
+    }
+    const preview = await this.previewCapabilityBinding(sessionId, connectionId, () =>
+      this.prepareSkillInvocation!({ sessionId, turnId, text: content.text, skillIds }),
+    );
+    if (!preview.ok) {
+      return { kind: 'rejected', outcome: operationConflict(preview.message) };
+    }
+    if (preview.value.disposition === 'blocked') {
+      return {
+        kind: 'rejected',
+        outcome: operationConflict('Explicit Skill invocation could not be resolved'),
+      };
+    }
+    return {
+      kind: 'ready',
+      content: composeHostedSkillInvocationContent(content, preview.value),
+      commitCapabilityBinding: preview.commit,
+    };
   }
 
   private regenerateTurn(
@@ -1661,10 +1759,20 @@ export class RootTurnCoordinator {
 
         const prepared = await this.prepareRootMessageContent(request);
         if (prepared.kind === 'rejected') return completedStart(prepared.outcome);
-        const binding = await this.clientCapabilities?.bindSession(
+        const canonicalContent = preflightRootMessageContent(prepared.content);
+        if (!canonicalContent.ok) return completedStart(canonicalContent.outcome);
+        const attachments = canonicalContent.content.attachments ?? [];
+        if (attachments.length > 0 && !this.attachmentValidator) {
+          return completedStart(operationConflict('Hosted attachment authority is unavailable'));
+        }
+        const attachmentError = await this.attachmentValidator?.validateTurnAttachments(
           request.sessionId,
-          context.connectionId,
+          attachments,
         );
+        if (attachmentError) return completedStart(operationConflict(attachmentError));
+        const binding = prepared.commitCapabilityBinding
+          ? await prepared.commitCapabilityBinding()
+          : await this.clientCapabilities?.bindSession(request.sessionId, context.connectionId);
         if (binding && !binding.ok) {
           return completedStart(operationConflict(binding.message));
         }
@@ -1677,7 +1785,7 @@ export class RootTurnCoordinator {
           proposedRunId: randomUUID(),
           proposedUserMessageId: randomUUID(),
           execution: request.execution,
-          normalizedInput: prepared.content,
+          normalizedInput: canonicalContent.content,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           sourceMessages: [],
           admittedAt: Date.now(),
@@ -1687,7 +1795,7 @@ export class RootTurnCoordinator {
             operationConflict('Turn identity belongs to a different execution kind'),
           );
         }
-        if (!rootMessageAdmissionMatches(admitted.admission, request, prepared.content)) {
+        if (!rootMessageAdmissionMatches(admitted.admission, request, canonicalContent.content)) {
           return completedStart(
             operationConflict('Turn identity was already admitted with a different payload'),
           );
@@ -1725,6 +1833,7 @@ export class RootTurnCoordinator {
     request: RootMessageStartRequest,
   ): Promise<RootMessageContentPreparation> {
     if ('content' in request) return { kind: 'ready', content: request.content };
+    if ('prepareFreshContent' in request) return request.prepareFreshContent();
     try {
       return { kind: 'ready', content: normalizeMessageContent(await request.prepareContent()) };
     } catch (error) {
@@ -2847,10 +2956,73 @@ function rootMessageAdmissionMatches(
 ): boolean {
   return (
     isDeepStrictEqual(admission.execution, request.execution) &&
-    messageContentsEqual(requireAdmissionMessageContent(admission), content) &&
+    (request.execution.kind === 'external_message' && request.execution.inputDigest
+      ? true
+      : messageContentsEqual(requireAdmissionMessageContent(admission), content)) &&
     isDeepStrictEqual(admission.turnOrchestration, request.turnOrchestration) &&
     admission.sourceMessages.length === 0
   );
+}
+
+function skillInvocationInputDigest(
+  content: MessageContent,
+  skillIds: readonly string[],
+): `sha256:${string}` {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify({ content, skillIds: [...skillIds] }))
+    .digest('hex')}`;
+}
+
+function composeHostedSkillInvocationContent(
+  content: MessageContent,
+  prepared: Exclude<PreparedSkillInvocationMessage, { disposition: 'blocked' }>,
+): MessageContent {
+  if (prepared.disposition === 'passthrough') return content;
+  const displayText =
+    content.displayText ??
+    (content.text.trim().length > 0
+      ? content.text
+      : prepared.skillInvocation.loaded.map((skill) => `/skill:${skill.id}`).join(' '));
+  const skillReferences = skillInvocationInlineReferences(
+    prepared.skillInvocation.receipts,
+    displayText,
+  );
+  const candidates = [
+    ...(content.inlineReferences ?? []).filter((reference) => reference.kind !== 'skill'),
+    ...skillReferences,
+  ].sort((left, right) => left.start - right.start || right.value.length - left.value.length);
+  const inlineReferences: NonNullable<MessageContent['inlineReferences']> = [];
+  let previousEnd = 0;
+  for (const reference of candidates) {
+    if (inlineReferences.length === INLINE_REFERENCE_MAX_COUNT) break;
+    if (reference.start < previousEnd) continue;
+    inlineReferences.push(reference);
+    previousEnd = reference.start + reference.value.length;
+  }
+  return normalizeMessageContent({
+    ...content,
+    text: prepared.sendText,
+    displayText,
+    inlineReferences,
+  });
+}
+
+function preflightRootMessageContent(
+  content: MessageContent,
+):
+  | { readonly ok: true; readonly content: MessageContent }
+  | { readonly ok: false; readonly outcome: TurnStartOutcome } {
+  try {
+    return {
+      ok: true,
+      content: normalizeRootTurnAdmissionPayload(content, []).normalizedInput,
+    };
+  } catch {
+    return {
+      ok: false,
+      outcome: operationConflict('Turn content exceeds durable admission limits'),
+    };
+  }
 }
 
 function recoveryUserMessage(admission: RootTurnAdmission): RecoveryUserMessage {

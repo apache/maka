@@ -32,6 +32,8 @@ import {
   TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH,
   TURN_MESSAGE_QUOTE_MAX_COUNT,
   TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH,
+  TURN_SKILL_ID_MAX_COUNT,
+  TURN_SKILL_ID_MAX_LENGTH,
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
@@ -49,6 +51,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'agent.graph.query',
       'agent.graph.stop',
       'artifact.delete',
+      'artifact.ingest',
       'artifact.query',
       'automation.mutate',
       'automation.query',
@@ -943,6 +946,52 @@ describe('Runtime Host bootstrap protocol', () => {
         input: { ...submitWire.input, content: { text: 'valid' } },
       },
     );
+  });
+
+  test('accepts bounded explicit Skill identities only on turn.start', () => {
+    const start = (skillIds: unknown, text = '') =>
+      decodeClientFrame({
+        requestId: 'skill-start',
+        operation: 'turn.start',
+        input: {
+          sessionId: 'session-1',
+          turnId: 'turn-skill-1',
+          content: { text },
+          skillIds,
+        },
+      });
+    assert.deepEqual(start(['writer', 'project:maka:reviewer']), {
+      requestId: 'skill-start',
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-skill-1',
+        content: { text: '' },
+        skillIds: ['writer', 'project:maka:reviewer'],
+      },
+    });
+    assert.doesNotThrow(() =>
+      start(Array.from({ length: TURN_SKILL_ID_MAX_COUNT }, (_, index) => `skill-${index}`)),
+    );
+    for (const skillIds of [
+      Array.from({ length: TURN_SKILL_ID_MAX_COUNT + 1 }, (_, index) => `skill-${index}`),
+      ['bad/id'],
+      ['bad id'],
+      ['x'.repeat(TURN_SKILL_ID_MAX_LENGTH + 1)],
+      [1],
+    ]) {
+      assert.throws(() => start(skillIds), isInvalidFrame);
+    }
+    assert.throws(() => start(undefined), isInvalidFrame);
+    assert.deepEqual(start([], 'plain'), {
+      requestId: 'skill-start',
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-skill-1',
+        content: { text: 'plain' },
+      },
+    });
   });
 
   test('decodes a closed regenerate identity without accepting replacement content', () => {

@@ -20,6 +20,7 @@ import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeMessageAuthorityInvariantError,
   SessionManager,
+  type PreparedSkillInvocationMessage,
   type RuntimeHostedRootAuthority,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunClosureReason,
@@ -37,8 +38,10 @@ import {
   type RootTurnAdmission,
   type RootTurnAdmissionStore,
 } from '@maka/storage/execution-stores';
+import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { SubscriptionFrame } from '../protocol/index.js';
+import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
 import { HostCanonicalPermissionOutcomeReader } from '../server/canonical-permission-outcome-reader.js';
 import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
@@ -360,6 +363,265 @@ test('turn.start durably applies one exact per-Turn orchestration override', asy
     );
     assert.equal(conflict.ok, false);
     if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('turn.start resolves explicit Skills once before durable admission and replays the result', async () => {
+  let preparationCount = 0;
+  let blocked = false;
+  let observedCapabilityPreview = false;
+  const capabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  const connection = capabilities.attachConnection('skill-provider', { send: async () => {} });
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    clientCapabilities: capabilities,
+    prepareSkillInvocation: async ({ sessionId }): Promise<PreparedSkillInvocationMessage> => {
+      preparationCount += 1;
+      const snapshot = capabilities.snapshotForSession(sessionId);
+      observedCapabilityPreview = (snapshot?.tools.length ?? 0) > 0;
+      snapshot?.release();
+      if (blocked) {
+        return {
+          disposition: 'blocked',
+          skillInvocation: {
+            loaded: [],
+            failed: [{ request: 'writer', reason: 'not_found' }],
+            receipts: [
+              {
+                invocation: 'explicit',
+                request: 'writer',
+                success: false,
+                reason: 'not_found',
+              },
+            ],
+          },
+        };
+      }
+      return {
+        disposition: 'ready',
+        sendText: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+        skillInvocation: {
+          loaded: [{ id: 'writer', name: 'Writer' }],
+          failed: [],
+          receipts: [
+            {
+              invocation: 'explicit',
+              request: 'writer',
+              success: true,
+              ref: 'project:maka:writer',
+              id: 'writer',
+              name: 'Writer',
+              scope: 'project',
+              source: 'maka',
+              truncated: false,
+            },
+          ],
+        },
+      };
+    },
+  });
+  const input = {
+    sessionId: fixture.sessionId,
+    turnId: 'turn-hosted-skill',
+    content: { text: '/skill:writer Draft this.' },
+    skillIds: ['writer'],
+  };
+  try {
+    await registerSessionCapability(fixture, capabilities, 'skill-provider', 'skill-registration', [
+      'inspect',
+    ]);
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency, 'skill-provider');
+    const started = await fixture.coordinator.handlers['turn.start'](input, context);
+    assert.equal(started.ok, true);
+    assert.equal(preparationCount, 1);
+    assert.equal(observedCapabilityPreview, true);
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      input.turnId,
+    );
+    assert.equal(admission?.execution.kind, 'external_message');
+    assert.match(
+      admission?.execution.kind === 'external_message'
+        ? (admission.execution.inputDigest ?? '')
+        : '',
+      /^sha256:[a-f0-9]{64}$/,
+    );
+    assert.deepEqual(admission?.normalizedInput, {
+      text: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+      displayText: '/skill:writer Draft this.',
+      inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
+    });
+
+    blocked = true;
+    const exactRetry = await fixture.coordinator.handlers['turn.start'](input, context);
+    assert.equal(exactRetry.ok, true);
+    assert.equal(preparationCount, 1, 'durable replay must not resolve a mutable Skill catalog');
+
+    const conflictingRetry = await fixture.coordinator.handlers['turn.start'](
+      { ...input, skillIds: ['writer', 'another'] },
+      context,
+    );
+    assert.equal(conflictingRetry.ok, false);
+    if (!conflictingRetry.ok) assert.equal(conflictingRetry.error.code, 'operation_conflict');
+  } finally {
+    await connection.close();
+    await capabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('turn.start rejects oversized Skill preparation before admission and preserves not-found semantics', async () => {
+  let preparationCount = 0;
+  let preparation: 'blocked' | 'oversized' = 'blocked';
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    prepareSkillInvocation: async () => {
+      preparationCount += 1;
+      if (preparation === 'blocked') {
+        return {
+          disposition: 'blocked',
+          skillInvocation: {
+            loaded: [],
+            failed: [{ request: 'writer', reason: 'not_found' }],
+            receipts: [],
+          },
+        };
+      }
+      return {
+        disposition: 'ready',
+        sendText: 'x'.repeat(70 * 1024),
+        skillInvocation: {
+          loaded: [{ id: 'writer', name: 'Writer' }],
+          failed: [],
+          receipts: [],
+        },
+      };
+    },
+  });
+  const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+  try {
+    const blocked = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-hosted-skill-blocked',
+        content: { text: '/skill:writer' },
+      },
+      context,
+    );
+    assert.equal(blocked.ok, false);
+    if (!blocked.ok) assert.equal(blocked.error.code, 'operation_conflict');
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        fixture.sessionId,
+        'turn-hosted-skill-blocked',
+      ),
+      undefined,
+    );
+
+    preparation = 'oversized';
+    const oversized = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-hosted-skill-oversized',
+        content: { text: '/skill:writer Draft this.' },
+      },
+      context,
+    );
+    assert.equal(oversized.ok, false);
+    if (!oversized.ok) assert.equal(oversized.error.code, 'operation_conflict');
+    assert.equal(fixture.drainRequested(), false);
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        fixture.sessionId,
+        'turn-hosted-skill-oversized',
+      ),
+      undefined,
+    );
+
+    const missingSession = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: 'missing-session',
+        turnId: 'turn-hosted-skill-missing-session',
+        content: { text: '/skill:writer Draft this.' },
+      },
+      context,
+    );
+    assert.equal(missingSession.ok, false);
+    if (!missingSession.ok) assert.equal(missingSession.error.code, 'not_found');
+    assert.equal(preparationCount, 2, 'missing Sessions must not resolve Skills');
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('turn.start admits only canonical live Session Artifact attachments', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    withArtifacts: true,
+  });
+  try {
+    const artifact = await fixture.artifacts!.create({
+      id: 'attachment-fixture',
+      sessionId: fixture.sessionId,
+      turnId: 'upload-1',
+      name: 'fixture.txt',
+      kind: 'file',
+      content: 'fixture bytes',
+      mimeType: 'text/plain',
+      source: 'user_upload',
+    });
+    const attachment = {
+      kind: 'other' as const,
+      name: artifact.name,
+      mimeType: artifact.mimeType!,
+      bytes: artifact.sizeBytes,
+      ref: {
+        kind: 'session_file' as const,
+        sessionId: fixture.sessionId,
+        relativePath: artifact.id,
+      },
+    };
+    for (const [turnId, invalidAttachment] of [
+      ['turn-with-wrong-size', { ...attachment, bytes: attachment.bytes + 1 }],
+      ['turn-with-wrong-kind', { ...attachment, kind: 'image' as const }],
+      [
+        'turn-with-cross-session-ref',
+        { ...attachment, ref: { ...attachment.ref, sessionId: 'another-session' } },
+      ],
+      [
+        'turn-with-missing-artifact',
+        { ...attachment, ref: { ...attachment.ref, relativePath: 'missing-artifact' } },
+      ],
+    ] as const) {
+      const rejected = await fixture.coordinator.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId,
+          content: { text: 'Use this attachment.', attachments: [invalidAttachment] },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      );
+      assert.equal(rejected.ok, false);
+      if (!rejected.ok) assert.equal(rejected.error.code, 'operation_conflict');
+      assert.equal(
+        await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
+        undefined,
+      );
+    }
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-with-attachment',
+        content: { text: 'Use this attachment.', attachments: [attachment] },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
   } finally {
     await fixture.dispose();
   }
@@ -3825,12 +4087,19 @@ async function createFailureFixture(options: {
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
   wrapMessageAuthority?(authority: RuntimeMessageAuthority): RuntimeMessageAuthority;
   withInteractions?: boolean;
+  withArtifacts?: boolean;
   beforeInteractionPreflight?(): Promise<void>;
   clientCapabilities?: HostClientCapabilityCoordinator;
   continuationSafety?: {
     workspaceIdentity: string;
     availableToolNames: readonly string[] | ((sessionId: string) => readonly string[]);
   };
+  prepareSkillInvocation?(input: {
+    sessionId: string;
+    turnId: string;
+    text: string;
+    skillIds: readonly string[];
+  }): Promise<PreparedSkillInvocationMessage>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -3842,6 +4111,10 @@ async function createFailureFixture(options: {
   if (!owner) throw new Error('Unable to acquire test root');
 
   const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const artifacts = options.withArtifacts
+    ? await openInteractiveArtifactStoreForWrite(owner.lease)
+    : undefined;
+  await artifacts?.recover();
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
     backend: 'fake',
@@ -3970,6 +4243,9 @@ async function createFailureFixture(options: {
         }),
       })
     : new SessionManager(managerDeps);
+  const artifactAuthority = artifacts
+    ? new HostArtifactCoordinator(artifacts, requestDrain, sessionAdmission, stores.sessionStore)
+    : undefined;
   const createCoordinator = (
     admissionOwner: RootAdmissionOwner,
     assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
@@ -3990,6 +4266,8 @@ async function createFailureFixture(options: {
       options.clientCapabilities,
       () => NO_GOAL_ROOT_AUTHORITY,
       assertAutomationRecoveryAdmission,
+      artifactAuthority,
+      options.prepareSkillInvocation,
     );
   coordinator = createCoordinator(rootAdmissionOwner);
 
@@ -4002,6 +4280,7 @@ async function createFailureFixture(options: {
     continuity,
     manager,
     interactions,
+    artifacts,
     sessionAdmission,
     acquireResidency,
     createRecoveryCoordinator: (

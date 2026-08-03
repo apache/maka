@@ -66,6 +66,27 @@ describe('skill invocation', () => {
     );
   });
 
+  it('bounds successful Skill references to canonical transcript limits', () => {
+    const receipts = Array.from({ length: 40 }, (_, index) => ({
+      invocation: 'explicit' as const,
+      request: `skill-${index}`,
+      success: true as const,
+      ref: `project:agents:skill-${index}`,
+      id: `skill-${index}`,
+      name: `${'x'.repeat(199)}😀tail`,
+      scope: 'project' as const,
+      source: 'agents' as const,
+      truncated: false,
+    }));
+    const references = skillInvocationInlineReferences(
+      receipts,
+      receipts.map((receipt) => `/skill:${receipt.id}`).join(' '),
+    );
+    assert.equal(references.length, 32);
+    assert.equal(references[0]?.label.length, 199);
+    assert.equal(references[0]?.label.endsWith('\ud83d'), false);
+  });
+
   it('lists only enabled, host-eligible skills as slim entries', async () => {
     await withWorkspace(async (workspaceRoot, homeDir) => {
       await writeSkill(

@@ -11,7 +11,9 @@ import {
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
-import { requireCount, requireExactRecord, requireRecord } from './codec.js';
+import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
+import { isCanonicalAttachmentRef, type AttachmentRef } from '@maka/core/events';
+import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -22,6 +24,8 @@ export const ARTIFACT_CURSOR_MAX_BYTES = 32;
 export const ARTIFACT_NAME_MAX_BYTES = 512;
 export const ARTIFACT_MIME_TYPE_MAX_BYTES = 512;
 export const ARTIFACT_SUMMARY_MAX_BYTES = 8 * 1024;
+export const ARTIFACT_INGEST_CHUNK_MAX_BYTES = 48 * 1024;
+export const ARTIFACT_INGEST_MIME_TYPE_MAX_BYTES = 256;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -122,7 +126,72 @@ export interface ArtifactDeleteResult {
   readonly artifact: ArtifactProjection;
 }
 
+export type ArtifactIngestInput =
+  | {
+      readonly kind: 'begin';
+      readonly sessionId: string;
+      readonly uploadId: string;
+      readonly name: string;
+      readonly mimeType: string;
+      readonly totalBytes: number;
+      readonly contentSha256: `sha256:${string}`;
+    }
+  | {
+      readonly kind: 'chunk';
+      readonly sessionId: string;
+      readonly uploadId: string;
+      readonly offset: number;
+      readonly chunkBase64: string;
+    }
+  | { readonly kind: 'commit'; readonly sessionId: string; readonly uploadId: string }
+  | { readonly kind: 'abort'; readonly sessionId: string; readonly uploadId: string };
+
+export type ArtifactIngestResult =
+  | { readonly kind: 'upload_opened'; readonly uploadId: string; readonly nextOffset: number }
+  | { readonly kind: 'chunk_accepted'; readonly uploadId: string; readonly nextOffset: number }
+  | { readonly kind: 'committed'; readonly uploadId: string; readonly attachment: AttachmentRef }
+  | { readonly kind: 'upload_aborted'; readonly uploadId: string };
+
 export const ARTIFACT_OPERATION_SPECS = {
+  'artifact.ingest': defineOperation<
+    ArtifactIngestInput,
+    ArtifactIngestResult,
+    | 'host_not_ready'
+    | 'host_draining'
+    | 'operation_unavailable'
+    | 'invalid_request'
+    | 'not_found'
+    | 'operation_conflict'
+    | 'persistence_failed'
+    | 'internal_failure'
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: [
+      'host_not_ready',
+      'host_draining',
+      'operation_unavailable',
+      'invalid_request',
+      'not_found',
+      'operation_conflict',
+      'persistence_failed',
+      'internal_failure',
+    ],
+    decodeInput: decodeArtifactIngestInput,
+    decodeOutput: decodeArtifactIngestResult,
+    assertOutputForInput: (input, output) => {
+      if (input.uploadId !== output.uploadId) {
+        throw invalidProtocolFrame('Artifact ingest changed upload identity');
+      }
+      if (
+        output.kind === 'committed' &&
+        (output.attachment.ref.kind !== 'session_file' ||
+          output.attachment.ref.sessionId !== input.sessionId)
+      ) {
+        throw invalidProtocolFrame('Artifact ingest changed Session identity');
+      }
+    },
+  }),
   'artifact.query': defineOperation<
     ArtifactQueryInput,
     ArtifactQueryResult,
@@ -146,6 +215,118 @@ export const ARTIFACT_OPERATION_SPECS = {
     decodeOutput: decodeArtifactDeleteResult,
   }),
 } as const;
+
+export function decodeArtifactIngestInput(value: unknown): ArtifactIngestInput {
+  const input = requireRecord(value, 'artifact ingest input');
+  if (input.kind === 'begin') {
+    const exact = requireExactRecord(input, 'artifact ingest begin input', [
+      'kind',
+      'sessionId',
+      'uploadId',
+      'name',
+      'mimeType',
+      'totalBytes',
+      'contentSha256',
+    ]);
+    return {
+      kind: 'begin',
+      sessionId: requireEntityId(exact.sessionId, 'sessionId'),
+      uploadId: requireEntityId(exact.uploadId, 'uploadId'),
+      name: boundedIngestText(exact.name, 'artifact ingest name', ARTIFACT_NAME_MAX_BYTES),
+      mimeType: boundedIngestText(
+        exact.mimeType,
+        'artifact ingest mime type',
+        ARTIFACT_INGEST_MIME_TYPE_MAX_BYTES,
+      ),
+      totalBytes: boundedAttachmentBytes(exact.totalBytes),
+      contentSha256: contentDigest(exact.contentSha256),
+    };
+  }
+  if (input.kind === 'chunk') {
+    const exact = requireExactRecord(input, 'artifact ingest chunk input', [
+      'kind',
+      'sessionId',
+      'uploadId',
+      'offset',
+      'chunkBase64',
+    ]);
+    const chunkBase64 = boundedText(
+      exact.chunkBase64,
+      'artifact ingest chunk',
+      Math.ceil((ARTIFACT_INGEST_CHUNK_MAX_BYTES * 4) / 3) + 4,
+      true,
+    );
+    if (!isCanonicalBase64(chunkBase64)) {
+      throw invalidProtocolFrame('Invalid artifact ingest chunk');
+    }
+    const chunk = Buffer.from(chunkBase64, 'base64');
+    if (chunk.byteLength === 0 || chunk.byteLength > ARTIFACT_INGEST_CHUNK_MAX_BYTES) {
+      throw invalidProtocolFrame('Invalid artifact ingest chunk');
+    }
+    return {
+      kind: 'chunk',
+      sessionId: requireEntityId(exact.sessionId, 'sessionId'),
+      uploadId: requireEntityId(exact.uploadId, 'uploadId'),
+      offset: requireCount(exact.offset, 'artifact ingest offset'),
+      chunkBase64,
+    };
+  }
+  if (input.kind === 'commit' || input.kind === 'abort') {
+    const exact = requireExactRecord(input, 'artifact ingest terminal input', [
+      'kind',
+      'sessionId',
+      'uploadId',
+    ]);
+    return {
+      kind: input.kind,
+      sessionId: requireEntityId(exact.sessionId, 'sessionId'),
+      uploadId: requireEntityId(exact.uploadId, 'uploadId'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid artifact ingest kind');
+}
+
+export function decodeArtifactIngestResult(value: unknown): ArtifactIngestResult {
+  const result = requireRecord(value, 'artifact ingest result');
+  if (result.kind === 'upload_opened' || result.kind === 'chunk_accepted') {
+    const exact = requireExactRecord(result, 'artifact ingest progress result', [
+      'kind',
+      'uploadId',
+      'nextOffset',
+    ]);
+    return {
+      kind: result.kind,
+      uploadId: requireEntityId(exact.uploadId, 'uploadId'),
+      nextOffset: requireCount(exact.nextOffset, 'artifact ingest next offset'),
+    };
+  }
+  if (result.kind === 'upload_aborted') {
+    const exact = requireExactRecord(result, 'artifact ingest abort result', ['kind', 'uploadId']);
+    return { kind: 'upload_aborted', uploadId: requireEntityId(exact.uploadId, 'uploadId') };
+  }
+  if (result.kind === 'committed') {
+    const exact = requireExactRecord(result, 'artifact ingest committed result', [
+      'kind',
+      'uploadId',
+      'attachment',
+    ]);
+    if (!isCanonicalAttachmentRef(exact.attachment)) {
+      throw invalidProtocolFrame('Invalid artifact ingest AttachmentRef');
+    }
+    if (exact.attachment.ref.kind !== 'session_file') {
+      throw invalidProtocolFrame('Invalid artifact ingest AttachmentRef');
+    }
+    return {
+      kind: 'committed',
+      uploadId: requireEntityId(exact.uploadId, 'uploadId'),
+      attachment: {
+        ...exact.attachment,
+        ref: { ...exact.attachment.ref },
+      },
+    };
+  }
+  throw invalidProtocolFrame('Invalid artifact ingest result kind');
+}
 
 export function decodeArtifactQueryInput(value: unknown): ArtifactQueryInput {
   const input = requireRecord(value, 'artifact query input');
@@ -400,6 +581,13 @@ function boundedText(value: unknown, label: string, maxBytes: number, allowEmpty
   return value;
 }
 
+function boundedIngestText(value: unknown, label: string, maxBytes: number): string {
+  const text = boundedText(value, label, maxBytes);
+  // eslint-disable-next-line no-control-regex
+  if (/[ -]/.test(text)) throw invalidProtocolFrame(`Invalid ${label}`);
+  return text;
+}
+
 function artifactEntityId(value: unknown, label: string): string {
   if (!isCanonicalArtifactEntityId(value)) throw invalidProtocolFrame(`Invalid ${label}`);
   return value;
@@ -415,6 +603,21 @@ function artifactRevision(value: unknown, label: string): ArtifactRevision {
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return value as ArtifactRevision;
+}
+
+function boundedAttachmentBytes(value: unknown): number {
+  const bytes = requireCount(value, 'artifact ingest total bytes');
+  if (bytes > MAX_ATTACHMENT_BYTES) {
+    throw invalidProtocolFrame('Artifact ingest exceeds attachment byte limit');
+  }
+  return bytes;
+}
+
+function contentDigest(value: unknown): `sha256:${string}` {
+  if (typeof value !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value)) {
+    throw invalidProtocolFrame('Invalid artifact ingest content digest');
+  }
+  return value as `sha256:${string}`;
 }
 
 function artifactKind(value: unknown): ArtifactKind {

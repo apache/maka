@@ -635,7 +635,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         turnId,
         index === 0
           ? `Reply with the hosted execution result.${' HISTORY_PRESSURE'.repeat(160)}`
-          : `Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`,
+          : index === 1
+            ? `/skill:hosted-skill Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`
+            : `Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`,
         connectionContext,
       );
       const terminal = await waitForTerminal(
@@ -663,7 +665,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_TASK_LEDGER_SENTINEL/);
     assert.match(requestText, /HOSTED_PERSONALIZATION_SENTINEL/);
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
+    assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     assert.deepEqual(toolNames(request?.body), [
+      'ArchiveRead',
       'AskUserQuestion',
       'Automation',
       'Bash',
@@ -697,6 +701,22 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     );
     assert.equal(assistant?.type, 'assistant');
     if (assistant?.type === 'assistant') assert.equal(assistant.text, RESPONSE_TEXT);
+    const skillMessage = messages.find(
+      (message) => message.type === 'user' && message.turnId === turnIds[1],
+    );
+    assert.equal(skillMessage?.type, 'user');
+    if (skillMessage?.type === 'user') {
+      assert.match(skillMessage.text, /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
+      assert.match(skillMessage.displayText ?? '', /^\/skill:hosted-skill /);
+      assert.deepEqual(skillMessage.inlineReferences, [
+        {
+          kind: 'skill',
+          value: '/skill:hosted-skill',
+          label: 'Hosted Skill Sentinel',
+          start: 0,
+        },
+      ]);
+    }
 
     const usage = await waitForUsage(
       composition,
@@ -1324,10 +1344,15 @@ test('production Host publishes and retires an implementation child patch', asyn
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, 3);
+    assert.equal(childArtifacts.length, 4);
     assert.equal(
       childArtifacts.filter((artifact) => artifact.source === 'provider_request_capture').length,
       2,
+    );
+    assert.ok(
+      childArtifacts.some(
+        (artifact) => artifact.source === 'tool_result' && artifact.name === 'implementation.txt',
+      ),
     );
     const patchArtifact = childArtifacts.find(
       (artifact) => artifact.source === 'subagent_writeback',
@@ -2021,6 +2046,12 @@ function backendCreationFixture(input: {
       list: async () => [],
     },
     artifacts: {},
+    executionArtifacts: {
+      recordToolArtifacts: async () => undefined,
+      archiveToolResult: async () => ({ artifactId: 'fixture-tool-result-archive' }),
+      readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+      readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
+    },
     usage: {
       pricing: {
         snapshot: input.readPricing,

@@ -26,6 +26,7 @@ export interface TurnStartInput {
   sessionId: string;
   turnId: string;
   content: MessageContent;
+  skillIds?: string[];
   turnOrchestration?: TurnOrchestration;
 }
 
@@ -36,6 +37,8 @@ export const TURN_MESSAGE_CONTENT_MAX_BYTES = 52 * 1024;
 export const TURN_MESSAGE_QUOTE_MAX_COUNT = 16;
 export const TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH = 32_000;
 export const TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH = 200;
+export const TURN_SKILL_ID_MAX_COUNT = 50;
+export const TURN_SKILL_ID_MAX_LENGTH = 512;
 const ATTACHMENT_NAME_MAX_BYTES = 512;
 const ATTACHMENT_MIME_TYPE_MAX_BYTES = 256;
 const ATTACHMENT_PATH_MAX_BYTES = 4096;
@@ -265,16 +268,36 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
     value,
     'turn.start input',
     ['sessionId', 'turnId', 'content'],
-    ['turnOrchestration'],
+    ['skillIds', 'turnOrchestration'],
   );
+  const skillIds = decodeSkillIds(record.skillIds);
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
-    content: decodeMessageContent(record.content),
+    content: decodeMessageContent(record.content, skillIds.length > 0),
+    ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
       : {}),
   };
+}
+
+function decodeSkillIds(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    value.length > TURN_SKILL_ID_MAX_COUNT ||
+    value.some(
+      (id) =>
+        typeof id !== 'string' ||
+        id.length === 0 ||
+        id.length > TURN_SKILL_ID_MAX_LENGTH ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)*$/.test(id),
+    )
+  ) {
+    throw invalidProtocolFrame('Invalid Turn skillIds');
+  }
+  return [...value];
 }
 
 function decodeTurnOrchestration(value: unknown): TurnOrchestration {
@@ -285,14 +308,14 @@ function decodeTurnOrchestration(value: unknown): TurnOrchestration {
   return { mode: record.mode, source: record.source };
 }
 
-export function decodeMessageContent(value: unknown): MessageContent {
+export function decodeMessageContent(value: unknown, allowEmptyText = false): MessageContent {
   let content: MessageContent;
   try {
     content = decodeCanonicalMessageContent(value);
   } catch {
     throw invalidProtocolFrame('Invalid Message content');
   }
-  requireUtf8String(content.text, 'Message text', TURN_MESSAGE_TEXT_MAX_BYTES, false);
+  requireUtf8String(content.text, 'Message text', TURN_MESSAGE_TEXT_MAX_BYTES, allowEmptyText);
   if (content.displayText !== undefined) {
     requireUtf8String(
       content.displayText,
