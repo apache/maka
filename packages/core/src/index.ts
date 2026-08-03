@@ -599,9 +599,12 @@ export type {
   ComputerUseWindowIdentity,
   CuAction,
   CuActionType,
+  CuObservingActionType,
   CuPoint,
   CuRegion,
   CuScrollDirection,
+  CuSemanticActionType,
+  CuToolActionType,
 } from './computer-use.js';
 export {
   COMPUTER_USE_ACTION_TYPES,
@@ -612,11 +615,18 @@ export {
   COMPUTER_USE_ERROR_CODES,
   COMPUTER_USE_FRAME_SOURCE_KINDS,
   CU_ACTION_TYPES,
+  CU_MUTATING_ACTION_TYPES,
+  CU_OBSERVING_ACTION_TYPES,
   CU_SCROLL_DIRECTIONS,
+  CU_SEMANTIC_ACTION_TYPES,
+  CU_TOOL_ACTION_TYPES,
   computerUseApprovalScopeKey,
   computerUseApprovalSummary,
   computerUseModelCallArgs,
   isComputerUseErrorCode,
+  isCuMutatingAction,
+  isCuObservingAction,
+  isCuToolAction,
 } from './computer-use.js';
 
 // permission-profile.ts

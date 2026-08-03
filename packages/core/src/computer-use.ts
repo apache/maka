@@ -155,6 +155,96 @@ export const CU_ACTION_TYPES = [
 export const COMPUTER_USE_ACTION_TYPES = CU_ACTION_TYPES;
 export type CuActionType = (typeof CU_ACTION_TYPES)[number];
 
+/**
+ * The semantic actions, which name an element rather than a pixel. They are not
+ * in `CU_ACTION_TYPES` because they are not `CuAction`s — they are dispatched
+ * through `runSemantic` — but they are on the same wire enum, so anything
+ * reasoning about "what the model may ask for" has to see both halves.
+ */
+export const CU_SEMANTIC_ACTION_TYPES = [
+  'click_element',
+  'set_value',
+  'select_text',
+  'secondary_action',
+  'press_key',
+] as const;
+export type CuSemanticActionType = (typeof CU_SEMANTIC_ACTION_TYPES)[number];
+
+/**
+ * Every action name the tool schema spells out itself, as it spells them —
+ * that is, every name that is not one of the `CU_ACTION_TYPES` coordinate
+ * actions folded into `CU_TOOL_ACTION_TYPES` below.
+ *
+ * This list used to be hand-written beside a schema that already listed the
+ * same names, and it drifted: `window_action` was added to the strict union and
+ * not here, so had it also reached the wire, every window move, resize and
+ * minimise would have been summarised as `unknown` — in the approval a person
+ * reads before allowing it, and in the record the model reads back of its own
+ * call.
+ *
+ * Drift in the other direction costs just as much and is quieter. A name listed
+ * here that the schema does not accept makes `computerUseApprovalSummary`
+ * report an action the tool will reject as though it were one that had been
+ * taken, and makes `rememberForTurnAllowed` true for it. So the guard in
+ * `computer-use-schema-parity.test.ts` (@maka/runtime, which can import the
+ * schema; this package cannot) compares the two lists in both directions.
+ *
+ * It is no longer hand-written: the two openers are named here and the rest is
+ * spliced from `CU_SEMANTIC_ACTION_TYPES`, so there is one place to add a
+ * semantic action rather than two that must agree.
+ */
+export const COMPUTER_USE_SEMANTIC_ACTIONS = [
+  'list_apps',
+  'observe',
+  ...CU_SEMANTIC_ACTION_TYPES,
+] as const;
+
+/**
+ * Every action name the `maka_computer` tool accepts, in wire order.
+ *
+ * One list, so that adding an action cannot leave a consumer silently matching
+ * nothing. This has already cost us once: an offline analyser restated the
+ * vocabulary as two regexes, neither of which matched a single coordinate
+ * action after the surface moved, and it reported clean runs for trajectories
+ * made entirely of blind clicks.
+ */
+export const CU_TOOL_ACTION_TYPES = [...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES] as const;
+export type CuToolActionType = (typeof CU_TOOL_ACTION_TYPES)[number];
+
+/**
+ * The actions that read without changing anything, and so take an observation
+ * lease rather than an action lease. Everything else on the wire is treated as
+ * mutating — including any action added later, which fails loud in an analyser
+ * rather than silently dropping out of the counts.
+ */
+export const CU_OBSERVING_ACTION_TYPES = [
+  'list_apps',
+  'observe',
+  'screenshot',
+  'cursor_position',
+  'wait',
+] as const;
+export type CuObservingActionType = (typeof CU_OBSERVING_ACTION_TYPES)[number];
+
+const OBSERVING_ACTION_SET: ReadonlySet<string> = new Set(CU_OBSERVING_ACTION_TYPES);
+const TOOL_ACTION_SET: ReadonlySet<string> = new Set(CU_TOOL_ACTION_TYPES);
+
+export const CU_MUTATING_ACTION_TYPES: readonly CuToolActionType[] = CU_TOOL_ACTION_TYPES.filter(
+  (action) => !OBSERVING_ACTION_SET.has(action),
+);
+
+export function isCuToolAction(action: string): action is CuToolActionType {
+  return TOOL_ACTION_SET.has(action);
+}
+
+export function isCuObservingAction(action: string): action is CuObservingActionType {
+  return OBSERVING_ACTION_SET.has(action);
+}
+
+export function isCuMutatingAction(action: string): action is CuToolActionType {
+  return TOOL_ACTION_SET.has(action) && !OBSERVING_ACTION_SET.has(action);
+}
+
 export type CuAction =
   | { type: 'screenshot' }
   | { type: 'cursor_position' }
@@ -466,35 +556,9 @@ const POINTER_ACTIONS = new Set([
 const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
 const SEMANTIC_ACTIONS = new Set(['click_element', 'set_value', 'select_text', 'secondary_action']);
 
-/**
- * Every action name the tool schema spells out itself, as it spells them —
- * that is, every name that is not one of the `CU_ACTION_TYPES` coordinate
- * actions folded in below.
- *
- * Hand-written beside a schema that already lists them, and it drifted:
- * `window_action` was added to the strict union and not here, so had it also
- * reached the wire, every window move, resize and minimise would have been
- * summarised as `unknown` — in the approval a person reads before allowing it,
- * and in the record the model reads back of its own call.
- *
- * Drift in the other direction costs just as much and is quieter. A name listed
- * here that the schema does not accept makes `computerUseApprovalSummary`
- * report an action the tool will reject as though it were one that had been
- * taken, and makes `rememberForTurnAllowed` true for it. So the guard in
- * `computer-use-schema-parity.test.ts` (@maka/runtime, which can import the
- * schema; this package cannot) compares the two lists in both directions.
- */
-export const COMPUTER_USE_SEMANTIC_ACTIONS = [
-  'list_apps',
-  'observe',
-  'click_element',
-  'set_value',
-  'select_text',
-  'secondary_action',
-  'press_key',
-] as const;
-
-const APPROVAL_ACTIONS = new Set<string>([...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES]);
+// Exactly the wire vocabulary, derived rather than restated: an action the tool
+// accepts is an action a person can be asked to approve.
+const APPROVAL_ACTIONS = new Set<string>(CU_TOOL_ACTION_TYPES);
 
 export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSummary {
   const record = asRecord(args);

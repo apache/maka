@@ -8,8 +8,10 @@
 // threading (S18). The backend owns the actual AX/capture dispatch.
 import { z } from 'zod';
 import {
-  CU_ACTION_TYPES,
+  CU_TOOL_ACTION_TYPES,
   isComputerUseErrorCode,
+  isCuMutatingAction,
+  isCuObservingAction,
   type CuAction,
   type CuPoint,
   type ComputerUseErrorCode,
@@ -88,16 +90,7 @@ export type {
 export const computerWireParams = z
   .object({
     action: z
-      .enum([
-        'list_apps',
-        'observe',
-        'click_element',
-        'set_value',
-        'select_text',
-        'secondary_action',
-        'press_key',
-        ...CU_ACTION_TYPES,
-      ] as [string, ...string[]])
+      .enum(CU_TOOL_ACTION_TYPES as unknown as [string, ...string[]])
       .describe(
         'Operation to perform. Required fields by action: observe/screenshot require app or window_id; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; press_key requires observation_id and text; coordinate actions require observation_id plus their coordinate fields.',
       ),
@@ -865,36 +858,15 @@ export function buildComputerUseTools(deps: {
             state.screenLocked();
             return sessionFailure('screen_locked');
           }
-          const requiresObservationLease =
-            input.action === 'observe' ||
-            input.action === 'screenshot' ||
-            input.action === 'list_apps' ||
-            input.action === 'cursor_position' ||
-            input.action === 'wait';
+          // Both halves of the wire enum are partitioned in `@maka/core`, so a
+          // new action cannot be added without landing on one side or the
+          // other — and offline consumers read the same partition.
+          const requiresObservationLease = isCuObservingAction(input.action);
           const observationLease = requiresObservationLease ? state.beforeObservation() : undefined;
           if (observationLease && !observationLease.ok) {
             return sessionFailure(observationLease.reason);
           }
-          const requiresActionLease =
-            input.action === 'click_element' ||
-            input.action === 'set_value' ||
-            input.action === 'select_text' ||
-            input.action === 'secondary_action' ||
-            input.action === 'press_key' ||
-            input.action === 'mouse_move' ||
-            input.action === 'left_click' ||
-            input.action === 'right_click' ||
-            input.action === 'middle_click' ||
-            input.action === 'double_click' ||
-            input.action === 'triple_click' ||
-            input.action === 'left_mouse_down' ||
-            input.action === 'left_mouse_up' ||
-            input.action === 'left_click_drag' ||
-            input.action === 'scroll' ||
-            input.action === 'zoom' ||
-            input.action === 'type' ||
-            input.action === 'key' ||
-            input.action === 'hold_key';
+          const requiresActionLease = isCuMutatingAction(input.action);
           const leaseResult = requiresActionLease ? state.beforeAction() : undefined;
           if (leaseResult && !leaseResult.ok) {
             return sessionFailure(leaseResult.reason);

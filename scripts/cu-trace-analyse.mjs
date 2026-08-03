@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 // What confused the model.
 //
-// `MAKA_CU_DEBUG_LOG` records every Computer Use call a real run made:
-// arguments verbatim, result untruncated, interleaved with the executor's own
-// dispatch trace. Reading one by hand tells you what happened; reading twenty
-// tells you what the tool surface keeps doing to models.
+// `MAKA_CU_DEBUG_LOG` is meant to record every Computer Use call a real run
+// made: arguments verbatim, result untruncated, interleaved with the executor's
+// own dispatch trace. Reading one by hand tells you what happened; reading
+// twenty tells you what the tool surface keeps doing to models.
+//
+// NOTHING WRITES THAT JOURNAL YET. `MAKA_CU_DEBUG_LOG` and the `CuDebugRecord`
+// shape read below have no producer anywhere in this repository — not on
+// `main`, not on any open branch other than the harness scripts that pass the
+// variable through. So the record shape here has never been checked against a
+// writer, and the first writer to land will disagree with it in some way. That
+// is why every field this file reads is required rather than defaulted: a
+// record it cannot classify is reported and exits non-zero, instead of being
+// counted as a call that went fine. See `classify` below.
 //
 // This looks for the shapes that mean a model was stuck rather than working:
 //
@@ -29,13 +38,37 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 
+// The vocabulary comes from the product, not from a copy of it kept here. Two
+// regexes used to restate the action names; by the time anyone looked, neither
+// matched a single coordinate action — `left_click` was in neither list — so a
+// trajectory of twenty blind coordinate clicks reported BLIND 0, and every
+// name the regexes did contain (`click`, `type_text`, `drag`, `launch_app`,
+// `window_action`, `element_sequence`, `wait_for_text`) had zero occurrences
+// on the wire. Importing the enum makes that failure impossible: an action
+// added to the tool is classified here the day it lands.
+import { CU_TOOL_ACTION_TYPES, isCuMutatingAction, isCuObservingAction } from '@maka/core';
+
 /** The call as the model asked for it, with the volatile parts removed. */
 export function signature(args) {
   const copy = { ...args };
   // An observation id changes every turn by design; two calls differing only
   // there are the same call as far as the model's intent goes.
   delete copy.observation_id;
-  return `${copy.action ?? '?'} ${JSON.stringify(copy)}`;
+  // Key order is not intent. A model that sends the same call three times can
+  // serialise it three ways, and reading those as three argument shapes
+  // reported verbatim repetition as schema-guessing — the exact confusion this
+  // file exists to name. Sort so the signature depends on content only.
+  return `${copy.action ?? '?'} ${stableStringify(copy)}`;
+}
+
+/** JSON with object keys in sorted order, at every depth. */
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 /**
@@ -51,21 +84,27 @@ export function targetKey(args) {
   return `${app}|${window}`;
 }
 
-/** Actions that read. Everything else that dispatches is a mutation. */
-const OBSERVING = /^(observe|screenshot|list_apps|wait_for_text|wait_for_text_gone)$/;
-const MUTATING =
-  /^(click|click_element|double_click|middle_click|triple_click|secondary_action|set_value|type_text|press_key|select_text|scroll|scroll_element|element_sequence|drag|window_action|launch_app)$/;
+// Actions that read take an observation lease; everything else on the wire
+// takes an action lease. That partition is `@maka/core`'s, imported above.
 
 /**
  * Whether a result handed the model a fresh tree.
  *
  * Maka attaches an observation to the result of an action, so a click is not
  * only a mutation — it is also a look, and the call after it is not blind. The
- * marker is the observation header the renderer writes, which is protocol
- * (`observation_id` is what an action has to quote back) rather than prose.
+ * marker is the `observation_id` key of the JSON the renderer writes
+ * (`packages/runtime/src/computer-use-tools.ts`, `observationText` and
+ * `persistedObservationText`), which is protocol — `observation_id` is what the
+ * next action has to quote back — rather than prose.
+ *
+ * This used to test for `observation_id=`, a shell-style form with zero
+ * occurrences in the product. It therefore returned false for every real
+ * observation, which made `blindCalls` unable to see that an action had handed
+ * back a replacement tree: a correct run of four clicks that each returned one
+ * reported BLIND 3. The counter flagged the product working.
  */
 export function carriesObservation(text) {
-  return /observation_id=/.test(String(text ?? ''));
+  return /"observation_id"\s*:\s*"/.test(String(text ?? ''));
 }
 
 /**
@@ -86,6 +125,15 @@ const LOOKS_FAILED = /\bfailed\b|\brefused\b|unsupported_action|\bblocked\b|\ber
  * them — they differ when the host projects a narrower surface, and a
  * disagreement between the two is worth seeing. `kind: "driver"` is the
  * executor's dispatch trace, which is what happened rather than what was asked.
+ *
+ * Nothing writes this shape yet (see the header). So the fields are read
+ * strictly: a `call` line without an arguments object, without an action name,
+ * or without any result at all is a record this file does not understand, and
+ * it is returned with `malformed` set so the report can say so and exit
+ * non-zero. Defaulting those to `{}` and `''` instead — which is what this did
+ * — turned twenty records of a shape it had never seen into
+ * `{"calls":20,"refusals":0,"blind":0,"actions":["?"]}` and exit 0: a clean
+ * bill of health for a corpus it had not read one field of.
  */
 export function classify(record) {
   if (record.kind !== 'call') return null;
@@ -93,31 +141,58 @@ export function classify(record) {
   // calls that differ only in a field the projection drops read as the same
   // call — which is how fourteen identical retries were counted as eight
   // different argument shapes.
-  const args = record.rawArgs ?? record.modelFacingArgs ?? {};
+  const args = isPlainObject(record.rawArgs)
+    ? record.rawArgs
+    : isPlainObject(record.modelFacingArgs)
+      ? record.modelFacingArgs
+      : null;
   // A failed call has no `resultModelText` at all; reading only that field made
   // every refusal invisible, so the refusal counts were the ones this analyser
   // exists to produce.
-  const text = String(record.resultText ?? record.resultModelText ?? '');
+  const resultText =
+    typeof record.resultText === 'string'
+      ? record.resultText
+      : typeof record.resultModelText === 'string'
+        ? record.resultModelText
+        : null;
+  const structural = typeof record.error === 'string' && record.error ? record.error : null;
+  const action = typeof args?.action === 'string' ? args.action : null;
+  // What is wrong with this line, in the words a reader can act on. Empty means
+  // the record was understood.
+  const malformed = [];
+  if (args === null) malformed.push('no rawArgs/modelFacingArgs object');
+  else if (action === null) malformed.push('no action name in the arguments');
+  else if (!CU_TOOL_ACTION_TYPES.includes(action)) {
+    malformed.push(`action "${action}" is not on the maka_computer wire enum`);
+  }
+  if (resultText === null && structural === null) {
+    malformed.push('no resultText, resultModelText or error field');
+  }
+  const text = resultText ?? '';
   // The structural field first. `CuDebugRecord.error` is the executor's own
   // code, written beside the result rather than inside it, so it survives any
   // change to how a refusal is worded for the model. The regex stays as a
   // second source for journals written before the field existed — and when
   // neither yields a code but the text reads like a failure, that is recorded
   // as `unclassified` and printed, rather than counted as a success.
-  const structural = typeof record.error === 'string' && record.error ? record.error : null;
   const fromText = /failed:\s*([a-z_]+)/.exec(text)?.[1] ?? null;
   const failed = structural ?? fromText;
   return {
-    action: args.action ?? '?',
-    args,
-    signature: signature(args),
-    target: targetKey(args),
+    action: action ?? '?',
+    args: args ?? {},
+    signature: signature(args ?? {}),
+    target: targetKey(args ?? {}),
     failed,
     unclassified: failed === null && LOOKS_FAILED.test(text),
+    malformed,
     observed: carriesObservation(text),
-    durationMs: record.durationMs ?? 0,
+    durationMs: typeof record.durationMs === 'number' ? record.durationMs : 0,
     text,
   };
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -135,8 +210,8 @@ export function blindCalls(calls) {
   // The target the model currently holds a live tree for, or null for none.
   let observedTarget = null;
   for (const call of calls) {
-    const observing = OBSERVING.test(call.action);
-    const mutating = MUTATING.test(call.action);
+    const observing = isCuObservingAction(call.action);
+    const mutating = isCuMutatingAction(call.action);
     if (observing) {
       if (call.observed || call.failed === null) observedTarget = call.target;
       continue;
@@ -162,20 +237,34 @@ export function endedAbandoned(calls) {
   return calls.slice(-2).some((call) => call.failed !== null);
 }
 
+/**
+ * The journal, split into the calls it carried and the lines it lost.
+ *
+ * A line that will not parse is not a line that can be ignored: a journal
+ * truncated mid-write, or written by something other than the executor, would
+ * otherwise present as a short but tidy trajectory. The count is returned so
+ * the report can say how much of the file it failed to read.
+ */
+export function parseJournal(raw) {
+  const calls = [];
+  const unreadable = [];
+  const lines = raw.split('\n').filter((line) => line.trim().length > 0);
+  for (const [index, line] of lines.entries()) {
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      unreadable.push(index + 1);
+      continue;
+    }
+    const call = classify(record);
+    if (call) calls.push(call);
+  }
+  return { calls, unreadable, lines: lines.length };
+}
+
 export function parseTrace(raw) {
-  return raw
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean)
-    .map(classify)
-    .filter(Boolean);
+  return parseJournal(raw).calls;
 }
 
 /** Everything one trajectory has to say about itself. */
@@ -213,6 +302,10 @@ export function analyseCalls(calls) {
     calls: calls.length,
     refusals: refusals.length,
     unclassified: calls.filter((c) => c.unclassified).length,
+    // Records this file could not read as a Computer Use call, with the reason.
+    // Anything in here makes every number beside it untrustworthy, so it is
+    // printed and it decides the exit code.
+    malformed: calls.flatMap((c) => c.malformed ?? []),
     codes: [...new Set(refusals.map((c) => c.failed))],
     repeated,
     thrash,
@@ -227,13 +320,21 @@ async function main(files) {
   const report = [];
   const everyCall = [];
   for (const file of files) {
-    const raw = await readFile(file, 'utf8').catch(() => '');
+    // A file that cannot be read is not an empty file. Reporting the two the
+    // same way is how a mistyped glob reads as a clean corpus.
+    let raw;
+    try {
+      raw = await readFile(file, 'utf8');
+    } catch (error) {
+      report.push({ file, unreadableFile: String(error?.message ?? error) });
+      continue;
+    }
     if (!raw.trim()) {
       report.push({ file, empty: true });
       continue;
     }
-    const calls = parseTrace(raw);
-    report.push({ file, ...analyseCalls(calls) });
+    const { calls, unreadable, lines } = parseJournal(raw);
+    report.push({ file, unreadable, lines, ...analyseCalls(calls) });
     calls.forEach((call, index) => {
       everyCall.push({ ...call, next: calls[index + 1]?.action ?? null });
     });
@@ -241,6 +342,10 @@ async function main(files) {
 
   for (const r of report) {
     console.log(`\n=== ${basename(r.file)}`);
+    if (r.unreadableFile) {
+      console.log(`    COULD NOT READ — ${r.unreadableFile}`);
+      continue;
+    }
     if (r.empty) {
       console.log(
         '    (no trace — the run wrote nothing, which usually means MAKA_CU_DEBUG_LOG was not set)',
@@ -252,6 +357,25 @@ async function main(files) {
     );
     console.log(`    actions: ${r.actions.join(' ')}`);
     if (r.codes.length > 0) console.log(`    codes: ${r.codes.join(' ')}`);
+    if (r.unreadable.length > 0) {
+      console.log(
+        `    UNREADABLE — ${r.unreadable.length} of ${r.lines} line(s) are not JSON` +
+          ` (first at line ${r.unreadable[0]}). This journal is truncated or was not written by` +
+          ' the executor; everything below is what survived.',
+      );
+    }
+    if (r.malformed.length > 0) {
+      // The reason the exit code is non-zero. Nothing writes this journal yet,
+      // so the likeliest cause is that the first producer to land disagrees
+      // with the shape read here — and the wrong answer to that is a table of
+      // zeroes that reads like a run with no problems.
+      const reasons = [...new Set(r.malformed)];
+      console.log(
+        `    NOT A COMPUTER USE CALL — ${r.malformed.length} record(s) this analyser cannot` +
+          ' classify. Every number in this block is computed over the rest:',
+      );
+      for (const reason of reasons.slice(0, 6)) console.log(`      ${reason}`);
+    }
     if (r.unclassified > 0) {
       // Loud, because the alternative is a table of zeroes that reads like a
       // clean run. Every one of these is a result the executor rendered as a
@@ -318,7 +442,7 @@ async function main(files) {
     }
   }
 
-  const total = report.filter((r) => !r.empty);
+  const total = report.filter((r) => !r.empty && !r.unreadableFile);
   if (total.length > 0) {
     const calls = total.reduce((n, r) => n + r.calls, 0);
     const refused = total.reduce((n, r) => n + r.refusals, 0);
@@ -333,6 +457,22 @@ async function main(files) {
           ' Fix the code extraction before trusting any number above.',
       );
     }
+  }
+
+  // Anything below this line is a reason to distrust everything above it, so it
+  // decides the exit code rather than being one more paragraph of output.
+  const unreadableFiles = report.filter((r) => r.unreadableFile).length;
+  const unreadableLines = total.reduce((n, r) => n + r.unreadable.length, 0);
+  const malformed = total.reduce((n, r) => n + r.malformed.length, 0);
+  if (unreadableFiles > 0 || unreadableLines > 0 || malformed > 0) {
+    console.log(
+      `\nREFUSING TO REPORT ON THIS CORPUS: ${unreadableFiles} file(s) unreadable,` +
+        ` ${unreadableLines} line(s) not JSON, ${malformed} record(s) not a Computer Use call.` +
+        ' Nothing writes MAKA_CU_DEBUG_LOG in this repository yet, so the shape read here has' +
+        ' never been checked against a writer — a corpus this file cannot classify is a' +
+        ' disagreement to fix, not a run with no problems.',
+    );
+    return 3;
   }
   // A corpus that produced no calls at all is not a clean run — it is a run
   // whose journal was never written. Nothing on `main` writes
