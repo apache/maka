@@ -792,10 +792,10 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: @hono/node-server@1.19.15
+Package: @hono/node-server@2.0.12
 Declared license: MIT
 Selected license: MIT
-Repository: https://github.com/honojs/node-server.git
+Repository: git+https://github.com/honojs/node-server.git
 
 --- LICENSE ---
 MIT License
@@ -1163,7 +1163,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
 
-Package: @modelcontextprotocol/sdk@1.29.0
+Package: @modelcontextprotocol/sdk@1.30.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
@@ -7368,7 +7368,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: fast-uri@3.1.4
+Package: fast-uri@3.1.5
 Declared license: BSD-3-Clause
 Selected license: BSD-3-Clause
 Repository: git+https://github.com/fastify/fast-uri.git
@@ -12447,7 +12447,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici@8.7.0
+Package: undici@8.10.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
