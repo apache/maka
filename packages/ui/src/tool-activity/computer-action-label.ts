@@ -15,21 +15,31 @@
  *
  * ## What these arguments actually are
  *
- * Not the wire call. `maka_computer` declares `categoryHint: 'computer_use'`,
- * and `ToolRuntime.executeTool` replaces a Computer Use call's arguments with
- * `computerUseApprovalSummary(...)` before anything is persisted or emitted —
- * so `item.args` here is a `ComputerUseApprovalSummary`, and it is the only
- * argument shape any renderer can ever see. That projection carries
- * `{action, approvalClass, rememberForTurnAllowed, app?, windowId?,
- * observationId?, elementId?}`, in the projection's own casing.
+ * Not the raw wire call, but the same dialect as it. `maka_computer` declares
+ * `categoryHint: 'computer_use'`, and `ToolRuntime` replaces a Computer Use
+ * call's arguments with `computerUseModelCallArgs(...)` before anything is
+ * persisted or emitted — so `item.args` here is a `ComputerUseModelCallArgs`,
+ * and it is the only argument shape any renderer can ever see. That projection
+ * keeps every key the model sent, in the names the tool accepts: `window_id`
+ * and `element_id`, not `windowId` and `elementId`.
  *
- * Everything else is withheld on purpose, and a named test enforces it:
+ * That distinction is load-bearing rather than cosmetic. This projection used
+ * to be `computerUseApprovalSummary`, which renames both keys, and a renderer
+ * that reads the old names off the new projection does not fail — every
+ * element action quietly falls back to "点击该元素", which is the exact defect
+ * this file exists to remove. `SummaryKey` below is `keyof
+ * ComputerUseModelCallArgs` so a stale name is a type error rather than a
+ * silent `undefined`, and the runtime seam is pinned by name in
+ * `computer-use-privacy-boundary.test.ts`.
+ *
+ * Values that came off the screen or out of a person's head are reduced to
+ * their shape by that projection, and a named test enforces it:
  * `computer-use-privacy-boundary.test.ts` asserts that a `type` call's `text`
- * and a pointer call's `coordinate` reach neither the persisted `tool_call`,
- * the `tool_start` event, nor the invocation record. `value`, `text`,
- * `coordinate`, `duration`, `scroll_direction` and `region` are therefore not
- * available to this function, and no branch here pretends otherwise: a label
- * that reads "输入「你好」" could only ever come from a fixture.
+ * arrives as `<text>` in the persisted `tool_call`, the `tool_start` event and
+ * the invocation record. `value` and `text` are therefore not available to this
+ * function as anything a person would want read out, and no branch here
+ * pretends otherwise: a label that reads "输入「你好」" could only ever come
+ * from a fixture.
  *
  * An element's human label is not available either, for a different reason.
  * `element_id` is an index into one observation, and the observation the UI can
@@ -42,7 +52,7 @@
  * falling back to the tool name.
  */
 
-import { type ComputerUseApprovalSummary, type UiLocale } from '@maka/core';
+import { type ComputerUseModelCallArgs, type UiLocale } from '@maka/core';
 import type { ToolActivityItem } from '../materialize.js';
 import { getToolActivityCopy, type ToolActivityCopy } from './copy.js';
 
@@ -68,8 +78,20 @@ export function computerActionLabel(
   return describeAction(args, copy) ?? copy.fallback;
 }
 
-/** The projection's keys, named so a typo cannot silently read `undefined`. */
-type SummaryKey = keyof ComputerUseApprovalSummary;
+/**
+ * The keys the projection declares by name, and the only ones read below.
+ *
+ * Not `keyof ComputerUseModelCallArgs`: that interface carries an index
+ * signature for every other argument the model sent, so `keyof` widens to
+ * `string | number` and the stale `windowId` this file used to read would type
+ * check again. Filtering the index signature back out leaves the five names the
+ * projection spells out, so renaming one there is a build error here rather
+ * than a row that quietly reads "点击该元素".
+ */
+type DeclaredArg<T> = keyof {
+  [K in keyof T as string extends K ? never : number extends K ? never : K]: unknown;
+};
+type SummaryKey = DeclaredArg<ComputerUseModelCallArgs>;
 
 function describeAction(
   args: Record<string, unknown>,
@@ -77,8 +99,8 @@ function describeAction(
 ): string | undefined {
   const action = str(args, 'action');
   const app = displayable(str(args, 'app'));
-  const windowId = int(args, 'windowId');
-  const elementId = str(args, 'elementId');
+  const windowId = int(args, 'window_id');
+  const elementId = identifier(str(args, 'element_id'));
   const element = elementId ? copy.element(elementId) : copy.elementUnknown;
 
   switch (action) {
@@ -162,6 +184,23 @@ function int(record: Record<string, unknown>, key: SummaryKey): number | undefin
 
 /** Keep an app name short enough to stay on one row. */
 const APP_CAP = 32;
+
+/**
+ * An element id the row is willing to print, or `undefined`.
+ *
+ * The persisted projection keeps whatever the model sent under `element_id`,
+ * redacted for secrets and bounded, and that is right for the model's own
+ * record — it has to read back the call it made, wrong or not. A row is a
+ * different surface. `e12` is an index into an observation and says which
+ * control; free text under that key is either an accessibility label the model
+ * copied off the screen or a mistake, and neither belongs in a sentence a
+ * person reads. The row falls back to naming no element rather than printing
+ * it, which is what the generic "点击该元素" is for.
+ */
+const ELEMENT_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+function identifier(value: string | undefined): string | undefined {
+  return value !== undefined && ELEMENT_ID.test(value) ? value : undefined;
+}
 
 /**
  * The projection already redacts and bounds `app` to 256 characters; a row is

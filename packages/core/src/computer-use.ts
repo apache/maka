@@ -349,29 +349,6 @@ export interface ComputerUseApprovalSummary {
   app?: string;
   windowId?: number;
   observationId?: string;
-  /**
-   * Which element the call targeted, when it targeted one.
-   *
-   * This projection is the only Computer Use argument shape that is persisted
-   * and the only one a renderer or an approval prompt can read, so an element
-   * action that omitted it could not be told apart from any other element
-   * action: ten clicks in a turn all read "click the element".
-   *
-   * It is safe to keep for the same reason `observationId` is, and it is kept
-   * the same way. An element id is the model's own choice of an index into an
-   * observation it already read — `e12` — not anything the screen said. It is
-   * admitted only when it matches {@link stableIdentifier}, so an accessibility
-   * label, a typed value, or any other free text that arrived under this key is
-   * dropped rather than persisted. That shape filter is not on its own a
-   * privacy boundary: `[A-Za-z0-9._:-]{1,256}` is also the shape of an API key,
-   * so a model that put one here would otherwise write it verbatim into the
-   * persisted arguments and into the row. It therefore runs the same
-   * {@link redactSecrets} pass `observationId` and `app` do — the projection is
-   * what gets persisted, so the redaction has to happen here. Values the screen
-   * or the user supplied — `value`, `text`, `coordinate` — stay out, as the
-   * privacy boundary requires.
-   */
-  elementId?: string;
 }
 
 /**
@@ -609,7 +586,6 @@ export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSu
   const rawApp = ownDataProperty(record, 'app');
   const rawWindowId = ownDataProperty(record, 'window_id');
   const rawObservationId = ownDataProperty(record, 'observation_id');
-  const rawElementId = ownDataProperty(record, 'element_id');
   const exactApp = typeof rawApp === 'string' && rawApp.length > 0 ? rawApp : undefined;
   const app = exactApp === undefined ? undefined : boundedDisplay(redactSecrets(exactApp), 256);
   const windowId =
@@ -620,10 +596,6 @@ export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSu
     exactObservationId === undefined
       ? undefined
       : boundedDisplay(redactSecrets(exactObservationId), 256);
-  const exactElementId =
-    typeof rawElementId === 'string' ? stableIdentifier(rawElementId) : undefined;
-  const elementId =
-    exactElementId === undefined ? undefined : boundedDisplay(redactSecrets(exactElementId), 256);
   const explicitTarget = exactApp !== undefined || windowId !== undefined;
   const targetBound =
     action === 'list_apps' ||
@@ -642,7 +614,6 @@ export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSu
     ...(app === undefined ? {} : { app }),
     ...(windowId === undefined ? {} : { windowId }),
     ...(observationId === undefined ? {} : { observationId }),
-    ...(elementId === undefined ? {} : { elementId }),
   };
 }
 

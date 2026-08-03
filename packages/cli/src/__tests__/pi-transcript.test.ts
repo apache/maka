@@ -3,7 +3,7 @@ import { before, describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { _setColorLevelForTesting } from '../tui-ansi.js';
 import type { PipeShellOutput, PtyShellOutput, ShellRunToolResult } from '@maka/core';
-import { computerUseApprovalSummary } from '@maka/core';
+import { computerUseModelCallArgs } from '@maka/core';
 import type { SessionEvent, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
@@ -4654,9 +4654,11 @@ describe('Maka Pi TUI Computer Use rows', () => {
   /**
    * The desktop is not the only renderer of tool activity, and the row that
    * reads `Maka Computer` reads it in both. The arguments are put through
-   * `computerUseApprovalSummary`, because that is what the runtime persists and
-   * emits for this tool — a fixture written as the wire call would assert a
-   * label from fields the TUI can never receive.
+   * `computerUseModelCallArgs`, because that is what the runtime persists and
+   * emits for this tool — a fixture written as the wire call, or run through
+   * some other projection, would assert a label from fields the TUI can never
+   * receive. That projection speaks the tool's own dialect: `window_id` and
+   * `element_id`, not `windowId` and `elementId`.
    */
   test('says what each Computer Use call did instead of repeating the tool name', () => {
     const state = createMakaPiTranscriptState();
@@ -4687,7 +4689,7 @@ describe('Maka Pi TUI Computer Use rows', () => {
           toolName: 'maka_computer',
           displayName: 'Maka Computer',
           activityKind: 'computer',
-          args: computerUseApprovalSummary(wireArgs),
+          args: computerUseModelCallArgs(wireArgs),
         }),
       );
       applyMakaSessionEventToTranscript(
@@ -4718,7 +4720,7 @@ describe('Maka Pi TUI Computer Use rows', () => {
     // The host's own approval bookkeeping is not something the model asked for
     // and has no business in a transcript row.
     const all = rows.join('\n');
-    assert.equal(/approvalClass|rememberForTurnAllowed|observationId/.test(all), false, all);
+    assert.equal(/approvalClass|rememberForTurnAllowed|observation_id/.test(all), false, all);
   });
 });
 

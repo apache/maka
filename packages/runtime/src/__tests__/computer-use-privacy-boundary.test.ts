@@ -278,43 +278,47 @@ test('Computer Use persists which element a call targeted', async () => {
   };
 
   // This object is the dialect, not an example of it. `computerActionLabel` in
-  // `packages/ui/src/tool-activity/computer-action-label.ts` reads these exact
-  // key names off the persisted args, and it is the only thing that turns a
-  // Computer Use row into a sentence. Respell them at the seam — `windowId` to
-  // `window_id`, `elementId` to `element_id` — and the renderer silently falls
-  // back to "点击该元素" on every row, which is the defect this projection
-  // exists to prevent. Change this assertion and that file in one commit.
+  // `packages/ui/src/tool-activity/computer-action-label.ts` and
+  // `computerCallSummary` in `packages/cli/src/pi-transcript-tools.ts` read
+  // these exact key names off the persisted args, and they are the only things
+  // that turn a Computer Use row into a sentence. Respell them at the seam —
+  // `window_id` to `windowId`, `element_id` to `elementId` — and both renderers
+  // silently fall back to "点击该元素" on every row, which is the defect this
+  // projection exists to prevent. Neither renderer's own suite can see it: both
+  // build their fixtures by calling a projection, so respelling the seam leaves
+  // them green. Change this assertion and those two files in one commit.
   assert.deepEqual(await persisted('e7'), {
     action: 'click_element',
-    approvalClass: 'semantic_mutation',
-    rememberForTurnAllowed: true,
     app: 'Calculator',
-    windowId: 7,
-    observationId: 'frame-1',
-    elementId: 'e7',
+    window_id: 7,
+    observation_id: 'frame-1',
+    element_id: 'e7',
   });
   // Two clicks in one turn have to be distinguishable, which is the whole
   // reason the field is carried.
-  assert.equal(((await persisted('e9')) as { elementId?: string }).elementId, 'e9');
-  // Anything under that key that is not an identifier is dropped rather than
-  // persisted: an accessibility label is screen content.
-  assert.equal(
-    ((await persisted('Customer SSN 123-45-6789')) as { elementId?: string }).elementId,
-    undefined,
-  );
+  assert.equal(((await persisted('e9')) as { element_id?: string }).element_id, 'e9');
   // A shape filter is not a privacy boundary. Arguments are not validated
   // before this projection runs — the test below asserts an invalid call still
-  // persists a summary — so a model that put a key under `element_id` reaches
-  // here, and `[A-Za-z0-9._:-]{1,256}` admits one. It has to be redacted at the
-  // seam, on the same terms `observation_id` and `app` already are, because
-  // this is the object that lands in the transcript.
+  // persists a record — so a model that put a key under `element_id` reaches
+  // here, and the identifier shape `[A-Za-z0-9._:-]{1,256}` admits one. It is
+  // redacted at the seam, on the same terms `app` already is, because this is
+  // the object that lands in the transcript and in the model's own history.
   assert.equal(
     (
       (await persisted('sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh')) as {
-        elementId?: string;
+        element_id?: string;
       }
-    ).elementId,
+    ).element_id,
     '[redacted]',
+  );
+  // Free text under that key is kept, deliberately: the model has to read back
+  // the call it made, and an element id it invented is still what it sent. The
+  // renderers are what refuse to print one — `computer-action-label.test.ts`
+  // pins that — because a row is read by a person and this record is read by
+  // the model that wrote it.
+  assert.equal(
+    ((await persisted('Customer SSN 123-45-6789')) as { element_id?: string }).element_id,
+    'Customer SSN 123-45-6789',
   );
 });
 

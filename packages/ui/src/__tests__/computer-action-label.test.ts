@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
-import { computerUseApprovalSummary } from '@maka/core';
+import { computerUseModelCallArgs } from '@maka/core';
 import { ToolTrow } from '../tool-activity.js';
 import { computerActionLabel, isComputerTool } from '../tool-activity/computer-action-label.js';
 import type { ToolActivityItem } from '../materialize.js';
@@ -12,14 +12,19 @@ import { LocaleProvider } from '../locale-context.js';
  * A row exactly as the runtime produces one.
  *
  * The arguments handed in are the wire call the model made; what the row gets
- * is `computerUseApprovalSummary(...)` of it, because that is what
- * `ToolRuntime.executeTool` puts on the `tool_start` event and in the persisted
- * `tool_call` for any tool declaring `categoryHint: 'computer_use'`.
+ * is `computerUseModelCallArgs(...)` of it, because that is what `ToolRuntime`
+ * puts on the `tool_start` event and in the persisted `tool_call` for any tool
+ * declaring `categoryHint: 'computer_use'`.
  *
- * Every fixture in this file goes through that projection, which is the point.
- * Hand-built `args` let a label be asserted from a field the renderer can never
- * receive: with wire arguments written straight into the row, this suite passed
- * while a ten-click turn rendered ten rows reading "点击该元素".
+ * Every fixture in this file goes through that projection, which is the point,
+ * and it has to be *that* projection rather than any projection. Hand-built
+ * `args` let a label be asserted from a field the renderer can never receive:
+ * with wire arguments written straight into the row, this suite passed while a
+ * ten-click turn rendered ten rows reading "点击该元素". Running them through
+ * the wrong projection is the same failure wearing a fixture — this file built
+ * its rows with `computerUseApprovalSummary`, which spells the same fields
+ * `windowId` and `elementId`, and stayed green through the seam being changed
+ * underneath it.
  */
 function computerCall(
   wireArgs: Record<string, unknown>,
@@ -31,7 +36,7 @@ function computerCall(
     displayName: 'Maka Computer',
     activityKind: 'computer',
     status: 'completed',
-    args: computerUseApprovalSummary(wireArgs),
+    args: computerUseModelCallArgs(wireArgs),
     ...extra,
   };
 }
@@ -105,28 +110,30 @@ describe('computer action label', () => {
   });
 
   /**
-   * The projection admits an element id only when it is a stable identifier.
-   * An accessibility label that arrived under that key is not one, and must not
-   * reach a row — the same reason the privacy boundary keeps `value` and
-   * `text` out entirely.
+   * The persisted projection keeps whatever the model sent under `element_id`,
+   * because the model has to read back the call it made. The row does not: an
+   * accessibility label the model copied off the screen is not an index into an
+   * observation, and it has no business in a sentence a person reads.
    */
   it('drops an element id that is free text rather than an identifier', () => {
-    const args = computerUseApprovalSummary({
+    const args = computerUseModelCallArgs({
       action: 'click_element',
       element_id: 'Customer SSN 123-45-6789',
     });
-    assert.equal((args as { elementId?: string }).elementId, undefined);
+    // The projection carries it — this is the renderer's own refusal, not the
+    // projection's, so it has to be asserted against a projection that kept it.
+    assert.equal(args.element_id, 'Customer SSN 123-45-6789');
     assert.equal(label({ action: 'click_element', element_id: 'Customer SSN 123-45-6789' }), '点击该元素');
   });
 
   /**
    * Not a preference: `computer-use-privacy-boundary.test.ts` asserts that a
-   * typed value and a coordinate reach neither the persisted call nor the
-   * event. A row that spelled either out would be reading a field that does not
-   * exist outside a fixture.
+   * typed value reaches neither the persisted call nor the event as anything
+   * but its shape. A row that spelled one out would be reading a field that
+   * does not exist outside a fixture.
    */
   it('never spells out a value the privacy boundary withholds', () => {
-    const args = computerUseApprovalSummary({
+    const args = computerUseModelCallArgs({
       action: 'set_value',
       element_id: 'e1',
       value: 'sk-abcdefghijklmnopqrstuvwx',
@@ -134,10 +141,12 @@ describe('computer action label', () => {
     });
     assert.deepEqual(Object.keys(args).sort(), [
       'action',
-      'approvalClass',
-      'elementId',
-      'rememberForTurnAllowed',
+      'coordinate',
+      'element_id',
+      'value',
     ]);
+    // The written value never crosses; only its shape does.
+    assert.equal(args.value, '<text>');
     const row = computerActionLabel(computerCall({
       action: 'set_value',
       element_id: 'e1',
@@ -211,7 +220,7 @@ describe('computer action label', () => {
       toolName: 'some_other_name',
       activityKind: 'computer',
       status: 'completed',
-      args: computerUseApprovalSummary({ action: 'click_element', element_id: 'e7' }),
+      args: computerUseModelCallArgs({ action: 'click_element', element_id: 'e7' }),
     };
     assert.equal(isComputerTool(wrapped), true);
     assert.equal(computerActionLabel(wrapped, 'zh'), '点击元素 e7');

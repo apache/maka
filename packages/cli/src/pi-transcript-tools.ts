@@ -798,12 +798,15 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
  * `action: … / approvalClass: … / rememberForTurnAllowed: …`, which names the
  * host's own approval bookkeeping rather than anything the model asked for.
  *
- * The arguments here are a `ComputerUseApprovalSummary`, not the wire call:
+ * The arguments here are a `ComputerUseModelCallArgs`, not the raw wire call:
  * `ToolRuntime` substitutes that projection for any tool declaring
- * `categoryHint: 'computer_use'` before anything is persisted. So the action,
- * the app, the window and the element are available and a typed value, a key
- * name and a coordinate are not — deliberately, and the same fields the desktop
- * row can use.
+ * `categoryHint: 'computer_use'` before anything is persisted. It keeps every
+ * key the model sent in the names the tool accepts — `window_id`, `element_id`
+ * — and reduces a screen-derived or typed value to its shape, so the action,
+ * the app, the window and the element are available and a written value is
+ * not. Reading `windowId`/`elementId` here instead is not a compile error and
+ * not a crash; it is every row silently losing its element, which is the defect
+ * this function exists to remove.
  */
 function computerCallSummary(args: Record<string, unknown> | undefined): string | undefined {
   if (!args) return undefined;
@@ -814,10 +817,10 @@ function computerCallSummary(args: Record<string, unknown> | undefined): string 
   const action = text('action');
   if (!action) return undefined;
   const parts = [action];
-  const elementId = text('elementId');
+  const elementId = text('element_id');
   if (elementId) parts.push(`element ${elementId}`);
   const app = text('app');
-  const windowId = args.windowId;
+  const windowId = args.window_id;
   const target =
     app && typeof windowId === 'number'
       ? `${app} window ${windowId}`
