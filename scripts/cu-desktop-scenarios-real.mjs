@@ -94,7 +94,16 @@ async function oracle(bundle, role) {
   const args = [join(ROOT, 'scripts', 'cu-ax-oracle.swift'), bundle, '--depth', '12'];
   if (role) args.push('--role', role);
   const { stdout } = await exec('swift', args, { maxBuffer: 32 * 1024 * 1024, timeout: 90_000 });
-  return JSON.parse(stdout);
+  const seen = JSON.parse(stdout);
+  // A witness that cannot see has to say so, loudly, rather than hand back an
+  // object with no `elements` — which every caller below would read as "the
+  // thing is not there". `screen_locked` and `not_permitted` both produce
+  // exactly that shape, and the second one is a blindfolded process reporting
+  // an empty world.
+  if (seen.error) {
+    throw new Error(`the accessibility witness could not read ${bundle}: ${seen.error}`);
+  }
+  return seen;
 }
 
 const strip = (v) => String(v ?? '').replace(/[‎‏‪-‮]/g, '');
@@ -317,8 +326,20 @@ const SCENARIOS = [
     },
     async verify() {
       // Read-only by construction: what is checked is that the window is still
-      // the one that was opened, not that anything changed.
+      // the one that was opened, not that anything changed. This scenario is
+      // therefore excluded from the "attempts that got the task done" count at
+      // the bottom of the file — a check that can only pass is not a score.
+      // What it can still catch is a model that was told to look and clicked
+      // instead.
       const seen = await oracle('com.apple.finder');
+      if (seen.truncated) {
+        // A depth cut reads as absence, so the negative half of this cannot be
+        // asserted from a tree that was not walked to the end.
+        return {
+          ok: false,
+          detail: `the witness tree was cut short: ${JSON.stringify(seen)}`.slice(0, 160),
+        };
+      }
       const has = (seen.elements ?? []).some((e) => /下载|Downloads/.test(strip(e.value)));
       return { ok: has, detail: has ? 'the sidebar still lists 下载' : 'the sidebar item is gone' };
     },
@@ -447,6 +468,15 @@ const SCENARIOS = [
       ]);
       const a = (calc.elements ?? [])[0]?.frame;
       const b = (text.elements ?? [])[0]?.frame;
+      // "One of the two windows is gone" is a negative assertion, and a tree
+      // the oracle cut short is missing elements for a reason that has nothing
+      // to do with the world.
+      if (calc.truncated || text.truncated) {
+        return {
+          ok: false,
+          detail: 'the witness tree was cut short, so a missing window means nothing',
+        };
+      }
       if (!a || !b) return { ok: false, detail: 'one of the two windows is gone' };
       // Side by side means one ends before the other begins. Which one is on
       // the left is the model's call; the ask only said not overlapping.
@@ -582,6 +612,11 @@ function run(scenario, userDataDir, model) {
         // interleaved with the executor's dispatch trace. This is the record
         // the analyser reads: what the model asked for, what it got back, and
         // what it did next.
+        //
+        // Nothing on `main` writes this file yet — the journal sink lives in
+        // `tool-assembly.ts` on the executor branch that has not landed. Until
+        // it does, these traces come out empty, and `cu-trace-analyse.mjs`
+        // exits 2 rather than reporting a clean run over nothing.
         MAKA_CU_DEBUG_LOG: tracePath,
       },
     });
@@ -630,16 +665,42 @@ for (const scenario of scenarios) {
       label: m[2],
       detail: m[3] ?? '',
     }));
+    // Whether the attempt happened at all.
+    //
+    // The child exits 2 before it sends anything when the screen is locked,
+    // when the target application did not start, when Computer Use could not be
+    // enabled, or when a settings panel is intercepting the composer. Its exit
+    // code used to be destructured and stored and never looked at, so those runs
+    // recorded zero checks, ran the witness against untouched state, and printed
+    // "not done" — the same cell a model that tried its best and failed
+    // produces. They are not the same result and must not read the same.
+    const attempted = code === 0 || code === 1;
+    if (!attempted) {
+      console.log(
+        `[DID NOT RUN] the harness exited ${code} before the model was asked anything.` +
+          ' Nothing below is about this model.',
+      );
+    }
     // What the attempt cost, reported rather than asserted: a task nobody can
     // do yet still has a better and a worse way of failing.
-    const calls = [...out.matchAll(/操作电脑 (\d+) 次/g)].map((m) => Number(m[1]));
-    const failedCalls = [...out.matchAll(/(\d+) 个失败/g)].map((m) => Number(m[1]));
+    //
+    // Read off the line the child prints from the session record. It used to be
+    // scraped from 操作电脑 N 次, a string that lives in unmerged interface work
+    // and does not appear anywhere in the product on main — so every cell in the
+    // cost column was a constant 0 dressed as a measurement.
+    const spend = [...out.matchAll(/^computer-calls: (\d+) failed: (\d+)$/gm)];
+    const calls = spend.map((m) => Number(m[1]));
+    const failedCalls = spend.map((m) => Number(m[2]));
 
     let witness = null;
-    try {
-      witness = (await scenario.verify?.(setup)) ?? null;
-    } catch (error) {
-      witness = { ok: false, detail: `witness failed: ${error.message}` };
+    // Only when the model was actually asked. A witness run against a target
+    // the child never touched reports on the setup, not on the attempt.
+    if (attempted) {
+      try {
+        witness = (await scenario.verify?.(setup)) ?? null;
+      } catch (error) {
+        witness = { ok: false, detail: `witness failed: ${error.message}` };
+      }
     }
     if (witness) {
       console.log(
@@ -655,6 +716,7 @@ for (const scenario of scenarios) {
       scenario,
       model,
       code,
+      attempted,
       checks,
       witness,
       calls: calls.length > 0 ? Math.max(...calls) : 0,
@@ -675,13 +737,27 @@ for (const task of tasks) {
   const cells = models.map((model) => {
     const r = results.find((x) => x.scenario.key === task && x.model === model);
     if (!r) return '·'.padEnd(16);
+    // "did not run" is its own cell. The child exits 2 without asking the model
+    // anything — locked screen, target did not start, Computer Use off — and
+    // that used to print as "not done", which is what a model that tried and
+    // failed prints. Reading the two as one is how a broken machine looked like
+    // a weak model.
+    if (!r.attempted) return `did not run (${r.code})`.padEnd(16);
+    // A read-only task has nothing for a witness to see, so it is not scored on
+    // the effect it did not have — see the note under the table.
+    if (r.scenario.readOnly) {
+      return `${r.witness?.ok ? 'intact' : 'DISTURBED'} ${r.calls}c/${r.failedCalls}f`.padEnd(16);
+    }
     const done = r.witness ? (r.witness.ok ? 'done' : 'not done') : '—';
     return `${done} ${r.calls}c/${r.failedCalls}f`.padEnd(16);
   });
   console.log(`${task.padEnd(w)}  ${cells.join(' ')}`);
 }
 console.log(
-  '\n(done = an independent reader saw the effect; Nc/Mf = N computer calls, M reported failed)',
+  '\n(done = an independent reader saw the effect; Nc/Mf = N computer calls, M reported failed;' +
+    '\n intact = a read-only task, checked only for having left the window alone —' +
+    '\n it has no completion an outside reader can see and is not counted below;' +
+    '\n did not run = the child exited before the model was asked anything)',
 );
 
 const chainProblems = results.flatMap((r) =>
@@ -692,8 +768,32 @@ if (chainProblems.length > 0) {
   for (const line of [...new Set(chainProblems)]) console.log(`  ${line}`);
 }
 
-const done = results.filter((r) => r.witness?.ok).length;
+// Only attempts that could be won, and only attempts that happened.
+//
+// `find-in-big-window` asserts that a read-only task changed nothing, so it can
+// never be "not done" and it used to occupy a permanent success cell in this
+// line — one free point in every run, in the one number the file is read for.
+const scored = results.filter((r) => r.attempted && !r.scenario.readOnly);
+const done = scored.filter((r) => r.witness?.ok).length;
+const notRun = results.filter((r) => !r.attempted);
 console.log(
-  `\n${done}/${results.length} attempts actually got the task done. The rest are the backlog, and the traces say why.`,
+  `\n${done}/${scored.length} attempts actually got the task done. The rest are the backlog, and the traces say why.`,
 );
+if (notRun.length > 0) {
+  console.log(
+    `${notRun.length} attempt(s) never ran — ` +
+      [...new Set(notRun.map((r) => `${r.scenario.key}×${r.model} exit ${r.code}`))].join(', ') +
+      '. Those say nothing about any model.',
+  );
+}
+const readOnly = results.filter((r) => r.attempted && r.scenario.readOnly);
+if (readOnly.length > 0) {
+  const disturbed = readOnly.filter((r) => !r.witness?.ok).length;
+  console.log(
+    `${readOnly.length} read-only attempt(s) are outside that count` +
+      (disturbed > 0
+        ? `, and ${disturbed} of them disturbed the window they were told to read`
+        : ''),
+  );
+}
 console.log(`logs and traces in ${OUT}`);

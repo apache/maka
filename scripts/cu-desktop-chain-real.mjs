@@ -58,15 +58,25 @@ const check = (label, pass, detail) => {
 const note = (line) => console.log(`      ${line}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * The pid of whatever is in front, or null when the question cannot be asked.
+ *
+ * `null`, not the string 'unavailable'. Both background invariants below are
+ * written as `!== targetPid`, and 'unavailable' is not equal to any pid, so
+ * returning it made them hold unconditionally — the invariant the whole product
+ * rests on passed exactly when the harness had lost the ability to check it. An
+ * Automation TCC denial is the obvious way that happens, and it is silent.
+ */
 async function frontmostPid() {
   try {
     const { stdout } = await exec('osascript', [
       '-e',
       'tell application "System Events" to get unix id of first process whose frontmost is true',
     ]);
-    return stdout.trim();
+    const pid = stdout.trim();
+    return pid === '' ? null : pid;
   } catch {
-    return 'unavailable';
+    return null;
   }
 }
 
@@ -196,8 +206,17 @@ try {
   const beforeFrontmost = await frontmostPid();
   check(
     'the target is in the background before the run',
-    beforeFrontmost !== targetPid,
-    `frontmost ${beforeFrontmost}, target ${targetPid}`,
+    beforeFrontmost !== null && beforeFrontmost !== targetPid,
+    beforeFrontmost === null
+      ? 'the frontmost process could not be read — most likely an Automation permission denial'
+      : `frontmost ${beforeFrontmost}, target ${targetPid}`,
+  );
+
+  // Every session that existed before this run, so the one this run creates can
+  // be named afterwards. The turn's tool calls are read out of the session
+  // record rather than off the screen — see the check further down for why.
+  const sessionsBefore = new Set(
+    await page.evaluate(async () => (await window.maka.sessions.list()).map((s) => s.id)),
   );
 
   // A new conversation, so the transcript this reads belongs to this run and
@@ -293,8 +312,10 @@ try {
   const duringFrontmost = await frontmostPid();
   check(
     'driving in the background never brought the target forward',
-    duringFrontmost !== targetPid,
-    `frontmost ${duringFrontmost}, target ${targetPid}`,
+    duringFrontmost !== null && duringFrontmost !== targetPid,
+    duringFrontmost === null
+      ? 'the frontmost process could not be read, so this was not checked'
+      : `frontmost ${duringFrontmost}, target ${targetPid}`,
   );
 
   // Every window this turn ever showed, not just the one being asserted on.
@@ -337,23 +358,66 @@ try {
     note(`cursor overlay ${sawOverlay ? 'opened' : 'never appeared'}`);
   }
 
-  // What the conversation actually says, so a green run cannot mean "nothing
-  // happened quietly".
-  const transcript = await page
-    .locator('.maka-chat-turn, [class*="turn"]')
-    .allInnerTexts()
-    .catch(() => []);
-  const text = transcript.join('\n');
+  // The tool calls, read out of the session record.
+  //
+  // This used to regex `/Maka Computer|computer/i` over
+  // `.maka-chat-turn, [class*="turn"]`. Two things were wrong with that.
+  // `.maka-chat-turn` matches nothing in the product — the class is
+  // `maka-turn`. And `[class*="turn"]` matches `section.maka-turn`, which
+  // renders `turn.user.text`, so the haystack included the prompt this file
+  // sent. Every prompt here begins 用 computer use, so the check passed on the
+  // echo of its own request: withhold the Computer Use tool surface entirely,
+  // let the model reply in prose with no tool call at all, and it still printed
+  // PASS. The same inclusion also fed the empty-text guard below, which could
+  // never see an empty transcript while the prompt was in it.
+  //
+  // The session record has no such ambiguity. A `tool_call` message is one the
+  // model made.
+  const sessionId = await page.evaluate(
+    async (before) => {
+      const now = await window.maka.sessions.list();
+      const fresh = now.filter((s) => !before.includes(s.id));
+      return fresh.length === 1 ? fresh[0].id : null;
+    },
+    [...sessionsBefore],
+  );
+  check(
+    'this run got a conversation of its own to read',
+    sessionId !== null,
+    sessionId ?? 'no single new session appeared, so the transcript below is not attributable',
+  );
+  const messages = sessionId
+    ? await page.evaluate((id) => window.maka.sessions.readMessages(id), sessionId)
+    : [];
+  const toolCalls = messages.filter((m) => m.type === 'tool_call');
+  const computerCalls = toolCalls.filter((m) => m.toolName === 'maka_computer');
   check(
     'the turn produced a Computer Use tool call',
-    /Maka Computer|computer/i.test(text),
-    text.slice(-260),
+    computerCalls.length > 0,
+    `${computerCalls.length} of ${toolCalls.length} tool calls were maka_computer` +
+      (toolCalls.length > 0
+        ? ` — ${[...new Set(toolCalls.map((m) => m.toolName))].join(', ')}`
+        : ''),
+  );
+  // What the assistant said, with the user's own words left out of it, so the
+  // breakdown check below reads the answer rather than the question.
+  const text = messages
+    .filter((m) => m.type === 'assistant')
+    .map((m) => m.text ?? '')
+    .join('\n');
+  const results = new Map(
+    messages.filter((m) => m.type === 'tool_result').map((m) => [m.toolUseId, m]),
   );
   // A failed tool call inside a turn that recovered is not a failed turn — but
   // it is worth naming, because a model that has to guess twice is a model the
   // tool surface told something unhelpful the first time.
-  const failedCalls = (text.match(/(\d+) 个失败/g) ?? []).join(', ');
-  if (failedCalls) note(`tool calls reported failed: ${failedCalls}`);
+  const failedCalls = computerCalls.filter((m) => results.get(m.id)?.isError === true).length;
+  if (failedCalls) note(`tool calls that came back an error: ${failedCalls}`);
+  // One line the parent can read, because the parent had been counting these
+  // off a piece of interface copy — 操作电脑 N 次 — that does not exist in the
+  // product, so every call-count cell in its table was a constant zero. The
+  // number is known here; it is printed here.
+  console.log(`computer-calls: ${computerCalls.length} failed: ${failedCalls}`);
   // What the turn ended as, not what words it used. The old test looked for
   // 完成/成功/✅ in the tail, so a model that answered a read-only question
   // perfectly — "I only observed, I clicked nothing" — was recorded as an
@@ -365,7 +429,9 @@ try {
   check(
     'the turn ended with an answer rather than breaking down',
     !brokeDown,
-    text.slice(-200).replace(/\n+/g, ' '),
+    text.trim().length === 0
+      ? 'the assistant said nothing at all'
+      : text.slice(-200).replace(/\n+/g, ' '),
   );
   // The property that matters when a task is beyond what the tools can do: a
   // model that cannot do the thing must say so, not narrate a success it did

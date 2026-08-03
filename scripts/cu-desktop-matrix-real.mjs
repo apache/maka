@@ -70,6 +70,19 @@ const oracleText = (tree) =>
 const displayValue = (tree, role) =>
   (tree.elements ?? []).filter((e) => e.role === role).map((e) => e.value ?? e.title ?? '');
 
+/**
+ * What is written in the app's own text and search fields.
+ *
+ * A search scenario used to be graded on whether the query appeared anywhere in
+ * the tree, which a preinstalled font or a restored lookup satisfies without
+ * anybody typing. The field is the one place the query can only have arrived by
+ * being put there.
+ */
+const fieldValues = (tree) =>
+  (tree.elements ?? [])
+    .filter((e) => /AXTextField|AXComboBox|AXSearchField/.test(e.role ?? ''))
+    .map((e) => String(e.value ?? ''));
+
 async function quit(bundleId) {
   await exec('osascript', ['-e', `tell application id "${bundleId}" to quit saving no`]).catch(
     () => {},
@@ -190,13 +203,36 @@ const SCENARIOS = [
     prompt:
       '用 computer use 在字体册（Font Book）的搜索框里搜索 Courier，' +
       '然后告诉我结果列表里出现了哪些字体。它在后台，不要切到前台。',
-    async verify(tree) {
-      const text = oracleText(tree);
+    async verify(after, before) {
+      // Courier ships with macOS and the font list shows it without anybody
+      // searching, so "the tree mentions Courier" is a check the model can pass
+      // by doing nothing — the same failure `textedit-typing` already guards
+      // against below. What only a search produces is the query sitting in the
+      // search field, and a list that did not show Courier before and does now.
+      const fieldsBefore = fieldValues(before).join(' | ');
+      const fieldsAfter = fieldValues(after).join(' | ');
+      const listedBefore = /courier/i.test(oracleText(before));
+      const listedAfter = /courier/i.test(oracleText(after));
+      const alreadyTyped = /courier/i.test(fieldsBefore);
       return [
         {
+          label: 'nothing was already searching for Courier',
+          pass: !alreadyTyped && !listedBefore,
+          detail: alreadyTyped
+            ? `the search field already read ${JSON.stringify(fieldsBefore)}`
+            : listedBefore
+              ? 'the font list was already showing Courier before the turn'
+              : 'started clean',
+        },
+        {
           label: 'the search field holds the query',
-          pass: /courier/i.test(text),
-          detail: (text.match(/.{0,40}[Cc]ourier.{0,40}/) ?? ['(not found)'])[0],
+          pass: !alreadyTyped && /courier/i.test(fieldsAfter),
+          detail: `fields: ${fieldsAfter || '(all empty)'}`,
+        },
+        {
+          label: 'the font list is showing Courier and was not before',
+          pass: listedAfter && !listedBefore,
+          detail: (oracleText(after).match(/.{0,40}[Cc]ourier.{0,40}/) ?? ['(not found)'])[0],
         },
       ];
     },
@@ -212,13 +248,29 @@ const SCENARIOS = [
     prompt:
       '用 computer use 在词典（Dictionary）里查 serendipity 这个词，' +
       '然后把它的释义念给我听。它在后台，不要切到前台。',
-    async verify(tree) {
-      const text = oracleText(tree);
+    async verify(after, before) {
+      // Dictionary restores its last lookup when it launches, so a rerun of
+      // this scenario passed on the previous run's state. Quitting it first is
+      // not enough — the restore happens on the next launch. The state has to
+      // be shown not to have been there already.
+      const shownBefore = /serendipity/i.test(oracleText(before));
+      const shownAfter = /serendipity/i.test(oracleText(after));
+      const fieldsAfter = fieldValues(after).join(' | ');
       return [
         {
+          label: 'the word was not already looked up',
+          pass: !shownBefore,
+          detail: shownBefore ? 'restored from an earlier run' : 'started clean',
+        },
+        {
           label: 'the dictionary is showing the looked-up word',
-          pass: /serendipity/i.test(text),
-          detail: (text.match(/.{0,60}[Ss]erendipity.{0,60}/) ?? ['(not found)'])[0],
+          pass: shownAfter && !shownBefore,
+          detail: (oracleText(after).match(/.{0,60}[Ss]erendipity.{0,60}/) ?? ['(not found)'])[0],
+        },
+        {
+          label: 'the search field holds the word',
+          pass: /serendipity/i.test(fieldsAfter),
+          detail: `fields: ${fieldsAfter || '(all empty)'}`,
         },
       ];
     },
@@ -248,10 +300,23 @@ const SCENARIOS = [
           .filter((n) => Number.isFinite(n));
       const start = scrollOf(before);
       const end = scrollOf(after);
+      // Against `start`, not against zero.
+      //
+      // `start` used to be computed and then used only in the detail string,
+      // and the pass condition was `end.some(v => v > 0.001)`. A window that
+      // restored already scrolled passed with no action at all, and a scroll
+      // that went upwards passed too.
+      const comparable = start.length > 0 && start.length === end.length;
+      const advanced = comparable && end.some((v, index) => v > start[index] + 0.001);
       return [
         {
-          label: 'the content scrolled down',
-          pass: end.some((v) => v > 0.001),
+          label: 'the scroll position was readable before and after',
+          pass: comparable,
+          detail: `scroll bars before ${start.length}, after ${end.length}`,
+        },
+        {
+          label: 'the content scrolled down from where it started',
+          pass: advanced,
           detail: `scroll bar before [${start.join(', ')}] after [${end.join(', ')}]`,
         },
       ];
@@ -271,14 +336,26 @@ const SCENARIOS = [
     prompt:
       '用 computer use 把计算器切换到「科学型」模式（在「显示」菜单里）。' +
       '切完之后观察一下，确认窗口里出现了科学计算的按钮。它在后台，不要切到前台。',
-    async verify(tree) {
-      const buttons = displayValue(tree, 'AXButton');
-      const width = tree.windows?.[0]?.frame?.w ?? 0;
+    async verify(after, before) {
+      // Against `before`, because the teardown below is best-effort: it clicks
+      // a menu item by index in a localised process name, and when that misses,
+      // Calculator stays scientific and the next run of this scenario passed a
+      // fixed threshold forever without the model touching anything.
+      const buttonsBefore = displayValue(before, 'AXButton').length;
+      const widthBefore = before.windows?.[0]?.frame?.w ?? 0;
+      const buttonsAfter = displayValue(after, 'AXButton').length;
+      const widthAfter = after.windows?.[0]?.frame?.w ?? 0;
+      const startedBasic = buttonsBefore <= 25 && widthBefore <= 400;
       return [
         {
+          label: 'the calculator started in the basic layout',
+          pass: startedBasic,
+          detail: `${buttonsBefore} buttons, window width ${widthBefore}`,
+        },
+        {
           label: 'the calculator switched to the scientific layout',
-          pass: buttons.length > 25 || width > 400,
-          detail: `${buttons.length} buttons, window width ${width}`,
+          pass: startedBasic && (buttonsAfter > buttonsBefore || widthAfter > widthBefore + 1),
+          detail: `${buttonsBefore} → ${buttonsAfter} buttons, width ${widthBefore} → ${widthAfter}`,
         },
       ];
     },
@@ -406,8 +483,13 @@ try {
 
     const before = await oracle(scenario.bundleId);
     if (before.error) {
-      log(`  target unavailable: ${before.error} — skipping`);
-      report.push({ scenario: scenario.name, skipped: before.error });
+      // A skip is a failed run, not a quiet one. It is counted in the exit code
+      // at the bottom of this file, because the state this used to produce —
+      // every scenario skipped, "0/0 checks passed", exit 0 — is a harness
+      // announcing success for having measured nothing.
+      log(`  target unavailable: ${before.error} — skipping (this makes the run fail)`);
+      if (before.detail) log(`    ${before.detail}`);
+      report.push({ scenario: scenario.name, skipped: before.error, detail: before.detail });
       continue;
     }
     log(`  before: ${before.window_count} window(s), ${before.element_count} elements`);
@@ -496,6 +578,16 @@ try {
     // shelling out to osascript changes the world exactly the way the oracle
     // wants, and would otherwise be scored a pass for a chain that was never
     // exercised.
+    // The bypass pattern, applied to the whole argument object.
+    //
+    // This used to be matched against `argsHead`, which is the first 200
+    // characters. A shell command with a preamble, a `cd`, or a heredoc pushes
+    // the `osascript` past 200 and the search saw nothing — on a check that
+    // exists because a model was once caught driving the app around Computer
+    // Use, with the oracle reporting a clean green for a chain that was never
+    // exercised. Truncating the haystack of an anti-bypass search defeats it by
+    // exactly the amount a bypass would need.
+    const BYPASS = /osascript|System Events|applescript|\bopen -|cliclick|screencapture/i;
     const allCalls = messages
       .filter((m) => m.type === 'tool_call')
       .map((m) => {
@@ -504,11 +596,21 @@ try {
           typeof result?.content === 'string'
             ? result.content
             : JSON.stringify(result?.content ?? '');
+        const args = JSON.stringify(m.args ?? null).replace(/\s+/g, ' ');
+        // Matched here, over the whole string, and only the excerpt is kept —
+        // so the report stays readable without the check reading less than the
+        // model wrote.
+        const bypass = m.toolName === 'maka_computer' ? null : BYPASS.exec(args);
         return {
           tool: m.toolName,
-          argsHead: JSON.stringify(m.args ?? null)
-            .replace(/\s+/g, ' ')
-            .slice(0, 200),
+          argsHead: args.slice(0, 200),
+          argsLength: args.length,
+          bypassAt: bypass
+            ? {
+                index: bypass.index,
+                excerpt: args.slice(Math.max(0, bypass.index - 60), bypass.index + 120),
+              }
+            : null,
           // What the other tools answered, too. A scenario can turn on what
           // `load_tools` said back, and recording only the request left that
           // invisible.
@@ -558,17 +660,27 @@ try {
         // test was proven.
         label: 'it did not reach the app by some other route',
         pass: !allCalls.some(
-          (c) =>
-            c.tool !== 'maka_computer' &&
-            /osascript|System Events|applescript|\bopen -|cliclick|screencapture/i.test(
-              `${c.tool} ${c.argsHead}`,
-            ),
+          (c) => c.tool !== 'maka_computer' && (c.bypassAt !== null || BYPASS.test(c.tool)),
         ),
         detail:
           allCalls
+            .filter((c) => c.tool !== 'maka_computer' && c.bypassAt)
+            .map((c) => `${c.tool} @${c.bypassAt.index}: ${c.bypassAt.excerpt}`)
+            .join(' | ') ||
+          allCalls
             .filter((c) => c.tool !== 'maka_computer')
-            .map((c) => c.tool)
-            .join(', ') || 'no other tools',
+            .map((c) => `${c.tool} (${c.argsLength} chars searched)`)
+            .join(', ') ||
+          'no other tools',
+      },
+      {
+        // Every pre-check below is a negative assertion about `before` — the
+        // sentence was not there, the word was not looked up, the layout was
+        // basic. A tree the oracle cut short reads as absence, so a truncated
+        // witness would hand all of them a free pass.
+        label: 'the witness read both trees whole',
+        pass: before.truncated !== true && after.truncated !== true,
+        detail: `before ${before.truncated ? 'cut' : 'whole'}, after ${after.truncated ? 'cut' : 'whole'}`,
       },
       ...(after.error
         ? [{ label: 'the target app survived the turn', pass: false, detail: after.error }]
@@ -616,8 +728,19 @@ try {
 await writeFile(join(OUT, 'report.json'), JSON.stringify(report, null, 2), 'utf8');
 await writeFile(join(OUT, 'main-logs.txt'), mainLogs.join('\n'), 'utf8');
 
+// What the run is allowed to call success.
+//
+// This used to be `report.flatMap(r => r.checks ?? [])`, which erases both the
+// skip path and the harness-crash catch — a scenario that skipped contributes
+// no checks, a crash contributes no checks, and `failed.length === 0` over an
+// empty array is zero. A run in which every scenario skipped printed
+// "0/0 checks passed" and exited 0, so the harness reported success having
+// proven nothing at all. Which is the one outcome a harness must never produce.
 const all = report.flatMap((r) => r.checks ?? []);
 const failed = all.filter((c) => !c.pass);
+const skipped = report.filter((r) => r.skipped);
+const crashed = report.filter((r) => r.harnessError);
+const ran = report.filter((r) => r.checks);
 log(`\n${'='.repeat(70)}`);
 for (const r of report) {
   if (!r.checks) continue;
@@ -626,5 +749,18 @@ for (const r of report) {
     `  ${bad === 0 ? 'OK  ' : 'FAIL'} ${r.scenario}  ${r.checks.length - bad}/${r.checks.length}`,
   );
 }
+for (const r of skipped) log(`  SKIP ${r.scenario} — the witness said ${r.skipped}`);
+for (const r of crashed) log(`  CRASH the harness stopped: ${r.harnessError}`);
 log(`${all.length - failed.length}/${all.length} checks passed — evidence in ${OUT}`);
-process.exit(failed.length === 0 ? 0 : 1);
+if (ran.length < selected.length) {
+  log(
+    `${selected.length - ran.length} of ${selected.length} scenario(s) never produced a check.` +
+      ' That is a failed run, not a clean one.',
+  );
+}
+if (all.length === 0) {
+  log('no check ran at all. There is no evidence here either way.');
+}
+process.exit(
+  failed.length === 0 && skipped.length === 0 && crashed.length === 0 && all.length > 0 ? 0 : 1,
+);
