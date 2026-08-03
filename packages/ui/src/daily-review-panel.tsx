@@ -42,6 +42,7 @@ import { useMountedRef } from './use-mounted-ref.js';
 import {
   createDailyReviewActivityState,
   dailyReviewActivityReducer,
+  shiftDailyReviewScope,
   type DailyReviewScope,
 } from './daily-review-view-state.js';
 
@@ -257,8 +258,8 @@ export function DailyReviewPanel(props: {
           size="sm"
           isIconOnly
           icon={<ChevronLeft />}
-          label={copy.date.earlier(range === 1 ? copy.date.unit.day : range === 7 ? copy.date.unit.week : copy.date.unit.month)}
-          onClick={() => selectScope({ range, offsetDays: offsetDays - range })}
+          label={copy.date.earlier(copy.date.unit.day)}
+          onClick={() => selectScope(shiftDailyReviewScope({ range, offsetDays }, -1))}
         />
         <Text type="label" weight="semibold" className="maka-daily-review-range-label">{rangeLabel}</Text>
         <Button
@@ -266,9 +267,9 @@ export function DailyReviewPanel(props: {
           size="sm"
           isIconOnly
           icon={<ChevronRight />}
-          label={copy.date.later(range === 1 ? copy.date.unit.day : range === 7 ? copy.date.unit.week : copy.date.unit.month)}
+          label={copy.date.later(copy.date.unit.day)}
           isDisabled={offsetDays >= 0}
-          onClick={() => selectScope({ range, offsetDays: Math.min(0, offsetDays + range) })}
+          onClick={() => selectScope(shiftDailyReviewScope({ range, offsetDays }, 1))}
         />
         <StackItem size="fill" />
         {currentArchive ? (
@@ -317,13 +318,13 @@ export function DailyReviewPanel(props: {
         />
       ) : null}
 
-      {!displayedSummary ? (
+      {!displayedSummary && loading ? (
         <VStack gap={3} aria-busy="true">
           <Skeleton width="100%" height={64} radius="rounded" index={0} />
           <Skeleton width="100%" height={48} radius="rounded" index={1} />
           <Skeleton width="100%" height={48} radius="rounded" index={2} />
         </VStack>
-      ) : (
+      ) : displayedSummary ? (
         <div
           key={resolvedView?.scopeKey}
           className="maka-daily-review-content"
@@ -360,7 +361,7 @@ export function DailyReviewPanel(props: {
             )}
           </VStack>
         </div>
-      )}
+      ) : null}
       </VStack>
       </div>
     </VStack>

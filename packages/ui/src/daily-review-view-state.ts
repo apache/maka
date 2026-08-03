@@ -33,6 +33,16 @@ export function createDailyReviewActivityState(scope: DailyReviewScope): DailyRe
   };
 }
 
+export function shiftDailyReviewScope(
+  scope: DailyReviewScope,
+  direction: -1 | 1,
+): DailyReviewScope {
+  return {
+    ...scope,
+    offsetDays: Math.min(0, scope.offsetDays + direction),
+  };
+}
+
 export function dailyReviewActivityReducer(
   state: DailyReviewActivityState,
   action: DailyReviewActivityAction,

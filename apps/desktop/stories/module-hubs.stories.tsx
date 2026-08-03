@@ -517,6 +517,39 @@ export const ScheduledDailyReview: Story = {
       '[aria-label="今天概览"]',
     );
     await expect(overview.textContent).not.toContain('错误');
+
+    const week = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
+    );
+    week.click();
+    const earlier = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.getAttribute('aria-label')?.includes('前一天') === true,
+    );
+    earlier.click();
+    await waitForStoryText(canvasElement, '最近 7 天（往前 1 天）');
+  },
+};
+
+// Real path: sidebar → scheduled tasks → Daily Review after the initial activity request fails.
+export const ScheduledDailyReviewInitialLoadFailed: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => {
+          throw new Error('activity fixture unavailable');
+        },
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, '每日回顾刷新失败');
+    await expect(canvasElement.querySelector('[aria-busy="true"]')).toBeNull();
+    await expect(canvasElement.querySelector('.astryx-skeleton')).toBeNull();
   },
 };
 

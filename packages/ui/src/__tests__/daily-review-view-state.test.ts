@@ -5,6 +5,7 @@ import type { DailyReviewSummary } from '@maka/core';
 import {
   createDailyReviewActivityState,
   dailyReviewActivityReducer,
+  shiftDailyReviewScope,
 } from '../daily-review-view-state.js';
 
 const today: DailyReviewSummary = {
@@ -89,5 +90,18 @@ describe('Daily Review resolved view continuity', () => {
     });
 
     assert.equal(staleResult, pendingMonth);
+  });
+});
+
+describe('Daily Review range navigation', () => {
+  it('moves rolling ranges one day at a time', () => {
+    assert.deepEqual(shiftDailyReviewScope({ range: 7, offsetDays: 0 }, -1), {
+      range: 7,
+      offsetDays: -1,
+    });
+    assert.deepEqual(shiftDailyReviewScope({ range: 30, offsetDays: -2 }, 1), {
+      range: 30,
+      offsetDays: -1,
+    });
   });
 });
