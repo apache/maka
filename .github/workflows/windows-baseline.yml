@@ -94,8 +94,7 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *>
-            "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
+          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *> "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
           $exitCode = $LASTEXITCODE
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
           exit $exitCode

@@ -38,6 +38,11 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
 
   assert.match(workflow, /Get-CimInstance Win32_Process/u);
   assert.match(workflow, /\$exitCode = \$LASTEXITCODE/u);
+  assert.match(
+    workflow,
+    /--workspaces=packages\/storage \*> "\$env:WINDOWS_BASELINE_LOG_DIR\/storage\.log"/u,
+  );
+  assert.match(workflow, /Get-Content "\$env:WINDOWS_BASELINE_LOG_DIR\/storage\.log"/u);
   assert.match(workflow, /actions\/upload-artifact@v4/u);
   assert.match(workflow, /name: windows-baseline/u);
   assert.match(workflow, /retention-days: 14/u);
