@@ -173,7 +173,7 @@ Project body.`,
       });
       assert.ok(out, 'expected a prompt fragment when AGENTS.md is present and enabled');
       assert.match(out, /Use TDD always/);
-      assert.match(out, /<workspace-instructions file="AGENTS\.md">/);
+      assert.match(out, /<workspace-instructions file="AGENTS\.md" scope="project">/);
     });
   });
 

@@ -18,9 +18,9 @@ import {
  *
  * The durable system prompt is built from the personalization fragment and the
  * gated workspace-instructions fragment (AGENTS.md / CLAUDE.md / GEMINI.md from
- * the session cwd). The per-turn tail carries the session environment (cwd /
- * git / platform / date), which must stay volatile to avoid churning the system
- * prefix hash.
+ * ~/.maka and the session cwd). The per-turn tail carries the session
+ * environment (cwd / git / platform / date), which must stay volatile to avoid
+ * churning the system prefix hash.
  *
  * The fragment builders themselves live in @maka/runtime and are shared with the
  * desktop app. This module owns only the CLI's choice of which fragments to
@@ -70,7 +70,7 @@ export async function buildCliSystemPrompt(
   input.onSkillSelection?.(skillPrompt.report);
   const skills = skillPrompt.text;
   const workspaceInstructions = input.settings.workspaceInstructions.enabled
-    ? await buildWorkspaceInstructionsPromptFragment(input.cwd)
+    ? await buildWorkspaceInstructionsPromptFragment(input.cwd, { homeDir: input.homeDir })
     : undefined;
   const fragments = [personalization.text, skills, workspaceInstructions].filter((v): v is string =>
     Boolean(v),
