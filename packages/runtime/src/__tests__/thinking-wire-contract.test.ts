@@ -117,7 +117,9 @@ describe('thinking wire contract', () => {
       for (const level of thinkingVariantsForModel(providerType, modelId)) {
         const options = buildProviderOptions(connection, modelId, level);
         if (!wiresAnything(options)) {
-          gaps.push(`${providerType}/${modelId} (openai-chat) declares "${level}" but wires nothing`);
+          gaps.push(
+            `${providerType}/${modelId} (openai-chat) declares "${level}" but wires nothing`,
+          );
         }
       }
     }
