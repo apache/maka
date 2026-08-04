@@ -28,26 +28,11 @@ const defaultRepoRoot = dirname(dirname(scriptPath));
 // conservatism for root orchestration, not a claim that its suite shares FS
 // state with other packages.
 //
-// runtime and runtime-host join it as a TEMPORARY mitigation for #2132, and
-// the reason is worth stating precisely so this list does not become a
-// dumping ground: they do NOT contend over a shared resource. Measured, at
-// --concurrency 3 some run fails 3 times out of 3; at --concurrency 1 across
-// every workspace, 0 out of 2; and each package alone passes repeatedly. Two
-// tempting explanations were tested and are false — /tmp does not fill up
-// (331 -> 339 entries under load, readdir in 1ms) and leftover child
-// processes are not the cause (running them back to back passes 3 of 3).
-// What is left is saturation: three tests with fixed waits miss their window
-// when the machine is busy.
-//
-// So this buys a quiet review pipeline at the cost of wall clock, and it is
-// the wrong permanent answer — the fix is in those tests' timing assumptions
-// (#2132). Remove these two entries when that lands. The unrelated /tmp
-// isolation gap found during the same investigation is #2133.
-export const SERIAL_WORKSPACE_DIRS = [
-  'packages/headless',
-  'packages/runtime',
-  'packages/runtime-host',
-];
+// Additions to this list need a measured, precisely stated reason. runtime
+// and runtime-host sat here temporarily while three tests relied on fixed
+// waits that missed their window under load; #2132 replaced those waits with
+// explicit barriers and the entries came out again.
+export const SERIAL_WORKSPACE_DIRS = ['packages/headless'];
 export const DEFAULT_WORKSPACE_TIMEOUT_MS = 15 * 60_000;
 
 const PROCESS_TERMINATION_GRACE_MS = 1_000;

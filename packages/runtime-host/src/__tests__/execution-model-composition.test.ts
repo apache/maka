@@ -1463,7 +1463,7 @@ test('production Host publishes and retires an implementation child patch', asyn
 });
 
 test('Host auxiliary models meter provider usage and abort physical requests', {
-  timeout: 10_000,
+  timeout: 20_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
   const provider = await startProvider();
@@ -1787,14 +1787,21 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
         },
       }),
     });
+    // An explicit controller instead of AbortSignal.timeout(10): a wall-clock
+    // timer races the preflight under load, and an abort that lands before
+    // dispatch takes a different error path (#2132). Aborting after the
+    // dispatch barrier settles pins the abort mid-flight; the TimeoutError
+    // reason name keeps the errorClass classification.
+    const effectTimeout = new AbortController();
     const timedEffect = stalledEffect.generateRecap({
       sessionId: session.id,
       effectId: 'recap-timeout',
       header: session,
       events: [],
-      abortSignal: AbortSignal.timeout(10),
+      abortSignal: effectTimeout.signal,
     });
     await settleWithin(effectProviderDispatched.promise);
+    effectTimeout.abort(new DOMException('provider stalled', 'TimeoutError'));
     const timedResult = await settleWithin(timedEffect);
     assert.equal(timedResult.ok, false);
     if (timedResult.ok) return;
