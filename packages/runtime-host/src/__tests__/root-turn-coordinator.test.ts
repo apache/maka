@@ -1169,6 +1169,53 @@ test('Agent Graph supervisor wake waits for root idle and binds one durable exec
   }
 });
 
+test('ShellRun completion wake binds a distinct durable root execution identity', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const turnId = 'turn-shell-run-completion';
+  const shellRunId = 'shell-run-completed-1';
+  try {
+    const outcome = await fixture.coordinator.runShellRunCompletionTurn(
+      fixture.sessionId,
+      {
+        turnId,
+        text: 'The detached command completed.',
+        displayText: 'A background command reached terminal completion.',
+        origin: { kind: 'shell_run_completion', shellRunId },
+      },
+      new AbortController().signal,
+    );
+    assert.deepEqual(outcome, { kind: 'completed', turnId });
+
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    const admission = admissions.find((candidate) => candidate.turnId === turnId);
+    assert.ok(admission);
+    assert.deepEqual(admission.execution, {
+      kind: 'shell_run_completion_wake',
+      shellRunId,
+    });
+
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, admission.runId);
+    assert.equal(run.shellRunCompletionWakeId, shellRunId);
+    const userMessage = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.id === admission.userMessageId,
+    );
+    assert.ok(userMessage?.type === 'user');
+    if (userMessage?.type === 'user') {
+      assert.deepEqual(userMessage.origin, { kind: 'shell_run_completion', shellRunId });
+      assert.equal(userMessage.displayText, 'A background command reached terminal completion.');
+    }
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('Agent Graph supervisor wake preserves structured context-overflow outcomes', async () => {
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>

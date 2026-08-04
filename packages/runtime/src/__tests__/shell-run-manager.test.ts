@@ -214,7 +214,7 @@ describe('ShellRunProcessManager', () => {
 
   test('persists completion notification through a real background process lifecycle', async () => {
     const updates: ShellRunUpdate[] = [];
-    const store = createLegacyShellRunStoreForTest(await workspace());
+    const store = createSqliteShellRunStore(await workspace());
     const manager = createManager(store, (update) => updates.push(update));
     const initial = await manager.runBackgroundBash(
       shellInput({

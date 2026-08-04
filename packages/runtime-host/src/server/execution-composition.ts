@@ -18,6 +18,7 @@ import {
   RuntimeReadModel,
   SessionManager,
   SessionActivityRegistry,
+  ShellRunCompletionWakeCoordinator,
   ShellRunProcessManager,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
@@ -163,12 +164,17 @@ export async function createExecutionRuntimeHostComposition(
     let manager: SessionManager | undefined;
     let graphCoordinator: AgentGraphCoordinator | undefined;
     let graphSupervisorWake: AgentGraphSupervisorWakeCoordinator | undefined;
+    let shellRunCompletionWake: ShellRunCompletionWakeCoordinator | undefined;
     const graphWakeActivities = new SessionActivityRegistry();
+    const shellRunWakeActivities = new SessionActivityRegistry();
     const shellRuns = new ShellRunProcessManager({
       store: openedShellRunStore,
       newId: randomUUID,
       now: Date.now,
-      onShellRunUpdate: (update) => runtimeResources?.observeShellRunUpdate(update),
+      onShellRunUpdate: (update) => {
+        runtimeResources?.observeShellRunUpdate(update);
+        shellRunCompletionWake?.notify(update);
+      },
     });
     const sandboxManager = createBuiltinSandboxManager();
     const filesystemWorkerLaunchSpecProvider =
@@ -634,6 +640,32 @@ export async function createExecutionRuntimeHostComposition(
       },
     );
     const coordinator = rootCoordinator;
+    shellRunCompletionWake = new ShellRunCompletionWakeCoordinator({
+      activityRegistry: shellRunWakeActivities,
+      store: openedShellRunStore,
+      listSessionIds: async () => (await manager.listSessions()).map((session) => session.id),
+      startTurn: (sessionId, input, _activity, abortSignal) =>
+        coordinator.runShellRunCompletionTurn(sessionId, input, abortSignal),
+      inspectTurn: async (sessionId, turnId) => {
+        const runs = (await stores.agentRunStore.listSessionRuns(sessionId)).filter(
+          (run) => run.turnId === turnId,
+        );
+        if (runs.length > 1) {
+          throw new Error(`ShellRun completion turn ${turnId} has multiple AgentRuns`);
+        }
+        const status = runs[0]?.status;
+        if (!status) return 'missing';
+        if (status === 'completed') return 'completed';
+        if (status === 'created' || status === 'running' || status === 'waiting_for_user') {
+          return 'active';
+        }
+        return 'failed';
+      },
+      newId: randomUUID,
+      now: Date.now,
+      acquireTaskLease: context.acquireResidency,
+      onError: () => context.requestDrain(),
+    });
     graphSupervisorWake = new AgentGraphSupervisorWakeCoordinator({
       activityRegistry: graphWakeActivities,
       wakeStore: openedGraphControlStore,
@@ -845,6 +877,7 @@ export async function createExecutionRuntimeHostComposition(
         );
         await coordinator.recover();
         rootRecoveryCompleted = true;
+        await shellRunCompletionWake.recover();
         await requireGraphSupervisorWake(graphSupervisorWake).recover();
         await requireGraphCoordinator(graphCoordinator).recover();
         await requireAutomationCoordinator(automations).recover();
@@ -874,6 +907,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           await graphSupervisorWake?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await shellRunCompletionWake?.close();
         } catch (error) {
           errors.push(error);
         }

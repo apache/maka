@@ -699,6 +699,7 @@ export interface UserMessage extends MessageContent {
   origin?:
     | { kind: 'automation'; automationId: string }
     | { kind: 'goal'; goalId: string }
+    | { kind: 'shell_run_completion'; shellRunId: string }
     | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
 }
 
@@ -965,9 +966,14 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
 type MessageOrigin = NonNullable<UserMessage['origin']>;
 type AutomationOrigin = Extract<MessageOrigin, { kind: 'automation' }>;
 type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
+type ShellRunCompletionOrigin = Extract<MessageOrigin, { kind: 'shell_run_completion' }>;
 type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
 const AUTOMATION_ORIGIN_SHAPE = defineObjectShape<AutomationOrigin>()(['kind', 'automationId'], []);
 const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
+const SHELL_RUN_COMPLETION_ORIGIN_SHAPE = defineObjectShape<ShellRunCompletionOrigin>()(
+  ['kind', 'shellRunId'],
+  [],
+);
 const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
   ['kind', 'graphId', 'wakeId', 'attemptId'],
   [],
@@ -1185,8 +1191,22 @@ function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
   );
 }
 
+function isShellRunCompletionOrigin(value: unknown): value is ShellRunCompletionOrigin {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, SHELL_RUN_COMPLETION_ORIGIN_SHAPE) &&
+    value.kind === 'shell_run_completion' &&
+    typeof value.shellRunId === 'string'
+  );
+}
+
 function isMessageOrigin(value: unknown): value is MessageOrigin {
-  return isAutomationOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
+  return (
+    isAutomationOrigin(value) ||
+    isGoalOrigin(value) ||
+    isShellRunCompletionOrigin(value) ||
+    isAgentGraphOrigin(value)
+  );
 }
 
 function isOptionalFiniteDuration(value: unknown): boolean {

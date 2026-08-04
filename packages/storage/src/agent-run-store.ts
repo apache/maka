@@ -1409,6 +1409,16 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     }
     return Object.freeze({ kind: 'goal', goalId: value.goalId });
   }
+  if (value.kind === 'shell_run_completion_wake') {
+    if (
+      !hasExactKeys(value, ['kind', 'shellRunId']) ||
+      typeof value.shellRunId !== 'string' ||
+      !isSafeId(value.shellRunId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'shell_run_completion_wake', shellRunId: value.shellRunId });
+  }
   if (value.kind === 'agent_graph_supervisor_wake') {
     if (
       !hasExactKeys(value, ['kind', 'graphId', 'wakeId', 'attemptId']) ||

@@ -103,6 +103,7 @@ export interface UserMessageInput extends MessageContent {
 export type TurnOrigin =
   | { kind: 'automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
+  | { kind: 'shell_run_completion'; shellRunId: string }
   | {
       kind: 'agent_graph';
       graphId: string;

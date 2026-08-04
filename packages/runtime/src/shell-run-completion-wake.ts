@@ -33,6 +33,8 @@ export interface ShellRunCompletionWakeInput {
   now(): number;
   maxDeliveryAttempts?: number;
   activeTurnCheckIntervalMs?: number;
+  /** Keeps an on-demand host alive from notification scheduling through durable settlement. */
+  acquireTaskLease?(): { release(): void };
   onError?(sessionId: string, error: unknown): void | Promise<void>;
 }
 
@@ -114,13 +116,17 @@ export class ShellRunCompletionWakeCoordinator {
     const key = `${sessionId}\0${shellRunId}`;
     if (this.#closed || this.#pending.has(key)) return;
     this.#pending.add(key);
+    const taskLease = this.#input.acquireTaskLease?.();
     const task = this.#deliver(sessionId, shellRunId)
       .catch((error) => {
         if (!this.#closed && !isAbortError(error)) {
           return this.#input.onError?.(sessionId, error);
         }
       })
-      .finally(() => this.#pending.delete(key));
+      .finally(() => {
+        this.#pending.delete(key);
+        taskLease?.release();
+      });
     this.#tasks.add(task);
     void task.finally(() => this.#tasks.delete(task));
   }
@@ -181,6 +187,7 @@ export class ShellRunCompletionWakeCoordinator {
               turnId,
               text: renderShellRunCompletionWakePrompt(record),
               displayText: 'A background command reached terminal completion.',
+              origin: { kind: 'shell_run_completion', shellRunId: record.shellRunId },
             },
             activity,
             this.#abortController.signal,

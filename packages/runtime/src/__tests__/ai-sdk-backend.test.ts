@@ -7452,6 +7452,110 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
+  test('ends the turn after a background completion subscription even alongside another tool', async () => {
+    const durable = durableTurnHarness('turn-1', 'build the Rust workspace and wait for it');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'build-1',
+                  toolName: 'Bash',
+                  input: JSON.stringify({
+                    command: 'cargo build',
+                    run_in_background: true,
+                    notify_on_complete: true,
+                  }),
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'inspect-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'Cargo.toml' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'legacy-poll',
+                  toolName: 'Bash',
+                  input: JSON.stringify({ command: 'sleep 300' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const bash: MakaTool = {
+      name: 'Bash',
+      description: 'Run a command and optionally notify on terminal completion.',
+      parameters: z.object({
+        command: z.string(),
+        run_in_background: z.boolean().optional(),
+        notify_on_complete: z.boolean().optional(),
+      }),
+      impl: async () => ({
+        kind: 'shell_run' as const,
+        ref: 'maka://runtime/background-tasks/build-1',
+        mode: 'pipes' as const,
+        status: 'running' as const,
+        cwd: '/tmp',
+        cmd: 'cargo build',
+        startedAt: 1,
+        updatedAt: 2,
+        revision: 2,
+        notifyOnComplete: true as const,
+      }),
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [bash, testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 1, 'completion subscription must prevent the polling model step');
+    assert.equal(
+      events.find((event) => event.type === 'complete')?.stopReason,
+      'background_task_wait',
+    );
+    assert.equal(
+      events.filter((event) => event.type === 'tool_start').length,
+      2,
+      'the synthetic legacy sleep call must never execute',
+    );
+  });
+
   test('reports an explicit step limit without making an auxiliary model call', async () => {
     const appended: StoredMessage[] = [];
     const durable = durableTurnHarness('turn-1', 'finish the task');

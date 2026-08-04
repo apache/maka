@@ -4580,6 +4580,13 @@ export class SessionManager {
         executionKind: input.execution.kind,
         goalId: input.execution.goalId,
       };
+    } else if (input.execution.kind === 'shell_run_completion_wake') {
+      headerExtras.shellRunCompletionWakeId = input.execution.shellRunId;
+      recoveryReason = 'shell_run_completion_internal_admission_without_run';
+      diagnostic = {
+        executionKind: input.execution.kind,
+        shellRunId: input.execution.shellRunId,
+      };
     } else if (input.execution.kind === 'agent_graph_supervisor_wake') {
       headerExtras.agentGraphWakeId = input.execution.wakeId;
       headerExtras.agentGraphWakeAttemptId = input.execution.attemptId;

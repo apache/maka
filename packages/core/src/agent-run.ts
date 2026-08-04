@@ -54,6 +54,7 @@ export type RootExecutionDescriptor =
   | { kind: 'context_compact' }
   | { kind: 'automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
+  | { kind: 'shell_run_completion_wake'; shellRunId: string }
   | {
       kind: 'agent_graph_supervisor_wake';
       graphId: string;
@@ -158,6 +159,8 @@ export interface AgentRunHeader {
   automationId?: string;
   /** Host-owned Goal generation that triggered this continuation Run. */
   goalId?: string;
+  /** Detached ShellRun whose terminal transition triggered this host-authored Run. */
+  shellRunCompletionWakeId?: string;
   /** Durable graph milestone that caused this host-authored supervisor turn. */
   agentGraphWakeId?: string;
   /** Durable delivery attempt for this host-authored supervisor turn. */
@@ -178,6 +181,7 @@ type HostedRootExecutionDescriptor = Extract<
       | 'context_compact'
       | 'automation'
       | 'goal'
+      | 'shell_run_completion_wake'
       | 'agent_graph_supervisor_wake'
       | 'safe_boundary_continuation';
   }
@@ -203,6 +207,7 @@ export function agentRunMatchesHostedRootExecution(
       run.continuationSource === undefined &&
       run.automationId === undefined &&
       run.goalId === undefined &&
+      run.shellRunCompletionWakeId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
     );
@@ -223,6 +228,7 @@ export function agentRunMatchesHostedRootExecution(
       run.continuationSource === undefined &&
       run.automationId === undefined &&
       run.goalId === undefined &&
+      run.shellRunCompletionWakeId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
     );
@@ -253,6 +259,7 @@ export function agentRunMatchesHostedRootExecution(
       run.parentSessionId === undefined &&
       run.automationId === undefined &&
       run.goalId === undefined &&
+      run.shellRunCompletionWakeId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
     );
@@ -286,6 +293,7 @@ function hostedRootAuthorityMatches(
       return (
         run.automationId === execution.automationId &&
         run.goalId === undefined &&
+        run.shellRunCompletionWakeId === undefined &&
         run.agentGraphWakeId === undefined &&
         run.agentGraphWakeAttemptId === undefined
       );
@@ -293,6 +301,15 @@ function hostedRootAuthorityMatches(
       return (
         run.goalId === execution.goalId &&
         run.automationId === undefined &&
+        run.shellRunCompletionWakeId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'shell_run_completion_wake':
+      return (
+        run.shellRunCompletionWakeId === execution.shellRunId &&
+        run.automationId === undefined &&
+        run.goalId === undefined &&
         run.agentGraphWakeId === undefined &&
         run.agentGraphWakeAttemptId === undefined
       );
@@ -305,7 +322,8 @@ function hostedRootAuthorityMatches(
         run.orchestrationSource === 'turn_override' &&
         run.agentSwarmAuthorization === 'none' &&
         run.automationId === undefined &&
-        run.goalId === undefined
+        run.goalId === undefined &&
+        run.shellRunCompletionWakeId === undefined
       );
   }
 }
@@ -438,6 +456,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'continuationSource',
     'automationId',
     'goalId',
+    'shellRunCompletionWakeId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
     'rootExecutionKind',
@@ -480,7 +499,12 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     (value.agentSwarmAuthorization === undefined ||
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
     (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
-    !(value.automationId !== undefined && value.goalId !== undefined) &&
+    [
+      value.automationId,
+      value.goalId,
+      value.shellRunCompletionWakeId,
+      value.agentGraphWakeId,
+    ].filter((item) => item !== undefined).length <= 1 &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalString(value.invocationId) &&
@@ -499,6 +523,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.workspaceIdentity,
       value.automationId,
       value.goalId,
+      value.shellRunCompletionWakeId,
       value.agentGraphWakeId,
       value.agentGraphWakeAttemptId,
       value.failureClass,

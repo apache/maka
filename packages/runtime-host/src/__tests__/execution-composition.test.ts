@@ -203,6 +203,50 @@ test('production composition orphans ownerless ShellRuns before serving Resource
   });
 });
 
+test('production composition recovers a terminal ShellRun subscription through Host root authority', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const shellRuns = await openInteractiveShellRunStoreForWrite(owner.lease);
+    await shellRuns.createShellRun({
+      ...shellRunRecord(session.id, 'completed-shell', 'running'),
+      status: 'completed',
+      completedAt: 2,
+      updatedAt: 2,
+      exitCode: 0,
+      notifyOnComplete: true,
+    });
+
+    const { composition } = await createCapturedExecutionComposition(owner);
+    try {
+      await waitFor(async () => {
+        const record = await shellRuns.readShellRun(session.id, 'completed-shell');
+        return record.completionWake?.deliveredAt !== undefined && record.observedAt !== undefined;
+      }, 10_000);
+      const admissions = await stores.agentRunStore.listRootTurnAdmissionsForRecovery(session.id);
+      const wake = admissions.find(
+        (admission) => admission.execution.kind === 'shell_run_completion_wake',
+      );
+      assert.ok(wake);
+      assert.deepEqual(wake.execution, {
+        kind: 'shell_run_completion_wake',
+        shellRunId: 'completed-shell',
+      });
+      const run = await stores.agentRunStore.readRun(session.id, wake.runId);
+      assert.equal(run.shellRunCompletionWakeId, 'completed-shell');
+      assert.equal(run.status, 'completed');
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('production execution composition owns claimed graph activation retry and exact abort', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
