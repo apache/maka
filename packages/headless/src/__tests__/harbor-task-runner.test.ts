@@ -3155,3 +3155,18 @@ describe('incompleteTerminalProviderRequest', () => {
     assert.equal(incompleteTerminalProviderRequest([], false), undefined);
   });
 });
+
+test('the linux/amd64 compose override resolves host.docker.internal for in-container agents', async () => {
+  const compose = await readFile(
+    new URL('../../harbor/docker-compose-linux-amd64.yaml', import.meta.url),
+    'utf8',
+  );
+
+  // Docker Desktop injects this name; native Linux Docker does not. Codex and
+  // Claude Code dial it to reach the host credential proxy, so dropping the
+  // mapping fails both competitor arms before their first model step while the
+  // Maka host cell -- which uses loopback -- keeps passing. That asymmetry
+  // looks like a competitor defect rather than a harness one, so pin it here.
+  assert.match(compose, /extra_hosts:/);
+  assert.match(compose, /host\.docker\.internal:host-gateway/);
+});
