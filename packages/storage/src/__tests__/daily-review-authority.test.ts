@@ -61,7 +61,7 @@ test('Daily Review authority serializes config revisions and preserves archives'
       const stored = await first.publishArchive(archive(), 180);
       assert.deepEqual(await second.getArchive(stored.id), stored);
       assert.deepEqual(
-        (await second.listArchives()).map((item) => item.id),
+        (await second.listArchivePage(null, 180)).archives.map((item) => item.id),
         [stored.id],
       );
 
@@ -106,14 +106,21 @@ test('Daily Review authority publishes and prunes archives in one operation', as
       await writer.publishArchive(older, 1);
       await writer.publishArchive(newer, 1);
       assert.deepEqual(
-        (await writer.listArchives()).map((item) => item.id),
+        (await writer.listArchivePage(null, 180)).archives.map((item) => item.id),
         [newer.id],
       );
       assert.equal(await writer.getArchive(older.id), null);
+      const oldest = archive(new Date(2026, 7, 2).getTime());
+      await writer.publishArchive(oldest, 1);
+      assert.deepEqual(
+        (await writer.listArchivePage(null, 180)).archives.map((item) => item.id),
+        [oldest.id],
+      );
+      assert.deepEqual(await writer.getArchive(oldest.id), oldest);
       await assert.rejects(() => writer.publishArchive({ ...newer, id: '2026-08-05-1d' }, 1));
       assert.deepEqual(
-        (await writer.listArchives()).map((item) => item.id),
-        [newer.id],
+        (await writer.listArchivePage(null, 180)).archives.map((item) => item.id),
+        [oldest.id],
       );
       writer.close();
     } finally {
@@ -126,7 +133,9 @@ function archive(fromMs = new Date(2026, 7, 3).getTime()): DailyReviewArchive {
   const start = new Date(fromMs);
   const toMs = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1).getTime();
   return {
-    id: '2026-08-03-1d',
+    id: `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(
+      start.getDate(),
+    ).padStart(2, '0')}-1d`,
     day: { fromMs, toMs },
     range: 1,
     status: 'ok',

@@ -26,6 +26,11 @@ export interface DailyReviewAuthoritySnapshot {
   readonly config: DailyReviewConfig;
 }
 
+export interface DailyReviewArchivePage {
+  readonly archives: readonly DailyReviewArchiveSummary[];
+  readonly nextBeforeArchiveId: string | null;
+}
+
 export type DailyReviewConfigMutationResult =
   | {
       readonly kind: 'committed' | 'unchanged';
@@ -47,7 +52,7 @@ export interface InteractiveDailyReviewAuthorityWriter {
     config: DailyReviewConfig,
   ): Promise<DailyReviewConfigMutationResult>;
   publishArchive(archive: DailyReviewArchive, maxArchives: number): Promise<DailyReviewArchive>;
-  listArchives(): Promise<readonly DailyReviewArchiveSummary[]>;
+  listArchivePage(beforeArchiveId: string | null, limit: number): Promise<DailyReviewArchivePage>;
   getArchive(archiveId: string): Promise<DailyReviewArchive | null>;
   deleteArchive(archiveId: string): Promise<boolean>;
   close(): void;
@@ -193,30 +198,58 @@ function createWriterFacade(
               WHERE archive_id IN (
                 SELECT archive_id
                 FROM workflow_daily_review_archives
-                ORDER BY archive_id DESC
+                WHERE archive_id <> ?
+                ORDER BY generated_at DESC, day_from_ms DESC, archive_id
                 LIMIT -1 OFFSET ?
               )
             `,
             )
-            .run(limit);
+            .run(normalized.id, limit - 1);
           return normalized;
         }),
       ),
-    listArchives: () =>
+    listArchivePage: (beforeArchiveId, limit) =>
       run((root) =>
-        withDatabase(root, 'read', (database) =>
-          (
-            database
-              .prepare(
-                `
-                SELECT archive_id AS archiveId, record_json AS recordJson
-                FROM workflow_daily_review_archives
-                ORDER BY archive_id DESC
-              `,
-              )
-              .all() as Array<{ archiveId: string; recordJson: string }>
-          ).map((row) => dailyReviewArchiveToSummary(decodeArchive(row.archiveId, row.recordJson))),
-        ),
+        withDatabase(root, 'read', (database) => {
+          if (beforeArchiveId !== null) assertArchiveId(beforeArchiveId);
+          const pageLimit = requirePageLimit(limit);
+          const rows = (
+            beforeArchiveId === null
+              ? database
+                  .prepare(
+                    `
+                  SELECT archive_id AS archiveId, record_json AS recordJson
+                  FROM workflow_daily_review_archives
+                  ORDER BY archive_id DESC
+                  LIMIT ?
+                `,
+                  )
+                  .all(pageLimit + 1)
+              : database
+                  .prepare(
+                    `
+                  SELECT archive_id AS archiveId, record_json AS recordJson
+                  FROM workflow_daily_review_archives
+                  WHERE archive_id < ?
+                  ORDER BY archive_id DESC
+                  LIMIT ?
+                `,
+                  )
+                  .all(beforeArchiveId, pageLimit + 1)
+          ) as Array<{
+            archiveId: string;
+            recordJson: string;
+          }>;
+          const archives = rows
+            .slice(0, pageLimit)
+            .map((row) =>
+              dailyReviewArchiveToSummary(decodeArchive(row.archiveId, row.recordJson)),
+            );
+          return {
+            archives,
+            nextBeforeArchiveId: rows.length > pageLimit ? (archives.at(-1)?.id ?? null) : null,
+          };
+        }),
       ),
     getArchive: (archiveId) =>
       run((root) =>
@@ -298,6 +331,13 @@ function assertArchiveId(archiveId: string): void {
 function requireArchiveLimit(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`Invalid Daily Review archive limit: ${value}`);
+  }
+  return value;
+}
+
+function requirePageLimit(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid Daily Review page limit: ${value}`);
   }
   return value;
 }

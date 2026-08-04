@@ -284,11 +284,8 @@ export async function repairPendingModelCallProjections(
       const events = await input.readRunEvents(entry.sessionId, entry.runId);
       const decoded = modelCallAttemptsFromRunEvents(events);
       for (const attempt of decoded.attempts) await input.ledger.record(attempt);
-      // The marker still clears: an event that cannot be decoded will not
-      // decode on the next pass either, and keeping the run marked forever
-      // would stall every later repair behind it. The count travels out with
-      // the result instead, so the gap stays visible.
       unreadableEvents += decoded.unreadableEvents;
+      if (decoded.unreadableEvents > 0) continue;
       await input.ledger.clear(entry.sessionId, entry.runId);
       repaired += 1;
     } catch {

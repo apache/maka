@@ -10,8 +10,6 @@ export type RunEventReader = (
 ) => Promise<readonly { readonly type: string; readonly data?: Record<string, unknown> }[]>;
 
 const USAGE_REPAIR_RUNS_PER_QUERY = 16;
-const COMPLETE_USAGE_MAX_REPAIR_PASSES = 16;
-
 export class CanonicalUsageProjectionIncompleteError extends Error {
   constructor() {
     super('Canonical Usage projection is incomplete');
@@ -45,17 +43,16 @@ export async function readCanonicalUsage(
   };
 }
 
-/** Drains a bounded repair backlog before returning data safe for durable derivatives. */
+/** Runs one bounded repair pass and rejects data still unsafe for durable derivatives. */
 export async function readCompleteCanonicalUsage(
   stores: InteractiveUsageStoresWriter,
   query: UsageQuery,
   now: number,
   readRunEvents: RunEventReader,
 ): Promise<CanonicalUsageSource> {
-  for (let pass = 0; pass < COMPLETE_USAGE_MAX_REPAIR_PASSES; pass += 1) {
-    const source = await readCanonicalUsage(stores, query, now, readRunEvents);
-    if (source.unreadableRecords > 0) throw new CanonicalUsageProjectionIncompleteError();
-    if (source.pendingRepairs === 0) return source;
+  const source = await readCanonicalUsage(stores, query, now, readRunEvents);
+  if (source.unreadableRecords > 0 || source.pendingRepairs > 0) {
+    throw new CanonicalUsageProjectionIncompleteError();
   }
-  throw new CanonicalUsageProjectionIncompleteError();
+  return source;
 }

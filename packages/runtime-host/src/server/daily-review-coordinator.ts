@@ -75,7 +75,7 @@ export class HostDailyReviewCoordinator {
     string,
     {
       readonly modelKey: string;
-      readonly replaceExisting: boolean;
+      readonly trigger: 'cron' | 'manual';
       readonly promise: Promise<DailyReviewArchive>;
     }
   >();
@@ -148,18 +148,13 @@ export class HostDailyReviewCoordinator {
             summary: await this.#buildSummary(input.offsetDays, input.range),
           });
         case 'archives': {
-          const archives = await this.#store.listArchives();
           const beforeArchiveId = input.beforeArchiveId;
-          const eligible =
-            beforeArchiveId === null
-              ? archives
-              : archives.filter((archive) => archive.id < beforeArchiveId);
-          const page = eligible.slice(0, input.limit);
+          const page = await this.#store.listArchivePage(beforeArchiveId, input.limit);
           return querySuccess({
             kind: 'archives',
-            archives: page,
+            archives: page.archives,
             beforeArchiveId,
-            nextBeforeArchiveId: eligible.length > page.length ? (page.at(-1)?.id ?? null) : null,
+            nextBeforeArchiveId: page.nextBeforeArchiveId,
           });
         }
         case 'archive':
@@ -275,13 +270,13 @@ export class HostDailyReviewCoordinator {
     const modelKey = input.modelKeyOverride.trim() || config.config.modelKey;
     const inFlight = this.#inFlight.get(archiveId);
     if (inFlight) {
-      if (inFlight.modelKey === modelKey && inFlight.replaceExisting === input.replaceExisting) {
+      if (inFlight.modelKey === modelKey && inFlight.trigger === input.trigger) {
         return inFlight.promise;
       }
       throw new DailyReviewRunConflictError(archiveId);
     }
     const pending = this.#generateArchive(archiveId, summary, modelKey, input);
-    const entry = { modelKey, replaceExisting: input.replaceExisting, promise: pending };
+    const entry = { modelKey, trigger: input.trigger, promise: pending };
     this.#inFlight.set(archiveId, entry);
     try {
       return await pending;

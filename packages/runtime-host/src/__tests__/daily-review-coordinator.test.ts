@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { DailyReviewArchive } from '@maka/core/daily-review';
+import { localDayBoundsAt, type DailyReviewArchive } from '@maka/core/daily-review';
 import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
@@ -39,9 +39,12 @@ test('Daily Review refuses to archive an incomplete canonical Usage projection',
         message: 'Daily Review is waiting for canonical Usage repair',
       },
     });
-    assert.equal(readRunEventsCount(), 16);
+    assert.equal(readRunEventsCount(), 1);
     assert.equal(drainCount(), 0);
-    assert.deepEqual(await store.listArchives(), []);
+    assert.deepEqual(await store.listArchivePage(null, 1), {
+      archives: [],
+      nextBeforeArchiveId: null,
+    });
   });
 });
 
@@ -92,7 +95,17 @@ test('Daily Review conflicts rather than coalescing different generation options
         CONTEXT,
       );
       await modelStarted;
-      const second = await coordinator.handlers['daily-review.mutate'](
+      const coalesced = coordinator.handlers['daily-review.mutate'](
+        {
+          kind: 'run',
+          range: 1,
+          offsetDays: 0,
+          modelKeyOverride: 'provider::model-a',
+          replaceExisting: false,
+        },
+        CONTEXT,
+      );
+      const conflicting = await coordinator.handlers['daily-review.mutate'](
         {
           kind: 'run',
           range: 1,
@@ -102,12 +115,14 @@ test('Daily Review conflicts rather than coalescing different generation options
         },
         CONTEXT,
       );
-      assert.equal(second.ok, false);
-      if (!second.ok) assert.equal(second.error.code, 'operation_conflict');
+      assert.equal(conflicting.ok, false);
+      if (!conflicting.ok) assert.equal(conflicting.error.code, 'operation_conflict');
       assert.equal(modelCalls, 1);
       assert.ok(releaseModel);
       releaseModel();
-      assert.equal((await first).ok, true);
+      const [firstResult, coalescedResult] = await Promise.all([first, coalesced]);
+      assert.equal(firstResult.ok, true);
+      assert.deepEqual(coalescedResult, firstResult);
     },
     {
       generate: async () => {
@@ -117,6 +132,81 @@ test('Daily Review conflicts rather than coalescing different generation options
         return { ok: false, errorClass: 'configuration' };
       },
     },
+  );
+});
+
+test('Daily Review does not coalesce cron and manual archive provenance', async () => {
+  let releaseModel: (() => void) | undefined;
+  let notifyModelStarted: (() => void) | undefined;
+  const modelStarted = new Promise<void>((resolve) => {
+    notifyModelStarted = resolve;
+  });
+  const modelGate = new Promise<void>((resolve) => {
+    releaseModel = resolve;
+  });
+  let modelCalls = 0;
+
+  await withCoordinator(
+    async ({ coordinator, store, usage }) => {
+      const snapshot = await store.readConfig();
+      const update = await store.updateConfig(snapshot.revision, {
+        enabled: true,
+        executeTime: '00:00',
+        modelKey: 'provider::model-a',
+      });
+      assert.equal(update.kind, 'committed');
+      const now = localDayBoundsAt(Date.now(), -1).fromMs + 1;
+      await usage.telemetry.recordLlmCall({
+        id: 'daily-review-cron-source',
+        callKind: 'main',
+        callId: 'daily-review-cron-source',
+        connectionSlug: 'test',
+        providerId: 'test',
+        modelId: 'test',
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheHitInputTokens: 0,
+        cacheMissInputTokens: 1,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 2,
+        costUsd: 0,
+        latencyMs: 1,
+        status: 'success',
+        startedAt: now,
+        date: new Date(now).toISOString().slice(0, 10),
+        ts: now,
+      });
+
+      const recovery = coordinator.recover();
+      await modelStarted;
+      const manual = await coordinator.handlers['daily-review.mutate'](
+        {
+          kind: 'run',
+          range: 1,
+          offsetDays: -1,
+          modelKeyOverride: '',
+          replaceExisting: false,
+        },
+        CONTEXT,
+      );
+      assert.equal(manual.ok, false);
+      if (!manual.ok) assert.equal(manual.error.code, 'operation_conflict');
+      assert.equal(modelCalls, 1);
+      assert.ok(releaseModel);
+      releaseModel();
+      await recovery;
+    },
+    {
+      generate: async () => {
+        modelCalls += 1;
+        notifyModelStarted?.();
+        await modelGate;
+        return { ok: false, errorClass: 'configuration' };
+      },
+    },
+    false,
   );
 });
 
@@ -166,6 +256,7 @@ async function withCoordinator(
   model: ConstructorParameters<typeof HostDailyReviewCoordinator>[0]['model'] = {
     generate: async () => ({ ok: false, errorClass: 'configuration' }),
   },
+  recoverBeforeRun = true,
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-coordinator-'));
   const capability = await resolveStorageRoot({
@@ -194,7 +285,7 @@ async function withCoordinator(
     },
   });
   try {
-    await coordinator.recover();
+    if (recoverBeforeRun) await coordinator.recover();
     await run({
       coordinator,
       store,
