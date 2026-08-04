@@ -26,17 +26,18 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
   }
 
   for (const command of [
-    'npm ci',
-    'npm run build:test',
-    'npm run windows:inventory',
-    'npm run test:scripts',
-    'npm run smoke:windows',
-    'node scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage',
+    'npm.cmd ci',
+    'npm.cmd run build:test',
+    'npm.cmd run windows:inventory',
+    'npm.cmd run test:scripts',
+    'npm.cmd run smoke:windows',
+    'node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage',
   ]) {
     assert.ok(workflow.includes(command), command);
   }
 
   assert.match(workflow, /Get-CimInstance Win32_Process/u);
+  assert.match(workflow, /\$exitCode = \$LASTEXITCODE/u);
   assert.match(workflow, /actions\/upload-artifact@v4/u);
   assert.match(workflow, /name: windows-baseline/u);
   assert.match(workflow, /retention-days: 14/u);

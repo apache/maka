@@ -39,8 +39,10 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          npm ci 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/install.log"
-          exit $LASTEXITCODE
+          npm.cmd ci *> "$env:WINDOWS_BASELINE_LOG_DIR/install.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/install.log"
+          exit $exitCode
 
       - id: build
         name: Build test artifacts
@@ -48,8 +50,10 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          npm run build:test 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/build.log"
-          exit $LASTEXITCODE
+          npm.cmd run build:test *> "$env:WINDOWS_BASELINE_LOG_DIR/build.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/build.log"
+          exit $exitCode
 
       - id: inventory
         name: Check Windows skip inventory
@@ -57,8 +61,10 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          npm run windows:inventory 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
-          exit $LASTEXITCODE
+          npm.cmd run windows:inventory *> "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
+          exit $exitCode
 
       - id: scripts
         name: Run repository script tests
@@ -66,8 +72,10 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          npm run test:scripts 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
-          exit $LASTEXITCODE
+          npm.cmd run test:scripts *> "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
+          exit $exitCode
 
       - id: smoke
         name: Run CLI and Electron startup smoke
@@ -75,8 +83,10 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          npm run smoke:windows 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
-          exit $LASTEXITCODE
+          npm.cmd run smoke:windows *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
+          exit $exitCode
 
       - id: storage
         name: Capture storage test baseline
@@ -84,9 +94,11 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          node scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage 2>&1 |
-            Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
-          exit $LASTEXITCODE
+          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *>
+            "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
+          exit $exitCode
 
       - id: processes
         name: Audit residual repository processes
@@ -104,7 +116,8 @@ jobs:
               } |
               Select-Object ProcessId, ParentProcessId, Name, CommandLine
           )
-          $leaks | ConvertTo-Json -Depth 3 | Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes.json"
+          ConvertTo-Json -InputObject $leaks -Depth 3 |
+            Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes.json"
           if ($leaks.Count -eq 0) {
             Write-Output 'No residual repository Node or Electron processes.'
             exit 0
