@@ -73,6 +73,9 @@ export interface DesktopConversationCopy {
     coveragePartial: string;
     coverageAbsent: string;
     unreadable: string;
+    turnsMissing: string;
+    turnsShort: string;
+    recovered: string;
     turnFailed: string;
   };
   quoteCompanion: {
@@ -165,6 +168,9 @@ const COPY = {
       coveragePartial: '部分调用没有记录，下面的数字是下界',
       coverageAbsent: '该后端不上报逐次调用明细',
       unreadable: '条记录无法解析',
+      turnsMissing: '轮没有记录',
+      turnsShort: '轮记录数少于步数',
+      recovered: '已恢复',
       turnFailed: '本轮失败',
     },
     quoteCompanion: {
@@ -242,6 +248,9 @@ const COPY = {
       coveragePartial: 'Some calls have no record; the numbers below are a floor',
       coverageAbsent: 'This backend does not report per-call detail',
       unreadable: 'unreadable records',
+      turnsMissing: 'turns with no record',
+      turnsShort: 'turns short of their step count',
+      recovered: 'recovered',
       turnFailed: 'Turn failed',
     },
     quoteCompanion: {

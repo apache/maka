@@ -7,7 +7,6 @@ import type {
   PermissionOverlayStartResult,
   RendererIngestInput,
   AppUpdateStatus,
-  WorkspaceInstructionsState,
 } from './bridge-contract.js';
 import type {
   ConnectionEvent,
@@ -90,14 +89,6 @@ import type {
   DeepResearchChangedEvent,
   DeepResearchRun,
 } from '@maka/core';
-import type {
-  PricingConfig,
-  UsageBucket,
-  UsageGroupBy,
-  UsageLogRow,
-  UsageQuery,
-  UsageSummaryV2,
-} from '@maka/core/usage-stats/types';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type {
   AgentGraphClientChangedEvent,
@@ -577,17 +568,6 @@ const makaBridge = {
       return ipcRenderer.invoke('memory:openBackup', kind);
     },
   },
-  workspaceInstructions: {
-    getState(): Promise<WorkspaceInstructionsState> {
-      return ipcRenderer.invoke('workspaceInstructions:getState');
-    },
-    openFile(file: string): Promise<{ ok: true } | { ok: false; message: string }> {
-      return ipcRenderer.invoke('workspaceInstructions:openFile', file);
-    },
-    createFile(file: string): Promise<{ ok: true } | { ok: false; message: string }> {
-      return ipcRenderer.invoke('workspaceInstructions:createFile', file);
-    },
-  },
   attachments: {
     pickFiles(): Promise<
       | { ok: true; files: { approvalId: string; name: string; mimeType?: string; size: number }[] }
@@ -909,26 +889,6 @@ const makaBridge = {
       return ipcRenderer.invoke('inspector:trace', sessionId);
     },
   },
-  usage: {
-    summary(query: UsageQuery): Promise<Result<UsageSummaryV2>> {
-      return ipcRenderer.invoke('usage:summary', query);
-    },
-    buckets(query: UsageQuery & { groupBy: UsageGroupBy }): Promise<Result<UsageBucket[]>> {
-      return ipcRenderer.invoke('usage:buckets', query);
-    },
-    logs(query: UsageQuery & { offset?: number; limit?: number }): Promise<Result<{ rows: UsageLogRow[]; total: number }>> {
-      return ipcRenderer.invoke('usage:logs', query);
-    },
-    listPricing(): Promise<Result<PricingConfig[]>> {
-      return ipcRenderer.invoke('usage:pricing:list');
-    },
-    putPricing(pricing: PricingConfig): Promise<Result<PricingConfig>> {
-      return ipcRenderer.invoke('usage:pricing:put', pricing);
-    },
-    resetPricing(modelKey: string): Promise<Result<void>> {
-      return ipcRenderer.invoke('usage:pricing:reset', modelKey);
-    },
-  },
   dailyReview: {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>> {
       return ipcRenderer.invoke('daily-review:day', { offsetDays, daySpan });
@@ -942,23 +902,11 @@ const makaBridge = {
     runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
       return ipcRenderer.invoke('daily-review:runOnce', input);
     },
-    list(): Promise<DailyReviewArchiveSummary[]> {
-      return ipcRenderer.invoke('daily-review:list');
-    },
     listArchives(): Promise<DailyReviewArchiveSummary[]> {
       return ipcRenderer.invoke('daily-review:list');
     },
-    get(archiveId: string): Promise<DailyReviewArchive | null> {
-      return ipcRenderer.invoke('daily-review:get', archiveId);
-    },
     getArchive(archiveId: string): Promise<DailyReviewArchive | null> {
       return ipcRenderer.invoke('daily-review:get', archiveId);
-    },
-    delete(archiveId: string): Promise<void> {
-      return ipcRenderer.invoke('daily-review:delete', archiveId);
-    },
-    deleteArchive(archiveId: string): Promise<void> {
-      return ipcRenderer.invoke('daily-review:delete', archiveId);
     },
     /**
      * PR-DAILY-REVIEW-EXPORT-FILE-0: render the markdown in the renderer
@@ -989,11 +937,6 @@ const makaBridge = {
     },
   },
   appWindow: {
-    subscribeOpenSettings(handler: () => void): () => void {
-      const listener = () => handler();
-      ipcRenderer.on('window:openSettings', listener);
-      return () => ipcRenderer.off('window:openSettings', listener);
-    },
     setTitlebarControlsVisible(visible: boolean): Promise<void> {
       return ipcRenderer.invoke('window:setTitlebarControlsVisible', visible);
     },

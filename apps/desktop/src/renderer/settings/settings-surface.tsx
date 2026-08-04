@@ -315,7 +315,13 @@ export function SettingsSurface(props: {
             <Layout
               height="fill"
               padding={0}
-              contentWidth={section === 'usage' ? 920 : 640}
+              /* One column width for EVERY section. Usage used to get 920
+                 while the rest sat in a 640 column, so switching pages
+                 visibly shifted the left edge — the title jumped ~120px
+                 between 使用统计 and any other page. A settings surface is
+                 one place; its margins must not depend on which page is
+                 open. */
+              contentWidth={920}
               header={(
                 <LayoutHeader padding={6}>
                   <div className="settingsPageHeader">
@@ -442,7 +448,6 @@ function SettingsPageBody(props: {
           connections={props.connections}
           defaultSlug={props.defaultSlug}
           onUpdate={props.onUpdateSettings}
-          onReloadSettings={props.onReloadSettings}
           onRefreshConnections={props.onRefreshConnections}
         />
       );

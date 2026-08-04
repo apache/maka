@@ -848,7 +848,14 @@ export type {
 } from './stream-watchdog.js';
 
 export { getAIModel, buildProviderOptions } from './model-factory.js';
-export { fallbackSessionTitle, generateSessionTitle, sessionTitleSource } from './session-title.js';
+export {
+  buildSessionTitlePrompt,
+  cleanGeneratedSessionTitle,
+  fallbackSessionTitle,
+  generateSessionTitle,
+  sessionTitleSource,
+  SESSION_TITLE_GENERATION_TIMEOUT_MS,
+} from './session-title.js';
 export type { ModelFactoryInput as GetAIModelInput } from './model-factory.js';
 export {
   extractOAuthSubscriptionAccessToken,
@@ -1188,6 +1195,7 @@ export {
   getBuiltinPricing,
   llmCallUsageFields,
   recordLlmCall,
+  recordLlmCallStrict,
   recordToolInvocation,
 } from './telemetry/index.js';
 export type {
@@ -1486,15 +1494,7 @@ export type {
 // ───────────────────────────────────────────────────────────────────────────
 export {
   buildWorkspaceInstructionsPromptFragment,
-  getWorkspaceInstructionsState,
   WORKSPACE_INSTRUCTION_FILES,
-  MAX_WORKSPACE_INSTRUCTION_FILE_CHARS,
-  MAX_WORKSPACE_INSTRUCTIONS_PROMPT_CHARS,
-} from './system-prompt/workspace-instructions.js';
-export type {
-  WorkspaceInstructionFileStatus,
-  WorkspaceInstructionFileState,
-  WorkspaceInstructionsState,
 } from './system-prompt/workspace-instructions.js';
 export {
   buildPersonalizationPromptFragment,
@@ -1584,6 +1584,17 @@ export type {
   GoalEvaluatorDeps,
   GoalEvaluatorResource,
 } from './goal-evaluator.js';
+export { generateToolFreeModelCall } from './tool-free-model-call.js';
+export type {
+  ToolFreeModelCallContent,
+  ToolFreeModelCallInput,
+  ToolFreeModelCallResult,
+} from './tool-free-model-call.js';
+export {
+  buildSessionRecapMessages,
+  cleanSessionRecapText,
+  SESSION_RECAP_INSTRUCTION,
+} from './session-recap.js';
 export {
   buildGoalTools,
   GOAL_SET_TOOL_NAME,

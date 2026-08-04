@@ -46,6 +46,11 @@ import {
   CLAUDE_CODE_TOOLCHAIN_SPEC,
   prepareClaudeCodeToolchain,
 } from '#claude-code-toolchain';
+import {
+  REASONIX_TOOLCHAIN_FINGERPRINT,
+  REASONIX_TOOLCHAIN_SPEC,
+  prepareReasonixToolchain,
+} from '#reasonix-toolchain';
 import { MAKA_NODE_TOOLCHAIN_FINGERPRINT, prepareMakaNodeToolchain } from '#maka-node-toolchain';
 import { createCodexOAuthHarnessCredentialBinding } from '#codex-oauth-harness';
 import {
@@ -89,7 +94,9 @@ const execFileAsync = promisify(execFile);
 
 export const DEFAULT_HARNESS_AB_RUN_ID = 'k3-maka-vs-kimi-code-tbench-2.1-full-v2';
 const CANARY_TASKS = 5;
-const MAX_PAIR_CONCURRENCY = 4;
+// Bounds host load only: every cell is an independent Harbor run, so pair
+// concurrency never enters scoring or resume identity beyond the manifest.
+const MAX_PAIR_CONCURRENCY = 16;
 const DEFAULT_PAIR_CONCURRENCY = 1;
 const DEFAULT_ARM_EXECUTION = 'sequential';
 const KIMI_CODING_PLAN_PRICING = Object.freeze({
@@ -261,11 +268,20 @@ async function readPierVersion() {
   }
 }
 
+/**
+ * A competitor profile is the single source of truth for one arm's pinned
+ * toolchain: how to prepare it, which env var overrides its cached path, and
+ * which runner option carries it. Downstream code reads these fields instead
+ * of re-dispatching on the competitor id.
+ */
 export const HARNESS_COMPETITOR_PROFILES = Object.freeze({
   'kimi-code': Object.freeze({
     id: 'kimi-code',
     version: KIMI_CODE_TOOLCHAIN_SPEC.kimiCode.version,
     toolchainFingerprint: KIMI_CODE_TOOLCHAIN_FINGERPRINT,
+    prepareToolchain: prepareKimiCodeToolchain,
+    toolchainPathEnvKey: 'MAKA_HARNESS_AB_KIMI_CODE_TOOLCHAIN',
+    runnerToolchainOption: 'kimiCodeToolchainPath',
     config: Object.freeze({
       outputFormat: 'stream-json',
       permissions: 'prompt-auto',
@@ -276,6 +292,9 @@ export const HARNESS_COMPETITOR_PROFILES = Object.freeze({
     id: 'opencode',
     version: OPENCODE_TOOLCHAIN_SPEC.opencode.version,
     toolchainFingerprint: OPENCODE_TOOLCHAIN_FINGERPRINT,
+    prepareToolchain: prepareOpenCodeToolchain,
+    toolchainPathEnvKey: 'MAKA_HARNESS_AB_OPENCODE_TOOLCHAIN',
+    runnerToolchainOption: 'opencodeToolchainPath',
     config: Object.freeze({
       pure: true,
       permissions: 'auto',
@@ -286,6 +305,9 @@ export const HARNESS_COMPETITOR_PROFILES = Object.freeze({
     id: 'codex',
     version: CODEX_TOOLCHAIN_SPEC.codex.version,
     toolchainFingerprint: CODEX_TOOLCHAIN_FINGERPRINT,
+    prepareToolchain: prepareCodexToolchain,
+    toolchainPathEnvKey: 'MAKA_HARNESS_AB_CODEX_TOOLCHAIN',
+    runnerToolchainOption: 'codexToolchainPath',
     config: Object.freeze({
       transport: 'responses-http',
       permissions: 'container-full-access',
@@ -296,9 +318,28 @@ export const HARNESS_COMPETITOR_PROFILES = Object.freeze({
     id: 'claude-code',
     version: CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version,
     toolchainFingerprint: CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
+    prepareToolchain: prepareClaudeCodeToolchain,
+    toolchainPathEnvKey: 'MAKA_HARNESS_AB_CLAUDE_CODE_TOOLCHAIN',
+    runnerToolchainOption: 'claudeCodeToolchainPath',
     config: Object.freeze({
       transport: 'anthropic-messages',
       permissions: 'bypassPermissions',
+      attemptPolicy: 'single',
+    }),
+  }),
+  reasonix: Object.freeze({
+    id: 'reasonix',
+    version: REASONIX_TOOLCHAIN_SPEC.reasonix.version,
+    toolchainFingerprint: REASONIX_TOOLCHAIN_FINGERPRINT,
+    prepareToolchain: prepareReasonixToolchain,
+    toolchainPathEnvKey: 'MAKA_HARNESS_AB_REASONIX_TOOLCHAIN',
+    runnerToolchainOption: 'reasonixToolchainPath',
+    config: Object.freeze({
+      // stream-json carries real tool names, which the redacted --events-jsonl
+      // surface aliases away; the arms are only comparable on tool behaviour if
+      // both capture their CLI's native stream.
+      outputFormat: 'stream-json',
+      permissions: 'auto',
       attemptPolicy: 'single',
     }),
   }),
@@ -373,6 +414,7 @@ const DEFAULT_RUNTIME_BY_COMPETITOR = Object.freeze({
   opencode: 'kimi-coding-plan-k3-max',
   codex: 'openai-codex-gpt-5.6-sol-xhigh',
   'claude-code': 'deepseek-v4-flash-max',
+  reasonix: 'deepseek-v4-flash-max',
 });
 
 const SUPPORTED_HARNESS_COMPOSITIONS = new Set([
@@ -383,6 +425,7 @@ const SUPPORTED_HARNESS_COMPOSITIONS = new Set([
   'terminal-bench-2.1|openai-codex-gpt-5.6-sol-xhigh|codex',
   'terminal-bench-2.1|deepseek-v4-flash-max|codex',
   'terminal-bench-2.1|deepseek-v4-flash-max|claude-code',
+  'terminal-bench-2.1|deepseek-v4-flash-max|reasonix',
   'deep-swe-1.1|kimi-coding-plan-k3-max|kimi-code',
   'deep-swe-1.1|openai-codex-gpt-5.6-sol-xhigh|codex',
   'deep-swe-1.1-full|kimi-coding-plan-k3-max|kimi-code',
@@ -560,39 +603,16 @@ export function resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile
 }
 
 export function resolveHarnessCompetitorToolchain(runRoot, competitorProfile, env = process.env) {
-  if (competitorProfile.id === 'kimi-code') {
-    return {
-      path: env.MAKA_HARNESS_AB_KIMI_CODE_TOOLCHAIN
-        ? resolve(env.MAKA_HARNESS_AB_KIMI_CODE_TOOLCHAIN)
-        : resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile),
-      prepare: prepareKimiCodeToolchain,
-    };
+  if (!competitorProfile.prepareToolchain) {
+    throw new Error(`unsupported harness competitor: ${competitorProfile.id}`);
   }
-  if (competitorProfile.id === 'opencode') {
-    return {
-      path: env.MAKA_HARNESS_AB_OPENCODE_TOOLCHAIN
-        ? resolve(env.MAKA_HARNESS_AB_OPENCODE_TOOLCHAIN)
-        : resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile),
-      prepare: prepareOpenCodeToolchain,
-    };
-  }
-  if (competitorProfile.id === 'codex') {
-    return {
-      path: env.MAKA_HARNESS_AB_CODEX_TOOLCHAIN
-        ? resolve(env.MAKA_HARNESS_AB_CODEX_TOOLCHAIN)
-        : resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile),
-      prepare: prepareCodexToolchain,
-    };
-  }
-  if (competitorProfile.id === 'claude-code') {
-    return {
-      path: env.MAKA_HARNESS_AB_CLAUDE_CODE_TOOLCHAIN
-        ? resolve(env.MAKA_HARNESS_AB_CLAUDE_CODE_TOOLCHAIN)
-        : resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile),
-      prepare: prepareClaudeCodeToolchain,
-    };
-  }
-  throw new Error(`unsupported harness competitor: ${competitorProfile.id}`);
+  const override = env[competitorProfile.toolchainPathEnvKey];
+  return {
+    path: override
+      ? resolve(override)
+      : resolveHarnessCompetitorToolchainPath(runRoot, competitorProfile),
+    prepare: competitorProfile.prepareToolchain,
+  };
 }
 
 export function resolveHarnessMakaNodeToolchain(runRoot, env = process.env) {
@@ -1176,13 +1196,7 @@ async function runLocked({
               ...runnerOptions,
               agent: profile.id,
               agentVersion: profile.version,
-              ...(profile.id === 'kimi-code'
-                ? { kimiCodeToolchainPath: toolchain.path }
-                : profile.id === 'opencode'
-                  ? { opencodeToolchainPath: toolchain.path }
-                  : profile.id === 'codex'
-                    ? { codexToolchainPath: toolchain.path }
-                    : { claudeCodeToolchainPath: toolchain.path }),
+              [profile.runnerToolchainOption]: toolchain.path,
             }),
           };
         }),

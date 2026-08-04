@@ -25,6 +25,7 @@ describe('generated artifact visibility', () => {
       'history_compact_block',
       'history_compact_source',
       'provider_request_capture',
+      'session_effect',
       'user_upload',
     ];
 

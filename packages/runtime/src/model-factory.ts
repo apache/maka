@@ -315,31 +315,48 @@ export function buildProviderOptions(
   const variants = thinkingVariantsForModel(connection.providerType, modelId);
   const level = thinkingLevel && variants.includes(thinkingLevel) ? thinkingLevel : undefined;
   switch (connection.providerType) {
-    case 'kimi-coding-plan':
+    case 'kimi-coding-plan': {
+      // Kimi's coding route has no off wire. Check the raw argument, not the
+      // normalized level: the entry gate above drops unsupported levels to
+      // undefined (default max), but an explicit off must be rejected, never
+      // silently upgraded to max. Today off cannot reach this branch through
+      // the UI (variants exclude it), but a direct runtime caller or a future
+      // models.dev `none` declaration must fail loudly, and the wire-contract
+      // sweep keeps that tripwire armed.
+      if (thinkingLevel === 'off') return {};
+      const effort = level ?? 'max';
       if (connection.models?.find((model) => model.id === modelId)?.apiProtocol === 'openai-chat') {
+        // The kimiCodingPlan provider-options namespace is the
+        // openai-compatible adapter name; ai-sdk resolves its camelCase
+        // alias to the kimi-coding-plan schema key (reasoning_effort).
         return {
-          kimiCodingPlan: { reasoningEffort: 'max' },
+          kimiCodingPlan: { reasoningEffort: effort },
         };
       }
       return {
         anthropic:
-          modelId === 'k3'
+          modelId === 'k3' || modelId === 'k3-256k'
             ? {
-                // K3 supports adaptive thinking only and currently fixes effort
-                // at max on Kimi Coding Plan.
+                // K3 (and its 256k-context variant) supports adaptive thinking
+                // only; effort defaults to max when unset.
                 thinking: { type: 'adaptive' as const },
-                effort: 'max',
+                effort,
               }
             : modelId === 'kimi-for-coding'
               ? {
-                  // Kimi's managed coding route requires enabled thinking and max
-                  // effort. The Anthropic AI SDK also requires a compatibility
-                  // budget and otherwise injects the same value with a warning.
+                  // Kimi's managed coding route requires enabled thinking; the
+                  // Anthropic AI SDK also requires a compatibility budget and
+                  // otherwise injects the same value with a warning.
                   thinking: { type: 'enabled' as const, budgetTokens: 1_024 },
-                  effort: 'max',
+                  effort,
                 }
-              : {},
+              : {
+                  // kimi-for-coding-highspeed has no declared effort and no
+                  // known thinking requirements; send nothing rather than
+                  // inventing a wire (mirrors main's prior behavior).
+                },
       };
+    }
     // Anthropic-protocol: effort enum models send `effort`; toggle/budget
     // models send `thinking.disabled` for off. No budget-token mapping — the
     // provider's native effort values pass through unchanged.

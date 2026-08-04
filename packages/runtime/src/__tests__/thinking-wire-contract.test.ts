@@ -98,4 +98,31 @@ describe('thinking wire contract', () => {
     }
     assert.deepEqual(gaps, []);
   });
+
+  test('kimi-coding-plan wires every declared variant over the openai-chat protocol too', () => {
+    // The sweep above only exercises conn() without a model apiProtocol, so
+    // kimi always takes its anthropic branch. Sweep the openai-chat branch
+    // explicitly so a future declared level cannot silently go unwired there.
+    const gaps: string[] = [];
+    const providerType = 'kimi-coding-plan' as const;
+    const modelIds = new Set([
+      ...PROVIDER_REGISTRY[providerType].fallbackModels,
+      ...modelMetadataIdsForProvider(providerType),
+    ]);
+    for (const modelId of modelIds) {
+      const connection = {
+        ...conn(providerType),
+        models: [{ id: modelId, apiProtocol: 'openai-chat' as const }],
+      };
+      for (const level of thinkingVariantsForModel(providerType, modelId)) {
+        const options = buildProviderOptions(connection, modelId, level);
+        if (!wiresAnything(options)) {
+          gaps.push(
+            `${providerType}/${modelId} (openai-chat) declares "${level}" but wires nothing`,
+          );
+        }
+      }
+    }
+    assert.deepEqual(gaps, []);
+  });
 });

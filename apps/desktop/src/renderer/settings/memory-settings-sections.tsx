@@ -1,54 +1,6 @@
 import { Button } from '@maka/ui';
-import { SettingsField, SettingsRow, SettingsSection } from './settings-section';
-import { workspaceInstructionStatusLabel } from './memory-settings-labels';
+import { SettingsField, SettingsSection } from './settings-section';
 import type { MemorySettingsCopy } from '../locales/settings-memory-copy';
-
-type WorkspaceInstructionState = Awaited<ReturnType<typeof window.maka.workspaceInstructions.getState>>;
-
-export function WorkspaceInstructionsSection(props: {
-  state: WorkspaceInstructionState | null;
-  copy: MemorySettingsCopy;
-  disabled: boolean;
-  isActionPending(key: string): boolean;
-  onOpen(file: string): void | Promise<void>;
-  onCreate(file: string): void | Promise<void>;
-}) {
-  if (!props.state) return null;
-  return (
-    <>
-      <SettingsRow
-        label={props.copy.detectedInstructions(props.state.detectedCount)}
-        description={props.copy.instructionLimit(props.state.fileCharLimit)}
-      />
-      {props.state.files.map((file) => (
-        <SettingsRow
-          key={file.file}
-          label={<code>{file.file}</code>}
-          description={workspaceInstructionStatusLabel(file.status, file.chars, file.truncated, props.copy)}
-          end={(file.status === 'available' || file.status === 'empty') ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={props.copy.openInstructionAria(file.file)}
-              isDisabled={props.disabled || props.isActionPending(`instruction:${file.file}:open`)}
-              onClick={() => void props.onOpen(file.file)}
-              label={props.isActionPending(`instruction:${file.file}:open`) ? props.copy.text.opening : props.copy.text.instructionOpen}
-            />
-          ) : file.status === 'missing' ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={props.copy.createInstructionAria(file.file)}
-              isDisabled={props.disabled || props.isActionPending(`instruction:${file.file}:create`)}
-              onClick={() => void props.onCreate(file.file)}
-              label={props.isActionPending(`instruction:${file.file}:create`) ? props.copy.text.creating : props.copy.text.instructionCreate}
-            />
-          ) : undefined}
-        />
-      ))}
-    </>
-  );
-}
 
 export function MemoryPromptPreviewSection(props: {
   copy: MemorySettingsCopy;

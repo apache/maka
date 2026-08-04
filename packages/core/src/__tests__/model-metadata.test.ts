@@ -80,15 +80,21 @@ describe('model-metadata vision capability', () => {
     assert.equal(resolveModelVisionSupport('openai', granted, 'some-unlisted-model'), true);
   });
 
-  it('publishes the Kimi K3 Coding Plan limits and sole supported effort', () => {
+  it('publishes the Kimi Coding Plan K3 limits and effort levels from models.dev', () => {
     assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3'), {
       displayName: 'Kimi K3',
       lifecycle: 'active',
-      docsUrl: 'https://www.kimi.com/code/docs/en/kimi-code/models.html',
+      docsUrl: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
       contextWindow: 1_048_576,
       maxOutputTokens: 131_072,
-      capabilities: { reasoning: true, functionCalling: true, vision: true },
-      thinkingOptions: { efforts: ['max'] },
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    });
+    // k3-256k joined the snapshot with the same effort set; the wire contract
+    // test then requires every declared level to actually wire.
+    assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3-256k').thinkingOptions, {
+      efforts: ['low', 'high', 'max'],
     });
   });
 
@@ -108,15 +114,11 @@ describe('model-metadata vision capability', () => {
     assert.equal(kimi.maxOutputTokens, 32_000);
   });
 
-  it('reuses MiniMax snapshot facts for the Coding Plan access path', () => {
-    assert.deepEqual(
-      lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3'),
-      lookupModelMetadata('MiniMax', 'MiniMax-M3'),
-    );
-    assert.equal(
-      lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3').capabilities?.vision,
-      true,
-    );
+  it('publishes MiniMax Coding Plan snapshot facts with its own access-path docs', () => {
+    const metadata = lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3');
+    assert.equal(metadata.capabilities?.vision, true);
+    assert.equal(metadata.thinkingOptions?.toggle, true);
+    assert.equal(metadata.docsUrl, 'https://platform.minimax.io/docs/token-plan/intro');
   });
 
   it('uses synchronized facts while preserving access-path overrides', () => {

@@ -72,9 +72,10 @@ export type SessionRetirementOperationKey = Extract<
   OperationKey,
   'session.lifecycle.set' | 'session.remove'
 >;
+export type SessionEffectOperationKey = Extract<OperationKey, 'session.recap.generate'>;
 export type SessionCatalogOperationKey = Exclude<
   Extract<OperationKey, `session.${string}`>,
-  SessionRevisionOperationKey | SessionRetirementOperationKey
+  SessionRevisionOperationKey | SessionRetirementOperationKey | SessionEffectOperationKey
 >;
 export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
@@ -85,6 +86,7 @@ export type OAuthOperationKey = Extract<OperationKey, `oauth.${string}`>;
 export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resource.${string}`>;
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
 export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
+export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
@@ -117,6 +119,7 @@ export type SessionRetirementOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionRetirementOperationKey
 >;
+export type SessionEffectOperationHandlerMap = Pick<OperationHandlerMap, SessionEffectOperationKey>;
 export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
@@ -132,6 +135,7 @@ export type ClientCapabilityOperationHandlerMap = Pick<
   ClientCapabilityOperationKey
 >;
 export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, AutomationOperationKey>;
+export type PlanOperationHandlerMap = Pick<OperationHandlerMap, PlanOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]

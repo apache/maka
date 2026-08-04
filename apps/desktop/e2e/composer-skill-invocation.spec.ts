@@ -210,6 +210,9 @@ test('staged Skills come back as chips after leaving and returning', async ({
   await composer.pressSequentially('run it');
   await pick('workspace', /Workspace Only/);
   await expect(projectChip).toContainText('Project Only');
+  // Both chips must land before navigating away: leaving while the second
+  // token is still committing races the draft snapshot and loses the chip.
+  await expect(workspaceChip).toContainText('Workspace Only');
 
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   const sidebar = page.getByRole('navigation', { name: '对话列表' });

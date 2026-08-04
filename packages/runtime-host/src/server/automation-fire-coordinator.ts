@@ -21,7 +21,7 @@ import {
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { AutomationAuthorityInvariantError } from './automation-errors.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
-import { runtimeHostSessionUnavailableReason } from './host-session-availability.js';
+import { runtimeHostAutomationSessionUnavailableReason } from './host-session-availability.js';
 
 type AutomationSessions = Pick<
   ExecutionSessionWriter,
@@ -237,7 +237,7 @@ export class HostAutomationFireCoordinator {
           const header = await this.#sessions.readHeaderSnapshot(sessionId);
           return header.isArchived ||
             header.status === 'archived' ||
-            runtimeHostSessionUnavailableReason(header)
+            runtimeHostAutomationSessionUnavailableReason(header)
             ? null
             : header;
         } catch (error) {
@@ -438,7 +438,7 @@ export class HostAutomationFireCoordinator {
     if (header.isArchived || header.status === 'archived') {
       throw new AutomationFireDeferredError('Automation target Session is archived');
     }
-    if (runtimeHostSessionUnavailableReason(header)) {
+    if (runtimeHostAutomationSessionUnavailableReason(header)) {
       throw new AutomationFireDeferredError('Automation target Session is unavailable');
     }
     if (fire.automationKind === 'heartbeat' && !HEARTBEAT_IDLE_STATUSES.has(header.status)) {

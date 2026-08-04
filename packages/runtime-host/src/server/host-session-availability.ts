@@ -9,13 +9,19 @@ const CHILD_CONTINUATION_UNAVAILABLE_REASON =
 export function runtimeHostSessionUnavailableReason(
   header: Pick<SessionHeader, 'collaborationMode' | 'labels'>,
 ): string | undefined {
-  if (header.collaborationMode === 'plan') {
-    return 'Plan sessions are not yet supported by Runtime Host.';
-  }
   if (isDeepResearchSession(header.labels)) {
     return 'Deep Research sessions are not yet supported by Runtime Host.';
   }
   return undefined;
+}
+
+export function runtimeHostAutomationSessionUnavailableReason(
+  header: Pick<SessionHeader, 'collaborationMode' | 'labels'>,
+): string | undefined {
+  if (header.collaborationMode === 'plan') {
+    return 'Automations cannot execute while the target Session is in Plan mode.';
+  }
+  return runtimeHostSessionUnavailableReason(header);
 }
 
 export function runtimeHostExternalTurnUnavailableReason(
@@ -42,6 +48,13 @@ export function runtimeHostExecutionUnavailableReason(
 ): string | undefined {
   return (
     runtimeHostSessionUnavailableReason(header) ??
+    (header.collaborationMode === 'plan' &&
+    execution.kind !== 'external_message' &&
+    execution.kind !== 'regenerate' &&
+    execution.kind !== 'context_compact' &&
+    execution.kind !== 'safe_boundary_continuation'
+      ? 'Background and delegated roots cannot execute while the Session is in Plan mode.'
+      : undefined) ??
     (header.subagentWorkspace && !isManagedWorktreeChildExecution(execution)
       ? WORKTREE_CHILD_UNAVAILABLE_REASON
       : undefined)

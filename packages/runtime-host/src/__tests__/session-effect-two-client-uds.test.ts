@@ -1,0 +1,122 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import type { SessionHeader } from '@maka/core/session';
+import type { RuntimeReadModelSessionView } from '@maka/runtime';
+import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
+import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
+import { RuntimeHostKernel } from '../server/host-kernel.js';
+import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { HostSessionEffectCoordinator } from '../server/session-effect-coordinator.js';
+
+const PROTOCOL = {
+  min: RUNTIME_HOST_PROTOCOL_VERSION,
+  max: RUNTIME_HOST_PROTOCOL_VERSION,
+} as const;
+
+test('two UDS Clients share one durable Session recap effect', {
+  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-session-effect-uds-'));
+  const root = join(base, 'interactive');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  let modelCalls = 0;
+  const modelStarted = gate();
+  const modelRelease = gate();
+  const host = await RuntimeHostKernel.start({
+    owner,
+    idleGraceMs: 10_000,
+    compositionFactory: async (context) => {
+      const artifacts = await openInteractiveArtifactStoreForWrite(context.owner.lease);
+      const coordinator = new HostSessionEffectCoordinator({
+        model: {
+          generateTitle: async () => undefined,
+          generateRecap: async () => {
+            modelCalls += 1;
+            modelStarted.release();
+            await modelRelease.promise;
+            return {
+              ok: true,
+              modelId: 'openrouter/free',
+              messages: [{ role: 'user', content: 'canonical history' }],
+              raw: 'We connected two Clients to one recap effect.',
+            };
+          },
+        },
+        readModel: {
+          getSessionView: async () => ({ events: [] }) as unknown as RuntimeReadModelSessionView,
+        },
+        artifacts,
+        sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
+        readSessionHeader: async () =>
+          ({ isArchived: false, status: 'active' }) as unknown as SessionHeader,
+        sessionAdmission: new SessionAdmissionGate(),
+        acquireResidency: context.acquireResidency,
+        requestDrain: context.requestDrain,
+      });
+      return {
+        handlers: {
+          ...createUnavailableDomainOperationHandlers(),
+          ...coordinator.handlers,
+        },
+        beginDrain: () => coordinator.beginDrain(),
+        recover: () => artifacts.recover(),
+        close: async () => {
+          await coordinator.close();
+          artifacts.close();
+        },
+      };
+    },
+  });
+  let desktop: RuntimeHostConnection | undefined;
+  let tui: RuntimeHostConnection | undefined;
+  try {
+    desktop = await connect(root, 'desktop');
+    tui = await connect(root, 'tui');
+    const input = { sessionId: 'session-1', effectId: 'effect-1', reason: 'manual' as const };
+    const desktopResult = desktop.generateSessionRecap(input);
+    await modelStarted.promise;
+    const tuiResult = tui.generateSessionRecap(input);
+    modelRelease.release();
+    const [first, second] = await Promise.all([desktopResult, tuiResult]);
+    assert.deepEqual(first, {
+      kind: 'generated',
+      effectId: 'effect-1',
+      reason: 'manual',
+      text: 'We connected two Clients to one recap effect.',
+      raw: 'We connected two Clients to one recap effect.',
+    });
+    assert.deepEqual(second, first);
+    assert.equal(modelCalls, 1);
+  } finally {
+    await Promise.allSettled([desktop?.close(), tui?.close()]);
+    await host.close().catch(() => undefined);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+function gate(): { promise: Promise<void>; release(): void } {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+async function connect(
+  rootPath: string,
+  surface: 'desktop' | 'tui',
+): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({ rootPath, surface, protocol: PROTOCOL });
+  assert.equal(result.kind, 'connected');
+  if (result.kind !== 'connected') throw new Error('Unable to connect to Runtime Host');
+  return result.connection;
+}

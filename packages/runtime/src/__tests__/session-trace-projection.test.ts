@@ -507,4 +507,31 @@ describe('session trace projection', () => {
       'and the decision that was actually recorded',
     );
   });
+
+  test('an unreadable record is a known gap even with no other evidence of one', () => {
+    // The reader counts what it could not decode; the projection has to carry
+    // that through, or spend nobody can see reads as a clean session.
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [],
+      modelCallAttempts: [attempt()],
+      unreadableRecords: 2,
+    });
+
+    assert.equal(trace.coverage.unreadableRecords, 2);
+    assert.equal(trace.coverage.modelCalls, 'partial', 'records nobody can read are a gap');
+  });
+
+  test('a session that is only unreadable records is still a covered session', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [],
+      modelCallAttempts: [],
+      unreadableRecords: 1,
+    });
+
+    assert.equal(trace.coverage.modelCalls, 'partial');
+    assert.equal(trace.coverage.unreadableRecords, 1);
+    assert.notEqual(trace.coverage.modelCalls, 'none', 'not "nothing happened"');
+  });
 });

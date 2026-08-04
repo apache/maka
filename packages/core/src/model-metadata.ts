@@ -405,25 +405,6 @@ const ollamaCloudThinkingModels: Record<string, ModelMetadata> = Object.fromEntr
 // access-path-specific aliases/limits. Standard model facts stay generated.
 const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMetadata>>> = {
   anthropic: ANTHROPIC_MODEL_OVERRIDES,
-  'minimax-coding-plan': GENERATED_MODELS_DEV_METADATA.MiniMax,
-  'stepfun-step-plan': {
-    'step-3.7-flash': {
-      ...GENERATED_MODELS_DEV_METADATA.stepfun['step-3.7-flash']!,
-      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
-    },
-    'step-3.5-flash-2603': {
-      ...GENERATED_MODELS_DEV_METADATA.stepfun['step-3.5-flash-2603']!,
-      thinkingOptions: { efforts: ['low', 'high'] },
-    },
-    'step-3.5-flash': GENERATED_MODELS_DEV_METADATA.stepfun['step-3.5-flash']!,
-    'step-router-v1': {
-      displayName: 'Step Router V1',
-      lifecycle: 'active',
-      docsUrl: 'https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api',
-      maxOutputTokens: 384_000,
-      capabilities: { vision: false, reasoning: true, functionCalling: true },
-    },
-  },
   'claude-subscription': CLAUDE_SUBSCRIPTION_MODEL_METADATA,
   openai: OPENAI_MODEL_OVERRIDES,
   google: GOOGLE_MODEL_OVERRIDES,
@@ -500,33 +481,6 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     'glm-5.1': { thinkingOptions: { toggle: true } },
     'glm-5v-turbo': { thinkingOptions: { toggle: true } },
     'glm-4.5-air': { thinkingOptions: { toggle: true } },
-  },
-  'kimi-coding-plan': {
-    k3: {
-      displayName: 'Kimi K3',
-      lifecycle: 'active',
-      docsUrl: 'https://www.kimi.com/code/docs/en/kimi-code/models.html',
-      contextWindow: 1_048_576,
-      maxOutputTokens: 131_072,
-      capabilities: { ...REASONING_FUNCTION_CALLING, vision: true },
-      thinkingOptions: { efforts: ['max'] },
-    },
-    'kimi-for-coding': {
-      displayName: 'Kimi for Coding',
-      lifecycle: 'active',
-      docsUrl: 'https://www.kimi.com/code/docs/en/',
-      contextWindow: 262_144,
-      maxOutputTokens: 32_768,
-      capabilities: { ...REASONING_FUNCTION_CALLING, vision: true },
-    },
-    'kimi-for-coding-highspeed': {
-      displayName: 'Kimi for Coding (HighSpeed)',
-      lifecycle: 'active',
-      docsUrl: 'https://www.kimi.com/code/docs/en/',
-      contextWindow: 262_144,
-      maxOutputTokens: 32_768,
-      capabilities: { ...REASONING_FUNCTION_CALLING, vision: true },
-    },
   },
 };
 

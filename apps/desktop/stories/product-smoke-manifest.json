@@ -6,6 +6,18 @@
     "floor": { "width": 480, "height": 900 }
   },
   "surfaces": {
+    "playContract": {
+      "storyId": "design-system-harness-contracts--play-executes",
+      "productionHost": "storybook-visual-smoke harness (autoplay contract, #1981)",
+      "state": "play function executed and flipped its DOM proof marker",
+      "viewports": ["wide"],
+      "viewportOptOuts": {
+        "compact": "harness contract, not a product surface — autoplay either runs or it does not, one viewport proves it",
+        "floor": "harness contract, not a product surface — autoplay either runs or it does not, one viewport proves it"
+      },
+      "colorSchemes": ["light"],
+      "checks": ["play-executed"]
+    },
     "onboarding": {
       "storyId": "product-onboarding--needs-connection",
       "productionHost": "ChatView > OnboardingHero",

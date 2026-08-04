@@ -39,6 +39,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/model-metadata',
   '@maka/core/model-thinking',
   '@maka/core/oauth-subscription',
+  '@maka/core/plan',
   '@maka/core/redaction',
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
@@ -61,6 +62,7 @@ const allowedServerExternalImports = new Set([
   '@maka/storage/interaction-store',
   '@maka/storage/long-term-memory-store',
   '@maka/storage/memory-bundle-store',
+  '@maka/storage/plan-authority',
   '@maka/storage/runtime-policy-stores',
   '@maka/storage/shell-run-authority',
   '@maka/storage/task-ledger-authority',
@@ -83,6 +85,7 @@ const allowedExternalImports = {
     '@maka/core/local-memory',
     '@maka/core/model-thinking',
     '@maka/core/orchestration',
+    '@maka/core/plan',
     '@maka/core/permission',
     '@maka/core/runtime-policy',
     '@maka/core/session',
@@ -199,6 +202,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
         specifier === '@maka/storage/execution-stores' ||
         specifier === '@maka/storage/long-term-memory-store' ||
         specifier === '@maka/storage/memory-bundle-store' ||
+        specifier === '@maka/storage/plan-authority' ||
         specifier === '@maka/storage/runtime-policy-stores' ||
         specifier === '@maka/storage/task-ledger-authority'
       ) {

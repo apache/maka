@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
+import { useHotkeys } from '@astryxdesign/core/hooks';
 import type {
   LlmConnection,
   ProviderType,
@@ -65,17 +66,19 @@ export function SettingsModal(props: {
   // focus away from anything open inside Settings while a session streams.
   const activeNavRef = useRef<HTMLButtonElement>(null);
 
-  // The Escape listener is safe to resubscribe on every onClose identity
-  // change (it only adds/removes a DOM listener, not a focus-stealing side
-  // effect), and keeping it keyed on `onClose` guarantees Escape always
-  // calls the current closure rather than a stale one.
-  useEffect(() => {
-    function onKey(event: globalThis.KeyboardEvent) {
-      if (event.key === 'Escape' && !event.defaultPrevented) props.onClose();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [props.onClose]);
+  // useHotkeys keeps its entries in a ref it refreshes every render, so Escape
+  // always calls the current `onClose` without the listener churning on that
+  // prop's identity (it is recreated on every AppShell render, i.e. per
+  // streamed token). It also skips defaultPrevented events, which is what the
+  // old `!event.defaultPrevented` check bought: a nested dialog that already
+  // consumed Escape closes itself, not the whole Settings surface.
+  //
+  // `allowInInputs` because Escape must close Settings from inside its own
+  // fields — the hook's default would have made Escape dead in every text box
+  // on the page.
+  useHotkeys([
+    { keys: 'escape', allowInInputs: true, onPress: () => props.onClose() },
+  ]);
 
   return (
     <div

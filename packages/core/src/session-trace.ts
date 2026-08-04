@@ -228,11 +228,12 @@ export interface SessionTraceCoverage {
   /** Turn ids with aggregate usage but no canonical record behind it. */
   turnsMissingModelCalls: string[];
   /**
-   * Canonical records the reader could not decode.
+   * Canonical records the reader could not read or decode.
    *
-   * Counted rather than dropped: a record that fails to decode is spend the
-   * trace cannot show, and silently omitting it is the difference between a
-   * gap that is visible and one that is not.
+   * Counted rather than dropped: spend the trace cannot show is the difference
+   * between a gap that is visible and one that is not. The unit is deliberately
+   * loose — a run whose events cannot be read at all counts as one, because
+   * nothing is known about how many records it held. Read it as a floor.
    */
   unreadableRecords: number;
   /**

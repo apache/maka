@@ -1,0 +1,172 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import {
+  decodePlanQueryResult,
+  decodeRequestFrame,
+  decodeResponseFrame,
+  HOST_OPERATION_SPECS,
+  PLAN_PAGE_MAX_ITEMS,
+} from '../protocol/index.js';
+
+const proposal = {
+  planId: 'plan-1',
+  proposalId: 'proposal-1',
+  sessionId: 'session-1',
+  turnId: 'turn-1',
+  revision: 1,
+  title: 'Host-owned Plan',
+  steps: [{ id: 'step-1', title: 'Own state', description: 'Persist the Plan in the Host' }],
+  status: 'pending_approval' as const,
+  submittedAt: 1,
+};
+
+test('Plan protocol declares bounded snapshot queries and stable controls', () => {
+  assert.equal(HOST_OPERATION_SPECS['plan.query'].mode, 'query');
+  assert.equal(HOST_OPERATION_SPECS['plan.control'].mode, 'control');
+  assert.deepEqual(
+    decodeRequestFrame({
+      requestId: 'request-1',
+      operation: 'plan.control',
+      input: {
+        kind: 'approve_proposal',
+        sessionId: 'session-1',
+        proposalId: 'proposal-1',
+        expectedRevision: 1,
+        expectedStoreVersion: 1,
+        operationId: 'approve-1',
+      },
+    }),
+    {
+      requestId: 'request-1',
+      operation: 'plan.control',
+      input: {
+        kind: 'approve_proposal',
+        sessionId: 'session-1',
+        proposalId: 'proposal-1',
+        expectedRevision: 1,
+        expectedStoreVersion: 1,
+        operationId: 'approve-1',
+      },
+    },
+  );
+  assert.deepEqual(
+    decodeResponseFrame({
+      requestId: 'request-1',
+      operation: 'plan.control',
+      ok: true,
+      result: {
+        sessionId: 'session-1',
+        storeVersion: 2,
+        eventType: 'plan_approved',
+        proposalId: 'proposal-1',
+        executionId: 'execution-1',
+      },
+    }),
+    {
+      requestId: 'request-1',
+      operation: 'plan.control',
+      ok: true,
+      result: {
+        sessionId: 'session-1',
+        storeVersion: 2,
+        eventType: 'plan_approved',
+        proposalId: 'proposal-1',
+        executionId: 'execution-1',
+      },
+    },
+  );
+  assert.throws(() =>
+    HOST_OPERATION_SPECS['plan.control'].assertOutputForInput?.(
+      {
+        kind: 'approve_proposal',
+        sessionId: 'session-1',
+        proposalId: 'proposal-1',
+        expectedRevision: 1,
+        expectedStoreVersion: 1,
+        operationId: 'approve-1',
+      },
+      {
+        sessionId: 'session-1',
+        storeVersion: 2,
+        eventType: 'plan_approved',
+        proposalId: 'proposal-1',
+        executionId: null,
+      },
+    ),
+  );
+});
+
+test('Plan pages reject open shapes, oversized pages, and malformed nested state', () => {
+  const page = {
+    kind: 'page',
+    sessionId: 'session-1',
+    storeVersion: 1,
+    latestProposalId: 'proposal-1',
+    activeExecutionId: null,
+    items: [{ kind: 'proposal', proposal }],
+    nextCursor: null,
+  };
+  assert.deepEqual(decodePlanQueryResult(page), page);
+  const legacyPage = {
+    ...page,
+    items: [
+      {
+        kind: 'proposal' as const,
+        proposal: { ...proposal, legacyProjection: { truncated: true as const } },
+      },
+    ],
+  };
+  assert.deepEqual(decodePlanQueryResult(legacyPage), legacyPage);
+  assert.throws(() => decodePlanQueryResult({ ...page, extra: true }));
+  assert.throws(() =>
+    decodePlanQueryResult({
+      ...page,
+      items: Array.from({ length: PLAN_PAGE_MAX_ITEMS + 1 }, () => ({
+        kind: 'proposal',
+        proposal,
+      })),
+    }),
+  );
+  assert.throws(() =>
+    decodePlanQueryResult({
+      ...page,
+      items: [{ kind: 'proposal', proposal: { ...proposal, unknown: true } }],
+    }),
+  );
+  assert.throws(() =>
+    decodePlanQueryResult({
+      ...page,
+      items: [
+        {
+          kind: 'proposal',
+          proposal: { ...proposal, legacyProjection: { truncated: false } },
+        },
+      ],
+    }),
+  );
+  assert.throws(() =>
+    decodePlanQueryResult({
+      ...page,
+      items: [
+        {
+          kind: 'proposal',
+          proposal: {
+            ...proposal,
+            steps: [{ ...proposal.steps[0], id: 'step one' }],
+          },
+        },
+      ],
+    }),
+  );
+  assert.throws(() =>
+    decodeRequestFrame({
+      requestId: 'request-2',
+      operation: 'plan.control',
+      input: {
+        kind: 'resume_execution',
+        sessionId: 'session-1',
+        executionId: 'execution-1',
+      },
+    }),
+  );
+});

@@ -2596,6 +2596,7 @@ export class RootTurnCoordinator {
         startSettled.resolve();
       }
       this.observeGoalOutcome(active, goalOutcomeFromSnapshot(snapshot));
+      await this.interruptPlanAfterUnsuccessfulTurn(input.sessionId, active, snapshot.status);
       terminalTransitionStarted = true;
       await this.completeTerminalTransition(input.sessionId, active);
     } catch (error) {
@@ -2615,6 +2616,7 @@ export class RootTurnCoordinator {
               executionAuditFailure = auditFailure;
             }
             this.observeGoalOutcome(active, goalOutcomeFromSnapshot(snapshot));
+            await this.interruptPlanAfterUnsuccessfulTurn(input.sessionId, active, snapshot.status);
             terminalTransitionStarted = true;
             await this.completeTerminalTransition(input.sessionId, active);
             containedRunFailure =
@@ -2672,6 +2674,21 @@ export class RootTurnCoordinator {
     if (active.observedGoalOutcome) return;
     active.observedGoalOutcome = outcome;
     if (active.observedGoalSettler) void active.observedGoalSettler(outcome);
+  }
+
+  private async interruptPlanAfterUnsuccessfulTurn(
+    sessionId: string,
+    active: ActiveRootTurn,
+    status: string,
+  ): Promise<void> {
+    if (status === 'completed' || !this.manager.hasPlanAuthority()) return;
+    await this.manager.interruptActivePlanExecution(
+      sessionId,
+      status === 'cancelled'
+        ? 'Plan execution was interrupted because the Runtime root Turn was cancelled.'
+        : 'Plan execution was interrupted because the Runtime root Turn failed.',
+      `plan_interrupt_${active.runId}`,
+    );
   }
 
   private completeTerminalTransition(sessionId: string, active: ActiveRootTurn): Promise<void> {

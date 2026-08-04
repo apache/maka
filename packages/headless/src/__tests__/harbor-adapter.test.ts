@@ -709,6 +709,19 @@ describe('Harbor adapter contract', () => {
     assert.match(result.stdout, /claude-code adapter ok/);
   });
 
+  test('reasonix_agent.py keeps the proxy token out of its config and command line', (t: TestContext) => {
+    const result = spawnSync('python3', ['-c', pythonReasonixAdapterSmokeScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /reasonix adapter ok/);
+  });
+
   test('Codex DeepSeek catalog pins the official Flash model contract', async () => {
     const catalog = JSON.parse(
       await readFile(
@@ -4086,6 +4099,316 @@ with tempfile.TemporaryDirectory() as pier_tmp:
     assert pier_cell["steps"] == 1, pier_cell
 
 print("kimi-code adapter ok")
+`;
+}
+
+function pythonReasonixAdapterSmokeScript(root: string): string {
+  return String.raw`
+import asyncio
+import json
+import sys
+import tempfile
+import types
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+
+def module(name):
+    mod = types.ModuleType(name)
+    sys.modules[name] = mod
+    return mod
+
+module("harbor")
+module("harbor.agents")
+module("harbor.agents.installed")
+base_mod = module("harbor.agents.installed.base")
+
+def with_prompt_template(fn):
+    async def wrapper(self, instruction, *args, **kwargs):
+        return await fn(self, self.render_instruction(instruction), *args, **kwargs)
+    return wrapper
+
+class BaseInstalledAgent:
+    def __init__(self, logs_dir, prompt_template_path=None, version=None, extra_env=None, model_name=None, **kwargs):
+        self.logs_dir = Path(logs_dir)
+        self._prompt_template_path = Path(prompt_template_path) if prompt_template_path else None
+        self._extra_env = extra_env or {}
+        self._version = version
+        self.model_name = model_name
+        self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
+
+    def _get_env(self, key):
+        return self._extra_env.get(key)
+
+    def render_instruction(self, instruction):
+        if not self._prompt_template_path:
+            return instruction
+        return self._prompt_template_path.read_text(encoding="utf-8").replace("{{ instruction }}", instruction)
+
+    async def exec_as_agent(self, environment, command, env=None, **kwargs):
+        return await environment.exec(command, env=env or {}, **kwargs)
+
+base_mod.BaseInstalledAgent = BaseInstalledAgent
+base_mod.with_prompt_template = with_prompt_template
+
+module("harbor.environments")
+env_mod = module("harbor.environments.base")
+env_mod.BaseEnvironment = object
+module("harbor.models")
+module("harbor.models.agent")
+context_mod = module("harbor.models.agent.context")
+context_mod.AgentContext = object
+
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+from reasonix_agent import MakaReasonixAgent, _classify_failure as _classify_from_harbor_text
+
+PROXY_TOKEN = "ephemeral-proxy-token"
+
+def stream(*lines):
+    return "\n".join(json.dumps(line) for line in lines) + "\n"
+
+RESULT = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "duration_ms": 1234,
+    "num_turns": 3,
+    "result": "done",
+    "session_id": "session-1",
+    "total_cost": 0.5,
+    "currency": "CNY",
+    "usage": {"input_tokens": 10, "output_tokens": 20},
+}
+
+STREAM = stream(
+    {"kind": "turn_started"},
+    {"kind": "tool_dispatch", "tool": {"name": "bash", "args": "ls"}},
+    {"kind": "tool_result", "tool": {"name": "bash", "output": "ok"}},
+    {"kind": "tool_dispatch", "tool": {"name": "bash", "args": "pwd"}},
+    {"kind": "tool_dispatch", "tool": {"name": "edit", "args": "main.go"}},
+    {"kind": "turn_done", "outcome": "ok"},
+    RESULT,
+)
+
+with tempfile.TemporaryDirectory() as tmp:
+    logs = Path(tmp)
+    template = logs / "prompt.j2"
+    template.write_text("templated: {{ instruction }}", encoding="utf-8")
+    commands = []
+
+    class Environment:
+        def __init__(self):
+            self.downloads = []
+
+        async def exec(self, command, env=None, **kwargs):
+            commands.append((command, env or {}))
+            if "--output-format stream-json" in command:
+                identity = logs / "maka-cell-execution-identity.json"
+                assert identity.exists(), "execution identity must be durable before sampling"
+                (logs / "reasonix.jsonl").write_text(STREAM, encoding="utf-8")
+            return types.SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def download_file(self, remote, local):
+            self.downloads.append(remote)
+
+    agent = MakaReasonixAgent(
+        logs,
+        prompt_template_path=template,
+        version="1.19.4",
+        model_name="deepseek-v4-flash",
+        extra_env={
+            "MAKA_REASONIX_TOOLCHAIN_FINGERPRINT": "sha256:" + "a" * 64,
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": PROXY_TOKEN,
+            "MAKA_MODEL": "deepseek-v4-flash",
+            "MAKA_LLM_CONNECTION_SLUG": "deepseek",
+            "MAKA_REASONING_EFFORT": "max",
+            "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_TRIAL_PRICING_SOURCE": "deepseek-official",
+        },
+    )
+    environment = Environment()
+    asyncio.run(agent.install(environment))
+    install_command, install_env = commands[0]
+    assert "sha256sum --check" in install_command, install_command
+    assert "/opt/maka-reasonix-toolchain/bin/node" in install_command, install_command
+    assert install_env["MAKA_EXPECTED_TOOLCHAIN_FINGERPRINT"] == "sha256:" + "a" * 64, install_env
+
+    asyncio.run(agent.run("hi", environment, object()))
+    # Harbor mounted path: the stream-json already landed host-side, so the
+    # adapter must not race the mount with a re-download.
+    assert environment.downloads == [], environment.downloads
+    run_command, run_env = commands[-1]
+    assert "/opt/maka-reasonix-toolchain/bin/reasonix run --auto" in run_command, run_command
+    assert "--model maka-proxy/deepseek-v4-flash" in run_command, run_command
+    assert "--effort max" in run_command, run_command
+    assert "--output-format stream-json" in run_command, run_command
+    assert "--events-jsonl" not in run_command, run_command
+    assert "templated: hi" in run_command, run_command
+    # The provider route lives in an isolated Reasonix home, never in the task
+    # workspace where the agent under test could read or rewrite it.
+    assert "/tmp/maka-reasonix/config.toml" in run_command, run_command
+    assert "reasonix.toml" not in run_command, run_command
+    assert 'api_key_env = "MAKA_REASONIX_PROXY_TOKEN"' in run_command, run_command
+    assert 'base_url = "http://host.docker.internal:43210"' in run_command, run_command
+    # Reasonix's default bash = "enforce" refuses to run bash at all when no OS
+    # sandbox is present, and Terminal-Bench images have no bubblewrap. Without
+    # this the arm silently loses its shell and can only write scripts it cannot
+    # run, which measures the image rather than the agent.
+    assert "[sandbox]" in run_command, run_command
+    assert 'bash = "off"' in run_command, run_command
+    # Reasonix resolves api_key_env from its own credential store rather than
+    # the process environment, so the token has to reach $REASONIX_HOME/.env.
+    # It must get there by shell expansion of the env var, never by
+    # interpolating the value into the command.
+    assert "/tmp/maka-reasonix/.env" in run_command, run_command
+    assert '"$MAKA_REASONIX_PROXY_TOKEN"' in run_command, run_command
+    # umask must precede every write so the credential file is never even
+    # momentarily group- or world-readable.
+    assert run_command.index("umask 077") < run_command.index("/tmp/maka-reasonix/.env"), run_command
+    # Secret boundary: the token value never appears in the command line (and so
+    # never in the process table or Harbor's command logs) nor in the config.
+    assert PROXY_TOKEN not in run_command, run_command
+    assert PROXY_TOKEN not in agent._config_toml(), agent._config_toml()
+    assert run_env["MAKA_REASONIX_PROXY_TOKEN"] == PROXY_TOKEN, run_env
+    assert run_env["REASONIX_HOME"] == "/tmp/maka-reasonix", run_env
+    # The credential file lives in the isolated home, never the task workspace.
+    assert "/tmp/maka-reasonix/" in run_command, run_command
+
+    agent.populate_context_post_run(object())
+    cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert cell["status"] == "completed", cell
+    assert cell["executionIdentity"]["model"] == "deepseek-v4-flash", cell
+    assert cell["executionIdentity"]["reasoningEffort"] == "max", cell
+    assert cell["executionIdentity"]["agentTools"] is False, cell
+    assert cell["runtimeRefs"]["sessionId"] == "session-1", cell
+    assert cell["steps"] == 3, cell
+    # tool_result and tool_progress echo a dispatched call and must not inflate
+    # the count that the report compares across arms.
+    assert cell["toolSummary"]["actualToolCallCounts"] == {"bash": 2, "edit": 1}, cell
+    assert cell["toolSummary"]["actualToolCalls"] == 3, cell
+    assert "tokenSummary" not in cell, cell
+
+    def assert_invalid_stream(raw, expected):
+        (logs / "reasonix.jsonl").write_text(raw, encoding="utf-8")
+        try:
+            agent.populate_context_post_run(object())
+        except ValueError as error:
+            assert expected in str(error), error
+        else:
+            raise AssertionError(f"invalid stream was accepted: {raw!r}")
+
+    assert_invalid_stream("", "result object")
+    assert_invalid_stream("{not-json}\n", "valid JSON")
+    assert_invalid_stream("[]\n", "JSON object")
+    assert_invalid_stream(stream({"kind": "turn_done"}), "result object")
+
+    # Reasonix binds its verdict to its exit code: error_during_execution always
+    # exits 1 (internal/cli/run_completion.go), so the real failure path always
+    # arrives with run() having raised. The stream's verdict must still win, or
+    # every genuine agent failure is classified infra_failed, drops out of the
+    # scored denominator, and silently biases the comparison toward Reasonix.
+    failing = dict(RESULT, is_error=True, subtype="error_during_execution",
+                   result="the model gave up after 40 turns")
+    (logs / "reasonix.jsonl").write_text(stream(failing), encoding="utf-8")
+    agent._failure_class = "infra_failed"
+    agent.populate_context_post_run(object())
+    self_reported = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert self_reported["status"] == "failed", self_reported
+    assert self_reported["errorClass"] == "runtime_error", self_reported
+
+    # Harbor's exception text embeds the whole command line, hence the task
+    # instruction; a task about network sockets must not be misread as an
+    # infrastructure fault when Reasonix itself said the agent failed.
+    del agent._failure_class
+    agent._failure_class = _classify_from_harbor_text(
+        "Command failed (exit 1): reasonix run ... 'debug the socket connection timeout'"
+    )
+    assert agent._failure_class == "network", agent._failure_class
+    agent.populate_context_post_run(object())
+    noisy = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert noisy["errorClass"] == "runtime_error", noisy
+
+    # An unknown future subtype must fail safe toward the scored class rather
+    # than silently shrinking the denominator.
+    unknown = dict(RESULT, is_error=True, subtype="some_future_subtype", result="")
+    (logs / "reasonix.jsonl").write_text(stream(unknown), encoding="utf-8")
+    agent.populate_context_post_run(object())
+    assert json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))["errorClass"] == "runtime_error"
+
+    # A run that wrote a terminal result reached the model and burned tokens, so
+    # it stays a scored agent outcome however the message reads. Re-scanning that
+    # prose for infrastructure markers would reintroduce the very coincidence the
+    # override exists to defeat: a task about sockets, or a model that narrates
+    # "the connection kept dropping", would drop the cell out of the denominator.
+    # Over-counting an agent loss is the honest direction; shrinking the
+    # denominator is not.
+    for message in [
+        "provider returned 401 unauthorized",
+        "429 rate limit exceeded",
+        "upstream 503 unavailable",
+        "the connection to the test service kept dropping",
+    ]:
+        (logs / "reasonix.jsonl").write_text(
+            stream(dict(RESULT, is_error=True, subtype="error_during_execution", result=message)),
+            encoding="utf-8",
+        )
+        agent.populate_context_post_run(object())
+        cell_out = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+        assert cell_out["errorClass"] == "runtime_error", (message, cell_out)
+
+    # The marker scan survives for the one path that has no verdict to trust:
+    # a run that died before writing a terminal result.
+    assert _classify_from_harbor_text("provider returned 401 unauthorized") == "auth"
+    assert _classify_from_harbor_text("boom") == "infra_failed"
+
+    # With no stream at all there is no verdict to trust, so the exception-derived
+    # class stands.
+    agent._failure_class = "auth"
+    (logs / "reasonix.jsonl").write_text("", encoding="utf-8")
+    agent.populate_context_post_run(object())
+    failed = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert failed["status"] == "failed", failed
+    assert failed["errorClass"] == "auth", failed
+
+# Unmounted-log-dir path: when the executor does not bind-mount the agent log
+# dir, the CLI's stream-json exists only in the container. The adapter must
+# download it itself, or _events(require_result=True) raises and a real
+# token-burning run is misclassified as infra.
+with tempfile.TemporaryDirectory() as pier_tmp:
+    pier_logs = Path(pier_tmp)
+
+    class UnmountedLogsEnvironment:
+        def __init__(self):
+            self.downloads = []
+
+        async def exec(self, command, env=None, **kwargs):
+            return types.SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def download_file(self, remote, local):
+            self.downloads.append(remote)
+            Path(local).write_text(stream(RESULT), encoding="utf-8")
+
+    pier_agent = MakaReasonixAgent(
+        pier_logs,
+        version="1.19.4",
+        model_name="deepseek-v4-flash",
+        extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": PROXY_TOKEN,
+            "MAKA_MODEL": "deepseek-v4-flash",
+            "MAKA_SYSTEM_PROMPT": "",
+        },
+    )
+    pier_environment = UnmountedLogsEnvironment()
+    asyncio.run(pier_agent.run("hi", pier_environment, object()))
+    assert "/logs/agent/reasonix.jsonl" in pier_environment.downloads, pier_environment.downloads
+    pier_agent.populate_context_post_run(object())
+    pier_cell = json.loads((pier_logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert pier_cell["status"] == "completed", pier_cell
+    assert pier_cell["steps"] == 3, pier_cell
+
+print("reasonix adapter ok")
 `;
 }
 

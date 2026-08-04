@@ -98,8 +98,8 @@ test('harness A/B uses one safe execution default and accepts per-run overrides'
     armExecution: 'sequential',
   });
   assert.throws(
-    () => resolveHarnessAbExecutionPolicy('5', undefined, 30),
-    /MAKA_HARNESS_AB_PAIR_CONCURRENCY must be an integer between 1 and 4/,
+    () => resolveHarnessAbExecutionPolicy('17', undefined, 30),
+    /MAKA_HARNESS_AB_PAIR_CONCURRENCY must be an integer between 1 and 16/,
   );
   assert.throws(
     () => resolveHarnessAbExecutionPolicy(undefined, 'together', 30),
@@ -283,10 +283,6 @@ test('harness A/B records its configured execution policy in the manifest', asyn
   assert.equal(selection.limit, 89);
   assert.equal(manifest.maxConcurrency, 2);
   assert.equal(manifest.maxConcurrentAttempts, 4);
-  assert.throws(
-    () => resolveHarnessAbExecutionPolicy('5', undefined, selection.taskIds.length),
-    /MAKA_HARNESS_AB_PAIR_CONCURRENCY must be an integer between 1 and 4/,
-  );
 });
 
 test('harness Oracle environment selects the linux/amd64 image manifest digest', async () => {
@@ -782,6 +778,58 @@ test('harness composition preserves historical manifest fingerprints', async () 
     });
     assert.equal(manifest.fingerprint, expected.fingerprint, expected.name);
   }
+});
+
+test('Reasonix comparison freezes the DeepSeek runtime, toolchain, and run identity', async () => {
+  const {
+    buildHarnessAbManifest,
+    buildHarnessExecutionProfile,
+    resolveHarnessAbRunId,
+    resolveHarnessComposition,
+    resolveHarnessCompetitorToolchain,
+    resolveHarnessCompetitorToolchainPath,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const composition = resolveHarnessComposition({ competitor: 'reasonix' });
+  const { competitorProfile, runtimeProfile } = composition;
+  // The competitor axis alone selects the DeepSeek runtime; both arms then
+  // share one model, effort, pricing source, and execution policy.
+  assert.equal(runtimeProfile.id, 'deepseek-v4-flash-max');
+  const manifest = buildHarnessAbManifest({
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition,
+  });
+  assert.deepEqual(manifest.metadata.model, {
+    provider: 'deepseek',
+    id: 'deepseek-v4-flash',
+    reasoningEffort: 'max',
+  });
+  assert.equal(manifest.arms[0].id, 'maka');
+  assert.equal(manifest.arms[1].id, 'reasonix');
+  assert.equal(manifest.arms[1].metadata.config.adapter, 'reasonix_agent:MakaReasonixAgent');
+  assert.equal(manifest.arms[1].metadata.config.billingMode, 'metered');
+  assert.equal(manifest.metadata.pricing.source, runtimeProfile.pricing.source);
+  assert.equal(
+    resolveHarnessAbRunId(composition),
+    'deepseek-v4-flash-maka-vs-reasonix-tbench-2.1-full-v1',
+  );
+  assert.match(
+    resolveHarnessCompetitorToolchainPath('/run', competitorProfile),
+    new RegExp(
+      `reasonix-1\\.19\\.4-${competitorProfile.toolchainFingerprint.slice(7, 19)}-linux-x64$`,
+    ),
+  );
+  const toolchain = resolveHarnessCompetitorToolchain('/run', competitorProfile, {
+    MAKA_HARNESS_AB_REASONIX_TOOLCHAIN: '/prepared/reasonix',
+  });
+  assert.equal(toolchain.path, '/prepared/reasonix');
+  assert.equal(toolchain.prepare.name, 'prepareReasonixToolchain');
+  assert.equal(competitorProfile.runnerToolchainOption, 'reasonixToolchainPath');
+  assert.equal(
+    buildHarnessExecutionProfile(runtimeProfile).modelSpec,
+    'deepseek/deepseek-v4-flash',
+  );
 });
 
 test('Codex comparison freezes the OpenAI model, pricing, and run identity', async () => {

@@ -46,7 +46,7 @@ import {
   fireContent,
   HostAutomationFireCoordinator,
 } from './automation-fire-coordinator.js';
-import { runtimeHostSessionUnavailableReason } from './host-session-availability.js';
+import { runtimeHostAutomationSessionUnavailableReason } from './host-session-availability.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 
 type AutomationSessions = Pick<
@@ -464,7 +464,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     return this.#exclusive(async () => {
       this.#assertWritable();
       const header = await this.#readMutableSession(input.sessionId);
-      const unavailableReason = runtimeHostSessionUnavailableReason(header);
+      const unavailableReason = runtimeHostAutomationSessionUnavailableReason(header);
       if (unavailableReason) {
         throw new AutomationMutationFailure('session_unavailable', unavailableReason);
       }
@@ -681,7 +681,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       if (automation.kind === 'cron' && !automation.execution) {
         try {
           const creator = await this.#sessions.readHeaderSnapshot(automation.sessionId);
-          const unavailableReason = runtimeHostSessionUnavailableReason(creator);
+          const unavailableReason = runtimeHostAutomationSessionUnavailableReason(creator);
           if (unavailableReason) {
             automation.status = 'paused';
             automation.nextFireAt = null;

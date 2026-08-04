@@ -75,8 +75,16 @@ test('project rename owns Enter without toggling the project disclosure', async 
   const sidebar = await expandedSidebar(page);
   await sidebar.getByRole('radio', { name: '按项目' }).click();
 
-  const project = sidebar.locator('[data-project-id]').first();
+  // Anchor on the SEEDED project (see LONG_SIDEBAR_PROJECT_* in
+  // seed-helpers): `.first()` used to race the app's async workspace
+  // self-registration — when only the 未归属项目 pseudo-group existed, its
+  // row has no 项目操作 trigger and the click below waited out its timeout.
+  const project = sidebar
+    .locator('[data-project-id]')
+    .filter({ hasText: '示例项目' })
+    .first();
   const projectToggle = project.locator('button[aria-expanded]').first();
+  await expect(project).toBeVisible();
   await expect(projectToggle).toHaveAttribute('aria-expanded', 'true');
   // Capture the disclosure state while the disclosure control is mounted:
   // starting a rename swaps the whole project row for the rename input, so
@@ -95,10 +103,21 @@ test('project rename owns Enter without toggling the project disclosure', async 
   const projectActions = project
     .locator('.maka-project-item-end')
     .getByRole('button', { name: /项目操作$/ });
-  await projectActions.click();
-  await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
+  // focus + Enter, the suite's menu-trigger idiom (plan-reminders.spec's
+  // openFocusedMenu): the trigger nests inside the row's composite
+  // SideNavItem button, and pointer hit-testing on that nesting is
+  // CI-timing sensitive; keyboard activation exercises the same menu.
+  await projectActions.focus();
+  await expect(projectActions).toBeFocused();
+  await page.keyboard.press('Enter');
+  const renameItem = page.getByRole('menuitem', { name: '重命名', exact: true });
+  await expect(renameItem).toBeVisible();
+  await renameItem.click();
 
-  const rename = project.getByRole('textbox', { name: '重命名' });
+  // Sidebar-scoped: starting a rename swaps the row's content for the input,
+  // so the name-filtered `project` locator cannot match while editing (the
+  // name lives in the input's value, which hasText does not read).
+  const rename = sidebar.getByRole('textbox', { name: '重命名' });
   await expect(rename).toBeFocused();
   const originalName = await rename.inputValue();
   await rename.press('A');

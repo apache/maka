@@ -14,6 +14,7 @@ import {
 } from '@maka/core';
 import {
   buildPersonalizationPromptFragment,
+  buildWorkspaceInstructionsPromptFragment,
   resolveProjectGitInfo,
   buildSessionEnvironmentPromptFragment,
   resolveSkillDiscoveryPaths,
@@ -22,7 +23,6 @@ import {
   type SkillSelectionReport,
 } from '@maka/runtime';
 import { buildSkillsPromptFragmentWithReport } from './skills.js';
-import { buildWorkspaceInstructionsPromptFragment } from './workspace-instructions.js';
 import type { LocalMemoryPromptUpdate, LocalMemoryService } from './local-memory-service.js';
 
 interface SystemPromptSettingsStore {

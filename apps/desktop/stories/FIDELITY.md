@@ -44,7 +44,7 @@ If the runtime computes a field, ask the runtime for it. A story that hardcodes 
 
 ## A `play` function is a step, not a test report
 
-A `play` that throws — including from an assertion — fails the smoke run and CI: `scripts/storybook-visual-smoke.mjs` subscribes to `playFunctionThrewException` and `unhandledErrorsWhilePlaying`, and the throw also surfaces as a console error it collects. What `play` cannot do is *report*: there is no test addon, so a run tells you the story broke, not which assertion, in what state, or against what expectation. It is also the slowest place to put a check, because reaching it means building and serving Storybook.
+A `play` that throws — including from an assertion — fails the smoke run and CI: `scripts/storybook-visual-smoke.mjs` subscribes to `playFunctionThrewException` and `unhandledErrorsWhilePlaying`, and the throw also surfaces as a console error it collects. That failure path only exists while plays actually run, so the harness carries its own proof: `harness-play-contract.stories.tsx` flips a DOM marker from `play`, and the manifest's `play-executed` check fails the run if autoplay ever stops (#1981). What `play` cannot do is *report*: there is no test addon, so a run tells you the story broke, not which assertion, in what state, or against what expectation. It is also the slowest place to put a check, because reaching it means building and serving Storybook.
 
 So put behavioural and computed-style contracts where they can name what they check — a `packages/ui` test, an e2e journey, or the smoke script's `checks` — and use `play` for what it is good at: driving a story into the state it claims to render.
 

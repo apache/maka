@@ -20,6 +20,7 @@ import {
   type HarborRunResult,
 } from '../harbor-task-runner.js';
 import {
+  harnessAgentImportPath,
   providerProxyClientAuthMode,
   providerProxyClientBaseUrl,
   providerProxyUpstreamAuthMode,
@@ -31,6 +32,7 @@ import {
   CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
   CLAUDE_CODE_TOOLCHAIN_SPEC,
 } from '../claude-code-toolchain.js';
+import { REASONIX_TOOLCHAIN_FINGERPRINT, REASONIX_TOOLCHAIN_SPEC } from '../reasonix-toolchain.js';
 
 function cellOutput(overrides: Partial<HarborCellOutput> = {}): HarborCellOutput {
   return {
@@ -104,6 +106,16 @@ test('DeepSeek routes each CLI through its native wire protocol', () => {
     providerProxyClientBaseUrl('https://proxy.invalid/lease', 'claude-code', 'deepseek'),
     'https://proxy.invalid/lease/anthropic',
   );
+  // Reasonix speaks DeepSeek's OpenAI-compatible wire natively, so it needs no
+  // agent-specific auth, usage, or base-URL branch — only the registry entry.
+  assert.equal(providerProxyUsageProtocol('reasonix', 'deepseek'), 'openai-chat-sse');
+  assert.equal(providerProxyClientAuthMode('reasonix', 'deepseek'), 'bearer');
+  assert.equal(providerProxyUpstreamAuthMode('reasonix', 'deepseek'), 'bearer');
+  assert.equal(
+    providerProxyClientBaseUrl('https://proxy.invalid/lease', 'reasonix', 'deepseek'),
+    'https://proxy.invalid/lease',
+  );
+  assert.equal(harnessAgentImportPath('reasonix'), 'reasonix_agent:MakaReasonixAgent');
 });
 
 interface FakeOptions {
@@ -2434,6 +2446,70 @@ describe('buildHarborJobConfig', () => {
     );
     assert.equal(env.KIMI_API_KEY, undefined);
     assert.equal(env.ANTHROPIC_API_KEY, undefined);
+  });
+
+  test('pins the Reasonix adapter and official toolchain without serializing credentials', () => {
+    const config = buildHarborJobConfig(runInput(), {
+      makaRepoPath: '/repo',
+      jobsDir: '/jobs/x',
+      jobName: 'trial',
+      agent: 'reasonix',
+      model: 'deepseek/deepseek-v4-flash',
+      provider: 'deepseek',
+      reasoningEffort: 'max',
+      agentVersion: REASONIX_TOOLCHAIN_SPEC.reasonix.version,
+      reasonixToolchainPath: '/cache/reasonix-1.19.4-linux-x64',
+      dockerPlatform: 'linux/amd64',
+    });
+    const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
+    const env = agent.env as Record<string, string>;
+    const mounts = (config.environment as { mounts: Array<Record<string, unknown>> }).mounts;
+
+    assert.equal(agent.import_path, 'reasonix_agent:MakaReasonixAgent');
+    assert.equal(agent.model_name, 'deepseek-v4-flash');
+    assert.deepEqual(agent.kwargs, { version: REASONIX_TOOLCHAIN_SPEC.reasonix.version });
+    assert.equal(env.MAKA_REASONIX_TOOLCHAIN_FINGERPRINT, REASONIX_TOOLCHAIN_FINGERPRINT);
+    assert.equal(env.MAKA_REASONING_EFFORT, 'max');
+    assert.ok(
+      mounts.some(
+        (mount) =>
+          mount.source === '/cache/reasonix-1.19.4-linux-x64' &&
+          mount.target === '/opt/maka-reasonix-toolchain' &&
+          mount.read_only === true,
+      ),
+    );
+    assert.equal(env.DEEPSEEK_API_KEY, undefined);
+    assert.equal(env.MAKA_REASONIX_PROXY_TOKEN, undefined);
+  });
+
+  test('refuses a Reasonix arm whose adapter version drifts from the pinned toolchain', () => {
+    assert.throws(
+      () =>
+        buildHarborJobConfig(runInput(), {
+          makaRepoPath: '/repo',
+          jobsDir: '/jobs/x',
+          jobName: 'trial',
+          agent: 'reasonix',
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          agentVersion: '1.19.3',
+          reasonixToolchainPath: '/cache/reasonix-1.19.4-linux-x64',
+        }),
+      /Reasonix adapter version must match toolchain version 1\.19\.4/,
+    );
+    assert.throws(
+      () =>
+        buildHarborJobConfig(runInput(), {
+          makaRepoPath: '/repo',
+          jobsDir: '/jobs/x',
+          jobName: 'trial',
+          agent: 'reasonix',
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          agentVersion: REASONIX_TOOLCHAIN_SPEC.reasonix.version,
+        }),
+      /reasonixToolchainPath is required for the Reasonix adapter/,
+    );
   });
 
   test('pins the Codex adapter and toolchain behind the host provider proxy', () => {

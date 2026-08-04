@@ -325,7 +325,7 @@ export const MAKA_AHE_CURRENT_COMPONENTS: readonly MakaAheTargetComponent[] = [
     sourceRefs: [
       { path: 'apps/desktop/src/main/system-prompt-main.ts' },
       { path: 'packages/runtime/src/system-prompt/session-environment-prompt.ts' },
-      { path: 'apps/desktop/src/main/workspace-instructions.ts' },
+      { path: 'packages/runtime/src/system-prompt/workspace-instructions.ts' },
     ],
   },
   {

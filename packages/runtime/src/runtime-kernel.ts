@@ -2290,7 +2290,26 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await this.appendStopProjection(sessionId, operation.abortNote);
       operation.abortNoteProjected = true;
     }
+    // The Session projection above now reads as aborted. The ledger has to say
+    // the same thing before this stop reports success: a Run left non-terminal
+    // here stays that way, because the stream that would have finalized it is
+    // exactly the one the stop could not wake.
+    //
+    // Embedded owners only. A Hosted Run's terminal fact belongs to the Host's
+    // own terminal authority (#1359, #1996), which also parks provider-
+    // indeterminate Runs a stop must not resolve on its behalf.
     for (const target of stoppedRuns.values()) {
+      if (!this.deps.interactionAuthority) {
+        try {
+          await target.run?.settleStopTerminal();
+        } catch (error) {
+          // Leave the target unfinished so the operation stays pending and a
+          // retried stop settles it again, the same way a failed projection
+          // write is retried above.
+          failures.add(error);
+          continue;
+        }
+      }
       target.run?.completeStop();
       target.stopCompleted = true;
     }

@@ -83,9 +83,6 @@ export function registerDailyReviewIpc(deps: DailyReviewIpcDeps): void {
   ipcMain.handle('daily-review:get', (_event, archiveId: string) =>
     deps.dailyReviewArchiveStore.getArchive(archiveId),
   );
-  ipcMain.handle('daily-review:delete', async (_event, archiveId: string) => {
-    await deps.dailyReviewArchiveStore.deleteArchive(archiveId);
-  });
   ipcMain.handle(
     'daily-review:saveMarkdownToFile',
     (_event, input: { markdown?: unknown; defaultName?: unknown } | undefined) =>

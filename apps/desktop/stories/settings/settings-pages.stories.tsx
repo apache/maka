@@ -311,19 +311,6 @@ function makeMemoryBridgeChannels(state: LocalMemoryState) {
       openLatestBackup: async () => ({ ok: true as const }),
       openBackup: async () => ({ ok: true as const }),
     },
-    workspaceInstructions: {
-      getState: async () => ({
-        files: [
-          { file: 'AGENTS.md', status: 'available', chars: 1_820, truncated: false },
-          { file: 'CLAUDE.md', status: 'missing', chars: 0, truncated: false },
-        ],
-        detectedCount: 1,
-        fileCharLimit: 20_000,
-        promptCharLimit: 8_000,
-      }),
-      openFile: async () => ({ ok: true as const }),
-      createFile: async () => ({ ok: true as const }),
-    },
   };
 }
 

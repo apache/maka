@@ -95,6 +95,7 @@ export type {
   CreateSqlitePlanStoreOptions,
   SqlitePlanStore,
 } from './plan-store.js';
+export * from './plan-authority.js';
 export { createSqliteTaskLedgerStore } from './task-ledger-store.js';
 export type {
   ConversationTaskLedgerCopyInput,

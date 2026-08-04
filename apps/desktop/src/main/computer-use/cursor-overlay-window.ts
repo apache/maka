@@ -18,10 +18,10 @@
  * inject a fake window factory + bounds resolver.
  */
 import { createRequire } from 'node:module';
-import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
 import type { CuPresentationFence } from '@maka/runtime';
+import { resolveOverlayAssetDir } from '../overlay-assets.js';
 import { cursorPresentationReadyDeadlineMs } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
 
 const requireElectron = createRequire(import.meta.url);
@@ -173,28 +173,14 @@ export function cursorOverlayWindowOptions(bounds: Rectangle, preloadPath: strin
   };
 }
 
-function defaultOverlayDistDir(): string {
-  // Robust to BOTH layouts: prod tsc compiles this to dist/main/computer-use/*.js,
-  // while `npm run dev` esbuild-bundles it into dist/main/main.js — either way the
-  // overlay lives at <dist>/overlay. Walk up to the 'dist' root and join 'overlay'.
-  const start = dirname(fileURLToPath(import.meta.url));
-  let dir = start;
-  for (let i = 0; i < 6; i++) {
-    if (basename(dir) === 'dist') return join(dir, 'overlay');
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return join(start, '..', '..', 'overlay'); // fallback: assume dist/main/computer-use
-}
-
 export function createCursorOverlayController(
   deps: CreateCursorOverlayControllerDeps = {},
 ): CursorOverlayController {
   const createOverlayWindow = deps.createOverlayWindow ?? defaultCreateOverlayWindow;
   const resolveOverlayBounds = deps.resolveOverlayBounds ?? defaultResolveOverlayBounds;
-  const preloadPath = deps.preloadPath ?? join(defaultOverlayDistDir(), 'cursor-overlay-preload.cjs');
-  const htmlPath = deps.htmlPath ?? join(defaultOverlayDistDir(), 'cursor-overlay.html');
+  const overlayAssetDir = resolveOverlayAssetDir(import.meta.url);
+  const preloadPath = deps.preloadPath ?? join(overlayAssetDir, 'cursor-overlay-preload.cjs');
+  const htmlPath = deps.htmlPath ?? join(overlayAssetDir, 'cursor-overlay.html');
   const subscribeDisplayChanges = deps.subscribeDisplayChanges
     ?? defaultSubscribeDisplayChanges;
 

@@ -251,7 +251,7 @@ export interface PierRunResult {
 
 export type PierProcessRunner = (request: PierRunRequest) => Promise<PierRunResult>;
 
-export type PierAgent = Exclude<HarnessAgentId, 'claude-code'>;
+export type PierAgent = Exclude<HarnessAgentId, 'claude-code' | 'reasonix'>;
 
 interface PierProviderRuntime {
   /** Proxy-minted secret env delivered via `--env-file` (kept off argv). */

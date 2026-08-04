@@ -159,4 +159,23 @@ describe('inspector panel model', () => {
     assert.equal(deriveInspectorPanelModel(trace()).empty, true);
     assert.equal(deriveInspectorPanelModel(undefined).empty, true);
   });
+
+  it('a session whose every record is unreadable is a gap, not an empty session', () => {
+    // "Nothing to trace" and "N records nobody could read" are opposite claims;
+    // rendering both is how unreadable spend hides in plain sight.
+    const model = deriveInspectorPanelModel(
+      trace({
+        coverage: {
+          modelCalls: 'partial',
+          turnsMissingModelCalls: [],
+          turnsWithFewerModelCallsThanSteps: [],
+          unreadableRecords: 3,
+        },
+      }),
+    );
+
+    assert.equal(model.turns.length, 0);
+    assert.equal(model.empty, false, 'a reported gap is never an empty session');
+    assert.equal(model.coverage?.unreadableRecords, 3);
+  });
 });

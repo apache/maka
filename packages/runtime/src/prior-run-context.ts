@@ -60,10 +60,9 @@ export async function buildPriorRuntimeContext(
   for (let runIndex = 0; runIndex < priorRuns.length; runIndex += 1) {
     const run = priorRuns[runIndex]!;
     if (!isTerminalRunStatus(run.status)) {
-      const terminalFactContext = await readNonTerminalPriorRunWithTerminalFact(input, run);
-      if (!terminalFactContext) continue;
-      priorRuns[runIndex] = terminalFactContext.run;
-      appendEvents(ordered, terminalFactContext.events, runIndex, input);
+      const nonTerminal = await readNonTerminalPriorRun(input, run);
+      if (nonTerminal.run) priorRuns[runIndex] = nonTerminal.run;
+      appendEvents(ordered, nonTerminal.events, runIndex, input);
       continue;
     }
     let events = await input.runtimeEventStore.readRuntimeEvents(input.sessionId, run.runId);
@@ -194,18 +193,29 @@ async function loadRequiredChildResumeContext(
   return { events, run: effectiveRunHeaderFromTerminalFact(run, terminalFact) };
 }
 
-async function readNonTerminalPriorRunWithTerminalFact(
+/**
+ * A prior run whose header never reached a terminal status: it was stopped
+ * while parked on an interaction, or the process died mid-turn. Its turn is
+ * still conversation the model must see, so the ledger it does have is
+ * replayed either way. Dropping the run instead would delete a whole turn —
+ * the user message included — from every later turn's context, silently and
+ * for good, because the header never becomes terminal on its own.
+ */
+async function readNonTerminalPriorRun(
   input: BuildPriorRuntimeContextInput,
   run: AgentRunHeader,
-): Promise<PriorRunTerminalFactContext | undefined> {
-  if (!input.runtimeEventStore) return undefined;
+): Promise<{ events: RuntimeEvent[]; run?: AgentRunHeader }> {
+  if (!input.runtimeEventStore) return { events: [] };
+  // No repair attempt here, unlike the terminal branch: `repairRunTerminalFact`
+  // returns false for a non-terminal header before reading anything, so calling
+  // it would be a promise that only ever answers "no".
   const events = await input.runtimeEventStore
     .readRuntimeEvents(input.sessionId, run.runId)
     .catch(() => []);
   const terminalFact = classifyRuntimeEventTerminalFact(run, events).fact;
   return terminalFact
     ? { events, run: effectiveRunHeaderFromTerminalFact(run, terminalFact) }
-    : undefined;
+    : { events };
 }
 
 async function backfillMissingPriorRuntimeEvents(

@@ -16,6 +16,7 @@ import {
   type RuntimeEvent,
 } from '@maka/core';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
+import type { PlanSessionState, PlanStore } from '@maka/core/plan';
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
 import {
   serializeOAuthSubscriptionTokens,
@@ -30,6 +31,7 @@ import {
   type ScannedSkill,
   agentGraphIdForRootSession,
   buildParentAgentTools,
+  SESSION_RECAP_INSTRUCTION,
 } from '@maka/runtime';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -41,21 +43,30 @@ import {
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
-import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import {
+  openInteractiveUsageStoresForWrite,
+  type InteractiveUsageStoresWriter,
+} from '@maka/storage/usage-stores';
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import {
+  createHostGoalEvaluator,
+  createHostSessionEffectModel,
+} from '../server/execution-model-authority.js';
+import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
-  createHostGoalEvaluator,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
+import {
+  HostOAuthExecutionAuthority,
+  OAuthExecutionCredentialError,
+} from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
 
@@ -651,7 +662,11 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     }
 
     const mainRequests = provider.requests.filter((request) => request.body.stream === true);
-    const compactRequests = provider.requests.filter((request) => request.body.stream !== true);
+    const compactRequests = provider.requests.filter(
+      (request) =>
+        request.body.stream !== true &&
+        /context summarization assistant/.test(JSON.stringify(request.body)),
+    );
     assert.equal(mainRequests.length, 5);
     assert.ok(compactRequests.length >= 1);
     const request = mainRequests[0];
@@ -738,16 +753,17 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     );
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
-    const evidence = await waitForProviderEvidence(execution, session.id, provider.requests.length);
-    assert.equal(evidence.captures.length, provider.requests.length);
-    assert.equal(evidence.attempts.length, provider.requests.length);
+    const capturedRequestCount = mainRequests.length + compactRequests.length;
+    const evidence = await waitForProviderEvidence(execution, session.id, capturedRequestCount);
+    assert.equal(evidence.captures.length, capturedRequestCount);
+    assert.equal(evidence.attempts.length, capturedRequestCount);
 
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const artifactPage = await artifacts.listPage(session.id, { offset: 0, limit: 100 });
     const captureArtifacts = artifactPage.records.filter(
       (artifact) => artifact.source === 'provider_request_capture',
     );
-    assert.equal(captureArtifacts.length, provider.requests.length);
+    assert.equal(captureArtifacts.length, capturedRequestCount);
     let summaryCaptureFound = false;
     for (const artifact of captureArtifacts) {
       const read = await artifacts.readTextInSession(session.id, artifact.id);
@@ -1522,6 +1538,243 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
     assert.equal(recorded.status, 'success');
     await evaluator.close();
 
+    const sessionEffects = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('Session effect telemetry must not drain the Host'),
+      newId: () => 'effect-call-1',
+    });
+    assert.equal(
+      await sessionEffects.generateTitle({
+        sessionId: session.id,
+        header: session,
+        sourceText: 'Explain the Runtime Host ownership change',
+        abortSignal: new AbortController().signal,
+      }),
+      '## Goal',
+    );
+    const recap = await sessionEffects.generateRecap({
+      sessionId: session.id,
+      effectId: 'recap-effect-1',
+      header: session,
+      events: [],
+      abortSignal: new AbortController().signal,
+    });
+    assert.equal(recap.ok, true);
+    if (!recap.ok) return;
+    assert.equal(recap.modelId, MODEL_ID);
+    assert.deepEqual(recap.messages, [{ role: 'user', content: SESSION_RECAP_INSTRUCTION }]);
+    assert.equal(recap.raw, SUMMARY_TEXT);
+    const effectLogs = await usage.telemetry.logs({ range: 'all' });
+    assert.ok(
+      effectLogs.rows.some(
+        (row) =>
+          row.callKind === 'session_title' &&
+          row.callId === `session_title_${session.id}_effect-call-1`,
+      ),
+    );
+    assert.ok(
+      effectLogs.rows.some(
+        (row) =>
+          row.callKind === 'session_recap' &&
+          row.callId === `session_recap_${session.id}_recap-effect-1`,
+      ),
+    );
+
+    assert.deepEqual(
+      await sessionEffects.generateRecap({
+        sessionId: session.id,
+        effectId: 'recap-disabled-model',
+        header: { ...session, model: 'disabled-model' },
+        events: [],
+        abortSignal: new AbortController().signal,
+      }),
+      {
+        ok: false,
+        errorClass: 'configuration',
+      },
+    );
+
+    let preflightDrainRequests = 0;
+    let preflightTransportCreations = 0;
+    const failingPreflightEffects = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage: {
+        pricing: {
+          snapshot: async () => {
+            throw new Error('injected pricing snapshot failure');
+          },
+        },
+        telemetry: {
+          recordLlmCall: async () =>
+            assert.fail('preflight failure must not record provider usage'),
+        },
+      } as unknown as InteractiveUsageStoresWriter,
+      requestDrain: () => {
+        preflightDrainRequests += 1;
+      },
+      createFetchTransport: () => {
+        preflightTransportCreations += 1;
+        throw new Error('preflight failure must not create a provider transport');
+      },
+    });
+    const preflightResult = await failingPreflightEffects.generateRecap({
+      sessionId: session.id,
+      effectId: 'recap-preflight-failure',
+      header: session,
+      events: [],
+      abortSignal: new AbortController().signal,
+    });
+    assert.equal(preflightResult.ok, false);
+    if (!preflightResult.ok) assert.equal(preflightResult.errorClass, 'persistence');
+    assert.equal(preflightTransportCreations, 0);
+    assert.equal(preflightDrainRequests, 1);
+
+    let oauthDrainRequests = 0;
+    let oauthProviderDispatches = 0;
+    let oauthTransportCloses = 0;
+    const oauthPersistenceEffects = createHostSessionEffectModel({
+      runtimePolicy: {
+        operations: {
+          resolveExecutionConnection: async () => ({
+            kind: 'ready',
+            connection: {
+              slug: 'oauth-persistence',
+              providerType: 'openai-codex',
+              enabledModelIds: [MODEL_ID],
+              models: [
+                {
+                  id: MODEL_ID,
+                  capabilities: { chat: true, functionCalling: true },
+                  contextWindow: 8_192,
+                  maxOutputTokens: 1_024,
+                },
+              ],
+            },
+            networkProxy: { enabled: false },
+            secretMaterial: { connection: { secret: 'oauth-material' } },
+          }),
+        },
+      } as unknown as RuntimePolicyStoresWriter,
+      oauthCredentials: {
+        bind: () => ({
+          providerType: 'openai-codex',
+          connectionSlug: 'oauth-persistence',
+          resolve: async () => ({
+            access_token: codexAccessToken('oauth-persistence-account'),
+            refresh_token: 'oauth-persistence-refresh',
+          }),
+          forceRefresh: async () => {
+            throw new OAuthExecutionCredentialError(
+              'persistence_failed',
+              'injected OAuth persistence failure',
+            );
+          },
+        }),
+      } as unknown as HostOAuthExecutionAuthority,
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => {
+        oauthDrainRequests += 1;
+      },
+      createFetchTransport: () => ({
+        fetch: async () => {
+          oauthProviderDispatches += 1;
+          return Response.json({ error: { message: 'expired credential' } }, { status: 401 });
+        },
+        close: async () => {
+          oauthTransportCloses += 1;
+        },
+      }),
+    });
+    const oauthResult = await oauthPersistenceEffects.generateRecap({
+      sessionId: session.id,
+      effectId: 'recap-oauth-persistence-failure',
+      header: session,
+      events: [],
+      abortSignal: new AbortController().signal,
+    });
+    assert.equal(oauthResult.ok, false);
+    if (!oauthResult.ok) assert.equal(oauthResult.errorClass, 'persistence');
+    assert.equal(oauthProviderDispatches, 1);
+    assert.equal(oauthTransportCloses, 1);
+    assert.equal(oauthDrainRequests, 1);
+
+    let accountingDrains = 0;
+    const accountingAbort = new AbortController();
+    const accountingFailure = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage: {
+        pricing: usage.pricing,
+        telemetry: {
+          recordLlmCall: async () => {
+            accountingAbort.abort(new DOMException('Host drain raced accounting', 'AbortError'));
+            throw new Error('injected accounting failure');
+          },
+        },
+      } as unknown as InteractiveUsageStoresWriter,
+      requestDrain: () => {
+        accountingDrains += 1;
+      },
+    });
+    assert.deepEqual(
+      await accountingFailure.generateRecap({
+        sessionId: session.id,
+        effectId: 'recap-accounting-failure',
+        header: session,
+        events: [],
+        abortSignal: accountingAbort.signal,
+      }),
+      {
+        ok: false,
+        modelId: MODEL_ID,
+        messages: [{ role: 'user', content: SESSION_RECAP_INSTRUCTION }],
+        errorClass: 'persistence',
+      },
+    );
+    assert.equal(accountingDrains, 1);
+
+    let effectProviderSignal: AbortSignal | undefined;
+    let effectTransportCloses = 0;
+    const effectProviderDispatched = deferred<void>();
+    const stalledEffect = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('A provider timeout must not drain the Host'),
+      createFetchTransport: () => ({
+        fetch: async (_request, init) => {
+          effectProviderSignal = init?.signal ?? undefined;
+          effectProviderDispatched.resolve();
+          return new Promise<Response>(() => {});
+        },
+        close: async () => {
+          effectTransportCloses += 1;
+        },
+      }),
+    });
+    const timedEffect = stalledEffect.generateRecap({
+      sessionId: session.id,
+      effectId: 'recap-timeout',
+      header: session,
+      events: [],
+      abortSignal: AbortSignal.timeout(10),
+    });
+    await settleWithin(effectProviderDispatched.promise);
+    const timedResult = await settleWithin(timedEffect);
+    assert.equal(timedResult.ok, false);
+    if (timedResult.ok) return;
+    assert.equal(timedResult.errorClass, 'timeout');
+    assert.equal(effectProviderSignal?.aborted, true);
+    assert.equal(effectTransportCloses, 1);
+
     let providerSignal: AbortSignal | undefined;
     let transportCloses = 0;
     const providerDispatched = deferred<void>();
@@ -1712,6 +1965,102 @@ test('Client Capability tools join the existing load_tools catalog without a par
       description: 'Loaded through the canonical tool connector.',
       toolNames: [capabilityTool.name],
     },
+  );
+});
+
+test('Plan composition admits only planning tools before approval and execution controls after', async () => {
+  const proposal = {
+    planId: 'plan-1',
+    proposalId: 'proposal-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    revision: 1,
+    title: 'Host Plan',
+    steps: [{ id: 'step-1', title: 'Implement', description: 'Implement the approved work' }],
+    status: 'pending_approval' as const,
+    submittedAt: 1,
+  };
+  const pending: PlanSessionState = {
+    schemaVersion: 1,
+    sessionId: 'session-1',
+    storeVersion: 1,
+    proposals: [proposal],
+    executions: [],
+    latestProposalId: proposal.proposalId,
+  };
+  const store = { readState: async () => pending } as unknown as PlanStore;
+  const base = {
+    policy: {
+      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+  };
+  const planning = createHostExecutionModelComposition({
+    ...base,
+    plan: { store, state: pending, mode: 'plan' },
+  });
+  assert.deepEqual(planning.tools.map((tool) => tool.name).sort(), [
+    'AskUserQuestion',
+    'SubmitPlan',
+  ]);
+  assert.match(
+    (await planning.systemPrompt({
+      sessionId: 'session-1',
+      turnId: 'turn-2',
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+    })) ?? '',
+    /Collaboration Mode: Plan/,
+  );
+
+  const execution = {
+    executionId: 'execution-1',
+    planId: proposal.planId,
+    proposalId: proposal.proposalId,
+    sessionId: proposal.sessionId,
+    status: 'active' as const,
+    steps: proposal.steps.map((step) => ({
+      ...step,
+      status: 'pending' as const,
+      updatedAt: 2,
+    })),
+    startedAt: 2,
+    updatedAt: 2,
+  };
+  const active: PlanSessionState = {
+    ...pending,
+    storeVersion: 2,
+    proposals: [{ ...proposal, status: 'approved' }],
+    executions: [execution],
+    activeExecutionId: execution.executionId,
+  };
+  const executing = createHostExecutionModelComposition({
+    ...base,
+    parentAgentTools: buildParentAgentTools(),
+    plan: { store, state: active, mode: 'agent' },
+  });
+  assert.ok(executing.tools.some((tool) => tool.name === 'update_plan'));
+  assert.ok(executing.tools.some((tool) => tool.name === 'cancel_plan'));
+  assert.equal(
+    executing.tools.some((tool) => tool.categoryHint === 'subagent'),
+    false,
+  );
+  assert.match(
+    await executing.turnTailPrompt({
+      sessionId: 'session-1',
+      turnId: 'turn-3',
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+    }),
+    /plan_execution_context/,
   );
 });
 
@@ -2092,6 +2441,13 @@ function readyExecutionConnection(baseUrl?: string) {
       connection: { secret: API_KEY },
     },
   };
+}
+
+function codexAccessToken(accountId: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId } }),
+  ).toString('base64url');
+  return `header.${payload}.signature`;
 }
 
 async function settleWithin<T>(pending: Promise<T>): Promise<T> {

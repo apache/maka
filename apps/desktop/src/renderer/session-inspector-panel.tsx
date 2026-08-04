@@ -17,7 +17,10 @@ import { useSessionTrace } from './use-session-trace.js';
 export function SessionInspectorPanel(props: { sessionId: string; active: boolean }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).inspector;
-  const snapshot = useSessionTrace(props.sessionId, props.active);
+  const snapshot = useSessionTrace(props.sessionId, props.active, {
+    loadFailed: copy.loadFailed,
+    locale,
+  });
   const model = deriveInspectorPanelModel(snapshot.trace);
 
   return (
@@ -39,6 +42,9 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
       {model.coverage && (
         <p className="maka-inspector-coverage" data-maka-contract="session-inspector-coverage">
           {model.coverage.kind === 'absent' ? copy.coverageAbsent : copy.coveragePartial}
+          {model.coverage.turnsMissing > 0 &&
+            ` · ${model.coverage.turnsMissing} ${copy.turnsMissing}`}
+          {model.coverage.turnsShort > 0 && ` · ${model.coverage.turnsShort} ${copy.turnsShort}`}
           {model.coverage.unreadableRecords > 0 &&
             ` · ${model.coverage.unreadableRecords} ${copy.unreadable}`}
         </p>
@@ -74,14 +80,25 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
 
       <ol className="maka-inspector-turns">
         {model.turns.map((turn) => (
-          <TurnRow key={turn.turnId} turn={turn} costUnavailable={copy.costUnavailable} failedLabel={copy.turnFailed} />
+          <TurnRow
+            key={turn.turnId}
+            turn={turn}
+            costUnavailable={copy.costUnavailable}
+            failedLabel={copy.turnFailed}
+            recoveredLabel={copy.recovered}
+          />
         ))}
       </ol>
     </section>
   );
 }
 
-function TurnRow(props: { turn: InspectorTurnRow; costUnavailable: string; failedLabel: string }) {
+function TurnRow(props: {
+  turn: InspectorTurnRow;
+  costUnavailable: string;
+  failedLabel: string;
+  recoveredLabel: string;
+}) {
   const { turn } = props;
   return (
     <li className="maka-inspector-turn" data-maka-contract="session-inspector-turn">
@@ -100,14 +117,23 @@ function TurnRow(props: { turn: InspectorTurnRow; costUnavailable: string; faile
       </div>
       <ol className="maka-inspector-steps">
         {turn.steps.map((step) => (
-          <StepRow key={step.id} step={step} costUnavailable={props.costUnavailable} />
+          <StepRow
+            key={step.id}
+            step={step}
+            costUnavailable={props.costUnavailable}
+            recoveredLabel={props.recoveredLabel}
+          />
         ))}
       </ol>
     </li>
   );
 }
 
-function StepRow(props: { step: InspectorStepRow; costUnavailable: string }) {
+function StepRow(props: {
+  step: InspectorStepRow;
+  costUnavailable: string;
+  recoveredLabel: string;
+}) {
   const { step } = props;
   return (
     <li
@@ -119,6 +145,11 @@ function StepRow(props: { step: InspectorStepRow; costUnavailable: string }) {
       <span className="maka-inspector-step-kind">{step.kind}</span>
       <span className="maka-inspector-step-label">{step.label}</span>
       {step.detail && <span className="maka-inspector-step-detail">{step.detail}</span>}
+      {step.recovered && (
+        <span className="maka-inspector-step-detail">
+          {props.recoveredLabel}: {step.recovered}
+        </span>
+      )}
       {step.retries !== undefined && (
         <span className="maka-inspector-step-retries">×{step.retries + 1}</span>
       )}

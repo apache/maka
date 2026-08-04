@@ -38,8 +38,9 @@ export interface SessionTraceInput {
   /** Canonical metering, from the AgentRun stream's `model_call_attempt_recorded`. */
   modelCallAttempts: readonly ModelCallAttempt[];
   /**
-   * Records the caller read but could not decode. Carried through to coverage
-   * so unreadable spend is visible instead of silently absent.
+   * Records the caller could not read or decode. Carried through to coverage so
+   * unreadable spend is visible instead of silently absent; the caller decides
+   * the unit, and a whole unreadable run counting as one is a floor.
    */
   unreadableRecords?: number;
 }

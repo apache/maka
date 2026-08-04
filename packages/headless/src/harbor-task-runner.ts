@@ -75,6 +75,11 @@ import {
   CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
   CLAUDE_CODE_TOOLCHAIN_SPEC,
 } from './claude-code-toolchain.js';
+import {
+  REASONIX_TOOLCHAIN_CONTAINER_PATH,
+  REASONIX_TOOLCHAIN_FINGERPRINT,
+  REASONIX_TOOLCHAIN_SPEC,
+} from './reasonix-toolchain.js';
 
 import { agentPhaseTimeoutSec, settlementGraceSec } from './maka-settlement.js';
 
@@ -83,6 +88,74 @@ export { MAKA_SETTLEMENT_GRACE_SEC } from './maka-settlement.js';
 const execFileAsync = promisify(execFile);
 
 const CONTAINER_MAKA_REPO = '/opt/maka-agent';
+
+/**
+ * Every competitor arm is pinned the same way: a prepared toolchain directory
+ * bind-mounted read-only, a version that must match the pinned spec, and a
+ * fingerprint the in-container adapter re-verifies before it runs. Only Maka
+ * runs from the repo mount, so it has no entry.
+ */
+const COMPETITOR_TOOLCHAINS: Readonly<
+  Record<
+    Exclude<HarnessAgentId, 'maka'>,
+    {
+      readonly label: string;
+      readonly optionKey: keyof Pick<
+        HarborTaskRunnerOptions,
+        | 'opencodeToolchainPath'
+        | 'kimiCodeToolchainPath'
+        | 'codexToolchainPath'
+        | 'claudeCodeToolchainPath'
+        | 'reasonixToolchainPath'
+      >;
+      readonly version: string;
+      readonly containerPath: string;
+      readonly fingerprint: string;
+      readonly fingerprintEnvKey: string;
+    }
+  >
+> = {
+  opencode: {
+    label: 'OpenCode',
+    optionKey: 'opencodeToolchainPath',
+    version: OPENCODE_TOOLCHAIN_SPEC.opencode.version,
+    containerPath: OPENCODE_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: OPENCODE_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT',
+  },
+  'kimi-code': {
+    label: 'Kimi Code',
+    optionKey: 'kimiCodeToolchainPath',
+    version: KIMI_CODE_TOOLCHAIN_SPEC.kimiCode.version,
+    containerPath: KIMI_CODE_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: KIMI_CODE_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_KIMI_CODE_TOOLCHAIN_FINGERPRINT',
+  },
+  codex: {
+    label: 'Codex',
+    optionKey: 'codexToolchainPath',
+    version: CODEX_TOOLCHAIN_SPEC.codex.version,
+    containerPath: CODEX_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: CODEX_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_CODEX_TOOLCHAIN_FINGERPRINT',
+  },
+  'claude-code': {
+    label: 'Claude Code',
+    optionKey: 'claudeCodeToolchainPath',
+    version: CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version,
+    containerPath: CLAUDE_CODE_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT',
+  },
+  reasonix: {
+    label: 'Reasonix',
+    optionKey: 'reasonixToolchainPath',
+    version: REASONIX_TOOLCHAIN_SPEC.reasonix.version,
+    containerPath: REASONIX_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: REASONIX_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_REASONIX_TOOLCHAIN_FINGERPRINT',
+  },
+};
 const TRIAL_CELL_OUTPUT = 'agent/maka-cell-output.json';
 const TRIAL_EXECUTION_IDENTITY = 'agent/maka-cell-execution-identity.json';
 const TRIAL_USAGE_CHECKPOINT = 'agent/maka-cell-usage-checkpoint.json';
@@ -177,6 +250,8 @@ export interface HarborTaskRunnerOptions {
   codexToolchainPath?: string;
   /** Prepared Claude Code native toolchain mounted read-only into task containers. */
   claudeCodeToolchainPath?: string;
+  /** Prepared Reasonix toolchain mounted read-only into task containers. */
+  reasonixToolchainPath?: string;
   /** Explicit Docker target platform shared by comparison arms. */
   dockerPlatform?: 'linux/amd64';
   /** Base directory under which each task gets an isolated per-task job dir. */
@@ -1010,83 +1085,30 @@ export function buildHarborJobConfig(
   const makaModel = modelIdForProvider(options.model, provider);
   const adapter = options.agent ?? 'maka';
   const agentModel = adapter === 'opencode' ? modelForOpenCode(options.model, provider) : makaModel;
-  if (adapter === 'opencode' && !options.opencodeToolchainPath) {
-    throw new Error('opencodeToolchainPath is required for the OpenCode adapter');
-  }
-  if (adapter === 'opencode' && options.agentVersion !== OPENCODE_TOOLCHAIN_SPEC.opencode.version) {
-    throw new Error(
-      `OpenCode adapter version must match toolchain version ${OPENCODE_TOOLCHAIN_SPEC.opencode.version}`,
-    );
-  }
-  if (adapter === 'kimi-code' && !options.kimiCodeToolchainPath) {
-    throw new Error('kimiCodeToolchainPath is required for the Kimi Code adapter');
-  }
-  if (
-    adapter === 'kimi-code' &&
-    options.agentVersion !== KIMI_CODE_TOOLCHAIN_SPEC.kimiCode.version
-  ) {
-    throw new Error(
-      `Kimi Code adapter version must match toolchain version ${KIMI_CODE_TOOLCHAIN_SPEC.kimiCode.version}`,
-    );
-  }
-  if (adapter === 'codex' && !options.codexToolchainPath) {
-    throw new Error('codexToolchainPath is required for the Codex adapter');
-  }
-  if (adapter === 'codex' && options.agentVersion !== CODEX_TOOLCHAIN_SPEC.codex.version) {
-    throw new Error(
-      `Codex adapter version must match toolchain version ${CODEX_TOOLCHAIN_SPEC.codex.version}`,
-    );
-  }
-  if (adapter === 'claude-code' && !options.claudeCodeToolchainPath) {
-    throw new Error('claudeCodeToolchainPath is required for the Claude Code adapter');
-  }
-  if (
-    adapter === 'claude-code' &&
-    options.agentVersion !== CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version
-  ) {
-    throw new Error(
-      `Claude Code adapter version must match toolchain version ${CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version}`,
-    );
+  const toolchain = adapter === 'maka' ? undefined : COMPETITOR_TOOLCHAINS[adapter];
+  if (toolchain) {
+    const toolchainPath = options[toolchain.optionKey];
+    if (!toolchainPath) {
+      throw new Error(`${toolchain.optionKey} is required for the ${toolchain.label} adapter`);
+    }
+    if (options.agentVersion !== toolchain.version) {
+      throw new Error(
+        `${toolchain.label} adapter version must match toolchain version ${toolchain.version}`,
+      );
+    }
   }
   const mounts: Array<Record<string, unknown>> = [
     { type: 'bind', source: options.makaRepoPath, target: CONTAINER_MAKA_REPO, read_only: true },
-    ...(adapter === 'opencode'
+    ...(toolchain
       ? [
           {
             type: 'bind',
-            source: options.opencodeToolchainPath!,
-            target: OPENCODE_TOOLCHAIN_CONTAINER_PATH,
+            source: options[toolchain.optionKey]!,
+            target: toolchain.containerPath,
             read_only: true,
           },
         ]
-      : adapter === 'kimi-code'
-        ? [
-            {
-              type: 'bind',
-              source: options.kimiCodeToolchainPath!,
-              target: KIMI_CODE_TOOLCHAIN_CONTAINER_PATH,
-              read_only: true,
-            },
-          ]
-        : adapter === 'codex'
-          ? [
-              {
-                type: 'bind',
-                source: options.codexToolchainPath!,
-                target: CODEX_TOOLCHAIN_CONTAINER_PATH,
-                read_only: true,
-              },
-            ]
-          : adapter === 'claude-code'
-            ? [
-                {
-                  type: 'bind',
-                  source: options.claudeCodeToolchainPath!,
-                  target: CLAUDE_CODE_TOOLCHAIN_CONTAINER_PATH,
-                  read_only: true,
-                },
-              ]
-            : []),
+      : []),
   ];
 
   const agentEnv: Record<string, string> = {
@@ -1105,17 +1127,8 @@ export function buildHarborJobConfig(
     agentEnv.MAKA_REASONING_EFFORT = options.reasoningEffort;
     if (adapter === 'opencode') agentEnv.MAKA_OPENCODE_VARIANT = options.reasoningEffort;
   }
-  if (adapter === 'opencode') {
-    agentEnv.MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT = OPENCODE_TOOLCHAIN_FINGERPRINT;
-  }
-  if (adapter === 'kimi-code') {
-    agentEnv.MAKA_KIMI_CODE_TOOLCHAIN_FINGERPRINT = KIMI_CODE_TOOLCHAIN_FINGERPRINT;
-  }
-  if (adapter === 'codex') {
-    agentEnv.MAKA_CODEX_TOOLCHAIN_FINGERPRINT = CODEX_TOOLCHAIN_FINGERPRINT;
-  }
-  if (adapter === 'claude-code') {
-    agentEnv.MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT = CLAUDE_CODE_TOOLCHAIN_FINGERPRINT;
+  if (toolchain) {
+    agentEnv[toolchain.fingerprintEnvKey] = toolchain.fingerprint;
   }
 
   if (options.pricing) {

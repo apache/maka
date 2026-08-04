@@ -43,7 +43,7 @@
    pull the page header into the same centered max-w-3xl column as the
    content. Before this, the header sat in `.settingsMainPane` padding
    (~34px from pane edge), while the row cards lived in the centered
-   640px column — the title
+   content column — the title
    and content were visibly misaligned. Drop the mainpane padding to
    thin top/bottom so the header + content can both share the centered
    column. */

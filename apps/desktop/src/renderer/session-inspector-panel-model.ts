@@ -23,6 +23,11 @@ export interface InspectorStepRow {
   status?: string;
   /** Retries beyond the first attempt of one logical call. */
   retries?: number;
+  /**
+   * The recovery decision that was actually recorded, structured rather than
+   * pre-formatted so the panel owns the wording in the reader's language.
+   */
+  recovered?: 'completed' | 'parked';
   failed: boolean;
 }
 
@@ -75,11 +80,15 @@ export function deriveInspectorPanelModel(trace: SessionTrace | undefined): Insp
     steps: turn.steps.map((step) => toStepRow(step, turn.failure?.attributedToStepId)),
   }));
 
+  const coverage = coverageNotice(trace);
   return {
     turns,
     totals: trace.totals,
-    ...(coverageNotice(trace) ? { coverage: coverageNotice(trace)! } : {}),
-    empty: turns.length === 0,
+    ...(coverage ? { coverage } : {}),
+    // A session whose every record failed to decode has no turns *and* a gap to
+    // report. Calling that empty would hide exactly what this panel exists to
+    // surface, so a reported gap is never "nothing to trace".
+    empty: turns.length === 0 && coverage === undefined,
   };
 }
 
@@ -109,7 +118,7 @@ function toStepRow(step: TraceStep, attributedToStepId: string | undefined): Ins
       kind: step.kind,
       label: step.toolName,
       // The recovery that happened, never the policy every dispatch declares.
-      ...(step.recovered ? { detail: `recovered: ${step.recovered.disposition}` } : {}),
+      ...(step.recovered ? { recovered: step.recovered.disposition } : {}),
       ...(step.durationMs !== undefined ? { durationMs: step.durationMs } : {}),
       status: step.status,
       failed,

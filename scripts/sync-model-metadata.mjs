@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 const SOURCE_URL = 'https://models.dev/api.json';
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
-const PROVIDERS = {
+export const PROVIDERS = {
   anthropic: 'anthropic',
   alibaba: 'alibaba',
   'alibaba-coding-plan-cn': 'alibaba-coding-plan-cn',
@@ -21,8 +21,10 @@ const PROVIDERS = {
   'gemini-cli': 'google',
   groq: 'groq',
   huggingface: 'huggingface',
+  'kimi-coding-plan': 'kimi-for-coding',
   MiniMax: 'minimax',
   'MiniMax-cn': 'minimax-cn',
+  'minimax-coding-plan': 'minimax-coding-plan',
   mistral: 'mistral',
   moonshot: 'moonshotai-cn',
   nvidia: 'nvidia',
@@ -35,6 +37,7 @@ const PROVIDERS = {
   stepfun: 'stepfun',
   'stepfun-ai': 'stepfun-ai',
   'stepfun-ai-step-plan': 'stepfun-ai-step-plan',
+  'stepfun-step-plan': 'stepfun-step-plan',
   togetherai: 'togetherai',
   'tencent-coding-plan': 'tencent-coding-plan',
   'tencent-token-plan': 'tencent-token-plan',
@@ -50,9 +53,9 @@ const PROVIDERS = {
   zenmux: 'zenmux',
 };
 
-async function main() {
-  const inputPath = option('--input');
-  const outputPath = option('--output') ?? DEFAULT_OUTPUT;
+export async function main(argv = process.argv) {
+  const inputPath = option('--input', argv);
+  const outputPath = option('--output', argv) ?? DEFAULT_OUTPUT;
   const catalog = JSON.parse(
     inputPath
       ? await readFile(inputPath, 'utf8')
@@ -65,6 +68,15 @@ async function main() {
   const generated = {};
   const generatedProviders = {};
   const generatedModelProviderOverrides = {};
+  const directory = {};
+  for (const [sourceId, provider] of Object.entries(catalog)) {
+    if (typeof provider.id !== 'string') {
+      throw new Error(`models.dev provider ${sourceId} has an unsupported shape`);
+    }
+    directory[provider.id] = {
+      ...(typeof provider.api === 'string' ? { api: provider.api } : {}),
+    };
+  }
   for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
     const provider = catalog[sourceId];
     if (!provider) {
@@ -127,6 +139,13 @@ async function main() {
   );
   for (const [provider, facts] of Object.entries(generatedProviders)) {
     lines.push(`  ${JSON.stringify(provider)}: ${JSON.stringify(facts)},`);
+  }
+  lines.push('};', '');
+  lines.push('export const GENERATED_MODELS_DEV_DIRECTORY: Record<string, { api?: string }> = {');
+  for (const [id, facts] of Object.entries(directory).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    lines.push(`  ${JSON.stringify(id)}: ${JSON.stringify(facts)},`);
   }
   lines.push('};', '');
   await writeFile(outputPath, lines.join('\n'));
@@ -220,10 +239,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await main();
 }
 
-function option(name) {
-  const index = process.argv.indexOf(name);
+function option(name, argv) {
+  const index = argv.indexOf(name);
   if (index === -1) return undefined;
-  const value = process.argv[index + 1];
+  const value = argv[index + 1];
   if (!value || value.startsWith('--')) throw new Error(`${name} requires a value`);
   return value;
 }

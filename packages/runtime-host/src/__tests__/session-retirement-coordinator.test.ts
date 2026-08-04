@@ -294,6 +294,7 @@ describe('Host Session retirement coordinator', () => {
         harness.blockers.interaction,
         harness.blockers.goal,
         harness.blockers.resource,
+        harness.blockers.effect,
         harness.blockers.graph,
         harness.blockers.graphWake,
         harness.blockers.automation,
@@ -697,6 +698,7 @@ async function withHarness(
       interaction: new Set<string>(),
       goal: new Set<string>(),
       resource: new Set<string>(),
+      effect: new Set<string>(),
       graph: new Set<string>(),
       graphWake: new Set<string>(),
       automation: new Set<string>(),
@@ -779,6 +781,9 @@ async function withHarness(
       },
       resources: {
         hasLiveSessionResources: async (sessionId) => blockers.resource.has(sessionId),
+      },
+      sessionEffects: {
+        hasLiveSessionState: (sessionId) => blockers.effect.has(sessionId),
       },
       graph: {
         hasLiveSessionState: async (sessionId) => blockers.graph.has(sessionId),
@@ -873,6 +878,7 @@ interface RetirementHarness {
     readonly interaction: Set<string>;
     readonly goal: Set<string>;
     readonly resource: Set<string>;
+    readonly effect: Set<string>;
     readonly graph: Set<string>;
     readonly graphWake: Set<string>;
     readonly automation: Set<string>;

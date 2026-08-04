@@ -18,9 +18,8 @@
  * constructor option, which is cast at that boundary.
  */
 import { createRequire } from 'node:module';
-import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
+import { resolveOverlayAssetDir } from '../overlay-assets.js';
 import {
   PIP_DEFAULT_EDGE,
   PIP_MARGIN,
@@ -65,20 +64,7 @@ export interface PipWindowLike {
 }
 
 export function defaultDistDir(): string {
-  // Same walk the cursor overlay uses, and for the same reason: prod tsc emits
-  // dist/main/computer-use/*.js while `npm run dev` esbuild-bundles into
-  // dist/main/main.js. app.getAppPath() differs between those and again when
-  // Electron is pointed at a loose script, so derive the location from this
-  // module instead of asking the app where it thinks it lives.
-  const start = dirname(fileURLToPath(import.meta.url));
-  let dir = start;
-  for (let i = 0; i < 6; i++) {
-    if (basename(dir) === 'dist') return join(dir, 'overlay');
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return join(start, '..', '..', 'overlay');
+  return resolveOverlayAssetDir(import.meta.url);
 }
 
 /**

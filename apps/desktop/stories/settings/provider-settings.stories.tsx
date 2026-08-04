@@ -311,7 +311,7 @@ function ProviderStoryFrame(props: {
           <Layout
             height="fill"
             padding={0}
-            contentWidth={640}
+            contentWidth={920}
             header={(
               <LayoutHeader padding={6}>
                 <div className="settingsPageHeader">

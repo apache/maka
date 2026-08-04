@@ -47,6 +47,7 @@
     "#kimi-code-toolchain": "./dist/kimi-code-toolchain.js",
     "#codex-toolchain": "./dist/codex-toolchain.js",
     "#claude-code-toolchain": "./dist/claude-code-toolchain.js",
+    "#reasonix-toolchain": "./dist/reasonix-toolchain.js",
     "#maka-node-toolchain": "./dist/maka-node-toolchain.js",
     "#codex-oauth-harness": "./dist/codex-oauth-harness.js",
     "#runtime-policy-ab-profile": "./dist/runtime-policy-ab-profile.js",

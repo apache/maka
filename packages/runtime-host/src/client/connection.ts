@@ -28,12 +28,18 @@ import {
   type OperationInput,
   type OperationKey,
   type OperationOutput,
+  type PlanControlInput,
+  type PlanControlResult,
+  type PlanQueryInput,
+  type PlanQueryResult,
   type ProtocolRange,
   type RequestFrame,
   type ResponseFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type SessionCwdRelocateInput,
+  type SessionRecapGenerateInput,
+  type SessionRecapGenerateResult,
   type SessionUpdateResult,
   type TurnQueryInput,
   type TurnRegenerateInput,
@@ -142,6 +148,12 @@ export interface RuntimeHostConnection {
     input: SessionCwdRelocateInput,
     timeoutMs?: number,
   ): Promise<SessionUpdateResult>;
+  generateSessionRecap(
+    input: SessionRecapGenerateInput,
+    timeoutMs?: number,
+  ): Promise<SessionRecapGenerateResult>;
+  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult>;
+  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult>;
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
   startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
@@ -337,6 +349,21 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<SessionUpdateResult> {
     return this.request('session.cwd.relocate', input, timeoutMs);
+  }
+
+  generateSessionRecap(
+    input: SessionRecapGenerateInput,
+    timeoutMs?: number,
+  ): Promise<SessionRecapGenerateResult> {
+    return this.request('session.recap.generate', input, timeoutMs);
+  }
+
+  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult> {
+    return this.request('plan.query', input, timeoutMs);
+  }
+
+  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
+    return this.request('plan.control', input, timeoutMs);
   }
 
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
@@ -779,6 +806,7 @@ function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number |
     case 'agent.graph.stop':
     case 'connection.models.fetch':
     case 'connection.test.run':
+    case 'session.recap.generate':
       // Completion effects own their deadlines and may wait for admitted work to settle.
       return undefined;
     default:
