@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import {
@@ -931,20 +931,7 @@ test('rejects a source tree containing a non-UTF-8 Git path', {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const invalidPath = Buffer.concat([Buffer.from(`${sourceRoot}/`, 'utf8'), Buffer.from([0xff])]);
-  await writeFile(invalidPath, 'invalid path bytes\n');
-  await git(sourceRoot, 'add', '-A');
-  await git(
-    sourceRoot,
-    '-c',
-    'user.name=Maka Test',
-    '-c',
-    'user.email=test@maka.invalid',
-    'commit',
-    '--quiet',
-    '-m',
-    'add invalid path',
-  );
+  await commitInvalidUtf8Path(sourceRoot);
   const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
@@ -1012,6 +999,52 @@ async function createEligibleSource(sourceRoot: string): Promise<string> {
   return realpath(sourceRoot);
 }
 
+async function commitInvalidUtf8Path(sourceRoot: string): Promise<void> {
+  const invalidPath = Buffer.from([0xff]);
+  const blobOid = gitWithInput(sourceRoot, ['hash-object', '-w', '--stdin'], 'invalid\n')
+    .toString('ascii')
+    .trim();
+  const existingEntries = gitWithInput(sourceRoot, ['ls-tree', '-z', 'HEAD']);
+  const invalidEntry = Buffer.concat([
+    Buffer.from(`100644 blob ${blobOid}\t`, 'ascii'),
+    invalidPath,
+    Buffer.from([0]),
+  ]);
+  const treeOid = gitWithInput(
+    sourceRoot,
+    ['mktree', '-z'],
+    Buffer.concat([existingEntries, invalidEntry]),
+  )
+    .toString('ascii')
+    .trim();
+  const parentOid = await git(sourceRoot, 'rev-parse', 'HEAD');
+  const commitOid = gitWithInput(
+    sourceRoot,
+    [
+      '-c',
+      'user.name=Maka Test',
+      '-c',
+      'user.email=test@maka.invalid',
+      'commit-tree',
+      treeOid,
+      '-p',
+      parentOid,
+    ],
+    'add invalid path\n',
+  )
+    .toString('ascii')
+    .trim();
+
+  await git(sourceRoot, 'update-ref', 'HEAD', commitOid, parentOid);
+  await git(sourceRoot, 'read-tree', treeOid);
+  // Keep Git status clean without asking the filesystem to materialize the invalid path.
+  gitWithInput(
+    sourceRoot,
+    ['update-index', '--skip-worktree', '-z', '--stdin'],
+    Buffer.concat([invalidPath, Buffer.from([0])]),
+  );
+}
+
 function openRequest(sourceRoot: string) {
   return {
     repositoryId: 'repository_11111111111111111111111111111111',
@@ -1047,6 +1080,18 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
     maxBuffer: 8 * 1024 * 1024,
   });
   return stdout.trim();
+}
+
+function gitWithInput(
+  cwd: string,
+  args: readonly string[],
+  input: string | Buffer = Buffer.alloc(0),
+): Buffer {
+  return execFileSync('git', args, {
+    cwd,
+    input,
+    maxBuffer: 8 * 1024 * 1024,
+  });
 }
 
 function waitForReady(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
