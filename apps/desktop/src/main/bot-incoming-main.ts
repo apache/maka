@@ -337,11 +337,15 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         await deps.botRegistry.sendTypingIndicator(message.platform, message.chatId).catch(() => false);
         while (!typingAbort.signal.aborted) {
           await new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, 4000);
-            typingAbort.signal.addEventListener('abort', () => {
+            const onAbort = (): void => {
               clearTimeout(timer);
               resolve();
-            }, { once: true });
+            };
+            const timer = setTimeout(() => {
+              typingAbort.signal.removeEventListener('abort', onAbort);
+              resolve();
+            }, 4000);
+            typingAbort.signal.addEventListener('abort', onAbort, { once: true });
           });
           if (typingAbort.signal.aborted) break;
           await deps.botRegistry.sendTypingIndicator(message.platform, message.chatId).catch(() => false);
