@@ -349,7 +349,8 @@ function runtimeHarness(runtimeCommitSink?: RuntimeCommitSink) {
     getPermissionPauseTarget: () => null,
     ...(runtimeCommitSink
       ? {
-          getCurrentRunId: () => 'run-1',
+          runId: 'run-1',
+          invocationId: 'invocation-1',
           runtimeCommitSink,
         }
       : {}),

@@ -51,10 +51,32 @@ describe('Host Client Capability coordinator', () => {
     const firstResult = await invoke(first.tools[0]);
     assert.deepEqual(firstResult, textResult('called:opaque'));
     const call = sent.find(
-      (frame): frame is { kind: 'client.capability.call'; registrationId: string } =>
-        isRecord(frame) && frame.kind === 'client.capability.call',
+      (
+        frame,
+      ): frame is {
+        kind: 'client.capability.call';
+        registrationId: string;
+        sessionId: string;
+        turnId: string;
+        toolCallId: string;
+        cwd: string;
+      } => isRecord(frame) && frame.kind === 'client.capability.call',
     );
     assert.equal(call?.registrationId, 'registration-a');
+    assert.deepEqual(
+      call && {
+        sessionId: call.sessionId,
+        turnId: call.turnId,
+        toolCallId: call.toolCallId,
+        cwd: call.cwd,
+      },
+      {
+        sessionId: 'session-a',
+        turnId: 'turn-a',
+        toolCallId: 'tool-call-a',
+        cwd: '/tmp',
+      },
+    );
 
     first.release();
     assert.ok(

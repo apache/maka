@@ -45,10 +45,10 @@ export interface McpToolDescriptor {
 declare const mcpToolBindingBrand: unique symbol;
 
 /**
- * Opaque consistency handle for one tool definition on one live MCP
- * connection. It prevents stale-definition calls; it is not a permission
- * capability. Consumers may retain and return it, but only the MCP manager can
- * interpret or mint it.
+ * Opaque consistency handle for one tool definition in one provider-owned
+ * snapshot. It prevents stale-definition calls; it is not a permission
+ * capability. Consumers may retain and return it, but only the owning provider
+ * can interpret or mint it.
  */
 export type McpToolBinding = string & { readonly [mcpToolBindingBrand]: true };
 
