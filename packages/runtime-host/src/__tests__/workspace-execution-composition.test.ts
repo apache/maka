@@ -38,11 +38,7 @@ test('keeps attached and managed execution profiles explicit', async () => {
     await composition.executeReadOnly(managed, { kind: 'read', path: 'README.md' }),
     { kind: 'read', content: 'managed' },
   );
-  assert.deepEqual(calls, [
-    'worker:/attached:read',
-    'managed:admit',
-    'managed:read',
-  ]);
+  assert.deepEqual(calls, ['worker:/attached:read', 'managed:admit', 'managed:read']);
 
   await composition.close();
 });

@@ -38,10 +38,10 @@ test('injects the owner-bound cwd and read-only boundary for allowed operations'
   });
   const scope = scopeFor(ownerToken);
 
-  assert.deepEqual(
-    await bridge.execute(scope, { kind: 'read', path: 'README.md' }),
-    { kind: 'read', content: 'ok' },
-  );
+  assert.deepEqual(await bridge.execute(scope, { kind: 'read', path: 'README.md' }), {
+    kind: 'read',
+    content: 'ok',
+  });
   assert.deepEqual(await bridge.execute(scope, { kind: 'glob', path: '.', pattern: '**/*.ts' }), {
     kind: 'glob',
     files: [],

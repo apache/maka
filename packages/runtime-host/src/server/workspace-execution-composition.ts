@@ -125,11 +125,7 @@ export function createRuntimeHostWorkspaceExecutionComposition(
           return await input.managedOwner.withManagedWorkspaceExecution(
             profile.executionHandle,
             (scope) =>
-              input.managedOwner!.executeReadOnlyFilesystemOperation(
-                scope,
-                operation,
-                abortSignal,
-              ),
+              input.managedOwner!.executeReadOnlyFilesystemOperation(scope, operation, abortSignal),
           );
         }
         if (!input.filesystemWorker) {
@@ -141,10 +137,7 @@ export function createRuntimeHostWorkspaceExecutionComposition(
         return await input.filesystemWorker.execute({
           operation,
           cwd: profile.cwd,
-          executionBoundary: createManagedExecutionBoundary(
-            createReadOnlyPermissionProfile(),
-            0,
-          ),
+          executionBoundary: createManagedExecutionBoundary(createReadOnlyPermissionProfile(), 0),
           ...(abortSignal ? { abortSignal } : {}),
         });
       } finally {

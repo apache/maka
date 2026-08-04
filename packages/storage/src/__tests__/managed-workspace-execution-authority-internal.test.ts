@@ -18,7 +18,10 @@ test('resolves an active execution scope only for its issuing owner', () => {
     head: Object.freeze({}) as never,
   });
 
-  assert.equal(requireManagedWorkspaceExecutionScopeInternal(issuer, scope).cwd, '/managed/worktree');
+  assert.equal(
+    requireManagedWorkspaceExecutionScopeInternal(issuer, scope).cwd,
+    '/managed/worktree',
+  );
   assert.throws(
     () => requireManagedWorkspaceExecutionScopeInternal(otherOwner, scope),
     (error) =>

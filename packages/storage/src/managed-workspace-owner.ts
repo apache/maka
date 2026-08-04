@@ -533,7 +533,6 @@ function assertExecutionCrossPlaneIdentity(
       'Managed workspace execution evidence does not identify one exact accepted boundary',
     );
   }
-
 }
 
 function sameManagedWorkspaceBinding(
