@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 import {
   MAKA_AHE_CURRENT_COMPONENTS,
@@ -19,11 +22,23 @@ import {
   VALID_MAKA_AHE_CHANGE_MANIFEST,
 } from './ahe-target-protocol.fixtures.js';
 
+const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+
 describe('AHE target protocol', () => {
   it('accepts the current Maka component map', () => {
     const result = validateMakaAheTargetComponents(MAKA_AHE_CURRENT_COMPONENTS);
 
     assert.equal(result.ok, true);
+  });
+
+  it('pins every component source ref to a file that exists in the repo', () => {
+    const missing = MAKA_AHE_CURRENT_COMPONENTS.flatMap((component) =>
+      component.sourceRefs
+        .filter((sourceRef) => !existsSync(join(repoRoot, sourceRef.path)))
+        .map((sourceRef) => `${component.id}: ${sourceRef.path}`),
+    );
+
+    assert.deepEqual(missing, []);
   });
 
   it('validates content-addressed v2 snapshots and detects manifest tampering', () => {
