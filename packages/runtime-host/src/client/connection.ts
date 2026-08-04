@@ -20,6 +20,8 @@ import {
   type ContextCompactResult,
   type ContextDiagnosticsQueryInput,
   type ContextDiagnosticsResult,
+  type DeepResearchQueryInput,
+  type DeepResearchQueryResult,
   type HostOperationErrorCode,
   type HostIncompatible,
   type HostRegistration,
@@ -154,6 +156,10 @@ export interface RuntimeHostConnection {
   ): Promise<SessionRecapGenerateResult>;
   queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult>;
   controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult>;
+  queryDeepResearch(
+    input: DeepResearchQueryInput,
+    timeoutMs?: number,
+  ): Promise<DeepResearchQueryResult>;
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
   startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
@@ -364,6 +370,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
     return this.request('plan.control', input, timeoutMs);
+  }
+
+  queryDeepResearch(
+    input: DeepResearchQueryInput,
+    timeoutMs?: number,
+  ): Promise<DeepResearchQueryResult> {
+    return this.request('deep-research.query', input, timeoutMs);
   }
 
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {

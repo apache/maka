@@ -16,6 +16,7 @@ import {
   DEEP_RESEARCH_STATUS_TOOL_NAME,
   DEEP_RESEARCH_UPDATE_CHECKLIST_TOOL_NAME,
   buildDeepResearchTools,
+  isDeepResearchToolAllowed,
   renderDeepResearchRunStatus,
   type DeepResearchArtifactStore,
 } from '../deep-research-tools.js';
@@ -124,6 +125,21 @@ describe('Deep Research runtime tools', () => {
         DEEP_RESEARCH_COMPLETE_TOOL_NAME,
       ],
     );
+  });
+
+  it('admits only the explicit Deep Research tool surface', () => {
+    const canonicalNames = [
+      DEEP_RESEARCH_START_TOOL_NAME,
+      DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
+      DEEP_RESEARCH_READ_ARTIFACT_TOOL_NAME,
+      DEEP_RESEARCH_UPDATE_CHECKLIST_TOOL_NAME,
+      DEEP_RESEARCH_RECORD_STEP_TOOL_NAME,
+      DEEP_RESEARCH_CHECKPOINT_TOOL_NAME,
+      DEEP_RESEARCH_STATUS_TOOL_NAME,
+      DEEP_RESEARCH_COMPLETE_TOOL_NAME,
+    ];
+    assert.ok(canonicalNames.every((name) => isDeepResearchToolAllowed({ name })));
+    assert.equal(isDeepResearchToolAllowed({ name: 'deep_research_unsafe_fixture' }), false);
   });
 
   it('runs the source-checkpoint-report lifecycle and makes artifact retries idempotent', async () => {

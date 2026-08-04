@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepResearchSession } from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
   AgentGraphCoordinator,
@@ -26,6 +27,7 @@ import {
   openInteractiveArtifactStoreForWrite,
 } from '@maka/storage/artifact-stores';
 import { openInteractiveAutomationAuthorityForWrite } from '@maka/storage/automation-authority';
+import { openInteractiveDeepResearchStoreForWrite } from '@maka/storage/deep-research-authority';
 import { openInteractivePlanStoreForWrite } from '@maka/storage/plan-authority';
 import {
   isSessionNotFoundError,
@@ -55,6 +57,7 @@ import { HostAutomationCoordinator } from './automation-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
+import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
@@ -108,6 +111,9 @@ export async function createExecutionRuntimeHostComposition(
     | Awaited<ReturnType<typeof openInteractiveAutomationAuthorityForWrite>>
     | undefined;
   let planStore: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>> | undefined;
+  let deepResearchStore:
+    | Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>
+    | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   try {
@@ -121,6 +127,10 @@ export async function createExecutionRuntimeHostComposition(
     automationStore = openedAutomationStore;
     const openedPlanStore = await openInteractivePlanStoreForWrite(context.owner.lease);
     planStore = openedPlanStore;
+    const openedDeepResearchStore = await openInteractiveDeepResearchStoreForWrite(
+      context.owner.lease,
+    );
+    deepResearchStore = openedDeepResearchStore;
     const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
     longTermMemoryStore = await openInteractiveLongTermMemoryStoreForWrite(context.owner.lease);
     taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
@@ -220,6 +230,7 @@ export async function createExecutionRuntimeHostComposition(
     let oauth: HostOAuthCoordinator | undefined;
     let automations: HostAutomationCoordinator | undefined;
     let goal: HostGoalCoordinator | undefined;
+    let deepResearch: HostDeepResearchCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -265,6 +276,13 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
     );
     const continuityCoordinator = continuity;
+    deepResearch = new HostDeepResearchCoordinator({
+      store: openedDeepResearchStore,
+      artifacts: openedArtifactStore,
+      sessions: stores.sessionStore,
+      sessionAdmission,
+      onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+    });
     let poisonFailure: Error | undefined;
     let draining = false;
     let recoveryTask: Promise<void> | undefined;
@@ -335,6 +353,9 @@ export async function createExecutionRuntimeHostComposition(
         clientCapabilities: requireClientCapabilities(clientCapabilities),
         automationTool: requireAutomationCoordinator(automations).modelTool,
         planStore: openedPlanStore,
+        deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
+          backendContext.sessionId,
+        ),
         goalTools: requireGoal(goal).tools,
         builtinTools,
         hostTools,
@@ -383,6 +404,13 @@ export async function createExecutionRuntimeHostComposition(
             state: planState,
             mode: header.collaborationMode ?? 'agent',
           },
+          ...(isDeepResearchSession(header.labels)
+            ? {
+                deepResearch: {
+                  tools: requireDeepResearch(deepResearch).toolsForSession(sessionId),
+                },
+              }
+            : {}),
         }).tools.map((tool) => tool.name);
       } finally {
         capabilitySnapshot?.release();
@@ -720,6 +748,7 @@ export async function createExecutionRuntimeHostComposition(
       purgeOperationalState: async (sessionId) => {
         await stores.purgeConversationOperationalState(sessionId);
         await openedPlanStore.purgeSessionState(sessionId);
+        await openedDeepResearchStore.purgeSessionState(sessionId);
       },
       purgeAgentGraphState: async (sessionId) => {
         await openedGraphControlStore.purgeAgentGraphControlState(
@@ -753,6 +782,7 @@ export async function createExecutionRuntimeHostComposition(
       ...runtimeResources.handlers,
       ...automations.handlers,
       ...plans.handlers,
+      ...requireDeepResearch(deepResearch).handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
@@ -849,6 +879,11 @@ export async function createExecutionRuntimeHostComposition(
         } catch (error) {
           errors.push(error);
         }
+        try {
+          deepResearch?.close();
+        } catch (error) {
+          errors.push(error);
+        }
         if (!backendInvalidationPoisoned) {
           try {
             await manager.refreshIdleBackends();
@@ -937,6 +972,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          openedDeepResearchStore.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -966,6 +1006,11 @@ export async function createExecutionRuntimeHostComposition(
     const errors: unknown[] = [error];
     try {
       await sessionEffects?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      deepResearchStore?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
@@ -1070,6 +1115,13 @@ function requireAutomationCoordinator(
   coordinator: HostAutomationCoordinator | undefined,
 ): HostAutomationCoordinator {
   if (!coordinator) throw new Error('Runtime Host Automation coordinator is not composed');
+  return coordinator;
+}
+
+function requireDeepResearch(
+  coordinator: HostDeepResearchCoordinator | undefined,
+): HostDeepResearchCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Deep Research coordinator is not composed');
   return coordinator;
 }
 

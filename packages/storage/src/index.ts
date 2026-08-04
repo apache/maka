@@ -111,6 +111,11 @@ export type {
   DeepResearchStore,
   SqliteDeepResearchStore,
 } from './deep-research-store.js';
+export {
+  authenticateInteractiveDeepResearchStoreWriter,
+  openInteractiveDeepResearchStoreForWrite,
+} from './deep-research-authority.js';
+export type { InteractiveDeepResearchStoreWriter } from './deep-research-authority.js';
 export * from './config-transfer.js';
 export * from './automation-store.js';
 export * from './automation-authority.js';

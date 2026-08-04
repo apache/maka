@@ -66,6 +66,7 @@
     "./task-ledger": "./dist/task-ledger.js",
     "./foreign-session": "./dist/foreign-session.js",
     "./deep-research-run": "./dist/deep-research-run.js",
+    "./explore-agent": "./dist/explore-agent.js",
     "./memory": "./dist/memory.js",
     "./long-term-memory": "./dist/long-term-memory.js",
     "./local-memory": "./dist/local-memory.js",

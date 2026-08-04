@@ -260,10 +260,18 @@ describe('Desktop backend tool surface', () => {
   it('keeps Deep Research on a read-only local tool surface without boundary expansion', async () => {
     const requestBoundary = tool('request_sandbox_boundary', 'custom_tool');
     const bash = tool('Bash', 'shell_unsafe');
+    const exploreAgent = tool('ExploreAgent', 'subagent');
     const webSearch = tool('WebSearch', 'web_read');
     const deepResearchStatus = tool('deep_research_status', 'read');
     const deps = makeDeps({
-      builtinTools: [readTool, writeTool, requestBoundary, bash, webSearch],
+      builtinTools: [
+        readTool,
+        writeTool,
+        requestBoundary,
+        bash,
+        exploreAgent,
+        webSearch,
+      ],
       deepResearchTools: [deepResearchStatus],
     });
     const input = inputFor('claude-sonnet-4-5-20250929');
@@ -273,7 +281,7 @@ describe('Desktop backend tool surface', () => {
 
     assert.deepEqual(
       surface.selectedTools.map((candidate) => candidate.name),
-      ['Read', 'WebSearch', 'deep_research_status'],
+      ['Read', 'ExploreAgent', 'WebSearch', 'deep_research_status'],
     );
   });
 

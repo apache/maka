@@ -39,6 +39,24 @@ export const DEEP_RESEARCH_CHECKPOINT_TOOL_NAME = 'deep_research_checkpoint';
 export const DEEP_RESEARCH_STATUS_TOOL_NAME = 'deep_research_status';
 export const DEEP_RESEARCH_COMPLETE_TOOL_NAME = 'deep_research_complete';
 
+const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
+  'AskUserQuestion',
+  'Read',
+  'ArchiveRead',
+  'Glob',
+  'Grep',
+  'ExploreAgent',
+  'WebSearch',
+  DEEP_RESEARCH_START_TOOL_NAME,
+  DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
+  DEEP_RESEARCH_READ_ARTIFACT_TOOL_NAME,
+  DEEP_RESEARCH_UPDATE_CHECKLIST_TOOL_NAME,
+  DEEP_RESEARCH_RECORD_STEP_TOOL_NAME,
+  DEEP_RESEARCH_CHECKPOINT_TOOL_NAME,
+  DEEP_RESEARCH_STATUS_TOOL_NAME,
+  DEEP_RESEARCH_COMPLETE_TOOL_NAME,
+]);
+
 export const DEEP_RESEARCH_ARTIFACT_CONTENT_MAX_CHARS = 512_000;
 export const DEEP_RESEARCH_ARTIFACT_READ_DEFAULT_CHARS = 32_000;
 export const DEEP_RESEARCH_ARTIFACT_READ_MAX_CHARS = 64_000;
@@ -98,6 +116,10 @@ export function buildDeepResearchTools(deps: BuildDeepResearchToolsDeps): MakaTo
     buildStatusTool(deps),
     buildCompleteTool(deps),
   ];
+}
+
+export function isDeepResearchToolAllowed(tool: Pick<MakaTool, 'name'>): boolean {
+  return DEEP_RESEARCH_ALLOWED_TOOL_NAMES.has(tool.name);
 }
 
 function buildStartTool(deps: BuildDeepResearchToolsDeps): MakaTool<

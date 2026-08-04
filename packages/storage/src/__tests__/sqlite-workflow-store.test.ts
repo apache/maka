@@ -355,6 +355,20 @@ describe('SQLite workflow stores', () => {
     });
   });
 
+  test('purges Deep Research events for retired Sessions', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteDeepResearchStore(root);
+      try {
+        await store.start(SESSION_ID, 'Remove the retired research workspace', 'standard');
+        await store.purgeSessionState(SESSION_ID);
+        assert.equal(await store.read(SESSION_ID), undefined);
+        assert.deepEqual(await store.readEvents(SESSION_ID), []);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   test('persists Plan Reminders', async () => {
     await withRoot(async (root) => {
       const store = createSqlitePlanReminderStore(root);

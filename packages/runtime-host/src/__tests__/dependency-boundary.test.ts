@@ -30,6 +30,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/automation',
   '@maka/core/backend-types',
   '@maka/core/events',
+  '@maka/core/explore-agent',
   '@maka/core/interaction',
   '@maka/core/llm-connections',
   '@maka/core/local-memory',
@@ -40,6 +41,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/model-thinking',
   '@maka/core/oauth-subscription',
   '@maka/core/plan',
+  '@maka/core/deep-research-run',
   '@maka/core/redaction',
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
@@ -56,6 +58,7 @@ const allowedServerExternalImports = new Set([
   '@maka/storage/agent-graph-control-store',
   '@maka/storage/artifact-stores',
   '@maka/storage/automation-authority',
+  '@maka/storage/deep-research-authority',
   '@maka/storage/model-call-ledger',
   '@maka/storage/execution-stores',
   '@maka/storage/git-worktree-child-executor',
@@ -79,6 +82,7 @@ const allowedExternalImports = {
     '@maka/core/automation',
     '@maka/core/collaboration',
     '@maka/core/events',
+    '@maka/core/deep-research-run',
     '@maka/core/execution-inspect',
     '@maka/core/goal',
     '@maka/core/interaction',
@@ -199,6 +203,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
       if (
         specifier === '@maka/runtime' ||
         specifier === '@maka/storage/agent-graph-control-store' ||
+        specifier === '@maka/storage/deep-research-authority' ||
         specifier === '@maka/storage/execution-stores' ||
         specifier === '@maka/storage/long-term-memory-store' ||
         specifier === '@maka/storage/memory-bundle-store' ||

@@ -87,6 +87,7 @@ export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resourc
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
 export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
 export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
+export type DeepResearchOperationKey = Extract<OperationKey, `deep-research.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
@@ -136,6 +137,7 @@ export type ClientCapabilityOperationHandlerMap = Pick<
 >;
 export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, AutomationOperationKey>;
 export type PlanOperationHandlerMap = Pick<OperationHandlerMap, PlanOperationKey>;
+export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]

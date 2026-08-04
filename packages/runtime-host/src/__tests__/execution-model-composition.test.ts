@@ -1968,6 +1968,76 @@ test('Client Capability tools join the existing load_tools catalog without a par
   );
 });
 
+test('Deep Research composition keeps one read-only research surface and prompt', async () => {
+  const tool = (name: string, categoryHint?: MakaTool['categoryHint']): MakaTool => ({
+    name,
+    description: `${name} fixture`,
+    parameters: {},
+    ...(categoryHint ? { categoryHint } : {}),
+    impl: async () => name,
+  });
+  const read = tool('Read');
+  const webSearch = tool('WebSearch');
+  const shell = tool('Shell');
+  const deepResearchStatus = tool('deep_research_status');
+  const unsafeDeepResearchTool = tool('deep_research_unsafe_fixture');
+  const clientMutation = tool('mcp__opaque__mutate', 'client_capability');
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+    hostTools: [read, webSearch, shell, unsafeDeepResearchTool],
+    parentAgentTools: buildParentAgentTools(),
+    clientCapabilities: {
+      tools: [clientMutation],
+      groups: [
+        {
+          id: 'client_fixture',
+          label: 'Opaque fixture',
+          toolNames: [clientMutation.name],
+        },
+      ],
+    },
+    deepResearch: { tools: [deepResearchStatus] },
+  });
+
+  assert.deepEqual(composition.tools.map((candidate) => candidate.name).sort(), [
+    'AskUserQuestion',
+    'Read',
+    'WebSearch',
+    'deep_research_status',
+  ]);
+  assert.equal(composition.tools.includes(shell), false);
+  assert.equal(composition.tools.includes(clientMutation), false);
+  assert.equal(composition.tools.includes(unsafeDeepResearchTool), false);
+  assert.equal(
+    composition.tools.some((candidate) => candidate.categoryHint === 'subagent'),
+    false,
+  );
+  assert.equal(
+    composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
+    undefined,
+  );
+  const prompt =
+    (await composition.systemPrompt({
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+    })) ?? '';
+  assert.match(prompt, /Deep research mode is active/);
+  assert.doesNotMatch(prompt, /ExploreAgent/);
+});
+
 test('Plan composition admits only planning tools before approval and execution controls after', async () => {
   const proposal = {
     planId: 'plan-1',

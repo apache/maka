@@ -178,15 +178,24 @@ export function buildDeepResearchImplementationPrompt(run: DeepResearchRun): str
   );
 }
 
-export function buildDeepResearchSystemPromptFragment(): string {
+export function buildDeepResearchSystemPromptFragment(
+  options: { readonly exploreAgentAvailable?: boolean } = {},
+): string {
+  const exploreAgentAvailable = options.exploreAgentAvailable ?? true;
   return [
     'Deep research mode is active for this session.',
     '',
     'Mode contract:',
-    '- Inspect first. Prefer Read, Glob, Grep, ExploreAgent, and safe read-only shell commands.',
-    '- Use ExploreAgent only for a separate, self-contained local investigation that benefits from a bounded read-only worker. Keep synthesis and final judgment in the main thread.',
-    '- Do not use ExploreAgent just because it is available. If the next step is a known file, a specific symbol, package scripts, test setup, config, or 1-3 obvious files, inspect directly in the main thread.',
-    '- When using ExploreAgent, bound the prompt with a goal, relevant paths or keywords, what to ignore, a stopping condition, and exactly what evidence the worker should return.',
+    exploreAgentAvailable
+      ? '- Inspect first. Prefer Read, Glob, Grep, WebSearch, and ExploreAgent.'
+      : '- Inspect first. Prefer Read, Glob, Grep, and WebSearch.',
+    ...(exploreAgentAvailable
+      ? [
+          '- Use ExploreAgent only for a separate, self-contained local investigation that benefits from a bounded read-only worker. Keep synthesis and final judgment in the main thread.',
+          '- Do not use ExploreAgent just because it is available. If the next step is a known file, a specific symbol, package scripts, test setup, config, or 1-3 obvious files, inspect directly in the main thread.',
+          '- When using ExploreAgent, bound the prompt with a goal, relevant paths or keywords, what to ignore, a stopping condition, and exactly what evidence the worker should return.',
+        ]
+      : []),
     '- Do not write, edit, delete, move, or rename user project files; do not install, run migrations, start services, or send network requests unless the user explicitly leaves research mode.',
     '- The deep_research_* tools are the one write exception: they only update Maka-owned research artifacts and an append-only workspace ledger, never the user project.',
     '- If implementation is needed, produce a concrete plan with files, risks, and verification commands instead of modifying files.',

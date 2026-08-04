@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepResearchSession } from '@maka/core/explore-agent';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import {
@@ -218,6 +219,12 @@ export class HostSessionRevisionCoordinator {
       return copyFailure(
         'operation_conflict',
         'Linked child Sessions cannot be copied as ordinary conversations',
+      );
+    }
+    if (isDeepResearchSession(sourceHeader.labels)) {
+      return copyFailure(
+        'operation_unavailable',
+        'Deep Research Sessions cannot be copied without an exact research ledger boundary',
       );
     }
     if (this.options.isSessionActive(input.sourceSessionId)) {

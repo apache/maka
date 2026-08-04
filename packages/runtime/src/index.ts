@@ -797,6 +797,7 @@ export {
   DEEP_RESEARCH_STATUS_TOOL_NAME,
   DEEP_RESEARCH_UPDATE_CHECKLIST_TOOL_NAME,
   buildDeepResearchTools,
+  isDeepResearchToolAllowed,
   renderDeepResearchRunStatus,
 } from './deep-research-tools.js';
 export type {

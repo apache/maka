@@ -35,6 +35,7 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly [writerBrand]: true;
   recover(): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
+  deleteOwnedDeepResearchArtifactInSession(sessionId: string, artifactId: string): Promise<void>;
   copyConversationArtifacts(
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
@@ -184,6 +185,14 @@ function createWriterFacade(
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
     },
+    deleteOwnedDeepResearchArtifactInSession: (sessionId, artifactId) =>
+      run(async () => {
+        const entry = await store.getInSession(sessionId, artifactId);
+        if (!entry.record || entry.record.source !== 'deep_research') {
+          throw new Error('Artifact does not belong to the expected Session authority');
+        }
+        await store.delete(artifactId);
+      }),
     copyConversationArtifacts: (input) => {
       const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
         ...input,
