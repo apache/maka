@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import type { Menu as ElectronMenu, MenuItemConstructorOptions } from 'electron';
+import type { WindowCommand } from '../preload/bridge-contract.js';
 
 // Electron is CommonJS, and named imports from it fail outside a main process.
 // Deferring the require keeps this module loadable under plain `node --test`,
@@ -10,32 +11,23 @@ const electron = (): typeof import('electron') =>
 /**
  * Commands the native menu routes to the renderer. The renderer owns the
  * implementations (`createSession` / `openSettings` / keyboard help in
- * app-shell-effects.ts); the menu is only the macOS entry surface for them —
- * one typed channel (`window:command`), one dispatch.
+ * app-shell-effects.ts); the menu is only the macOS entry surface for them.
+ * Derived from the preload contract so the two sides of the `window:command`
+ * channel cannot drift apart.
  */
-export type ApplicationMenuCommand = 'newTask' | 'openSettings' | 'openHelp';
-
-export interface ApplicationMenuLabels {
-  newTask: string;
-  openSettings: string;
-  openHelp: string;
-}
+export type ApplicationMenuCommand = WindowCommand['id'];
 
 export interface ApplicationMenuDeps {
   platform: NodeJS.Platform;
   isPackaged: boolean;
   dispatch: (command: ApplicationMenuCommand) => void;
-  /** English by default: Electron renders role menus (Edit, Window, …) in
-   * English too, so localizing only the custom items would split the menu
-   * bar's language mid-column. */
-  labels?: ApplicationMenuLabels;
 }
 
-const DEFAULT_LABELS: ApplicationMenuLabels = {
+const MENU_LABELS = {
   newTask: 'New Task',
   openSettings: 'Settings…',
   openHelp: 'Keyboard Shortcuts',
-};
+} as const;
 
 /**
  * Platform-appropriate application menu, or `null` when the platform must
@@ -58,20 +50,23 @@ const DEFAULT_LABELS: ApplicationMenuLabels = {
  * - A menu accelerator is the single active owner of `Cmd+N` / `Cmd+,` on
  *   macOS: AppKit resolves menu key equivalents before the web contents sees
  *   the keydown, so the renderer's `useHotkeys` entry never also fires.
+ *
+ * Labels are English on purpose: Electron renders role menus (Edit, Window,
+ * …) in English too, so localizing only the custom items would split the menu
+ * bar's language mid-column.
  */
 export function buildApplicationMenuTemplate(
   deps: ApplicationMenuDeps,
 ): MenuItemConstructorOptions[] | null {
   const { platform, isPackaged, dispatch } = deps;
   if (platform !== 'darwin') return null;
-  const labels = deps.labels ?? DEFAULT_LABELS;
   return [
     {
       label: 'Maka',
       submenu: [
         { role: 'about' },
         { type: 'separator' },
-        { label: labels.openSettings, accelerator: 'Command+,', click: () => dispatch('openSettings') },
+        { label: MENU_LABELS.openSettings, accelerator: 'Command+,', click: () => dispatch('openSettings') },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -85,7 +80,7 @@ export function buildApplicationMenuTemplate(
     {
       label: 'File',
       submenu: [
-        { label: labels.newTask, accelerator: 'CmdOrCtrl+N', click: () => dispatch('newTask') },
+        { label: MENU_LABELS.newTask, accelerator: 'CmdOrCtrl+N', click: () => dispatch('newTask') },
         { type: 'separator' },
         { role: 'close' },
       ],
@@ -112,7 +107,7 @@ export function buildApplicationMenuTemplate(
     { role: 'windowMenu' },
     {
       role: 'help',
-      submenu: [{ label: labels.openHelp, click: () => dispatch('openHelp') }],
+      submenu: [{ label: MENU_LABELS.openHelp, click: () => dispatch('openHelp') }],
     },
   ];
 }

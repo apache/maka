@@ -19,6 +19,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type * as AppShellEffects from '../../renderer/app-shell-effects.js';
 import type * as KeepSystemAwake from '../../renderer/use-keep-system-awake.js';
 import type * as ProjectContext from '../../renderer/use-project-context.js';
+import type { WindowCommand } from '../../preload/bridge-contract.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 
@@ -40,6 +41,8 @@ type CapturedSubscriptions = {
   sessionChange?: (event: { reason: string; sessionId?: string; ts: number; turnId?: string }) => void;
   settingsExternalChanged?: () => void;
   settingsGet?(): Promise<{ system: { keepSystemAwake: boolean } }>;
+  windowCommand?: (command: WindowCommand) => void;
+  windowCommandSubscribeCount: number;
 };
 type RendererMakaStub = {
   app: {
@@ -240,6 +243,7 @@ describe('AppShell effect stability contract', () => {
       activeSessionSubscribeCount: 0,
       connectionSubscribeCount: 0,
       planDueSubscribeCount: 0,
+      windowCommandSubscribeCount: 0,
     };
     const root = installReactRenderer(captured);
     const calls: string[] = [];
@@ -278,6 +282,7 @@ describe('AppShell effect stability contract', () => {
       activeSessionSubscribeCount: 0,
       connectionSubscribeCount: 0,
       planDueSubscribeCount: 0,
+      windowCommandSubscribeCount: 0,
     };
     const root = installReactRenderer(captured);
     const refs = { activeIdRef: { current: 'session-1' } };
@@ -311,6 +316,46 @@ describe('AppShell effect stability contract', () => {
     assert.deepEqual(calls, ['second']);
   });
 
+  it('keeps the window-command subscription stable while routing native-menu commands', async () => {
+    const effects = await appShellEffects;
+    const refs = createBootstrapRefs();
+    const captured: CapturedSubscriptions = {
+      activeSessionSubscribeCount: 0,
+      connectionSubscribeCount: 0,
+      planDueSubscribeCount: 0,
+      windowCommandSubscribeCount: 0,
+    };
+    const root = installReactRenderer(captured);
+    const commands: string[] = [];
+    const run = () =>
+      render(
+        root,
+        createElement(BootstrapSubscriptionProbe, {
+          effects,
+          onConnectionEvent: () => {},
+          onCreateSession: () => commands.push('newTask'),
+          onOpenSettings: () => commands.push('openSettings'),
+          onOpenHelp: () => commands.push('openHelp'),
+          refs,
+        }),
+      );
+
+    await run();
+    assert.equal(captured.windowCommandSubscribeCount, 1);
+
+    await run();
+    assert.equal(captured.windowCommandSubscribeCount, 1, 'rerendering with a new handler must not resubscribe');
+
+    await act(async () => {
+      captured.windowCommand?.({ id: 'newTask' });
+      captured.windowCommand?.({ id: 'openSettings' });
+      captured.windowCommand?.({ id: 'openHelp' });
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(commands, ['newTask', 'openSettings', 'openHelp']);
+  });
+
   it('keeps plan reminder toast actions on the latest navigation handler', async () => {
     const effects = await appShellEffects;
     const refs = createBootstrapRefs();
@@ -318,6 +363,7 @@ describe('AppShell effect stability contract', () => {
       activeSessionSubscribeCount: 0,
       connectionSubscribeCount: 0,
       planDueSubscribeCount: 0,
+      windowCommandSubscribeCount: 0,
     };
     const root = installReactRenderer(captured);
     const navSections: string[] = [];
@@ -626,6 +672,9 @@ function BootstrapSubscriptionProbe(props: {
   onNavSelection?(selection: { section: string }): void;
   onToastAction?(onClick: (() => void) | undefined): void;
   onConfirmLiveTurn?(sessionId: string, turnId: string): void;
+  onCreateSession?(): void;
+  onOpenSettings?(): void;
+  onOpenHelp?(): void;
   refs: ReturnType<typeof createBootstrapRefs>;
 }) {
   props.effects.useAppShellBootstrapSubscriptions({
@@ -636,10 +685,10 @@ function BootstrapSubscriptionProbe(props: {
     clearPendingTurnActionsForSession: () => {},
     confirmLiveTurn: (sessionId: string, turnId: string) => props.onConfirmLiveTurn?.(sessionId, turnId),
     clearSessionRendererState: () => {},
-    createSession: () => {},
+    createSession: () => props.onCreateSession?.(),
     handleConnectionEvent: props.onConnectionEvent,
-    openHelp: () => {},
-    openSettings: () => {},
+    openHelp: () => props.onOpenHelp?.(),
+    openSettings: () => props.onOpenSettings?.(),
     pendingPermissionModeChangesRef: props.refs.pendingPermissionModeChangesRef,
     pendingSessionModelChangesRef: props.refs.pendingSessionModelChangesRef,
     pendingTurnActionTimersRef: props.refs.pendingTurnActionTimersRef,
@@ -836,6 +885,7 @@ function createCapturedSubscriptions(
     activeSessionSubscribeCount: 0,
     connectionSubscribeCount: 0,
     planDueSubscribeCount: 0,
+    windowCommandSubscribeCount: 0,
     ...overrides,
   };
 }
@@ -919,7 +969,11 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
       }),
     },
     appWindow: {
-      subscribeCommand: () => noop,
+      subscribeCommand(callback: (command: WindowCommand) => void) {
+        captured.windowCommandSubscribeCount += 1;
+        captured.windowCommand = callback;
+        return noop;
+      },
     },
     connections: {
       subscribeEvents(callback: (event: ConnectionEvent) => void) {

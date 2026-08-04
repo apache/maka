@@ -12,7 +12,6 @@ function deps(overrides: Partial<ApplicationMenuDeps> = {}): ApplicationMenuDeps
     platform: 'darwin',
     isPackaged: true,
     dispatch: () => {},
-    labels: { newTask: 'New Task', openSettings: 'Settings…', openHelp: 'Keyboard Shortcuts' },
     ...overrides,
   };
 }

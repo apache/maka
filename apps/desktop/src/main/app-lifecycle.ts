@@ -283,6 +283,9 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
         if (mainWindowController.hasOpenWindows()) {
           mainWindowController.send('window:command', { id: command });
         } else {
+          // Deliberately drop the command: re-creating the window is what the
+          // user asked for by acting on the menu, and replaying stale commands
+          // after startup would be surprising (accepted trade-off, #2088).
           quitCoordinator.focusOrCreateWindow();
         }
       },
