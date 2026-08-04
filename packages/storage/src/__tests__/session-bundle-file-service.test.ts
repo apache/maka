@@ -186,6 +186,13 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
       10_000,
       'hydration staging',
     );
+    const ownershipName = `${stagingName}.owner.json`;
+    await waitForFileText(
+      join(fixture.root, ownershipName),
+      '"stagingDev"',
+      10_000,
+      'bound hydration ownership',
+    );
     assert.equal(child.kill('SIGKILL'), true);
     const result = await closed;
     assert.equal(result.signal, 'SIGKILL', Buffer.concat(stderr).toString('utf8'));
@@ -194,7 +201,6 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
     const stagingMetadata = await lstat(stagingPath);
     assert.equal(stagingMetadata.isDirectory(), true);
     assert.equal(stagingMetadata.isSymbolicLink(), false);
-    const ownershipName = `${stagingName}.owner.json`;
     assert.equal((await lstat(join(fixture.root, ownershipName))).isFile(), true);
     assert.deepEqual(
       (await readdir(fixture.root)).filter((name) => name.startsWith(stagingPrefix)).sort(),
@@ -213,7 +219,9 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
     await rename(stagingPath, capturedStagingPath);
     await symlink(unrelatedRoot, stagingPath);
     assert.deepEqual(
-      await createSessionBundleFileService().cleanupHydrationStaging({ destinationRoot }),
+      await createSessionBundleFileService().cleanupHydrationStaging({
+        destinationRoot,
+      }),
       {
         destinationRoot,
         removedStagingDirectories: 0,
@@ -226,6 +234,24 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
     await rm(stagingPath);
     await rename(capturedStagingPath, stagingPath);
 
+    await rename(stagingPath, capturedStagingPath);
+    await mkdir(stagingPath);
+    await writeFile(join(stagingPath, 'replacement-sentinel'), 'replacement');
+    assert.deepEqual(
+      await createSessionBundleFileService().cleanupHydrationStaging({
+        destinationRoot,
+      }),
+      {
+        destinationRoot,
+        removedStagingDirectories: 0,
+        removedOwnershipRecords: 0,
+      },
+    );
+    assert.equal(await readFile(join(stagingPath, 'replacement-sentinel'), 'utf8'), 'replacement');
+    assert.equal((await lstat(join(fixture.root, ownershipName))).isFile(), true);
+    await rm(stagingPath, { recursive: true });
+    await rename(capturedStagingPath, stagingPath);
+
     const cleanup = await createSessionBundleFileService().cleanupHydrationStaging({
       destinationRoot,
     });
@@ -235,12 +261,16 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
       removedOwnershipRecords: 1,
     });
     await assert.rejects(lstat(stagingPath), { code: 'ENOENT' });
-    await assert.rejects(lstat(join(fixture.root, ownershipName)), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(fixture.root, ownershipName)), {
+      code: 'ENOENT',
+    });
     assert.equal((await lstat(decoyDirectory)).isDirectory(), true);
     assert.equal(await readFile(decoyOwnership, 'utf8'), '{}\n');
     assert.equal(await readFile(join(unrelatedRoot, 'sentinel'), 'utf8'), 'unrelated');
     assert.deepEqual(
-      await createSessionBundleFileService().cleanupHydrationStaging({ destinationRoot }),
+      await createSessionBundleFileService().cleanupHydrationStaging({
+        destinationRoot,
+      }),
       {
         destinationRoot,
         removedStagingDirectories: 0,
@@ -368,6 +398,82 @@ test('cleans the inode actually linked when the pack pathname is swapped at link
   await assert.rejects(lstat(destination), { code: 'ENOENT' });
   assert.equal(await readFile(replacement.temporaryPath, 'utf8'), 'EVIL');
   assert.equal((await lstat(replacement.capturedPath)).isFile(), true);
+});
+
+test('cleans a published pack when the temporary pathname disappears after link', async () => {
+  const fixture = await createFixture();
+  const destination = join(fixture.root, 'linked-temp-removed.tar.zst');
+  const resultPath = join(fixture.root, 'linked-temp-removed-result.json');
+  const childPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'session-bundle-pack-linked-temp-remover.js',
+  );
+  const child = spawn(
+    process.execPath,
+    [
+      childPath,
+      fixture.stateRoot,
+      fixture.workspaceRoot,
+      destination,
+      resultPath,
+      JSON.stringify(limits),
+      identityBytes.toString('hex'),
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  const stderr: Buffer[] = [];
+  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const result = await waitForChildClose(
+    child,
+    CHILD_PROCESS_TIMEOUT_MS,
+    'Session Bundle linked temp remover',
+  );
+  assert.equal(result.code, 0, Buffer.concat(stderr).toString('utf8'));
+  const removal = JSON.parse(await readFile(resultPath, 'utf8')) as {
+    code: string;
+    capturedPath: string;
+  };
+  assert.equal(removal.code, 'io_failure');
+  await assert.rejects(lstat(destination), { code: 'ENOENT' });
+  assert.equal((await lstat(removal.capturedPath)).isFile(), true);
+});
+
+test('removes an ownership record when its initialization write fails', async () => {
+  const fixture = await createFixture();
+  const archivePath = join(fixture.root, 'owner-write-failure.tar.zst');
+  const artifact = await packFixture(archivePath, fixture);
+  const destinationRoot = join(fixture.root, 'owner-write-failure-hydrated');
+  const childPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'session-bundle-hydration-owner-write-failure.js',
+  );
+  const child = spawn(
+    process.execPath,
+    [childPath, archivePath, artifact.archiveDigest, JSON.stringify(limits), destinationRoot],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const result = await waitForChildClose(
+    child,
+    CHILD_PROCESS_TIMEOUT_MS,
+    'Session Bundle ownership write failure',
+  );
+  assert.equal(result.code, 0, Buffer.concat(stderr).toString('utf8'));
+  assert.deepEqual(JSON.parse(Buffer.concat(stdout).toString('utf8')), {
+    code: 'io_failure',
+  });
+  await assert.rejects(lstat(destinationRoot), { code: 'ENOENT' });
+  assert.deepEqual(
+    (await readdir(fixture.root)).filter((name) =>
+      name.startsWith('.owner-write-failure-hydrated.maka-session-bundle-staging-'),
+    ),
+    [],
+  );
 });
 
 test('reports read-side source changes and filesystem failures at the operation boundary', async () => {
@@ -973,6 +1079,21 @@ async function waitForDirectoryEntry(
       const metadata = await lstat(join(root, entry));
       if (metadata.isDirectory() && !metadata.isSymbolicLink()) return entry;
     }
+    await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 1));
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);
+}
+
+async function waitForFileText(
+  path: string,
+  expected: string,
+  timeoutMs: number,
+  label: string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const contents = await readFile(path, 'utf8').catch(() => undefined);
+    if (contents?.includes(expected)) return;
     await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 1));
   }
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);

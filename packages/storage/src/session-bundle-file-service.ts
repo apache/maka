@@ -10,6 +10,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
   stat,
   type FileHandle,
 } from 'node:fs/promises';
@@ -78,8 +79,10 @@ const HYDRATION_STAGING_MARKER = '.maka-session-bundle-staging-';
 const HYDRATION_OWNERSHIP_SUFFIX = '.owner.json';
 const HYDRATION_OWNERSHIP_KIND = 'maka-session-bundle-hydration-staging' as const;
 const HYDRATION_OWNERSHIP_MAX_BYTES = 2 * 1024;
+const HYDRATION_CLEANUP_SUFFIX = '.cleanup';
 const HYDRATION_TOKEN_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const FILESYSTEM_ID_PATTERN = /^(0|[1-9][0-9]*)$/;
 const PACK_TEMP_MARKER = '.maka-session-bundle-pack-';
 const PUBLICATION_LOCK_MARKER = '.maka-session-bundle-publish-';
 const PACK_FILE_CHUNK_BYTES = 64 * 1024;
@@ -88,9 +91,12 @@ const SESSION_BUNDLE_ZSTD_WINDOW_DESCRIPTOR = 0x58;
 const NODE_ZSTD_TRAILING_EMPTY_FRAME = Buffer.from('28b52ffd040001000099e9d851', 'hex');
 const publicationLockGates = new Map<string, Promise<void>>();
 
-interface FileFingerprint {
+interface FilesystemNodeIdentity {
   dev: bigint;
   ino: bigint;
+}
+
+interface FileFingerprint extends FilesystemNodeIdentity {
   nlink: bigint;
   size: bigint;
   mtimeNs: bigint;
@@ -114,7 +120,14 @@ interface HydrationStagingOwnershipV1 {
   destinationName: string;
   stagingName: string;
   token: string;
+  stagingDev: string;
+  stagingIno: string;
 }
+
+type HydrationStagingOwnershipReservationV1 = Omit<
+  HydrationStagingOwnershipV1,
+  'stagingDev' | 'stagingIno'
+>;
 
 interface PackDirectoryEntry {
   canonical: Extract<SessionBundleCanonicalTreeEntry, { kind: 'directory' }>;
@@ -1543,28 +1556,29 @@ async function publishPackFileNoReplace(
     throw error;
   }
 
+  // Establish cleanup ownership from the path that link() published before any
+  // lookup of the mutable temporary pathname can fail. The final cleanup still
+  // verifies this inode binding before removing the destination.
+  const linkedMetadata = await lstat(destination, { bigint: true });
+  if (linkedMetadata.isFile() && !linkedMetadata.isSymbolicLink()) {
+    state.linkedFingerprint = fingerprint(linkedMetadata);
+  }
   const [beforeHandle, beforeTemporary, beforeDestination] = await Promise.all([
     handle.stat({ bigint: true }),
     lstat(temporaryPath, { bigint: true }),
     lstat(destination, { bigint: true }),
   ]);
   const verificationFingerprint = fingerprint(beforeHandle);
-  const linkedFingerprint = fingerprint(beforeDestination);
-  if (
-    beforeTemporary.isFile() &&
-    beforeDestination.isFile() &&
-    !beforeTemporary.isSymbolicLink() &&
-    !beforeDestination.isSymbolicLink() &&
-    sameFilesystemNode(fingerprint(beforeTemporary), linkedFingerprint)
-  ) {
-    // Cleanup must follow the inode this link() actually published, even when
-    // the mutable temporary pathname was swapped after its binding check.
-    state.linkedFingerprint = linkedFingerprint;
-  }
   if (
     !beforeHandle.isFile() ||
+    !beforeTemporary.isFile() ||
     !beforeDestination.isFile() ||
+    beforeTemporary.isSymbolicLink() ||
+    beforeDestination.isSymbolicLink() ||
     beforeHandle.size !== BigInt(expectedBytes) ||
+    state.linkedFingerprint === undefined ||
+    !sameFilesystemNode(state.linkedFingerprint, fingerprint(beforeDestination)) ||
+    !sameFilesystemNode(fingerprint(beforeTemporary), fingerprint(beforeDestination)) ||
     !sameFilesystemNode(hashedFingerprint, verificationFingerprint) ||
     !sameFingerprint(verificationFingerprint, fingerprint(beforeDestination))
   ) {
@@ -1710,6 +1724,21 @@ async function writeAll(
   }
 }
 
+async function replaceOpenFileContents(
+  handle: FileHandle,
+  contents: Buffer,
+  operation: 'pack' | 'hydrate',
+): Promise<void> {
+  await handle.truncate(0);
+  let offset = 0;
+  while (offset < contents.byteLength) {
+    const result = await handle.write(contents, offset, contents.byteLength - offset, offset);
+    if (result.bytesWritten <= 0) throw ioError(operation);
+    offset += result.bytesWritten;
+  }
+  await handle.sync();
+}
+
 async function createHydrationStaging(
   destinationRoot: string,
   parentMetadata: BigIntStats,
@@ -1721,7 +1750,7 @@ async function createHydrationStaging(
   const stagingName = `${prefix}${token}`;
   const stagingRoot = join(parent, stagingName);
   const ownershipPath = `${stagingRoot}${HYDRATION_OWNERSHIP_SUFFIX}`;
-  const ownership = encodeHydrationStagingOwnership({
+  const reservation = encodeHydrationStagingOwnershipReservation({
     schemaVersion: 1,
     kind: HYDRATION_OWNERSHIP_KIND,
     destinationName,
@@ -1729,15 +1758,24 @@ async function createHydrationStaging(
     token,
   });
   let ownershipHandle: FileHandle | undefined;
+  let createdOwnershipFingerprint: FileFingerprint | undefined;
+  let stagingFingerprint: FileFingerprint | undefined;
+  let initialized = false;
   try {
     ownershipHandle = await open(ownershipPath, 'wx', 0o600);
-    await writeAll(ownershipHandle, ownership, 'hydrate');
+    const createdOwnershipMetadata = await ownershipHandle.stat({
+      bigint: true,
+    });
+    if (
+      !createdOwnershipMetadata.isFile() ||
+      createdOwnershipMetadata.nlink !== 1n ||
+      createdOwnershipMetadata.size !== 0n
+    ) {
+      throw ioError('hydrate');
+    }
+    createdOwnershipFingerprint = fingerprint(createdOwnershipMetadata);
+    await writeAll(ownershipHandle, reservation, 'hydrate');
     await ownershipHandle.sync();
-    const ownershipMetadata = await ownershipHandle.stat({ bigint: true });
-    if (!ownershipMetadata.isFile() || ownershipMetadata.nlink !== 1n) throw ioError('hydrate');
-    const ownershipFingerprint = fingerprint(ownershipMetadata);
-    await ownershipHandle.close();
-    ownershipHandle = undefined;
     await syncDirectory(parent);
 
     await mkdir(stagingRoot, { mode: 0o700 });
@@ -1750,15 +1788,54 @@ async function createHydrationStaging(
     ) {
       throw ioError('hydrate');
     }
+    stagingFingerprint = fingerprint(stagingMetadata);
     await syncDirectory(parent);
+
+    const ownership = encodeHydrationStagingOwnership({
+      schemaVersion: 1,
+      kind: HYDRATION_OWNERSHIP_KIND,
+      destinationName,
+      stagingName,
+      token,
+      stagingDev: stagingMetadata.dev.toString(),
+      stagingIno: stagingMetadata.ino.toString(),
+    });
+    await replaceOpenFileContents(ownershipHandle, ownership, 'hydrate');
+    const [ownershipMetadata, ownershipPathMetadata] = await Promise.all([
+      ownershipHandle.stat({ bigint: true }),
+      lstat(ownershipPath, { bigint: true }),
+    ]);
+    if (
+      !ownershipMetadata.isFile() ||
+      !ownershipPathMetadata.isFile() ||
+      ownershipPathMetadata.isSymbolicLink() ||
+      ownershipMetadata.nlink !== 1n ||
+      !sameFilesystemNode(createdOwnershipFingerprint, fingerprint(ownershipMetadata)) ||
+      !sameFingerprint(fingerprint(ownershipMetadata), fingerprint(ownershipPathMetadata))
+    ) {
+      throw ioError('hydrate');
+    }
+    const ownershipFingerprint = fingerprint(ownershipMetadata);
+    await ownershipHandle.close();
+    ownershipHandle = undefined;
+    initialized = true;
     return {
       stagingRoot,
-      stagingFingerprint: fingerprint(stagingMetadata),
+      stagingFingerprint,
       ownershipPath,
       ownershipFingerprint,
     };
   } finally {
     await ownershipHandle?.close().catch(() => {});
+    if (!initialized) {
+      if (stagingFingerprint !== undefined) {
+        await removeOwnedDirectory(stagingRoot, parent, stagingFingerprint).catch(() => {});
+      }
+      if (createdOwnershipFingerprint !== undefined) {
+        await removeOwnedPackFile(ownershipPath, createdOwnershipFingerprint).catch(() => {});
+      }
+      await syncDirectory(parent).catch(() => {});
+    }
   }
 }
 
@@ -1789,40 +1866,32 @@ async function cleanupHydrationStagingForDestination(
       ownershipName,
     );
     if (owned === undefined) continue;
-    const stagingMetadata = await lstat(owned.stagingRoot, { bigint: true }).catch(
-      (error: unknown) => {
-        if (isErrno(error, 'ENOENT')) return undefined;
-        throw error;
-      },
-    );
-    if (stagingMetadata === undefined) {
+    if (await removeOwnedDirectory(owned.stagingRoot, parent, owned.stagingIdentity)) {
+      removedStagingDirectories += 1;
+      changed = true;
       if (await removeOwnedPackFile(owned.ownershipPath, owned.ownershipFingerprint)) {
         removedOwnershipRecords += 1;
-        changed = true;
       }
       continue;
     }
+
+    const [stagingMetadata, quarantineMetadata] = await Promise.all([
+      lstat(owned.stagingRoot).catch((error: unknown) => {
+        if (isErrno(error, 'ENOENT')) return undefined;
+        throw error;
+      }),
+      lstat(hydrationCleanupRoot(owned.stagingRoot)).catch((error: unknown) => {
+        if (isErrno(error, 'ENOENT')) return undefined;
+        throw error;
+      }),
+    ]);
     if (
-      !stagingMetadata.isDirectory() ||
-      stagingMetadata.isSymbolicLink() ||
-      stagingMetadata.dev !== parentMetadata.dev
+      stagingMetadata === undefined &&
+      quarantineMetadata === undefined &&
+      (await removeOwnedPackFile(owned.ownershipPath, owned.ownershipFingerprint))
     ) {
-      continue;
-    }
-    const expectedStaging = fingerprint(stagingMetadata);
-    const currentStaging = await lstat(owned.stagingRoot, { bigint: true });
-    if (
-      !currentStaging.isDirectory() ||
-      currentStaging.isSymbolicLink() ||
-      !sameFingerprint(expectedStaging, fingerprint(currentStaging))
-    ) {
-      continue;
-    }
-    await rm(owned.stagingRoot, { recursive: true });
-    removedStagingDirectories += 1;
-    changed = true;
-    if (await removeOwnedPackFile(owned.ownershipPath, owned.ownershipFingerprint)) {
       removedOwnershipRecords += 1;
+      changed = true;
     }
   }
   if (changed) await syncDirectory(parent);
@@ -1837,6 +1906,7 @@ async function readHydrationStagingOwnership(
 ): Promise<
   | {
       stagingRoot: string;
+      stagingIdentity: FilesystemNodeIdentity;
       ownershipPath: string;
       ownershipFingerprint: FileFingerprint;
     }
@@ -1882,6 +1952,10 @@ async function readHydrationStagingOwnership(
     }
     return {
       stagingRoot: join(parent, ownership.stagingName),
+      stagingIdentity: {
+        dev: BigInt(ownership.stagingDev),
+        ino: BigInt(ownership.stagingIno),
+      },
       ownershipPath,
       ownershipFingerprint,
     };
@@ -1894,6 +1968,12 @@ function encodeHydrationStagingOwnership(value: HydrationStagingOwnershipV1): Bu
   return Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
 }
 
+function encodeHydrationStagingOwnershipReservation(
+  value: HydrationStagingOwnershipReservationV1,
+): Buffer {
+  return Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
+}
+
 function decodeHydrationStagingOwnership(value: Buffer): HydrationStagingOwnershipV1 | undefined {
   let decoded: unknown;
   try {
@@ -1903,13 +1983,17 @@ function decodeHydrationStagingOwnership(value: Buffer): HydrationStagingOwnersh
   }
   if (
     !isRecord(decoded) ||
-    Object.keys(decoded).length !== 5 ||
+    Object.keys(decoded).length !== 7 ||
     decoded.schemaVersion !== 1 ||
     decoded.kind !== HYDRATION_OWNERSHIP_KIND ||
     typeof decoded.destinationName !== 'string' ||
     typeof decoded.stagingName !== 'string' ||
     typeof decoded.token !== 'string' ||
-    !HYDRATION_TOKEN_PATTERN.test(decoded.token)
+    !HYDRATION_TOKEN_PATTERN.test(decoded.token) ||
+    typeof decoded.stagingDev !== 'string' ||
+    !FILESYSTEM_ID_PATTERN.test(decoded.stagingDev) ||
+    typeof decoded.stagingIno !== 'string' ||
+    !FILESYSTEM_ID_PATTERN.test(decoded.stagingIno)
   ) {
     return undefined;
   }
@@ -1919,6 +2003,8 @@ function decodeHydrationStagingOwnership(value: Buffer): HydrationStagingOwnersh
     destinationName: decoded.destinationName,
     stagingName: decoded.stagingName,
     token: decoded.token,
+    stagingDev: decoded.stagingDev,
+    stagingIno: decoded.stagingIno,
   };
   return encodeHydrationStagingOwnership(ownership).equals(value) ? ownership : undefined;
 }
@@ -1937,6 +2023,101 @@ async function readBoundedFileHandle(
   return offset > maxBytes ? undefined : buffer.subarray(0, offset);
 }
 
+async function removeOwnedDirectory(
+  path: string,
+  parent: string,
+  expectedIdentity: FilesystemNodeIdentity,
+): Promise<boolean> {
+  if (dirname(path) !== parent) return false;
+  const quarantineRoot = hydrationCleanupRoot(path);
+  const quarantinedPath = join(quarantineRoot, 'staging');
+  const existingQuarantined = await lstat(quarantinedPath, {
+    bigint: true,
+  }).catch((error: unknown) => {
+    if (isErrno(error, 'ENOENT') || isErrno(error, 'ENOTDIR')) return undefined;
+    throw error;
+  });
+  if (existingQuarantined !== undefined) {
+    if (
+      !existingQuarantined.isDirectory() ||
+      existingQuarantined.isSymbolicLink() ||
+      !sameFilesystemNode(expectedIdentity, fingerprint(existingQuarantined))
+    ) {
+      return false;
+    }
+    await rm(quarantinedPath, { recursive: true });
+    await rmdir(quarantineRoot).catch(() => {});
+    return true;
+  }
+  try {
+    await rmdir(quarantineRoot);
+  } catch (error) {
+    if (!isErrno(error, 'ENOENT')) return false;
+  }
+
+  const initial = await lstat(path, { bigint: true }).catch((error: unknown) => {
+    if (isErrno(error, 'ENOENT')) return undefined;
+    throw error;
+  });
+  if (
+    initial === undefined ||
+    !initial.isDirectory() ||
+    initial.isSymbolicLink() ||
+    !sameFilesystemNode(expectedIdentity, fingerprint(initial))
+  ) {
+    return false;
+  }
+
+  // Recursive removal is path-based in Node. Move the candidate into a fresh,
+  // destination-owned quarantine first, then verify the moved inode. Its name
+  // is derivable from the ownership record so a crash during cleanup can resume.
+  let quarantined = false;
+  try {
+    await mkdir(quarantineRoot, { mode: 0o700 });
+  } catch (error) {
+    if (isErrno(error, 'EEXIST')) return false;
+    throw error;
+  }
+  try {
+    const current = await lstat(path, { bigint: true }).catch((error: unknown) => {
+      if (isErrno(error, 'ENOENT')) return undefined;
+      throw error;
+    });
+    if (
+      current === undefined ||
+      !current.isDirectory() ||
+      current.isSymbolicLink() ||
+      !sameFilesystemNode(expectedIdentity, fingerprint(current))
+    ) {
+      return false;
+    }
+    try {
+      await rename(path, quarantinedPath);
+    } catch (error) {
+      if (isErrno(error, 'ENOENT')) return false;
+      throw error;
+    }
+    quarantined = true;
+    const moved = await lstat(quarantinedPath, { bigint: true });
+    if (
+      !moved.isDirectory() ||
+      moved.isSymbolicLink() ||
+      !sameFilesystemNode(expectedIdentity, fingerprint(moved))
+    ) {
+      return false;
+    }
+    await rm(quarantinedPath, { recursive: true });
+    quarantined = false;
+    return true;
+  } finally {
+    if (!quarantined) await rmdir(quarantineRoot).catch(() => {});
+  }
+}
+
+function hydrationCleanupRoot(stagingRoot: string): string {
+  return `${stagingRoot}${HYDRATION_CLEANUP_SUFFIX}`;
+}
+
 async function removeOwnedHydrationStaging(
   staging: HydrationStagingBinding,
   parent: string,
@@ -1951,18 +2132,7 @@ async function removeOwnedHydrationStaging(
   ) {
     return;
   }
-  const metadata = await lstat(staging.stagingRoot, { bigint: true }).catch((error: unknown) => {
-    if (isErrno(error, 'ENOENT')) return undefined;
-    throw error;
-  });
-  if (
-    metadata !== undefined &&
-    metadata.isDirectory() &&
-    !metadata.isSymbolicLink() &&
-    sameFilesystemNode(staging.stagingFingerprint, fingerprint(metadata))
-  ) {
-    await rm(staging.stagingRoot, { recursive: true });
-  }
+  await removeOwnedDirectory(staging.stagingRoot, parent, staging.stagingFingerprint);
   await removeOwnedPackFile(staging.ownershipPath, staging.ownershipFingerprint);
   await syncDirectory(parent);
 }
@@ -2036,7 +2206,7 @@ function sameFingerprint(left: FileFingerprint, right: FileFingerprint): boolean
   );
 }
 
-function sameFilesystemNode(left: FileFingerprint, right: FileFingerprint): boolean {
+function sameFilesystemNode(left: FilesystemNodeIdentity, right: FilesystemNodeIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
