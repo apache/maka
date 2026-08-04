@@ -2582,6 +2582,7 @@ function AppShellContent({
         setUiLocalePreference={setUiLocalePreference}
         uiLocaleUpdateGate={uiLocaleUpdateGate}
         setUserLabel={setUserLabel}
+        setDefaultPermissionMode={setDefaultPermissionMode}
         settingsRequestedSection={settingsRequestedSection}
         settingsProviderCatalogOpen={settingsProviderCatalogOpen}
         settingsConnectionDetailSlug={settingsConnectionDetailSlug}

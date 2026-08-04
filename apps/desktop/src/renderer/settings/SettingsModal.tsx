@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type {
+  ChatDefaultPermissionMode,
   LlmConnection,
   ProviderType,
   SettingsSection,
@@ -35,6 +36,7 @@ export function SettingsModal(props: {
   onUiLocalePreferenceChange(preference: UiLocalePreference): void;
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
+  onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
   /**
    * Force the modal to a specific section when it (re-)mounts or when the
    * value changes while already open. Used by the command palette so
@@ -100,6 +102,7 @@ export function SettingsModal(props: {
         onUiLocalePreferenceChange={props.onUiLocalePreferenceChange}
         uiLocaleUpdateGate={props.uiLocaleUpdateGate}
         onUserLabelChange={props.onUserLabelChange}
+        onDefaultPermissionModeChange={props.onDefaultPermissionModeChange}
         requestedSection={props.requestedSection}
         openProviderCatalog={props.openProviderCatalog}
         initialConnectionSlug={props.initialConnectionSlug}

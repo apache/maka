@@ -16,6 +16,7 @@ import {
 import { ArrowLeft } from '@maka/ui/icons';
 import type {
   AppSettings,
+  ChatDefaultPermissionMode,
   LlmConnection,
   ProviderType,
   SettingsSection,
@@ -66,6 +67,7 @@ export function SettingsSurface(props: {
   onUiLocalePreferenceChange(preference: UiLocalePreference): void;
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
+  onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
   requestedSection?: SettingsSection;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
@@ -201,6 +203,12 @@ export function SettingsSurface(props: {
         next.personalization.uiLocale,
         props.onUiLocalePreferenceChange,
       );
+      if (patch.chatDefaults?.permissionMode !== undefined) {
+        // The empty composer lives outside Settings and mirrors this value.
+        // Update it from the committed result even if Settings closed while
+        // the save was in flight; a close-time re-read can race the write.
+        props.onDefaultPermissionModeChange(next.chatDefaults.permissionMode);
+      }
       if (settingsModalMountedRef.current && ticket === settingsUpdateTicketRef.current) {
         setSettings(next);
         props.onUserLabelChange?.(next.personalization.displayName);

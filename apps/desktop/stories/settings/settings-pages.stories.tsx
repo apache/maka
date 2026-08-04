@@ -813,6 +813,7 @@ function SettingsStory(props: {
           onThemePaletteChange={setThemePalette}
           onUiLocalePreferenceChange={noop}
           uiLocaleUpdateGate={uiLocaleUpdateGate}
+          onDefaultPermissionModeChange={noop}
           requestedSection={props.section}
           initialFocusRef={initialFocusRef}
           onOpenDailyReview={noop}
