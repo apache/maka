@@ -52,9 +52,9 @@ test('reports activity for every pulled SDK stream part before semantic translat
   const semanticKinds: string[] = [];
   for await (const event of result.events) semanticKinds.push(event.kind);
 
-  // streamText adds start-step and finish-step around the six provider parts.
-  // The tool-input parts are intentionally absent from the semantic stream,
-  // but each successfully pulled SDK part still reports liveness.
+  // streamText consumes the provider stream-start/finish parts and emits
+  // start/start-step plus finish-step/finish, so this fixture becomes eight
+  // pulled SDK parts. Tool-input parts stay absent from the semantic stream.
   assert.equal(activityCount, parts.length + 2);
   assert.ok(activityCount > semanticKinds.length);
 });

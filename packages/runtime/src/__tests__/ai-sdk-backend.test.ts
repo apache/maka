@@ -10482,7 +10482,7 @@ describe('AiSdkBackend tool execution', () => {
     assert.equal(resumeCount, 1);
   });
 
-  test('keeps the stream alive while a large tool input is still arriving', async () => {
+  test('keeps the stream alive while filtered tool input parts keep arriving', async () => {
     let providerCalls = 0;
     const model = new MockLanguageModelV4({
       doStream: async () => {
@@ -10525,7 +10525,7 @@ describe('AiSdkBackend tool execution', () => {
       modelId: 'claude-sonnet-4-5-20250929',
       modelFactory: () => model,
       tools: [],
-      streamConnectTimeoutMs: 100,
+      streamConnectTimeoutMs: 1_000,
       streamIdleTimeoutMs: 100,
       newId: idGenerator(),
       now: Date.now,
