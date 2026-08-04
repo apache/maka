@@ -990,7 +990,7 @@ export class AiSdkBackend implements AgentBackend {
       let watchdog: StreamWatchdog | null = null;
       let watchdogTimeoutError: Error | null = null;
       try {
-        watchdog = new StreamWatchdog({
+        const streamWatchdog = new StreamWatchdog({
           now: this.now,
           connectTimeoutMs: this.input.streamConnectTimeoutMs,
           idleTimeoutMs: this.input.streamIdleTimeoutMs,
@@ -1006,6 +1006,7 @@ export class AiSdkBackend implements AgentBackend {
             turnAbortController.abort(watchdogTimeoutError);
           },
         });
+        watchdog = streamWatchdog;
         scope.watchdog = watchdog;
         watchdog.start();
         const activeTools = plan.activeTools;
@@ -1375,6 +1376,7 @@ export class AiSdkBackend implements AgentBackend {
               messages: attemptMessages,
               tools: modelTools,
               activeTools: activeToolsForRequest,
+              onStreamActivity: () => streamWatchdog.markActivity(),
               repairToolCall: async ({
                 toolCall,
                 error,
@@ -1402,7 +1404,6 @@ export class AiSdkBackend implements AgentBackend {
             try {
               for await (const event of result.events) {
                 if (scope.aborted) break;
-                watchdog.markActivity();
                 if (event.kind === 'error') {
                   // A request-level error ends this stream; capture it and stop
                   // consuming (the synthesized trailer carries no real step) so

@@ -109,6 +109,8 @@ export interface ModelAdapterStreamInput {
   messages: ModelMessage[];
   tools: ModelToolSet;
   activeTools: string[];
+  /** Observe each successfully pulled SDK stream part before semantic translation. */
+  onStreamActivity: () => void;
   system?: string;
   abortSignal: AbortSignal;
   repairToolCall: (input: {
@@ -228,7 +230,7 @@ export class ModelAdapter {
       // `error` event → ErrorEvent path, so silence the default.
       onError: () => {},
     }) as unknown as SdkStreamResult;
-    return this.toModelStreamResult(sdkResult);
+    return this.toModelStreamResult(sdkResult, input.onStreamActivity);
   }
 
   /**
@@ -237,7 +239,10 @@ export class ModelAdapter {
    * streaming stays live; failures, usage, finish reason, and request messages
    * are normalized to Maka-owned contracts. No AI SDK type escapes this method.
    */
-  private toModelStreamResult(sdk: SdkStreamResult): ModelStreamResult {
+  private toModelStreamResult(
+    sdk: SdkStreamResult,
+    onStreamActivity: () => void,
+  ): ModelStreamResult {
     const kimiOpenAiTransportState = usesKimiOpenAiChat(this.input.connection, this.input.modelId)
       ? this.kimiOpenAiTransportState
       : undefined;
@@ -245,6 +250,7 @@ export class ModelAdapter {
       async *[Symbol.asyncIterator]() {
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
+            onStreamActivity();
             for (const event of translateChunk(chunk, kimiOpenAiTransportState)) yield event;
           }
         } catch (error) {

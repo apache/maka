@@ -10482,6 +10482,71 @@ describe('AiSdkBackend tool execution', () => {
     assert.equal(resumeCount, 1);
   });
 
+  test('keeps the stream alive while a large tool input is still arriving', async () => {
+    let providerCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        providerCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] = [
+          { type: 'stream-start', warnings: [] },
+          { type: 'text-start', id: 'text-1' },
+          { type: 'text-delta', id: 'text-1', delta: 'Preparing the report.' },
+          { type: 'text-end', id: 'text-1' },
+          { type: 'tool-input-start', id: 'tool-1', toolName: 'Write' },
+          { type: 'tool-input-delta', id: 'tool-1', delta: '{"path":' },
+          { type: 'tool-input-delta', id: 'tool-1', delta: '"report.md",' },
+          { type: 'tool-input-delta', id: 'tool-1', delta: '"content":' },
+          { type: 'tool-input-delta', id: 'tool-1', delta: '"complete"}' },
+          { type: 'tool-input-end', id: 'tool-1' },
+          { type: 'text-start', id: 'text-2' },
+          { type: 'text-delta', id: 'text-2', delta: 'Done.' },
+          { type: 'text-end', id: 'text-2' },
+          {
+            type: 'finish',
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: emptyUsage(),
+          },
+        ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: 25,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header('bypass'),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => model,
+      tools: [],
+      streamConnectTimeoutMs: 100,
+      streamIdleTimeoutMs: 100,
+      newId: idGenerator(),
+      now: Date.now,
+    });
+
+    const events: SessionEvent[] = [];
+    await collectEvents(
+      backend.send({ turnId: 'turn-1', text: 'write the report', context: [] }),
+      events,
+    );
+
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+      JSON.stringify(events.filter((event) => event.type === 'error')),
+    );
+    assert.equal(providerCalls, 1);
+    const completion = events.find((event) => event.type === 'complete');
+    assert.equal(completion?.type === 'complete' ? completion.stopReason : undefined, 'end_turn');
+  });
+
   test('caps concurrent read-only subagent tools in one turn', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
