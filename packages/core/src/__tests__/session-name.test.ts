@@ -49,6 +49,23 @@ describe('normalizeUserSessionName', () => {
     }
   });
 
+  // #1404: the shared sanitizeUnicodeText pipeline (union coverage) now also
+  // neutralizes the bidi marks (ALM/LRM/RLM) and invisible operators
+  // (WJ/IT/IS/IP) that session-name used to miss. Written with \u escapes so
+  // the source stays plain text. Locks the coverage so it can't silently drift
+  // back out of sync with foreign-session.
+  it('neutralizes the bidi marks and invisible operators the union pipeline adds', () => {
+    const cases = [
+      // bidi marks → space: U+061C ALM, U+200E LRM, U+200F RLM
+      ['a\u061Cb\u200Ec\u200Fd', 'a b c d'],
+      // invisible format chars → removed: U+2060 WJ, U+2061 IT, U+2062 IS, U+2063 IP, U+2064 IP
+      ['x\u2060y\u2061z\u2062w\u2063v\u2064u', 'xyzwvu'],
+    ] as const;
+    for (const [input, value] of cases) {
+      assert.deepEqual(normalizeUserSessionName(input), { ok: true, value });
+    }
+  });
+
   it('normalizes canonically equivalent text to NFC', () => {
     assert.deepEqual(normalizeUserSessionName('café'), { ok: true, value: 'café' });
   });

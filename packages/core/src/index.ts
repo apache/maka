@@ -1081,6 +1081,10 @@ export {
   stripEnvelopeTags,
 } from './foreign-session.js';
 
+// text-sanitize.ts (#1404)
+export type { SanitizeUnicodeOptions } from './text-sanitize.js';
+export { sanitizeUnicodeText } from './text-sanitize.js';
+
 // task-ledger.ts (main agent session task tracking)
 export type {
   CreateTaskInput,

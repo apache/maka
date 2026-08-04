@@ -11,9 +11,9 @@
  * bidi spoofs. This module is the single gate all foreign text passes
  * through before it may reach a Maka surface or an LLM prompt:
  *
- *   - `sanitizeForeignText` — NFC, C0/C1/bidi controls → space, zero-width
- *     removal, whitespace collapse, code-point cap (the session-name.ts
- *     pipeline, parameterized for longer payloads).
+ *   - `sanitizeForeignText` — the shared Unicode pipeline in text-sanitize.ts
+ *     (NFC, C0/C1/bidi controls → space, zero-width removal, whitespace
+ *     collapse, code-point cap), parameterized for longer payloads.
  *   - digest building redacts secrets (`redactSecrets`) and never includes
  *     tool outputs, system prompts, or thinking blocks — only user-authored
  *     messages, assistant text, and file paths, each capped.
@@ -24,6 +24,7 @@
  */
 
 import { redactSecrets } from './redaction.js';
+import { sanitizeUnicodeText } from './text-sanitize.js';
 
 export const FOREIGN_SESSION_SOURCES = ['claude-code', 'codex'] as const;
 export type ForeignSessionSource = (typeof FOREIGN_SESSION_SOURCES)[number];
@@ -86,23 +87,15 @@ export interface ForeignSessionDigest {
 }
 
 /**
- * session-name.ts pipeline generalized for foreign payloads: same character
- * classes, parameterized cap, and empty-in → empty-out (callers decide the
- * fallback; foreign text has no "reject" path because we never block a scan
- * on one bad string).
+ * Shared Unicode pipeline (text-sanitize.ts) wrapped for foreign payloads:
+ * empty-in → empty-out (callers decide the fallback; foreign text has no
+ * "reject" path because we never block a scan on one bad string). The cap is
+ * caller-supplied because foreign payloads vary (title 120 / message 2000 /
+ * path 260 code points).
  */
 export function sanitizeForeignText(input: unknown, maxCodePoints: number): string {
   if (typeof input !== 'string') return '';
-  const cleaned = input
-    .normalize('NFC')
-    .replace(/[\u0000-\u001F\u007F\u0080-\u009F]/g, ' ')
-    .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, ' ')
-    .replace(/[\u200B-\u200D\u2060-\u2064\uFEFF]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const points = Array.from(cleaned);
-  if (points.length <= maxCodePoints) return cleaned;
-  return points.slice(0, maxCodePoints).join('') + '…';
+  return sanitizeUnicodeText(input, { maxCodePoints });
 }
 
 /** Sanitize + redact in one step for digest payloads. */
