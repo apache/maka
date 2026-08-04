@@ -2879,12 +2879,15 @@ export class AiSdkBackend implements AgentBackend {
    *
    * The ledger lands a step's parts as: tool_call(s), tool_result(s), thinking,
    * text (the per-step AssistantMessage flushes at `finish-step`, after the
-   * step's tool events). Model text carries the step id and closes the step: it
-   * emits `[reasoning, text, tool-call…]` then the tool results. Steps with no
-   * text closer — a thinking + tool step (its empty text closer is skipped from
-   * the plan as `empty_text_skipped`) or a pure-tool step — flush grouped by
-   * stepId, claiming any parked reasoning for that step. Legacy per-turn items
-   * (no step id) keep the older shape: tool calls form a tool-only assistant,
+   * step's tool events). Model text carries the step id and closes the step.
+   * Client tools replay as `[reasoning, text, tool-call…]` followed by tool
+   * messages; provider-executed tools replay as
+   * `[reasoning, tool-call, tool-result, text]`, preserving provider chronology
+   * for item references and grounded text. Steps with no text closer — a
+   * thinking + tool step (its empty text closer is skipped from the plan as
+   * `empty_text_skipped`) or a pure-tool step — flush grouped by stepId,
+   * claiming any parked reasoning for that step. Legacy per-turn items (no step
+   * id) keep the older shape: tool calls form a tool-only assistant,
    * text/thinking become standalone messages.
    */
   private async materializeRuntimeReplayPlan(
@@ -2988,8 +2991,8 @@ export class AiSdkBackend implements AgentBackend {
         });
       }
     };
-    // Emit one assistant message for a step: reasoning (if any), text (if any),
-    // then the step's tool calls, followed by those calls' tool results.
+    // Emit one assistant message for a step, preserving the distinct client-
+    // and provider-executed tool chronologies described above.
     const emitStep = async (
       reasoning: readonly ThinkingItem[] | undefined,
       text: TextItem | undefined,
@@ -3002,6 +3005,30 @@ export class AiSdkBackend implements AgentBackend {
       for (const item of replayReasoning ?? []) {
         if (item.part) content.push(item.part);
       }
+      // Provider-owned tools execute before the grounded assistant text in the
+      // same provider step. Preserve that chronology for Responses item
+      // references and Anthropic server_tool_use/result replay. Client tools
+      // stay after text because their execution begins only after this step.
+      for (const call of calls) {
+        if (call.providerExecuted !== true) continue;
+        content.push({
+          type: 'tool-call',
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          input: call.input,
+          ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+          providerExecuted: true,
+        });
+        const result = results.get(call.toolCallId);
+        if (!result || result.providerExecuted !== true) continue;
+        results.delete(call.toolCallId);
+        content.push({
+          type: 'tool-result',
+          toolCallId: result.toolCallId,
+          toolName: result.toolName,
+          output: await materializeReplayToolResult(result),
+        });
+      }
       if (text && text.content.length > 0) {
         content.push({
           type: 'text',
@@ -3010,6 +3037,7 @@ export class AiSdkBackend implements AgentBackend {
         });
       }
       for (const call of calls) {
+        if (call.providerExecuted === true) continue;
         content.push({
           type: 'tool-call',
           toolCallId: call.toolCallId,
@@ -3019,17 +3047,6 @@ export class AiSdkBackend implements AgentBackend {
           ...(call.providerExecuted !== undefined
             ? { providerExecuted: call.providerExecuted }
             : {}),
-        });
-      }
-      for (const call of calls) {
-        const result = results.get(call.toolCallId);
-        if (!result || result.providerExecuted !== true) continue;
-        results.delete(call.toolCallId);
-        content.push({
-          type: 'tool-result',
-          toolCallId: result.toolCallId,
-          toolName: result.toolName,
-          output: await materializeReplayToolResult(result),
         });
       }
       const replayProviderOptions = replayReasoning?.find(

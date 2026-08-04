@@ -47,6 +47,8 @@ import {
   BotRegistry,
   ShellRunProcessManager,
   SessionActivityRegistry,
+  buildParentAgentTools,
+  listRunnableBuiltinAgentDefinitions,
   listInvocableSkills,
   prepareSkillInvocationMessage,
   resolveSkillDiscoveryPaths,
@@ -57,6 +59,7 @@ import type {
   GoalTurnOutcome,
   HostCapabilities,
   HostCapabilitiesResolver,
+  MakaTool,
 } from '@maka/runtime';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
@@ -140,6 +143,7 @@ import { createSettingsRuntimeEffects } from './settings-runtime-effects.js';
 import { createAiSdkBackendFactory, createSessionStreamer } from './session-stream.js';
 import {
   resolveDesktopBackendToolSurface,
+  resolveDesktopChildToolSurface,
   resolveDesktopNewSessionSkillHost,
   resolveDesktopSessionSkillHost,
 } from './desktop-backend-tool-surface.js';
@@ -751,9 +755,26 @@ const desktopBackendToolSurfaceDeps = {
   planStore,
   getWebSearchSettings: async () => (await settingsStore.get()).webSearch,
   getPrivacySettings: async () => (await settingsStore.get()).privacy,
+  childTools: childAgentTools,
+  buildParentAgentToolsForChildSurface: (tools: readonly MakaTool[]) =>
+    buildParentAgentTools({
+      taskLedger: taskLedgerStore,
+      definitions: listRunnableBuiltinAgentDefinitions({
+        tools,
+        worktreeChildExecutorAvailable: worktreeChildExecutor !== undefined,
+      }),
+    }),
   getAgentGraphSupervisorTools: (sessionId: string) =>
     agentGraphCoordinator.toolsForSession(sessionId),
 };
+
+async function resolveDesktopChildTools(sessionId: string) {
+  const header = await store.readHeader(sessionId);
+  return resolveDesktopChildToolSurface(desktopBackendToolSurfaceDeps, {
+    header,
+    tools: childAgentTools,
+  });
+}
 // Cursor-overlay teardown assigns a module-scoped `let`, so it stays in boot.ts.
 onMainWindowClose = () => {
   computerUseOverlay.destroyAll();
@@ -917,6 +938,7 @@ const runtime = new SessionManager({
   shellRuns,
   backends,
   childTools: childAgentTools,
+  resolveChildTools: resolveDesktopChildTools,
   subagentCatalog,
   worktreeChildExecutor,
   safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',

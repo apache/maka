@@ -6,11 +6,14 @@ import type { McpClientManager } from '@maka/mcp';
 import {
   type AiSdkBackendInput,
   type BackendFactoryContext,
+  buildParentAgentTools,
+  listRunnableBuiltinAgentDefinitions,
   type MakaTool,
   type ToolAvailabilityConfig,
 } from '@maka/runtime';
 import {
   resolveDesktopBackendToolSurface,
+  resolveDesktopChildToolSurface,
   resolveDesktopNewSessionSkillHost,
   resolveDesktopSessionSkillHost,
   type DesktopBackendToolSurfaceDeps,
@@ -380,6 +383,76 @@ describe('Desktop backend tool surface', () => {
     assert.equal(
       surface.selectedTools.some((candidate) => candidate.name === 'WebSearch'),
       false,
+    );
+  });
+
+  it('derives Desktop parent and child agent availability from the routed search surface', async () => {
+    const clientSearch = tool('WebSearch', 'web_read');
+    const staticParentTools = buildParentAgentTools();
+    const deepseek: LlmConnection = {
+      ...connectionFor('deepseek-v4-flash'),
+      providerType: 'deepseek',
+      models: [{ id: 'deepseek-v4-flash', apiProtocol: 'openai-responses' }],
+    };
+    const childTools = [readTool, clientSearch];
+    const routedProfiles = new Map<boolean, string[]>();
+    const makeSearchDeps = (enabled: boolean) =>
+      makeDeps({
+        builtinTools: [readTool, ...staticParentTools],
+        childTools,
+        buildParentAgentToolsForChildSurface: (routedChildTools) => {
+          const definitions = listRunnableBuiltinAgentDefinitions({ tools: routedChildTools });
+          routedProfiles.set(enabled, definitions.map((definition) => definition.profile));
+          return buildParentAgentTools({ definitions });
+        },
+        getReadyConnection: async () => ({
+          connection: deepseek,
+          apiKey: 'deepseek-key',
+          model: 'deepseek-v4-flash',
+        }),
+        getWebSearchSettings: async () => ({
+          enabled,
+          defaultProvider: 'model',
+          providers: {
+            tavily: {
+              apiKey: '',
+              credentialSource: 'none',
+              credentialVersion: 0,
+              credentialStatus: 'untested',
+            },
+          },
+        }),
+      });
+
+    const disabledDeps = makeSearchDeps(false);
+    await resolveDesktopBackendToolSurface(
+      disabledDeps,
+      inputFor('deepseek-v4-flash'),
+    );
+    assert.equal(routedProfiles.get(false)?.includes('web_research'), false);
+    assert.deepEqual(
+      (
+        await resolveDesktopChildToolSurface(disabledDeps, {
+          header: inputFor('deepseek-v4-flash').header,
+          tools: childTools,
+        })
+      ).map((tool) => tool.name),
+      ['Read'],
+    );
+
+    const enabledDeps = makeSearchDeps(true);
+    await resolveDesktopBackendToolSurface(
+      enabledDeps,
+      inputFor('deepseek-v4-flash'),
+    );
+    assert.equal(routedProfiles.get(true)?.includes('web_research'), true);
+    const routedChildTools = await resolveDesktopChildToolSurface(enabledDeps, {
+      header: inputFor('deepseek-v4-flash').header,
+      tools: childTools,
+    });
+    assert.equal(
+      routedChildTools.find((tool) => tool.name === 'WebSearch')?.providerTool?.kind,
+      'openai-web-search',
     );
   });
 

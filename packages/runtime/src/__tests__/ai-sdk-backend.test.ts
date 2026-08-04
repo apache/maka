@@ -2158,6 +2158,88 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('replays provider-executed web search before its grounded assistant text', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildNativeWebSearchTool({ adapter: 'openai-responses' })],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u-search',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'search',
+          }),
+          runtimeEvent({
+            id: 'rt-search-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { stepId: 'provider-step' },
+            content: {
+              kind: 'function_call',
+              id: 'search-1',
+              name: 'WebSearch',
+              args: { query: 'latest Maka' },
+              providerExecuted: true,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'search-1',
+              name: 'WebSearch',
+              result: { type: 'web_search_result', query: 'latest Maka' },
+              providerOutput: { type: 'web_search_result', id: 'ws_123' },
+              providerExecuted: true,
+              isError: false,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-text',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'provider-step' },
+            content: { kind: 'text', text: 'Maka shipped the feature.' },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+    const assistant = prompt.find(
+      (message) =>
+        message.role === 'assistant' && message.content.some((part) => part.type === 'tool-call'),
+    );
+    assert.deepEqual(
+      assistant?.content.map((part) => part.type),
+      ['tool-call', 'tool-result', 'text'],
+    );
+    assert.match(JSON.stringify(assistant), /ws_123/);
+    assert.match(JSON.stringify(assistant), /Maka shipped the feature/);
+  });
+
   test('replays an image tool result as provider image data', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();
@@ -13923,6 +14005,7 @@ function runtimeEvent(input: {
   content?: RuntimeEvent['content'];
   status?: RuntimeEvent['status'];
   actions?: RuntimeEvent['actions'];
+  refs?: RuntimeEvent['refs'];
 }): RuntimeEvent {
   return {
     id: input.id,
@@ -13937,6 +14020,7 @@ function runtimeEvent(input: {
     ...(input.content ? { content: input.content } : {}),
     ...(input.status ? { status: input.status } : {}),
     ...(input.actions ? { actions: input.actions } : {}),
+    ...(input.refs ? { refs: input.refs } : {}),
   };
 }
 
