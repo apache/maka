@@ -1,21 +1,12 @@
 import type { Page } from '@playwright/test';
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { expect, test, COMPOSER_INPUT, waitForInvocableSkills } from './fixtures';
 
 async function createStarterSkillAndReload(page: Page): Promise<void> {
   const result = await page.evaluate(() => window.maka.skills.createStarter());
   expect(result.ok).toBe(true);
   await page.reload();
   await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
-  // The `/` menu lists what the renderer has projected, and that projection is
-  // refreshed asynchronously after load. Wait for the Skill to be invocable so
-  // an empty first search is never mistaken for a missing suggestion.
-  await expect
-    .poll(async () =>
-      (await page.evaluate(() => window.maka.skills.listInvocable(undefined))).map(
-        (skill) => skill.id,
-      ),
-    )
-    .toContain('starter-skill');
+  await waitForInvocableSkills(page, ['starter-skill']);
 }
 
 /** The staged Skill's inline chip, addressed by the token it serializes to. */
