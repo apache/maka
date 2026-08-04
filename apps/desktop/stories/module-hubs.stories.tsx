@@ -451,6 +451,7 @@ function ModuleSurface(props: {
 function ExtensionsSkillsSurface(props: {
   skills?: SkillEntry[];
   bundledSkillCatalog?: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkillCatalog']>;
+  onUpdateManagedSkill?: ComponentProps<typeof SkillsPage>['onUpdateManagedSkill'];
 }) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.extensions;
   return (
@@ -474,7 +475,7 @@ function ExtensionsSkillsSurface(props: {
         onPreviewManagedSkillUpdate={async (skillId) => (
           skillId === UPDATE_AVAILABLE_PREVIEW.skill.id ? UPDATE_AVAILABLE_PREVIEW : null
         )}
-        onUpdateManagedSkill={async () => true}
+        onUpdateManagedSkill={props.onUpdateManagedSkill ?? (async () => true)}
         onSetSkillEnabled={noop}
         onSetSkillPinned={noop}
         onDeleteSkill={noop}
@@ -560,6 +561,20 @@ async function waitForStoryButton(
   throw new Error('Story action button did not render');
 }
 
+async function waitForStoryMenuItem(
+  canvasElement: HTMLElement,
+  predicate: (menuItem: HTMLElement) => boolean,
+): Promise<HTMLElement> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const menuItem = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ).find(predicate);
+    if (menuItem) return menuItem;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error('Story menu item did not render');
+}
+
 async function waitForStorySelector<T extends Element>(
   canvasElement: HTMLElement,
   selector: string,
@@ -597,7 +612,64 @@ export const ExtensionsSkillsBundled: Story = {
 
 // Real path: sidebar → 扩展 → 技能, after a managed source reports an update.
 export const ExtensionsSkillsUpdateAvailable: Story = {
-  render: () => <ExtensionsSkillsSurface skills={UPDATE_AVAILABLE_SKILLS} />,
+  render: function Render() {
+    const [updateInput, setUpdateInput] = useState<unknown>(null);
+    return (
+      <>
+        <ExtensionsSkillsSurface
+          skills={UPDATE_AVAILABLE_SKILLS}
+          onUpdateManagedSkill={async (skillId, options) => {
+            setUpdateInput({ skillId, options });
+            return true;
+          }}
+        />
+        <output data-testid="skills-update-input" hidden>
+          {updateInput ? JSON.stringify(updateInput) : ''}
+        </output>
+      </>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const moreActions = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.getAttribute('aria-label') === 'release-checklist 的更多操作',
+    );
+    moreActions.click();
+
+    const storyDocument = canvasElement.ownerDocument.documentElement;
+    const viewUpdate = await waitForStoryMenuItem(
+      storyDocument,
+      (candidate) => candidate.textContent?.includes('查看更新') === true,
+    );
+    viewUpdate.click();
+
+    const review = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[aria-label="Skill 更新审查"]',
+    );
+    await expect(review.textContent).toContain(UPDATE_AVAILABLE_PREVIEW.currentContent);
+    await expect(review.textContent).toContain(UPDATE_AVAILABLE_PREVIEW.sourceContent);
+
+    const applyUpdate = await waitForStoryButton(
+      review,
+      (candidate) => candidate.textContent?.trim() === '更新到来源版本',
+    );
+    applyUpdate.click();
+
+    const output = await waitForStorySelector<HTMLOutputElement>(
+      canvasElement,
+      '[data-testid="skills-update-input"]',
+    );
+    await waitForStoryText(output, UPDATE_AVAILABLE_PREVIEW.expectedSourceSha256);
+    const input = JSON.parse(output.textContent ?? '') as Record<string, unknown>;
+    await expect(input).toEqual({
+      skillId: UPDATE_AVAILABLE_PREVIEW.skill.id,
+      options: {
+        expectedCurrentSha256: UPDATE_AVAILABLE_PREVIEW.expectedCurrentSha256,
+        expectedSourceSha256: UPDATE_AVAILABLE_PREVIEW.expectedSourceSha256,
+      },
+    });
+  },
 };
 
 // Real path: sidebar → 扩展 → 技能, with an installed Skill disabled.
