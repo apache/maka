@@ -584,15 +584,25 @@ function findChunkMatch(
 ): { start: number; end: number } | null {
   let searchFrom = 0;
   if (chunk.changeContext) {
-    const ctxIndex = lines.findIndex((line) => line.includes(chunk.changeContext!));
-    if (ctxIndex < 0) return null;
+    const ctxIndex = findContextLine(lines, chunk.changeContext);
+    if (ctxIndex < 0) {
+      // A substring-only (or absent) context never anchors a pure addition:
+      // Codex places it at EOF instead of an arbitrary substring position.
+      if (chunk.oldLines.length === 0) {
+        return { start: lines.length, end: lines.length };
+      }
+      return null;
+    }
     searchFrom = ctxIndex;
   }
 
   const old = chunk.oldLines;
   if (old.length === 0) {
     // Codex pure-insertion: EOF marker or no context → insert at EOF.
-    // With @@ context only, insert immediately after the context line.
+    // With @@ context only, insert immediately after the context line — but
+    // only when the context is a real line match. A substring-only context
+    // must never anchor the insertion at an arbitrary position, so it falls
+    // back to EOF exactly like Codex's pure-addition behavior.
     if (chunk.isEndOfFile || !chunk.changeContext) {
       return { start: lines.length, end: lines.length };
     }
@@ -632,6 +642,20 @@ function findChunkMatch(
   const end = start + old.length;
   if (chunk.isEndOfFile && end !== lines.length) return null;
   return { start, end };
+}
+
+/**
+ * Locate the `@@` context as a whole line (Codex semantics): the header names
+ * a line, not a substring, so `foo` must not anchor inside `prefix foo suffix`.
+ * Exact match after trimming trailing whitespace first, then a controlled
+ * full-trim fallback for indentation drift. Returns -1 when no line matches.
+ */
+function findContextLine(lines: readonly string[], context: string): number {
+  const trimmed = context.trimEnd();
+  const exact = lines.findIndex((line) => line.trimEnd() === trimmed);
+  if (exact >= 0) return exact;
+  const fullyTrimmed = context.trim();
+  return lines.findIndex((line) => line.trim() === fullyTrimmed);
 }
 
 function invalidHunk(

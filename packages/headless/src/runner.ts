@@ -188,6 +188,9 @@ export async function runExperimentWithStorage(
         llmConnectionSlug: config.llmConnectionSlug,
         model: config.model,
         permissionMode: 'ask',
+        ...(effectiveConfig.editingProtocol
+          ? { editingProtocol: effectiveConfig.editingProtocol }
+          : {}),
         ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
         name: `lab:${config.id}:${task.id}`,
       },

@@ -18,7 +18,6 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import {
-  canWritePath,
   compilePermissionProfile,
   type SandboxBoundaryExpansion,
   type StorageRef,
@@ -74,8 +73,7 @@ import { buildArchiveReadTool } from './archive-read-tool.js';
 import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import {
-  FilesystemWorkerClientError,
-  filesystemWorkerRuntimeWritableRoots,
+  preflightApplyPatchWrites,
   type FilesystemWorkerClient,
 } from './filesystem-worker/client.js';
 import {
@@ -1275,110 +1273,21 @@ async function preflightApplyPatchPermissions(input: {
     return;
   }
 
-  const managed = input.ctx.executionBoundary?.kind === 'managed';
-  const platform = process.platform as SandboxPlatform;
-  const compiled =
-    managed && input.ctx.executionBoundary?.kind === 'managed'
-      ? {
-          profile: input.ctx.executionBoundary.profile,
-          workspaceRoots: [input.canonicalCwd],
-        }
-      : input.permissionProfile
-        ? {
-            profile: input.permissionProfile,
-            workspaceRoots: [input.canonicalCwd],
-          }
-        : compilePermissionProfile({
-            mode: input.ctx.permissionMode ?? 'ask',
-            cwd: input.canonicalCwd,
-          });
-
-  const tmpCanonical = await realpath(tmpdir()).catch(() => tmpdir());
-  const slashTmpCanonical = await realpath('/tmp').catch(() => '/tmp');
-  const missingEntries: Array<{
-    path: string;
-    access: 'write';
-    scope: 'exact';
-  }> = [];
-
-  for (const intent of input.accesses) {
-    // Delete/Move sources address a directory entry; Add/Update/Move
-    // destinations write through the canonical (followed) target (#2059).
-    const entry =
-      intent.access === 'delete'
-        ? await assertApplyPatchEntryContained(input.canonicalCwd, intent.path)
-        : undefined;
-    const target = entry
-      ? {
-          displayPath: entry.displayPath,
-          enforcementPath: entry.entryPath,
-          targetType: await entryTargetType(entry.entryPath),
-        }
-      : await normalizeSandboxBoundaryPath({
-          path: intent.path,
-          access: 'write',
-          scope: 'exact',
-          cwd: input.canonicalCwd,
-        });
-    const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
-      platform,
-      access: 'write',
-      enforcementPath: target.enforcementPath,
-      targetType: target.targetType,
-    });
-    const pathContext = {
-      workspaceRoots: compiled.workspaceRoots,
-      tmpdir: tmpCanonical,
-      slashTmp: slashTmpCanonical,
-      ...(runtimeWritableRoots ? { runtimeWritableRoots } : {}),
-    };
-    const allowed = canWritePath(compiled.profile, target.enforcementPath, pathContext);
-    if (!allowed) {
-      missingEntries.push({
-        path: target.enforcementPath,
-        access: 'write',
-        scope: 'exact',
-      });
-    }
-  }
-
-  if (missingEntries.length === 0) return;
-
-  throw new FilesystemWorkerClientError({
-    reason: managed ? 'sandbox_boundary_required' : 'path_denied',
-    stage: 'validation',
-    recoverable: true,
-    message: managed
-      ? 'ApplyPatch requires sandbox boundary expansion for one or more paths before mutation.'
-      : 'ApplyPatch path is not writable under the current permission profile.',
-    ...(managed
-      ? {
-          requiredExpansion: {
-            filesystem: {
-              entries: missingEntries,
-            },
-          },
-        }
-      : {}),
+  // With a managed worker, the worker client owns normalization, profile
+  // compilation, writable-root widening, and the structured boundary error
+  // (with requiredExpansion for every missing path). Keeping this planning in
+  // one authority means the preflight and the mutation that follows can never
+  // disagree about a path's classification.
+  await preflightApplyPatchWrites({
+    intents: input.accesses.map((intent) => ({
+      path: intent.path,
+      access: intent.access,
+    })),
+    cwd: input.canonicalCwd,
+    ...(input.ctx.executionBoundary ? { executionBoundary: input.ctx.executionBoundary } : {}),
+    mode: input.ctx.permissionMode ?? 'ask',
+    ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
   });
-}
-
-async function entryTargetType(path: string): Promise<'missing' | 'file' | 'other'> {
-  try {
-    const metadata = await lstat(path);
-    if (metadata.isFile() || metadata.isSymbolicLink()) return 'file';
-    return 'other';
-  } catch (error) {
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      (error.code === 'ENOENT' || error.code === 'ENOTDIR')
-    ) {
-      return 'missing';
-    }
-    throw error;
-  }
 }
 
 function terminalError(

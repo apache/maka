@@ -443,6 +443,12 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
           kind: 'external',
           revision: 0,
         });
+        // The editing protocol must be persisted onto the session header, not
+        // only projected onto the product tool surface: an implementation
+        // child later derives its tool surface from the durable header, so a
+        // missing field there would filter ApplyPatch out of the child (#1556).
+        const header = await sessions.readHeader(result.sessionId);
+        assert.equal(header.editingProtocol, 'apply_patch');
       } finally {
         await sessions.close?.();
       }

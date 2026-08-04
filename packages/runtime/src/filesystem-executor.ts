@@ -323,30 +323,16 @@ function createWorkspaceFilesystemExecutor(
           });
           return { kind: 'grep', matches };
         }
-        case 'lstat': {
-          // Entry semantics: probe the directory entry itself, never the
-          // followed target, so a plan-time symlink probe matches the
-          // delete/move mutation that follows.
-          let targetType: FilesystemWorkerTarget['targetType'];
-          try {
-            const metadata = await lstat(resolve(cwd, operation.path));
-            if (metadata.isSymbolicLink()) targetType = 'symlink';
-            else if (metadata.isFile()) targetType = 'file';
-            else if (metadata.isDirectory()) targetType = 'directory';
-            else targetType = 'other';
-          } catch (error) {
-            if (nodeErrorCode(error) === 'ENOENT' || nodeErrorCode(error) === 'ENOTDIR') {
-              targetType = 'missing';
-            } else {
-              throw error;
-            }
-          }
-          return { kind: 'lstat', targetType };
-        }
-        case 'delete': {
-          const target = resolve(cwd, operation.path);
-          await unlink(target);
-          return { kind: 'delete', ok: true, path: target };
+        default: {
+          // lstat/delete are entry-semantics operations owned by the
+          // ApplyPatch engine adapter (builtin-tools) and the filesystem
+          // worker protocol. The host-local backend deliberately does not
+          // carry a second copy of entry normalization — keeping one avoids
+          // the drift that produced path-classification failures (#1556).
+          const kind = (operation as { kind: string }).kind;
+          throw new Error(
+            `Filesystem operation ${kind} is not supported by the host-local backend.`,
+          );
         }
       }
     },

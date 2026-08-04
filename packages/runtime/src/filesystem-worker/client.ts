@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
@@ -63,6 +64,104 @@ export interface FilesystemWorkerExecuteInput {
   /** Explicit embedding policy. Mode-based defaults are compiled only when omitted. */
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
+}
+
+/** One planned ApplyPatch mutation path, for batch permission preflight. */
+export interface ApplyPatchWriteIntent {
+  path: string;
+  /** Delete/Move sources address the directory entry; writes follow the canonical target. */
+  access: 'write' | 'delete';
+}
+
+/**
+ * Batch permission preflight for a planned ApplyPatch: every mutation path is
+ * checked under the same authority as a real worker call (same normalization,
+ * profile compilation, and writable-root widening), before the first mutation
+ * lands. Throws one structured error carrying `requiredExpansion` covering all
+ * missing paths, so ToolRuntime can offer the normal boundary retry once.
+ */
+export async function preflightApplyPatchWrites(input: {
+  intents: readonly ApplyPatchWriteIntent[];
+  cwd: string;
+  executionBoundary?: ExecutionBoundary;
+  mode?: PermissionMode;
+  permissionProfile?: PermissionProfile;
+  platform?: SandboxPlatform;
+}): Promise<void> {
+  if (input.intents.length === 0) return;
+  const canonicalCwd = await realpath(input.cwd).catch(() => {
+    throw clientError(
+      'invalid_operation',
+      'validation',
+      'preflight',
+      'Session cwd is unavailable.',
+    );
+  });
+  const compiled =
+    input.executionBoundary?.kind === 'managed'
+      ? {
+          profile: input.executionBoundary.profile,
+          workspaceRoots: [canonicalCwd],
+        }
+      : input.permissionProfile
+        ? {
+            profile: input.permissionProfile,
+            workspaceRoots: [canonicalCwd],
+          }
+        : compilePermissionProfile({ mode: input.mode ?? 'ask', cwd: canonicalCwd });
+  const platform = input.platform ?? process.platform;
+  const tmpCanonical = await canonicalPath(tmpdir());
+  const slashTmpCanonical = await canonicalPath('/tmp');
+  const missingEntries: Array<{ path: string; access: 'write'; scope: 'exact' }> = [];
+
+  for (const intent of input.intents) {
+    const entryMode = intent.access === 'delete';
+    const target = entryMode
+      ? await normalizeDirectoryEntryTarget(canonicalCwd, intent.path, 'write', 'exact')
+      : await normalizeSandboxBoundaryPath({
+          path: intent.path,
+          access: 'write',
+          scope: 'exact',
+          cwd: canonicalCwd,
+        });
+    const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
+      platform,
+      access: 'write',
+      enforcementPath: target.enforcementPath,
+      targetType: target.targetType,
+      entryMode,
+    });
+    const pathContext = {
+      workspaceRoots: compiled.workspaceRoots,
+      tmpdir: tmpCanonical,
+      slashTmp: slashTmpCanonical,
+      ...(runtimeWritableRoots ? { runtimeWritableRoots } : {}),
+    };
+    if (!canWritePath(compiled.profile, target.enforcementPath, pathContext)) {
+      missingEntries.push({ path: target.enforcementPath, access: 'write', scope: 'exact' });
+    }
+  }
+
+  if (missingEntries.length === 0) return;
+  const managed = input.executionBoundary?.kind === 'managed';
+  throw clientError(
+    managed ? 'sandbox_boundary_required' : 'path_denied',
+    'validation',
+    'preflight',
+    managed
+      ? 'ApplyPatch requires sandbox boundary expansion for one or more paths before mutation.'
+      : 'ApplyPatch path is not writable under the current permission profile.',
+    true,
+    managed
+      ? {
+          requiredExpansion: {
+            filesystem: {
+              entries: missingEntries,
+            },
+          },
+        }
+      : {},
+  );
 }
 
 export type FilesystemWorkerClientErrorReason =
@@ -199,12 +298,23 @@ export class FilesystemWorkerClient {
       access,
       enforcementPath: target.enforcementPath,
       targetType: target.targetType,
+      entryMode,
+    });
+    // Entry-mode read probes (lstat) need the entry's parent reachable too;
+    // the read-only mount is derived from the same deepest-existing-ancestor
+    // rule so a missing entry still classifies correctly on Linux.
+    const runtimeReadableRoots = filesystemWorkerRuntimeReadableRoots({
+      platform,
+      access,
+      enforcementPath: target.enforcementPath,
+      entryMode,
     });
     const pathContext = {
       workspaceRoots: compiled.workspaceRoots,
       tmpdir: await canonicalPath(tmpdir()),
       slashTmp: await canonicalPath('/tmp'),
       ...(runtimeWritableRoots ? { runtimeWritableRoots } : {}),
+      ...(runtimeReadableRoots ? { runtimeReadableRoots } : {}),
     };
     const allowed =
       access === 'write'
@@ -300,7 +410,9 @@ export class FilesystemWorkerClient {
       );
     }
     const pinnedRuntimeWritableRoot =
-      platform === 'linux' && target.targetType === 'missing' && runtimeWritableRoots?.[0]
+      platform === 'linux' &&
+      runtimeWritableRoots?.[0] &&
+      (entryMode || target.targetType === 'missing')
         ? (() => {
             try {
               return pinExistingLinuxProfilePath({
@@ -321,8 +433,8 @@ export class FilesystemWorkerClient {
         : undefined;
     if (
       platform === 'linux' &&
-      target.targetType === 'missing' &&
       runtimeWritableRoots &&
+      (entryMode || target.targetType === 'missing') &&
       !pinnedRuntimeWritableRoot
     ) {
       throw clientError(
@@ -344,7 +456,12 @@ export class FilesystemWorkerClient {
           profile: workerProfile,
           pathContext: {
             ...pathContext,
-            runtimeReadableRoots: launch.spec.runtimeReadableRoots,
+            // Keep the entry-probe read-only mount alongside the launch
+            // spec's own runtime roots (worker executable, Grep runtime).
+            runtimeReadableRoots: uniqueRoots([
+              ...(pathContext.runtimeReadableRoots ?? []),
+              ...launch.spec.runtimeReadableRoots,
+            ]),
             executableRoots: launch.spec.executableRoots,
             ...(pinnedTarget
               ? {
@@ -454,14 +571,71 @@ export function filesystemWorkerRuntimeWritableRoots(input: {
   access: 'read' | 'write';
   enforcementPath: string;
   targetType: FilesystemWorkerTarget['targetType'];
+  entryMode?: boolean;
 }): readonly string[] | undefined {
-  if (input.platform !== 'linux' || input.access !== 'write' || input.targetType !== 'missing') {
+  if (input.platform !== 'linux' || input.access !== 'write') {
     return undefined;
   }
-  // A create may need several parent directories. The worker still validates
-  // the exact operation boundary before mutating; this runtime-only root merely
-  // gives that one trusted worker enough kernel access to mkdir the path.
-  return [dirname(input.enforcementPath)];
+  // Entry-mode operations (Delete, lstat probe, ApplyPatch create) address
+  // the directory entry itself: the worker needs the deepest existing
+  // ancestor of the entry's parent mounted so it can probe, unlink, or mkdir
+  // the entry. The entry may not exist yet or may be a symlink that cannot be
+  // pinned, so the mount target is always the ancestor directory. Replace-
+  // mode writes pin the exact file instead and need no parent root.
+  if (input.entryMode || input.targetType === 'missing') {
+    const ancestor = deepestExistingAncestor(dirname(input.enforcementPath));
+    return ancestor ? [ancestor] : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Read-only parent mount for an entry-mode lstat probe on Linux: the worker
+ * must be able to reach the entry's parent to classify the entry itself.
+ */
+export function filesystemWorkerRuntimeReadableRoots(input: {
+  platform: SandboxPlatform;
+  access: 'read' | 'write';
+  enforcementPath: string;
+  entryMode?: boolean;
+}): readonly string[] | undefined {
+  if (input.platform !== 'linux' || input.access !== 'read' || !input.entryMode) {
+    return undefined;
+  }
+  const ancestor = deepestExistingAncestor(dirname(input.enforcementPath));
+  return ancestor ? [ancestor] : undefined;
+}
+
+/**
+ * The deepest directory on `path`'s chain that exists on disk, so a mount
+ * (and its pin) always targets a real directory even when the entry itself
+ * or several parents are missing.
+ */
+function deepestExistingAncestor(path: string): string | undefined {
+  let cursor = path;
+  while (true) {
+    try {
+      return realpathSync(cursor);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = dirname(cursor);
+      if (parent === cursor) return undefined;
+      cursor = parent;
+    }
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+  );
+}
+
+function uniqueRoots(values: readonly string[]): readonly string[] {
+  return [...new Set(values)];
 }
 
 /**

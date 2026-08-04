@@ -1071,6 +1071,31 @@ describe('runHarborCell', () => {
     });
   });
 
+  test('persists the apply_patch editing protocol on the durable session header', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const result = await runHarborCell({
+        config: { ...config, editingProtocol: 'apply_patch' },
+        instruction: 'write the answer in-place',
+        cwd: workspaceDir,
+        outputDir,
+        storageRoot,
+        registerBackends: registerCellBackend,
+      });
+
+      assert.equal(result.output.status, 'completed');
+      // The product surface is projected from the config, but the durable
+      // header is what a spawned implementation child reads to derive its own
+      // tool surface; without persistence the child loses ApplyPatch (#1556).
+      const sessions = createSessionStore(storageRoot);
+      try {
+        const header = await sessions.readHeader(result.invocation.sessionId);
+        assert.equal(header.editingProtocol, 'apply_patch');
+      } finally {
+        await sessions.close?.();
+      }
+    });
+  });
+
   test('does not provision child tools when Agent tools are disabled by default', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       const observed: { spawned?: boolean; error?: string } = {};

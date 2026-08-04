@@ -86,8 +86,10 @@ export async function executeFilesystemOperation(
     case 'lstat': {
       // Address the directory entry (never the followed target) with the
       // same containment as Delete, so a plan-time symlink probe is
-      // consistent with the mutation that follows.
-      const path = await resolveDeleteOperandAllowed(
+      // consistent with the mutation that follows. Missing entries are a
+      // legitimate probe result (Add/Move preflight), not an error: the
+      // target-type classification below reports them as `missing`.
+      const path = await resolveLstatOperandAllowed(
         operation.cwd,
         operation.path,
         'ApplyPatch lstat',
@@ -425,6 +427,40 @@ async function resolveDirectoryEntryWritableAllowed(
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, 'write', permission);
   const operand = await canonicalDirectoryEntryPath(candidate);
   assertAllowed(root, operand, label, 'write', permission);
+  return operand;
+}
+
+async function resolveLstatOperandAllowed(
+  cwd: string,
+  inputPath: string,
+  label: string,
+  permission: FilesystemWorkerRequest['operationBoundary'],
+): Promise<string> {
+  const { root, candidate } = await resolveCandidate(cwd, inputPath, label, 'read', permission);
+  // The parent may itself be missing (nested Add/Move destinations). Resolve
+  // the deepest existing ancestor and keep the missing segments so a missing
+  // entry anywhere below the root classifies as `missing`, not not_found.
+  const parent = await realpathAllowMissing(dirname(candidate));
+  if (!isPathInside(root, parent)) {
+    throw operationError('path_denied', `${label} path escaped its approved target.`);
+  }
+  const operand = resolve(parent, basename(candidate));
+  const metadata = await fs.lstat(operand).catch((error) => {
+    // A missing entry is a valid probe result (Add/Move destinations).
+    if (nodeErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (metadata === undefined) {
+    // The caller classifies the operand with lstatTargetTypeOf, which maps
+    // ENOENT to `missing`. The parent containment above still holds, so a
+    // missing entry inside the root is a legal answer.
+    return operand;
+  }
+  if (metadata.isSymbolicLink()) {
+    return operand;
+  }
+  const target = await fs.realpath(operand);
+  assertAllowed(root, target, label, 'read', permission);
   return operand;
 }
 

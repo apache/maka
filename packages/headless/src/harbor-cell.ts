@@ -422,6 +422,7 @@ export async function runHarborCellWithStorage(
         model: config.model,
         ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
         permissionMode: 'ask',
+        ...(config.editingProtocol ? { editingProtocol: config.editingProtocol } : {}),
         name: `harbor-cell:${input.config.id}`,
       },
       { initialBoundary: { kind: 'external', revision: 0 } },

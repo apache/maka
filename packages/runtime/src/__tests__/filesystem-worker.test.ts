@@ -303,6 +303,46 @@ describe('filesystem worker operations', () => {
     }
   });
 
+  test('lstat classifies a missing entry as missing instead of not_found', async () => {
+    const root = await temporaryDirectory('maka-worker-lstat-missing-');
+    const target = join(root, 'new-file.txt');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'lstat', cwd: root, path: target },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'missing' },
+        target,
+      ),
+    );
+
+    // An ApplyPatch Add/Move preflight probes the destination before it
+    // exists; the worker must report `missing`, not a not_found error.
+    assert.equal(response.ok, true);
+    if (response.ok) {
+      assert.deepEqual(response.result, { kind: 'lstat', targetType: 'missing' });
+    }
+  });
+
+  test('lstat classifies a missing nested entry as missing instead of not_found', async () => {
+    const root = await temporaryDirectory('maka-worker-lstat-nested-');
+    const target = join(root, 'generated', 'deep', 'nested.txt');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'lstat', cwd: root, path: target },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'missing' },
+        target,
+      ),
+    );
+
+    // Neither the entry nor its parents exist; this is a legal preflight
+    // result for Add File: generated/deep/nested.txt.
+    assert.equal(response.ok, true);
+    if (response.ok) {
+      assert.deepEqual(response.result, { kind: 'lstat', targetType: 'missing' });
+    }
+  });
+
   test('deletes an in-workspace symlink operand without deleting its target', async (t) => {
     if (process.platform === 'win32') {
       t.skip('file symlink creation is not reliably available on Windows CI');

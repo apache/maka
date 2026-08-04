@@ -4,8 +4,16 @@ import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildBuiltinTools } from '../builtin-tools.js';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { executeApplyPatchWithAdapter, type ApplyPatchFsAdapter } from '../apply-patch-engine.js';
 import { projectEffectiveProductToolSurface } from '../tool-catalog-derive.js';
+import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
+import {
+  FILESYSTEM_WORKER_PROTOCOL_VERSION,
+  type FilesystemWorkerOperation,
+  type FilesystemWorkerRequest,
+  type FilesystemWorkerTarget,
+} from '../filesystem-worker/protocol.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
 function toolCtx(cwd: string): MakaToolContext {
@@ -242,6 +250,94 @@ describe('ApplyPatch tool integration', () => {
       assert.equal((await lstat(join(root, 'move-link.txt'))).isSymbolicLink(), true);
       assert.equal(await readFile(join(root, 'target.txt'), 'utf8'), 'target\n');
       await assert.rejects(() => lstat(join(root, 'moved.txt')));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('managed-worker Add and Move to missing destinations preflight cleanly', async (t) => {
+    if (process.platform === 'win32') {
+      // canWritePath matches workspace roots with POSIX separators; the
+      // preflight path space on Windows is a pre-existing gap, not part of
+      // the managed-worker behavior under test (CI runs POSIX).
+      t.skip('managed permission matching requires POSIX host paths');
+      return;
+    }
+    const root = await mkdtemp(join(tmpdir(), 'maka-apply-patch-managed-'));
+    try {
+      await writeFile(join(root, 'source.txt'), 'src\n', 'utf8');
+      const worker = {
+        async execute(input: {
+          operation: FilesystemWorkerOperation;
+          cwd: string;
+        }): Promise<unknown> {
+          const expectedTarget = await workerExpectedTarget(root, input.operation);
+          // The real client sends the absolute display/enforcement path as the
+          // operand; the worker revalidates it against expectedTarget.
+          const operation: FilesystemWorkerOperation = {
+            ...input.operation,
+            cwd: input.cwd,
+            path: expectedTarget.displayPath,
+          };
+          const request: FilesystemWorkerRequest = {
+            version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+            requestId: 'request-1',
+            operation,
+            operationBoundary: {
+              filesystem: {
+                entries: [
+                  {
+                    path: expectedTarget.enforcementPath,
+                    access: expectedTarget.access,
+                    scope: expectedTarget.scope,
+                  },
+                ],
+              },
+            },
+            expectedTarget,
+          };
+          const response = await executeFilesystemWorkerRequest(request);
+          if (!response.ok) throw new Error(response.error.message);
+          return response.result;
+        },
+      };
+      const apply = buildBuiltinTools({
+        filesystemWorker: worker as never,
+        permissionProfile: createWorkspaceWritePermissionProfile(),
+      }).find((tool) => tool.name === 'ApplyPatch');
+      assert.ok(apply);
+
+      // Add a brand-new file: the preflight lstat must classify the missing
+      // destination as `missing`, not not_found.
+      const added = await apply.impl(
+        {
+          patch: envelope(['*** Add File: generated/deep/new.txt', '+created', ''].join('\n')),
+        },
+        toolCtx(root),
+      );
+      assert.equal((added as { ok: boolean }).ok, true);
+      assert.equal(await readFile(join(root, 'generated', 'deep', 'new.txt'), 'utf8'), 'created\n');
+
+      // Move to a missing destination: the destination lstat is missing and
+      // the source delete lands on the source entry.
+      const moved = await apply.impl(
+        {
+          patch: envelope(
+            [
+              '*** Update File: source.txt',
+              '*** Move to: moved-away.txt',
+              '@@',
+              '-src',
+              '+moved',
+              '',
+            ].join('\n'),
+          ),
+        },
+        toolCtx(root),
+      );
+      assert.equal((moved as { ok: boolean }).ok, true);
+      assert.equal(await readFile(join(root, 'moved-away.txt'), 'utf8'), 'moved\n');
+      await assert.rejects(() => readFile(join(root, 'source.txt'), 'utf8'));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -488,3 +584,63 @@ describe('shared ApplyPatch engine partial move failure', () => {
     assert.equal(files.size, 0);
   });
 });
+
+/**
+ * Build the worker `expectedTarget` the same way the real client does: the
+ * entry-mode path (lstat/delete/create) resolves the parent chain and appends
+ * the leaf, so a missing destination still has a valid enforcement path.
+ */
+async function workerExpectedTarget(
+  root: string,
+  operation: FilesystemWorkerOperation,
+): Promise<FilesystemWorkerTarget & { displayPath: string }> {
+  const { realpathAllowMissing } = await import('../path-containment.js');
+  const { dirname, basename, resolve } = await import('node:path');
+  const entryMode =
+    operation.kind === 'delete' ||
+    operation.kind === 'lstat' ||
+    (operation.kind === 'write' && operation.mode === 'create');
+  const canonicalCwd = await import('node:fs/promises').then((m) => m.realpath(root));
+  const displayPath = resolve(canonicalCwd, operation.path);
+  const access = operation.kind === 'write' || operation.kind === 'delete' ? 'write' : 'read';
+  if (!entryMode) {
+    const enforcementPath = await realpathAllowMissing(displayPath);
+    return {
+      displayPath,
+      enforcementPath,
+      access,
+      scope: 'exact',
+      targetType: await targetTypeOf(enforcementPath),
+    };
+  }
+  const parentReal = await realpathAllowMissing(dirname(displayPath));
+  const enforcementPath = resolve(parentReal, basename(displayPath));
+  return {
+    displayPath,
+    enforcementPath,
+    access,
+    scope: 'exact',
+    targetType: await targetTypeOf(enforcementPath),
+  };
+}
+
+async function targetTypeOf(path: string): Promise<FilesystemWorkerTarget['targetType']> {
+  const { lstat: lstatFn } = await import('node:fs/promises');
+  try {
+    const metadata = await lstatFn(path);
+    if (metadata.isSymbolicLink()) return 'symlink';
+    if (metadata.isFile()) return 'file';
+    if (metadata.isDirectory()) return 'directory';
+    return 'other';
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+    ) {
+      return 'missing';
+    }
+    throw error;
+  }
+}

@@ -200,4 +200,134 @@ describe('applyUpdateChunksToContent', () => {
     if (!result.ok) return;
     assert.equal(result.content, 'first\n');
   });
+
+  test('Codex context match: a substring-only context does not anchor the hunk', () => {
+    // `foo` appears inside `prefix foo suffix` but names no whole line, so the
+    // matcher must not use the first substring hit as the context line.
+    const original = 'prefix foo suffix\nfoo\ntail\n';
+    const result = applyUpdateChunksToContent(
+      original,
+      [
+        {
+          changeContext: 'foo',
+          oldLines: ['tail'],
+          newLines: ['INSERT'],
+          isEndOfFile: false,
+        },
+      ],
+      'f.txt',
+    );
+    // The context line is the second line (`foo`), so the old-lines search
+    // starts there and finds `tail` immediately after it.
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.content, 'prefix foo suffix\nfoo\nINSERT\n');
+  });
+
+  test('Codex pure insertion with a context header anchors after the context line', () => {
+    const original = 'first\ncontext line\nlast\n';
+    const result = applyUpdateChunksToContent(
+      original,
+      [
+        {
+          changeContext: 'context line',
+          oldLines: [],
+          newLines: ['INSERT'],
+          isEndOfFile: false,
+        },
+      ],
+      'f.txt',
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.content, 'first\ncontext line\nINSERT\nlast\n');
+  });
+
+  test('Codex pure insertion with a substring-only context falls back to EOF', () => {
+    // The context names no whole line (only a substring of `prefix foo suffix`),
+    // so a pure addition is placed at EOF instead of an arbitrary position.
+    const original = 'prefix foo suffix\nlast\n';
+    const result = applyUpdateChunksToContent(
+      original,
+      [
+        {
+          changeContext: 'foo',
+          oldLines: [],
+          newLines: ['INSERT'],
+          isEndOfFile: false,
+        },
+      ],
+      'f.txt',
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.content, 'prefix foo suffix\nlast\nINSERT\n');
+  });
+
+  test('Codex ambiguous context prefers the first whole-line match', () => {
+    const original = 'a\ncontext\nb\ncontext\nc\n';
+    const result = applyUpdateChunksToContent(
+      original,
+      [
+        {
+          changeContext: 'context',
+          oldLines: [],
+          newLines: ['INSERT'],
+          isEndOfFile: false,
+        },
+      ],
+      'f.txt',
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.content, 'a\ncontext\nINSERT\nb\ncontext\nc\n');
+  });
+
+  test('Codex repeated old-lines still requires a unique match', () => {
+    const original = 'x\nx\n';
+    const result = applyUpdateChunksToContent(
+      original,
+      [{ oldLines: ['x'], newLines: ['y'], isEndOfFile: false }],
+      'f.txt',
+    );
+    assert.equal(result.ok, false);
+  });
+
+  test('Codex EOF marker inserts at the end regardless of context', () => {
+    const original = 'context line\nlast\n';
+    const result = applyUpdateChunksToContent(
+      original,
+      [
+        {
+          changeContext: 'context line',
+          oldLines: [],
+          newLines: ['INSERT'],
+          isEndOfFile: true,
+        },
+      ],
+      'f.txt',
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.content, 'context line\nlast\nINSERT\n');
+  });
+
+  test('Codex context matching tolerates trailing-whitespace drift', () => {
+    const original = 'context line   \nlast\n';
+    const result = applyUpdateChunksToContent(
+      original,
+      [
+        {
+          changeContext: 'context line',
+          oldLines: [],
+          newLines: ['INSERT'],
+          isEndOfFile: false,
+        },
+      ],
+      'f.txt',
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.content, 'context line   \nINSERT\nlast\n');
+  });
 });

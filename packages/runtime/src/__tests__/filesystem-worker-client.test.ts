@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { rmSync, realpathSync } from 'node:fs';
 import {
   lstat,
   mkdtemp,
@@ -420,6 +420,8 @@ describe('filesystem worker Linux path context', () => {
 
   test('requests a trusted parent mount only for a missing write target', () => {
     const target = join(tmpdir(), 'maka-linux-worker-parent', 'new.txt');
+    // The parent does not exist yet: the mount is the deepest existing
+    // ancestor (tmpdir), which is enough for the worker to mkdir the chain.
     assert.deepEqual(
       filesystemWorkerRuntimeWritableRoots({
         platform: 'linux',
@@ -427,7 +429,7 @@ describe('filesystem worker Linux path context', () => {
         enforcementPath: target,
         targetType: 'missing',
       }),
-      [join(tmpdir(), 'maka-linux-worker-parent')],
+      [realpathSync(tmpdir())],
     );
     assert.equal(
       filesystemWorkerRuntimeWritableRoots({
@@ -446,6 +448,18 @@ describe('filesystem worker Linux path context', () => {
         targetType: 'missing',
       }),
       undefined,
+    );
+    // Entry-mode deletes address an existing entry: the mount is the entry's
+    // parent, never the entry itself (which may be a symlink).
+    assert.deepEqual(
+      filesystemWorkerRuntimeWritableRoots({
+        platform: 'linux',
+        access: 'write',
+        enforcementPath: target,
+        targetType: 'file',
+        entryMode: true,
+      }),
+      [realpathSync(tmpdir())],
     );
   });
 });
