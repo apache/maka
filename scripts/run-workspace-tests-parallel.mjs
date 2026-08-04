@@ -71,76 +71,89 @@ export async function runWorkspace(
   // to book-keep its own removal — a rule nothing enforces, and which years of
   // accumulated `maka-*` directories in the user's tmpdir show is not kept.
   const tempRoot = await mkdtemp(join(tmpdir(), `maka-test-${tempRootSlug(name)}-`));
-  console.log(`\n[${name}] start: ${command}`);
-  const child = spawn(command, {
-    cwd,
-    stdio: 'inherit',
-    shell: true,
-    detached: process.platform !== 'win32',
-    // TMPDIR is what os.tmpdir() reads on POSIX, TMP/TEMP on Windows.
-    env: { ...process.env, TMPDIR: tempRoot, TMP: tempRoot, TEMP: tempRoot },
-  });
-  const completion = new Promise((resolvePromise, reject) => {
-    let settled = false;
-    const settle = (fn) => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-    child.on('error', (err) => {
-      settle(() => reject(new Error(`[${name}] spawn failed: ${err.message}`)));
+  // Everything after the tree exists runs under the finally that removes it, so
+  // no path out of this function — including a synchronous throw from spawn —
+  // can leave it behind.
+  let timeout;
+  let onAbort;
+  try {
+    console.log(`\n[${name}] start: ${command}`);
+    const child = spawn(command, {
+      cwd,
+      stdio: 'inherit',
+      shell: true,
+      detached: process.platform !== 'win32',
+      // TMPDIR is what os.tmpdir() reads on POSIX, TMP/TEMP on Windows.
+      env: { ...process.env, TMPDIR: tempRoot, TMP: tempRoot, TEMP: tempRoot },
     });
-    child.on('close', (code) => {
-      settle(() => {
-        if (code === 0) {
-          console.log(`[${name}] passed`);
-          resolvePromise(name);
-        } else {
-          reject(new Error(`[${name}] failed with code ${code}`));
-        }
+    const completion = new Promise((resolvePromise, reject) => {
+      let settled = false;
+      const settle = (fn) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+      child.on('error', (err) => {
+        settle(() => reject(new Error(`[${name}] spawn failed: ${err.message}`)));
+      });
+      child.on('close', (code) => {
+        settle(() => {
+          if (code === 0) {
+            console.log(`[${name}] passed`);
+            resolvePromise(name);
+          } else {
+            reject(new Error(`[${name}] failed with code ${code}`));
+          }
+        });
       });
     });
-  });
 
-  let stopReason;
-  let requestStop;
-  const stopRequested = new Promise((_resolve, reject) => {
-    requestStop = (reason) => {
-      if (stopReason) return;
-      stopReason = reason;
-      reject(reason);
-    };
-  });
-  const onAbort = () => requestStop(workspaceRunCancelledError());
-  signal?.addEventListener('abort', onAbort, { once: true });
-  const timeout = Number.isFinite(timeoutMs)
-    ? setTimeout(
-        () => requestStop(new Error(`[${name}] timed out after ${timeoutMs}ms`)),
-        timeoutMs,
-      )
-    : undefined;
-  if (signal?.aborted) onAbort();
+    let stopReason;
+    let requestStop;
+    const stopRequested = new Promise((_resolve, reject) => {
+      requestStop = (reason) => {
+        if (stopReason) return;
+        stopReason = reason;
+        reject(reason);
+      };
+    });
+    onAbort = () => requestStop(workspaceRunCancelledError());
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timeout = Number.isFinite(timeoutMs)
+      ? setTimeout(
+          () => requestStop(new Error(`[${name}] timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        )
+      : undefined;
+    if (signal?.aborted) onAbort();
 
-  try {
-    return await Promise.race([completion, stopRequested]);
-  } catch (error) {
-    if (error === stopReason) {
-      try {
-        await terminateWorkspace(child);
-      } catch (terminationError) {
-        throw new AggregateError(
-          [error, terminationError],
-          `[${name}] failed to terminate its test process tree`,
-        );
+    try {
+      return await Promise.race([completion, stopRequested]);
+    } catch (error) {
+      if (error === stopReason) {
+        try {
+          await terminateWorkspace(child);
+        } catch (terminationError) {
+          throw new AggregateError(
+            [error, terminationError],
+            `[${name}] failed to terminate its test process tree`,
+          );
+        }
       }
+      throw error;
     }
-    throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
-    signal?.removeEventListener('abort', onAbort);
-    // Runs after terminateWorkspace, so the process tree is already down and
-    // nothing is still writing into the tree being removed.
-    await rm(tempRoot, { recursive: true, force: true });
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+    // Normally the process tree is already down here: either it closed on its
+    // own or terminateWorkspace reaped it. When termination itself failed the
+    // tree is removed under a process that may still be writing — that run has
+    // already been declared failed and killed, so losing its scratch files is
+    // preferable to leaking the tree. Removal failure must not replace whatever
+    // this function was already reporting.
+    await rm(tempRoot, { recursive: true, force: true }).catch((error) => {
+      console.warn(`[${name}] could not remove ${tempRoot}: ${error.message}`);
+    });
   }
 }
 

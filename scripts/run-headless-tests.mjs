@@ -76,7 +76,12 @@ export function runHeadlessTests(options = {}) {
     if (result.error) throw result.error;
     return result.status ?? 1;
   } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    // A cleanup failure must not replace the suite's own result.
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`could not remove ${tempDir}: ${error.message}`);
+    }
   }
 }
 

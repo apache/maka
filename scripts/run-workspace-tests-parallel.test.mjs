@@ -88,6 +88,21 @@ test('each workspace runs in its own temp namespace, removed however it ends', a
   assert.notEqual(observed[0].tmpdir, process.env.TMPDIR);
 });
 
+test('the temp namespace is removed even when spawn throws synchronously', async () => {
+  let observed;
+  const spawn = (_command, options) => {
+    observed = options.env.TMPDIR;
+    throw new Error('spawn exploded');
+  };
+
+  await assert.rejects(
+    () => runWorkspaceTests({ repoRoot: '/repo', workspaceDirs: ['packages/core'], spawn }),
+    /spawn exploded/,
+  );
+
+  assert.equal(existsSync(observed), false);
+});
+
 test('bounded parallel mode never exceeds its configured concurrency', async () => {
   const repoRoot = '/repo';
   const workspaceDirs = ['packages/core', 'packages/ui', 'apps/desktop'];
@@ -161,7 +176,11 @@ test('workspace timeout waits for process cleanup before reporting failure', asy
   child.pid = 42;
   let terminationStarted = false;
   let terminationFinished = false;
-  const spawn = () => child;
+  let tempRoot;
+  const spawn = (_command, options) => {
+    tempRoot = options.env.TMPDIR;
+    return child;
+  };
   const terminateWorkspace = async (target) => {
     assert.equal(target, child);
     terminationStarted = true;
@@ -182,6 +201,8 @@ test('workspace timeout waits for process cleanup before reporting failure', asy
   );
   assert.equal(terminationStarted, true);
   assert.equal(terminationFinished, true);
+  // The stop path reaps the process tree before the namespace goes away.
+  assert.equal(existsSync(tempRoot), false);
 });
 
 async function waitForPidFile(path) {
