@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto';
+import type { AttachmentRef } from '@maka/core/events';
 import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
 import {
   type DirectRequestOperationKey,
@@ -5,6 +7,7 @@ import {
   type RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
 import {
+  ARTIFACT_INGEST_CHUNK_MAX_BYTES,
   type InteractionAnswerInput,
   type OperationInput,
   type OperationOutput,
@@ -19,6 +22,7 @@ import {
   type SessionConversationCopyInput,
   type SessionConversationCopyResult,
   type SessionCreateInput,
+  type ExecutionBoundarySummary,
   type SessionLifecycleState,
   type SessionMetadataPatch,
   type SessionUpdateResult,
@@ -154,6 +158,10 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundarySummary> {
+    return this.#request('session.execution_boundary.query', { sessionId });
+  }
+
   async setSessionLifecycle(
     sessionId: string,
     state: SessionLifecycleState,
@@ -189,6 +197,70 @@ export class DesktopRuntimeHostClient {
       if (result.kind === 'committed') return requireSessionProjection(result.session);
     }
     throw revisionConflict(`${kind} copy`, input.sourceSessionId);
+  }
+
+  async ingestAttachment(input: {
+    sessionId: string;
+    name: string;
+    mimeType: string;
+    content: Uint8Array;
+    uploadId?: string;
+  }): Promise<AttachmentRef> {
+    const uploadId = input.uploadId ?? randomUUID();
+    const digest = `sha256:${createHash('sha256').update(input.content).digest('hex')}` as const;
+    let opened = false;
+    try {
+      const begin = await this.#request('artifact.ingest', {
+        kind: 'begin',
+        sessionId: input.sessionId,
+        uploadId,
+        name: input.name,
+        mimeType: input.mimeType,
+        totalBytes: input.content.byteLength,
+        contentSha256: digest,
+      });
+      if (begin.kind === 'committed') return begin.attachment;
+      if (begin.kind !== 'upload_opened') {
+        throw new Error('Runtime Host did not open the Attachment upload');
+      }
+      opened = true;
+      let offset = begin.nextOffset;
+      while (offset < input.content.byteLength) {
+        const chunk = input.content.subarray(
+          offset,
+          Math.min(input.content.byteLength, offset + ARTIFACT_INGEST_CHUNK_MAX_BYTES),
+        );
+        const accepted = await this.#request('artifact.ingest', {
+          kind: 'chunk',
+          sessionId: input.sessionId,
+          uploadId,
+          offset,
+          chunkBase64: Buffer.from(chunk).toString('base64'),
+        });
+        if (accepted.kind !== 'chunk_accepted' || accepted.nextOffset <= offset) {
+          throw new Error('Runtime Host did not advance the Attachment upload');
+        }
+        offset = accepted.nextOffset;
+      }
+      const committed = await this.#request('artifact.ingest', {
+        kind: 'commit',
+        sessionId: input.sessionId,
+        uploadId,
+      });
+      if (committed.kind !== 'committed') {
+        throw new Error('Runtime Host did not commit the Attachment upload');
+      }
+      return committed.attachment;
+    } catch (error) {
+      if (opened) {
+        await this.#request('artifact.ingest', {
+          kind: 'abort',
+          sessionId: input.sessionId,
+          uploadId,
+        }).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   submitMessage(

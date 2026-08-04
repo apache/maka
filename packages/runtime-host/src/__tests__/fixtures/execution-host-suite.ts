@@ -60,6 +60,7 @@ import {
 } from '../../client/index.js';
 import {
   decodeHostFrame,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   TASK_LEDGER_PAGE_MAX_ITEMS,
   type ConnectionCatalogQueryResult,
@@ -1097,7 +1098,7 @@ export async function sendStartWithoutReadingResponse(
     surface: 'desktop',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
-    compatibilityEpoch: 1,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
   });
   const handshake = decodeHostFrame(await transport.read(2_000));
   assert.ok('kind' in handshake);

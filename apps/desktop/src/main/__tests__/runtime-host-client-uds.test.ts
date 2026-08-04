@@ -20,7 +20,10 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { DesktopRuntimeHostClient } from '../runtime-host-client.js';
+import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import { registerRuntimeHostSessionCatalogIpc } from '../runtime-host-session-catalog-ipc-main.js';
+import { registerRuntimeHostSessionExecutionIpc } from '../runtime-host-session-execution-ipc-main.js';
+import { RuntimeHostSessionObserver } from '../runtime-host-session-observer.js';
 
 test('drives Desktop Session operations through a real Runtime Host connection', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-desktop-host-client-'));
@@ -215,6 +218,106 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       { reason: 'deleted', sessionId: 'session-ipc' },
     ]);
 
+    await client.close();
+  } finally {
+    await host?.close().catch(() => undefined);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('drives the renderer Session execution facade through real UDS framing', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-desktop-host-execution-ipc-'));
+  let host: RuntimeHostKernel | undefined;
+  try {
+    const capability = await resolveStorageRoot({ path: base, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const projected = session('session-1');
+    host = await RuntimeHostKernel.start({
+      owner,
+      idleGraceMs: 10_000,
+      compositionFactory: async () => ({
+        handlers: handlers({
+          'session.catalog.query': async (input) => ({
+            ok: true,
+            result: {
+              kind: 'session',
+              session: input.kind === 'get' && input.sessionId === projected.id ? projected : null,
+            },
+          }),
+          'session.execution_boundary.query': async (input) => {
+            assert.equal(input.sessionId, projected.id);
+            return {
+              ok: true,
+              result: { kind: 'managed', access: 'read_only', revision: 2 },
+            };
+          },
+          'turn.start': async (input) => {
+            assert.equal(input.sessionId, projected.id);
+            assert.equal(input.content.text, 'Run through the Host');
+            return {
+              ok: true,
+              result: {
+                sessionId: input.sessionId,
+                turnId: input.turnId,
+                runId: 'run-1',
+                status: 'running',
+              },
+            };
+          },
+        }),
+        beginDrain() {},
+        async recover() {},
+        async close() {},
+      }),
+    });
+    const connected = await connectRuntimeHost({
+      rootPath: base,
+      surface: 'desktop',
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+    });
+    assert.equal(connected.kind, 'connected');
+    if (connected.kind !== 'connected') throw new Error('Desktop did not connect to Runtime Host');
+    const client = new DesktopRuntimeHostClient(connected.connection);
+    const observer = new RuntimeHostSessionObserver({ client, emitSessionsChanged() {} });
+    const ipc = ipcHarness();
+    registerRuntimeHostSessionExecutionIpc(
+      {
+        client,
+        observer,
+        attachmentApprovals: createAttachmentApprovalRegistry(),
+        emitSessionsChanged() {},
+        stat: async () => ({ size: 0 }),
+        resizeImage: async (bytes) => bytes,
+        newId: () => 'turn-1',
+      },
+      ipc,
+    );
+
+    assert.deepEqual(await ipc.invoke('sessions:readExecutionBoundary', projected.id), {
+      kind: 'managed',
+      access: 'read_only',
+      revision: 2,
+    });
+    assert.deepEqual(
+      await ipc.invoke('sessions:send', projected.id, {
+        type: 'send',
+        turnId: 'turn-1',
+        text: 'Run through the Host',
+      }),
+      {
+        ok: true,
+        turnId: 'turn-1',
+        attachments: [],
+        inlineReferences: [],
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      },
+    );
+
+    await observer.close();
     await client.close();
   } finally {
     await host?.close().catch(() => undefined);

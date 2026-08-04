@@ -148,6 +148,27 @@ export type ExecutionBoundary =
       readonly revision: number;
     };
 
+/**
+ * Bounded Client read model for presenting an execution boundary without
+ * exposing the potentially large Host-owned permission profile.
+ */
+export type ExecutionBoundarySummary =
+  | {
+      readonly kind: 'managed';
+      readonly access: 'read_only' | 'writable';
+      readonly revision: number;
+    }
+  | {
+      readonly kind: 'bypass';
+      readonly revision: number;
+    }
+  | {
+      readonly kind: 'external';
+      readonly revision: number;
+    };
+
+export type ExecutionBoundaryReadModel = ExecutionBoundary | ExecutionBoundarySummary;
+
 export type LegacyPermissionMode = 'ask' | 'execute' | 'explore' | 'bypass';
 
 /**
@@ -170,11 +191,15 @@ export type LegacyPermissionMode = 'ask' | 'execute' | 'explore' | 'bypass';
  * them — it never claims a specific boundary.
  */
 export function executionBoundaryDisplayMode(
-  boundary: ExecutionBoundary,
+  boundary: ExecutionBoundaryReadModel,
 ): PermissionMode | undefined {
   if (boundary.kind === 'external') return undefined;
   if (boundary.kind === 'bypass') return 'bypass';
-  return isReadOnlyPermissionProfile(boundary.profile) ? 'explore' : 'ask';
+  const readOnly =
+    'profile' in boundary
+      ? isReadOnlyPermissionProfile(boundary.profile)
+      : boundary.access === 'read_only';
+  return readOnly ? 'explore' : 'ask';
 }
 
 export function createGenesisExecutionBoundary(mode: LegacyPermissionMode): ExecutionBoundary {

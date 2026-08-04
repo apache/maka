@@ -1,4 +1,4 @@
-import type { ExecutionBoundary } from '@maka/core';
+import type { ExecutionBoundaryReadModel } from '@maka/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * not answered yet, and the surface has no honest state to show (#1629).
  */
 export type ExecutionBoundaryReadResult =
-  | { outcome: 'read'; boundary: ExecutionBoundary }
+  | { outcome: 'read'; boundary: ExecutionBoundaryReadModel }
   | { outcome: 'unreadable' }
   | { outcome: 'cancelled' };
 
@@ -34,7 +34,7 @@ export const EXECUTION_BOUNDARY_READ_RETRY_DELAYS_MS: readonly number[] = [150, 
  * the retry policy is the fix for #1629, so it has to be assertable directly.
  */
 export async function readExecutionBoundaryWithRetry(input: {
-  read(): Promise<ExecutionBoundary>;
+  read(): Promise<ExecutionBoundaryReadModel>;
   wait(delayMs: number): Promise<void>;
   cancelled(): boolean;
   retryDelaysMs?: readonly number[];
@@ -67,7 +67,7 @@ export async function readExecutionBoundaryWithRetry(input: {
  */
 export interface ActiveExecutionBoundarySnapshot {
   sessionId: string;
-  boundary: ExecutionBoundary | undefined;
+  boundary: ExecutionBoundaryReadModel | undefined;
 }
 
 /**
@@ -78,7 +78,7 @@ export interface ActiveExecutionBoundarySnapshot {
 export function activeExecutionBoundaryOf(
   snapshot: ActiveExecutionBoundarySnapshot | undefined,
   activeSessionId: string | undefined,
-): ExecutionBoundary | undefined {
+): ExecutionBoundaryReadModel | undefined {
   if (!activeSessionId || snapshot?.sessionId !== activeSessionId) return undefined;
   return snapshot.boundary;
 }
@@ -121,7 +121,7 @@ export interface ActiveExecutionBoundaryReadCommit {
  */
 export function startActiveExecutionBoundaryRead(input: {
   sessionId: string;
-  read(sessionId: string): Promise<ExecutionBoundary>;
+  read(sessionId: string): Promise<ExecutionBoundaryReadModel>;
   commit: ActiveExecutionBoundaryReadCommit;
   retryDelaysMs?: readonly number[];
 }): () => void {
@@ -190,7 +190,7 @@ export function useActiveExecutionBoundary(
   /** Re-read when the session's stored permission mode changes under us. */
   permissionMode: string | undefined,
 ): {
-  boundary: ExecutionBoundary | undefined;
+  boundary: ExecutionBoundaryReadModel | undefined;
   /** The read for this session ran out of attempts; the boundary is unknown. */
   unreadable: boolean;
   /** A read for this session is in flight. */

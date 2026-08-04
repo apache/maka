@@ -1,0 +1,461 @@
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import test from 'node:test';
+import type { SessionEvent, StoredMessage } from '@maka/core';
+import type {
+  SessionContinuitySnapshot,
+  SubscriptionFrame,
+} from '@maka/runtime-host/protocol';
+import type { DesktopRuntimeHostSession } from '../runtime-host-client.js';
+import {
+  RuntimeHostSessionObserver,
+  type RuntimeHostSessionObserverTarget,
+} from '../runtime-host-session-observer.js';
+
+test('joins an active Turn without losing or replaying assistant text', async () => {
+  const transcript = deferred<StoredMessage[]>();
+  const events = new AsyncFrameQueue();
+  let closeCount = 0;
+  const handle: DesktopRuntimeHostSession = {
+    snapshot: continuitySnapshot(),
+    transcript: transcript.promise,
+    events,
+    async close() {
+      closeCount += 1;
+      events.end();
+    },
+  };
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => handle },
+    emitSessionsChanged() {},
+    now: () => 50,
+  });
+  const target = eventTarget(1);
+
+  const observing = observer.observe('session-1', 'observer-1', target);
+  events.push(deltaFrame(1, 5, ' world'));
+  transcript.resolve([
+    {
+      type: 'assistant',
+      id: 'message-1',
+      turnId: 'turn-1',
+      ts: 10,
+      text: 'Hello',
+      modelId: 'test-model',
+    },
+  ]);
+  await observing;
+  await waitFor(() => target.events.length === 2);
+
+  assert.deepEqual(
+    target.events.map((event) => [event.type, 'text' in event ? event.text : undefined]),
+    [
+      ['text_delta', 'Hello'],
+      ['text_delta', ' world'],
+    ],
+  );
+
+  events.push({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    snapshot: continuitySnapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'completed',
+        terminalEventId: 'terminal-1',
+      },
+    }),
+  });
+  await waitFor(() => target.events.some((event) => event.type === 'complete'));
+
+  assert.deepEqual(
+    target.events.filter(
+      (event): event is Extract<SessionEvent, { type: 'text_complete' }> =>
+        event.type === 'text_complete',
+    ),
+    [
+      {
+        type: 'text_complete',
+        id: 'terminal-1:text:message-1',
+        turnId: 'turn-1',
+        messageId: 'message-1',
+        ts: 50,
+        text: 'Hello world',
+      },
+    ],
+  );
+
+  await observer.unobserve('observer-1');
+  assert.equal(closeCount, 1);
+});
+
+test('shares one Host subscription and one delivery per renderer target', async () => {
+  const events = new AsyncFrameQueue();
+  let openCount = 0;
+  let closeCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        return {
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          async close() {
+            closeCount += 1;
+            events.end();
+          },
+        };
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  const target = eventTarget(7);
+
+  await Promise.all([
+    observer.observe('session-1', 'observer-1', target),
+    observer.observe('session-1', 'observer-2', target),
+  ]);
+  events.push(deltaFrame(1, 0, 'one'));
+  await waitFor(() => target.events.length === 1);
+
+  assert.equal(openCount, 1);
+  assert.equal(target.events.length, 1);
+  await observer.unobserve('observer-1');
+  assert.equal(closeCount, 0);
+  await observer.unobserve('observer-2');
+  assert.equal(closeCount, 1);
+});
+
+test('releases the renderer destroyed listener when its last observer leaves', async () => {
+  const events = new AsyncFrameQueue();
+  const destroyed = new EventEmitter();
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+  });
+  const target: RuntimeHostSessionObserverTarget = {
+    id: 10,
+    send() {},
+    once: (event, listener) => destroyed.once(event, listener),
+    off: (event, listener) => destroyed.off(event, listener),
+  };
+
+  await observer.observe('session-1', 'observer-1', target);
+  assert.equal(destroyed.listenerCount('destroyed'), 1);
+  await observer.unobserve('observer-1');
+  assert.equal(destroyed.listenerCount('destroyed'), 0);
+});
+
+test('closes a Host handle that arrives after the observer is closed', async () => {
+  const opened = deferred<DesktopRuntimeHostSession>();
+  let closeCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: () => opened.promise },
+    emitSessionsChanged() {},
+  });
+  const observing = observer.observe('session-1', 'observer-1', eventTarget(8));
+
+  await observer.close();
+  opened.resolve({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: new AsyncFrameQueue(),
+    async close() {
+      closeCount += 1;
+    },
+  });
+
+  await assert.rejects(observing, /closed while opening/);
+  assert.equal(closeCount, 1);
+});
+
+test('drains live frames while refreshing the canonical transcript', async () => {
+  const initialEvents = new AsyncFrameQueue();
+  const refreshEvents = new AsyncFrameQueue();
+  const refreshTranscript = deferred<StoredMessage[]>();
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        if (openCount === 1) {
+          return {
+            snapshot: continuitySnapshot(),
+            transcript: Promise.resolve([]),
+            events: initialEvents,
+            async close() {
+              initialEvents.end();
+            },
+          };
+        }
+        return {
+          snapshot: continuitySnapshot(),
+          transcript: refreshTranscript.promise,
+          events: refreshEvents,
+          async close() {
+            refreshEvents.end();
+          },
+        };
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  await observer.observe('session-1', 'observer-1', eventTarget(9));
+  await observer.readMessages('session-1');
+
+  const refreshing = observer.readMessages('session-1');
+  await waitFor(() => refreshEvents.nextCount > 0);
+  refreshTranscript.resolve([]);
+
+  assert.deepEqual(await refreshing, []);
+  await observer.close();
+});
+
+test('rehydrates pending interactions and publishes answer acknowledgements', async () => {
+  const pending = {
+    schemaVersion: 1 as const,
+    interactionId: 'interaction-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1 as const,
+    status: 'pending' as const,
+    outcome: null,
+    request: {
+      kind: 'question' as const,
+      toolUseId: 'tool-1',
+      questions: [
+        {
+          question: 'Proceed?',
+          options: [{ label: 'Yes', description: 'Continue.' }],
+        },
+      ],
+    },
+  };
+  const events = new AsyncFrameQueue();
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot({ interactions: { pending: [pending] } }),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+    now: () => 75,
+  });
+  const target = eventTarget(2);
+  await observer.observe('session-1', 'observer-1', target);
+
+  assert.deepEqual(await observer.readActiveInteractions('session-1'), target.events);
+  observer.publishInteractionAnswer(
+    {
+      ...pending,
+      revision: 2,
+      status: 'answered',
+      outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
+    },
+    pending,
+  );
+
+  assert.equal(target.events.at(-1)?.type, 'user_question_answer_ack');
+  await observer.close();
+});
+
+test('projects Host queue revisions and newly delivered steering messages', async () => {
+  const events = new AsyncFrameQueue();
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+    now: () => 90,
+  });
+  const target = eventTarget(3);
+  await observer.observe('session-1', 'observer-1', target);
+  const queued = {
+    entryId: 'entry-1',
+    messageId: 'message-steer',
+    content: { text: 'Change direction' },
+    placement: 'current_turn' as const,
+    state: 'queued' as const,
+  };
+
+  events.push({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: continuitySnapshot({
+      projectionRevision: 2,
+      queue: {
+        hostEpoch: 'host-1',
+        queueRevision: 1,
+        steering: [queued],
+        followup: [],
+      },
+    }),
+  });
+  await waitFor(() => target.events.length === 1);
+  events.push({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    snapshot: continuitySnapshot({
+      projectionRevision: 3,
+      queue: {
+        hostEpoch: 'host-1',
+        queueRevision: 2,
+        steering: [{ ...queued, state: 'in_flight' }],
+        followup: [],
+      },
+    }),
+  });
+  await waitFor(() => target.events.length === 3);
+
+  assert.deepEqual(
+    target.events.map((event) => event.type),
+    ['queue_update', 'steering_message', 'queue_update'],
+  );
+  assert.deepEqual(target.events[1], {
+    type: 'steering_message',
+    id: 'host-queue:host-1:2:entry-1',
+    turnId: 'turn-1',
+    messageId: 'message-steer',
+    ts: 90,
+    content: { text: 'Change direction' },
+  });
+  await observer.close();
+});
+
+function continuitySnapshot(
+  overrides: Partial<SessionContinuitySnapshot> = {},
+): SessionContinuitySnapshot {
+  return {
+    schemaVersion: 3,
+    session: {
+      sessionId: 'session-1',
+      metadataRevision: 1,
+      status: 'running',
+      createdAt: 1,
+      lastUsedAt: 1,
+      isArchived: false,
+    },
+    projectionRevision: 1,
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+    },
+    goal: null,
+    queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+    interactions: { pending: [] },
+    ...overrides,
+  };
+}
+
+function deltaFrame(sequence: number, startOffset: number, text: string): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_delta',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence,
+    sessionId: 'session-1',
+    delta: {
+      kind: 'text',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      messageId: 'message-1',
+      startOffset,
+      text,
+    },
+  };
+}
+
+function eventTarget(id: number): RuntimeHostSessionObserverTarget & { events: SessionEvent[] } {
+  const events: SessionEvent[] = [];
+  return {
+    id,
+    events,
+    send(_channel, event) {
+      events.push(event);
+    },
+    once() {},
+    off() {},
+  };
+}
+
+class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
+  readonly #frames: SubscriptionFrame[] = [];
+  readonly #waiters: Array<(result: IteratorResult<SubscriptionFrame>) => void> = [];
+  nextCount = 0;
+  #ended = false;
+
+  push(frame: SubscriptionFrame): void {
+    const waiter = this.#waiters.shift();
+    if (waiter) waiter({ value: frame, done: false });
+    else this.#frames.push(frame);
+  }
+
+  end(): void {
+    this.#ended = true;
+    for (const waiter of this.#waiters.splice(0)) waiter({ value: undefined, done: true });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
+    return {
+      next: () => {
+        this.nextCount += 1;
+        const frame = this.#frames.shift();
+        if (frame) return Promise.resolve({ value: frame, done: false });
+        if (this.#ended) return Promise.resolve({ value: undefined, done: true });
+        return new Promise((resolve) => this.#waiters.push(resolve));
+      },
+    };
+  }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail('Timed out waiting for observer state');
+}

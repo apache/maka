@@ -200,6 +200,24 @@ test('treats empty configuration patches as read-only lookups', async () => {
   ]);
 });
 
+test('reads the bounded Host execution boundary summary', async () => {
+  const { client, requests } = clientWithResponses([
+    { kind: 'managed', access: 'read_only', revision: 4 },
+  ]);
+
+  assert.deepEqual(await client.readExecutionBoundary('session-1'), {
+    kind: 'managed',
+    access: 'read_only',
+    revision: 4,
+  });
+  assert.deepEqual(requests, [
+    {
+      operation: 'session.execution_boundary.query',
+      input: { sessionId: 'session-1' },
+    },
+  ]);
+});
+
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
@@ -262,6 +280,118 @@ test('binds message controls to the current Host Epoch', async () => {
       },
     },
   ]);
+});
+
+test('uploads Attachment bytes in bounded Host chunks and commits the digest', async () => {
+  const bytes = new Uint8Array(48 * 1024 + 3).fill(7);
+  const attachment = {
+    kind: 'file' as const,
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    bytes: bytes.byteLength,
+    ref: {
+      kind: 'session_file' as const,
+      sessionId: 'session-1',
+      relativePath: 'artifact-1',
+    },
+  };
+  const { client, requests } = clientWithResponses([
+    { kind: 'upload_opened', nextOffset: 0 },
+    { kind: 'chunk_accepted', nextOffset: 48 * 1024 },
+    { kind: 'chunk_accepted', nextOffset: bytes.byteLength },
+    { kind: 'committed', attachment },
+  ]);
+
+  assert.deepEqual(
+    await client.ingestAttachment({
+      sessionId: 'session-1',
+      uploadId: 'upload-1',
+      name: 'notes.txt',
+      mimeType: 'text/plain',
+      content: bytes,
+    }),
+    attachment,
+  );
+  assert.deepEqual(
+    requests.map(({ operation, input }) => ({
+      operation,
+      kind: (input as { kind?: string }).kind,
+      offset: (input as { offset?: number }).offset,
+    })),
+    [
+      { operation: 'artifact.ingest', kind: 'begin', offset: undefined },
+      { operation: 'artifact.ingest', kind: 'chunk', offset: 0 },
+      { operation: 'artifact.ingest', kind: 'chunk', offset: 48 * 1024 },
+      { operation: 'artifact.ingest', kind: 'commit', offset: undefined },
+    ],
+  );
+  const begin = requests[0]?.input as { contentSha256: string; totalBytes: number };
+  assert.equal(begin.totalBytes, bytes.byteLength);
+  assert.match(begin.contentSha256, /^sha256:[a-f0-9]{64}$/);
+});
+
+test('aborts an opened Attachment upload when a later chunk fails', async () => {
+  const requests: RecordedRequest[] = [];
+  const connection = {
+    hostEpoch: 'host-current',
+    request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
+      requests.push({ operation, input });
+      if ((input as { kind?: string }).kind === 'begin') {
+        return { kind: 'upload_opened', nextOffset: 0 };
+      }
+      if ((input as { kind?: string }).kind === 'abort') {
+        return { kind: 'upload_aborted', uploadId: 'upload-1' };
+      }
+      throw new Error('chunk failed');
+    },
+    close: async () => undefined,
+  } as unknown as RuntimeHostConnection;
+  const client = new DesktopRuntimeHostClient(connection);
+
+  await assert.rejects(
+    () =>
+      client.ingestAttachment({
+        sessionId: 'session-1',
+        uploadId: 'upload-1',
+        name: 'notes.txt',
+        mimeType: 'text/plain',
+        content: new Uint8Array([1]),
+      }),
+    /chunk failed/,
+  );
+  assert.deepEqual(
+    requests.map(({ input }) => (input as { kind: string }).kind),
+    ['begin', 'chunk', 'abort'],
+  );
+});
+
+test('accepts an idempotently committed Attachment upload at begin', async () => {
+  const attachment = {
+    kind: 'file' as const,
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    bytes: 1,
+    ref: {
+      kind: 'session_file' as const,
+      sessionId: 'session-1',
+      relativePath: 'artifact-1',
+    },
+  };
+  const { client, requests } = clientWithResponses([
+    { kind: 'committed', uploadId: 'upload-1', attachment },
+  ]);
+
+  assert.deepEqual(
+    await client.ingestAttachment({
+      sessionId: 'session-1',
+      uploadId: 'upload-1',
+      name: 'notes.txt',
+      mimeType: 'text/plain',
+      content: new Uint8Array([1]),
+    }),
+    attachment,
+  );
+  assert.equal(requests.length, 1);
 });
 
 test('fails explicitly when the Host cannot represent a legacy Session', async () => {

@@ -36,6 +36,12 @@ describe('executionBoundaryDisplayMode', () => {
       }),
     ).toBe('ask');
     expect(executionBoundaryDisplayMode({ kind: 'bypass', revision: 1 })).toBe('bypass');
+    expect(
+      executionBoundaryDisplayMode({ kind: 'managed', access: 'read_only', revision: 2 }),
+    ).toBe('explore');
+    expect(executionBoundaryDisplayMode({ kind: 'managed', access: 'writable', revision: 2 })).toBe(
+      'ask',
+    );
   });
 
   test('an approved expansion that grants a write stops reading as read-only', () => {

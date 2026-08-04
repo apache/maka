@@ -98,6 +98,7 @@ const allowedExternalImports = {
     '@maka/core/plan',
     '@maka/core/permission',
     '@maka/core/runtime-policy',
+    '@maka/core/sandbox-boundary',
     '@maka/core/session',
     '@maka/core/shell-run-result',
     '@maka/core/task-ledger',

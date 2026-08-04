@@ -30,6 +30,7 @@ import {
 import { readHostRegistration } from '../control/registration.js';
 import {
   decodeHostFrame,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_MAX_FRAME_BYTES,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RuntimeHostProtocolError,
@@ -169,7 +170,7 @@ describe('non-serving Runtime Host kernel', () => {
           surface: 'inspect',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
-          compatibilityEpoch: 1,
+          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
         });
         const handshake = decodeHostFrame(await transport.read(1_000));
         assert.ok('kind' in handshake && handshake.kind === 'accepted');
@@ -406,7 +407,7 @@ describe('non-serving Runtime Host kernel', () => {
         hostEpoch: candidate.host.hostEpoch,
         protocolMin: CURRENT_PROTOCOL.min,
         protocolMax: CURRENT_PROTOCOL.max,
-        compatibilityEpoch: 1,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
         state: 'ready',
         replacement: 'blocked_by_residency',
       });
@@ -931,7 +932,7 @@ describe('non-serving Runtime Host kernel', () => {
         surface: 'tui',
         protocolMin: CURRENT_PROTOCOL.min,
         protocolMax: CURRENT_PROTOCOL.max,
-        compatibilityEpoch: 1,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       });
       const response = decodeHostFrame(await transport.read(2_000));
       assert.deepEqual(response, { kind: 'draining', hostEpoch: candidate.host.hostEpoch });
@@ -993,7 +994,7 @@ describe('non-serving Runtime Host kernel', () => {
           surface: 'tui',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
-          compatibilityEpoch: 1,
+          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake && handshake.kind === 'accepted');
@@ -1045,7 +1046,7 @@ describe('non-serving Runtime Host kernel', () => {
           surface: 'tui',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
-          compatibilityEpoch: 1,
+          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake);
@@ -1175,7 +1176,7 @@ describe('non-serving Runtime Host kernel', () => {
           surface: 'tui',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
-          compatibilityEpoch: 1,
+          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake);
@@ -1218,7 +1219,7 @@ describe('non-serving Runtime Host kernel', () => {
             surface: 'inspect',
             protocolMin: CURRENT_PROTOCOL.min,
             protocolMax: CURRENT_PROTOCOL.max,
-            compatibilityEpoch: 1,
+            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
           });
           assert.deepEqual(decodeHostFrame(await rejectedHandshakeTransport.read(1_000)), {
             kind: 'draining',
@@ -2012,7 +2013,7 @@ async function openNonReadingStatusSocket(path: string): Promise<Socket> {
         surface: 'tui',
         protocolMin: CURRENT_PROTOCOL.min,
         protocolMax: CURRENT_PROTOCOL.max,
-        compatibilityEpoch: 1,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       })}\n`,
     );
   });

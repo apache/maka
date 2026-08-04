@@ -675,6 +675,8 @@ export {
 // sandbox-boundary.ts
 export type {
   ExecutionBoundary,
+  ExecutionBoundaryReadModel,
+  ExecutionBoundarySummary,
   CreateSandboxBoundaryRequest,
   LegacyPermissionMode,
   SandboxBoundaryAccess,

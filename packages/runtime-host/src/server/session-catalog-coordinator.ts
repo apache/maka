@@ -3,6 +3,11 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
+import {
+  executionBoundaryDisplayMode,
+  type ExecutionBoundary,
+  type ExecutionBoundarySummary,
+} from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
@@ -44,6 +49,7 @@ import {
   type SessionConfigurationUpdateInput,
   type SessionCreateInput,
   type SessionCwdRelocateInput,
+  type SessionExecutionBoundaryQueryInput,
   type SessionMetadataUpdateInput,
   type SessionModelTarget,
   type SessionReadMarkerSetInput,
@@ -60,6 +66,7 @@ type SessionCatalogStores = Pick<
   | 'markSessionReadThroughMessage'
   | 'probeStableSessionCreate'
   | 'readCatalogRecord'
+  | 'readExecutionBoundary'
   | 'readHeaderRecordSnapshot'
   | 'updateHeaderVersioned'
 >;
@@ -115,6 +122,7 @@ export class HostSessionCatalogCoordinator {
     'session.configuration.update': (input) => this.#updateConfiguration(input),
     'session.cwd.relocate': (input) => this.#relocateCwd(input),
     'session.read_marker.set': (input) => this.#setReadMarker(input),
+    'session.execution_boundary.query': (input) => this.#queryExecutionBoundary(input),
   };
 
   readonly #stores: SessionCatalogStores;
@@ -174,6 +182,25 @@ export class HostSessionCatalogCoordinator {
       );
     } catch {
       return queryFailure('persistence_failed', 'Session catalog is unavailable');
+    }
+  }
+
+  async #queryExecutionBoundary(
+    input: SessionExecutionBoundaryQueryInput,
+  ): Promise<OperationOutcome<'session.execution_boundary.query'>> {
+    try {
+      return {
+        ok: true,
+        result: projectExecutionBoundary(await this.#stores.readExecutionBoundary(input.sessionId)),
+      };
+    } catch (error) {
+      if (isNotFound(error)) {
+        return executionBoundaryFailure('not_found', 'Session does not exist');
+      }
+      return executionBoundaryFailure(
+        'persistence_failed',
+        'Session execution boundary is unavailable',
+      );
     }
   }
 
@@ -1011,6 +1038,22 @@ function queryFailure(
   message: string,
 ): Extract<OperationOutcome<'session.catalog.query'>, { readonly ok: false }> {
   return { ok: false, error: { code, message } };
+}
+
+function executionBoundaryFailure(
+  code: OperationError<'session.execution_boundary.query'>['code'],
+  message: string,
+): Extract<OperationOutcome<'session.execution_boundary.query'>, { readonly ok: false }> {
+  return { ok: false, error: { code, message } };
+}
+
+function projectExecutionBoundary(boundary: ExecutionBoundary): ExecutionBoundarySummary {
+  if (boundary.kind !== 'managed') return { kind: boundary.kind, revision: boundary.revision };
+  return {
+    kind: 'managed',
+    access: executionBoundaryDisplayMode(boundary) === 'explore' ? 'read_only' : 'writable',
+    revision: boundary.revision,
+  };
 }
 
 function metadataFailure(

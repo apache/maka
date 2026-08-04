@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   createDefaultRuntimePolicy,
+  createGenesisExecutionBoundary,
   DEEP_RESEARCH_SESSION_LABEL,
   DEEP_RESEARCH_SESSION_NAME,
   type SessionHeader,
@@ -37,6 +38,24 @@ const context: ConnectionContext = {
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
+
+test('projects only bounded execution boundary presentation facts', async () => {
+  const fixture = createFixture({
+    stores: {
+      readExecutionBoundary: async () => createGenesisExecutionBoundary('explore'),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.execution_boundary.query'](
+    { sessionId: fixture.sessionId },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    result: { kind: 'managed', access: 'read_only', revision: 0 },
+  });
+});
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
   const fixture = createFixture({
@@ -525,6 +544,7 @@ function createFixture(
     markSessionReadThroughMessage: async () => headerSnapshot(header, revision),
     probeStableSessionCreate: async () => ({ kind: 'absent' }),
     readCatalogRecord: async () => catalogRecord(header, revision),
+    readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
     readHeaderRecordSnapshot: async () => headerSnapshot(header, revision),
     updateHeaderVersioned: async (_sessionId, patch, expectedRevision) => {
       if (expectedRevision !== revision) {

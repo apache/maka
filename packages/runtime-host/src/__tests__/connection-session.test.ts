@@ -13,6 +13,7 @@ import { readHostRegistration } from '../control/registration.js';
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
 import {
   decodeHostFrame,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostFrame,
   type ResponseFrame,
@@ -697,7 +698,7 @@ async function openAcceptedTransport(
     surface: 'tui',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
-    compatibilityEpoch: 1,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
   });
   const handshake = decodeHostFrame(await transport.read(1_000));
   assert.ok('kind' in handshake);

@@ -318,6 +318,11 @@ export function registerSessionsIpc(
     }
     return messages;
   });
+  // The Runtime Host candidate uses these channels to bind renderer listeners
+  // to one atomic transcript/live subscription. Embedded execution already
+  // owns its stream lifetime, so its implementation is intentionally a no-op.
+  ipcMain.handle('sessions:observe', () => undefined);
+  ipcMain.handle('sessions:unobserve', () => undefined);
   ipcMain.handle('sessions:listTurns', (_event, sessionId: string) => runtime.listTurns(sessionId));
   // Goal kill-switch surface: the renderer reads the active goal to badge a
   // session running an autonomous loop, and clears it to stop the loop. `get`

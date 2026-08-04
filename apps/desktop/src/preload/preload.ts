@@ -20,7 +20,7 @@ import type {
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   HealthSnapshot,
-  ExecutionBoundary,
+  ExecutionBoundaryReadModel,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
@@ -243,7 +243,7 @@ const makaBridge = {
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);
     },
-    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return ipcRenderer.invoke('sessions:readExecutionBoundary', sessionId);
     },
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]> {
@@ -285,7 +285,12 @@ const makaBridge = {
       const channel = `sessions:event:${sessionId}`;
       const listener = (_event: Electron.IpcRendererEvent, payload: SessionEvent) => handler(payload);
       ipcRenderer.on(channel, listener);
-      return () => ipcRenderer.off(channel, listener);
+      const observerId = crypto.randomUUID();
+      void ipcRenderer.invoke('sessions:observe', sessionId, observerId).catch(() => undefined);
+      return () => {
+        ipcRenderer.off(channel, listener);
+        void ipcRenderer.invoke('sessions:unobserve', observerId).catch(() => undefined);
+      };
     },
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, payload: SessionChangedEvent) => handler(payload);

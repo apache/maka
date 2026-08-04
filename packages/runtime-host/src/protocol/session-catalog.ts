@@ -10,6 +10,8 @@ import {
   type SessionSubagentProjection,
 } from '@maka/core/session';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
+import type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
+export type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
 import {
   assertAllowedKeys,
   requireCount,
@@ -53,6 +55,7 @@ const CONFIGURATION_UPDATE_ERRORS = [
   'operation_conflict',
 ] as const;
 const READ_MARKER_ERRORS = [...METADATA_UPDATE_ERRORS, 'operation_conflict'] as const;
+const EXECUTION_BOUNDARY_QUERY_ERRORS = [...QUERY_ERRORS, 'not_found'] as const;
 
 const PROJECTION_REQUIRED_FIELDS = [
   'id',
@@ -169,6 +172,10 @@ export interface SessionCwdRelocateInput {
 export interface SessionReadMarkerSetInput {
   readonly sessionId: string;
   readonly readThroughMessageId: string;
+}
+
+export interface SessionExecutionBoundaryQueryInput {
+  readonly sessionId: string;
 }
 
 export interface SessionCatalogProjection {
@@ -314,7 +321,52 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
     decodeOutput: decodeSessionCatalogItem,
     assertOutputForInput: (input, output) => assertSessionIdentity(input.sessionId, output),
   }),
+  'session.execution_boundary.query': defineOperation<
+    SessionExecutionBoundaryQueryInput,
+    ExecutionBoundarySummary,
+    (typeof EXECUTION_BOUNDARY_QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: EXECUTION_BOUNDARY_QUERY_ERRORS,
+    decodeInput: decodeSessionExecutionBoundaryQueryInput,
+    decodeOutput: decodeExecutionBoundarySummary,
+  }),
 } as const;
+
+export function decodeSessionExecutionBoundaryQueryInput(
+  value: unknown,
+): SessionExecutionBoundaryQueryInput {
+  const input = requireExactRecord(value, 'Session execution boundary query input', ['sessionId']);
+  return { sessionId: requireEntityId(input.sessionId, 'sessionId') };
+}
+
+export function decodeExecutionBoundarySummary(value: unknown): ExecutionBoundarySummary {
+  const boundary = requireRecord(value, 'Session execution boundary summary');
+  if (boundary.kind === 'managed') {
+    const exact = requireExactRecord(boundary, 'Managed execution boundary summary', [
+      'kind',
+      'access',
+      'revision',
+    ]);
+    if (exact.access !== 'read_only' && exact.access !== 'writable') {
+      throw invalidProtocolFrame('Invalid managed execution boundary access');
+    }
+    return {
+      kind: 'managed',
+      access: exact.access,
+      revision: requireCount(exact.revision, 'Execution boundary revision'),
+    };
+  }
+  if (boundary.kind === 'bypass' || boundary.kind === 'external') {
+    const exact = requireExactRecord(boundary, 'Execution boundary summary', ['kind', 'revision']);
+    return {
+      kind: boundary.kind,
+      revision: requireCount(exact.revision, 'Execution boundary revision'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid execution boundary summary');
+}
 
 export function decodeSessionCatalogQueryInput(value: unknown): SessionCatalogQueryInput {
   const input = requireRecord(value, 'Session catalog query input');

@@ -1,4 +1,4 @@
-import type { ExecutionBoundary, PermissionMode } from '@maka/core';
+import type { ExecutionBoundaryReadModel, PermissionMode } from '@maka/core';
 import { executionBoundaryDisplayMode } from '@maka/core';
 
 export interface DesktopExecutionBoundarySurface {
@@ -8,7 +8,7 @@ export interface DesktopExecutionBoundarySurface {
 
 export function deriveDesktopExecutionBoundarySurface(
   activeSessionId: string | undefined,
-  boundary: ExecutionBoundary | undefined,
+  boundary: ExecutionBoundaryReadModel | undefined,
   fallbackMode: PermissionMode,
 ): DesktopExecutionBoundarySurface {
   if (!activeSessionId) {

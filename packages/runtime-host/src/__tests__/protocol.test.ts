@@ -102,6 +102,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.configuration.update',
       'session.create',
       'session.cwd.relocate',
+      'session.execution_boundary.query',
       'session.lifecycle.set',
       'session.metadata.update',
       'session.read_marker.set',

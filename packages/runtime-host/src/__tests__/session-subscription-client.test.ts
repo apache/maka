@@ -20,6 +20,7 @@ import { removeHostRegistration, writeHostRegistration } from '../control/regist
 import {
   decodeClientFrame,
   encodeProtocolFrame,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
@@ -456,7 +457,7 @@ async function withProtocolPeer(
       endpoint: endpoint.path,
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
-      compatibilityEpoch: 1,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       state: 'ready',
       pid: process.pid,
       createdAt: new Date().toISOString(),
@@ -493,7 +494,7 @@ async function acceptConnectionAndReadOpen(
     hostEpoch,
     connectionId: 'connection-1',
     selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
-    compatibilityEpoch: 1,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
     state: 'ready',
   });
   const request = decodeClientFrame(await transport.read(1_000));

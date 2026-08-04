@@ -234,7 +234,7 @@ function normalizeCreateThinkingLevel(
   return { thinkingLevel: value };
 }
 
-function toDesktopHostSessionSummary(
+export function toDesktopHostSessionSummary(
   session: SessionCatalogProjection,
 ): DesktopHostSessionSummary {
   return {

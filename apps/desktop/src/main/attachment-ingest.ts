@@ -10,6 +10,14 @@ export type AttachmentIngestFile =
   | { path: string; mimeType?: string; size: number }
   | { name: string; mimeType?: string; size: number; content: Uint8Array };
 
+export interface AttachmentSnapshotInput {
+  name: string;
+  mimeType: string;
+  artifactKind: ArtifactKind;
+  attachmentKind: AttachmentRef['kind'];
+  content: Uint8Array;
+}
+
 /**
  * Resolve a selected/dropped file into an {@link AttachmentRef} the runtime
  * can consume:
@@ -36,6 +44,52 @@ export async function ingestAttachments(input: {
   now?: () => number;
   maxBytes?: number;
 }): Promise<AttachmentRef[]> {
+  return resolveAttachmentRefs({
+    ...input,
+    workspaceFiles: 'reference',
+    snapshot: async ({ name, mimeType, artifactKind, attachmentKind, content }) => {
+      const source: ArtifactSource = 'user_upload';
+      const record = await input.artifactStore.create({
+        sessionId: input.sessionId,
+        turnId: input.sessionId,
+        name,
+        kind: artifactKind,
+        content,
+        mimeType,
+        source,
+        ...(input.now ? { now: input.now() } : {}),
+      });
+      return {
+        kind: attachmentKind,
+        name,
+        mimeType,
+        bytes: content.byteLength,
+        ref: {
+          kind: 'session_file',
+          sessionId: input.sessionId,
+          relativePath: record.id,
+        },
+      };
+    },
+  });
+}
+
+/**
+ * Resolve attachment references while making workspace-file ownership
+ * explicit. Embedded execution can preserve cwd-contained files as workspace
+ * references; the Runtime Host adapter snapshots every selected path because
+ * hosted Turn attachments accept only canonical Session Artifacts.
+ */
+export async function resolveAttachmentRefs(input: {
+  files: AttachmentIngestFile[];
+  cwd: string;
+  sessionId: string;
+  workspaceFiles: 'reference' | 'snapshot';
+  snapshot: (input: AttachmentSnapshotInput) => Promise<AttachmentRef>;
+  resizeImage?: (bytes: Uint8Array) => Promise<Uint8Array>;
+  realpath?: (path: string) => Promise<string>;
+  maxBytes?: number;
+}): Promise<AttachmentRef[]> {
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
   const refs: AttachmentRef[] = [];
   for (const file of input.files) {
@@ -43,7 +97,12 @@ export async function ingestAttachments(input: {
     const mimeType = file.mimeType && file.mimeType.length > 0 ? file.mimeType : guessMimeFromName(name);
     const kind = attachmentKindFromMimeType(mimeType, name);
 
-    if (kind !== 'image' && isPathAttachment(file) && (await isInsideCwdReal(input.cwd, file.path, input.realpath))) {
+    if (
+      input.workspaceFiles === 'reference' &&
+      kind !== 'image' &&
+      isPathAttachment(file) &&
+      (await isInsideCwdReal(input.cwd, file.path, input.realpath))
+    ) {
       const realCwd = await resolveReal(input.cwd, input.realpath);
       const realTarget = await resolveReal(file.path, input.realpath);
       refs.push({
@@ -60,25 +119,17 @@ export async function ingestAttachments(input: {
     if (kind === 'image' && input.resizeImage) {
       bytes = await input.resizeImage(bytes);
     }
-    const artifactKind: ArtifactKind = kind === 'image' ? 'image' : kind === 'pdf' ? 'pdf' : 'file';
-    const source: ArtifactSource = 'user_upload';
-    const record = await input.artifactStore.create({
-      sessionId: input.sessionId,
-      turnId: input.sessionId,
-      name,
-      kind: artifactKind,
-      content: bytes,
-      mimeType,
-      source,
-      ...(input.now ? { now: input.now() } : {}),
-    });
-    refs.push({
-      kind,
-      name,
-      mimeType,
-      bytes: bytes.byteLength,
-      ref: { kind: 'session_file', sessionId: input.sessionId, relativePath: record.id },
-    });
+    const artifactKind: ArtifactKind =
+      kind === 'image' ? 'image' : kind === 'pdf' ? 'pdf' : 'file';
+    refs.push(
+      await input.snapshot({
+        name,
+        mimeType,
+        artifactKind,
+        attachmentKind: kind,
+        content: bytes,
+      }),
+    );
   }
   return refs;
 }
