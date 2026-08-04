@@ -282,10 +282,13 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         );
       }
       assertExecutionCrossPlaneIdentity(accepted.binding, accepted.receipt, accepted.head);
-      // This preliminary proof exists so crash tests can stop at a real,
-      // completed artifact verification. No authority is published from it.
-      await this.#verifyExecutionArtifactOrQuarantine(accepted.binding, accepted.receipt);
-      await this.failpoint?.('after_execution_artifact_verification');
+      // Test builds with a failpoint retain a preliminary proof so crash tests
+      // can stop after a real, completed artifact verification. The ordinary
+      // production path performs only the final proof below.
+      if (this.failpoint) {
+        await this.#verifyExecutionArtifactOrQuarantine(accepted.binding, accepted.receipt);
+        await this.failpoint('after_execution_artifact_verification');
+      }
 
       // The final proof bundle is intentionally ordered so the exact Git
       // receipt/binding/worktree verification is the last awaited operation

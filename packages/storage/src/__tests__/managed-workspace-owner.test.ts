@@ -17,6 +17,7 @@ import {
 import {
   inspectManagedWorkspaceExecutionHandleInternal,
   inspectManagedWorkspaceExecutionScopeInternal,
+  ManagedWorkspaceExecutionAuthorityError,
 } from '../managed-workspace-execution-authority-internal.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
@@ -167,10 +168,21 @@ test('publishes only a revocable execution scope through its accepted handle', a
     assert.deepEqual(retainedScope, { kind: 'managed_workspace_execution_scope_v1' });
     assert.throws(
       () =>
+        inspectManagedWorkspaceExecutionScopeInternal({
+          kind: 'managed_workspace_execution_scope_v1',
+        }),
+      (error) =>
+        error instanceof ManagedWorkspaceExecutionAuthorityError &&
+        error.code === 'managed_workspace_execution_scope_invalid',
+    );
+    assert.throws(
+      () =>
         inspectManagedWorkspaceExecutionScopeInternal(
           retainedScope as ManagedWorkspaceExecutionScope,
         ),
-      /execution scope has expired/u,
+      (error) =>
+        error instanceof ManagedWorkspaceExecutionAuthorityError &&
+        error.code === 'managed_workspace_execution_scope_expired',
     );
     await owner.close();
   } finally {
@@ -477,6 +489,80 @@ test('drains an admitted managed execution before owner close completes', async 
   } finally {
     releaseExecution();
     await Promise.allSettled([executing, closing].filter((value) => value !== undefined));
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('allows concurrent read-only scopes for one handle and close drains both', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  let releaseFirst!: () => void;
+  const firstReleased = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let releaseSecond!: () => void;
+  const secondReleased = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  let bothAdmitted!: () => void;
+  const bothScopesActive = new Promise<void>((resolve) => {
+    bothAdmitted = resolve;
+  });
+  let activeScopes = 0;
+  let executions: Promise<void>[] = [];
+  let closing: Promise<void> | undefined;
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+    const execute = (released: Promise<void>) =>
+      owner.withManagedWorkspaceExecution(accepted.executionHandle, async (scope) => {
+        assert.equal(inspectManagedWorkspaceExecutionScopeInternal(scope).workspaceEffect, 'none');
+        activeScopes += 1;
+        if (activeScopes === 2) bothAdmitted();
+        await released;
+        activeScopes -= 1;
+      });
+
+    executions = [execute(firstReleased), execute(secondReleased)];
+    assert.equal(
+      await Promise.race([bothScopesActive.then(() => 'active'), delay(20_000, 'timeout')]),
+      'active',
+    );
+    assert.equal(activeScopes, 2);
+
+    closing = owner.close();
+    assert.equal(
+      await Promise.race([closing.then(() => 'closed'), delay(250, 'pending')]),
+      'pending',
+    );
+    releaseFirst();
+    assert.equal(
+      await Promise.race([closing.then(() => 'closed'), delay(250, 'pending')]),
+      'pending',
+    );
+    releaseSecond();
+    await Promise.all(executions);
+    await closing;
+    assert.equal(owner.state, 'closed');
+  } finally {
+    releaseFirst();
+    releaseSecond();
+    await Promise.allSettled([...executions, closing].filter((value) => value !== undefined));
     runtimeStore.close();
     await rootOwner.close();
   }

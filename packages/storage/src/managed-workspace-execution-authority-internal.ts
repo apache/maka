@@ -12,6 +12,20 @@ export interface ManagedWorkspaceExecutionScope {
   readonly kind: 'managed_workspace_execution_scope_v1';
 }
 
+export type ManagedWorkspaceExecutionAuthorityErrorCode =
+  | 'managed_workspace_execution_scope_invalid'
+  | 'managed_workspace_execution_scope_expired';
+
+export class ManagedWorkspaceExecutionAuthorityError extends Error {
+  constructor(
+    readonly code: ManagedWorkspaceExecutionAuthorityErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ManagedWorkspaceExecutionAuthorityError';
+  }
+}
+
 export interface ManagedWorkspaceExecutionAuthorityStateInternal {
   readonly store: RuntimeWorkspaceVersionAuthorityStore;
   readonly binding: Readonly<ManagedWorkspaceBinding>;
@@ -86,7 +100,10 @@ export function revokeManagedWorkspaceExecutionScopeInternal(
 ): void {
   const state = scopes.get(scope);
   if (!state || state.ownerToken !== ownerToken) {
-    throw new Error('Managed workspace execution scope is invalid for this owner');
+    throw new ManagedWorkspaceExecutionAuthorityError(
+      'managed_workspace_execution_scope_invalid',
+      'Managed workspace execution scope is invalid for this owner',
+    );
   }
   state.active = false;
 }
@@ -96,7 +113,17 @@ export function inspectManagedWorkspaceExecutionScopeInternal(
   scope: ManagedWorkspaceExecutionScope,
 ): ManagedWorkspaceExecutionScopeStateInternal {
   const state = scopes.get(scope);
-  if (!state) throw new Error('Managed workspace execution scope is invalid');
-  if (!state.active) throw new Error('Managed workspace execution scope has expired');
+  if (!state) {
+    throw new ManagedWorkspaceExecutionAuthorityError(
+      'managed_workspace_execution_scope_invalid',
+      'Managed workspace execution scope is invalid',
+    );
+  }
+  if (!state.active) {
+    throw new ManagedWorkspaceExecutionAuthorityError(
+      'managed_workspace_execution_scope_expired',
+      'Managed workspace execution scope has expired',
+    );
+  }
   return state;
 }

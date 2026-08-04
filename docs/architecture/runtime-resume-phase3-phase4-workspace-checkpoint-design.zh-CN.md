@@ -561,7 +561,10 @@ M1 拆成独立不变量，避免一次 PR 同时跨越 host lifecycle、runtime
 1. **M1.1 execution scope admission（当前切片）**：M0 只返回 owner-bound opaque handle；同一 owner 每次
    execution 都在 drain residency 内重新证明 canonical head、Git receipt、HEAD/tree/ownership 与 root
    identity，最后只签发 callback 生命周期内有效的 opaque scope，不公开 raw cwd。provisioning 固定为
-   `canonical_tree_only_v1`，`workspaceEffect` 固定为 `none`；
+   `canonical_tree_only_v1`，`workspaceEffect` 固定为 `none`。同一 handle 可以并发多个只读 admission，
+   `close()` 必须等待全部 active scope drain；普通生产 admission 只做一次最终 Git verification，preliminary
+   verification 仅存在于配置 crash failpoint 的 production-shaped 测试路径；过期或伪造 scope 通过 typed
+   `ManagedWorkspaceExecutionAuthorityError` 的稳定 code fail closed；
 2. **M1.2 runtime-host composition**：建立 managed/attached typed profile、startup/drain/shutdown 顺序，并让
    storage-internal worker bridge 只能用 active scope 解析 cwd；
 3. **M1.3 environment provisioning**：单独设计 ignored dependency、secret 与 scratch overlay。M1.1 不复制

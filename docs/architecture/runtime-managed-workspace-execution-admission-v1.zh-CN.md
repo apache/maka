@@ -1,10 +1,11 @@
 # Managed Workspace Execution Admission v1：M1.1 可撤销 scope 门
 
-- 状态：实现中
+- 状态：M1.1 已实现；尚无 runtime-host / Desktop / CLI 生产消费者
 - 更新日期：2026-08-04
-- 主要不变量：同一个 `ManagedWorkspaceOwner` 只能用其亲自签发的进程内 execution handle 创建一次 active
-  execution scope；每次创建 scope 前重新证明 exact SQLite workspace head 与 exact Git artifact，公共 API
-  永不发布 raw cwd，callback 退出后 scope 立即失效
+- 主要不变量：同一个 `ManagedWorkspaceOwner` 只能用其亲自签发的进程内 execution handle 创建 active
+  execution scope；一次 admission 只签发一个 scope，但同一 handle 允许多个只读 admission 并发。每次创建
+  scope 前重新证明 exact SQLite workspace head 与 exact Git artifact，公共 API 永不发布 raw cwd，callback
+  退出后 scope 立即失效
 - lifecycle / admission owner：`ManagedWorkspaceOwner`
 - durable truth：SQLite immutable workspace RuntimeEvents
 - artifact evidence：Maka-owned Git binding、baseline receipt、HEAD/tree 与 ownership lock
@@ -27,7 +28,9 @@ await owner.withManagedWorkspaceExecution(accepted.executionHandle, async (scope
 `openManagedWorkspaceBaseline(...)` 不再公开 raw binding、receipt 或 `worktreePath`。handle 的内部证据保存在
 未从 package root 导出的模块中，并使用 `WeakMap` 与 owner token 绑定；复制相同字段或使用另一个 owner 的
 handle 都不能获得执行权限。scope 同样由 `WeakMap` 保存真实状态，callback 退出后即使被闭包保留也只能得到
-`managed_workspace_execution_scope_expired`。
+typed `ManagedWorkspaceExecutionAuthorityError`，其稳定 code 为
+`managed_workspace_execution_scope_expired`；伪造 scope 的 code 为
+`managed_workspace_execution_scope_invalid`。
 
 本切片没有接入 Desktop、CLI 或 ToolRuntime。它只建立 host 后续接线必须消费的唯一准入 API，不同时跨越
 runtime protocol、host lifecycle 与工具 I/O 三个边界。
@@ -39,7 +42,7 @@ runtime protocol、host lifecycle 与工具 I/O 三个边界。
 | execution admission owner | 只有签发 handle 的同一个 `ManagedWorkspaceOwner` 可以消费它 |
 | durable authority | handle/scope 都不是 durable fact；canonical head 通过注册时捕获的 storage-internal reader 读取，不调用可被 caller shadow 的 public method |
 | 原子性边界 | 不虚构 Git 与 SQLite 之外的新事务；在 owner/root lease residency 内完成 final root/DB/head proof，再以 exact receipt/binding/Git verification 作为 scope 签发前最后一个 await |
-| 执行期间 | callback 计入 owner active operation；`close()` 等它 drain，新 admission 在 closing 后被拒绝 |
+| 执行期间 | 每个 callback 分别计入 owner active operation；同一 handle 可并发多个 `workspaceEffect: none` scope；`close()` 等全部 scope drain，新 admission 在 closing 后被拒绝 |
 | invalid handle | `managed_workspace_execution_handle_invalid`；不签发 scope |
 | canonical head 漂移/缺失 | fail closed；旧 handle 不能自行选择新 head |
 | artifact drift | 不签发 scope；所有 Git verification 阶段的 `managed_workspace_drifted` 统一 quarantine |
@@ -71,7 +74,9 @@ sequenceDiagram
 ```
 
 这不是跨 SQLite/Git/filesystem 的共同事务。它关闭 cooperating Maka writer 的 proof-to-scope seam；任意外部
-进程仍可能在最后一次 filesystem observation 后制造 drift，后续 admission 会 fail closed。M1.2 的 worker/
+进程仍可能在最后一次 filesystem observation 后制造 drift，后续 admission 会 fail closed。普通生产路径只执行
+图中的一次 final Git verification；只有配置 production-shaped crash failpoint 的测试路径才先执行一次 preliminary
+verification，以便在真实 proof 完成后 `SIGKILL`，随后仍必须再次执行 final verification 才能签发 scope。M1.2 的 worker/
 sandbox 建立实际 I/O 隔离，M2 才负责 mutating tool 产生 successor candidate 并接受新 workspace version。
 
 ## 4. Provisioning 与实际可用性边界
@@ -95,8 +100,9 @@ ignored dependency、secret 与 scratch overlay 必须作为独立 M1 provisioni
 |---|---|
 | baseline 已接受，签发 handle 前崩溃 | 重启后从 canonical head 与 receipt 重新签发新 handle |
 | execution verification 中崩溃 | 没有 durable “half admission”；旧 handle 随进程消失 |
-| preliminary verification 后 drift | final exact receipt/Git verification 检测并 quarantine；scope 不签发 |
-| callback 运行时 owner close | close 等 callback drain；不取消已 admission operation |
+| crash-test preliminary verification 后 drift | final exact receipt/Git verification 检测并 quarantine；scope 不签发 |
+| 同一 handle 的两个只读 callback 并发 | 两个 scope 可同时 active，彼此独立 revoke |
+| 多个 callback 运行时 owner close | close 等全部 callback drain；不取消已 admission operation |
 | closing 后新 execution 请求 | `managed_workspace_owner_closing` |
 | forged / cross-owner handle | `managed_workspace_execution_handle_invalid` |
 | callback 保存 scope 后再次使用 | scope 已 expired，internal consumer 必须拒绝 |
@@ -105,7 +111,8 @@ ignored dependency、secret 与 scratch overlay 必须作为独立 M1 provisioni
 | 重启后恢复 | 新 root owner、新 managed owner、新 handle；不可恢复旧进程内 capability |
 
 production-shaped 测试使用真实 pinned Git、真实 SQLite、真实子进程和 `SIGKILL`，证明 execution artifact
-verification 中断后，重启只能经完整 reopen/revalidate 获得新 scope authority。
+verification 中断后，重启只能经完整 reopen/revalidate 获得新 scope authority；真实 Git 并发测试证明两个
+只读 scope 可以并行，且 `close()` 必须等待二者全部退出。
 
 ## 6. 平台能力矩阵
 
