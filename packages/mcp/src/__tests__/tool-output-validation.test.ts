@@ -13,7 +13,7 @@ describe('MCP Tool output validation preparation', () => {
         properties: {
           value: {
             type: 'string',
-            'x-mcp-header': 'X-Value',
+            'x-vendor-extension': 'opaque',
           },
         },
       },

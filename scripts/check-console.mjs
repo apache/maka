@@ -119,10 +119,6 @@ const ALLOW = new Map([
     'packages/runtime-host/src/server/execution-composition.ts',
     'optional environment-backed bootstrap failure is generalized before startup logging; no credential or provider payloads.',
   ],
-  [
-    'packages/mcp/src/index.ts',
-    'bounded aggregate diagnostics for excluded Tool metadata contain capped names and stable reason codes, never arguments or credentials.',
-  ],
 ]);
 
 async function walk(root) {

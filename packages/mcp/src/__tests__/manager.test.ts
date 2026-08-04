@@ -362,7 +362,11 @@ describe('McpClientManager remote transport E2E', () => {
     await reconnect;
 
     assert.equal(reconnectedBeforeRelease, true);
-    await assert.rejects(refresh);
+    await assert.rejects(refresh, (error: unknown) => {
+      assert.match(String(error), /connection changed during tool refresh/u);
+      assert.doesNotMatch(String(error), /undefined/u);
+      return true;
+    });
     assert.deepEqual(
       manager.status('remote')?.tools.map((tool) => tool.name),
       ['echo', 'invalid-output'],
