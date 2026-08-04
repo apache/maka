@@ -21,19 +21,24 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+function choice(
+  connectionSlug: string,
+  providerType: ChatModelChoice['providerType'],
+  providerLabel: string,
+  model: string,
+  label: string,
+): ChatModelChoice {
+  return { connectionSlug, providerType, providerLabel, model, label, isDefault: false, thinkingLevels: [] };
+}
+
 const CHOICES: ChatModelChoice[] = [
-  { connectionSlug: 'openai-main', providerType: 'openai', model: 'gpt-5', label: 'GPT-5' },
-  { connectionSlug: 'openai-main', providerType: 'openai', model: 'gpt-5-mini', label: 'GPT-5 mini' },
-  { connectionSlug: 'openai-main', providerType: 'openai', model: 'o3', label: 'o3' },
-  { connectionSlug: 'anthropic-team', providerType: 'anthropic', model: 'claude-opus-4-1', label: 'Claude Opus 4.1' },
-  { connectionSlug: 'anthropic-team', providerType: 'anthropic', model: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
-  { connectionSlug: 'google-lab', providerType: 'google', model: 'gemini-3-pro', label: 'Gemini 3 Pro' },
-  {
-    connectionSlug: 'openrouter',
-    providerType: 'openai-compatible',
-    model: 'vendor/a-very-long-model-name-with-reasoning-and-tools-preview',
-    label: 'A very long model name with reasoning and tools preview',
-  },
+  choice('openai-main', 'openai', 'OpenAI', 'gpt-5', 'GPT-5'),
+  choice('openai-main', 'openai', 'OpenAI', 'gpt-5-mini', 'GPT-5 mini'),
+  choice('openai-main', 'openai', 'OpenAI', 'o3', 'o3'),
+  choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-opus-4-1', 'Claude Opus 4.1'),
+  choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-sonnet-4', 'Claude Sonnet 4'),
+  choice('google-lab', 'google', 'Google Gemini', 'gemini-3-pro', 'Gemini 3 Pro'),
+  choice('openrouter', 'openai-compatible', 'Custom relay', 'vendor/a-very-long-model-name-with-reasoning-and-tools-preview', 'A very long model name with reasoning and tools preview'),
 ];
 
 // Canonical user-facing ladder when a model offers the common set.

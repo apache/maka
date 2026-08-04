@@ -10,11 +10,11 @@ import {
 import { ChevronRight, Search } from '@maka/ui/icons';
 import {
   CATALOG_PROVIDER_TYPES,
-  PROVIDER_DEFAULTS,
   RECOMMENDED_PROVIDER_TYPES,
   type ProviderCatalogGroup,
   type ProviderType,
-} from '@maka/core';
+} from '@maka/core/provider-registry';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';

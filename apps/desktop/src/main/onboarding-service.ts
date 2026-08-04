@@ -33,11 +33,15 @@ import {
   deriveOnboardingState,
   hasSettledInitialOnboarding,
   ONBOARDING_MILESTONE_IDS,
+  projectSessionSendOutcome,
+  type ChatModelChoice,
   type OnboardingMilestone,
   type OnboardingMilestoneId,
   type OnboardingState,
   type SessionSummary,
+  type SessionSendProjection,
 } from '@maka/core';
+import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LlmConnection } from '@maka/core/llm-connections';
 
 export interface OnboardingSnapshot {
@@ -51,6 +55,8 @@ export interface OnboardingSnapshot {
   /** Connection list — bundled to avoid a separate `connections:list` + `getDefault` IPC. */
   connections: LlmConnection[];
   defaultSlug: string | null;
+  chatModelChoices: ChatModelChoice[];
+  sessionSendOutcomes: Record<string, SessionSendProjection>;
 }
 
 export interface OnboardingServiceDeps {
@@ -135,10 +141,10 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
       // get auto-marked as completed so the hero never appears.
       if (logicalSessions.length > 0 && !hasSettledInitialOnboarding(milestones)) {
         const updated = await deps.upsertMilestone('initial_onboarding', 'completed');
-        return { state, milestones: updated, sessions, connections, defaultSlug: defaultSlug ?? null };
+        return buildSnapshot(state, updated, sessions, connections, defaultSlug, secrets);
       }
 
-      return { state, milestones, sessions, connections, defaultSlug: defaultSlug ?? null };
+      return buildSnapshot(state, milestones, sessions, connections, defaultSlug, secrets);
     },
 
     async setMilestone(id: unknown, status: unknown): Promise<OnboardingSnapshot> {
@@ -178,7 +184,7 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
         sessions: logicalSessions,
         secrets,
       });
-      return { state, milestones, sessions, connections, defaultSlug: defaultSlug ?? null };
+      return buildSnapshot(state, milestones, sessions, connections, defaultSlug, secrets);
     },
 
     async clearMilestone(id: unknown): Promise<OnboardingSnapshot> {
@@ -208,8 +214,37 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
         sessions: logicalSessions,
         secrets,
       });
-      return { state, milestones, sessions, connections, defaultSlug: defaultSlug ?? null };
+      return buildSnapshot(state, milestones, sessions, connections, defaultSlug, secrets);
     },
+  };
+}
+
+function buildSnapshot(
+  state: OnboardingState,
+  milestones: OnboardingMilestone[],
+  sessions: SessionSummary[],
+  connections: LlmConnection[],
+  defaultSlug: string | null,
+  secrets: Readonly<Record<string, boolean>>,
+): OnboardingSnapshot {
+  return {
+    state,
+    milestones,
+    sessions,
+    connections,
+    defaultSlug: defaultSlug ?? null,
+    chatModelChoices: buildChatModelChoices(connections),
+    sessionSendOutcomes: Object.fromEntries(
+      sessions.map((session) => [
+        session.id,
+        projectSessionSendOutcome({
+          session,
+          connections,
+          defaultSlug,
+          hasSecret: (slug) => secrets[slug] ?? false,
+        }),
+      ]),
+    ),
   };
 }
 

@@ -15,6 +15,7 @@ import type {
   UpdateAppSettingsResult,
 } from "@maka/core";
 import type { TestProxyInput } from "@maka/core/settings/network-settings";
+import { buildChatModelChoices } from "@maka/core/chat-model-choice";
 import {
   Button,
   FormLayout,
@@ -33,7 +34,6 @@ import {
   Banner,
 } from "@maka/ui";
 import { ProviderBrandMark } from "./provider-brand-marks";
-import { buildCatalogChatModelChoices } from "../model-catalog-choices";
 import { PasswordInput } from "./password-input";
 import { settingsActionErrorMessage } from "./settings-error-copy";
 import { useActionGuard, useKeyedActionGuard } from "./use-action-guard";
@@ -193,7 +193,7 @@ function GeneralDefaultsCard(props: {
   const [savingPermissionMode, setSavingPermissionMode] = useState(false);
 
   const modelChoices = useMemo(
-    () => buildCatalogChatModelChoices(props.connections),
+    () => buildChatModelChoices(props.connections),
     [props.connections],
   );
   const modelGroups = useMemo(

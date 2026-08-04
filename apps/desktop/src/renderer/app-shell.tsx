@@ -19,13 +19,13 @@ import type {
 import {
   collapseSessionRevisions,
   filterLinkedSessionTree,
-  hasSettledInitialOnboarding,
   isLinkedSubagentSession,
   parseGraphCommand,
   parseSwarmCommand,
   projectRevisionLinkedSessionTree,
   resolveUiLocale,
 } from '@maka/core';
+import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
   AutomationsPage,
   DailyReviewPage,
@@ -335,7 +335,6 @@ function AppShellContent({
   const { memoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
   const {
     connections,
-    connectionsRevision,
     defaultConnection,
     setConnections,
     setDefaultConnection,
@@ -678,14 +677,13 @@ function AppShellContent({
   } = useShellChatModel({
     uiLocale,
     connections,
-    connectionsRevision,
+    snapshotChoices: onboarding.snapshot?.chatModelChoices,
+    sessionSendOutcome: activeSession
+      ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
+      : undefined,
     defaultConnection,
     activationCandidate: onboardingActivationCandidate,
     activeSession,
-    // Only trust the loaded transcript once the active session's
-    // messages finished loading; during the load the list may still be
-    // empty or carry the previous session.
-    activeSessionHasUserMessage: !messageLoadPending && messages.some((message) => message.type === 'user'),
     persistedComposerDefaults,
     openSettingsSection,
   });

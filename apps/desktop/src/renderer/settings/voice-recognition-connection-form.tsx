@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import {
-  PROVIDER_DEFAULTS,
-  effectiveBaseUrl,
   type LlmConnection,
 } from '@maka/core';
+import { PROVIDER_DEFAULTS, effectiveBaseUrl } from '@maka/core/llm-connections';
 import {
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';

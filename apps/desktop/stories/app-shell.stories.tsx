@@ -38,14 +38,20 @@ const modelChoices: ChatModelChoice[] = [
   {
     connectionSlug: 'anthropic-main',
     providerType: 'anthropic',
+    providerLabel: 'Anthropic',
     model: 'claude-sonnet-4-5',
     label: 'Claude Sonnet 4.5',
+    isDefault: true,
+    thinkingLevels: [],
   },
   {
     connectionSlug: 'openai-main',
     providerType: 'openai',
+    providerLabel: 'OpenAI',
     model: 'gpt-5.1',
     label: 'GPT-5.1',
+    isDefault: true,
+    thinkingLevels: [],
   },
 ];
 

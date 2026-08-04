@@ -6,7 +6,6 @@
 // by Settings, and a ready workspace returns to the ordinary Composer.
 
 import {
-  RECOMMENDED_PROVIDER_TYPES,
   type LlmConnection,
   type OnboardingState,
   type ProviderType,
@@ -30,8 +29,7 @@ import type { ReactNode } from 'react';
 import { getOnboardingCopy } from './locales/onboarding-copy';
 import { getOnboardingHeroCopy, type OnboardingHeroCopy } from './onboarding-hero-copy';
 import { ProviderLogo, providerDisplay } from './settings/provider-display';
-
-const FIRST_RUN_PROVIDER_TYPES = RECOMMENDED_PROVIDER_TYPES.slice(0, 4);
+import { FIRST_RUN_PROVIDER_TYPES } from './onboarding-provider-types';
 
 export interface OnboardingHeroProps {
   state: OnboardingState;

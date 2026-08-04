@@ -111,6 +111,8 @@ export interface OnboardingSnapshot {
   sessions: import('@maka/core').SessionSummary[];
   connections: import('@maka/core').LlmConnection[];
   defaultSlug: string | null;
+  chatModelChoices: import('@maka/core').ChatModelChoice[];
+  sessionSendOutcomes: Record<string, import('@maka/core').SessionSendProjection>;
 }
 
 export type RendererIngestInput =

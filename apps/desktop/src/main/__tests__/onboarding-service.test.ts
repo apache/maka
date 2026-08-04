@@ -44,6 +44,24 @@ function realConnection(overrides: Partial<LlmConnection> = {}): LlmConnection {
   } as LlmConnection;
 }
 
+function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
+  return {
+    id: 's1',
+    name: 'Session',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'a',
+    connectionLocked: true,
+    model: 'claude-sonnet-4-5-20250929',
+    permissionMode: 'ask',
+    ...overrides,
+  };
+}
+
 function fakeDeps(overrides: Partial<OnboardingServiceDeps> = {}): OnboardingServiceDeps {
   const milestones: OnboardingMilestone[] = [];
   return {
@@ -86,6 +104,27 @@ describe('createOnboardingService.getSnapshot', () => {
     assert.deepEqual(snapshot.milestones, [
       { id: 'first_chat_sent', completedAt: 1_700_000_000_000 },
     ]);
+    assert.equal(snapshot.chatModelChoices[0]?.providerLabel, 'Anthropic');
+    assert.equal(snapshot.chatModelChoices[0]?.isDefault, true);
+  });
+
+  it('projects session send readiness again after connection credentials change', async () => {
+    let hasCredential = true;
+    const service = createOnboardingService(fakeDeps({
+      listConnections: async () => [realConnection({ slug: 'a' })],
+      getDefaultSlug: async () => 'a',
+      listSessions: async () => [session()],
+      getMilestones: async () => [{ id: 'initial_onboarding', completedAt: 1 }],
+      hasCredential: async () => hasCredential,
+    }));
+
+    assert.deepEqual((await service.getSnapshot()).sessionSendOutcomes.s1, { kind: 'ready' });
+    hasCredential = false;
+    assert.deepEqual((await service.getSnapshot()).sessionSendOutcomes.s1, {
+      kind: 'blocked',
+      reason: 'missing_api_key',
+      connectionLocked: true,
+    });
   });
 
   it('keeps physical revision summaries in the snapshot for version navigation', async () => {

@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  PROVIDER_DEFAULTS,
-  connectionEnabledModelIds,
-  isWiredOAuthProvider,
   type ConnectionTestResult,
   type LlmConnection,
   type ModelInfo,
   type ProviderType,
 } from '@maka/core';
+import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import { isWiredOAuthProvider } from '@maka/core/provider-registry';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
@@ -15,7 +15,6 @@ import {
 } from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { buildCatalogModelChoices } from '../model-catalog-choices';
 import { connectionChipStatus } from './provider-connection-status';
 import { useKeyedActionGuard } from './use-action-guard';
 import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
@@ -225,13 +224,15 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
 
   // Picker entries come from the same catalog merge path as Chat and Daily
   // Review, but use the local unsaved editor draft for model/default changes.
-  const modelChoices = buildCatalogModelChoices({
-    slug: connection.slug,
-    providerType: connection.providerType,
-    defaultModel: connection.defaultModel,
-    models: modelSource === 'fetched' || models.length > 0 ? models : undefined,
-    modelSource,
-    modelsFetchedAt: connection.modelsFetchedAt,
+  const modelChoices = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: connection.slug,
+      providerType: connection.providerType,
+      defaultModel: connection.defaultModel,
+      models: modelSource === 'fetched' || models.length > 0 ? models : undefined,
+      modelSource,
+      modelsFetchedAt: connection.modelsFetchedAt,
+    },
   });
 
   /**

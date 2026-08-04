@@ -1,11 +1,13 @@
 import { useState, type FormEvent } from 'react';
 import {
-  PROVIDER_DEFAULTS,
-  deriveConnectionSlug,
-  isWiredOAuthProvider,
-  validateSlug,
   type ProviderType,
 } from '@maka/core';
+import {
+  PROVIDER_DEFAULTS,
+  deriveConnectionSlug,
+  validateSlug,
+} from '@maka/core/llm-connections';
+import { isWiredOAuthProvider } from '@maka/core/provider-registry';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,

@@ -400,6 +400,8 @@ export {
   thinkingVariantsForModel,
 } from './model-thinking.js';
 
+export type { ChatModelChoice } from './chat-model-choice.js';
+
 // agent-run.ts
 export type {
   AgentRunEvent,

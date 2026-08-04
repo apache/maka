@@ -481,10 +481,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
     const summaries: SessionSummary[] = [];
     for (let index = 0; index < withPreviews.length; index += 1) {
       const { record, previewMessages } = withPreviews[index]!;
-      const { header } = record;
+      let { header } = record;
       let messages = previewMessages.slice(-10);
-      if (index < 3) {
-        messages = (await this.metadata.readMessages(header.id)).slice(-10);
+      if (index < 3 || (!header.connectionLocked && previewMessages.length > 0)) {
+        const storedMessages = await this.metadata.readMessages(header.id);
+        if (!header.connectionLocked) {
+          header = await this.lockConnectionAfterFirstUserMessage(header, storedMessages);
+        }
+        if (index < 3) messages = storedMessages.slice(-10);
       }
       summaries.push(toSummary(header, messages));
     }

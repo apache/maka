@@ -42,6 +42,52 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('list self-heals a legacy unlocked session after its first user message', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-lock-heal-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessage(session.id, {
+        type: 'user',
+        id: 'message-1',
+        turnId: 'turn-1',
+        ts: 10,
+        text: 'legacy message',
+      });
+      await store.appendMessages(
+        session.id,
+        Array.from({ length: 10 }, (_, index) => ({
+          type: 'assistant',
+          id: `legacy-assistant-${index}`,
+          turnId: `legacy-turn-${index}`,
+          ts: 11 + index,
+          text: 'reply',
+          modelId: 'fake-model',
+        })),
+      );
+      for (let index = 0; index < 3; index += 1) {
+        const newer = await store.create(makeInput({ name: `Newer ${index}` }));
+        await store.appendMessage(newer.id, {
+          type: 'assistant',
+          id: `newer-assistant-${index}`,
+          turnId: `newer-turn-${index}`,
+          ts: 30 + index,
+          text: 'newer reply',
+          modelId: 'fake-model',
+        });
+      }
+
+      assert.equal(
+        (await store.list()).find((listed) => listed.id === session.id)?.connectionLocked,
+        true,
+      );
+      assert.equal((await store.readHeaderSnapshot(session.id)).connectionLocked, true);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('commits message and catalog projection atomically', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-atomic-'));
     const store = createSessionStore(root);

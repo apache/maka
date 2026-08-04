@@ -1,4 +1,4 @@
-import type { ProviderType, UiCatalog } from '@maka/core';
+import type { ProviderType, UiCatalog, UiLocale } from '@maka/core';
 
 /**
  * Pure-data provider introduction copy, localized zh / en.
@@ -275,3 +275,8 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'Gemini CLI', description: 'Google account sign-in is not yet wired to chat.' },
   },
 } satisfies Record<ProviderType, UiCatalog<ProviderCopy>>;
+
+export function providerDisplay(type: ProviderType, locale: UiLocale): ProviderCopy {
+  const copy = (PROVIDER_DISPLAY_COPY as Partial<Record<string, UiCatalog<ProviderCopy>>>)[type]?.[locale];
+  return copy ?? { name: type, description: UNKNOWN_PROVIDER_DESCRIPTION[locale] };
+}

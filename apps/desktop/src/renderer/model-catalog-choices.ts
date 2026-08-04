@@ -1,53 +1,18 @@
 import {
+  buildConnectionModelCatalogEntries,
+  type ModelCatalogEntry,
+  type SavedModelChoice,
+} from '@maka/core/model-catalog';
+import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
-  buildConnectionModelCatalogEntries,
   connectionEnabledModelIds,
-  isWiredOAuthProvider,
-  normalizeOpenAiCodexConnection,
-  type LlmConnection,
-  type ModelCatalogEntry,
-  type ProviderType,
-  type SavedModelChoice,
-  type UiLocale,
-} from '@maka/core';
-import type { ChatModelChoice } from '@maka/ui';
+} from '@maka/core/llm-connections';
+import { isWiredOAuthProvider } from '@maka/core/provider-registry';
+import type { LlmConnection, ProviderType, UiLocale } from '@maka/core';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 
 const DAILY_REVIEW_MODEL_KEY_SEPARATOR = '::';
-
-export function pickNewChatModel(input: {
-  pending: { llmConnectionSlug: string; model: string } | null;
-  activationCandidate?: { llmConnectionSlug: string; model: string };
-  catalogDefault: { llmConnectionSlug: string; model: string } | undefined;
-  choices: readonly ChatModelChoice[];
-}): { llmConnectionSlug: string; model: string } | undefined {
-  const pending =
-    input.pending &&
-    input.choices.some(
-      (choice) =>
-        choice.connectionSlug === input.pending?.llmConnectionSlug &&
-        choice.model === input.pending.model,
-    )
-      ? input.pending
-      : null;
-  if (pending) return pending;
-  const activationCandidate =
-    input.activationCandidate &&
-    input.choices.some(
-      (choice) =>
-        choice.connectionSlug === input.activationCandidate?.llmConnectionSlug &&
-        choice.model === input.activationCandidate.model,
-    )
-      ? input.activationCandidate
-      : undefined;
-  if (activationCandidate) return activationCandidate;
-  if (input.catalogDefault) return input.catalogDefault;
-  const first = input.choices[0];
-  return first
-    ? { llmConnectionSlug: first.connectionSlug, model: first.model }
-    : undefined;
-}
 
 export function buildCatalogRecommendedDefaultModel(providerType: ProviderType): string {
   const entry = selectableCatalogEntries({
@@ -56,48 +21,6 @@ export function buildCatalogRecommendedDefaultModel(providerType: ProviderType):
     defaultModel: '',
   })[0];
   return entry?.id ?? '';
-}
-
-export function pickCatalogDefaultChatModel(connection: Pick<
-  LlmConnection,
-  'slug' | 'providerType' | 'defaultModel' | 'models' | 'modelSource' | 'modelsFetchedAt'
->): { llmConnectionSlug: string; model: string } | undefined {
-  const entry = selectableCatalogEntries(connection).find((choice) => choice.isDefault && choice.canUseAsChatDefault);
-  return entry ? { llmConnectionSlug: connection.slug, model: entry.id } : undefined;
-}
-
-export function buildCatalogChatModelChoices(connections: readonly LlmConnection[]): ChatModelChoice[] {
-  const choices: ChatModelChoice[] = [];
-  for (const rawConnection of connections) {
-    const connection = normalizeOpenAiCodexConnection(rawConnection);
-    if (!isModelConsumerConnection(connection)) continue;
-    // Only non-OAuth connections get their user-chosen name surfaced in the
-    // menu heading — see `ChatModelChoice.connectionName`. OAuth providers'
-    // `connection.name` embeds the account email, so this stays undefined
-    // for them and the menu falls back to the provider label.
-    const connectionName = PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token'
-      ? undefined
-      : connection.name;
-    const enabledModelIds = new Set(connectionEnabledModelIds(connection));
-    for (const entry of selectableCatalogEntries(connection)) {
-      if (!enabledModelIds.has(entry.id)) continue;
-      choices.push({
-        connectionSlug: connection.slug,
-        providerType: connection.providerType,
-        model: entry.id,
-        label: modelDisplayLabel(entry),
-        connectionName,
-      });
-    }
-  }
-  return choices;
-}
-
-export function buildCatalogModelChoices(connection: Pick<
-  LlmConnection,
-  'slug' | 'providerType' | 'defaultModel' | 'models' | 'modelSource' | 'modelsFetchedAt'
->): ModelCatalogEntry[] {
-  return buildConnectionModelCatalogEntries({ connection });
 }
 
 export function buildCatalogDailyReviewModelOptions(

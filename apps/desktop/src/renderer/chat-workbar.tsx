@@ -1,8 +1,8 @@
 import { lazy, Suspense, useState, type CSSProperties } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
-import { useUiLocale, type ChatModelChoice } from '@maka/ui';
-import type { SessionSummary } from '@maka/core';
+import { useUiLocale } from '@maka/ui';
+import type { ChatModelChoice, SessionSummary } from '@maka/core';
 import type { SessionWorkbarTab } from './session-workbar-layout';
 import { getShellCopy } from './locales/shell-copy';
 import type {
