@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import {
@@ -169,7 +169,7 @@ export class FilesystemWorkerClient {
           access,
           scope: operationScope(parsedOperation.data.kind),
           cwd: canonicalCwd,
-        }),
+        })
     ).catch(() => {
       throw clientError('invalid_operation', 'validation', requestId);
     });
@@ -265,7 +265,7 @@ export class FilesystemWorkerClient {
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
     const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
     const pinnedTarget =
-      platform === 'linux' && target.targetType !== 'missing' && target.targetType !== 'symlink'
+      platform === 'linux' && target.targetType !== 'missing'
         ? (() => {
             try {
               return pinExistingLinuxProfilePath({
@@ -287,7 +287,6 @@ export class FilesystemWorkerClient {
     if (
       platform === 'linux' &&
       target.targetType !== 'missing' &&
-      target.targetType !== 'symlink' &&
       !pinnedTarget
     ) {
       throw clientError(
@@ -475,20 +474,22 @@ async function normalizeDirectoryEntryTarget(
   cwd: string,
   path: string,
   access: SandboxBoundaryAccess,
-  scope: SandboxBoundaryScope,
+  scope: SandboxBoundaryScope | 'auto',
 ): Promise<NormalizedSandboxBoundaryPath> {
-  const canonicalCwd = await fs.realpath(cwd);
+  const canonicalCwd = await realpath(cwd);
   const displayPath = resolve(canonicalCwd, path);
   const parentReal = await realpathAllowMissing(dirname(displayPath));
   const enforcementPath = resolve(parentReal, basename(displayPath));
-  return { displayPath, enforcementPath, access, scope, targetType: await entryTargetTypeOf(enforcementPath) };
+  const targetType = await entryTargetTypeOf(enforcementPath);
+  const effectiveScope = scope === 'auto' ? (targetType === 'directory' ? 'subtree' : 'exact') : scope;
+  return { displayPath, enforcementPath, access, scope: effectiveScope, targetType };
 }
 
 async function entryTargetTypeOf(
   path: string,
 ): Promise<NormalizedSandboxBoundaryPath['targetType']> {
   try {
-    const metadata = await fs.lstat(path);
+    const metadata = await lstat(path);
     if (metadata.isFile() || metadata.isSymbolicLink()) return 'file';
     if (metadata.isDirectory()) return 'directory';
     return 'other';

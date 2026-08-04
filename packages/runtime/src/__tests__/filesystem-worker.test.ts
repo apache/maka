@@ -195,13 +195,16 @@ describe('filesystem worker operations', () => {
     await assert.rejects(readFile(outsidePath, 'utf8'), { code: 'ENOENT' });
   });
 
-  test('creates missing destination parents for an approved write', async () => {
+  test('creates missing destination parents for an approved create', async () => {
     const root = await temporaryDirectory('maka-worker-write-parent-');
     const target = join(root, 'generated', 'deep', 'file.txt');
 
+    // #2059 follow-final containment: a plain write needs its parent in
+    // realpath space, while create-mode (ApplyPatch Add) may build the
+    // missing parent chain through the canonical entry.
     const response = await executeFilesystemWorkerRequest(
       requestFor(
-        { kind: 'write', cwd: root, path: target, content: 'nested' },
+        { kind: 'write', cwd: root, path: target, content: 'nested', mode: 'create' },
         { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
       ),
     );

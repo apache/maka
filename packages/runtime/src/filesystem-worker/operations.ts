@@ -95,7 +95,6 @@ export async function executeFilesystemOperation(
       );
       return { kind: 'lstat', targetType: await lstatTargetTypeOf(path) };
     }
-    }
     case 'read': {
       const path = await resolveExistingAllowed(
         operation.cwd,
