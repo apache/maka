@@ -4,6 +4,7 @@ import {
 } from '@maka/storage/root-authority';
 import type { RuntimeHostCandidateOptions } from './candidate.js';
 import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
+import { resolveBundledGitRuntime } from './bundled-git-runtime.js';
 import { createExecutionRuntimeHostComposition } from './execution-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 
@@ -13,11 +14,19 @@ export type ExecutionRuntimeHostCandidateResult =
 
 export interface ExecutionRuntimeHostCandidateOptions extends RuntimeHostCandidateOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
+  /** Packaged resource root containing bundled-git.json and the Git toolchain. */
+  readonly bundledGitResourcesRoot?: string;
 }
 
 export async function startExecutionRuntimeHostCandidate(
   options: ExecutionRuntimeHostCandidateOptions,
 ): Promise<ExecutionRuntimeHostCandidateResult> {
+  if (options.managedWorkspaceGitRuntime && options.bundledGitResourcesRoot) {
+    throw new Error('Managed workspace Git runtime must have exactly one authority');
+  }
+  const managedWorkspaceGitRuntime = options.bundledGitResourcesRoot
+    ? await resolveBundledGitRuntime({ resourcesRoot: options.bundledGitResourcesRoot })
+    : options.managedWorkspaceGitRuntime;
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,
     kind: 'interactive',
@@ -31,9 +40,7 @@ export async function startExecutionRuntimeHostCandidate(
     handshakeTimeoutMs: options.handshakeTimeoutMs,
     compositionFactory: (context) =>
       createExecutionRuntimeHostComposition(context, {
-        ...(options.managedWorkspaceGitRuntime
-          ? { managedWorkspaceGitRuntime: options.managedWorkspaceGitRuntime }
-          : {}),
+        ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
       }),
   });
   return { kind: 'winner', host };

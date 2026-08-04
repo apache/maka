@@ -1,0 +1,17 @@
+Maka bundled Git runtime
+========================
+
+Maka packages the cross-platform Git distribution maintained by GitHub Desktop's
+dugite-native project. The pinned release is declared by dugite 3.2.2 in
+node_modules/dugite/script/embedded-git.json and is verified by SHA-256 before
+extraction.
+
+Git is licensed under the GNU General Public License version 2. The packaged Git
+distribution carries its upstream license and component notices inside the
+resources/git directory. Corresponding source for the exact bundled release is
+available from:
+
+https://github.com/desktop/dugite-native/releases/tag/v2.53.0-3
+
+The dugite JavaScript wrapper is licensed under the MIT License; its license is
+packaged at resources/licenses/dugite/LICENSE.

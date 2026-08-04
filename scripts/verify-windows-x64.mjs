@@ -95,6 +95,7 @@ export async function verifyPackagedWindowsApp(
   step('checking packaged resources');
   await requirePath(executable);
   await assertPackagedResources(resources, { requirePath, forbidPath });
+  await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
 
   step('reading the executable architecture');
   const machine = await readMachine(executable);

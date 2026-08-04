@@ -14,6 +14,7 @@ import {
 import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
+import { bundledGitEnvironment } from './dugite-native-environment.js';
 import { registerManagedBaselineReceiptAuthorityInternal } from './managed-baseline-receipt-authority-internal.js';
 
 const execFileAsync = promisify(execFile);
@@ -143,6 +144,10 @@ export class GitWorkspaceServiceError extends Error {
 export interface VerifiedGitRuntimeInput {
   readonly executablePath: string;
   readonly expectedSha256: `sha256:${string}`;
+  readonly distribution?: {
+    readonly kind: 'dugite_native_v1';
+    readonly rootPath: string;
+  };
 }
 
 export interface CreateGitWorkspaceServiceInput {
@@ -1597,6 +1602,22 @@ class VerifiedGitRuntime {
         'Managed workspace requires an absolute Git executable and SHA-256 digest',
       );
     }
+    if (input.distribution) {
+      const rootPath = input.distribution.rootPath;
+      const executableRelativePath = relative(rootPath, input.executablePath);
+      if (
+        !isAbsolute(rootPath) ||
+        executableRelativePath === '' ||
+        executableRelativePath === '..' ||
+        executableRelativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) ||
+        isAbsolute(executableRelativePath)
+      ) {
+        throw new GitWorkspaceServiceError(
+          'git_runtime_unavailable',
+          'Bundled Git executable must belong to its declared distribution root',
+        );
+      }
+    }
   }
 
   verify(): Promise<{ executablePath: string; digest: `sha256:${string}` }> {
@@ -1615,10 +1636,7 @@ class VerifiedGitRuntime {
       await mkdir(homePath, { recursive: true });
       await mkdir(hooksPath, { recursive: true });
     }
-    const env = isolatedGitEnvironment(
-      runtime.executablePath,
-      homePath ?? dirname(runtime.executablePath),
-    );
+    const env = isolatedGitEnvironment(this.input, homePath ?? dirname(runtime.executablePath));
     try {
       const { stdout } = await execFileAsync(
         runtime.executablePath,
@@ -1650,10 +1668,7 @@ class VerifiedGitRuntime {
       await mkdir(homePath, { recursive: true });
       await mkdir(hooksPath, { recursive: true });
     }
-    const env = isolatedGitEnvironment(
-      runtime.executablePath,
-      homePath ?? dirname(runtime.executablePath),
-    );
+    const env = isolatedGitEnvironment(this.input, homePath ?? dirname(runtime.executablePath));
     const { stdout } = await execFileAsync(
       runtime.executablePath,
       [...fixedGitArguments(hooksPath), ...args],
@@ -1696,7 +1711,7 @@ class VerifiedGitRuntime {
       [...fixed, '-C', sourceRoot, 'pack-objects', '--stdout', '--revs'],
       {
         cwd: homePath,
-        env: isolatedGitEnvironment(packRuntime.executablePath, homePath),
+        env: isolatedGitEnvironment(this.input, homePath),
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       },
@@ -1717,7 +1732,7 @@ class VerifiedGitRuntime {
       [...fixed, '--git-dir', repositoryPath, 'index-pack', '--stdin', '--fix-thin'],
       {
         cwd: homePath,
-        env: isolatedGitEnvironment(indexRuntime.executablePath, homePath),
+        env: isolatedGitEnvironment(this.input, homePath),
         stdio: ['pipe', 'ignore', 'pipe'],
         windowsHide: true,
       },
@@ -2783,7 +2798,11 @@ function isOwnedBaselineCommit(raw: string): boolean {
   );
 }
 
-function isolatedGitEnvironment(executablePath: string, homePath: string): NodeJS.ProcessEnv {
+function isolatedGitEnvironment(
+  input: VerifiedGitRuntimeInput,
+  homePath: string,
+): NodeJS.ProcessEnv {
+  const executablePath = input.executablePath;
   const env: NodeJS.ProcessEnv = {
     HOME: homePath,
     XDG_CONFIG_HOME: join(homePath, 'xdg'),
@@ -2797,6 +2816,17 @@ function isolatedGitEnvironment(executablePath: string, homePath: string): NodeJ
     LC_ALL: 'C',
     PATH: dirname(executablePath),
   };
+  if (input.distribution?.kind === 'dugite_native_v1') {
+    Object.assign(
+      env,
+      bundledGitEnvironment({
+        platform: process.platform,
+        arch: process.arch,
+        rootPath: input.distribution.rootPath,
+        executablePath,
+      }),
+    );
+  }
   for (const name of ['SystemRoot', 'WINDIR', 'COMSPEC', 'TMP', 'TEMP', 'TMPDIR']) {
     if (process.env[name]) env[name] = process.env[name];
   }
