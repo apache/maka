@@ -552,13 +552,12 @@ const MIME_TYPES = {
   '.woff2': 'font/woff2',
 };
 
-async function startStaticServer(staticDir) {
+export async function startStaticServer(staticDir) {
   const root = resolve(staticDir);
   const server = createServer(async (request, response) => {
+    let requestPath;
     try {
-      const requestPath = decodeURIComponent(
-        new URL(request.url ?? '/', 'http://localhost').pathname,
-      );
+      requestPath = decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname);
       const target = resolve(root, `.${requestPath === '/' ? '/index.html' : requestPath}`);
       if (relative(root, target).startsWith('..')) {
         response.writeHead(403).end();
@@ -571,6 +570,10 @@ async function startStaticServer(staticDir) {
       });
       createReadStream(target).pipe(response);
     } catch {
+      if (requestPath === '/favicon.ico') {
+        response.writeHead(204, { 'cache-control': 'no-store' }).end();
+        return;
+      }
       response.writeHead(404).end('Not found');
     }
   });

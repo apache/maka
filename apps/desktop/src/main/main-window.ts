@@ -609,8 +609,8 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
         readyState: document.readyState,
         title: document.title,
         appFramePresent: Boolean(document.querySelector('.appFrame')),
-        searchModalPresent: Boolean(document.querySelector('.maka-search-modal')),
-        searchModalBackdropPresent: Boolean(document.querySelector('dialog.maka-search-modal[open]')),
+        searchModalPresent: Boolean(document.querySelector('[data-maka-contract="search-modal"]')),
+        searchModalOpen: Boolean(document.querySelector('dialog[data-maka-contract="search-modal"][open]')),
         errorBoundaryPresent: Boolean(document.querySelector('.maka-error-surface')),
         bodyTextLength: document.body?.innerText?.trim().length ?? 0,
         bodyTextSample: document.body?.innerText?.trim().slice(0, 240) ?? '',
@@ -650,7 +650,7 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
             backgroundColor: style.backgroundColor,
           };
         })(),
-        activeElementInSearchModal: Boolean(document.activeElement && document.activeElement.closest && document.activeElement.closest('.maka-search-modal')),
+        activeElementInSearchModal: Boolean(document.activeElement && document.activeElement.closest && document.activeElement.closest('[data-maka-contract="search-modal"]')),
         activeElement: document.activeElement ? {
           tagName: document.activeElement.tagName,
           className: typeof document.activeElement.className === 'string' ? document.activeElement.className : '',
