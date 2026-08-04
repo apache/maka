@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -181,27 +182,40 @@ function SessionListGroups(props: {
     });
   }
 
-  function renderSessionTree(session: SessionSummary, nested: boolean): ReactNode {
-    const childSessions = props.childSessionsByParentId?.get(session.id);
-    return (
-      <SessionNavRow
-        key={session.id}
-        session={session}
-        nested={nested}
-        active={session.id === props.activeId}
-        streaming={props.streamingSessionIds?.has(session.id) ?? false}
-        stale={props.staleSessionIds?.has(session.id) ?? false}
-        worktree={props.worktreeSessionIds?.has(session.id) ?? false}
-        editing={editingSessionId === session.id}
-        onSelectSession={props.onSelectSession}
-        actions={props.rowActions}
-        setEditingSessionId={setEditingSessionId}
-        childSessions={childSessions}
-        expandedForActiveDescendant={activeAncestorIds.has(session.id)}
-        renderChildSession={(child) => renderSessionTree(child, true)}
-      />
-    );
-  }
+  const renderSessionTree = useCallback(
+    function renderSessionTree(session: SessionSummary, nested: boolean): ReactNode {
+      const childSessions = props.childSessionsByParentId?.get(session.id);
+      return (
+        <SessionNavRow
+          key={session.id}
+          session={session}
+          nested={nested}
+          active={session.id === props.activeId}
+          streaming={props.streamingSessionIds?.has(session.id) ?? false}
+          stale={props.staleSessionIds?.has(session.id) ?? false}
+          worktree={props.worktreeSessionIds?.has(session.id) ?? false}
+          editing={editingSessionId === session.id}
+          onSelectSession={props.onSelectSession}
+          actions={props.rowActions}
+          setEditingSessionId={setEditingSessionId}
+          childSessions={childSessions}
+          expandedForActiveDescendant={activeAncestorIds.has(session.id)}
+          renderSessionTree={childSessions?.length ? renderSessionTree : undefined}
+        />
+      );
+    },
+    [
+      activeAncestorIds,
+      editingSessionId,
+      props.activeId,
+      props.childSessionsByParentId,
+      props.onSelectSession,
+      props.rowActions,
+      props.staleSessionIds,
+      props.streamingSessionIds,
+      props.worktreeSessionIds,
+    ],
+  );
 
   if (props.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
@@ -344,7 +358,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   setEditingSessionId: Dispatch<SetStateAction<string | null>>;
   childSessions?: readonly SessionSummary[];
   expandedForActiveDescendant: boolean;
-  renderChildSession(session: SessionSummary): ReactNode;
+  renderSessionTree?(session: SessionSummary, nested: boolean): ReactNode;
 }) {
   const locale = useUiLocale();
   const metaTitle = formatSessionMeta(props.session, locale);
@@ -423,7 +437,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
             // the expensive descendant tree while this node is collapsed.
             <span className="maka-session-lazy-children-sentinel" aria-hidden="true" />
           ) : (
-            props.childSessions?.map(props.renderChildSession)
+            props.childSessions?.map((child) => props.renderSessionTree?.(child, true))
           )
         ) : undefined}
       </SideNavItem>
