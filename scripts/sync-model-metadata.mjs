@@ -68,6 +68,16 @@ async function main() {
   const generated = {};
   const generatedProviders = {};
   const generatedModelProviderOverrides = {};
+  const directory = {};
+  for (const [sourceId, provider] of Object.entries(catalog)) {
+    if (typeof provider.id !== 'string' || typeof provider.name !== 'string') {
+      throw new Error(`models.dev provider ${sourceId} has an unsupported shape`);
+    }
+    directory[provider.id] = {
+      name: provider.name,
+      ...(typeof provider.api === 'string' ? { api: provider.api } : {}),
+    };
+  }
   for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
     const provider = catalog[sourceId];
     if (!provider) {
@@ -130,6 +140,15 @@ async function main() {
   );
   for (const [provider, facts] of Object.entries(generatedProviders)) {
     lines.push(`  ${JSON.stringify(provider)}: ${JSON.stringify(facts)},`);
+  }
+  lines.push('};', '');
+  lines.push(
+    'export const GENERATED_MODELS_DEV_DIRECTORY: Record<string, { name: string; api?: string }> = {',
+  );
+  for (const [id, facts] of Object.entries(directory).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    lines.push(`  ${JSON.stringify(id)}: ${JSON.stringify(facts)},`);
   }
   lines.push('};', '');
   await writeFile(outputPath, lines.join('\n'));

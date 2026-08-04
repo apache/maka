@@ -117,6 +117,18 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'low'), {
       kimiCodingPlan: { reasoningEffort: 'low' },
     });
+    assert.deepEqual(buildProviderOptions(connection, 'k3', 'high'), {
+      kimiCodingPlan: { reasoningEffort: 'high' },
+    });
+    // k3 has no off variant, so the entry gate drops off like any other
+    // unsupported level and the model default (max) applies — the same
+    // global semantics as every provider. The case-level `level === 'off'`
+    // guard above is future-proofing for a models.dev `none` declaration,
+    // which would surface off in variants and be rejected, not maxed.
+    assert.deepEqual(buildProviderOptions(connection, 'k3', 'off'), expected);
+    assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'off'), {
+      anthropic: { thinking: { type: 'adaptive' }, effort: 'max' },
+    });
   });
 
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
@@ -336,6 +348,11 @@ describe('buildProviderOptions: thinking level', () => {
       {},
     );
     assert.deepEqual(buildProviderOptions(conn('stepfun-step-plan'), 'step-router-v1', 'high'), {});
+    // step-router-v1 follows models.dev (no reasoning_options): no effort
+    // levels at all. Locks the intent so a future upstream flip to
+    // reasoning=true without options surfaces here instead of silently
+    // changing the UI.
+    assert.deepEqual([...thinkingVariantsForModel('stepfun-step-plan', 'step-router-v1')], []);
   });
 
   test('StepFun Step Plan Global sends only officially supported reasoning effort levels', () => {

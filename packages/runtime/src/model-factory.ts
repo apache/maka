@@ -316,11 +316,16 @@ export function buildProviderOptions(
   const level = thinkingLevel && variants.includes(thinkingLevel) ? thinkingLevel : undefined;
   switch (connection.providerType) {
     case 'kimi-coding-plan': {
-      // Kimi's coding route declares no off level, so 'off' is unreachable
-      // here (variants come from the metadata universe); default to max and
-      // pass any chosen level through.
-      const effort = level && level !== 'off' ? level : 'max';
+      // Kimi's coding route has no off wire. 'off' is unreachable today
+      // (variants come from the metadata universe and exclude it), but if
+      // models.dev ever declares a `none` effort this must fail loudly
+      // rather than silently sending max.
+      if (level === 'off') return {};
+      const effort = level ?? 'max';
       if (connection.models?.find((model) => model.id === modelId)?.apiProtocol === 'openai-chat') {
+        // The kimiCodingPlan provider-options namespace is the
+        // openai-compatible adapter name; ai-sdk resolves its camelCase
+        // alias to the kimi-coding-plan schema key (reasoning_effort).
         return {
           kimiCodingPlan: { reasoningEffort: effort },
         };
@@ -342,7 +347,11 @@ export function buildProviderOptions(
                   thinking: { type: 'enabled' as const, budgetTokens: 1_024 },
                   effort,
                 }
-              : {},
+              : {
+                  // kimi-for-coding-highspeed has no declared effort and no
+                  // known thinking requirements; send nothing rather than
+                  // inventing a wire (mirrors main's prior behavior).
+                },
       };
     }
     // Anthropic-protocol: effort enum models send `effort`; toggle/budget

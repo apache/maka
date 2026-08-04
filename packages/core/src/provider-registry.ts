@@ -335,6 +335,12 @@ for (const id of stepfunStepPlanModelIds.slice(0, 3)) {
     );
   }
 }
+const kimiCodingPlanModelIds = ['k3', 'kimi-for-coding'] as const;
+for (const id of kimiCodingPlanModelIds) {
+  if (!GENERATED_MODELS_DEV_METADATA['kimi-coding-plan'][id]?.capabilities?.functionCalling) {
+    throw new Error(`models.dev Kimi Coding Plan snapshot is missing documented model ${id}`);
+  }
+}
 const stepfunGlobal = GENERATED_MODELS_DEV_PROVIDER_FACTS['stepfun-ai'];
 if (stepfunGlobal.id !== 'stepfun-ai') {
   throw new Error('models.dev StepFun Global provider facts are missing stable id stepfun-ai');
@@ -648,7 +654,10 @@ const providerRegistry = {
     baseUrl: 'https://api.kimi.com/coding/v1',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['k3', 'kimi-for-coding'],
+    // kimi-for-coding / -highspeed intentionally have no thinking knob:
+    // models.dev declares no reasoning_options for them, so the effort
+    // control only appears for k3 / k3-256k. Not a sync gap.
+    fallbackModels: [...kimiCodingPlanModelIds],
     status: 'ready',
     protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
@@ -1763,6 +1772,7 @@ const providerRegistry = {
     modelDiscovery: { kind: 'protocol', auth: 'claude-subscription' },
     category: 'oauth',
     catalogBadge: 'Experimental',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.anthropic.id,
   },
   'openai-codex': {
     label: 'OpenAI OAuth (ChatGPT / Codex)',
@@ -1777,6 +1787,7 @@ const providerRegistry = {
     modelDiscovery: { kind: 'protocol', auth: 'openai-codex' },
     category: 'oauth',
     catalogBadge: 'Account',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.openai.id,
   },
   'gemini-cli': {
     label: 'Gemini CLI OAuth',
