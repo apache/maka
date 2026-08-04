@@ -188,10 +188,12 @@ test('staged Skills come back as chips after leaving and returning', async ({
   const pick = async (query: string, name: RegExp) => {
     await composer.click();
     await composer.pressSequentially(` /${query}`);
-    await expect(
-      page.getByRole('listbox', { name: '技能' }).getByRole('option', { name }),
-    ).toBeVisible();
-    await composer.press('Enter');
+    const option = page.getByRole('listbox', { name: '技能' }).getByRole('option', { name });
+    await expect(option).toBeVisible();
+    // This journey owns draft restoration, while keyboard selection is covered
+    // separately. Select the exact option without coupling setup to the
+    // popover's transient highlighted-item state under concurrent workers.
+    await option.click();
   };
 
   await composer.fill('alpha-marker');
