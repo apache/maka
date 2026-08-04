@@ -1,9 +1,4 @@
-import {
-  fetch,
-  Response as UndiciResponse,
-  type Dispatcher,
-  type RequestInit as UndiciRequestInit,
-} from 'undici';
+import { fetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici';
 import { matchesBypassList } from '../network/bypass-matcher.js';
 import { buildProxyDispatcher } from '../network/proxy-dispatcher.js';
 import { resolveActiveProxy } from '../network/active-proxy-state.js';
@@ -15,50 +10,6 @@ export type ProxiedFetchInit = UndiciRequestInit & {
   timeoutMs?: number;
 };
 
-// Ties dispatcher/listener cleanup to the response body instead of the
-// function stack (#2126). The body is re-wrapped so we learn when it reaches
-// EOF, errors, or is cancelled; `settled` resolves at that point and never
-// rejects. Null-body responses (204/304, HEAD) settle immediately.
-function observeBodySettle(response: Response): { response: Response; settled: Promise<void> } {
-  const body = response.body;
-  if (!body) return { response, settled: Promise.resolve() };
-  let settle!: () => void;
-  const settled = new Promise<void>((resolve) => {
-    settle = resolve;
-  });
-  const reader = body.getReader();
-  const observed = new ReadableStream<Uint8Array>({
-    async pull(streamController) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          settle();
-          streamController.close();
-          return;
-        }
-        streamController.enqueue(value);
-      } catch (error) {
-        settle();
-        streamController.error(error);
-      }
-    },
-    async cancel(reason) {
-      settle();
-      await reader.cancel(reason).catch(() => {});
-    },
-  });
-  const rewrapped = new UndiciResponse(observed, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: [...response.headers],
-  }) as unknown as Response;
-  // The Response constructor cannot carry these; preserve the Fetch contract
-  // for consumers that read where the response actually came from.
-  Object.defineProperty(rewrapped, 'url', { value: response.url });
-  Object.defineProperty(rewrapped, 'redirected', { value: response.redirected });
-  return { response: rewrapped, settled };
-}
-
 export async function proxiedFetch(url: string, init: ProxiedFetchInit = {}): Promise<Response> {
   const proxy = resolveActiveProxy();
   let dispatcher: Dispatcher | undefined;
@@ -68,6 +19,7 @@ export async function proxiedFetch(url: string, init: ProxiedFetchInit = {}): Pr
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...fetchInit } = init;
   const timeoutEnabled = timeoutMs > 0;
   const controller = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let timedOut = false;
 
   const disposeDispatcher = async (force = false) => {
@@ -88,13 +40,6 @@ export async function proxiedFetch(url: string, init: ProxiedFetchInit = {}): Pr
       await disposable.close.call(dispatcher).catch(() => {});
   };
 
-  const onCallerAbort = () => controller.abort(signal?.reason);
-  if (signal) {
-    if (signal.aborted) controller.abort(signal.reason);
-    else signal.addEventListener('abort', onCallerAbort, { once: true });
-  }
-  const detachCallerAbort = () => signal?.removeEventListener('abort', onCallerAbort);
-
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = timeoutEnabled
     ? new Promise<never>((_resolve, reject) => {
@@ -104,22 +49,13 @@ export async function proxiedFetch(url: string, init: ProxiedFetchInit = {}): Pr
           void disposeDispatcher(true);
           reject(new Error('Fetch timeout'));
         }, timeoutMs);
-        controller.signal.addEventListener(
-          'abort',
-          () => {
-            if (timer) clearTimeout(timer);
-          },
-          { once: true },
-        );
       })
     : undefined;
 
-  const request = fetch(url, { ...fetchInit, dispatcher, signal: controller.signal }).catch(
-    (error) => {
-      if (timedOut) return new Promise<never>(() => {});
-      throw error;
-    },
-  );
+  const request = fetch(url, { ...fetchInit, dispatcher, signal: requestSignal }).catch((error) => {
+    if (timedOut) return new Promise<never>(() => {});
+    throw error;
+  });
 
   let response: Response;
   try {
@@ -128,20 +64,17 @@ export async function proxiedFetch(url: string, init: ProxiedFetchInit = {}): Pr
       : ((await request) as unknown as Response);
   } catch (error) {
     if (timer) clearTimeout(timer);
-    detachCallerAbort();
     await disposeDispatcher(timedOut);
     throw error;
   }
 
-  // Headers are in: return now and hand the per-request dispatcher to the
-  // body's lifecycle (#2126). Awaiting close() here made a streaming caller
-  // wait for body EOF before seeing the Response at all. close() is graceful,
-  // letting the in-flight body finish before it resolves, so it is
-  // intentionally not awaited. As before, the timeout bounds time-to-headers
-  // only.
+  // Headers are in: return the original Fetch Response now. close() is
+  // graceful and stays pending until the active body reaches EOF, errors, or
+  // is cancelled, so it already owns the exact lifecycle this request needs;
+  // awaiting it here was the streaming bug. AbortSignal.any keeps caller
+  // cancellation wired to the original body without adding a listener that
+  // this function must later detach.
   if (timer) clearTimeout(timer);
-  const { response: observed, settled } = observeBodySettle(response);
-  void settled.then(detachCallerAbort);
-  void disposeDispatcher(false).then(detachCallerAbort);
-  return observed;
+  void disposeDispatcher(false);
+  return response;
 }

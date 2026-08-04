@@ -105,6 +105,10 @@ describe('proxiedFetch', () => {
         'proxiedFetch did not return before body EOF',
       );
       assert.equal(response.status, 200);
+      assert.equal(response.url, 'http://example.test/stream');
+      assert.equal(response.redirected, false);
+      assert.throws(() => response.headers.set('x-review-check', 'mutable'), TypeError);
+      assert.equal(getEventListeners(caller.signal, 'abort').length, 0);
       assert.equal(proxy.tailSent(), false);
 
       assert.ok(response.body);
@@ -150,6 +154,41 @@ describe('proxiedFetch', () => {
       assert.ok(response.body);
       await response.body.cancel();
       await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(getEventListeners(caller.signal, 'abort').length, 0);
+    } finally {
+      setActiveProxy(null);
+      await proxy.close();
+    }
+  });
+
+  test('caller abort after headers still aborts the original streamed body', async () => {
+    const proxy = await startStreamingProxy();
+    setActiveProxy({
+      ...PROXY_DEFAULTS,
+      enabled: true,
+      type: 'http',
+      host: '127.0.0.1',
+      port: proxy.port,
+      bypassList: [],
+    });
+    const caller = new AbortController();
+    try {
+      const response = await withTimeout(
+        proxiedFetch('http://example.test/stream', { timeoutMs: 0, signal: caller.signal }),
+        5_000,
+        'proxiedFetch did not return before body EOF',
+      );
+      assert.ok(response.body);
+      const reader = response.body.getReader();
+      const first = await withTimeout(
+        reader.read(),
+        5_000,
+        'first chunk not readable before abort',
+      );
+      assert.equal(Buffer.from(first.value ?? []).toString(), 'hello world');
+
+      caller.abort(new Error('caller stopped'));
+      await assert.rejects(() => reader.read(), /caller stopped|abort/iu);
       assert.equal(getEventListeners(caller.signal, 'abort').length, 0);
     } finally {
       setActiveProxy(null);
