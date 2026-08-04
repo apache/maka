@@ -78,7 +78,7 @@ const siliconflowModelIds = toolCallingModelIds(
   ['moonshotai/Kimi-K2.6'],
 );
 const minimaxPlanModelIds = toolCallingModelIds(
-  'MiniMax',
+  'MiniMax Coding Plan',
   GENERATED_MODELS_DEV_METADATA['minimax-coding-plan'],
   ['MiniMax-M3'],
 );
@@ -328,7 +328,7 @@ if (stepfunStepPlan.id !== 'stepfun-step-plan') {
     'models.dev StepFun Step Plan provider facts are missing stable id stepfun-step-plan',
   );
 }
-for (const id of stepfunStepPlanModelIds.slice(0, 3)) {
+for (const id of stepfunStepPlanModelIds) {
   if (!GENERATED_MODELS_DEV_METADATA['stepfun-step-plan'][id]?.capabilities?.functionCalling) {
     throw new Error(
       `models.dev StepFun Step Plan snapshot is missing documented Step Plan model ${id}`,

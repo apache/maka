@@ -316,11 +316,14 @@ export function buildProviderOptions(
   const level = thinkingLevel && variants.includes(thinkingLevel) ? thinkingLevel : undefined;
   switch (connection.providerType) {
     case 'kimi-coding-plan': {
-      // Kimi's coding route has no off wire. 'off' is unreachable today
-      // (variants come from the metadata universe and exclude it), but if
-      // models.dev ever declares a `none` effort this must fail loudly
-      // rather than silently sending max.
-      if (level === 'off') return {};
+      // Kimi's coding route has no off wire. Check the raw argument, not the
+      // normalized level: the entry gate above drops unsupported levels to
+      // undefined (default max), but an explicit off must be rejected, never
+      // silently upgraded to max. Today off cannot reach this branch through
+      // the UI (variants exclude it), but a direct runtime caller or a future
+      // models.dev `none` declaration must fail loudly, and the wire-contract
+      // sweep keeps that tripwire armed.
+      if (thinkingLevel === 'off') return {};
       const effort = level ?? 'max';
       if (connection.models?.find((model) => model.id === modelId)?.apiProtocol === 'openai-chat') {
         // The kimiCodingPlan provider-options namespace is the

@@ -120,15 +120,11 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'high'), {
       kimiCodingPlan: { reasoningEffort: 'high' },
     });
-    // k3 has no off variant, so the entry gate drops off like any other
-    // unsupported level and the model default (max) applies — the same
-    // global semantics as every provider. The case-level `level === 'off'`
-    // guard above is future-proofing for a models.dev `none` declaration,
-    // which would surface off in variants and be rejected, not maxed.
-    assert.deepEqual(buildProviderOptions(connection, 'k3', 'off'), expected);
-    assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'off'), {
-      anthropic: { thinking: { type: 'adaptive' }, effort: 'max' },
-    });
+    // Kimi has no off wire: an explicit off request is rejected (empty
+    // options), never silently upgraded to max. Unsupported levels other
+    // than off keep the global default-max semantics.
+    assert.deepEqual(buildProviderOptions(connection, 'k3', 'off'), {});
+    assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'off'), {});
   });
 
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
