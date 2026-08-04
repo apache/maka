@@ -377,9 +377,14 @@ immutable immediate-source replay，但不产生 claim/start，也不能承接
 SQLite authority owner 后删除。
 
 B3 之前，branch/revision preflight 必须在创建目标 Session 之前拒绝任何 V1/V2
-`continuationSource`、continuation-start、tool dispatch/recovery 与 operation reference，稳定
-返回 `branch_runtime_fact_rewrite_unsupported`。B3 的正确实现要先建立旧 id 到新 id 的 typed
-映射，再逐类重写内部 evidence/claim/operation 引用；不允许恢复 shallow copy。
+`continuationSource` 与 continuation-start，稳定返回
+`branch_runtime_fact_rewrite_unsupported`。continuation claim 与 boundary evidence 不属于普通
+Run/Event 复制边界，不能在没有 typed authority copy 协议时浅拷贝。
+
+tool dispatch/recovery 与 operation reference 则已由 conversation runtime ledger copy 建立旧 id
+到新 id 的 typed 映射：新 invocation 决定新 operation id，dispatch、recovery、RuntimeEvent
+refs 和 recovery evidence RuntimeEvent ids 必须原子重写后才能导入目标 Session。该路径
+应保持可用，不得因 continuation authority 的 fail-closed 闸门被误拦截。
 
 #### 后续执行语义绑定：ContinuationExecutionProfileV1
 

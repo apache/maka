@@ -17947,7 +17947,7 @@ describe('SessionManager permission mode updates', () => {
     expect((await store.readHeader(child.id)).projectId).toBe(null);
   });
 
-  test('fails before creating branch or revision sessions that need typed authority-fact rewriting', async () => {
+  test('branch and revision sessions rewrite tool operation authority facts', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
@@ -18055,25 +18055,29 @@ describe('SessionManager permission mode updates', () => {
       ],
     );
 
-    const attempts = [
-      () =>
-        manager.branchFromTurn(session.id, {
-          sourceTurnId: 'authority-source-turn',
-          name: 'Blocked branch',
-        }),
-      () =>
-        manager.branchBeforeTurn(session.id, {
-          sourceTurnId: 'authority-later-turn',
-          name: 'Blocked before branch',
-        }),
-      () =>
-        manager.reviseBeforeTurn(session.id, {
-          sourceTurnId: 'authority-later-turn',
-        }),
+    const copies = [
+      await manager.branchFromTurn(session.id, {
+        sourceTurnId: 'authority-source-turn',
+        name: 'Tool branch',
+      }),
+      await manager.branchBeforeTurn(session.id, {
+        sourceTurnId: 'authority-later-turn',
+        name: 'Tool branch before later turn',
+      }),
+      await manager.reviseBeforeTurn(session.id, {
+        sourceTurnId: 'authority-later-turn',
+      }),
     ];
-    for (const attempt of attempts) {
-      await expectRejects(attempt(), /typed identity rewriting/i);
-      expect((await store.list()).map((candidate) => candidate.id)).toEqual([session.id]);
+    for (const copy of copies) {
+      const [targetRun] = await runStore.listSessionRuns(copy.id);
+      assert.ok(targetRun);
+      const targetEvents = await runStore.readRuntimeEvents(copy.id, targetRun.runId);
+      const dispatch = targetEvents.find((event) => event.actions?.toolDispatch);
+      const targetOperationId = dispatch?.actions?.toolDispatch?.operationId;
+      assert.ok(targetOperationId);
+      assert.notEqual(targetOperationId, 'authority-operation');
+      assert.equal(dispatch?.refs?.operationId, targetOperationId);
+      assert.equal(targetRun.sessionId, copy.id);
     }
   });
 

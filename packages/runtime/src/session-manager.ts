@@ -5454,10 +5454,11 @@ export class SessionManager {
   }
 
   /**
-   * PR B3 will provide typed identity rewriting for authority-bearing facts.
-   * Until then, fail before creating the target session: shallow-copying any
-   * of these facts would produce a readable-looking conversation whose durable
-   * operation/continuation identities still point at the source session.
+   * Tool operation identities are rewritten by cloneConversationRuntimeLedger.
+   * Continuation authority is different: its claim and boundary evidence live
+   * outside the copied Run/Event ledger. Until that authority has a typed copy
+   * protocol, fail before creating a target Session rather than carrying source
+   * continuation identities into a readable-looking clone.
    */
   private assertConversationRuntimeLedgerCloneSupported(
     sourceView: RuntimeReadModelSessionView,
@@ -5477,16 +5478,13 @@ export class SessionManager {
     const unsupportedRun = sourceView.runs.find(
       (run) => selectedRuns.has(run.runId) && run.continuationSource !== undefined,
     );
-    const unsupportedEvent = sourceView.events.find(
+    const unsupportedContinuationEvent = sourceView.events.find(
       (event) =>
         selectedRuns.has(event.runId) &&
         copiedTurnIds.has(event.turnId) &&
-        (event.actions?.continuationStart !== undefined ||
-          event.actions?.toolDispatch !== undefined ||
-          event.actions?.toolRecovery !== undefined ||
-          event.refs?.operationId !== undefined),
+        event.actions?.continuationStart !== undefined,
     );
-    if (!unsupportedRun && !unsupportedEvent) return;
+    if (!unsupportedRun && !unsupportedContinuationEvent) return;
 
     const error = new Error(
       'Conversation copy contains durable runtime authority facts that require typed identity rewriting',
