@@ -544,6 +544,9 @@ async function seedSource(
       ),
       parentRunId: continuationParent.runId,
       agentId: 'child-agent',
+      agentName: 'Child Agent',
+      retriedFromRunId: continuationParent.runId,
+      retriedFromTurnId: continuationParent.turnId,
       continuationSource: {
         sourceInvocationId: continuationParent.invocationId!,
         sourceRunId: continuationParent.runId,
@@ -553,6 +556,18 @@ async function seedSource(
     };
     for (const run of [continuationParent, continuationChild]) {
       await execution.agentRunStore.createRun(run);
+      if (run.runId === continuationParent.runId) {
+        await execution.runtimeEventStore.appendRuntimeEvent(
+          run.sessionId,
+          run.runId,
+          runtimeEvent(run.sessionId, run.runId, run.invocationId!, run.turnId, {
+            id: 'continuation-parent-user',
+            role: 'user',
+            author: 'user',
+            content: { kind: 'text', text: 'retain the child continuation closure' },
+          }),
+        );
+      }
       await execution.runtimeEventStore.appendRuntimeEvent(
         run.sessionId,
         run.runId,
@@ -562,6 +577,17 @@ async function seedSource(
         }),
       );
     }
+    const persistedContinuationRuns = await execution.agentRunStore.listSessionRuns(
+      continuationSource.id,
+    );
+    const persistedContinuationChild = persistedContinuationRuns.find(
+      (run) => run.runId === continuationChild.runId,
+    );
+    assert.equal(persistedContinuationChild?.agentId, continuationChild.agentId);
+    assert.deepEqual(
+      persistedContinuationChild?.continuationSource,
+      continuationChild.continuationSource,
+    );
     const artifact = await artifacts.create({
       id: 'source-artifact',
       sessionId: source.id,
