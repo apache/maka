@@ -165,6 +165,7 @@ describe('stale session CSS contract (@kenji review gate)', () => {
     const child = makeSessionSummary({ id: 'child', name: 'Child' });
     const html = renderSessionListPanel({
       sessions: [parent],
+      activeId: child.id,
       childSessionsByParentId: new Map([['parent', [child]]]),
       staleSessionIds: new Set(['parent']),
     });

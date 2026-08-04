@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { DeepResearchRun } from '@maka/core';
+import type { DeepResearchClientProgress } from '@maka/core';
 import { DeepResearchEmptyHero } from '../chat-empty-hero.js';
 import { DeepResearchProgressPanel } from '../chat-view.js';
 import { getConversationCopy } from '../conversation-copy.js';
 import { LocaleProvider } from '../locale-context.js';
 
-function completedRun(): DeepResearchRun {
+function completedRun(): DeepResearchClientProgress {
   return {
-    schemaVersion: 1,
     sessionId: 'session-1',
     objective: 'Verify the progress UI.',
     scopeLevel: 'standard',
@@ -18,47 +17,25 @@ function completedRun(): DeepResearchRun {
     round: 2,
     createdAt: 1,
     updatedAt: 2,
-    artifacts: [],
+    artifactsCount: 0,
+    stepsCount: 1,
     checklist: [{
       itemId: 'project_entrypoints',
       title: 'Map project entrypoints',
       status: 'completed',
-      evidenceArtifactIds: ['source-1'],
-      updatedAt: 2,
     }],
-    steps: [{
-      stepId: 'step-1',
-      kind: 'local_exploration',
-      status: 'completed',
-      objective: 'Inspect the entrypoint.',
-      summary: 'Entrypoint inspected.',
-      roots: ['packages/ui'],
-      keywords: ['ChatView'],
-      ignoredPaths: ['dist'],
-      stoppingCondition: 'Stop after the visible surface is located.',
-      expectedEvidence: 'A component symbol.',
-      evidenceArtifactIds: ['source-1'],
-      inspectedRefs: [{ kind: 'symbol', locator: 'DeepResearchProgressPanel' }],
-      workerRunIds: ['worker-1'],
-      createdAt: 2,
-    }],
+    recentInspectedRefs: [{ kind: 'symbol', locator: 'DeepResearchProgressPanel' }],
+    workerRunIds: ['worker-1'],
+    blockers: [],
     reportSections: [
-      { key: 'conclusion', status: 'completed', artifactId: 'section-1', updatedAt: 2 },
-      { key: 'source_evidence', status: 'completed', artifactId: 'section-2', updatedAt: 2 },
-      { key: 'borrow_diverge_risk_gate', status: 'completed', artifactId: 'section-3', updatedAt: 2 },
-      { key: 'implementation_recommendations', status: 'completed', artifactId: 'section-4', updatedAt: 2 },
-      { key: 'verification', status: 'completed', artifactId: 'section-5', updatedAt: 2 },
+      { key: 'conclusion', status: 'completed' },
+      { key: 'source_evidence', status: 'completed' },
+      { key: 'borrow_diverge_risk_gate', status: 'completed' },
+      { key: 'implementation_recommendations', status: 'completed' },
+      { key: 'verification', status: 'completed' },
     ],
-    checkpoints: [],
     reportArtifactId: 'report-1',
-    handoff: {
-      artifactId: 'handoff-1',
-      implementationTasks: ['Implement the approved slice.'],
-      recommendedIssues: ['Track visual QA.'],
-      recommendedPullRequests: [],
-      verificationCommands: ['npm test'],
-    },
-    completedAt: 2,
+    implementationPrompt: 'Implement the approved slice.',
   };
 }
 
@@ -81,7 +58,7 @@ describe('DeepResearchProgressPanel', () => {
     const run = completedRun();
     const markup = renderToStaticMarkup(
       <DeepResearchProgressPanel
-        run={{ ...run, status: 'active', stage: 'report_writing', completedAt: undefined }}
+        run={{ ...run, status: 'active', stage: 'report_writing', implementationPrompt: undefined }}
         onContinue={() => undefined}
       />,
     );

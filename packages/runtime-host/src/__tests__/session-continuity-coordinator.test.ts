@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionEvent, SessionHeader, ShellRunUpdate, StoredMessage } from '@maka/core';
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { PiAgentBackend, type PiAgentTransport } from '@maka/runtime';
 import {
@@ -334,6 +334,79 @@ test('coalesces Agent graph invalidations onto the Session subscription sequence
   coordinator.close();
 });
 
+test('coalesces typed domain invalidations without publishing continuity projections', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'plan');
+  await waitFor(() => sink.frames.length === 2);
+
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_domain_changed'
+        ? { kind: frame.kind, sequence: frame.sequence, domain: frame.domain }
+        : frame.kind,
+    ),
+    [
+      { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'task' },
+      { kind: 'subscription.session_domain_changed', sequence: 2, domain: 'plan' },
+    ],
+  );
+  coordinator.close();
+});
+
+test('fans one bounded Runtime Resource burst out to an inherited Session view', async () => {
+  const childSessionId = 'child-session';
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async (sessionId) => canonicalFor(sessionId),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const outcome = await coordinator.handlers['subscription.open'](
+    { sessionId: childSessionId },
+    connectionContext('connection-1'),
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  connection.activate(outcome.result.subscriptionId);
+  const updates = Array.from({ length: 64 }, (_, index) => {
+    const update = shellRunUpdate({
+      sessionId: 'parent-session',
+      sourceToolCallId: `tool-${index}`,
+    });
+    update.result.ref = `shell:run-${index}`;
+    return update;
+  });
+
+  for (const update of updates) coordinator.enqueueRuntimeResourceChanged(update);
+  await waitFor(() => sink.frames.length === 1);
+
+  assert.deepEqual(sink.frames[0], {
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: HOST_EPOCH,
+    subscriptionId: outcome.result.subscriptionId,
+    sequence: 1,
+    sessionId: childSessionId,
+    domain: 'runtime_resource',
+    resources: updates.map((update) => ({
+      sourceSessionId: update.sessionId,
+      ref: update.result.ref,
+    })),
+  });
+  coordinator.close();
+});
+
 test('slow subscriber receives a terminal eviction without delaying another subscriber', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
@@ -618,6 +691,44 @@ function canonical(
       followup: [],
     },
     interactions: overrides.interactions ?? { pending: [] },
+  };
+}
+
+function canonicalFor(sessionId: string): CanonicalSessionProjection {
+  const projection = canonical();
+  return {
+    ...projection,
+    session: { ...projection.session, sessionId },
+    rootTurn: projection.rootTurn ? { ...projection.rootTurn, sessionId } : null,
+  };
+}
+
+function shellRunUpdate(overrides: Partial<ShellRunUpdate> = {}): ShellRunUpdate {
+  return {
+    sessionId: SESSION_ID,
+    ownership: { kind: 'local' },
+    sourceTurnId: 'turn-1',
+    sourceToolCallId: 'tool-1',
+    result: {
+      kind: 'shell_run',
+      ref: 'shell:run-1',
+      mode: 'pipes',
+      status: 'running',
+      cwd: '/workspace',
+      cmd: 'sleep 60',
+      startedAt: 1,
+      updatedAt: 2,
+      revision: 2,
+      output: {
+        mode: 'pipes',
+        stdout: 'ready',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    },
+    ...overrides,
   };
 }
 

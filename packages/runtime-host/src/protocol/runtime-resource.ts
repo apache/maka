@@ -225,7 +225,7 @@ export function decodeRuntimeResourceQueryInput(value: unknown): RuntimeResource
     return {
       kind: 'get',
       sessionId: requireEntityId(input.sessionId, 'sessionId'),
-      ref: boundedRef(input.ref),
+      ref: decodeRuntimeResourceRef(input.ref),
     };
   }
   throw invalidProtocolFrame('Invalid Runtime Resource query kind');
@@ -328,7 +328,7 @@ export function decodeRuntimeResourceControllerControlInput(
   ]);
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
-    ref: boundedRef(input.ref),
+    ref: decodeRuntimeResourceRef(input.ref),
     controllerId: requireEntityId(input.controllerId, 'controllerId'),
     sequence: controlSequence(input.sequence, 'controller sequence'),
     control: decodePtyControl(input.control),
@@ -382,7 +382,7 @@ export function decodeRuntimeResourceStopInput(value: unknown): RuntimeResourceS
   const input = requireExactRecord(value, 'Runtime Resource stop input', ['sessionId', 'ref']);
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
-    ref: boundedRef(input.ref),
+    ref: decodeRuntimeResourceRef(input.ref),
   };
 }
 
@@ -445,7 +445,7 @@ function decodeControllerIdentity(
   const input = requireExactRecord(value, label, ['sessionId', 'ref', 'controllerId']);
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
-    ref: boundedRef(input.ref),
+    ref: decodeRuntimeResourceRef(input.ref),
     controllerId: requireEntityId(input.controllerId, 'controllerId'),
   };
 }
@@ -539,7 +539,7 @@ function boundedCursor(value: unknown, label: string): string {
   return requireUtf8String(value, label, RUNTIME_RESOURCE_CURSOR_MAX_BYTES);
 }
 
-function boundedRef(value: unknown): string {
+export function decodeRuntimeResourceRef(value: unknown): string {
   return requireUtf8String(value, 'Runtime Resource ref', RUNTIME_RESOURCE_REF_MAX_BYTES);
 }
 

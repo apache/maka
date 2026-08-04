@@ -20,7 +20,7 @@ function makeSpawn(plan) {
   const calls = [];
   const spawn = (command, options) => {
     const child = new EventEmitter();
-    const dir = String(options.cwd).split('/').slice(-2).join('/');
+    const dir = String(options.cwd).replaceAll('\\', '/').split('/').slice(-2).join('/');
     calls.push({ command, cwd: options.cwd, shell: options.shell });
     queueMicrotask(() => {
       const step = plan[dir] ?? { close: 0 };
@@ -65,7 +65,7 @@ test('parallel mode aggregates every failed workspace name', async () => {
   // The serial workspace runs even though the parallel batch failed — the
   // regression that had headless silently not running whenever anything else
   // did.
-  assert.ok(calls.some((call) => call.cwd.endsWith('packages/headless')));
+  assert.ok(calls.some((call) => call.cwd.replaceAll('\\', '/').endsWith('packages/headless')));
 });
 
 test('each workspace runs in its own temp namespace, removed however it ends', async () => {

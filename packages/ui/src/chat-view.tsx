@@ -9,7 +9,7 @@ import type { ChatModelChoice } from './chat-model-helpers.js';
 import { PromptAnchorRail } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type {
-  DeepResearchRun,
+  DeepResearchClientProgress,
   ProviderType,
   SessionSummary,
   ShellRunUpdate,
@@ -59,9 +59,9 @@ export function ChatView(props: {
   continuingIndicator?: boolean;
   activeSession?: SessionSummary;
   /** Durable Deep Research projection supplied by the host for visible progress and resume state. */
-  deepResearchRun?: DeepResearchRun;
+  deepResearchRun?: DeepResearchClientProgress;
   /** Explicitly starts a normal implementation task from a completed read-only research run. */
-  onContinueDeepResearchHandoff?(run: DeepResearchRun): void;
+  onContinueDeepResearchHandoff?(run: DeepResearchClientProgress): void;
   activeConnectionLabel?: string;
   activeModel?: string;
   activeModelLabel?: string;
@@ -619,21 +619,13 @@ export function DeepResearchProgressPanel({
   onContinue,
   copy = getConversationCopy('zh').chat.deepResearchProgress,
 }: {
-  run: DeepResearchRun;
-  onContinue?: (run: DeepResearchRun) => void;
+  run: DeepResearchClientProgress;
+  onContinue?: (run: DeepResearchClientProgress) => void;
   copy?: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
 }) {
   const completedItems = run.checklist.filter(
     (item) => item.status === 'completed' || item.status === 'skipped',
   ).length;
-  const inspectedRefs = run.steps.flatMap((step) => step.inspectedRefs).slice(-8);
-  const workerRunIds = [...new Set(run.steps.flatMap((step) => step.workerRunIds))].slice(-8);
-  const blockers = [
-    ...run.checklist.flatMap((item) =>
-      item.blockedReason ? [`${item.title}: ${item.blockedReason}`] : []),
-    ...run.steps.flatMap((step) =>
-      step.blockedReason ? [`${step.objective}: ${step.blockedReason}`] : []),
-  ];
 
   return (
     <section
@@ -654,7 +646,7 @@ export function DeepResearchProgressPanel({
           <span className="maka-deep-research-run-count">
             {completedItems}/{run.checklist.length}
           </span>
-          {run.status === 'completed' && onContinue && (
+          {run.status === 'completed' && run.implementationPrompt && onContinue && (
             <Button
               type="button"
               label={copy.handoffAction}
@@ -693,9 +685,9 @@ export function DeepResearchProgressPanel({
         </div>
         <div>
           <h3>{copy.inspectedTitle}</h3>
-          {inspectedRefs.length > 0 ? (
+          {run.recentInspectedRefs.length > 0 ? (
             <ul>
-              {inspectedRefs.map((ref, index) => (
+              {run.recentInspectedRefs.map((ref, index) => (
                 <li key={`${ref.kind}-${ref.locator}-${index}`}>
                   <span>{ref.kind}</span>
                   <code>{ref.locator}</code>
@@ -706,11 +698,11 @@ export function DeepResearchProgressPanel({
         </div>
         <div>
           <h3>{copy.executionTitle}</h3>
-          <p>{copy.executionSummary(run.steps.length, run.artifacts.length)}</p>
-          {workerRunIds.length > 0 && <p>{copy.workersLabel}: {workerRunIds.join(', ')}</p>}
-          {blockers.length > 0 ? (
+          <p>{copy.executionSummary(run.stepsCount, run.artifactsCount)}</p>
+          {run.workerRunIds.length > 0 && <p>{copy.workersLabel}: {run.workerRunIds.join(', ')}</p>}
+          {run.blockers.length > 0 ? (
             <ul className="maka-deep-research-run-blockers">
-              {blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+              {run.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
             </ul>
           ) : <p>{copy.noBlockers}</p>}
         </div>

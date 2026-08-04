@@ -99,6 +99,11 @@ export const DEEP_RESEARCH_STEPS_MAX = 500;
 export const DEEP_RESEARCH_STEP_TEXT_MAX_CHARS = 2_000;
 export const DEEP_RESEARCH_STEP_LIST_ITEMS_MAX = 50;
 export const DEEP_RESEARCH_INSPECTED_REFS_MAX = 200;
+export const DEEP_RESEARCH_CLIENT_PROGRESS_MAX_BYTES = 46 * 1024;
+export const DEEP_RESEARCH_CLIENT_RECENT_ITEMS_MAX = 8;
+export const DEEP_RESEARCH_CLIENT_OBJECTIVE_MAX_BYTES = 4 * 1024;
+export const DEEP_RESEARCH_CLIENT_TEXT_MAX_BYTES = 256;
+export const DEEP_RESEARCH_CLIENT_IMPLEMENTATION_PROMPT_MAX_BYTES = 16 * 1024;
 
 export const DEEP_RESEARCH_DEFAULT_CHECKLIST = [
   { itemId: 'project_entrypoints', title: 'Map project entrypoints and execution setup' },
@@ -263,6 +268,29 @@ export interface DeepResearchRun {
   reportArtifactId?: string;
   handoff?: DeepResearchHandoff;
   completedAt?: number;
+}
+
+/** Bounded product-facing progress shared by local and Host-backed clients. */
+export interface DeepResearchClientProgress {
+  sessionId: string;
+  objective: string;
+  scopeLevel: DeepResearchScopeLevel;
+  status: DeepResearchRunStatus;
+  stage: DeepResearchStage;
+  round: number;
+  createdAt: number;
+  updatedAt: number;
+  artifactsCount: number;
+  stepsCount: number;
+  checklist: Array<
+    Pick<DeepResearchChecklistItem, 'itemId' | 'title' | 'status' | 'blockedReason'>
+  >;
+  reportSections: Array<Pick<DeepResearchReportSectionState, 'key' | 'status'>>;
+  recentInspectedRefs: Array<Pick<DeepResearchInspectedRef, 'kind' | 'locator' | 'label'>>;
+  workerRunIds: string[];
+  blockers: string[];
+  reportArtifactId?: string;
+  implementationPrompt?: string;
 }
 
 export interface DeepResearchProjection {

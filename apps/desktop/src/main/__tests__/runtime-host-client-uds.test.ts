@@ -23,6 +23,7 @@ import { DesktopRuntimeHostClient } from '../runtime-host-client.js';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import { registerRuntimeHostSessionCatalogIpc } from '../runtime-host-session-catalog-ipc-main.js';
 import { registerRuntimeHostSessionExecutionIpc } from '../runtime-host-session-execution-ipc-main.js';
+import { registerRuntimeHostSessionDomainsIpc } from '../runtime-host-session-domains-ipc-main.js';
 import { RuntimeHostSessionObserver } from '../runtime-host-session-observer.js';
 
 test('drives Desktop Session operations through a real Runtime Host connection', async () => {
@@ -318,6 +319,109 @@ test('drives the renderer Session execution facade through real UDS framing', as
     );
 
     await observer.close();
+    await client.close();
+  } finally {
+    await host?.close().catch(() => undefined);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('drives bounded Session domain projections through real UDS framing', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-desktop-host-domains-ipc-'));
+  let host: RuntimeHostKernel | undefined;
+  try {
+    const capability = await resolveStorageRoot({ path: base, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    host = await RuntimeHostKernel.start({
+      owner,
+      idleGraceMs: 10_000,
+      compositionFactory: async () => ({
+        handlers: handlers({
+          'task.ledger.query': async (input) => ({
+            ok: true,
+            result: {
+              kind: 'page',
+              sessionId: input.sessionId,
+              revision: catalogRevision('6'),
+              tasks: [
+                {
+                  id: 'task-1',
+                  key: 'T1',
+                  subject: 'Verify the Desktop adapter',
+                  status: 'in_progress',
+                  createdAt: 1,
+                  updatedAt: 2,
+                },
+              ],
+              nextCursor: null,
+            },
+          }),
+          'plan.query': async (input) => ({
+            ok: true,
+            result: {
+              kind: 'page',
+              sessionId: input.sessionId,
+              storeVersion: 0,
+              latestProposalId: null,
+              activeExecutionId: null,
+              items: [],
+              nextCursor: null,
+            },
+          }),
+          'goal.query': async (input) => ({
+            ok: true,
+            result: { sessionId: input.sessionId, goal: null },
+          }),
+          'deep-research.query': async (input) => ({
+            ok: true,
+            result: { kind: 'not_started', sessionId: input.sessionId, revision: 0 },
+          }),
+          'runtime.resource.query': async (input) => ({
+            ok: true,
+            result: {
+              kind: 'page',
+              sessionId: input.sessionId,
+              revision: catalogRevision('7'),
+              resources: [],
+              nextCursor: null,
+            },
+          }),
+        }),
+        beginDrain() {},
+        async recover() {},
+        async close() {},
+      }),
+    });
+    const connected = await connectRuntimeHost({
+      rootPath: base,
+      surface: 'desktop',
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+    });
+    assert.equal(connected.kind, 'connected');
+    if (connected.kind !== 'connected') throw new Error('Desktop did not connect to Runtime Host');
+    const client = new DesktopRuntimeHostClient(connected.connection);
+    const ipc = ipcHarness();
+    registerRuntimeHostSessionDomainsIpc({ client, emitModeChanged() {} }, ipc);
+
+    assert.equal(
+      ((await ipc.invoke('tasks:list', 'session-1')) as Array<{ id: string }>)[0]?.id,
+      'task-1',
+    );
+    assert.deepEqual(await ipc.invoke('plan-mode:getState', 'session-1'), {
+      schemaVersion: 1,
+      sessionId: 'session-1',
+      storeVersion: 0,
+      proposals: [],
+      executions: [],
+    });
+    assert.equal(await ipc.invoke('goal:get', 'session-1'), null);
+    assert.equal(await ipc.invoke('deepResearch:get', 'session-1'), undefined);
+    assert.deepEqual(await ipc.invoke('shell-runs:list', 'session-1'), []);
+
     await client.close();
   } finally {
     await host?.close().catch(() => undefined);

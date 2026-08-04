@@ -17,7 +17,6 @@ import type {
   UiLocalePreference,
 } from '@maka/core';
 import {
-  buildDeepResearchImplementationPrompt,
   collapseSessionRevisions,
   filterLinkedSessionTree,
   hasSettledInitialOnboarding,
@@ -2468,7 +2467,16 @@ function AppShellContent({
                   iterations: activeGoal.iterations,
                   maxIterations: activeGoal.maxIterations,
                             onClear: () => {
-                              void window.maka.goal.clear(activeGoal.sessionId);
+                              void window.maka.goal.clear(activeGoal.sessionId).catch((error) => {
+                                toastApi.error(
+                                  shellCopy.goalClearFailedTitle,
+                                  localizedShellErrorMessage(
+                                    error,
+                                    shellCopy.goalClearFailedFallback,
+                                    uiLocale,
+                                  ),
+                                );
+                              });
                             },
                           }
                         : undefined
@@ -2529,7 +2537,8 @@ function AppShellContent({
                     : undefined
                 }
                 onContinueDeepResearchHandoff={(run) => {
-                  const prompt = buildDeepResearchImplementationPrompt(run);
+                  const prompt = run.implementationPrompt;
+                  if (!prompt) return;
                   void createSession().then(() => {
                     window.requestAnimationFrame(() => {
                       composerRef.current?.setText(prompt);

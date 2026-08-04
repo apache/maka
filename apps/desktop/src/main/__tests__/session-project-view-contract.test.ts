@@ -230,11 +230,19 @@ describe('sidebar project view mode', () => {
     assert.doesNotMatch(activeChunk, /data-session-status=/);
   });
 
-  it('renders linked child sessions directly beneath their parent as normal selectable rows', () => {
+  it('lazy-mounts linked children and expands the active child ancestor chain', () => {
     const parent = makeSessionSummary({ id: 'parent', name: 'Parent task' });
     const child = makeSessionSummary({ id: 'child', name: 'Child agent' });
+    const collapsedMarkup = renderSessionListPanel({
+      sessions: [parent],
+      childSessionsByParentId: new Map([[parent.id, [child]]]),
+    });
+    assert.match(collapsedMarkup, /maka-session-lazy-children-sentinel/);
+    assert.doesNotMatch(collapsedMarkup, /data-session-id="child"/);
+
     const markup = renderSessionListPanel({
       sessions: [parent],
+      activeId: child.id,
       childSessionsByParentId: new Map([[parent.id, [child]]]),
     });
 

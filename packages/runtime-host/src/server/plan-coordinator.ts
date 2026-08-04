@@ -42,6 +42,7 @@ export interface HostPlanCoordinatorInput {
   readonly sessionAdmission: SessionAdmissionGate;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly refreshContinuity: (sessionId: string, lease: SessionAdmissionLease) => Promise<void>;
+  readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
 }
 
@@ -59,6 +60,7 @@ export class HostPlanCoordinator {
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #isSessionActive: (sessionId: string) => boolean;
   readonly #refreshContinuity: HostPlanCoordinatorInput['refreshContinuity'];
+  readonly #onProjectionChanged: HostPlanCoordinatorInput['onProjectionChanged'];
   readonly #requestDrain: () => void;
 
   constructor(input: HostPlanCoordinatorInput) {
@@ -68,6 +70,7 @@ export class HostPlanCoordinator {
     this.#sessionAdmission = input.sessionAdmission;
     this.#isSessionActive = input.isSessionActive;
     this.#refreshContinuity = input.refreshContinuity;
+    this.#onProjectionChanged = input.onProjectionChanged;
     this.#requestDrain = input.requestDrain;
   }
 
@@ -140,6 +143,7 @@ export class HostPlanCoordinator {
     }
     try {
       const result = await this.#applyControl(input);
+      this.#onProjectionChanged(input.sessionId);
       await this.#refreshContinuity(input.sessionId, lease);
       return { ok: true, result: projectControlResult(result) };
     } catch (error) {
