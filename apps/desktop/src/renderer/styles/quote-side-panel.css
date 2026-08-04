@@ -4,9 +4,15 @@
    control. This file adds only the native window hit-test opt-out plus the
    workbar "追问引用" tab and in-tab companion. */
 
-/* Selection coordinates and top-layer behavior belong to Astryx useLayer. */
+/* Selection coordinates and top-layer behavior belong to Astryx useLayer.
+   The secondary buttons inside use the translucent `--color-neutral` surface,
+   which assumes an opaque backdrop — floating over transcript text it reads
+   as transparent, so the wrapper supplies the popover surface itself (same
+   convention as ChatLayoutScrollButton). */
 .maka-quote-actions {
   display: inline-flex;
+  border-radius: var(--radius-element);
+  background: var(--color-background-popover);
   -webkit-app-region: no-drag;
 }
 
