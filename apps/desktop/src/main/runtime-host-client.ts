@@ -4,6 +4,11 @@ import type { PlanSessionState, PlanUserControlInput } from '@maka/core/plan';
 import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import {
+  canonicalPricingConfigsEqual,
+  comparePricingModelKeys,
+} from '@maka/core/usage-stats/pricing';
+import type { PricingConfig } from '@maka/core/usage-stats/types';
+import {
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
@@ -11,6 +16,8 @@ import {
 } from '@maka/runtime-host/client';
 import {
   ARTIFACT_INGEST_CHUNK_MAX_BYTES,
+  decodePricingMutateInput,
+  type EffectivePricingEntry,
   type InteractionAnswerInput,
   type GoalControlAction,
   type GoalProjection,
@@ -18,6 +25,8 @@ import {
   type OperationOutput,
   type PlanProjectionItem,
   type PlanQueryResult,
+  type PricingMutation,
+  type PricingQueryResult,
   type QueueRetractInput,
   type QueueRetractResult,
   type SessionCatalogFilter,
@@ -41,6 +50,7 @@ import {
 } from '@maka/runtime-host/protocol';
 
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
+const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 
 export type DesktopSessionConfigurationPatch = Partial<SessionConfiguration>;
 
@@ -48,6 +58,8 @@ export type DesktopRuntimeHostClientErrorCode =
   | 'catalog_unstable'
   | 'client_closed'
   | 'projection_unstable'
+  | 'pricing_snapshot_stale'
+  | 'pricing_unstable'
   | 'revision_conflict'
   | 'session_not_found'
   | 'unsupported_session';
@@ -69,11 +81,107 @@ export interface DesktopRuntimeHostSession {
   close(): Promise<void>;
 }
 
+export interface DesktopPricingSnapshot {
+  readonly hostEpoch: string;
+  readonly revision: number;
+  readonly entries: readonly EffectivePricingEntry[];
+}
+
+export interface DesktopPricingMutationInput {
+  readonly base: DesktopPricingSnapshot;
+  readonly mutation: PricingMutation;
+}
+
+export type DesktopPricingMutationOutcome =
+  | {
+      readonly kind: 'saved';
+      readonly disposition: 'committed' | 'unchanged';
+      readonly snapshot: DesktopPricingSnapshot;
+    }
+  | {
+      readonly kind: 'saved_refresh_failed';
+      readonly disposition: 'committed' | 'unchanged';
+    }
+  | {
+      readonly kind: 'synchronized' | 'review_required';
+      readonly reason: 'revision_conflict' | 'outcome_unknown';
+      readonly snapshot: DesktopPricingSnapshot;
+    }
+  | {
+      readonly kind: 'reconciliation_unavailable';
+      readonly reason: 'revision_conflict' | 'outcome_unknown';
+    };
+
+type PricingReconciliationTarget =
+  | { readonly kind: 'upsert'; readonly pricing: Readonly<PricingConfig> }
+  | {
+      readonly kind: 'delete';
+      readonly modelKey: string;
+      readonly expected: 'builtin' | 'unpriced' | 'no_override';
+    };
+
 export class DesktopRuntimeHostClient {
   readonly #sessions = new Set<DesktopSessionHandle>();
   #closeTask: Promise<void> | undefined;
 
   constructor(private readonly connection: RuntimeHostConnection) {}
+
+  async loadPricingSnapshot(): Promise<DesktopPricingSnapshot> {
+    for (let attempt = 0; attempt < MAX_PRICING_SNAPSHOT_ATTEMPTS; attempt += 1) {
+      const snapshot = await this.#readPricingSnapshot();
+      if (snapshot) return snapshot;
+    }
+    throw new DesktopRuntimeHostClientError(
+      'pricing_unstable',
+      'Pricing kept changing while Desktop read it',
+    );
+  }
+
+  async applyPricingMutation(
+    input: DesktopPricingMutationInput,
+  ): Promise<DesktopPricingMutationOutcome> {
+    this.#assertOpen();
+    if (input.base.hostEpoch !== this.connection.hostEpoch) {
+      throw new DesktopRuntimeHostClientError(
+        'pricing_snapshot_stale',
+        'Pricing snapshot belongs to a different Runtime Host Epoch',
+      );
+    }
+    const request = decodePricingMutateInput({
+      expectedRevision: input.base.revision,
+      mutation: input.mutation,
+    });
+    const reconciliationTarget = createPricingReconciliationTarget(
+      input.base,
+      request.mutation,
+    );
+    let result: OperationOutput<'pricing.mutate'>;
+    try {
+      result = await this.#request('pricing.mutate', request);
+    } catch (error) {
+      if (
+        error instanceof RuntimeHostOperationError &&
+        error.code !== 'commit_outcome_unknown'
+      ) {
+        throw error;
+      }
+      return this.#reconcilePricingMutation(reconciliationTarget, 'outcome_unknown');
+    }
+
+    if (result.kind === 'revision_conflict') {
+      return this.#reconcilePricingMutation(reconciliationTarget, 'revision_conflict');
+    }
+
+    try {
+      return {
+        kind: 'saved',
+        disposition: result.kind,
+        snapshot: await this.loadPricingSnapshot(),
+      };
+    } catch {
+      return { kind: 'saved_refresh_failed', disposition: result.kind };
+    }
+  }
 
   async listSessions(filter?: SessionCatalogFilter): Promise<SessionCatalogProjection[]> {
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
@@ -554,6 +662,73 @@ export class DesktopRuntimeHostClient {
     }
   }
 
+  async #readPricingSnapshot(): Promise<DesktopPricingSnapshot | undefined> {
+    this.#assertOpen();
+    const first = await this.#request('pricing.query', { kind: 'start' });
+    if (first.kind !== 'page' || first.offset !== 0) {
+      throw new DesktopRuntimeHostClientError(
+        'pricing_unstable',
+        'Runtime Host returned an invalid initial Pricing page',
+      );
+    }
+    const entries = [...first.entries];
+    const offsets = new Set<number>([0]);
+    let page: Extract<PricingQueryResult, { kind: 'page' }> = first;
+    while (page.nextOffset !== null) {
+      const offset = page.nextOffset;
+      if (offset <= page.offset || offsets.has(offset)) {
+        throw new DesktopRuntimeHostClientError(
+          'pricing_unstable',
+          'Runtime Host repeated a Pricing page offset',
+        );
+      }
+      offsets.add(offset);
+      const next = await this.#request('pricing.query', {
+        kind: 'continue',
+        revision: first.revision,
+        offset,
+      });
+      if (next.kind === 'revision_changed') return undefined;
+      if (next.revision !== first.revision || next.offset !== offset) {
+        throw new DesktopRuntimeHostClientError(
+          'pricing_unstable',
+          'Runtime Host returned an inconsistent Pricing page',
+        );
+      }
+      entries.push(...next.entries);
+      page = next;
+    }
+    if (!pricingEntriesAreCanonical(entries)) {
+      throw new DesktopRuntimeHostClientError(
+        'pricing_unstable',
+        'Runtime Host returned non-canonical Pricing pages',
+      );
+    }
+    return {
+      hostEpoch: this.connection.hostEpoch,
+      revision: first.revision,
+      entries,
+    };
+  }
+
+  async #reconcilePricingMutation(
+    target: PricingReconciliationTarget,
+    reason: 'revision_conflict' | 'outcome_unknown',
+  ): Promise<DesktopPricingMutationOutcome> {
+    try {
+      const snapshot = await this.loadPricingSnapshot();
+      return {
+        kind: pricingTargetMatchesSnapshot(target, snapshot)
+          ? 'synchronized'
+          : 'review_required',
+        reason,
+        snapshot,
+      };
+    } catch {
+      return { kind: 'reconciliation_unavailable', reason };
+    }
+  }
+
   async #updateSession(
     sessionId: string,
     update: (current: SessionCatalogProjection) => Promise<SessionUpdateResult>,
@@ -754,5 +929,55 @@ function unstableProjection(name: string, sessionId: string): DesktopRuntimeHost
   return new DesktopRuntimeHostClientError(
     'projection_unstable',
     `Runtime Host ${name} kept changing while Desktop read Session ${sessionId}`,
+  );
+}
+
+function createPricingReconciliationTarget(
+  base: DesktopPricingSnapshot,
+  mutation: PricingMutation,
+): PricingReconciliationTarget {
+  if (mutation.kind === 'upsert') return { kind: 'upsert', pricing: mutation.pricing };
+  const baseEntry = base.entries.find(({ pricing }) => pricing.modelKey === mutation.modelKey);
+  const expected =
+    baseEntry?.source === 'custom'
+      ? baseEntry.resetEffect === 'restore_builtin'
+        ? 'builtin'
+        : 'unpriced'
+      : 'no_override';
+  return { kind: 'delete', modelKey: mutation.modelKey, expected };
+}
+
+function pricingTargetMatchesSnapshot(
+  target: PricingReconciliationTarget,
+  snapshot: DesktopPricingSnapshot,
+): boolean {
+  const current = snapshot.entries.find(
+    ({ pricing }) => pricing.modelKey === pricingTargetModelKey(target),
+  );
+  if (target.kind === 'upsert') {
+    return (
+      current?.source === 'custom' &&
+      canonicalPricingConfigsEqual(current.pricing, target.pricing)
+    );
+  }
+  switch (target.expected) {
+    case 'builtin':
+      return current?.source === 'builtin';
+    case 'unpriced':
+      return current === undefined;
+    case 'no_override':
+      return current === undefined || current.source === 'builtin';
+  }
+}
+
+function pricingTargetModelKey(target: PricingReconciliationTarget): string {
+  return target.kind === 'upsert' ? target.pricing.modelKey : target.modelKey;
+}
+
+function pricingEntriesAreCanonical(entries: readonly EffectivePricingEntry[]): boolean {
+  return entries.every(
+    (entry, index) =>
+      index === 0 ||
+      comparePricingModelKeys(entries[index - 1]!.pricing.modelKey, entry.pricing.modelKey) < 0,
   );
 }
