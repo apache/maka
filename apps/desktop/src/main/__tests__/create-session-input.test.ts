@@ -10,7 +10,11 @@ import { describe, it } from 'node:test';
 import type { AppSettings, ChatDefaultPermissionMode } from '@maka/core';
 import { DEEP_RESEARCH_SESSION_LABEL, DEFAULT_SESSION_NAME } from '@maka/core';
 
-import { type CreateSessionRequest, resolveCreateSessionInput } from '../create-session-input.js';
+import {
+  type CreateSessionRequest,
+  resolveCreateSessionInput,
+  resolveCreateSessionRequest,
+} from '../create-session-input.js';
 
 function settings(permissionMode: ChatDefaultPermissionMode) {
   return async () => ({ chatDefaults: { permissionMode } }) as AppSettings;
@@ -23,6 +27,18 @@ function resolve(input: unknown, readSettings = settings('ask')) {
 }
 
 describe('resolveCreateSessionInput', () => {
+  it('leaves an ordinary default permission choice to the owning runtime', () => {
+    assert.equal(resolveCreateSessionRequest(undefined).permissionMode, undefined);
+    assert.equal(resolveCreateSessionRequest({ permissionMode: 'bypass' }).permissionMode, 'bypass');
+    assert.deepEqual(resolveCreateSessionRequest({ mode: 'deep_research' }), {
+      mode: 'deep_research',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+      name: DEFAULT_SESSION_NAME,
+      labels: undefined,
+    });
+  });
+
   it('forces the read-only boundary for Deep Research', async () => {
     const resolved = await resolve({ mode: 'deep_research' });
     assert.equal(resolved.permissionMode, 'explore');

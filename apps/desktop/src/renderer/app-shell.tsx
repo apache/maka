@@ -21,6 +21,7 @@ import {
   collapseSessionRevisions,
   filterLinkedSessionTree,
   hasSettledInitialOnboarding,
+  isLinkedSubagentSession,
   parseGraphCommand,
   parseSwarmCommand,
   projectRevisionLinkedSessionTree,
@@ -2220,7 +2221,7 @@ function AppShellContent({
                     {navSelection.section === 'sessions' &&
                     activeId &&
                     activeSessionForView &&
-                    !activeSessionForView.subagentParent ? (
+                    !isLinkedSubagentSession(activeSessionForView) ? (
                       <AgentGraphPanel
                         rootSessionId={activeId}
                         enabled={(activeSessionForView.orchestrationMode ?? 'default') === 'graph'}

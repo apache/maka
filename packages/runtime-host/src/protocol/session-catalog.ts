@@ -1,11 +1,13 @@
 import { isCollaborationMode, type CollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode, type OrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
+import { isSessionStartMode, type SessionStartMode } from '@maka/core/explore-agent';
 import {
   isSessionBlockedReason,
   isSessionStatus,
   type SessionBlockedReason,
   type SessionStatus,
+  type SessionSubagentProjection,
 } from '@maka/core/session';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import {
@@ -20,6 +22,8 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
+
+export type { SessionSubagentProjection } from '@maka/core/session';
 
 export const SESSION_CATALOG_PAGE_MAX_ITEMS = 32;
 export const SESSION_CATALOG_RESULT_MAX_BYTES = 48 * 1024;
@@ -119,6 +123,7 @@ export type SessionModelTarget =
 export interface SessionCreateInput {
   readonly sessionId: string;
   readonly cwd: string;
+  readonly mode?: SessionStartMode;
   readonly projectId?: string | null;
   readonly name?: string;
   readonly labels?: readonly string[];
@@ -164,13 +169,6 @@ export interface SessionCwdRelocateInput {
 export interface SessionReadMarkerSetInput {
   readonly sessionId: string;
   readonly readThroughMessageId: string;
-}
-
-export interface SessionSubagentProjection {
-  readonly parentSessionId: string;
-  readonly agentId?: string;
-  readonly agentName?: string;
-  readonly profile?: string;
 }
 
 export interface SessionCatalogProjection {
@@ -363,6 +361,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
     'Session create input',
     ['sessionId', 'cwd', 'modelTarget'],
     [
+      'mode',
       'projectId',
       'name',
       'labels',
@@ -375,6 +374,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     cwd: requireUtf8String(input.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
+    ...(Object.hasOwn(input, 'mode') ? { mode: sessionStartMode(input.mode) } : {}),
     ...(Object.hasOwn(input, 'projectId')
       ? {
           projectId:
@@ -403,6 +403,11 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
       ? { orchestrationMode: orchestrationMode(input.orchestrationMode) }
       : {}),
   };
+}
+
+function sessionStartMode(value: unknown): SessionStartMode {
+  if (!isSessionStartMode(value)) throw invalidProtocolFrame('Invalid Session start mode');
+  return value;
 }
 
 export function decodeSessionMetadataUpdateInput(value: unknown): SessionMetadataUpdateInput {

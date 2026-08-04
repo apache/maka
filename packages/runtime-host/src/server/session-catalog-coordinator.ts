@@ -5,7 +5,11 @@ import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
-import { DEEP_RESEARCH_SESSION_LABEL, type SessionHeader } from '@maka/core/session';
+import {
+  isSessionStartModeLabel as isExecutionSemanticLabel,
+  sessionStartModeSpec,
+} from '@maka/core/explore-agent';
+import type { SessionHeader } from '@maka/core/session';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
@@ -212,7 +216,7 @@ export class HostSessionCatalogCoordinator {
           llmConnectionSlug: model.connectionSlug,
           model: model.model,
           ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
-          permissionMode: input.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+          permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
           collaborationMode: input.collaborationMode ?? 'agent',
           orchestrationMode: input.orchestrationMode ?? 'default',
         };
@@ -635,6 +639,7 @@ interface PreparedSessionCreate {
   readonly cwd: string;
   readonly name: string;
   readonly labels: readonly string[];
+  readonly permissionMode?: SessionCreateInput['permissionMode'];
   readonly requestFingerprint: string;
 }
 
@@ -648,9 +653,17 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
       'Session creation cannot set reserved execution labels',
     );
   }
+  const mode = input.mode === undefined ? undefined : sessionStartModeSpec(input.mode);
+  if (mode === undefined && input.permissionMode === 'explore') {
+    throw new SessionOperationFailure(
+      'invalid_request',
+      'Session creation requires a declared mode for explore permission',
+    );
+  }
   const cwd = await canonicalSessionDirectory(input.cwd);
-  const name = normalizedSessionName(input.name ?? DEFAULT_SESSION_NAME);
-  const labels = [...(input.labels ?? [])];
+  const name = normalizedSessionName(mode?.name ?? input.name ?? DEFAULT_SESSION_NAME);
+  const labels = [...(input.labels ?? []), ...(mode?.labels ?? [])];
+  const permissionMode = mode?.permissionMode ?? input.permissionMode;
   const identity = [
     'session.create.v1',
     input.sessionId,
@@ -662,7 +675,7 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
       ? ['default']
       : ['explicit', input.modelTarget.connectionSlug, input.modelTarget.model],
     input.thinkingLevel ?? null,
-    input.permissionMode ?? ['runtime_default'],
+    permissionMode ?? ['runtime_default'],
     input.collaborationMode ?? 'agent',
     input.orchestrationMode ?? 'default',
   ];
@@ -670,6 +683,7 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
     cwd,
     name,
     labels,
+    ...(permissionMode === undefined ? {} : { permissionMode }),
     requestFingerprint: `sha256:${createHash('sha256')
       .update(JSON.stringify(identity))
       .digest('hex')}`,
@@ -933,10 +947,6 @@ function normalizedSessionName(name: string): string {
 
 function normalizeSessionNamePatch(name: string): Pick<SessionHeader, 'name' | 'titleIsManual'> {
   return { name: normalizedSessionName(name), titleIsManual: true };
-}
-
-function isExecutionSemanticLabel(label: string): boolean {
-  return label === DEEP_RESEARCH_SESSION_LABEL;
 }
 
 function replaceUserOwnedLabels(

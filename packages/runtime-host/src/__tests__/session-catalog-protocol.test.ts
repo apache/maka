@@ -221,6 +221,37 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('accepts only declared Session start modes', () => {
+    const decoded = decodeClientFrame({
+      requestId: 'request-mode',
+      operation: 'session.create',
+      input: {
+        sessionId: 'session-mode',
+        cwd: '/workspace',
+        mode: 'deep_research',
+        modelTarget: { kind: 'default' },
+      },
+    });
+    if ('kind' in decoded || decoded.operation !== 'session.create') {
+      assert.fail('Expected Session create frame');
+    }
+    assert.equal(decoded.input.mode, 'deep_research');
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-invalid-mode',
+          operation: 'session.create',
+          input: {
+            sessionId: 'session-invalid-mode',
+            cwd: '/workspace',
+            mode: 'unknown',
+            modelTarget: { kind: 'default' },
+          },
+        }),
+      isProtocolError,
+    );
+  });
+
   test('correlates committed and conflicting update outputs with the request Session', () => {
     const session = projection();
     assert.deepEqual(

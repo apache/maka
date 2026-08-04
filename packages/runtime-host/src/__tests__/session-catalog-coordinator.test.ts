@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   createDefaultRuntimePolicy,
   DEEP_RESEARCH_SESSION_LABEL,
+  DEEP_RESEARCH_SESSION_NAME,
   type SessionHeader,
 } from '@maka/core';
 import { SessionConfigurationTransitionError, headerToSummary } from '@maka/runtime';
@@ -216,6 +217,73 @@ test('creation rejects reserved execution labels before claiming a Session ident
     },
   });
   assert.equal(createAttempts, 0);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('creation rejects explore permission without a declared mode', async () => {
+  let createAttempts = 0;
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        assert.fail('Unscoped explore permission must be rejected before persistence');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      cwd: process.cwd(),
+      modelTarget: { kind: 'default' },
+      permissionMode: 'explore',
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'invalid_request',
+      message: 'Session creation requires a declared mode for explore permission',
+    },
+  });
+  assert.equal(createAttempts, 0);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('creation materializes Deep Research semantics inside the Host transaction', async () => {
+  let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async (request) => {
+        created = request;
+        return {
+          kind: 'existing',
+          record: headerSnapshot(sessionHeader(request.sessionId, request.input.labels ?? []), 3),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      cwd: process.cwd(),
+      mode: 'deep_research',
+      name: 'Caller override',
+      labels: ['customer-label'],
+      modelTarget: { kind: 'default' },
+      permissionMode: 'execute',
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.ok(created);
+  assert.equal(created.input.name, DEEP_RESEARCH_SESSION_NAME);
+  assert.deepEqual(created.input.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
+  assert.equal(created.input.permissionMode, 'explore');
   assert.equal(fixture.drainRequests(), 0);
 });
 

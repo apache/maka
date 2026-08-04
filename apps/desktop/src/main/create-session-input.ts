@@ -24,58 +24,21 @@ import type {
   SessionStartMode,
 } from '@maka/core';
 import {
-  DEEP_RESEARCH_SESSION_LABEL,
   DEFAULT_SESSION_NAME,
   isChatDefaultPermissionMode,
   isCollaborationMode,
   isOrchestrationMode,
+  isSessionStartMode,
+  sessionStartModeSpec,
 } from '@maka/core';
 
 import { resolveDefaultPermissionMode } from './permission-mode-default.js';
-
-/**
- * The renderer names a product intent; main stays the sole authority on what
- * that intent means. A closed mapping rather than a passthrough, so nothing
- * the renderer sends can reach `explore` except the mode that earns it.
- */
-interface SessionModeSeed {
-  permissionMode: PermissionMode;
-  name: string;
-  labels: string[];
-}
-
-/**
- * Closed over `SessionStartMode`, not over an `if`: adding a member without a
- * seed is a compile error here, which is the only place that catches it. A
- * missing arm would otherwise degrade silently into "no mode at all" — a plain
- * session at the configured default, with the new mode's name, label and
- * boundary all quietly absent.
- */
-const SESSION_MODE_SEEDS = {
-  deep_research: {
-    // Deep Research is a read-only exploration boundary, so it overrides the
-    // user's configured default rather than seeding from it.
-    permissionMode: 'explore',
-    name: 'Deep Research',
-    labels: [DEEP_RESEARCH_SESSION_LABEL],
-  },
-} satisfies Record<SessionStartMode, SessionModeSeed>;
 
 /**
  * `unknown`, because this is an IPC boundary and the renderer's type is a
  * promise, not a guarantee. An unrecognized value confers nothing — it is not
  * a mode — and the caller falls through to an ordinary session, which is the
  * same session it would have got by not naming one.
- */
-function sessionModeSeed(mode: unknown): SessionModeSeed | undefined {
-  return typeof mode === 'string' && Object.hasOwn(SESSION_MODE_SEEDS, mode)
-    ? SESSION_MODE_SEEDS[mode as SessionStartMode]
-    : undefined;
-}
-
-/**
- * The part of a create request this module resolves. Everything else — cwd,
- * backend, connection, model, thinking level — stays the handler's.
  */
 export interface CreateSessionRequest {
   mode?: SessionStartMode;
@@ -94,12 +57,15 @@ export interface ResolvedCreateSessionInput {
   labels: string[] | undefined;
 }
 
-export async function resolveCreateSessionInput(
-  input: CreateSessionRequest | undefined,
-  deps: { readSettings: () => Promise<AppSettings> },
-): Promise<ResolvedCreateSessionInput> {
-  const modeSeed = sessionModeSeed(input?.mode);
+export interface ResolvedCreateSessionRequest
+  extends Omit<ResolvedCreateSessionInput, 'permissionMode'> {
+  mode?: SessionStartMode;
+  permissionMode?: PermissionMode;
+}
 
+export function resolveCreateSessionRequest(
+  input: CreateSessionRequest | undefined,
+): ResolvedCreateSessionRequest {
   const collaborationMode = input?.collaborationMode ?? 'agent';
   if (!isCollaborationMode(collaborationMode)) {
     throw new TypeError('Invalid collaboration mode.');
@@ -108,26 +74,39 @@ export async function resolveCreateSessionInput(
   if (!isOrchestrationMode(orchestrationMode)) {
     throw new TypeError('Invalid orchestration mode.');
   }
-  // `explore` is a boundary a mode confers, never one a caller may open a
-  // session at — core already spells that out as `ChatDefaultPermissionMode`
-  // (the modes a user can pick). Refusing it here is what makes the seed the
-  // only way in; `sessions:setPermissionMode` stays the separate, deliberate
-  // path for moving an existing session (the quote companion uses it).
+  // `explore` is a boundary a product mode confers, not one a caller may
+  // request directly. Existing Sessions use a separate deliberate mutation.
   if (input?.permissionMode !== undefined && !isChatDefaultPermissionMode(input.permissionMode)) {
     throw new TypeError('Invalid permission mode.');
   }
 
   return {
-    permissionMode:
-      modeSeed?.permissionMode ??
-      input?.permissionMode ??
-      (await resolveDefaultPermissionMode(deps.readSettings)),
+    ...(isSessionStartMode(input?.mode) ? { mode: input.mode } : {}),
+    ...(input?.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
     collaborationMode,
     orchestrationMode,
-    name: modeSeed?.name ?? input?.name ?? DEFAULT_SESSION_NAME,
-    // Merged, not replaced: a mode adds a label, it does not own the set. No
-    // caller sends both today, and silently dropping the caller's would be the
-    // surprising half of that.
-    labels: modeSeed ? [...new Set([...(input?.labels ?? []), ...modeSeed.labels])] : input?.labels,
+    name: input?.name ?? DEFAULT_SESSION_NAME,
+    labels: input?.labels,
+  };
+}
+
+export async function resolveCreateSessionInput(
+  input: CreateSessionRequest | undefined,
+  deps: { readSettings: () => Promise<AppSettings> },
+): Promise<ResolvedCreateSessionInput> {
+  const request = resolveCreateSessionRequest(input);
+  const mode = request.mode === undefined ? undefined : sessionStartModeSpec(request.mode);
+  return {
+    collaborationMode: request.collaborationMode,
+    orchestrationMode: request.orchestrationMode,
+    name: mode?.name ?? request.name,
+    labels:
+      mode === undefined
+        ? request.labels
+        : [...new Set([...(request.labels ?? []), ...mode.labels])],
+    permissionMode:
+      mode?.permissionMode ??
+      request.permissionMode ??
+      (await resolveDefaultPermissionMode(deps.readSettings)),
   };
 }

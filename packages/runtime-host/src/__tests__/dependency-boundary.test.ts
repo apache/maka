@@ -89,6 +89,7 @@ const allowedExternalImports = {
     '@maka/core/deep-research-run',
     '@maka/core/daily-review',
     '@maka/core/execution-inspect',
+    '@maka/core/explore-agent',
     '@maka/core/goal',
     '@maka/core/interaction',
     '@maka/core/local-memory',

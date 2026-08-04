@@ -9,6 +9,7 @@ import type {
 import {
   childSessionsForParent,
   filterLinkedSessionTree,
+  isLinkedSubagentSession,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
@@ -142,13 +143,19 @@ describe('subagent session parent relation', () => {
     const otherChild = summary('other-child', {
       subagentParent: { ...relation, parentSessionId: 'other-parent' },
     });
+    const hostChild = summary('host-child', {
+      subagent: { parentSessionId: 'parent-session', agentName: 'Worker' },
+    });
 
     assert.deepEqual(
-      childSessionsForParent([childA, branch, childB, otherChild], 'parent-session').map(
+      childSessionsForParent([childA, branch, childB, otherChild, hostChild], 'parent-session').map(
         (session) => session.id,
       ),
-      ['child-a', 'child-b'],
+      ['child-a', 'child-b', 'host-child'],
     );
+    assert.equal(isLinkedSubagentSession(childA), true);
+    assert.equal(isLinkedSubagentSession(hostChild), true);
+    assert.equal(isLinkedSubagentSession(branch), false);
   });
 
   test('projects linked children beneath parents while preserving branches and orphans', () => {
@@ -185,10 +192,10 @@ describe('subagent session parent relation', () => {
 
   test('keeps cyclic linked relations visible as roots', () => {
     const childA = summary('child-a', {
-      subagentParent: { ...relation, parentSessionId: 'child-b' },
+      subagent: { parentSessionId: 'child-b' },
     });
     const childB = summary('child-b', {
-      subagentParent: { ...relation, parentSessionId: 'child-a' },
+      subagent: { parentSessionId: 'child-a' },
     });
 
     const tree = projectLinkedSessionTree([childA, childB]);

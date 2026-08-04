@@ -6,6 +6,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
@@ -173,6 +174,20 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       });
       if ('kind' in planSession) assert.fail('Plan Session must be wire-representable');
       assert.equal(planSession.collaborationMode, 'plan');
+      const researchSession = requireSessionProjection(
+        await desktop.request('session.create', {
+          sessionId: 'deep-research-session',
+          cwd: root,
+          mode: 'deep_research',
+          name: 'Caller override',
+          labels: ['customer-label'],
+          modelTarget: { kind: 'default' },
+          permissionMode: 'bypass',
+        }),
+      );
+      assert.equal(researchSession.name, DEEP_RESEARCH_SESSION_NAME);
+      assert.deepEqual(researchSession.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
+      assert.equal(researchSession.permissionMode, 'explore');
 
       const policy = await tui.request('runtime.policy.query', {});
       const changedPolicy = await tui.request('runtime.policy.mutate', {
@@ -366,6 +381,12 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       assert.equal(readFromTui.hasUnread, false);
       assert.equal(readFromTui.lastReadMessageId, 'message-2');
 
+      const catalogBeforeBulk = await desktop.request('session.catalog.query', {
+        kind: 'list_start',
+      });
+      if (catalogBeforeBulk.kind !== 'page' || catalogBeforeBulk.nextCursor !== null) {
+        assert.fail('Pre-bulk Session catalog must fit on one page');
+      }
       const bulk = (
         await Promise.all(
           Array.from({ length: 34 }, (_, index) =>
@@ -394,7 +415,10 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       if (continuation.kind !== 'page') {
         assert.fail('Stable Session catalog continuation must return a page');
       }
-      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 6);
+      assert.equal(
+        firstPage.sessions.length + continuation.sessions.length,
+        bulk.length + catalogBeforeBulk.sessions.length,
+      );
 
       const filteredStart = await desktop.request('session.catalog.query', {
         kind: 'list_start',

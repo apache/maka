@@ -3,11 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import type { IpcMain } from 'electron';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
 import {
   HOST_OPERATION_SPECS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type OperationKey,
+  type SessionCatalogProjection,
 } from '@maka/runtime-host/protocol';
 import {
   RuntimeHostKernel,
@@ -18,6 +20,7 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { DesktopRuntimeHostClient } from '../runtime-host-client.js';
+import { registerRuntimeHostSessionCatalogIpc } from '../runtime-host-session-catalog-ipc-main.js';
 
 test('drives Desktop Session operations through a real Runtime Host connection', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-desktop-host-client-'));
@@ -88,6 +91,137 @@ test('drives Desktop Session operations through a real Runtime Host connection',
   }
 });
 
+test('drives the renderer Session catalog facade through real UDS framing', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-desktop-host-ipc-'));
+  let host: RuntimeHostKernel | undefined;
+  let projected: SessionCatalogProjection | undefined;
+  try {
+    const capability = await resolveStorageRoot({ path: base, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    host = await RuntimeHostKernel.start({
+      owner,
+      idleGraceMs: 10_000,
+      compositionFactory: async () => ({
+        handlers: handlers({
+          'session.catalog.query': async (input) => {
+            if (input.kind === 'get') {
+              return {
+                ok: true,
+                result: {
+                  kind: 'session',
+                  session: projected?.id === input.sessionId ? projected : null,
+                },
+              };
+            }
+            return {
+              ok: true,
+              result: {
+                kind: 'page',
+                revision: catalogRevision(String(projected?.revision ?? 0)),
+                sessions: projected ? [projected] : [],
+                nextCursor: null,
+              },
+            };
+          },
+          'session.create': async (input) => {
+            assert.deepEqual(input.modelTarget, { kind: 'default' });
+            assert.equal(input.permissionMode, undefined);
+            projected = session(input.sessionId, {
+              cwd: input.cwd,
+              name: input.name,
+              connectionLocked: false,
+            });
+            return { ok: true, result: projected };
+          },
+          'session.configuration.update': async (input) => {
+            assert.ok(projected);
+            assert.equal(input.expectedRevision, projected.revision);
+            projected = session(projected.id, {
+              ...projected,
+              revision: projected.revision + 1,
+              permissionMode: input.configuration.permissionMode,
+              collaborationMode: input.configuration.collaborationMode,
+              orchestrationMode: input.configuration.orchestrationMode,
+              ...(input.configuration.thinkingLevel === null
+                ? {}
+                : { thinkingLevel: input.configuration.thinkingLevel }),
+            });
+            return { ok: true, result: { kind: 'committed', session: projected } };
+          },
+          'session.lifecycle.set': async (input) => {
+            assert.ok(projected);
+            const archived = input.state === 'archived';
+            projected = session(projected.id, {
+              ...projected,
+              revision: projected.revision + 1,
+              isArchived: archived,
+              status: archived ? 'archived' : 'active',
+            });
+            return { ok: true, result: projected };
+          },
+          'session.remove': async (input) => {
+            assert.ok(projected);
+            assert.equal(input.expectedRevision, projected.revision);
+            const sessionId = projected.id;
+            projected = undefined;
+            return { ok: true, result: { kind: 'removed', sessionId } };
+          },
+        }),
+        beginDrain() {},
+        async recover() {},
+        async close() {},
+      }),
+    });
+    const connected = await connectRuntimeHost({
+      rootPath: base,
+      surface: 'desktop',
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+    });
+    assert.equal(connected.kind, 'connected');
+    if (connected.kind !== 'connected') throw new Error('Desktop did not connect to Runtime Host');
+    const client = new DesktopRuntimeHostClient(connected.connection);
+    const ipc = ipcHarness();
+    const changes: Array<{ reason: string; sessionId?: string }> = [];
+    registerRuntimeHostSessionCatalogIpc(
+      {
+        client,
+        workspaceRoot: base,
+        emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
+        newId: () => 'session-ipc',
+      },
+      ipc,
+    );
+
+    const created = await ipc.invoke('sessions:create', undefined);
+    assert.deepEqual((await ipc.invoke('sessions:list')) as unknown[], [created]);
+    assert.equal(
+      (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'execute') as {
+        permissionMode: string;
+      }).permissionMode,
+      'execute',
+    );
+    await ipc.invoke('sessions:archive', 'session-ipc');
+    assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
+    await ipc.invoke('sessions:remove', 'session-ipc');
+    assert.deepEqual(await ipc.invoke('sessions:list'), []);
+    assert.deepEqual(changes, [
+      { reason: 'created', sessionId: 'session-ipc' },
+      { reason: 'mode-change', sessionId: 'session-ipc' },
+      { reason: 'archived', sessionId: 'session-ipc' },
+      { reason: 'deleted', sessionId: 'session-ipc' },
+    ]);
+
+    await client.close();
+  } finally {
+    await host?.close().catch(() => undefined);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 type TestHandlers = Partial<RuntimeHostComposition['handlers']>;
 
 function handlers(overrides: TestHandlers): RuntimeHostComposition['handlers'] {
@@ -112,7 +246,27 @@ function catalogRevision(seed: string): `sha256:${string}` {
   return `sha256:${seed.repeat(64)}`;
 }
 
-function session(id: string) {
+type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+
+function ipcHarness() {
+  const ipcHandlers = new Map<string, IpcHandler>();
+  return {
+    handle(channel: string, handler: IpcHandler) {
+      assert.equal(ipcHandlers.has(channel), false, `duplicate handler: ${channel}`);
+      ipcHandlers.set(channel, handler);
+    },
+    async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+      const handler = ipcHandlers.get(channel);
+      assert.ok(handler, `missing handler: ${channel}`);
+      return handler({} as never, ...args);
+    },
+  };
+}
+
+function session(
+  id: string,
+  overrides: Partial<SessionCatalogProjection> = {},
+): SessionCatalogProjection {
   return {
     id,
     revision: 1,
@@ -133,5 +287,6 @@ function session(id: string) {
     permissionMode: 'ask',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
-  } as const;
+    ...overrides,
+  };
 }

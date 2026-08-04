@@ -162,6 +162,17 @@ export type SubagentSessionRuntimeSummary = Omit<
   'systemPrompt' | 'categoryPolicy'
 >;
 
+/**
+ * Client-facing child-session relation when the durable spawn record remains
+ * inside the Runtime Host authority boundary.
+ */
+export interface SessionSubagentProjection {
+  parentSessionId: string;
+  agentId?: string;
+  agentName?: string;
+  profile?: string;
+}
+
 export function isSessionStatus(value: unknown): value is SessionStatus {
   return typeof value === 'string' && (SESSION_STATUSES as readonly string[]).includes(value);
 }
@@ -289,6 +300,7 @@ export interface SessionSummary {
   runningTurnIds?: string[];
   parentSessionId?: string;
   branchOfTurnId?: string;
+  subagent?: SessionSubagentProjection;
   subagentParent?: SubagentSessionParent;
   subagentRuntime?: SubagentSessionRuntimeSummary;
   subagentWorkspace?: SubagentWorkspaceBinding;
@@ -489,11 +501,14 @@ export function childSessionsForParent(
   sessions: readonly SessionSummary[],
   parentSessionId: string,
 ): SessionSummary[] {
-  return sessions.filter(
-    (session) =>
-      isSubagentSessionParent(session.subagentParent) &&
-      session.subagentParent.parentSessionId === parentSessionId,
-  );
+  return sessions.filter((session) => linkedSubagentParentId(session) === parentSessionId);
+}
+
+/** Whether a Session is a linked child in either local or Host projection form. */
+export function isLinkedSubagentSession(
+  session: Pick<SessionSummary, 'subagent' | 'subagentParent'>,
+): boolean {
+  return linkedSubagentParentId(session) !== undefined;
 }
 
 /** Read-model projection; input order is preserved at every tree level. */
@@ -504,11 +519,9 @@ export function projectLinkedSessionTree(
   const sessionsById = new Map(sessions.map((session) => [session.id, session]));
   const nestedParentByChildId = new Map<string, string>();
   const linkedParentId = (session: SessionSummary): string | undefined => {
-    const relation = session.subagentParent;
-    if (!isSubagentSessionParent(relation)) return undefined;
-    return (
-      options.parentSessionIdAliases?.get(relation.parentSessionId) ?? relation.parentSessionId
-    );
+    const parentSessionId = linkedSubagentParentId(session);
+    if (!parentSessionId) return undefined;
+    return options.parentSessionIdAliases?.get(parentSessionId) ?? parentSessionId;
   };
 
   for (const session of sessions) {
@@ -537,6 +550,15 @@ export function projectLinkedSessionTree(
     roots,
     childrenByParentId: mutableChildren,
   };
+}
+
+function linkedSubagentParentId(
+  session: Pick<SessionSummary, 'subagent' | 'subagentParent'>,
+): string | undefined {
+  if (isSubagentSessionParent(session.subagentParent)) {
+    return session.subagentParent.parentSessionId;
+  }
+  return session.subagent?.parentSessionId;
 }
 
 /**

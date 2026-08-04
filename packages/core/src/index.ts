@@ -340,6 +340,7 @@ export type {
   SessionChangedReason,
   SessionStatus,
   SessionBlockedReason,
+  SessionSubagentProjection,
   SubagentSessionLifecycle,
   SubagentSessionParent,
   SubagentSessionRuntime,
@@ -374,6 +375,7 @@ export {
   deriveTurnRecords,
   isSessionStatus,
   isSessionBlockedReason,
+  isLinkedSubagentSession,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
@@ -1806,18 +1808,25 @@ export {
 } from './web-search.js';
 
 // explore-agent.ts — read-only deep research session profile.
-export type { SessionStartMode } from './explore-agent.js';
+export type { SessionStartMode, SessionStartModeSpec } from './explore-agent.js';
 export {
+  SESSION_START_MODES,
+  SESSION_START_MODE_LABELS,
+  SESSION_START_MODE_SPECS,
   DEEP_RESEARCH_EVIDENCE_CHECKLIST,
   DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_CHARS,
   DEEP_RESEARCH_PROGRESS_CHECKPOINTS,
   DEEP_RESEARCH_SESSION_LABEL,
+  DEEP_RESEARCH_SESSION_NAME,
   DEEP_RESEARCH_REPORT_SECTIONS,
   DEEP_RESEARCH_SCOPE_OPTIONS,
   DEEP_RESEARCH_STARTER_PROMPTS,
   DEEP_RESEARCH_WORKFLOW_STEPS,
   buildDeepResearchSystemPromptFragment,
   buildDeepResearchImplementationPrompt,
+  sessionStartModeSpec,
+  isSessionStartMode,
+  isSessionStartModeLabel,
   isDeepResearchSession,
 } from './explore-agent.js';
 
