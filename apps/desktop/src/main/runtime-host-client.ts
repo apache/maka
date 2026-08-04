@@ -83,6 +83,7 @@ export interface DesktopRuntimeHostSession {
 
 export interface DesktopPricingSnapshot {
   readonly hostEpoch: string;
+  readonly connectionId: string;
   readonly revision: number;
   readonly entries: readonly EffectivePricingEntry[];
 }
@@ -141,10 +142,13 @@ export class DesktopRuntimeHostClient {
     input: DesktopPricingMutationInput,
   ): Promise<DesktopPricingMutationOutcome> {
     this.#assertOpen();
-    if (input.base.hostEpoch !== this.connection.hostEpoch) {
+    if (
+      input.base.hostEpoch !== this.connection.hostEpoch ||
+      input.base.connectionId !== this.connection.connectionId
+    ) {
       throw new DesktopRuntimeHostClientError(
         'pricing_snapshot_stale',
-        'Pricing snapshot belongs to a different Runtime Host Epoch',
+        'Pricing snapshot belongs to a different Runtime Host connection',
       );
     }
     const request = decodePricingMutateInput({
@@ -706,6 +710,7 @@ export class DesktopRuntimeHostClient {
     }
     return {
       hostEpoch: this.connection.hostEpoch,
+      connectionId: this.connection.connectionId,
       revision: first.revision,
       entries,
     };

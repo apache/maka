@@ -28,6 +28,7 @@ test('restarts a paginated Pricing read instead of mixing revisions', async () =
 
   assert.deepEqual(await client.loadPricingSnapshot(), {
     hostEpoch: 'host-current',
+    connectionId: 'connection-current',
     revision: 2,
     entries: [freshOne, freshTwo],
   });
@@ -80,6 +81,27 @@ test('rejects a Pricing mutation from another Host Epoch before dispatch', async
     () =>
       client.applyPricingMutation({
         base: snapshot('host-replaced', 4, [builtin('provider:model', 1)]),
+        mutation: { kind: 'delete', modelKey: 'provider:model' },
+      }),
+    (error: unknown) =>
+      error instanceof DesktopRuntimeHostClientError &&
+      error.code === 'pricing_snapshot_stale',
+  );
+  assert.deepEqual(requests, []);
+});
+
+test('rejects a Pricing mutation from a previous connection with the same Host Epoch', async () => {
+  const { client, requests } = clientWithResponses([]);
+
+  await assert.rejects(
+    () =>
+      client.applyPricingMutation({
+        base: snapshot(
+          'host-current',
+          4,
+          [builtin('provider:model', 1)],
+          'connection-previous',
+        ),
         mutation: { kind: 'delete', modelKey: 'provider:model' },
       }),
     (error: unknown) =>
@@ -371,6 +393,7 @@ function clientWithResponses(responses: unknown[]): {
   const requests: RecordedRequest[] = [];
   const connection = {
     hostEpoch: 'host-current',
+    connectionId: 'connection-current',
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
       requests.push({ operation, input });
       if (remaining.length === 0) throw new Error(`Unexpected operation: ${operation}`);
@@ -387,8 +410,9 @@ function snapshot(
   hostEpoch: string,
   revision: number,
   entries: readonly EffectivePricingEntry[],
+  connectionId = 'connection-current',
 ): DesktopPricingSnapshot {
-  return { hostEpoch, revision, entries };
+  return { hostEpoch, connectionId, revision, entries };
 }
 
 function page(

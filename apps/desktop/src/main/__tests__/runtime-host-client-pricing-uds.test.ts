@@ -18,7 +18,10 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
-import { DesktopRuntimeHostClient } from '../runtime-host-client.js';
+import {
+  DesktopRuntimeHostClient,
+  DesktopRuntimeHostClientError,
+} from '../runtime-host-client.js';
 
 test('drives the Desktop Pricing adapter through a real Runtime Host connection', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-desktop-pricing-client-'));
@@ -28,6 +31,7 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     let revision = 1;
+    let mutationRequests = 0;
     let entries: EffectivePricingEntry[] = [
       builtin('provider:first', 1),
       builtin('provider:second', 2),
@@ -63,6 +67,7 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
             };
           },
           'pricing.mutate': async (input) => {
+            mutationRequests += 1;
             if (input.expectedRevision !== revision) {
               return {
                 ok: true,
@@ -103,26 +108,59 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
 
     const initial = await client.loadPricingSnapshot();
     assert.equal(initial.hostEpoch, connected.connection.hostEpoch);
+    assert.equal(initial.connectionId, connected.connection.connectionId);
     assert.deepEqual(initial.entries, entries);
 
+    await client.close();
+    const reconnected = await connectRuntimeHost({
+      rootPath: base,
+      surface: 'desktop',
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+    });
+    assert.equal(reconnected.kind, 'connected');
+    if (reconnected.kind !== 'connected') {
+      throw new Error('Desktop did not reconnect to Runtime Host');
+    }
+    assert.equal(reconnected.connection.hostEpoch, connected.connection.hostEpoch);
+    assert.notEqual(reconnected.connection.connectionId, connected.connection.connectionId);
+    const reconnectedClient = new DesktopRuntimeHostClient(reconnected.connection);
+
     const override = pricing('provider:second', 4);
+    await assert.rejects(
+      () =>
+        reconnectedClient.applyPricingMutation({
+          base: initial,
+          mutation: { kind: 'upsert', pricing: override },
+        }),
+      (error: unknown) =>
+        error instanceof DesktopRuntimeHostClientError &&
+        error.code === 'pricing_snapshot_stale',
+    );
+    assert.equal(mutationRequests, 0);
+
+    const reloaded = await reconnectedClient.loadPricingSnapshot();
     assert.deepEqual(
-      await client.applyPricingMutation({
-        base: initial,
+      await reconnectedClient.applyPricingMutation({
+        base: reloaded,
         mutation: { kind: 'upsert', pricing: override },
       }),
       {
         kind: 'saved',
         disposition: 'committed',
         snapshot: {
-          hostEpoch: connected.connection.hostEpoch,
+          hostEpoch: reconnected.connection.hostEpoch,
+          connectionId: reconnected.connection.connectionId,
           revision: 2,
           entries: [builtin('provider:first', 1), custom(override)],
         },
       },
     );
+    assert.equal(mutationRequests, 1);
 
-    await client.close();
+    await reconnectedClient.close();
   } finally {
     await host?.close().catch(() => undefined);
     await rm(base, { recursive: true, force: true });
