@@ -1,41 +1,18 @@
 import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
 import {
-  connectOrSpawnRuntimeHost,
-  type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
 import {
-  RUNTIME_HOST_PROTOCOL_VERSION,
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
-
-export type DesktopRuntimeHostConnectResult =
-  | { kind: 'connected'; client: DesktopRuntimeHostClient }
-  | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: 'connected' }>;
 
 export interface DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   close(): Promise<void>;
-}
-
-export async function connectDesktopRuntimeHost(
-  rootPath: string,
-): Promise<DesktopRuntimeHostConnectResult> {
-  const result = await connectOrSpawnRuntimeHost({
-    rootPath,
-    surface: 'desktop',
-    protocol: {
-      min: RUNTIME_HOST_PROTOCOL_VERSION,
-      max: RUNTIME_HOST_PROTOCOL_VERSION,
-    },
-  });
-  return result.kind === 'connected'
-    ? { kind: 'connected', client: new DesktopRuntimeHostClient(result.connection) }
-    : result;
 }
 
 export class DesktopRuntimeHostClient {

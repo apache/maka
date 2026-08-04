@@ -104,7 +104,7 @@ test('heavy workspaces are projected onto dedicated CI lanes', () => {
   const runtimeHost = planTests(['packages/runtime-host/src/server/index.ts'], { graph });
   assert.equal(runtimeHost.runtimeHost, true);
   assert.equal(runtimeHost.headless, false);
-  assert.deepEqual(runtimeHost.standardWorkspaces, ['packages/cli']);
+  assert.deepEqual(runtimeHost.standardWorkspaces, ['packages/cli', 'apps/desktop']);
 
   const runtime = planTests(['packages/runtime/src/index.ts'], { graph });
   assert.equal(runtime.runtimeHost, true);
@@ -127,7 +127,7 @@ test('heavy workspaces are projected onto dedicated CI lanes', () => {
   const outputs = formatGitHubOutputs(runtimeHost).split('\n');
   assert.ok(outputs.includes('runtime_host=true'));
   assert.ok(outputs.includes('headless=false'));
-  assert.ok(outputs.includes('standard_workspaces=packages/cli'));
+  assert.ok(outputs.includes('standard_workspaces=packages/cli,apps/desktop'));
 });
 
 test('global and unknown production changes fail safe to the complete suite', () => {
