@@ -473,7 +473,11 @@ async function normalizeDirectoryEntryTarget(
   path: string,
   access: SandboxBoundaryAccess,
   scope: SandboxBoundaryScope | 'auto',
-): Promise<Omit<NormalizedSandboxBoundaryPath, 'targetType'> & { targetType: FilesystemWorkerTarget['targetType'] }> {
+): Promise<
+  Omit<NormalizedSandboxBoundaryPath, 'targetType'> & {
+    targetType: FilesystemWorkerTarget['targetType'];
+  }
+> {
   const canonicalCwd = await realpath(cwd);
   const displayPath = resolve(canonicalCwd, path);
   const parentReal = await realpathAllowMissing(dirname(displayPath));
@@ -484,9 +488,7 @@ async function normalizeDirectoryEntryTarget(
   return { displayPath, enforcementPath, access, scope: effectiveScope, targetType };
 }
 
-async function entryTargetTypeOf(
-  path: string,
-): Promise<FilesystemWorkerTarget['targetType']> {
+async function entryTargetTypeOf(path: string): Promise<FilesystemWorkerTarget['targetType']> {
   try {
     const metadata = await lstat(path);
     if (metadata.isSymbolicLink()) return 'symlink';
