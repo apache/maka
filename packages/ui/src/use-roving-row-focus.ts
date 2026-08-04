@@ -18,7 +18,7 @@
 // never follows focus — the inspector is too expensive a side effect to fire
 // on a plain arrow press.
 
-import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type FocusEvent, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useState, type KeyboardEvent, type FocusEvent, type RefObject } from 'react';
 
 /** The design system renders one invisible button per interactive row. */
 const ROW_BUTTON_SELECTOR = 'li button';
@@ -41,19 +41,20 @@ export function useRovingRowFocus(containerRef: RefObject<HTMLElement | null>): 
     () => Array.from(containerRef.current?.querySelectorAll<HTMLElement>(ROW_BUTTON_SELECTOR) ?? []),
     [containerRef],
   );
-  const activeIndexRef = useRef(activeIndex);
-  activeIndexRef.current = activeIndex;
-
-  // No dependency array on purpose. React never wrote these tabindexes, so it
-  // cannot restore them: any render that replaces a row button — a new
-  // reminder, a filter change, a delete — hands us fresh nodes at their default
-  // tabindex 0, which would put the whole list back in the tab order.
+  // No dependency array on purpose, and it is load-bearing twice over. React
+  // never wrote these tabindexes, so it cannot restore them: any render that
+  // mounts a fresh row button — a new reminder, a filter change — hands us a
+  // node at its default tabindex 0, which puts the list back in the tab order.
+  // And the stop has to follow `activeIndex` after every arrow press, or Tab
+  // out and back would return to whichever row the user left long ago.
+  // Running on every render is what covers both; it is also why this reads
+  // `activeIndex` straight from the render closure rather than through a ref.
   useLayoutEffect(() => {
     const rows = readRows();
     if (rows.length === 0) return;
     // Clamp rather than reset: when the active row is deleted, the row that
     // took its place is the one that should still hold the list's tab stop.
-    const active = Math.min(activeIndexRef.current, rows.length - 1);
+    const active = Math.min(activeIndex, rows.length - 1);
     for (const [index, row] of rows.entries()) row.tabIndex = index === active ? 0 : -1;
   });
 
