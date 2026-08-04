@@ -22,6 +22,10 @@ import {
   type ContextDiagnosticsResult,
   type DeepResearchQueryInput,
   type DeepResearchQueryResult,
+  type DailyReviewMutateInput,
+  type DailyReviewMutateResult,
+  type DailyReviewQueryInput,
+  type DailyReviewQueryResult,
   type HostOperationErrorCode,
   type HostIncompatible,
   type HostRegistration,
@@ -160,6 +164,14 @@ export interface RuntimeHostConnection {
     input: DeepResearchQueryInput,
     timeoutMs?: number,
   ): Promise<DeepResearchQueryResult>;
+  queryDailyReview(
+    input: DailyReviewQueryInput,
+    timeoutMs?: number,
+  ): Promise<DailyReviewQueryResult>;
+  mutateDailyReview(
+    input: DailyReviewMutateInput,
+    timeoutMs?: number,
+  ): Promise<DailyReviewMutateResult>;
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
   startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
@@ -377,6 +389,20 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<DeepResearchQueryResult> {
     return this.request('deep-research.query', input, timeoutMs);
+  }
+
+  queryDailyReview(
+    input: DailyReviewQueryInput,
+    timeoutMs?: number,
+  ): Promise<DailyReviewQueryResult> {
+    return this.request('daily-review.query', input, timeoutMs);
+  }
+
+  mutateDailyReview(
+    input: DailyReviewMutateInput,
+    timeoutMs?: number,
+  ): Promise<DailyReviewMutateResult> {
+    return this.request('daily-review.mutate', input, timeoutMs);
   }
 
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
@@ -819,6 +845,7 @@ function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number |
     case 'agent.graph.stop':
     case 'connection.models.fetch':
     case 'connection.test.run':
+    case 'daily-review.mutate':
     case 'session.recap.generate':
       // Completion effects own their deadlines and may wait for admitted work to settle.
       return undefined;

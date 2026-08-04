@@ -1,34 +1,9 @@
 /**
- * PR-DAILY-REVIEW-MVP-0 — local-only daily summary contract.
+ * Daily Review domain values and pure projection helpers.
  *
- * Aggregates one day's activity (sessions touched, requests, tokens,
- * cost, top tools, top models) into a single value object that the
- * main process can return over IPC and the renderer can drop straight
- * into a panel. Pure types + helpers only; the actual data comes from
- * the existing telemetry repo + session store (no new persistence).
- *
- * borrow
- * - External reference describes a similar daily aggregation surface
- *   ("today" digest), but our scope is intentionally smaller: read-only
- *   summary, no scheduling, no cloud sync, no missions/cron, no
- *   LLM-generated narrative yet.
- *
- * diverge
- * - No background daemon — the summary is computed on demand when the
- *   user opens the panel, not pushed via cron.
- * - No automatic memory promotion of "what I worked on" — that would
- *   need explicit user opt-in under the daily-review privacy
- *   defaults.
- *
- * risk
- * - Only reads telemetry + session metadata; both already live on
- *   disk. No new file/network IO surface.
- *
- * gate
- * - Pure unit tests cover the day-boundary helpers (UTC vs local TZ
- *   was deliberately resolved in favour of LOCAL TZ — the user thinks
- *   in their own day, not UTC).
- * - Aggregator is pure: take inputs, return DailyReviewSummary.
+ * A review summarizes local Session and usage facts over local-time day
+ * boundaries. Runtime ownership, persistence, scheduling, and model execution
+ * stay outside this module so every Client observes the same domain contract.
  */
 
 import type { UsageBucket, UsageQuery, UsageSummaryV2 } from './usage-stats/types.js';
@@ -186,12 +161,7 @@ export function dailyUsageQuery(day: DayRangeMs): UsageQuery {
 /** Default cap for activity sessions and generated report evidence. */
 export const DAILY_REVIEW_LIST_LIMIT = 8;
 
-/**
- * PR-DAILY-REVIEW-FULL-0 — config + archive contract.
- *
- * One range contract shared by core, main, preload, and renderer. Archives
- * remain local JSON files; manual and scheduled runs use the same pipeline.
- */
+/** Config and durable archive contract shared by Host and Client adapters. */
 
 export type DailyReviewRange = 1 | 7 | 30;
 
@@ -368,7 +338,7 @@ export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive 
     modelKey: input.modelKey,
     sections,
     totals,
-    errorMessage: input.errorMessage,
+    ...(input.errorMessage === undefined ? {} : { errorMessage: input.errorMessage }),
   };
 }
 
@@ -442,6 +412,6 @@ export function dailyReviewArchiveToSummary(
     trigger: archive.trigger,
     modelKey: archive.modelKey,
     totals: archive.totals,
-    errorMessage: archive.errorMessage,
+    ...(archive.errorMessage === undefined ? {} : { errorMessage: archive.errorMessage }),
   };
 }

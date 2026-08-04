@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 2;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 3;
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -62,6 +62,11 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS workflow_daily_review_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       config_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_daily_review_authority_state (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      revision INTEGER NOT NULL CHECK (revision >= 0)
     );
 
     CREATE TABLE IF NOT EXISTS workflow_daily_review_archives (

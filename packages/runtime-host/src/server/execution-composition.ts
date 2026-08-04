@@ -28,6 +28,7 @@ import {
 } from '@maka/storage/artifact-stores';
 import { openInteractiveAutomationAuthorityForWrite } from '@maka/storage/automation-authority';
 import { openInteractiveDeepResearchStoreForWrite } from '@maka/storage/deep-research-authority';
+import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
 import { openInteractivePlanStoreForWrite } from '@maka/storage/plan-authority';
 import {
   isSessionNotFoundError,
@@ -58,12 +59,14 @@ import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
+import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
 import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
 } from './execution-model-composition.js';
 import {
   createHostGoalEvaluator,
+  createHostDailyReviewModel,
   createHostSessionEffectModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
@@ -114,6 +117,9 @@ export async function createExecutionRuntimeHostComposition(
   let deepResearchStore:
     | Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>
     | undefined;
+  let dailyReviewStore:
+    | Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>
+    | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   try {
@@ -131,6 +137,10 @@ export async function createExecutionRuntimeHostComposition(
       context.owner.lease,
     );
     deepResearchStore = openedDeepResearchStore;
+    const openedDailyReviewStore = await openInteractiveDailyReviewAuthorityForWrite(
+      context.owner.lease,
+    );
+    dailyReviewStore = openedDailyReviewStore;
     const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
     longTermMemoryStore = await openInteractiveLongTermMemoryStoreForWrite(context.owner.lease);
     taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
@@ -231,6 +241,7 @@ export async function createExecutionRuntimeHostComposition(
     let automations: HostAutomationCoordinator | undefined;
     let goal: HostGoalCoordinator | undefined;
     let deepResearch: HostDeepResearchCoordinator | undefined;
+    let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -283,6 +294,21 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
     });
+    dailyReview = new HostDailyReviewCoordinator({
+      store: openedDailyReviewStore,
+      usage: openedUsageStores,
+      sessions: stores.sessionStore,
+      readRunEvents: (sessionId, runId) => stores.agentRunStore.readEvents(sessionId, runId),
+      model: createHostDailyReviewModel({
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
+        usage: openedUsageStores,
+        requestDrain: context.requestDrain,
+      }),
+      acquireResidency: context.acquireResidency,
+      requestDrain: context.requestDrain,
+    });
     let poisonFailure: Error | undefined;
     let draining = false;
     let recoveryTask: Promise<void> | undefined;
@@ -297,6 +323,7 @@ export async function createExecutionRuntimeHostComposition(
       rootCoordinator?.beginDrain();
       runtimeResources?.beginDrain();
       automations?.beginDrain();
+      dailyReview?.beginDrain();
       messages.beginDrain();
       interactions.beginDrain();
       connectionEffects.beginDrain();
@@ -783,6 +810,7 @@ export async function createExecutionRuntimeHostComposition(
       ...automations.handlers,
       ...plans.handlers,
       ...requireDeepResearch(deepResearch).handlers,
+      ...requireDailyReview(dailyReview).handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
@@ -818,6 +846,7 @@ export async function createExecutionRuntimeHostComposition(
         await requireGraphSupervisorWake(graphSupervisorWake).recover();
         await requireGraphCoordinator(graphCoordinator).recover();
         await requireAutomationCoordinator(automations).recover();
+        await requireDailyReview(dailyReview).recover();
         requireAutomationCoordinator(automations).start();
       })();
       return recoveryTask;
@@ -866,6 +895,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           await automations?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await dailyReview?.close();
         } catch (error) {
           errors.push(error);
         }
@@ -1010,6 +1044,11 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
+      dailyReviewStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
       deepResearchStore?.close();
     } catch (closeError) {
       errors.push(closeError);
@@ -1122,6 +1161,13 @@ function requireDeepResearch(
   coordinator: HostDeepResearchCoordinator | undefined,
 ): HostDeepResearchCoordinator {
   if (!coordinator) throw new Error('Runtime Host Deep Research coordinator is not composed');
+  return coordinator;
+}
+
+function requireDailyReview(
+  coordinator: HostDailyReviewCoordinator | undefined,
+): HostDailyReviewCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Daily Review coordinator is not composed');
   return coordinator;
 }
 

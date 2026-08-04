@@ -10,6 +10,7 @@
     ".": "./dist/index.js",
     "./artifact-stores": "./dist/artifact-stores.js",
     "./automation-authority": "./dist/automation-authority.js",
+    "./daily-review-authority": "./dist/daily-review-authority.js",
     "./deep-research-authority": "./dist/deep-research-authority.js",
     "./plan-authority": "./dist/plan-authority.js",
     "./execution-stores": "./dist/execution-stores.js",

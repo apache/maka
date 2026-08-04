@@ -27,6 +27,7 @@ export { RuntimeHostProtocolError } from './errors.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
 export * from './automation.js';
+export * from './daily-review.js';
 export * from './client-capability.js';
 export * from './goal.js';
 export * from './plan.js';

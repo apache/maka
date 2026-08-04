@@ -51,6 +51,7 @@ import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import {
+  createHostDailyReviewModel,
   createHostGoalEvaluator,
   createHostSessionEffectModel,
 } from '../server/execution-model-authority.js';
@@ -1582,6 +1583,32 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
           row.callId === `session_recap_${session.id}_recap-effect-1`,
       ),
     );
+
+    const dailyReview = createHostDailyReviewModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
+      newId: () => 'daily-review-call-1',
+    });
+    assert.deepEqual(
+      await dailyReview.generate({
+        modelKey: `goal-evaluator-provider::${MODEL_ID}`,
+        prompt: 'Generate one Daily Review.',
+        abortSignal: new AbortController().signal,
+      }),
+      {
+        ok: true,
+        text: SUMMARY_TEXT,
+        modelKey: `goal-evaluator-provider::${MODEL_ID}`,
+      },
+    );
+    const dailyReviewLogs = await usage.telemetry.logs({ range: 'all' });
+    const dailyReviewLog = dailyReviewLogs.rows.find((row) => row.callKind === 'daily_review');
+    assert.ok(dailyReviewLog);
+    assert.equal(dailyReviewLog.callId, 'daily_review_daily-review-call-1');
+    assert.equal(dailyReviewLog.sessionId, undefined);
 
     assert.deepEqual(
       await sessionEffects.generateRecap({

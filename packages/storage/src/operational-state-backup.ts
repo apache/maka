@@ -415,6 +415,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'workflow_plan_reminders',
         'workflow_quote_companion_cleanup',
         'workflow_daily_review_state',
+        'workflow_daily_review_authority_state',
         'workflow_daily_review_archives',
         'usage_llm_calls',
         'usage_tool_invocations',

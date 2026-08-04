@@ -69,6 +69,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'credential.vault.delete',
       'credential.vault.query',
       'credential.vault.set',
+      'daily-review.mutate',
+      'daily-review.query',
       'deep-research.query',
       'execution.inspect.query',
       'execution.inspect.resolve',

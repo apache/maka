@@ -7,7 +7,6 @@ import type {
   UsageQuery,
 } from '@maka/core/usage-stats/types';
 import { comparePricingModelKeys } from '@maka/core/usage-stats/pricing';
-import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
 import {
   mergeUsageBuckets,
   mergeUsageLogs,
@@ -15,7 +14,6 @@ import {
   type CanonicalUsageSource,
   type UsageProvenance,
 } from '@maka/core/usage-ledger-merge';
-import { repairPendingModelCallProjections } from '@maka/storage/model-call-ledger';
 import { BUILTIN_PRICING } from '@maka/runtime';
 import {
   authenticateInteractiveUsageStoresWriter,
@@ -44,6 +42,9 @@ import {
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
+import { readCanonicalUsage, type RunEventReader } from './canonical-usage-reader.js';
+
+export type { RunEventReader } from './canonical-usage-reader.js';
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -79,35 +80,7 @@ export class HostUsagePricingCoordinator {
    * range is resolved once here so both sources answer the same window.
    */
   async #canonicalUsage(query: UsageQuery, now: number): Promise<CanonicalUsageSource> {
-    // Fold in anything the authority holds that this read model is behind on,
-    // before answering. Whatever a pass cannot repair is reported rather than
-    // silently missing from the totals.
-    const repair = await this.#repairPendingProjections();
-    const page = await this.#stores.modelCalls.modelCallAttempts(
-      resolveUsageRange(query.range, now),
-    );
-    return {
-      attempts: page.attempts,
-      // Both kinds of unreadable record count: a stored row that will not
-      // decode, and an authority event a repair could not turn into one.
-      unreadableRecords: page.unreadableRecords + repair.unreadableEvents,
-      pendingRepairs: repair.remaining,
-    };
-  }
-
-  async #repairPendingProjections(): Promise<{ remaining: number; unreadableEvents: number }> {
-    if (!this.#readRunEvents) return { remaining: 0, unreadableEvents: 0 };
-    const result = await repairPendingModelCallProjections({
-      ledger: {
-        record: (attempt) => this.#stores.modelCalls.recordModelCallAttempt(attempt),
-        pending: () => this.#stores.modelCalls.pendingReprojections(),
-        clear: (sessionId, runId) =>
-          this.#stores.modelCalls.clearPendingReprojection(sessionId, runId),
-      },
-      readRunEvents: this.#readRunEvents,
-      limit: USAGE_REPAIR_RUNS_PER_QUERY,
-    });
-    return { remaining: result.remaining, unreadableEvents: result.unreadableEvents };
+    return readCanonicalUsage(this.#stores, query, now, this.#readRunEvents);
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
@@ -345,20 +318,6 @@ export class HostUsagePricingCoordinator {
     this.#requestDrain();
   }
 }
-
-/**
- * The authority read used to rebuild the Usage read model for one run.
- */
-export type RunEventReader = (
-  sessionId: string,
-  runId: string,
-) => Promise<readonly { readonly type: string; readonly data?: Record<string, unknown> }[]>;
-
-/**
- * Repairs are bounded per query. A backlog is drained across successive reads
- * rather than making one Usage page wait for all of it.
- */
-const USAGE_REPAIR_RUNS_PER_QUERY = 16;
 
 /** Provenance of a result the model-call ledger has nothing to say about. */
 const EMPTY_PROVENANCE: UsageProvenance = {
