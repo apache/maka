@@ -27,9 +27,11 @@ import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
   type RunTraceEvent,
+  type RuntimeReadModelSessionView,
   type ScannedSkill,
   agentGraphIdForRootSession,
   buildParentAgentTools,
+  SESSION_RECAP_INSTRUCTION,
 } from '@maka/runtime';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -41,21 +43,32 @@ import {
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
-import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import {
+  openInteractiveUsageStoresForWrite,
+  type InteractiveUsageStoresWriter,
+} from '@maka/storage/usage-stores';
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import {
+  createHostGoalEvaluator,
+  createHostSessionEffectModel,
+} from '../server/execution-model-authority.js';
+import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
-  createHostGoalEvaluator,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
+import {
+  HostOAuthExecutionAuthority,
+  OAuthExecutionCredentialError,
+} from '../server/oauth-execution-authority.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { HostSessionEffectCoordinator } from '../server/session-effect-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
 
@@ -651,7 +664,11 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     }
 
     const mainRequests = provider.requests.filter((request) => request.body.stream === true);
-    const compactRequests = provider.requests.filter((request) => request.body.stream !== true);
+    const compactRequests = provider.requests.filter(
+      (request) =>
+        request.body.stream !== true &&
+        /context summarization assistant/.test(JSON.stringify(request.body)),
+    );
     assert.equal(mainRequests.length, 5);
     assert.ok(compactRequests.length >= 1);
     const request = mainRequests[0];
@@ -738,16 +755,17 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     );
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
-    const evidence = await waitForProviderEvidence(execution, session.id, provider.requests.length);
-    assert.equal(evidence.captures.length, provider.requests.length);
-    assert.equal(evidence.attempts.length, provider.requests.length);
+    const capturedRequestCount = mainRequests.length + compactRequests.length;
+    const evidence = await waitForProviderEvidence(execution, session.id, capturedRequestCount);
+    assert.equal(evidence.captures.length, capturedRequestCount);
+    assert.equal(evidence.attempts.length, capturedRequestCount);
 
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const artifactPage = await artifacts.listPage(session.id, { offset: 0, limit: 100 });
     const captureArtifacts = artifactPage.records.filter(
       (artifact) => artifact.source === 'provider_request_capture',
     );
-    assert.equal(captureArtifacts.length, provider.requests.length);
+    assert.equal(captureArtifacts.length, capturedRequestCount);
     let summaryCaptureFound = false;
     for (const artifact of captureArtifacts) {
       const read = await artifacts.readTextInSession(session.id, artifact.id);
@@ -1522,6 +1540,337 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
     assert.equal(recorded.status, 'success');
     await evaluator.close();
 
+    const sessionEffects = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('Session effect telemetry must not drain the Host'),
+      newId: () => 'effect-call-1',
+    });
+    assert.equal(
+      await sessionEffects.generateTitle({
+        sessionId: session.id,
+        header: session,
+        sourceText: 'Explain the Runtime Host ownership change',
+        abortSignal: new AbortController().signal,
+      }),
+      '## Goal',
+    );
+    const recap = await sessionEffects.generateRecap({
+      sessionId: session.id,
+      effectId: 'recap-effect-1',
+      header: session,
+      events: [],
+      abortSignal: new AbortController().signal,
+    });
+    assert.equal(recap.ok, true);
+    if (!recap.ok) return;
+    assert.equal(recap.modelId, MODEL_ID);
+    assert.deepEqual(recap.messages, [{ role: 'user', content: SESSION_RECAP_INSTRUCTION }]);
+    assert.equal(recap.raw, SUMMARY_TEXT);
+    const effectLogs = await usage.telemetry.logs({ range: 'all' });
+    assert.ok(
+      effectLogs.rows.some(
+        (row) =>
+          row.callKind === 'session_title' &&
+          row.callId === `session_title_${session.id}_effect-call-1`,
+      ),
+    );
+    assert.ok(
+      effectLogs.rows.some(
+        (row) =>
+          row.callKind === 'session_recap' &&
+          row.callId === `session_recap_${session.id}_recap-effect-1`,
+      ),
+    );
+
+    assert.deepEqual(
+      await sessionEffects.generateRecap({
+        sessionId: session.id,
+        effectId: 'recap-disabled-model',
+        header: { ...session, model: 'disabled-model' },
+        events: [],
+        abortSignal: new AbortController().signal,
+      }),
+      {
+        ok: false,
+        errorClass: 'configuration',
+      },
+    );
+
+    let preflightDrainRequests = 0;
+    let preflightTransportCreations = 0;
+    let preflightDraining = false;
+    const requestPreflightDrain = () => {
+      if (preflightDraining) return;
+      preflightDraining = true;
+      preflightDrainRequests += 1;
+    };
+    const failingPreflightEffects = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage: {
+        pricing: {
+          snapshot: async () => {
+            throw new Error('injected pricing snapshot failure');
+          },
+        },
+        telemetry: {
+          recordLlmCall: async () =>
+            assert.fail('preflight failure must not record provider usage'),
+        },
+      } as unknown as InteractiveUsageStoresWriter,
+      requestDrain: requestPreflightDrain,
+      createFetchTransport: () => {
+        preflightTransportCreations += 1;
+        throw new Error('preflight failure must not create a provider transport');
+      },
+    });
+    const preflightArtifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await preflightArtifacts.recover();
+    const preflightCoordinator = new HostSessionEffectCoordinator({
+      model: failingPreflightEffects,
+      readModel: {
+        getSessionView: async () => ({ events: [] }) as unknown as RuntimeReadModelSessionView,
+      },
+      artifacts: preflightArtifacts,
+      sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      readSessionHeader: async () => session,
+      sessionAdmission: new SessionAdmissionGate(),
+      acquireResidency: () => ({ release() {} }),
+      requestDrain: requestPreflightDrain,
+    });
+    const preflightInput = {
+      sessionId: session.id,
+      effectId: 'recap-preflight-failure',
+      reason: 'manual' as const,
+    };
+    const preflightContext: ConnectionContext = {
+      hostEpoch: 'preflight-failure',
+      connectionId: 'preflight-failure',
+      surface: 'tui',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    assert.deepEqual(
+      await preflightCoordinator.handlers['session.recap.generate'](
+        preflightInput,
+        preflightContext,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'outcome_unknown',
+          message: 'Recap accounting outcome is unknown',
+        },
+      },
+    );
+    assert.deepEqual(
+      await preflightCoordinator.handlers['session.recap.generate'](
+        preflightInput,
+        preflightContext,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'outcome_unknown',
+          message: 'Recap provider outcome is unknown; use a new effect identity to retry',
+        },
+      },
+    );
+    assert.equal(preflightTransportCreations, 0);
+    assert.equal(preflightDrainRequests, 1);
+    assert.equal(
+      (await preflightArtifacts.listPage(session.id, { offset: 0, limit: 10 })).records.length,
+      1,
+    );
+    await preflightCoordinator.close();
+    preflightArtifacts.close();
+
+    let oauthDrainRequests = 0;
+    let oauthProviderDispatches = 0;
+    let oauthTransportCloses = 0;
+    let oauthDraining = false;
+    const requestOAuthDrain = () => {
+      if (oauthDraining) return;
+      oauthDraining = true;
+      oauthDrainRequests += 1;
+    };
+    const oauthPersistenceEffects = createHostSessionEffectModel({
+      runtimePolicy: {
+        operations: {
+          resolveExecutionConnection: async () => ({
+            kind: 'ready',
+            connection: {
+              slug: 'oauth-persistence',
+              providerType: 'openai-codex',
+              enabledModelIds: [MODEL_ID],
+              models: [
+                {
+                  id: MODEL_ID,
+                  capabilities: { chat: true, functionCalling: true },
+                  contextWindow: 8_192,
+                  maxOutputTokens: 1_024,
+                },
+              ],
+            },
+            networkProxy: { enabled: false },
+            secretMaterial: { connection: { secret: 'oauth-material' } },
+          }),
+        },
+      } as unknown as RuntimePolicyStoresWriter,
+      oauthCredentials: {
+        bind: () => ({
+          providerType: 'openai-codex',
+          connectionSlug: 'oauth-persistence',
+          resolve: async () => ({
+            access_token: codexAccessToken('oauth-persistence-account'),
+            refresh_token: 'oauth-persistence-refresh',
+          }),
+          forceRefresh: async () => {
+            throw new OAuthExecutionCredentialError(
+              'persistence_failed',
+              'injected OAuth persistence failure',
+            );
+          },
+        }),
+      } as unknown as HostOAuthExecutionAuthority,
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: requestOAuthDrain,
+      createFetchTransport: () => ({
+        fetch: async () => {
+          oauthProviderDispatches += 1;
+          return Response.json({ error: { message: 'expired credential' } }, { status: 401 });
+        },
+        close: async () => {
+          oauthTransportCloses += 1;
+        },
+      }),
+    });
+    const oauthArtifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await oauthArtifacts.recover();
+    const oauthCoordinator = new HostSessionEffectCoordinator({
+      model: oauthPersistenceEffects,
+      readModel: {
+        getSessionView: async () => ({ events: [] }) as unknown as RuntimeReadModelSessionView,
+      },
+      artifacts: oauthArtifacts,
+      sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      readSessionHeader: async () => session,
+      sessionAdmission: new SessionAdmissionGate(),
+      acquireResidency: () => ({ release() {} }),
+      requestDrain: requestOAuthDrain,
+    });
+    const oauthInput = {
+      sessionId: session.id,
+      effectId: 'recap-oauth-persistence-failure',
+      reason: 'manual' as const,
+    };
+    assert.deepEqual(
+      await oauthCoordinator.handlers['session.recap.generate'](oauthInput, preflightContext),
+      {
+        ok: false,
+        error: {
+          code: 'outcome_unknown',
+          message: 'Recap accounting outcome is unknown',
+        },
+      },
+    );
+    assert.deepEqual(
+      await oauthCoordinator.handlers['session.recap.generate'](oauthInput, preflightContext),
+      {
+        ok: false,
+        error: {
+          code: 'outcome_unknown',
+          message: 'Recap provider outcome is unknown; use a new effect identity to retry',
+        },
+      },
+    );
+    assert.equal(oauthProviderDispatches, 1);
+    assert.equal(oauthTransportCloses, 1);
+    assert.equal(oauthDrainRequests, 1);
+    const oauthRecords = (
+      await oauthArtifacts.listPage(session.id, { offset: 0, limit: 10 })
+    ).records.filter((record) => record.turnId === oauthInput.effectId);
+    assert.equal(oauthRecords.length, 1);
+    assert.equal(oauthRecords[0]?.name, 'session-recap-intent.json');
+    await oauthCoordinator.close();
+    oauthArtifacts.close();
+
+    let accountingDrains = 0;
+    const accountingAbort = new AbortController();
+    const accountingFailure = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage: {
+        pricing: usage.pricing,
+        telemetry: {
+          recordLlmCall: async () => {
+            accountingAbort.abort(new DOMException('Host drain raced accounting', 'AbortError'));
+            throw new Error('injected accounting failure');
+          },
+        },
+      } as unknown as InteractiveUsageStoresWriter,
+      requestDrain: () => {
+        accountingDrains += 1;
+      },
+    });
+    assert.deepEqual(
+      await accountingFailure.generateRecap({
+        sessionId: session.id,
+        effectId: 'recap-accounting-failure',
+        header: session,
+        events: [],
+        abortSignal: accountingAbort.signal,
+      }),
+      {
+        ok: false,
+        modelId: MODEL_ID,
+        messages: [{ role: 'user', content: SESSION_RECAP_INSTRUCTION }],
+        errorClass: 'persistence',
+      },
+    );
+    assert.equal(accountingDrains, 1);
+
+    let effectProviderSignal: AbortSignal | undefined;
+    let effectTransportCloses = 0;
+    const effectProviderDispatched = deferred<void>();
+    const stalledEffect = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('A provider timeout must not drain the Host'),
+      createFetchTransport: () => ({
+        fetch: async (_request, init) => {
+          effectProviderSignal = init?.signal ?? undefined;
+          effectProviderDispatched.resolve();
+          return new Promise<Response>(() => {});
+        },
+        close: async () => {
+          effectTransportCloses += 1;
+        },
+      }),
+    });
+    const timedEffect = stalledEffect.generateRecap({
+      sessionId: session.id,
+      effectId: 'recap-timeout',
+      header: session,
+      events: [],
+      abortSignal: AbortSignal.timeout(10),
+    });
+    await settleWithin(effectProviderDispatched.promise);
+    const timedResult = await settleWithin(timedEffect);
+    assert.equal(timedResult.ok, false);
+    if (timedResult.ok) return;
+    assert.equal(timedResult.errorClass, 'timeout');
+    assert.equal(effectProviderSignal?.aborted, true);
+    assert.equal(effectTransportCloses, 1);
+
     let providerSignal: AbortSignal | undefined;
     let transportCloses = 0;
     const providerDispatched = deferred<void>();
@@ -2092,6 +2441,13 @@ function readyExecutionConnection(baseUrl?: string) {
       connection: { secret: API_KEY },
     },
   };
+}
+
+function codexAccessToken(accountId: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId } }),
+  ).toString('base64url');
+  return `header.${payload}.signature`;
 }
 
 async function settleWithin<T>(pending: Promise<T>): Promise<T> {

@@ -59,6 +59,9 @@ type RetirementGoals = Pick<
   'beginSessionRetirement' | 'hasLiveGoal' | 'unarchiveSessions'
 >;
 type RetirementResources = Pick<HostRuntimeResourceCoordinator, 'hasLiveSessionResources'>;
+type RetirementSessionEffects = {
+  hasLiveSessionState(sessionId: string): boolean;
+};
 type RetirementGraph = {
   hasLiveSessionState(sessionId: string): Promise<boolean>;
 };
@@ -87,6 +90,7 @@ export interface HostSessionRetirementCoordinatorOptions {
     beginSessionRetirement(sessionIds: readonly string[]): Promise<HostAutomationSessionRetirement>;
   };
   readonly resources: RetirementResources;
+  readonly sessionEffects: RetirementSessionEffects;
   readonly graph: RetirementGraph;
   readonly graphWake: RetirementGraphWake;
   readonly manager: RetirementManager;
@@ -138,6 +142,7 @@ export class HostSessionRetirementCoordinator {
   readonly #goals: RetirementGoals;
   readonly #automation: HostSessionRetirementCoordinatorOptions['automation'];
   readonly #resources: RetirementResources;
+  readonly #sessionEffects: RetirementSessionEffects;
   readonly #graph: RetirementGraph;
   readonly #graphWake: RetirementGraphWake;
   readonly #manager: RetirementManager;
@@ -163,6 +168,7 @@ export class HostSessionRetirementCoordinator {
     this.#goals = options.goals;
     this.#automation = options.automation;
     this.#resources = options.resources;
+    this.#sessionEffects = options.sessionEffects;
     this.#graph = options.graph;
     this.#graphWake = options.graphWake;
     this.#manager = options.manager;
@@ -399,6 +405,9 @@ export class HostSessionRetirementCoordinator {
       }
       if (await this.#resources.hasLiveSessionResources(sessionId)) {
         throw new SessionRetirementBusyError('Session has a live Runtime Resource');
+      }
+      if (this.#sessionEffects.hasLiveSessionState(sessionId)) {
+        throw new SessionRetirementBusyError('Session has a live derived effect');
       }
       const header = requireFamilyRecord(family, sessionId).header;
       if (!header.subagentParent && (await this.#graph.hasLiveSessionState(sessionId))) {

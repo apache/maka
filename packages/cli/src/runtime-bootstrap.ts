@@ -12,12 +12,11 @@ import {
   RuntimeReadModel,
   SessionManager,
   ShellRunProcessManager,
-  applyRuntimeEventContextBudget,
   buildAutomationTool,
   buildAskUserQuestionTool,
   buildRequestSandboxBoundaryTool,
   buildBuiltinTools,
-  buildRuntimeEventModelReplayPlan,
+  buildSessionRecapMessages,
   buildChildAgentTools,
   createBuiltinSandboxManager,
   isBuiltinFilesystemWorkerSandboxAvailable,
@@ -44,7 +43,6 @@ import {
   getAIModel,
   generateSessionTitle as generateRuntimeSessionTitle,
   loadHistoryCompactBlocksFromArtifacts,
-  replayPlanItemsToModelMessages,
   recoverAgentGraphSupervisorContextOverflow,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
@@ -93,7 +91,7 @@ import {
 } from './connection-target.js';
 import { buildCliSystemPrompt, buildCliTurnTailPrompt } from './cli-system-prompt.js';
 import { CliGoalContinuation } from './cli-goal-continuation.js';
-import { RECAP_INSTRUCTION, cleanRecapText } from './session-recap.js';
+import { cleanRecapText } from './session-recap.js';
 
 export interface MakaCliRuntimeContext {
   /** Legacy shared-root input retained for callers that do not split roots. */
@@ -505,26 +503,11 @@ export async function createMakaCliRuntimeContext(
               }
             : {}),
         });
-        const contextWindow = resolveSelectedModelContextWindow(ready.connection, ready.model);
-        // Same budget-policy construction the backend uses (buildDefaultContextBudgetPolicy
-        // + applyRuntimeEventContextBudget), with the cap overridden to the
-        // recap-specific 85%-of-window-minus-4096 semantics. An unknown context
-        // window skips trimming entirely rather than guessing a cap.
-        let trimmedEvents = view.events;
-        if (contextWindow !== undefined) {
-          const budgetPolicy = buildDefaultContextBudgetPolicy(ready.connection, {
-            name: 'session-recap-history-budget',
-            modelId: ready.model,
-          });
-          if (budgetPolicy?.maxHistoryEstimatedTokens !== undefined) {
-            budgetPolicy.maxHistoryEstimatedTokens = Math.floor(contextWindow * 0.85) - 4096;
-          }
-          trimmedEvents =
-            applyRuntimeEventContextBudget(view.events, budgetPolicy)?.events ?? view.events;
-        }
-        const plan = buildRuntimeEventModelReplayPlan(trimmedEvents);
-        requestMessages = replayPlanItemsToModelMessages(plan.items);
-        requestMessages.push({ role: 'user', content: RECAP_INSTRUCTION });
+        requestMessages = buildSessionRecapMessages({
+          events: view.events,
+          connection: ready.connection,
+          modelId: ready.model,
+        });
         const ai = (await import('ai')) as unknown as {
           generateText(opts: Record<string, unknown>): Promise<{ text: string }>;
         };

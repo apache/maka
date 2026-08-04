@@ -99,6 +99,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.lifecycle.set',
       'session.metadata.update',
       'session.read_marker.set',
+      'session.recap.generate',
       'session.remove',
       'session.revision.create',
       'skill.catalog.mutate',

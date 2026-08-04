@@ -1,10 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { PROVIDER_DEFAULTS, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
-import type { SessionHeader } from '@maka/core/session';
 import {
   filterModelVisibleTaskLedgerTasks,
   renderTaskLedgerPromptText,
@@ -29,17 +26,13 @@ import {
   createProviderRequestCaptureRecorder,
   createProxiedFetchTransport,
   getAIModel,
-  generateGoalEvaluationModelCall,
-  llmCallUsageFields,
   projectEffectiveProductToolSurface,
-  recordLlmCall,
   recordToolInvocation,
   resolveProjectGitInfo,
   resolveSelectedModelContextWindow,
   SkillShadowSelectionTracker,
   type BackendFactoryContext,
   type BuildBuiltinToolsOptions,
-  type GoalEvaluatorResource,
   type MakaTool,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
@@ -69,10 +62,10 @@ import type {
 import {
   createHostOAuthModelFetch,
   type HostOAuthExecutionAuthority,
-  type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
 import type { HostExecutionArtifactServices } from './execution-artifacts.js';
+import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 const CHILD_INSTRUCTION_BOUNDARY = [
@@ -229,174 +222,6 @@ export interface HostAiSdkBackendInput {
   readonly parentAgentTools?: readonly MakaTool[];
   readonly childAgents?: HostChildAgentBackendCapabilities;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
-}
-
-export interface HostGoalEvaluatorInput {
-  readonly runtimePolicy: RuntimePolicyStoresWriter;
-  readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
-  readonly usage: InteractiveUsageStoresWriter;
-  readonly requestDrain: () => void;
-  readonly readSessionHeader: (sessionId: string) => Promise<SessionHeader>;
-  readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
-  readonly now?: () => number;
-  readonly newId?: () => string;
-}
-
-/** Creates a tool-free Goal judge on the Session's canonical connection and model. */
-export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEvaluatorResource {
-  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
-  const now = input.now ?? Date.now;
-  const newId = input.newId ?? randomUUID;
-  let telemetryDrainRequested = false;
-  const telemetry = {
-    insertLlmCall: async (
-      record: Parameters<typeof input.usage.telemetry.recordLlmCall>[0],
-    ): Promise<void> => {
-      try {
-        await input.usage.telemetry.recordLlmCall(record);
-      } catch (error) {
-        if (!telemetryDrainRequested) {
-          telemetryDrainRequested = true;
-          input.requestDrain();
-        }
-        throw error;
-      }
-    },
-  };
-  return createOwnedGoalEvaluator({
-    evaluate: async (prompt, sessionId, signal) => {
-      const header = await readDuringBackendCreation(
-        () => input.readSessionHeader(sessionId),
-        signal,
-      );
-      const [target, pricingSnapshot] = await Promise.all([
-        readDuringBackendCreation(
-          () =>
-            resolveExecutionTarget(
-              header,
-              input.runtimePolicy,
-              input.oauthCredentials,
-              createFetchTransport,
-            ),
-          signal,
-        ),
-        readDuringBackendCreation(() => input.usage.pricing.snapshot(), signal),
-      ]);
-      const pricing = buildPricingLookup(pricingSnapshot.overrides);
-      const transport = createFetchTransport(
-        toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
-      );
-      let apiKey = target.apiKey;
-      let modelFetch: typeof fetch = transport.fetch;
-      try {
-        if (target.oauthBinding) {
-          const initialOAuthTokens = await readDuringBackendCreation(
-            () => target.oauthBinding!.resolve(),
-            signal,
-          );
-          apiKey = initialOAuthTokens.access_token;
-          modelFetch = createHostOAuthModelFetch({
-            binding: target.oauthBinding,
-            initialTokens: initialOAuthTokens,
-            connection: target.connection,
-            sessionId,
-            modelId: target.model,
-            claudeDeviceId: input.claudeDeviceId,
-            fetchFn: transport.fetch,
-          });
-        }
-        const startedAt = now();
-        const callId = `goal_evaluation_${sessionId}_${newId()}`;
-        const baseRecord = {
-          sessionId,
-          callKind: 'goal_evaluation' as const,
-          callId,
-          connectionSlug: target.connection.slug,
-          providerId: target.connection.providerType,
-          modelId: target.model,
-          startedAt,
-        };
-        try {
-          const result = await generateGoalEvaluationModelCall({
-            model: getAIModel({
-              connection: target.connection,
-              apiKey,
-              modelId: target.model,
-              fetch: modelFetch,
-            }),
-            prompt,
-            abortSignal: signal,
-            providerOptions: buildProviderOptions(
-              target.connection,
-              target.model,
-              header.thinkingLevel,
-            ),
-          });
-          await recordLlmCall(
-            { repo: telemetry, lookupPricing: pricing },
-            {
-              ...baseRecord,
-              ...(result.usage
-                ? llmCallUsageFields(result.usage)
-                : { inputTokens: 0, outputTokens: 0 }),
-              ...(result.finishReason && !result.usage
-                ? { rawFinishReason: result.finishReason }
-                : {}),
-              latencyMs: Math.max(0, now() - startedAt),
-              status: 'success',
-            },
-          );
-          return result.text;
-        } catch (error) {
-          await recordLlmCall(
-            { repo: telemetry, lookupPricing: pricing },
-            {
-              ...baseRecord,
-              inputTokens: 0,
-              outputTokens: 0,
-              latencyMs: Math.max(0, now() - startedAt),
-              status: signal.aborted ? 'aborted' : 'error',
-              errorClass: evaluatorErrorClass(error),
-            },
-          );
-          throw error;
-        }
-      } finally {
-        await transport.close();
-      }
-    },
-  });
-}
-
-function createOwnedGoalEvaluator(
-  evaluator: Pick<GoalEvaluatorResource, 'evaluate'>,
-): GoalEvaluatorResource {
-  const active = new Set<Promise<void>>();
-  let closing = false;
-  let closeTask: Promise<void> | undefined;
-  return {
-    evaluate: (prompt, sessionId, signal) => {
-      if (closing) return Promise.reject(new Error('Goal evaluator is closing'));
-      const task = evaluator.evaluate(prompt, sessionId, signal);
-      const settled = task.then(
-        () => undefined,
-        () => undefined,
-      );
-      active.add(settled);
-      void settled.finally(() => active.delete(settled));
-      return task;
-    },
-    close: () => {
-      closing = true;
-      closeTask ??= Promise.all([...active]).then(() => undefined);
-      return closeTask;
-    },
-  };
-}
-
-function evaluatorErrorClass(error: unknown): string {
-  return error instanceof Error ? error.name : 'UnknownError';
 }
 
 /** Builds one real provider backend from canonical Host state. */
@@ -678,34 +503,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   }
 }
 
-function readDuringBackendCreation<T>(
-  read: () => Promise<T>,
-  abortSignal?: AbortSignal,
-): Promise<T> {
-  if (!abortSignal) return read();
-  if (abortSignal.aborted) return Promise.reject(backendCreationAbortReason(abortSignal));
-
-  let onAbort: (() => void) | undefined;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(backendCreationAbortReason(abortSignal));
-    abortSignal.addEventListener('abort', onAbort, { once: true });
-  });
-  const pending = Promise.resolve().then(() => {
-    if (abortSignal.aborted) throw backendCreationAbortReason(abortSignal);
-    return read();
-  });
-  return Promise.race([pending, aborted]).finally(() => {
-    if (onAbort) abortSignal.removeEventListener('abort', onAbort);
-  });
-}
-
-function backendCreationAbortReason(abortSignal: AbortSignal): unknown {
-  return (
-    abortSignal.reason ??
-    new DOMException('Runtime Host backend creation was aborted', 'AbortError')
-  );
-}
-
 class HostAiSdkBackend extends AiSdkBackend {
   constructor(
     input: ConstructorParameters<typeof AiSdkBackend>[0],
@@ -754,82 +551,6 @@ function assertUniqueToolNames(tools: readonly MakaTool[]): void {
     }
     names.add(tool.name);
   }
-}
-
-interface ResolvedExecutionTarget {
-  readonly connection: RuntimeExecutionConnection;
-  readonly model: string;
-  readonly apiKey: string;
-  readonly oauthBinding?: HostOAuthExecutionBinding;
-  readonly networkProxy: RuntimePolicy['networkProxy'];
-  readonly proxySecret?: string;
-}
-
-async function resolveExecutionTarget(
-  header: BackendFactoryContext['header'],
-  runtimePolicy: RuntimePolicyStoresWriter,
-  oauthCredentials: HostOAuthExecutionAuthority,
-  createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
-): Promise<ResolvedExecutionTarget> {
-  const resolved = await runtimePolicy.operations.resolveExecutionConnection(
-    header.llmConnectionSlug,
-  );
-  if (resolved.kind !== 'ready') {
-    throw new Error(`Runtime Host model connection is not ready: ${resolved.kind}`);
-  }
-  const provider = PROVIDER_DEFAULTS[resolved.connection.providerType];
-  if (!provider || provider.runtimeAdapter.kind === 'unavailable') {
-    throw new Error('Runtime Host model provider is not executable');
-  }
-  const model = header.model.trim();
-  const modelInfo = resolved.connection.models.find((candidate) => candidate.id === model);
-  if (!model || !resolved.connection.enabledModelIds.includes(model) || !modelInfo) {
-    throw new Error('Runtime Host Session model is not enabled by its canonical connection');
-  }
-  if (isModelExplicitlyUnsupportedForChat(modelInfo)) {
-    throw new Error('Runtime Host Session model is not chat-capable');
-  }
-
-  const connection: RuntimeExecutionConnection = {
-    slug: resolved.connection.slug,
-    providerType: resolved.connection.providerType,
-    ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
-    defaultModel: model,
-    models: [...resolved.connection.models],
-  };
-  if (provider.authKind === 'oauth_token') {
-    const material = resolved.secretMaterial.connection;
-    if (!material) throw new Error('Runtime Host OAuth credential is not configured');
-    const refreshProxy = toRuntimePolicyProxy(
-      resolved.networkProxy,
-      resolved.secretMaterial.networkProxy?.secret,
-    );
-    return {
-      connection,
-      model,
-      apiKey: '',
-      oauthBinding: oauthCredentials.bind({
-        providerType: resolved.connection.providerType,
-        connectionSlug: resolved.connection.slug,
-        material,
-        createRefreshTransport: () => createFetchTransport(refreshProxy),
-      }),
-      networkProxy: resolved.networkProxy,
-      ...(resolved.secretMaterial.networkProxy
-        ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
-        : {}),
-    };
-  }
-
-  return {
-    connection,
-    model,
-    apiKey: resolved.secretMaterial.connection?.secret ?? '',
-    networkProxy: resolved.networkProxy,
-    ...(resolved.secretMaterial.networkProxy
-      ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
-      : {}),
-  };
 }
 
 function buildDefaultHostTools(

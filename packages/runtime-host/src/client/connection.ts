@@ -34,6 +34,8 @@ import {
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type SessionCwdRelocateInput,
+  type SessionRecapGenerateInput,
+  type SessionRecapGenerateResult,
   type SessionUpdateResult,
   type TurnQueryInput,
   type TurnRegenerateInput,
@@ -142,6 +144,10 @@ export interface RuntimeHostConnection {
     input: SessionCwdRelocateInput,
     timeoutMs?: number,
   ): Promise<SessionUpdateResult>;
+  generateSessionRecap(
+    input: SessionRecapGenerateInput,
+    timeoutMs?: number,
+  ): Promise<SessionRecapGenerateResult>;
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
   startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
@@ -337,6 +343,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<SessionUpdateResult> {
     return this.request('session.cwd.relocate', input, timeoutMs);
+  }
+
+  generateSessionRecap(
+    input: SessionRecapGenerateInput,
+    timeoutMs?: number,
+  ): Promise<SessionRecapGenerateResult> {
+    return this.request('session.recap.generate', input, timeoutMs);
   }
 
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
@@ -779,6 +792,7 @@ function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number |
     case 'agent.graph.stop':
     case 'connection.models.fetch':
     case 'connection.test.run':
+    case 'session.recap.generate':
       // Completion effects own their deadlines and may wait for admitted work to settle.
       return undefined;
     default:

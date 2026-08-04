@@ -3,6 +3,8 @@ export const MODEL_CALL_KINDS = [
   'semantic_compact',
   'history_compact',
   'goal_evaluation',
+  'session_title',
+  'session_recap',
 ] as const;
 export type ModelCallKind = (typeof MODEL_CALL_KINDS)[number];
 

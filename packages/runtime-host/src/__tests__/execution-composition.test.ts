@@ -119,6 +119,42 @@ test('composition drain preserves usage admission until active Runtime work sett
   });
 });
 
+test('production composition commits automatic titles through Host-owned Session effects', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
+    try {
+      const session = await manager.createSession({
+        cwd: root,
+        backend: 'fake',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId: 'turn-title',
+          content: { text: 'Host owns this automatic title' },
+        },
+        {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'title-client',
+          surface: 'tui',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.equal(started.ok, true);
+      await waitFor(async () => {
+        const summary = (await manager.listSessions()).find((item) => item.id === session.id);
+        return summary?.name === 'Host owns this automatic title';
+      });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('production composition orphans ownerless ShellRuns before serving Resource queries', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
@@ -537,5 +573,13 @@ async function withCompositionRoot(
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });
+  }
+}
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for condition');
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
 }

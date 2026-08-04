@@ -14,6 +14,7 @@ import {
   isOAuthEnrollmentProviderEnabled,
   isBuiltinFilesystemWorkerSandboxAvailable,
   prepareSkillInvocationMessageFromInventory,
+  RuntimeReadModel,
   SessionManager,
   SessionActivityRegistry,
   ShellRunProcessManager,
@@ -56,8 +57,11 @@ import { HostClientCapabilityCoordinator } from './client-capability-coordinator
 import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
-  createHostGoalEvaluator,
 } from './execution-model-composition.js';
+import {
+  createHostGoalEvaluator,
+  createHostSessionEffectModel,
+} from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
@@ -77,6 +81,7 @@ import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
+import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
@@ -101,6 +106,7 @@ export async function createExecutionRuntimeHostComposition(
     | Awaited<ReturnType<typeof openInteractiveAutomationAuthorityForWrite>>
     | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
+  let sessionEffects: HostSessionEffectCoordinator | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
@@ -271,6 +277,7 @@ export async function createExecutionRuntimeHostComposition(
       messages.beginDrain();
       interactions.beginDrain();
       connectionEffects.beginDrain();
+      sessionEffects?.beginDrain();
       skills.beginDrain();
       memory?.beginDrain();
       oauth?.beginDrain();
@@ -366,6 +373,28 @@ export async function createExecutionRuntimeHostComposition(
         capabilitySnapshot?.release();
       }
     };
+    const sessionEffectCoordinator = new HostSessionEffectCoordinator({
+      model: createHostSessionEffectModel({
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
+        usage: openedUsageStores,
+        requestDrain: context.requestDrain,
+      }),
+      readModel: new RuntimeReadModel({
+        runStore: stores.agentRunStore,
+        runtimeEventStore: stores.runtimeEventStore,
+        projectionCache: stores.sessionStore,
+        canonicalPermissionOutcomes,
+      }),
+      artifacts: openedArtifactStore,
+      sessions: stores.sessionStore,
+      readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
+      sessionAdmission,
+      acquireResidency: context.acquireResidency,
+      requestDrain: context.requestDrain,
+    });
+    sessionEffects = sessionEffectCoordinator;
     manager = new SessionManager({
       store: stores.sessionStore,
       runStore: stores.agentRunStore,
@@ -375,6 +404,9 @@ export async function createExecutionRuntimeHostComposition(
       newId: randomUUID,
       now: Date.now,
       safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
+      generateSessionTitle: (input) => sessionEffectCoordinator.generateTitle(input),
+      onSessionTitleChanged: (sessionId) =>
+        continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       inspectContinuationSafety: createLocalContinuationSafetyInspector({
         readSessionCwd: async (sessionId) =>
           (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
@@ -651,6 +683,7 @@ export async function createExecutionRuntimeHostComposition(
       goals: requireGoal(goal),
       automation: automations,
       resources: runtimeResources,
+      sessionEffects: sessionEffectCoordinator,
       graph: requireGraphCoordinator(graphCoordinator),
       graphWake: requireGraphSupervisorWake(graphSupervisorWake),
       manager,
@@ -679,6 +712,7 @@ export async function createExecutionRuntimeHostComposition(
       ...interactions.handlers,
       ...runtimePolicy.handlers,
       ...connectionEffects.handlers,
+      ...sessionEffectCoordinator.handlers,
       ...continuityCoordinator.handlers,
       ...taskLedger.handlers,
       ...artifacts.handlers,
@@ -777,6 +811,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           await runtimeResources?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await sessionEffects?.close();
         } catch (error) {
           errors.push(error);
         }
@@ -890,6 +929,11 @@ export async function createExecutionRuntimeHostComposition(
     };
   } catch (error) {
     const errors: unknown[] = [error];
+    try {
+      await sessionEffects?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
     try {
       graphClient?.close();
     } catch (closeError) {
