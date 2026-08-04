@@ -43,6 +43,17 @@ export interface RuntimeEventStore {
     event: RuntimeEvent,
     options?: { durable?: boolean },
   ): Promise<void>;
+  /**
+   * Coalesce one already-admitted mutable presentation stream into one store
+   * transaction. Callers must preserve provider order and flush before every
+   * immutable execution boundary. Stores that do not implement this optional
+   * fast path continue to receive one append per partial event.
+   */
+  appendRuntimePartialBatch?(
+    sessionId: string,
+    runId: string,
+    events: readonly RuntimeEvent[],
+  ): Promise<void>;
   /** Append the terminal event if absent, or re-establish its stable-storage barrier if present. */
   ensureTerminalRuntimeEventDurable(
     sessionId: string,

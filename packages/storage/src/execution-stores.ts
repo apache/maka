@@ -432,6 +432,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       toolBoundaryProtocol: runtimePersistence.runtimeCommitStore.toolBoundaryProtocol,
       appendRuntimeEvent: (sessionId, runId, event, options) =>
         run(() => runtimeEventStore.appendRuntimeEvent(sessionId, runId, event, options)),
+      appendRuntimePartialBatch: (sessionId, runId, events) =>
+        run(() => runtimeEventStore.appendRuntimePartialBatch(sessionId, runId, events)),
       importConversationCopyRuntimeEvents: (sessionId, batches) =>
         run(() => runtimeEventStore.importConversationCopyRuntimeEvents(sessionId, batches)),
       ensureTerminalRuntimeEventDurable: (sessionId, runId, event) =>

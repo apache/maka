@@ -368,6 +368,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'tool_journal_events',
         'tool_operations',
         'runtime_partial_snapshots',
+        'runtime_partial_segments',
         'runtime_capabilities',
         'runtime_continuation_claims',
         'runtime_workspace_epochs',

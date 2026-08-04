@@ -48,6 +48,7 @@ describe('SqliteRuntimeStore', () => {
 
       const legacy = new DatabaseSync(dbPath);
       legacy.exec(`
+        DROP TABLE runtime_partial_segments;
         DROP TABLE runtime_storage_root_binding;
         DROP TABLE runtime_workspace_heads;
         DROP TABLE runtime_workspace_versions;
@@ -96,7 +97,7 @@ describe('SqliteRuntimeStore', () => {
 
       const upgraded = createSqliteRuntimeStore(dbPath);
       try {
-        assert.equal(upgraded.schemaVersion(), 9);
+        assert.equal(upgraded.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
         const inspect = new DatabaseSync(dbPath);
         try {
           assert.deepEqual(
@@ -126,6 +127,45 @@ describe('SqliteRuntimeStore', () => {
         } finally {
           inspect.close();
         }
+      } finally {
+        upgraded.close();
+      }
+    });
+  });
+
+  it('upgrades a schema 9 partial snapshot and appends new segments without rewriting it', async () => {
+    await withStore(async (store, dbPath) => {
+      const partial = (id: string, ts: number, text: string): RuntimeEvent =>
+        functionCallEvent({
+          id,
+          ts,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text },
+          refs: { providerEventId: 'message-1' },
+        });
+      await store.appendRuntimeEvent('session-1', 'run-1', partial('partial-old', 1, 'old'));
+      store.close();
+
+      const legacy = new DatabaseSync(dbPath);
+      legacy.prepare(`UPDATE runtime_partial_snapshots SET text_content = 'old'`).run();
+      legacy.exec('DROP TABLE runtime_partial_segments; PRAGMA user_version = 9;');
+      legacy.close();
+
+      const upgraded = createSqliteRuntimeStore(dbPath);
+      try {
+        const before = await upgraded.readRuntimeEvents('session-1', 'run-1');
+        assert.equal(
+          before[0]?.content?.kind === 'text' ? before[0].content.text : undefined,
+          'old',
+        );
+        await upgraded.appendRuntimeEvent('session-1', 'run-1', partial('partial-new', 2, 'new'));
+        const after = await upgraded.readRuntimeEvents('session-1', 'run-1');
+        assert.equal(
+          after[0]?.content?.kind === 'text' ? after[0].content.text : undefined,
+          'oldnew',
+        );
       } finally {
         upgraded.close();
       }
@@ -1239,6 +1279,73 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('stores a partial batch as one append-only segment and reconstructs the same text', async () => {
+    await withStore(async (store, dbPath) => {
+      const partial = (id: string, ts: number, text: string): RuntimeEvent =>
+        functionCallEvent({
+          id,
+          ts,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text },
+          refs: { providerEventId: 'message-1' },
+        });
+      await store.appendRuntimeEvent('session-1', 'run-1', partial('partial-1', 1, 'a'));
+      await store.appendRuntimePartialBatch('session-1', 'run-1', [
+        partial('partial-2', 2, 'b'),
+        partial('partial-3', 3, 'c'),
+      ]);
+
+      const events = await store.readRuntimeEvents('session-1', 'run-1');
+      assert.equal(events.length, 1);
+      assert.equal(events[0]?.content?.kind, 'text');
+      assert.equal(events[0]?.content?.kind === 'text' ? events[0].content.text : undefined, 'abc');
+
+      const inspect = new DatabaseSync(dbPath);
+      try {
+        assert.deepEqual(
+          inspect
+            .prepare(`
+              SELECT segment_seq, text_content
+              FROM runtime_partial_segments
+              ORDER BY segment_seq ASC
+            `)
+            .all()
+            .map((row) => ({ ...row })),
+          [
+            { segment_seq: 1, text_content: 'a' },
+            { segment_seq: 2, text_content: 'bc' },
+          ],
+        );
+      } finally {
+        inspect.close();
+      }
+    });
+  });
+
+  it('rejects a partial batch that crosses presentation streams atomically', async () => {
+    await withStore(async (store) => {
+      const partial = (id: string, providerEventId: string, text: string): RuntimeEvent =>
+        functionCallEvent({
+          id,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text },
+          refs: { providerEventId },
+        });
+      await assert.rejects(
+        store.appendRuntimePartialBatch('session-1', 'run-1', [
+          partial('partial-1', 'message-1', 'a'),
+          partial('partial-2', 'message-2', 'b'),
+        ]),
+        /exactly one presentation stream/,
+      );
+      assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), []);
+    });
+  });
+
   it('rejects a physical immutable prefix with an event-seq gap', async () => {
     await withStore(async (store, dbPath) => {
       for (let eventSeq = 1; eventSeq <= 3; eventSeq += 1) {
@@ -1278,7 +1385,7 @@ describe('SqliteRuntimeStore', () => {
   });
 
   it('replaces text and tool partial snapshots when their durable final arrives', async () => {
-    await withStore(async (store) => {
+    await withStore(async (store, dbPath) => {
       await store.appendRuntimeEvent(
         'session-1',
         'run-1',
@@ -1330,6 +1437,19 @@ describe('SqliteRuntimeStore', () => {
         ['text-final', 'call-event-1', 'response-event-1'],
       );
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
+      const inspect = new DatabaseSync(dbPath);
+      try {
+        assert.equal(
+          (
+            inspect.prepare('SELECT count(*) AS count FROM runtime_partial_segments').get() as {
+              count: number;
+            }
+          ).count,
+          0,
+        );
+      } finally {
+        inspect.close();
+      }
     });
   });
 
