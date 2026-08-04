@@ -86,10 +86,11 @@ export function PasswordInput(props: {
     }
   }
   return (
-    // The marker rides on the group label because that is the visible one; the
-    // inner input's label is hidden. `aria-required` is separate — Astryx only
-    // writes it from `isRequired` on the control itself, so the inner TextInput
-    // carries the prop too.
+    // The marker rides on the group label because it is the only one: a
+    // TextInput inside an InputGroup returns its bare input wrapper and renders
+    // no Field at all, so its own `isRequired` produces no marker anywhere. It
+    // still carries the prop, because that input is what `aria-required` is
+    // written on, and the group's `aria-labelledby` is what names it.
     <InputGroup
       label={props.label}
       description={props.description}

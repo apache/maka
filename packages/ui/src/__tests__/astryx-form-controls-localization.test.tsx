@@ -60,16 +60,24 @@ describe('Astryx form-control localization', () => {
     assert.doesNotMatch(markup, /Optional/);
   });
 
+  /**
+   * `en` resolves through the catalog the patch adds to, not through a
+   * hard-coded string, so a key missing from `locales/en.json` surfaces as the
+   * raw key in the markup. Both markers are asserted because they are separate
+   * entries: dropping one leaves the other's assertion green.
+   */
   it('keeps Astryx’s English markers when the locale is en', () => {
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
         <AstryxLocaleProvider>
           <TextInput label="API key" value="" onChange={() => {}} isRequired />
+          <TextInput label="Note" value="" onChange={() => {}} isOptional />
         </AstryxLocaleProvider>
       </LocaleProvider>,
     );
 
     assert.match(markup, /Required/);
+    assert.match(markup, /Optional/);
     assert.doesNotMatch(markup, /@astryx\.field/);
   });
 
