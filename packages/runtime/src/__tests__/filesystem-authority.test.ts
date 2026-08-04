@@ -250,12 +250,12 @@ describe('file tools follow the execution boundary', () => {
       // atomic, so the survivor is whole even with no lock at all. Only an
       // overlap counter distinguishes a held lock from the kernel's own
       // serialisation, and only two spellings of one path prove the key
-      // canonicalises. Ordering is enforced with barriers instead of timers
-      // (#2132): submission order cannot promise acquisition order, because
-      // the lock key derivation is itself async. The first edit parks inside
-      // the locked region, and the second is released into the region only
-      // after its lock key resolved, so a lockless implementation overlaps
-      // deterministically while the first reader is still parked.
+      // canonicalises. Ordering is enforced with causal barriers instead of
+      // timers (#2132): submission order cannot promise acquisition order,
+      // because the lock key derivation is itself async. The first read waits
+      // for the second key to resolve. A working lock keeps that second read
+      // queued; a lockless implementation necessarily overlaps it with the
+      // first read, which is still active at that exact boundary.
       const host = createLocalWorkspaceExecutor();
       let active = 0;
       let overlapped = false;
@@ -264,10 +264,6 @@ describe('file tools follow the execution boundary', () => {
       let firstReadStarted!: () => void;
       const firstReadStartedPromise = new Promise<void>((resolve) => {
         firstReadStarted = resolve;
-      });
-      let releaseFirstRead!: () => void;
-      const releaseFirstReadPromise = new Promise<void>((resolve) => {
-        releaseFirstRead = resolve;
       });
       let secondKeyResolved!: () => void;
       const secondKeyResolvedPromise = new Promise<void>((resolve) => {
@@ -287,7 +283,7 @@ describe('file tools follow the execution boundary', () => {
             reads += 1;
             if (reads === 1) {
               firstReadStarted();
-              await releaseFirstReadPromise;
+              await secondKeyResolvedPromise;
             }
             try {
               return await host.readFile(input);
@@ -307,13 +303,6 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      await secondKeyResolvedPromise;
-      // Give a lockless second edit every chance to reach readFile while the
-      // first reader is parked; a working lock keeps it queued instead.
-      for (let tick = 0; tick < 25; tick += 1) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
-      releaseFirstRead();
       await Promise.all([first, second]);
 
       expect(overlapped).toBe(false);
