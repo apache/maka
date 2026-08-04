@@ -320,9 +320,15 @@ const stepfunStepPlanModelIds = [
   'step-3.5-flash',
   'step-router-v1',
 ] as const;
+const stepfunStepPlan = GENERATED_MODELS_DEV_PROVIDER_FACTS['stepfun-step-plan'];
+if (stepfunStepPlan.id !== 'stepfun-step-plan') {
+  throw new Error('models.dev StepFun Step Plan provider facts are missing stable id stepfun-step-plan');
+}
 for (const id of stepfunStepPlanModelIds.slice(0, 3)) {
-  if (!GENERATED_MODELS_DEV_METADATA.stepfun[id]?.capabilities?.functionCalling) {
-    throw new Error(`models.dev StepFun snapshot is missing documented Step Plan model ${id}`);
+  if (!GENERATED_MODELS_DEV_METADATA['stepfun-step-plan'][id]?.capabilities?.functionCalling) {
+    throw new Error(
+      `models.dev StepFun Step Plan snapshot is missing documented Step Plan model ${id}`,
+    );
   }
 }
 const stepfunGlobal = GENERATED_MODELS_DEV_PROVIDER_FACTS['stepfun-ai'];
@@ -1339,7 +1345,7 @@ const providerRegistry = {
     catalogGroup: 'plans',
     catalogBadge: 'Plan',
     signupUrl: 'https://platform.stepfun.com/interface-key',
-    modelsDevId: stepfun.id,
+    modelsDevId: stepfunStepPlan.id,
     readyOrder: 28,
     catalogOrder: 28,
   },

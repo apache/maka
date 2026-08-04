@@ -93,10 +93,9 @@ describe('model-metadata vision capability', () => {
     });
     // k3-256k joined the snapshot with the same effort set; the wire contract
     // test then requires every declared level to actually wire.
-    assert.deepEqual(
-      lookupModelMetadata('kimi-coding-plan', 'k3-256k').thinkingOptions,
-      { efforts: ['low', 'high', 'max'] },
-    );
+    assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3-256k').thinkingOptions, {
+      efforts: ['low', 'high', 'max'],
+    });
   });
 
   it('uses Volcengine Coding Plan model facts for its exact fallback allowlist', () => {

@@ -87,11 +87,10 @@ describe('buildProviderOptions: thinking level', () => {
   });
 
   test('Kimi K3 passes the chosen effort through adaptive thinking, defaulting to max', () => {
-    assert.deepEqual([...thinkingVariantsForModel('kimi-coding-plan', 'k3')], [
-      'low',
-      'high',
-      'max',
-    ]);
+    assert.deepEqual(
+      [...thinkingVariantsForModel('kimi-coding-plan', 'k3')],
+      ['low', 'high', 'max'],
+    );
     const expected = { anthropic: { thinking: { type: 'adaptive' }, effort: 'max' } };
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3'), expected);
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'max'), expected);

@@ -35,6 +35,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
   | 'stepfun'
   | 'stepfun-ai'
   | 'stepfun-ai-step-plan'
+  | 'stepfun-step-plan'
   | 'togetherai'
   | 'tencent-coding-plan'
   | 'tencent-token-plan'
@@ -11148,6 +11149,47 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
+  'stepfun-step-plan': {
+    'step-3.5-flash': {
+      displayName: 'Step 3.5 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api',
+      contextWindow: 256000,
+      maxOutputTokens: 256000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'step-3.5-flash-2603': {
+      displayName: 'Step 3.5 Flash 2603',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api',
+      contextWindow: 256000,
+      maxOutputTokens: 256000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high'] },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'step-3.7-flash': {
+      displayName: 'Step 3.7 Flash',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api',
+      contextWindow: 256000,
+      maxOutputTokens: 256000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'step-router-v1': {
+      displayName: 'Step Router v1',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api',
+      contextWindow: 256000,
+      maxOutputTokens: 256000,
+      capabilities: { vision: false, reasoning: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+  },
   togetherai: {
     'deepcogito/cogito-v2-1-671b': {
       displayName: 'Cogito v2.1 671B',
@@ -16579,6 +16621,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
   | 'stepfun'
   | 'stepfun-ai'
   | 'stepfun-ai-step-plan'
+  | 'stepfun-step-plan'
   | 'togetherai'
   | 'tencent-coding-plan'
   | 'tencent-token-plan'
@@ -16689,6 +16732,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
   stepfun: {},
   'stepfun-ai': {},
   'stepfun-ai-step-plan': {},
+  'stepfun-step-plan': {},
   togetherai: {},
   'tencent-coding-plan': {},
   'tencent-token-plan': {},
@@ -16826,6 +16870,7 @@ export const GENERATED_MODELS_DEV_PROVIDER_FACTS: Record<
   | 'stepfun'
   | 'stepfun-ai'
   | 'stepfun-ai-step-plan'
+  | 'stepfun-step-plan'
   | 'togetherai'
   | 'tencent-coding-plan'
   | 'tencent-token-plan'
@@ -17003,6 +17048,12 @@ export const GENERATED_MODELS_DEV_PROVIDER_FACTS: Record<
     name: 'StepFun Step Plan (Global)',
     api: 'https://api.stepfun.ai/step_plan/v1',
     doc: 'https://platform.stepfun.ai/docs/en/step-plan/integrations/reasoning-api',
+  },
+  'stepfun-step-plan': {
+    id: 'stepfun-step-plan',
+    name: 'StepFun Step Plan (China)',
+    api: 'https://api.stepfun.com/step_plan/v1',
+    doc: 'https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api',
   },
   togetherai: {
     id: 'togetherai',
