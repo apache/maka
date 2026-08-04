@@ -89,13 +89,6 @@ export function buildCommandList(args: {
    */
   onOpenLocalMemoryFile?(): Promise<void> | void;
   /**
-   * PR-CMD-PALETTE-OPEN-WORKSPACE-INSTRUCTIONS-0: open the first
-   * available workspace instruction file (AGENTS.md / CLAUDE.md / …)
-   * in the OS default editor. The renderer is responsible for falling
-   * back gracefully when no available file exists.
-   */
-  onOpenWorkspaceInstructionsFile?(): Promise<void> | void;
-  /**
    * PR-CMD-PALETTE-PERMISSION-MODE-0: switch the active session's
    * permission mode from anywhere via ⌘K. Only registers when both
    * a callback and an active session id are wired. Mirrors the
@@ -393,16 +386,6 @@ export function buildCommandList(args: {
       Icon: FolderOpen,
       keywords: [...copy.staticKeywords['diag:open-local-memory']],
       run: () => args.onOpenLocalMemoryFile!(),
-    });
-  }
-  if (args.onOpenWorkspaceInstructionsFile) {
-    cmds.push({
-      id: 'diag:open-workspace-instructions',
-      kind: 'action',
-      ...staticCopy('diag:open-workspace-instructions'),
-      Icon: FolderOpen,
-      keywords: [...copy.staticKeywords['diag:open-workspace-instructions']],
-      run: () => args.onOpenWorkspaceInstructionsFile!(),
     });
   }
   if (args.onSetPermissionMode && args.activeSessionId) {

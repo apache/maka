@@ -121,7 +121,6 @@ import { registerNotificationsIpc } from './notifications-ipc-main.js';
 import { registerAppIpc } from './app-ipc-main.js';
 import { registerGitIpc } from './git-ipc-main.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
-import { registerWorkspaceInstructionsIpc } from './workspace-instructions-ipc-main.js';
 import { registerOnboardingIpc } from './onboarding-ipc-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
 import {
@@ -750,8 +749,8 @@ function ensureUsageReady(): Promise<void> {
 const previousBotStatus = new Map<BotProvider, Pick<BotStatus, 'readiness' | 'reason'>>();
 let botIncoming: ReturnType<typeof createBotIncomingMainService>;
 // Single authority for the "current project root" selection, shared across the
-// app/window, git, workspace-search, workspace-instructions, and session-entry
-// IPC surfaces. botIncoming and automation cron runs read the current
+// app/window, git, workspace-search, and session-entry IPC surfaces.
+// botIncoming and automation cron runs read the current
 // selection through the thin `resolveCurrentProjectRoot` adapter below.
 const projectRootController = createProjectRootController({
   lastProjectPathFile: join(workspaceRoot, 'last-project-path.json'),
@@ -1073,7 +1072,6 @@ function registerIpc(): void {
   registerMemoryIpc({ localMemory });
   registerConfigIpc({ connectionStore, settingsStore, credentialStore, workspaceRoot });
   registerNotificationsIpc({ settingsStore, mainWindowController, e2e: isE2e });
-  registerWorkspaceInstructionsIpc({ getCurrentProjectRoot: currentProjectRoot });
   registerWorkspaceResourcesIpc({
     workspaceRoot,
     artifactStore,

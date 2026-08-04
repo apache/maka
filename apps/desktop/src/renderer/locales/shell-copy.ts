@@ -34,7 +34,6 @@ export const STATIC_COMMAND_IDS = [
   'diag:copy-env-summary',
   'diag:test-network-proxy',
   'diag:open-local-memory',
-  'diag:open-workspace-instructions',
 ] as const;
 
 export type StaticCommandId = (typeof STATIC_COMMAND_IDS)[number];
@@ -105,17 +104,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
   ],
   'diag:test-network-proxy': ['network', 'proxy', 'test', 'ping', '网络', '代理', '测试', '连接', '诊断'],
   'diag:open-local-memory': ['memory', 'md', 'open', '记忆', '本地', '编辑', 'edit'],
-  'diag:open-workspace-instructions': [
-    'workspace',
-    'instructions',
-    'agents',
-    'claude',
-    'md',
-    'open',
-    '项目',
-    '指引',
-    '本地',
-  ],
 };
 
 type ShellCopy = {
@@ -201,10 +189,6 @@ type ShellCopy = {
     memoryOpenFailedTitle: string;
     openFailedTitle: string;
     memoryOpenFallback: string;
-    instructionsMissingTitle: string;
-    instructionsMissingDescription: string;
-    fileOpenFailed(file: string): string;
-    instructionsOpenFallback: string;
     today: string;
     reviewCopiedTitle: string;
     reviewSummary(sessions: number, requests: number): string;
@@ -526,11 +510,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '系统编辑器',
     group: '诊断',
   },
-  'diag:open-workspace-instructions': {
-    label: '打开项目指引文件',
-    hint: 'AGENTS.md / CLAUDE.md',
-    group: '诊断',
-  },
 };
 
 const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
@@ -620,11 +599,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'diag:open-local-memory': {
     label: 'Open local MEMORY.md',
     hint: 'System editor',
-    group: 'Diagnostics',
-  },
-  'diag:open-workspace-instructions': {
-    label: 'Open project instructions',
-    hint: 'AGENTS.md / CLAUDE.md',
     group: 'Diagnostics',
   },
 };
@@ -763,10 +737,6 @@ const SHELL_COPY_BY_LOCALE = {
       memoryOpenFailedTitle: '无法打开 MEMORY.md',
       openFailedTitle: '打开失败',
       memoryOpenFallback: '无法打开 MEMORY.md，请稍后重试。',
-      instructionsMissingTitle: '等待创建项目指引',
-      instructionsMissingDescription: '在 Settings · 记忆 创建 AGENTS.md 或 CLAUDE.md',
-      fileOpenFailed: (file: string) => `无法打开 ${file}`,
-      instructionsOpenFallback: '无法打开项目指引，请稍后重试。',
       today: '今天',
       reviewCopiedTitle: '已复制今日回顾为 Markdown',
       reviewSummary: (sessions: number, requests: number) => `${sessions} 个对话 · ${requests} 个请求`,
@@ -1230,10 +1200,6 @@ const SHELL_COPY_BY_LOCALE = {
       memoryOpenFailedTitle: 'Could not open MEMORY.md',
       openFailedTitle: 'Open failed',
       memoryOpenFallback: 'MEMORY.md could not be opened. Try again later.',
-      instructionsMissingTitle: 'Project instructions not created yet',
-      instructionsMissingDescription: 'Create AGENTS.md or CLAUDE.md in Settings · Memory',
-      fileOpenFailed: (file: string) => `Could not open ${file}`,
-      instructionsOpenFallback: 'Project instructions could not be opened. Try again later.',
       today: 'Today',
       reviewCopiedTitle: "Today's review copied as Markdown",
       reviewSummary: (sessions: number, requests: number) => `${sessions} conversations · ${requests} requests`,

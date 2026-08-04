@@ -113,27 +113,6 @@ export interface OnboardingSnapshot {
   defaultSlug: string | null;
 }
 
-export type WorkspaceInstructionFileStatus =
-  | 'available'
-  | 'missing'
-  | 'blocked'
-  | 'empty'
-  | 'unreadable';
-
-export interface WorkspaceInstructionFileState {
-  file: string;
-  status: WorkspaceInstructionFileStatus;
-  chars: number;
-  truncated: boolean;
-}
-
-export interface WorkspaceInstructionsState {
-  files: WorkspaceInstructionFileState[];
-  detectedCount: number;
-  fileCharLimit: number;
-  promptCharLimit: number;
-}
-
 export type RendererIngestInput =
   | { approvalId: string; name: string; mimeType?: string }
   | { file: File };
@@ -448,11 +427,6 @@ export interface MakaBridge {
     openFile(): Promise<{ ok: true } | { ok: false; message: string }>;
     openLatestBackup(): Promise<{ ok: true } | { ok: false; message: string }>;
     openBackup(kind: 'save' | 'reset' | 'restore'): Promise<{ ok: true } | { ok: false; message: string }>;
-  };
-  workspaceInstructions: {
-    getState(): Promise<WorkspaceInstructionsState>;
-    openFile(file: string): Promise<{ ok: true } | { ok: false; message: string }>;
-    createFile(file: string): Promise<{ ok: true } | { ok: false; message: string }>;
   };
   attachments: {
     pickFiles(): Promise<

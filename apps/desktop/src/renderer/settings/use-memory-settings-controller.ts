@@ -24,7 +24,7 @@ export interface MemoryDocumentControllerProps {
   onReloadSettings(): Promise<void>;
 }
 
-/** Owns the MEMORY.md document lifecycle; workspace instructions have a separate authority. */
+/** Owns the MEMORY.md document lifecycle. */
 export function useMemoryDocumentController(props: MemoryDocumentControllerProps) {
   const locale = useUiLocale();
   const copy = getMemorySettingsCopy(locale);

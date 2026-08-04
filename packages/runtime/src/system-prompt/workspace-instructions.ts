@@ -6,10 +6,9 @@ import { isPathInside } from '../path-containment.js';
  * Read-only workspace-instruction prompt fragment.
  *
  * Reads the cwd's AGENTS.md / CLAUDE.md / GEMINI.md and renders a
- * `<workspace-instructions>` block for the system prompt. The file-management
- * surface (open / create / template / path-safety helpers) stays with the
- * desktop app; this module owns only the prompt-builder and the read-only
- * scan state shared by both the desktop UI and headless / CLI entry points.
+ * `<workspace-instructions>` block for the system prompt. Project files remain
+ * owned by the project itself; this module is the shared read-only boundary for
+ * desktop, headless, and CLI entry points.
  *
  * Moved here from apps/desktop/src/main/workspace-instructions.ts so the CLI/TUI
  * can inject the same project-instruction fragment as the desktop app without
@@ -24,29 +23,7 @@ export const MAX_WORKSPACE_INSTRUCTIONS_PROMPT_CHARS = 14000;
 interface WorkspaceInstruction {
   file: string;
   text: string;
-  chars: number;
   truncated: boolean;
-}
-
-export type WorkspaceInstructionFileStatus =
-  | 'available'
-  | 'missing'
-  | 'blocked'
-  | 'empty'
-  | 'unreadable';
-
-export interface WorkspaceInstructionFileState {
-  file: string;
-  status: WorkspaceInstructionFileStatus;
-  chars: number;
-  truncated: boolean;
-}
-
-export interface WorkspaceInstructionsState {
-  files: WorkspaceInstructionFileState[];
-  detectedCount: number;
-  fileCharLimit: number;
-  promptCharLimit: number;
 }
 
 export async function buildWorkspaceInstructionsPromptFragment(
@@ -80,80 +57,36 @@ export async function buildWorkspaceInstructionsPromptFragment(
   return parts.join('\n');
 }
 
-export async function getWorkspaceInstructionsState(
-  cwd: string,
-): Promise<WorkspaceInstructionsState> {
-  const files = (await scanWorkspaceInstructions(cwd)).map(
-    ({ file, status, chars, truncated }) => ({
-      file,
-      status,
-      chars,
-      truncated,
-    }),
-  );
-  return {
-    files,
-    detectedCount: files.filter((file) => file.status === 'available').length,
-    fileCharLimit: MAX_WORKSPACE_INSTRUCTION_FILE_CHARS,
-    promptCharLimit: MAX_WORKSPACE_INSTRUCTIONS_PROMPT_CHARS,
-  };
-}
-
 async function readWorkspaceInstructions(cwd: string): Promise<WorkspaceInstruction[]> {
-  return (await scanWorkspaceInstructions(cwd)).filter(
-    (instruction): instruction is WorkspaceInstruction & { status: 'available' } =>
-      instruction.status === 'available',
-  );
-}
-
-async function scanWorkspaceInstructions(
-  cwd: string,
-): Promise<Array<WorkspaceInstruction & { status: WorkspaceInstructionFileStatus }>> {
   let root: string;
   try {
     root = await realpath(cwd);
   } catch {
-    return WORKSPACE_INSTRUCTION_FILES.map((file) => ({
-      file,
-      text: '',
-      chars: 0,
-      truncated: false,
-      status: 'missing',
-    }));
+    return [];
   }
 
-  const out: Array<WorkspaceInstruction & { status: WorkspaceInstructionFileStatus }> = [];
+  const out: WorkspaceInstruction[] = [];
   for (const file of WORKSPACE_INSTRUCTION_FILES) {
     const candidate = join(root, file);
     let resolved: string;
     try {
       resolved = await realpath(candidate);
     } catch {
-      out.push({ file, text: '', chars: 0, truncated: false, status: 'missing' });
       continue;
     }
-    if (!isPathInside(root, resolved)) {
-      out.push({ file, text: '', chars: 0, truncated: false, status: 'blocked' });
-      continue;
-    }
+    if (!isPathInside(root, resolved)) continue;
     try {
       const raw = await readFile(resolved, 'utf8');
       const cleaned = cleanPromptText(raw.trim());
-      if (!cleaned) {
-        out.push({ file, text: '', chars: 0, truncated: false, status: 'empty' });
-        continue;
-      }
-      const text = truncateCodepoints(cleaned, MAX_WORKSPACE_INSTRUCTION_FILE_CHARS);
+      if (!cleaned) continue;
       const chars = Array.from(cleaned).length;
       out.push({
         file,
-        text,
-        chars,
-        truncated: chars > Array.from(text).length,
-        status: 'available',
+        text: truncateCodepoints(cleaned, MAX_WORKSPACE_INSTRUCTION_FILE_CHARS),
+        truncated: chars > MAX_WORKSPACE_INSTRUCTION_FILE_CHARS,
       });
     } catch {
-      out.push({ file, text: '', chars: 0, truncated: false, status: 'unreadable' });
+      continue;
     }
   }
   return out;

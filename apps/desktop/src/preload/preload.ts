@@ -7,7 +7,6 @@ import type {
   PermissionOverlayStartResult,
   RendererIngestInput,
   AppUpdateStatus,
-  WorkspaceInstructionsState,
 } from './bridge-contract.js';
 import type {
   ConnectionEvent,
@@ -567,17 +566,6 @@ const makaBridge = {
     },
     openBackup(kind: 'save' | 'reset' | 'restore'): Promise<{ ok: true } | { ok: false; message: string }> {
       return ipcRenderer.invoke('memory:openBackup', kind);
-    },
-  },
-  workspaceInstructions: {
-    getState(): Promise<WorkspaceInstructionsState> {
-      return ipcRenderer.invoke('workspaceInstructions:getState');
-    },
-    openFile(file: string): Promise<{ ok: true } | { ok: false; message: string }> {
-      return ipcRenderer.invoke('workspaceInstructions:openFile', file);
-    },
-    createFile(file: string): Promise<{ ok: true } | { ok: false; message: string }> {
-      return ipcRenderer.invoke('workspaceInstructions:createFile', file);
     },
   },
   attachments: {

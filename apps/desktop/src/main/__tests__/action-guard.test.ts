@@ -3,8 +3,7 @@
  * multi-latch sibling of useOAuthLoginFlow's one-shot action guard, consumed
  * through useKeyedActionGuard by Settings components that hold several
  * independent action latches at once (the connection detail sheet's mutually
- * excluding actions, the memory / workspace-instructions controllers' per-row
- * action keys).
+ * excluding actions and the memory controller's per-row action keys).
  *
  * The hook itself needs a DOM + React to render; the guard is pulled out
  * precisely so the safety behaviors the pages rely on — synchronous

@@ -1475,15 +1475,7 @@ export type {
 // ───────────────────────────────────────────────────────────────────────────
 export {
   buildWorkspaceInstructionsPromptFragment,
-  getWorkspaceInstructionsState,
   WORKSPACE_INSTRUCTION_FILES,
-  MAX_WORKSPACE_INSTRUCTION_FILE_CHARS,
-  MAX_WORKSPACE_INSTRUCTIONS_PROMPT_CHARS,
-} from './system-prompt/workspace-instructions.js';
-export type {
-  WorkspaceInstructionFileStatus,
-  WorkspaceInstructionFileState,
-  WorkspaceInstructionsState,
 } from './system-prompt/workspace-instructions.js';
 export {
   buildPersonalizationPromptFragment,

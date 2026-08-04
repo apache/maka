@@ -217,30 +217,6 @@ export function buildAppShellCommandList(
         );
       }
     },
-    onOpenWorkspaceInstructionsFile: async () => {
-      const { toastApi } = optionsRef.current;
-      try {
-        // PR-CMD-PALETTE-OPEN-WORKSPACE-INSTRUCTIONS-0: open the
-        // first available workspace instruction file. If none are
-        // available, surface a hint so the user knows where to
-        // create one rather than getting a silent no-op.
-        const state = await window.maka.workspaceInstructions.getState();
-        const available = state.files.find((f) => f.status === 'available');
-        if (!available) {
-          toastApi.info(copy.instructionsMissingTitle, copy.instructionsMissingDescription);
-          return;
-        }
-        const result = await window.maka.workspaceInstructions.openFile(available.file);
-        if (!result.ok) {
-          toastApi.error(copy.fileOpenFailed(available.file), result.message);
-        }
-      } catch (err) {
-        toastApi.error(
-          copy.openFailedTitle,
-          commandPaletteActionErrorMessage(err, copy.instructionsOpenFallback, options.uiLocale),
-        );
-      }
-    },
     onSetPermissionMode: options.canSetPermissionMode
       ? (mode) => optionsRef.current.setPermissionMode(mode)
       : undefined,
