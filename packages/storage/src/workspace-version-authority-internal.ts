@@ -1,4 +1,8 @@
-import type { WorkspaceBaselineAuthorityInput, WorkspaceBaselineCommitResult } from '@maka/core';
+import type {
+  WorkspaceBaselineAuthorityInput,
+  WorkspaceBaselineCommitResult,
+  WorkspaceHeadRecordV1,
+} from '@maka/core';
 import { lstatSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
@@ -9,9 +13,14 @@ type WorkspaceBaselineAuthorityWriter = (
   rootId: string,
 ) => Promise<WorkspaceBaselineCommitResult>;
 type WorkspaceStorageRootBinder = (rootId: string) => void;
+type WorkspaceHeadReader = (
+  workspaceId: string,
+  workspaceEpochId: string,
+) => Promise<WorkspaceHeadRecordV1 | undefined>;
 
 interface WorkspaceBaselineAuthorityRegistration {
   readonly writer: WorkspaceBaselineAuthorityWriter;
+  readonly readHead: WorkspaceHeadReader;
   readonly bindStorageRoot: WorkspaceStorageRootBinder;
   readonly databasePath: string;
   readonly databaseFileIdentity?: string;
@@ -28,6 +37,7 @@ export function registerWorkspaceBaselineAuthorityWriterInternal(
   databasePath: string,
   writer: WorkspaceBaselineAuthorityWriter,
   bindStorageRoot: WorkspaceStorageRootBinder,
+  readHead: WorkspaceHeadReader,
 ): void {
   if (workspaceBaselineAuthorityWriters.has(store)) {
     throw new Error('Workspace baseline authority writer is already registered');
@@ -35,10 +45,21 @@ export function registerWorkspaceBaselineAuthorityWriterInternal(
   const resolvedDatabasePath = resolve(databasePath);
   workspaceBaselineAuthorityWriters.set(store, {
     writer,
+    readHead,
     bindStorageRoot,
     databasePath: resolvedDatabasePath,
     databaseFileIdentity: captureRegularFileIdentity(resolvedDatabasePath),
   });
+}
+
+export function readWorkspaceHeadInternal(
+  store: object,
+  workspaceId: string,
+  workspaceEpochId: string,
+): Promise<WorkspaceHeadRecordV1 | undefined> {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Workspace baseline authority reader is unavailable');
+  return registration.readHead(workspaceId, workspaceEpochId);
 }
 
 /**

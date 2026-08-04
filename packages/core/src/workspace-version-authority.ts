@@ -112,14 +112,14 @@ export interface WorkspaceVersionRecordV1 extends WorkspaceBaselineAcceptedV1 {
 }
 
 export interface WorkspaceHeadRecordV1 {
-  repositoryId: string;
-  workspaceId: string;
-  workspaceEpochId: string;
-  workspaceVersionId: string;
-  acceptedEventId: string;
-  commitOid: string;
-  treeOid: string;
-  revision: number;
+  readonly repositoryId: string;
+  readonly workspaceId: string;
+  readonly workspaceEpochId: string;
+  readonly workspaceVersionId: string;
+  readonly acceptedEventId: string;
+  readonly commitOid: string;
+  readonly treeOid: string;
+  readonly revision: number;
 }
 
 export interface WorkspaceBaselineCommitResult {

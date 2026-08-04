@@ -8,17 +8,37 @@ export interface ManagedWorkspaceExecutionHandle {
   readonly kind: 'managed_workspace_execution_handle_v1';
 }
 
+export interface ManagedWorkspaceExecutionScope {
+  readonly kind: 'managed_workspace_execution_scope_v1';
+}
+
 export interface ManagedWorkspaceExecutionAuthorityStateInternal {
   readonly store: RuntimeWorkspaceVersionAuthorityStore;
-  readonly binding: ManagedWorkspaceBinding;
-  readonly receipt: ManagedWorkspaceBaselineReceiptV1;
-  readonly head: WorkspaceHeadRecordV1;
+  readonly binding: Readonly<ManagedWorkspaceBinding>;
+  readonly receipt: Readonly<ManagedWorkspaceBaselineReceiptV1>;
+  readonly head: Readonly<WorkspaceHeadRecordV1>;
 }
 
 const states = new WeakMap<
   object,
   ManagedWorkspaceExecutionAuthorityStateInternal & {
     readonly ownerToken: object;
+  }
+>();
+
+export interface ManagedWorkspaceExecutionScopeStateInternal {
+  readonly provisioning: 'canonical_tree_only_v1';
+  readonly workspaceEffect: 'none';
+  readonly cwd: string;
+  readonly binding: Readonly<ManagedWorkspaceBinding>;
+  readonly head: Readonly<WorkspaceHeadRecordV1>;
+}
+
+const scopes = new WeakMap<
+  object,
+  ManagedWorkspaceExecutionScopeStateInternal & {
+    readonly ownerToken: object;
+    active: boolean;
   }
 >();
 
@@ -48,5 +68,35 @@ export function inspectManagedWorkspaceExecutionHandleInternal(
 ): ManagedWorkspaceExecutionAuthorityStateInternal {
   const state = states.get(handle);
   if (!state) throw new Error('Managed workspace execution handle is invalid');
+  return state;
+}
+
+export function issueManagedWorkspaceExecutionScopeInternal(
+  ownerToken: object,
+  state: ManagedWorkspaceExecutionScopeStateInternal,
+): ManagedWorkspaceExecutionScope {
+  const scope = Object.freeze({ kind: 'managed_workspace_execution_scope_v1' as const });
+  scopes.set(scope, { ...state, ownerToken, active: true });
+  return scope;
+}
+
+export function revokeManagedWorkspaceExecutionScopeInternal(
+  ownerToken: object,
+  scope: ManagedWorkspaceExecutionScope,
+): void {
+  const state = scopes.get(scope);
+  if (!state || state.ownerToken !== ownerToken) {
+    throw new Error('Managed workspace execution scope is invalid for this owner');
+  }
+  state.active = false;
+}
+
+/** Package-internal active-scope evidence access for storage contract tests. */
+export function inspectManagedWorkspaceExecutionScopeInternal(
+  scope: ManagedWorkspaceExecutionScope,
+): ManagedWorkspaceExecutionScopeStateInternal {
+  const state = scopes.get(scope);
+  if (!state) throw new Error('Managed workspace execution scope is invalid');
+  if (!state.active) throw new Error('Managed workspace execution scope has expired');
   return state;
 }

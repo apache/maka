@@ -21,7 +21,10 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, before, test } from 'node:test';
 import { openManagedWorkspaceOwner } from '../managed-workspace-owner.js';
-import { inspectManagedWorkspaceExecutionHandleInternal } from '../managed-workspace-execution-authority-internal.js';
+import {
+  inspectManagedWorkspaceExecutionHandleInternal,
+  inspectManagedWorkspaceExecutionScopeInternal,
+} from '../managed-workspace-execution-authority-internal.js';
 import { createGitWorkspaceService } from '../git-workspace-service.js';
 import * as publicStorage from '../index.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
@@ -60,6 +63,8 @@ test('does not expose artifact-only workspace creation through the public storag
   assert.equal('createGitWorkspaceService' in publicStorage, false);
   assert.equal('issueManagedWorkspaceExecutionHandleInternal' in publicStorage, false);
   assert.equal('inspectManagedWorkspaceExecutionHandleInternal' in publicStorage, false);
+  assert.equal('issueManagedWorkspaceExecutionScopeInternal' in publicStorage, false);
+  assert.equal('inspectManagedWorkspaceExecutionScopeInternal' in publicStorage, false);
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
@@ -992,7 +997,8 @@ test('reissues execution authority after a real process crash during admission v
         openRequest(sourceRoot),
       );
       let observedCwd: string | undefined;
-      await owner.withManagedWorkspaceExecution(reopened.executionHandle, async (context) => {
+      await owner.withManagedWorkspaceExecution(reopened.executionHandle, async (scope) => {
+        const context = inspectManagedWorkspaceExecutionScopeInternal(scope);
         observedCwd = context.cwd;
         assert.equal(await readFile(join(context.cwd, 'tracked.txt'), 'utf8'), 'tracked\n');
       });

@@ -61,7 +61,8 @@ owner 的 public surface 开放两个连续、不可绕过的 workspace admissio
 1. `openManagedWorkspaceBaseline(store, identity)` 从 eligible clean source 创建/exact-adopt artifact，
    持久化并复验 receipt，再由 storage-internal writer 接受 canonical baseline，返回 owner-bound execution handle；
 2. `withManagedWorkspaceExecution(handle, callback)` 在每次执行前重新证明 canonical head、receipt、HEAD/tree、
-   ownership 与 root identity，只在 drain-managed callback 中发布 cwd。
+   ownership 与 root identity，只在 drain-managed callback 中签发可撤销 opaque scope；raw cwd 不进入
+   public API。
 
 artifact-only create/open 和 `GitWorkspaceService` factory 不从 package root 导出。调用者不能在 SQLite
 acceptance 前取得 `worktreePath` 或裸 `ManagedWorkspaceBinding`。入口返回前必须验证 worktree、index、

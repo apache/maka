@@ -939,11 +939,13 @@ export class SqliteRuntimeStore
   }
 
   private registerWorkspaceBaselineAuthorityWriter(databasePath: string): void {
+    const readWorkspaceHead = this.readWorkspaceHead.bind(this);
     registerWorkspaceBaselineAuthorityWriterInternal(
       this,
       databasePath,
       (input, rootId) => this.#commitWorkspaceBaseline(input, rootId),
       (rootId) => this.#bindWorkspaceStorageRoot(rootId),
+      readWorkspaceHead,
     );
   }
 
