@@ -75,6 +75,7 @@ import { SessionAdmissionGate } from '../../server/session-admission-gate.js';
 import { HostTaskLedgerCoordinator } from '../../server/task-ledger-coordinator.js';
 import { continuationSafetyDigest } from '../../server/root-turn-coordinator.js';
 import { FramedTransport } from '../../transport/framed-transport.js';
+import { removePosixEndpointDirectories } from './endpoint-hygiene.js';
 
 export const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -1414,19 +1415,6 @@ async function acquireReader(capability: StorageRootCapability<'interactive'>) {
       throw new Error('Interactive root reader could not acquire the released root');
     await sleep(20);
   }
-}
-
-async function removePosixEndpointDirectories(rootId: string): Promise<void> {
-  if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
-  const prefix = `m-${process.getuid()}-${Buffer.from(rootId, 'hex').toString('base64url')}-`;
-  const entries = await readdir('/tmp', { withFileTypes: true });
-  await Promise.all(
-    entries.map(async (entry) => {
-      if (entry.isDirectory() && entry.name.startsWith(prefix)) {
-        await rm(join('/tmp', entry.name), { recursive: true, force: true });
-      }
-    }),
-  );
 }
 
 export function withTimeout<T>(

@@ -32,6 +32,7 @@ import {
   type SubscriptionFrame,
 } from '../protocol/index.js';
 import { FramedTransport } from '../transport/framed-transport.js';
+import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 
 const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -1154,19 +1155,6 @@ function waitForExit(
     child.once('error', onError);
     child.once('exit', onExit);
   });
-}
-
-async function removePosixEndpointDirectories(rootId: string): Promise<void> {
-  if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
-  const prefix = `m-${process.getuid()}-${Buffer.from(rootId, 'hex').toString('base64url')}-`;
-  const entries = await readdir('/tmp', { withFileTypes: true });
-  await Promise.all(
-    entries.map(async (entry) => {
-      if (entry.isDirectory() && entry.name.startsWith(prefix)) {
-        await rm(join('/tmp', entry.name), { recursive: true, force: true });
-      }
-    }),
-  );
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

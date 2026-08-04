@@ -17,6 +17,7 @@ import {
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
+import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import {
   MEMORY_DOCUMENT_CHUNK_MAX_BYTES,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -474,19 +475,6 @@ function waitForExitResult(
     child.once('error', onError);
     child.once('exit', onExit);
   });
-}
-
-async function removePosixEndpointDirectories(rootId: string): Promise<void> {
-  if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
-  const prefix = `m-${process.getuid()}-${Buffer.from(rootId, 'hex').toString('base64url')}-`;
-  const entries = await readdir('/tmp', { withFileTypes: true });
-  await Promise.all(
-    entries.map(async (entry) => {
-      if (entry.isDirectory() && entry.name.startsWith(prefix)) {
-        await rm(join('/tmp', entry.name), { recursive: true, force: true });
-      }
-    }),
-  );
 }
 
 function revision(bytes: Uint8Array): `sha256:${string}` {

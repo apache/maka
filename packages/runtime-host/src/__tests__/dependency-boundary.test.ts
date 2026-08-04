@@ -17,6 +17,7 @@ const allowedHostExternalImports = new Set([
   'node:crypto',
   'node:fs/promises',
   'node:net',
+  'node:os',
   'node:path',
   'node:perf_hooks',
   'node:url',
