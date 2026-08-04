@@ -77,9 +77,11 @@ const siliconflowModelIds = toolCallingModelIds(
   GENERATED_MODELS_DEV_METADATA.siliconflow,
   ['moonshotai/Kimi-K2.6'],
 );
-const minimaxPlanModelIds = toolCallingModelIds('MiniMax', GENERATED_MODELS_DEV_METADATA.MiniMax, [
-  'MiniMax-M3',
-]);
+const minimaxPlanModelIds = toolCallingModelIds(
+  'MiniMax',
+  GENERATED_MODELS_DEV_METADATA['minimax-coding-plan'],
+  ['MiniMax-M3'],
+);
 
 const xai = GENERATED_MODELS_DEV_PROVIDER_FACTS.xai;
 if (xai.id !== 'xai') throw new Error('models.dev xAI provider facts are missing stable id xai');
@@ -322,7 +324,9 @@ const stepfunStepPlanModelIds = [
 ] as const;
 const stepfunStepPlan = GENERATED_MODELS_DEV_PROVIDER_FACTS['stepfun-step-plan'];
 if (stepfunStepPlan.id !== 'stepfun-step-plan') {
-  throw new Error('models.dev StepFun Step Plan provider facts are missing stable id stepfun-step-plan');
+  throw new Error(
+    'models.dev StepFun Step Plan provider facts are missing stable id stepfun-step-plan',
+  );
 }
 for (const id of stepfunStepPlanModelIds.slice(0, 3)) {
   if (!GENERATED_MODELS_DEV_METADATA['stepfun-step-plan'][id]?.capabilities?.functionCalling) {
@@ -633,6 +637,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://console.anthropic.com/settings/keys',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.anthropic.id,
     readyOrder: 1,
     catalogOrder: 9,
     recommendedOrder: 3,
@@ -652,6 +657,7 @@ const providerRegistry = {
     catalogGroup: 'plans',
     catalogBadge: 'Coding',
     signupUrl: 'https://www.kimi.com/code/console',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['kimi-coding-plan'].id,
     readyOrder: 15,
     catalogOrder: 1,
     recommendedOrder: 5,
@@ -671,7 +677,7 @@ const providerRegistry = {
     catalogGroup: 'plans',
     catalogBadge: 'Coding',
     signupUrl: 'https://platform.minimax.io/subscribe/coding-plan',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.MiniMax.id,
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['minimax-coding-plan'].id,
     readyOrder: 17,
     catalogOrder: 2,
   },
@@ -768,6 +774,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://platform.openai.com/api-keys',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.openai.id,
     readyOrder: 2,
     catalogOrder: 10,
     recommendedOrder: 2,
@@ -787,6 +794,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://aistudio.google.com/app/apikey',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.google.id,
     readyOrder: 3,
     catalogOrder: 11,
     recommendedOrder: 4,
@@ -806,6 +814,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://platform.deepseek.com/api_keys',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.deepseek.id,
     readyOrder: 4,
     catalogOrder: 3,
     recommendedOrder: 6,
@@ -844,6 +853,7 @@ const providerRegistry = {
     catalogGroup: 'plans',
     catalogBadge: 'Coding',
     signupUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['zai-coding-plan'].id,
     readyOrder: 6,
     catalogOrder: 5,
   },
@@ -862,6 +872,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.MiniMax.id,
     readyOrder: 7,
     catalogOrder: 6,
   },
@@ -880,6 +891,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['MiniMax-cn'].id,
     readyOrder: 8,
     catalogOrder: 7,
   },
@@ -1779,6 +1791,7 @@ const providerRegistry = {
     modelDiscovery: { kind: 'protocol' },
     category: 'oauth',
     catalogBadge: 'Account',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['gemini-cli'].id,
   },
 } satisfies Record<string, ProviderDefaults>;
 

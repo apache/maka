@@ -23,6 +23,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
   | 'kimi-coding-plan'
   | 'MiniMax'
   | 'MiniMax-cn'
+  | 'minimax-coding-plan'
   | 'mistral'
   | 'moonshot'
   | 'nvidia'
@@ -4319,6 +4320,72 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       displayName: 'MiniMax-M3',
       lifecycle: 'active',
       docsUrl: 'https://platform.minimaxi.com/docs/guides/quickstart',
+      contextWindow: 1000000,
+      maxOutputTokens: 128000,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+  },
+  'minimax-coding-plan': {
+    'MiniMax-M2': {
+      displayName: 'MiniMax-M2',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.minimax.io/docs/token-plan/intro',
+      contextWindow: 196608,
+      maxOutputTokens: 128000,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'MiniMax-M2.1': {
+      displayName: 'MiniMax-M2.1',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.minimax.io/docs/token-plan/intro',
+      contextWindow: 204800,
+      maxOutputTokens: 131072,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'MiniMax-M2.5': {
+      displayName: 'MiniMax-M2.5',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.minimax.io/docs/token-plan/intro',
+      contextWindow: 204800,
+      maxOutputTokens: 131072,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'MiniMax-M2.5-highspeed': {
+      displayName: 'MiniMax-M2.5-highspeed',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.minimax.io/docs/token-plan/intro',
+      contextWindow: 204800,
+      maxOutputTokens: 131072,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'MiniMax-M2.7': {
+      displayName: 'MiniMax-M2.7',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.minimax.io/docs/token-plan/intro',
+      contextWindow: 204800,
+      maxOutputTokens: 131072,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'MiniMax-M2.7-highspeed': {
+      displayName: 'MiniMax-M2.7-highspeed',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.minimax.io/docs/token-plan/intro',
+      contextWindow: 204800,
+      maxOutputTokens: 131072,
+      capabilities: { vision: false, reasoning: true, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'MiniMax-M3': {
+      displayName: 'MiniMax-M3',
+      lifecycle: 'active',
+      docsUrl: 'https://platform.minimax.io/docs/token-plan/intro',
       contextWindow: 1000000,
       maxOutputTokens: 128000,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
@@ -16609,6 +16676,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
   | 'kimi-coding-plan'
   | 'MiniMax'
   | 'MiniMax-cn'
+  | 'minimax-coding-plan'
   | 'mistral'
   | 'moonshot'
   | 'nvidia'
@@ -16662,6 +16730,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
   'kimi-coding-plan': {},
   MiniMax: {},
   'MiniMax-cn': {},
+  'minimax-coding-plan': {},
   mistral: {},
   moonshot: {},
   nvidia: {},
@@ -16858,6 +16927,7 @@ export const GENERATED_MODELS_DEV_PROVIDER_FACTS: Record<
   | 'kimi-coding-plan'
   | 'MiniMax'
   | 'MiniMax-cn'
+  | 'minimax-coding-plan'
   | 'mistral'
   | 'moonshot'
   | 'nvidia'
@@ -16982,6 +17052,12 @@ export const GENERATED_MODELS_DEV_PROVIDER_FACTS: Record<
     name: 'MiniMax (minimaxi.com)',
     api: 'https://api.minimaxi.com/anthropic/v1',
     doc: 'https://platform.minimaxi.com/docs/guides/quickstart',
+  },
+  'minimax-coding-plan': {
+    id: 'minimax-coding-plan',
+    name: 'MiniMax Token Plan (minimax.io)',
+    api: 'https://api.minimax.io/anthropic/v1',
+    doc: 'https://platform.minimax.io/docs/token-plan/intro',
   },
   mistral: {
     id: 'mistral',

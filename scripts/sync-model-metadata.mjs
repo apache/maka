@@ -24,6 +24,7 @@ const PROVIDERS = {
   'kimi-coding-plan': 'kimi-for-coding',
   MiniMax: 'minimax',
   'MiniMax-cn': 'minimax-cn',
+  'minimax-coding-plan': 'minimax-coding-plan',
   mistral: 'mistral',
   moonshot: 'moonshotai-cn',
   nvidia: 'nvidia',

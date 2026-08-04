@@ -114,15 +114,11 @@ describe('model-metadata vision capability', () => {
     assert.equal(kimi.maxOutputTokens, 32_000);
   });
 
-  it('reuses MiniMax snapshot facts for the Coding Plan access path', () => {
-    assert.deepEqual(
-      lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3'),
-      lookupModelMetadata('MiniMax', 'MiniMax-M3'),
-    );
-    assert.equal(
-      lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3').capabilities?.vision,
-      true,
-    );
+  it('publishes MiniMax Coding Plan snapshot facts with its own access-path docs', () => {
+    const metadata = lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3');
+    assert.equal(metadata.capabilities?.vision, true);
+    assert.equal(metadata.thinkingOptions?.toggle, true);
+    assert.equal(metadata.docsUrl, 'https://platform.minimax.io/docs/token-plan/intro');
   });
 
   it('uses synchronized facts while preserving access-path overrides', () => {
