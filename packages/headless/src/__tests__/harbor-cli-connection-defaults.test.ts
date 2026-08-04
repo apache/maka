@@ -50,11 +50,11 @@ describe('applyConnectionDefaults', () => {
     ],
   });
 
-  test('injects the complete default connection and colocated credentials path', () => {
+  test('injects the complete default connection and colocated credentials path', async () => {
     const connectionsPath = makeTempConnections(defaultDocument());
     const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
 
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
 
     assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
@@ -62,7 +62,7 @@ describe('applyConnectionDefaults', () => {
     assert.equal(env.MAKA_CREDENTIALS_PATH, join(dirname(connectionsPath), 'credentials.json'));
   });
 
-  test('does not override explicit model, provider, or connection authority', () => {
+  test('does not override explicit model, provider, or connection authority', async () => {
     const connectionsPath = makeTempConnections(defaultDocument());
 
     for (const [name, value] of [
@@ -77,13 +77,13 @@ describe('applyConnectionDefaults', () => {
       };
       const before = { ...env };
 
-      applyConnectionDefaults(env);
+      await applyConnectionDefaults(env);
 
       assert.deepEqual(env, before, name);
     }
   });
 
-  test('ignores missing, malformed, disabled, incomplete, or unsupported connection sources', () => {
+  test('ignores missing, malformed, disabled, incomplete, or unsupported connection sources', async () => {
     const malformedDir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
     cleanupDirs.push(malformedDir);
     const malformedPath = join(malformedDir, 'llm-connections.json');
@@ -120,13 +120,13 @@ describe('applyConnectionDefaults', () => {
     for (const connectionsPath of sources) {
       const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
 
-      applyConnectionDefaults(env);
+      await applyConnectionDefaults(env);
 
       assert.deepEqual(env, { MAKA_CONNECTIONS_PATH: connectionsPath }, connectionsPath);
     }
   });
 
-  test('leaves MAKA_BASE_URL unset when the connection has no base URL', () => {
+  test('leaves MAKA_BASE_URL unset when the connection has no base URL', async () => {
     const connectionsPath = makeTempConnections({
       defaultSlug: 'deepseek-default',
       connections: [
@@ -140,28 +140,28 @@ describe('applyConnectionDefaults', () => {
     });
     const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
 
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
 
     assert.equal(env.MAKA_MODEL, 'deepseek/deepseek-v4-flash');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'deepseek-default');
     assert.equal(env.MAKA_BASE_URL, undefined);
   });
 
-  test('preserves an explicit base URL while filling the remaining defaults', () => {
+  test('preserves an explicit base URL while filling the remaining defaults', async () => {
     const connectionsPath = makeTempConnections(defaultDocument());
     const env: Record<string, string | undefined> = {
       MAKA_CONNECTIONS_PATH: connectionsPath,
       MAKA_BASE_URL: 'http://custom-url:9999',
     };
 
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
 
     assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
     assert.equal(env.MAKA_BASE_URL, 'http://custom-url:9999');
   });
 
-  test('skips defaults for fake and pi-agent backends', () => {
+  test('skips defaults for fake and pi-agent backends', async () => {
     const connectionsPath = makeTempConnections(defaultDocument());
 
     for (const backend of ['fake', 'pi-agent']) {
@@ -171,13 +171,13 @@ describe('applyConnectionDefaults', () => {
       };
       const before = { ...env };
 
-      applyConnectionDefaults(env);
+      await applyConnectionDefaults(env);
 
       assert.deepEqual(env, before, backend);
     }
   });
 
-  test('normalizes the legacy codex-subscription provider type', () => {
+  test('normalizes the legacy codex-subscription provider type', async () => {
     const connectionsPath = makeTempConnections({
       defaultSlug: 'codex-subscription',
       connections: [
@@ -192,7 +192,7 @@ describe('applyConnectionDefaults', () => {
     });
     const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
 
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
 
     assert.equal(env.MAKA_MODEL, 'openai-codex/gpt-5.6-sol');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'codex-subscription');

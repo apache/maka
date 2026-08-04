@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { BackendKind, ProviderType } from '@maka/core';
-import { PROVIDER_DEFAULTS, normalizeProviderType } from '@maka/core';
-import { resolveMakaWorkspaceRoot } from '@maka/storage';
+import { PROVIDER_DEFAULTS } from '@maka/core';
+import { createConnectionStore, resolveMakaWorkspaceRoot } from '@maka/storage';
 import type { Config, Task } from './contracts.js';
 import {
   type HarborCellExecutionIdentity,
@@ -397,7 +396,7 @@ export async function resolveHarborRunOptions(
   // only covers the MAKA_BACKEND env-var path, not the flag path.
   const backend = backendKind(valueOf(parsed, env, 'backend', 'MAKA_BACKEND') ?? 'ai-sdk');
   if (backend === 'ai-sdk') {
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
   }
   applyApiKeyFile(parsed, env);
   const mode = harborMode(valueOf(parsed, env, 'mode', 'MAKA_HARBOR_MODE') ?? 'task-run');
@@ -827,52 +826,62 @@ function backendKind(value: string): BackendKind {
  * provider, model, slug, and baseUrl into env so downstream code resolves
  * them naturally.
  *
+ * Routed through `@maka/storage`'s ConnectionStore authority rather than
+ * re-parsing llm-connections.json inline: the store owns the file schema,
+ * the v1→v2 migration (which normalizes legacy persisted providerType ids
+ * like codex-subscription → openai-codex on read), and the default-slug
+ * selection rules (a default that is disabled or has no defaultModel reads
+ * back as no default). The inline reader this replaced had drifted from all
+ * three (#1404: "route through ... ConnectionStore authority").
+ *
  * Guards:
  * - Skip if any explicit model/provider/connection input is already set
  * - Skip for non-ai-sdk backends (fake, pi-agent)
  * - Validate providerType against PROVIDER_DEFAULTS before writing
  * - Only write MAKA_LLM_CONNECTION_SLUG / MAKA_BASE_URL if they are undefined
  */
-export function applyConnectionDefaults(env: Record<string, string | undefined>): void {
+export async function applyConnectionDefaults(
+  env: Record<string, string | undefined>,
+): Promise<void> {
   // Skip if any explicit model/provider/connection input is set
   if (env.MAKA_MODEL || env.HARBOR_MODEL || env.MAKA_PROVIDER || env.MAKA_LLM_CONNECTION_SLUG)
     return;
   // Skip for non-ai-sdk backends
   if (env.MAKA_BACKEND === 'fake' || env.MAKA_BACKEND === 'pi-agent') return;
 
-  const connectionsPath = env.MAKA_CONNECTIONS_PATH ?? resolveDefaultConnectionsPath();
+  // MAKA_CONNECTIONS_PATH points at the connections file directly (back-compat
+  // with tests and overrides); the store takes the containing workspace root.
+  // When unset, fall back to the shared workspace-path authority.
+  const root = env.MAKA_CONNECTIONS_PATH
+    ? dirname(env.MAKA_CONNECTIONS_PATH)
+    : resolveMakaWorkspaceRoot();
+  const store = createConnectionStore(root);
   try {
-    const file = JSON.parse(readFileSync(connectionsPath, 'utf8')) as {
-      defaultSlug?: string | null;
-      connections?: Array<{
-        slug: string;
-        providerType?: string;
-        defaultModel?: string;
-        baseUrl?: string;
-        enabled?: boolean;
-      }>;
-    };
-    if (!file.defaultSlug || !Array.isArray(file.connections)) return;
-    const conn = file.connections.find((c) => c.slug === file.defaultSlug && c.enabled !== false);
-    if (!conn?.providerType || !conn.defaultModel) return;
-    // Normalize legacy persisted providerType ids (e.g. codex-subscription ->
-    // openai-codex) so connections stored before a rename keep resolving.
-    // applyConnectionDefaults reads llm-connections.json directly, bypassing
-    // ConnectionStore's on-read normalization.
-    const providerType = normalizeProviderType(conn.providerType);
-    if (!(providerType in PROVIDER_DEFAULTS)) return;
+    const slug = await store.getDefault();
+    if (!slug) return;
+    const conn = await store.get(slug);
+    // A default that resolves to null, or that carries no usable model, is
+    // treated as "no default" — matching the store's own normalizeDefaultSlug.
+    if (!conn || !conn.defaultModel) return;
+    // providerType is already normalized by the store's migrateConnectionV1ToV2
+    // on read. Guard against an unknown provider (a connection persisted on a
+    // branch this build doesn't register) before writing it into env.
+    if (!(conn.providerType in PROVIDER_DEFAULTS)) return;
 
-    env.MAKA_MODEL = `${providerType}/${conn.defaultModel}`;
+    env.MAKA_MODEL = `${conn.providerType}/${conn.defaultModel}`;
     if (env.MAKA_LLM_CONNECTION_SLUG === undefined) env.MAKA_LLM_CONNECTION_SLUG = conn.slug;
     if (env.MAKA_BASE_URL === undefined && conn.baseUrl) env.MAKA_BASE_URL = conn.baseUrl;
     // credentials.json lives next to llm-connections.json in the workspace;
     // point readStoredMakaApiKey at it so Windows/Linux no-env works too,
     // not just macOS.
     if (env.MAKA_CREDENTIALS_PATH === undefined) {
-      env.MAKA_CREDENTIALS_PATH = join(dirname(connectionsPath), 'credentials.json');
+      env.MAKA_CREDENTIALS_PATH = join(root, 'credentials.json');
     }
   } catch {
-    // File doesn't exist or is malformed — fall through to existing hardcoded defaults
+    // File doesn't exist or is malformed — fall through to existing hardcoded
+    // defaults. The store swallows ENOENT (returns no default) but re-throws
+    // malformed JSON, so this catch preserves harbor's historical silent
+    // fallback for both cases.
   }
 }
 
