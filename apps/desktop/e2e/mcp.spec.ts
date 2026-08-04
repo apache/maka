@@ -23,13 +23,13 @@ test('module navigation removes the hidden chat surface from layout and hit test
   ).toBe(false);
 });
 
-test('MCP workspace stays centered without horizontal overflow at compact widths', async ({ window: page }) => {
+test('MCP workspace aligns with the shared header without horizontal overflow', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('navigation', { name: '对话列表' }).getByRole('button', { name: '扩展', exact: true }).click();
   await page.locator('.maka-module-hub-selector').getByRole('button', { name: 'MCP' }).click();
   await expect(page.locator('.maka-mcp-workspace')).toBeVisible();
 
-  for (const width of [861, 860, 761]) {
+  for (const width of [1440, 1280, 861, 860, 761]) {
     await page.setViewportSize({ width, height: 700 });
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
 
@@ -42,6 +42,7 @@ test('MCP workspace stays centered without horizontal overflow at compact widths
         throw new Error('Expected the MCP module layout');
       }
       const mainRect = main.getBoundingClientRect();
+      const headerRect = header.getBoundingClientRect();
       const workspaceRect = workspace.getBoundingClientRect();
       return {
         mainOverflow: main.scrollWidth - main.clientWidth,
@@ -49,6 +50,10 @@ test('MCP workspace stays centered without horizontal overflow at compact widths
           workspaceRect.left + workspaceRect.width / 2
             - (mainRect.left + main.clientWidth / 2),
         ),
+        headerWidth: headerRect.width,
+        workspaceWidth: workspaceRect.width,
+        leftEdgeDelta: Math.abs(workspaceRect.left - headerRect.left),
+        rightEdgeDelta: Math.abs(workspaceRect.right - headerRect.right),
         headerDisplay: getComputedStyle(header).display,
         commandBarDisplay: getComputedStyle(commandBar).display,
       };
@@ -56,8 +61,72 @@ test('MCP workspace stays centered without horizontal overflow at compact widths
 
     expect(geometry.mainOverflow, `${width}px: ${JSON.stringify(geometry)}`).toBe(0);
     expect(geometry.centerDelta, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(1);
+    if (width >= 1280) {
+      expect(geometry.headerWidth, `${width}px: ${JSON.stringify(geometry)}`).toBe(900);
+      expect(geometry.workspaceWidth, `${width}px: ${JSON.stringify(geometry)}`).toBe(geometry.headerWidth);
+      expect(geometry.leftEdgeDelta, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(1);
+      expect(geometry.rightEdgeDelta, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(1);
+    }
     expect(geometry.headerDisplay).toBe(width <= 860 ? 'grid' : 'flex');
     expect(geometry.commandBarDisplay).toBe(width <= 860 ? 'grid' : 'flex');
+  }
+});
+
+test('MCP server descriptions truncate with an ellipsis at 700px and 500px', async ({ window: page }) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('navigation', { name: '对话列表' }).getByRole('button', { name: '扩展', exact: true }).click();
+  await page.locator('.maka-module-hub-selector').getByRole('button', { name: 'MCP' }).click();
+
+  const endpoint = `https://example.com/${'narrow-description-segment/'.repeat(12)}mcp`;
+  await page.evaluate(async (url) => {
+    await window.maka.mcp.upsert('long-endpoint', {
+      enabled: false,
+      url,
+      transport: 'streamable-http',
+    });
+  }, endpoint);
+  await page.getByRole('button', { name: '刷新' }).click();
+  const installedTab = page.locator('[data-tab-value="installed"]');
+  await expect(installedTab).toContainText('已安装');
+  await expect(installedTab).toContainText('1');
+  await installedTab.click();
+
+  const row = page.getByRole('listitem').filter({ hasText: 'long-endpoint' });
+  const description = row.locator('[data-maka-contract="mcp-server-description"]');
+  await expect(description).toBeVisible();
+  await expect(description.getByTitle(endpoint)).toHaveText(endpoint);
+
+  for (const width of [700, 500]) {
+    await page.setViewportSize({ width, height: 700 });
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+
+    const geometry = await description.evaluate((content) => {
+      const slot = content.parentElement;
+      const main = content.closest<HTMLElement>('.maka-module-main');
+      const summary = content.closest<HTMLElement>('.maka-mcp-server-summary');
+      if (!slot || !main || !summary) throw new Error('Expected the MCP server description layout');
+      const slotStyle = getComputedStyle(slot);
+      const contentStyle = getComputedStyle(content);
+      const slotRect = slot.getBoundingClientRect();
+      const summaryRect = summary.getBoundingClientRect();
+      return {
+        mainOverflow: main.scrollWidth - main.clientWidth,
+        contentOverflow: content.scrollWidth - content.clientWidth,
+        slotRightOverflow: slotRect.right - summaryRect.right,
+        slotOverflow: slotStyle.overflow,
+        contentOverflowStyle: contentStyle.overflow,
+        contentTextOverflow: contentStyle.textOverflow,
+        contentWhiteSpace: contentStyle.whiteSpace,
+      };
+    });
+
+    expect(geometry.mainOverflow, `${width}px: ${JSON.stringify(geometry)}`).toBe(0);
+    expect(geometry.contentOverflow, `${width}px: ${JSON.stringify(geometry)}`).toBeGreaterThan(0);
+    expect(geometry.slotRightOverflow, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(1);
+    expect(geometry.slotOverflow).toBe('hidden');
+    expect(geometry.contentOverflowStyle).toBe('hidden');
+    expect(geometry.contentTextOverflow).toBe('ellipsis');
+    expect(geometry.contentWhiteSpace).toBe('nowrap');
   }
 });
 
@@ -145,6 +214,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await extensionSelector.getByRole('button', { name: 'MCP' }).click();
   const mcp = page.getByRole('main', { name: '扩展' });
   await expect(mcp.getByRole('heading', { name: '扩展' })).toBeVisible();
+  await expect(mcp.getByRole('toolbar', { name: 'MCP 浏览操作' })).toBeVisible();
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：MCP');
   await expect(mcp.getByText('把 Maka 连接到你的工作环境')).toBeVisible();
   await expect(mcp.locator('[data-maka-contract="module-actions"]').getByRole('button')).toHaveCount(1);

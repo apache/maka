@@ -335,7 +335,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         ) : null}
 
         <div className="maka-mcp-browser">
-          <div className="maka-mcp-command-bar">
+          <div className="maka-mcp-command-bar" role="toolbar" aria-label={copy.page.toolbarAria}>
             <div className="maka-mcp-tabs">
               <TabList
                 value={activeTab}
@@ -584,11 +584,14 @@ function McpServerRow(props: {
     ? props.copy.page.localStdio
     : props.server.transport ?? 'auto';
   return (
+    // Astryx ListItem does not accept children. Keep this semantic wrapper so
+    // the summary Item and its expandable diagnostics form one list item.
     <div className="maka-mcp-server-row" role="listitem">
       <Item
         className="maka-mcp-server-summary"
         align="start"
         density="spacious"
+        descriptionLines={1}
         label={(
           <span className="maka-mcp-server-heading">
             <span>{props.serverId}</span>
@@ -599,7 +602,7 @@ function McpServerRow(props: {
           </span>
         )}
         description={(
-          <span className="maka-mcp-server-description">
+          <span className="maka-mcp-server-description" data-maka-contract="mcp-server-description">
             {!state.exception ? <span>{state.label} · </span> : null}
             <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
           </span>

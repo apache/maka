@@ -15,7 +15,7 @@ export type McpCopy = {
   remove: { title(id: string): string; description: string; confirm: string; cancel: string };
   page: {
     subtitle: string; actionsAria: string; refreshing: string; refresh: string; add: string;
-    workspaceAria: string; setupTitle: string; setupDescription: string; localStdio: string;
+    workspaceAria: string; toolbarAria: string; setupTitle: string; setupDescription: string; localStdio: string;
     categoriesAria: string; market: string; installed: string; searchPlaceholder: string; searchAria: string;
     noMarket: string; noMarketDetail(query: string): string; clearSearch: string; loading: string;
     noInstalled: string; noInstalledDetail: string; browseMarket: string; noInstalledMatch: string; noInstalledMatchDetail(query: string): string;
@@ -59,7 +59,7 @@ const MCP_COPY = {
     remove: { title: (id) => `删除 MCP「${id}」？`, description: '它提供的工具会从下一次 agent turn 中移除，配置无法自动恢复。', confirm: '删除', cancel: '取消' },
     page: {
       subtitle: '连接外部应用、数据与服务，为 Maka 安全地扩展新工具。', actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
-      workspaceAria: 'MCP 市场与已安装项', setupTitle: '把 Maka 连接到你的工作环境', setupDescription: '从精选模板开始，或添加任意 stdio、Streamable HTTP 与 SSE server。',
+      workspaceAria: 'MCP 市场与已安装项', toolbarAria: 'MCP 浏览操作', setupTitle: '把 Maka 连接到你的工作环境', setupDescription: '从精选模板开始，或添加任意 stdio、Streamable HTTP 与 SSE server。',
       localStdio: '本地 stdio', categoriesAria: 'MCP 分类', market: '市场', installed: '已安装',
       searchPlaceholder: '搜索 MCP…', searchAria: '搜索 MCP', noMarket: '没有找到匹配的 MCP', noMarketDetail: (query) => `换一个关键词，或清空「${query}」查看全部模板。`,
       clearSearch: '清空搜索', loading: '正在读取 MCP 配置…', noInstalled: '还没有安装 MCP', noInstalledDetail: '从市场选择模板，或手动添加你自己的 server。',
@@ -105,7 +105,7 @@ const MCP_COPY = {
     remove: { title: (id) => `Delete MCP “${id}”?`, description: 'Its tools will be removed from the next agent turn, and the configuration cannot be restored automatically.', confirm: 'Delete', cancel: 'Cancel' },
     page: {
       subtitle: 'Connect external apps, data, and services to safely extend Maka with new tools.', actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
-      workspaceAria: 'MCP marketplace and installed servers', setupTitle: 'Connect Maka to your work environment', setupDescription: 'Start with a curated template, or add any stdio, Streamable HTTP, or SSE server.',
+      workspaceAria: 'MCP marketplace and installed servers', toolbarAria: 'MCP browser controls', setupTitle: 'Connect Maka to your work environment', setupDescription: 'Start with a curated template, or add any stdio, Streamable HTTP, or SSE server.',
       localStdio: 'Local stdio', categoriesAria: 'MCP categories', market: 'Marketplace', installed: 'Installed',
       searchPlaceholder: 'Search MCP…', searchAria: 'Search MCP', noMarket: 'No matching MCP servers', noMarketDetail: (query) => `Try another keyword, or clear “${query}” to view every template.`,
       clearSearch: 'Clear search', loading: 'Reading MCP configuration…', noInstalled: 'No MCP servers installed', noInstalledDetail: 'Choose a template from the marketplace, or add your own server manually.',

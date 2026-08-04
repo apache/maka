@@ -4,7 +4,7 @@
 }
 
 .maka-mcp-workspace {
-  width: min(100%, 960px);
+  width: min(100%, 900px);
   min-height: 0;
   margin-inline: auto;
   display: grid;
@@ -186,6 +186,7 @@
 }
 
 .maka-mcp-server-description {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
