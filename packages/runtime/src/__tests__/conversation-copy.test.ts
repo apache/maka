@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import type {
   AgentRunHeader,
   AgentRunStore,
+  EmittedAgentRunEvent,
   RuntimeEvent,
   RuntimeEventStore,
   StoredMessage,
@@ -58,6 +59,47 @@ test('archived tool-result copy preflight detects conversation-owned references'
         },
       }),
       'session-source',
+    ),
+    true,
+  );
+  const linkedChildReferences = new Map([
+    [
+      'child-session',
+      {
+        runIds: new Set(['child-run']),
+        artifactIds: new Set(['child-artifact']),
+      },
+    ],
+  ]);
+  const linkedResult = serialized({
+    kind: 'subagent',
+    childSessionId: 'child-session',
+    agentName: 'Researcher',
+    turnId: 'child-turn',
+    runId: 'child-run',
+    status: 'completed',
+    permissionMode: 'ask',
+    summary: 'done',
+    artifactIds: ['child-artifact'],
+  });
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      linkedResult,
+      'session-source',
+      linkedChildReferences,
+    ),
+    false,
+  );
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      linkedResult,
+      'session-source',
+      new Map([
+        [
+          'child-session',
+          { runIds: new Set(['other-run']), artifactIds: new Set(['child-artifact']) },
+        ],
+      ]),
     ),
     true,
   );
@@ -228,6 +270,7 @@ test('conversation copy rewrites owned references without changing opaque tool p
   ];
   const references = {
     mode: 'exact' as const,
+    linkedChildren: { mode: 'reject' as const },
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -341,6 +384,74 @@ test('conversation copy rewrites owned references without changing opaque tool p
       }),
     /missing AgentRun run-source/,
   );
+
+  const linked = rewriteConversationCopyMessage(
+    {
+      type: 'tool_result',
+      id: 'linked-result',
+      turnId: 'turn-1',
+      ts: 6,
+      toolUseId: 'linked-call',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-session',
+        agentName: 'Researcher',
+        turnId: 'child-turn',
+        runId: 'child-run',
+        status: 'completed',
+        permissionMode: 'ask',
+        summary: 'done',
+        artifactIds: ['child-artifact'],
+      },
+    },
+    {
+      ...references,
+      linkedChildren: {
+        mode: 'preserve_validated',
+        references: new Map([
+          [
+            'child-session',
+            {
+              runIds: new Set(['child-run']),
+              artifactIds: new Set(['child-artifact']),
+            },
+          ],
+        ]),
+      },
+    },
+  );
+  assert.equal(
+    linked.type === 'tool_result' && linked.content.kind === 'subagent'
+      ? linked.content.runId
+      : undefined,
+    'child-run',
+  );
+  assert.deepEqual(
+    linked.type === 'tool_result' && linked.content.kind === 'subagent'
+      ? linked.content.artifactIds
+      : undefined,
+    ['child-artifact'],
+  );
+  assert.deepEqual(
+    rewriteConversationCopyMessage(linked, {
+      mode: 'preserve_external',
+      sourceSessionId: 'session-source',
+      targetSessionId: 'session-target',
+      runIds: new Map(),
+      runtimeEventIds: new Map(),
+      providerTraceIds: new Map(),
+    }),
+    linked,
+  );
+  assert.throws(
+    () =>
+      rewriteConversationCopyMessage(linked, {
+        ...references,
+        linkedChildren: { mode: 'preserve_validated', references: new Map() },
+      }),
+    /missing linked child Session child-session/,
+  );
 });
 
 test('conversation copy turn closure includes legacy children but excludes later continuations', async () => {
@@ -408,6 +519,95 @@ test('conversation copy turn closure includes legacy children but excludes later
   assert.deepEqual(plan.copyTurnIds, ['turn-parent', 'turn-child', 'turn-grandchild']);
 });
 
+test('conversation copy rejects continuation authority selected through the child-run closure', async () => {
+  const parent = agentRunHeader({ runId: 'run-parent', turnId: 'turn-parent' });
+  const child = agentRunHeader({
+    runId: 'run-child-retry',
+    turnId: 'turn-child-retry',
+    parentRunId: 'run-parent',
+    agentId: 'agent-child',
+    continuationSource: {
+      sourceInvocationId: parent.invocationId!,
+      sourceRunId: parent.runId,
+      sourceTurnId: parent.turnId,
+      sourceRuntimeEventHighWater: 1,
+    },
+  });
+  const runs = [parent, child];
+
+  await assert.rejects(
+    prepareConversationRuntimeLedgerCopy({
+      sourceSessionId: 'session-source',
+      sourceEvents: [],
+      copiedMessages: [
+        {
+          type: 'user',
+          id: 'message-parent',
+          turnId: parent.turnId,
+          ts: 1,
+          text: 'retain the parent and its child closure',
+        },
+      ],
+      runStore: {
+        listSessionRuns: async () => runs,
+        readEvents: async () => [],
+      },
+      runtimeEventStore: {
+        readRuntimeEvents: async (_sessionId, runId) => {
+          const run = runs.find((candidate) => candidate.runId === runId);
+          assert.ok(run);
+          return [
+            runtimeEvent({
+              id: `terminal-${runId}`,
+              runId,
+              invocationId: run.invocationId,
+              turnId: run.turnId,
+              status: 'completed',
+            }),
+          ];
+        },
+      },
+    }),
+    /typed identity rewriting/i,
+  );
+});
+
+test('conversation copy rejects legacy v1 continuation-start events', async () => {
+  const run = agentRunHeader({ runId: 'run-v1', turnId: 'turn-v1' });
+  await assert.rejects(
+    prepareConversationRuntimeLedgerCopy({
+      sourceSessionId: 'session-source',
+      sourceEvents: [],
+      copiedMessages: [
+        { type: 'user', id: 'message-v1', turnId: run.turnId, ts: 1, text: 'retain' },
+      ],
+      runStore: {
+        listSessionRuns: async () => [run],
+        readEvents: async () => [],
+      },
+      runtimeEventStore: {
+        readRuntimeEvents: async () => [
+          runtimeEvent({
+            id: 'v1-start',
+            runId: run.runId,
+            invocationId: run.invocationId,
+            turnId: run.turnId,
+            actions: { stateDelta: { continuationStart: true } },
+          }),
+          runtimeEvent({
+            id: 'v1-terminal',
+            runId: run.runId,
+            invocationId: run.invocationId,
+            turnId: run.turnId,
+            status: 'completed',
+          }),
+        ],
+      },
+    }),
+    /typed identity rewriting/i,
+  );
+});
+
 test('conversation copy rejects a retained AgentRun without RuntimeEvent facts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-missing-runtime-copy-'));
   try {
@@ -464,6 +664,7 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
+            linkedChildren: { mode: 'reject' },
             sourceSessionId: 'session-source',
             targetSessionId: 'session-target',
             artifactIds: new Map(),
@@ -614,6 +815,7 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
+        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -742,6 +944,7 @@ test('conversation copy validates operational events before persisting target le
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
+            linkedChildren: { mode: 'reject' },
             sourceSessionId: 'session-source',
             targetSessionId: 'session-target',
             artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -970,6 +1173,24 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       turnId: 'turn-1',
       ts: 3,
     });
+    // A record left by a build whose writer this one no longer has. The cast is the point: the
+    // write contract forbids producing this type, and only another version could have put it in
+    // the source ledger. The rewriters cannot check an unknown payload for source-owned ids, so
+    // the copy must drop it rather than carry those ids into the target (#1942).
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'written_by_another_version',
+      id: 'foreign-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 3.5,
+      data: { runtimeEventId: 'event-source-1' },
+    } as unknown as EmittedAgentRunEvent);
+    assert.ok(
+      (await runStore.readEvents('session-source', 'run-source')).some(
+        (event) => event.type === 'written_by_another_version',
+      ),
+    );
     const source = await new RuntimeReadModel({
       runStore,
       runtimeEventStore,
@@ -981,6 +1202,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
+            linkedChildren: { mode: 'reject' },
             sourceSessionId: 'session-source',
             targetSessionId: 'session-missing-artifact',
             artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -1010,6 +1232,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
+        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map([
@@ -1260,6 +1483,7 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
+        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -1437,6 +1661,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
+        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),

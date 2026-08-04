@@ -6,7 +6,7 @@ import type {
   UsageLogRow,
   UsageQuery,
 } from '@maka/core/usage-stats/types';
-import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
+import { comparePricingModelKeys } from '@maka/core/usage-stats/pricing';
 import {
   mergeUsageBuckets,
   mergeUsageLogs,
@@ -14,7 +14,7 @@ import {
   type CanonicalUsageSource,
   type UsageProvenance,
 } from '@maka/core/usage-ledger-merge';
-import { repairPendingModelCallProjections } from '@maka/storage/model-call-ledger';
+import { BUILTIN_PRICING } from '@maka/runtime';
 import {
   authenticateInteractiveUsageStoresWriter,
   classifyInteractiveUsageStoresFailure,
@@ -30,6 +30,7 @@ import {
   USAGE_PAGE_MAX_ITEMS,
   USAGE_PROJECTION_TEXT_MAX_BYTES,
   type OperationOutcome,
+  type EffectivePricingEntry,
   type PricingMutateInput,
   type PricingQueryInput,
   type PricingQueryResult,
@@ -41,6 +42,9 @@ import {
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
+import { readCanonicalUsage, type RunEventReader } from './canonical-usage-reader.js';
+
+export type { RunEventReader } from './canonical-usage-reader.js';
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -76,35 +80,7 @@ export class HostUsagePricingCoordinator {
    * range is resolved once here so both sources answer the same window.
    */
   async #canonicalUsage(query: UsageQuery, now: number): Promise<CanonicalUsageSource> {
-    // Fold in anything the authority holds that this read model is behind on,
-    // before answering. Whatever a pass cannot repair is reported rather than
-    // silently missing from the totals.
-    const repair = await this.#repairPendingProjections();
-    const page = await this.#stores.modelCalls.modelCallAttempts(
-      resolveUsageRange(query.range, now),
-    );
-    return {
-      attempts: page.attempts,
-      // Both kinds of unreadable record count: a stored row that will not
-      // decode, and an authority event a repair could not turn into one.
-      unreadableRecords: page.unreadableRecords + repair.unreadableEvents,
-      pendingRepairs: repair.remaining,
-    };
-  }
-
-  async #repairPendingProjections(): Promise<{ remaining: number; unreadableEvents: number }> {
-    if (!this.#readRunEvents) return { remaining: 0, unreadableEvents: 0 };
-    const result = await repairPendingModelCallProjections({
-      ledger: {
-        record: (attempt) => this.#stores.modelCalls.recordModelCallAttempt(attempt),
-        pending: () => this.#stores.modelCalls.pendingReprojections(),
-        clear: (sessionId, runId) =>
-          this.#stores.modelCalls.clearPendingReprojection(sessionId, runId),
-      },
-      readRunEvents: this.#readRunEvents,
-      limit: USAGE_REPAIR_RUNS_PER_QUERY,
-    });
-    return { remaining: result.remaining, unreadableEvents: result.unreadableEvents };
+    return readCanonicalUsage(this.#stores, query, now, this.#readRunEvents);
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
@@ -209,11 +185,9 @@ export class HostUsagePricingCoordinator {
           }),
         };
       }
+      const entries = projectEffectivePricingEntries(snapshot.overrides);
       const offset = input.kind === 'start' ? 0 : input.offset;
-      if (
-        offset > snapshot.overrides.length ||
-        (input.kind === 'continue' && offset === snapshot.overrides.length)
-      ) {
+      if (offset > entries.length || (input.kind === 'continue' && offset === entries.length)) {
         return {
           ok: false,
           error: { code: 'invalid_request', message: 'Pricing offset is invalid' },
@@ -221,7 +195,7 @@ export class HostUsagePricingCoordinator {
       }
       return {
         ok: true,
-        result: createPricingPage(snapshot.revision, snapshot.overrides, offset),
+        result: createPricingPage(snapshot.revision, entries, offset),
       };
     } catch (error) {
       return this.#mapReadFailure<'pricing.query'>(error, 'Pricing authority');
@@ -345,20 +319,6 @@ export class HostUsagePricingCoordinator {
   }
 }
 
-/**
- * The authority read used to rebuild the Usage read model for one run.
- */
-export type RunEventReader = (
-  sessionId: string,
-  runId: string,
-) => Promise<readonly { readonly type: string; readonly data?: Record<string, unknown> }[]>;
-
-/**
- * Repairs are bounded per query. A backlog is drained across successive reads
- * rather than making one Usage page wait for all of it.
- */
-const USAGE_REPAIR_RUNS_PER_QUERY = 16;
-
 /** Provenance of a result the model-call ledger has nothing to say about. */
 const EMPTY_PROVENANCE: UsageProvenance = {
   coverage: {
@@ -383,13 +343,13 @@ function invalidUsageOffset(): OperationOutcome<'usage.query'> {
 
 function createPricingPage(
   revision: number,
-  overrides: readonly Readonly<PricingConfig>[],
+  entries: readonly EffectivePricingEntry[],
   offset: number,
 ): PricingQueryResult {
-  const items: Readonly<PricingConfig>[] = [];
-  for (let index = offset; index < overrides.length; index += 1) {
+  const items: EffectivePricingEntry[] = [];
+  for (let index = offset; index < entries.length; index += 1) {
     if (items.length >= PRICING_PAGE_MAX_ITEMS) break;
-    const item = overrides[index];
+    const item = entries[index];
     if (!item) break;
     const candidate = [...items, item];
     const nextOffset = offset + candidate.length;
@@ -397,12 +357,12 @@ function createPricingPage(
       kind: 'page',
       revision,
       offset,
-      overrides: candidate,
-      nextOffset: nextOffset < overrides.length ? nextOffset : null,
+      entries: candidate,
+      nextOffset: nextOffset < entries.length ? nextOffset : null,
     };
     if (jsonBytes(page) > PRICING_PAGE_MAX_BYTES) {
       if (items.length === 0) {
-        throw new Error('Canonical pricing override exceeds the wire page limit');
+        throw new Error('Canonical pricing entry exceeds the wire page limit');
       }
       break;
     }
@@ -413,8 +373,28 @@ function createPricingPage(
     kind: 'page',
     revision,
     offset,
-    overrides: items,
-    nextOffset: nextOffset < overrides.length ? nextOffset : null,
+    entries: items,
+    nextOffset: nextOffset < entries.length ? nextOffset : null,
+  });
+}
+
+function projectEffectivePricingEntries(
+  overrides: readonly Readonly<PricingConfig>[],
+): readonly EffectivePricingEntry[] {
+  const builtinsByKey = new Map(BUILTIN_PRICING.map((pricing) => [pricing.modelKey, pricing]));
+  const overridesByKey = new Map(overrides.map((pricing) => [pricing.modelKey, pricing]));
+  const modelKeys = new Set([...builtinsByKey.keys(), ...overridesByKey.keys()]);
+
+  return [...modelKeys].sort(comparePricingModelKeys).map((modelKey) => {
+    const override = overridesByKey.get(modelKey);
+    if (override) {
+      return {
+        pricing: override,
+        source: 'custom',
+        resetEffect: builtinsByKey.has(modelKey) ? 'restore_builtin' : 'become_unpriced',
+      };
+    }
+    return { pricing: builtinsByKey.get(modelKey)!, source: 'builtin' };
   });
 }
 

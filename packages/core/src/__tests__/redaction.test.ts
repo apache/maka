@@ -259,6 +259,28 @@ describe('generalizedErrorMessage', () => {
       assert.doesNotMatch(message, /sk-live-secret-token-value|token=secret/);
     }
   });
+
+  test('does not mistake runtime authority errors for authentication failures', () => {
+    assert.equal(
+      generalizedErrorMessage(
+        new Error('Conversation copy contains durable runtime authority facts'),
+        'Conversation copy failed',
+      ),
+      'Conversation copy failed',
+    );
+  });
+
+  test('recognizes provider authentication error spellings', () => {
+    for (const message of [
+      'AuthenticationError',
+      'OAuth2 token expired',
+      'User is not authorized',
+      'Please authenticate',
+      'authToken is missing',
+    ]) {
+      assert.equal(generalizedErrorMessage(new Error(message)), 'Authentication failed');
+    }
+  });
 });
 
 describe('generalizedErrorMessageChinese', () => {
@@ -296,6 +318,16 @@ describe('generalizedErrorMessageChinese', () => {
         '会话已创建但发送失败，请重试。',
       ),
       '会话已创建但发送失败，请重试。',
+    );
+  });
+
+  test('does not mistake runtime authority errors for authentication failures', () => {
+    assert.equal(
+      generalizedErrorMessageChinese(
+        new Error('Conversation copy contains durable runtime authority facts'),
+        '无法基于该上下文创建新会话。',
+      ),
+      '无法基于该上下文创建新会话。',
     );
   });
 });

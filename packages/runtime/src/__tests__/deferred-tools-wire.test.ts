@@ -71,6 +71,7 @@ async function toolNamesSeenByProvider(activeNames: ReadonlySet<string>): Promis
     messages: [{ role: 'user', content: 'hi' }],
     tools: modelTools,
     activeTools: canonical.activeTools,
+    onStreamActivity: () => {},
     system: 'sys',
     abortSignal: new AbortController().signal,
     repairToolCall: async () => null,
@@ -142,6 +143,7 @@ describe('ModelAdapter provider-step boundary', () => {
         },
       },
       activeTools: ['Read'],
+      onStreamActivity: () => {},
       abortSignal: new AbortController().signal,
       repairToolCall: async () => null,
     });
@@ -187,6 +189,7 @@ describe('ModelAdapter provider-step boundary', () => {
       messages: [{ role: 'user', content: 'read it' }],
       tools: toolsWithExecutableBehavior,
       activeTools: ['Read'],
+      onStreamActivity: () => {},
       abortSignal: new AbortController().signal,
       repairToolCall: async () => null,
     });

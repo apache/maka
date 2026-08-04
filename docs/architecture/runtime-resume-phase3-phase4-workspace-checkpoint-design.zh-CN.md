@@ -1,13 +1,13 @@
 # Runtime Resume Phase 3–4 实施路线
 
-> 路线更新（2026-08-01）：workspace 主线已从“通用 checkpoint 抽象优先”切换为
+> 路线更新（2026-08-02）：workspace 主线已从“通用 checkpoint 抽象优先”切换为
 > **Git-native managed workspace**。本文保留 Recovery/Continuation 已落地协议与旧路线的历史论证；
 > 新实现不再以通用 per-file checkpoint、native manifest 或 CAS object store 为前置。
 > 当前 M0 的 baseline-only 权威合同见
 > [Workspace Version Authority v1](./runtime-workspace-version-authority-v1.zh-CN.md)。
 
 - 状态：Implementation tracked
-- 更新日期：2026-08-01
+- 更新日期：2026-08-02
 - 事实权威：immutable RuntimeEvents
 - 主要平台：Linux、macOS；Windows 有限支持
 - 拆分审计：`runtime-resume-extraction-ledger.zh-CN.md`
@@ -28,7 +28,7 @@ RuntimeEvent 是语义事实的唯一权威，但不能替代执行所有权的�
 | recovery semantics | immutable RuntimeEvents | call、dispatch、outcome、observation、decision |
 | execution ownership | admission/claim CAS | 一个 source boundary 只能有一个执行者 |
 | projection | SQLite tables | 可删除、可从事件重建 |
-| workspace artifact | checkpoint provider | 保存/验证 workspace 状态，不能单独授权 continuation |
+| workspace artifact | managed Git artifact owner（强模式） | 保存/验证 workspace 状态，不能单独授权 continuation |
 
 ## 2. Phase 3A：工具恢复
 
@@ -377,9 +377,14 @@ immutable immediate-source replay，但不产生 claim/start，也不能承接
 SQLite authority owner 后删除。
 
 B3 之前，branch/revision preflight 必须在创建目标 Session 之前拒绝任何 V1/V2
-`continuationSource`、continuation-start、tool dispatch/recovery 与 operation reference，稳定
-返回 `branch_runtime_fact_rewrite_unsupported`。B3 的正确实现要先建立旧 id 到新 id 的 typed
-映射，再逐类重写内部 evidence/claim/operation 引用；不允许恢复 shallow copy。
+`continuationSource` 与 continuation-start，稳定返回
+`branch_runtime_fact_rewrite_unsupported`。continuation claim 与 boundary evidence 不属于普通
+Run/Event 复制边界，不能在没有 typed authority copy 协议时浅拷贝。
+
+tool dispatch/recovery 与 operation reference 则已由 conversation runtime ledger copy 建立旧 id
+到新 id 的 typed 映射：新 invocation 决定新 operation id，dispatch、recovery、RuntimeEvent
+refs 和 recovery evidence RuntimeEvent ids 必须原子重写后才能导入目标 Session。该路径
+应保持可用，不得因 continuation authority 的 fail-closed 闸门被误拦截。
 
 #### 后续执行语义绑定：ContinuationExecutionProfileV1
 
@@ -507,138 +512,134 @@ generic repair 必须识别 claim-owned target 并 defer，不能用普通 `app_
 identity。当前 PR B 交付 authority-capable SessionManager 与 SQLite 协议；在 PR D 把该 authority
 接入 runtime-host 生产组合并完成 owner/ordering 测试前，不得宣称 hosted auto-resume 已启用。
 
-## 3. Native 与 Git 的能力边界
+## 3. Native、attached 与 managed 的能力边界
 
-### 无 Git CLI / 非 Git workspace
+### Native / attached checkout
 
-Native 支持止于单次 operation：
+Attached 模式继续服务现有用户目录与兼容场景，但不冒充强 workspace continuity：
 
-- Write/Edit 的 before/expected-after evidence；
-- 崩溃后 after-state finalize；
-- 不能证明时 park；
-- 不建设 native workspace manifest 或 CAS object store；
-- 不提供 workspace-wide drift、isolated restore 或 durable rebaseline。
+- RuntimeEvent history、continuation authority 与已落地的工具恢复事实继续有效；
+- 不能证明 workspace 内容对应某个 Runtime boundary 时 park；
+- 不建设第二套 native workspace manifest 或 CAS object store；
+- 不在用户 checkout 上自动 reset、redo 或覆盖 drift；
+- 旧的 generic checkpoint provider、per-file carrier 与 observe-only user-repository Git 路线只保留为
+  attached/legacy research，不再是 `managed_worktree` 的实现前置。
 
-### 有 Git CLI 且 workspace 是 eligible repository
+### Git-native managed workspace
 
-Git 是 workspace continuity carrier，而不是单文件因果证明的前置条件：
+强模式以 Maka-owned repository/worktree 为 artifact carrier。Git 证明文件世界，SQLite immutable
+RuntimeEvents 决定 Maka 是否接受某个文件版本；Git commit、ref、receipt 与 projection 都不是第二套真相。
+内置并校验的 Git CLI 是该模式的运行能力，不要求用户自行安装 Git，也不修改用户 repository 的 index/ref。
 
-- workspace snapshot；
-- RuntimeEvent boundary 与 Git tree/commit 绑定；
-- workspace-wide drift detection；
-- isolated worktree restore；
-- durable rebaseline；
-- object retention 与 GC。
+## 4. Git-native managed workspace 演进
 
-## 4. Phase 3B：Checkpoint 语义
+### M0 — Baseline admission（已合并）
 
-### PR E — Checkpoint contracts
-
-先定义纯语义和 fake provider，不接 Git：
-
-在第一个通用 Phase 3B 审计事实落盘前，先引入 generic invisible `runtimeFact` envelope。
-现有 `actions.toolRecovery` 保持不变，避免返工；workspace transition 与 checkpoint 使用通用
-envelope。旧 read-model 对未知 fact 可跳过展示，但 recovery consumer 必须 fail closed。这个前置
-不追溯阻塞已经存在的 PR A tool recovery facts。
-
-```ts
-interface WorkspaceBoundary {
-  workspaceIdentity: string;
-  workspaceEpoch: number;
-  immutableRuntimeHighWater: number;
-  immutableRuntimeDigest: string;
-  checkpointRef: string;
-  checkpointPolicyHash: string;
-}
-```
-
-需要证明：
-
-- checkpoint 绑定的是 immutable boundary，不是 mutable UI snapshot；
-- cwd 切换产生明确 workspace transition；
-- checkpoint provider 只能 capture/verify/materialize，不能自行批准 resume；
-- required/optional/legacy host policy 有稳定结果；
-- plan 与 execution revalidation 使用同一 boundary。
-
-### PR F — Canonical checkpoint bundle
-
-把 checkpoint accepted fact 与 RuntimeEvent boundary 原子绑定：
-
-- fact 只有一个 canonical writer；
-- projection 可重建；
-- checkpoint ref、workspace identity、epoch、high-water、digest 全部交叉校验；
-- artifact 已生成但 fact 未提交时允许 GC；
-- fact 已提交但 artifact 缺失时 fail closed。
-
-## 5. Phase 4A：Git observe/capture
-
-### PR G — Observe-only Git carrier
-
-先只读验证：
-
-- repository/worktree identity；
-- HEAD/tree/index/dirty state；
-- ignored/untracked policy；
-- submodule、LFS、sparse checkout、case sensitivity 能力探测；
-- 不写 ref、不改用户 index、不改 working tree。
-
-不合格仓库降级到 native operation recovery，不伪装具备 workspace continuity。
-
-### PR H — Production capture + retention
-
-- 使用 Maka 自有 ref namespace 或独立 object ownership；
-- capture 不修改用户 branch/index；
-- checkpoint fact 接受后才成为 durable root；
-- quota、retention、orphan GC；
-- p50/p95 capture 延迟和磁盘增量 telemetry；
-- host lifecycle 完成后才默认启用。
-
-## 6. Phase 4B/4C：恢复与 rebaseline
-
-### Isolated restore
-
-workspace drift 时默认恢复到隔离 worktree/目录，不覆盖用户当前工作：
-
-1. verify checkpoint；
-2. materialize isolated workspace；
-3. 写 workspace transition fact；
-4. continuation 在新 identity/epoch 下开始；
-5. 用户当前目录保持不变。
-
-### Durable rebaseline
-
-“以当前文件为准继续”不是忽略错误：
-
-1. capture 当前 workspace；
-2. 持久化新 baseline fact；
-3. increment workspace epoch；
-4. 告知模型必须重新读取受影响文件；
-5. continuation 只引用新 boundary。
-
-## 7. 依赖顺序
+M0 只证明一条接受链：
 
 ```text
-PR A persistence authority
- ├─> PR B continuation correctness
- └─> PR C file finalize-only recovery
-
-PR B
- ├─> execution-profile binding
- └─> PR D hosted authority + owner lifecycle
-
-PR B + PR C
- └─> PR E checkpoint contracts
-      └─> PR F canonical checkpoint bundle
-           └─> PR G observe-only Git
-                └─> PR H capture + retention
-                     ├─> isolated restore
-                     └─> durable rebaseline
-
-execution-profile binding 与 PR D hosted authority/owner lifecycle 必须在 production
-auto-resume 默认开启前完成；PR D 也必须在 production checkpoint capture 默认开启前完成。
+authenticated storage-root owner
+→ create/reopen Maka-owned managed Git workspace
+→ durable exact receipt
+→ SQLite atomic epoch + baseline acceptance
+→ post-commit DB/Git/root-owner revalidation
+→ publish usable baseline
 ```
 
-## 8. 工程门槛
+M0 不接 Desktop、CLI、runtime host 或工具执行。Whole-root import 当前只恢复 storage-root identity 与
+SQLite ownership；既有 linked worktree 的路径迁移需要独立 relocation/rematerialization 协议。非空且未绑定的
+legacy DB 继续 fail closed，未来由显式、备份后、可审计的 root-binding maintenance flow 处理，不能藏在首次
+baseline open 中。
+
+### M1 — Execution admission 与环境可用性
+
+只允许 host 从 M0 成功返回的 accepted handle 取得工具 cwd，并证明：
+
+- managed owner 与 runtime host 的启动、drain、关闭顺序；
+- 每次执行前 exact instance/HEAD/tree/ownership revalidation；
+- ignored dependencies、`.env` 与 build scratch 使用明确 provisioning/overlay policy，不污染 canonical tree；
+- 外部修改 Maka-owned worktree 时检测 drift、fail closed 并 quarantine；
+- attached 与 managed execution profile 在类型和配置上不可静默互相 fallback。
+
+M1 拆成独立不变量，避免一次 PR 同时跨越 host lifecycle、runtime protocol 与 platform I/O：
+
+1. **M1.1 execution scope admission（当前切片）**：M0 只返回 owner-bound opaque handle；同一 owner 每次
+   execution 都在 drain residency 内重新证明 canonical head、Git receipt、HEAD/tree/ownership 与 root
+   identity，最后只签发 callback 生命周期内有效的 opaque scope，不公开 raw cwd。provisioning 固定为
+   `canonical_tree_only_v1`，`workspaceEffect` 固定为 `none`。同一 handle 可以并发多个只读 admission，
+   `close()` 必须等待全部 active scope drain；普通生产 admission 只做一次最终 Git verification，preliminary
+   verification 仅存在于配置 crash failpoint 的 production-shaped 测试路径；过期或伪造 scope 通过 typed
+   `ManagedWorkspaceExecutionAuthorityError` 的稳定 code fail closed；
+2. **M1.2 runtime-host composition**：建立 managed/attached typed profile、startup/drain/shutdown 顺序，并让
+   storage-internal worker bridge 只能用 active scope 解析 cwd；
+3. **M1.3 environment provisioning**：单独设计 ignored dependency、secret 与 scratch overlay。M1.1 不复制
+   `.env`、`node_modules` 或 build output，也不以 attached checkout silent fallback 掩盖能力缺失。
+
+M1.1 合同见
+[Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
+
+### M2 — Mutation version acceptance
+
+每个 mutating tool 使用 candidate ref/version 协议：
+
+1. T1 前冻结 execution profile、base workspace version 与 mutation identity；
+2. 工具只在 owned worktree 中执行；
+3. Git artifact owner 捕获并验证 candidate commit/tree；
+4. SQLite 在一个 authority transaction 中接受 tool outcome 与 successor workspace version；
+5. artifact orphan 可回收；canonical fact 已接受而 artifact 缺失时 fail closed；
+6. crash matrix 覆盖执行前后、candidate durable 前后、SQLite commit 前后与返回前复验。
+
+这一步取代旧的“先做通用 checkpoint contract，再接 observe-only Git carrier”。不得同时维护两套
+managed workspace version writer。
+
+### M3 — Workspace-bound continuation / resume
+
+Continuation boundary 同时绑定 immutable RuntimeEvent cursor 与 accepted workspace version/epoch：
+
+- planner 与 execution revalidation 读取同一 canonical boundary；
+- startup reopen 必须重新证明 exact Git artifact、storage root 与 owner；
+- operation effect 无法证明、artifact 漂移或 execution profile 不匹配时 park；
+- 自动 resume 仍由独立用户设置控制，默认关闭；手动恢复与自动恢复不能共享一个含糊开关。
+
+### M4 — Product workflows
+
+在 M0–M3 的事实与 owner 边界稳定后，再分别交付：
+
+- isolated restore，不覆盖用户当前目录；
+- explicit rebaseline，创建新 epoch 并要求模型重新读取；
+- publish/merge/undo、retention 与 orphan GC；
+- whole-root managed-workspace relocation；
+- replication/cross-device 与 multi-agent merge。
+
+每项都必须是独立 PR；不能借“恢复产品化”一次跨越 schema、runtime protocol、host lifecycle 与 platform I/O。
+
+## 5. 依赖顺序
+
+```text
+PR A recovery persistence authority (merged)
+└─> PR B continuation correctness (merged)
+
+Git-native workspace:
+M0.1 Git artifact owner (merged)
+  + M0.2 workspace version authority (merged)
+  + M0.3 managed owner lifecycle (merged)
+  └─> M0.4 baseline open bundle (merged)
+       └─> M1.1 execution scope admission (current)
+            └─> M1.2 runtime-host composition
+                 └─> M1.3 explicit environment provisioning
+                      └─> M2 mutation version acceptance
+                           └─> M3 workspace-bound continuation
+                                └─> M4 restore / rebaseline / publish / replication
+
+Independent maintenance gates before broad production enablement:
+  - legacy non-empty DB root-binding adoption
+  - whole-root managed-workspace relocation/rematerialization
+```
+
+旧 PR C–H 的论证可作为历史材料，但不再代表 `managed_worktree` 的施工依赖图；其中不具备生产消费者的
+generic checkpoint、observe-only carrier 与预设抽象不得迁入新主线。
+
+## 6. 工程门槛
 
 每个 PR 必须：
 
@@ -657,16 +658,16 @@ auto-resume 默认开启前完成；PR D 也必须在 production checkpoint capt
 - continuation claim verification 的 p50/p95 与每次 append 扫描 claim 的数量；长期应增加
   source/target/run 索引、局部验证或可失效的已验证缓存，避免退化为
   `O(claims × immutable writes)`；
-- checkpoint capture p50/p95；
+- managed mutation candidate capture/accept p50/p95；
 - `workspace_drift`、`mode_mismatch`、`artifact_missing` park 比例；
 - 自动恢复成功率必须把长命令、大仓库、dirty workspace 纳入分母。
 
-## 9. 不做的承诺
+## 7. 不做的承诺
 
 - PR A 不提供真实工具自动恢复；
 - PR B 不恢复 workspace；
-- PR C 不自动 redo stale before-state；
-- 无 Git 环境不提供 workspace snapshot；
-- Git carrier 不覆盖用户当前工作区；
+- M0 不把 managed worktree 交给生产工具；
+- attached checkout 不提供 managed 级 workspace continuity；
+- Maka-owned Git artifact 不覆盖用户当前 checkout；
 - 无法证明的 Bash/远程 API 副作用不自动重试；
 - process-crash transaction atomicity 不等于断电级 durability。

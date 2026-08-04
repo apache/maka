@@ -8,6 +8,7 @@ import {
   dailyUsageQuery,
   normalizeDailyReviewArchive,
   normalizeDailyReviewConfig,
+  parseDailyReviewArchiveId,
   localDayBoundsAt,
   localDayBoundsForInstant,
   pickDailyReviewSessions,
@@ -203,6 +204,15 @@ describe('Daily Review range contract', () => {
     assert.equal(dailyReviewArchiveId(day, 1), '2026-08-03-1d');
     assert.equal(dailyReviewArchiveId(day, 7), '2026-08-03-7d');
     assert.equal(dailyReviewArchiveId(day, 30), '2026-08-03-30d');
+  });
+
+  it('parses canonical identities without accepting impossible calendar dates', () => {
+    assert.deepEqual(parseDailyReviewArchiveId('2026-08-03-30d'), {
+      localDate: '2026-08-03',
+      range: 30,
+    });
+    assert.equal(parseDailyReviewArchiveId('2026-02-30-1d'), null);
+    assert.equal(parseDailyReviewArchiveId('2026-08-03-deep'), null);
   });
 
   it('maps legacy modes onto the range contract when reading', () => {

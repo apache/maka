@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from 'react';
+import { memo, useEffect, useState, type RefObject } from 'react';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -11,7 +11,7 @@ export interface PromptAnchorRailTurn {
 }
 
 export interface PromptAnchorRailProps {
-  turns: PromptAnchorRailTurn[];
+  turns: readonly PromptAnchorRailTurn[];
   /** The scroll container that holds the `[data-turn-id]` turn sections. */
   scrollRef: RefObject<HTMLElement | null>;
 }
@@ -23,10 +23,15 @@ export interface PromptAnchorRailProps {
  * scrolls the target turn into view; an IntersectionObserver highlights the
  * tick whose turn is currently at the top of the viewport.
  */
-export function PromptAnchorRail({ turns, scrollRef }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
-
+  // Rebuilding this observer costs one querySelector + observe per turn over
+  // the whole transcript, so it must not run per streamed token (#2030). What
+  // keeps it from running is the caller: ChatView hands back the same array
+  // while no rail-visible field moved. Keying the effect on that array is
+  // therefore both the cheap check and the thing that fails loudly if the
+  // caller ever stops reusing it.
   useEffect(() => {
     const root = scrollRef.current;
     if (!root || turns.length === 0) return;
@@ -97,4 +102,4 @@ export function PromptAnchorRail({ turns, scrollRef }: PromptAnchorRailProps): R
       })}
     </nav>
   );
-}
+});

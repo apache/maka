@@ -7,12 +7,41 @@ export type PlanExecutionStatus = (typeof PLAN_EXECUTION_STATUSES)[number];
 export const PLAN_STEP_STATUSES = ['pending', 'in_progress', 'completed', 'skipped'] as const;
 export type PlanStepStatus = (typeof PLAN_STEP_STATUSES)[number];
 
+export const PLAN_ENTITY_ID_MAX_CHARS = 128;
+export const PLAN_TEXT_MAX_BYTES = 16 * 1024;
+export const PLAN_LIFECYCLE_REASON_MAX_BYTES = 1024;
+export const PLAN_PROJECTION_ITEM_MAX_BYTES = 60 * 1024;
+export const PLAN_MAX_STEPS = 50;
+export const PLAN_MAX_FILES_PER_STEP = 50;
+export const PLAN_MAX_RISKS = 20;
+export const PLAN_STEP_TITLE_MAX_CHARS = 30;
+
+const PLAN_ENTITY_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{1,${PLAN_ENTITY_ID_MAX_CHARS}}$`);
+const PLAN_TEXT_ENCODER = new TextEncoder();
+
+export function isCanonicalPlanEntityId(value: string): boolean {
+  return PLAN_ENTITY_ID_PATTERN.test(value);
+}
+
+export function planEncodedByteLength(value: unknown): number {
+  return PLAN_TEXT_ENCODER.encode(JSON.stringify(value) ?? 'null').byteLength;
+}
+
+export function isPlanTextWithinLimit(value: string, maxBytes = PLAN_TEXT_MAX_BYTES): boolean {
+  return PLAN_TEXT_ENCODER.encode(value).byteLength <= maxBytes;
+}
+
 export interface PlanStepDefinition {
   id: string;
   title: string;
   description: string;
   files?: string[];
   complexity?: 'low' | 'medium' | 'high';
+}
+
+export interface LegacyPlanProjection {
+  /** The pre-Host ledger required bounded content or identity projection. */
+  truncated: true;
 }
 
 export interface PlanProposal {
@@ -30,6 +59,7 @@ export interface PlanProposal {
   risks?: string[];
   status: PlanProposalStatus;
   submittedAt: number;
+  legacyProjection?: LegacyPlanProjection;
 }
 
 export interface PlanExecutionStep extends PlanStepDefinition {
@@ -52,6 +82,7 @@ export interface PlanExecution {
   interruptedAt?: number;
   cancelReason?: string;
   interruptionReason?: string;
+  legacyProjection?: LegacyPlanProjection;
 }
 
 export interface PlanSessionState {
@@ -66,9 +97,13 @@ export interface PlanSessionState {
 
 interface PlanEventBase {
   id: string;
+  /** Fingerprint of the mutation input used to reconcile an exact retry. */
+  operationFingerprint?: string;
   sessionId: string;
   ts: number;
   storeVersion: number;
+  /** Read-time compatibility marker; new canonical events never persist it. */
+  legacyProjection?: LegacyPlanProjection;
 }
 
 export type PlanEvent =
@@ -117,6 +152,7 @@ export type PlanEvent =
     });
 
 export interface SubmitPlanProposalInput {
+  operationId?: string;
   sessionId: string;
   turnId: string;
   title: string;
@@ -126,7 +162,61 @@ export interface SubmitPlanProposalInput {
   sourceExecutionId?: string;
 }
 
+export function isPlanProposalLifecycleAdmissible(
+  input: Pick<SubmitPlanProposalInput, 'title' | 'overview' | 'steps' | 'risks'>,
+): boolean {
+  const id = 'x'.repeat(PLAN_ENTITY_ID_MAX_CHARS);
+  const timestamp = Number.MAX_SAFE_INTEGER;
+  const proposal: PlanProposal = {
+    planId: id,
+    proposalId: id,
+    sessionId: id,
+    turnId: id,
+    revision: Number.MAX_SAFE_INTEGER,
+    supersedesProposalId: id,
+    sourceExecutionId: id,
+    title: input.title,
+    ...(input.overview ? { overview: input.overview } : {}),
+    steps: structuredClone(input.steps),
+    ...(input.risks ? { risks: structuredClone(input.risks) } : {}),
+    status: 'pending_approval',
+    submittedAt: timestamp,
+  };
+  const execution = worstCasePlanExecution(proposal, id, timestamp);
+  return (
+    planEncodedByteLength({ kind: 'proposal', proposal }) <= PLAN_PROJECTION_ITEM_MAX_BYTES &&
+    planEncodedByteLength({ kind: 'execution', execution }) <= PLAN_PROJECTION_ITEM_MAX_BYTES
+  );
+}
+
+export function worstCasePlanExecution(
+  proposal: Pick<PlanProposal, 'planId' | 'proposalId' | 'sessionId' | 'steps'>,
+  executionId: string,
+  timestamp = Number.MAX_SAFE_INTEGER,
+): PlanExecution {
+  const reason = 'x'.repeat(PLAN_LIFECYCLE_REASON_MAX_BYTES);
+  return {
+    executionId,
+    planId: proposal.planId,
+    proposalId: proposal.proposalId,
+    sessionId: proposal.sessionId,
+    status: 'cancelled',
+    steps: proposal.steps.map((step) => ({
+      ...structuredClone(step),
+      status: 'pending',
+      updatedAt: timestamp,
+    })),
+    startedAt: timestamp,
+    updatedAt: timestamp,
+    interruptedAt: timestamp,
+    interruptionReason: reason,
+    cancelledAt: timestamp,
+    cancelReason: reason,
+  };
+}
+
 export interface ApprovePlanProposalInput {
+  operationId?: string;
   sessionId: string;
   proposalId: string;
   expectedRevision: number;
@@ -134,17 +224,20 @@ export interface ApprovePlanProposalInput {
 }
 
 export interface RequestPlanRevisionInput {
+  operationId?: string;
   sessionId: string;
   proposalId: string;
 }
 
 export interface AbandonPlanProposalInput {
+  operationId?: string;
   sessionId: string;
   proposalId: string;
   reason: string;
 }
 
 export interface UpdatePlanExecutionInput {
+  operationId?: string;
   sessionId: string;
   executionId: string;
   steps: Array<{
@@ -156,6 +249,7 @@ export interface UpdatePlanExecutionInput {
 }
 
 export interface CancelPlanExecutionInput {
+  operationId?: string;
   sessionId: string;
   executionId: string;
   reason: string;
@@ -166,16 +260,100 @@ export interface PlanMutationResult {
   state: PlanSessionState;
 }
 
+export const PLAN_USER_ABANDON_REASON = 'User exited Plan Mode before approval.';
+export const PLAN_USER_CANCEL_REASON = 'User abandoned the interrupted plan.';
+
+export type PlanUserControlInput =
+  | {
+      readonly kind: 'request_revision' | 'abandon_proposal';
+      readonly sessionId: string;
+      readonly proposalId: string;
+      readonly operationId: string;
+    }
+  | {
+      readonly kind: 'approve_proposal';
+      readonly sessionId: string;
+      readonly proposalId: string;
+      readonly expectedRevision: number;
+      readonly expectedStoreVersion: number;
+      readonly operationId: string;
+    }
+  | {
+      readonly kind: 'resume_execution' | 'cancel_execution';
+      readonly sessionId: string;
+      readonly executionId: string;
+      readonly operationId: string;
+    };
+
+export function planUserControlMutationInput(
+  input: PlanUserControlInput,
+):
+  | RequestPlanRevisionInput
+  | AbandonPlanProposalInput
+  | ApprovePlanProposalInput
+  | CancelPlanExecutionInput
+  | { operationId: string; sessionId: string; executionId: string } {
+  switch (input.kind) {
+    case 'request_revision':
+      return {
+        operationId: input.operationId,
+        sessionId: input.sessionId,
+        proposalId: input.proposalId,
+      };
+    case 'abandon_proposal':
+      return {
+        operationId: input.operationId,
+        sessionId: input.sessionId,
+        proposalId: input.proposalId,
+        reason: PLAN_USER_ABANDON_REASON,
+      };
+    case 'approve_proposal':
+      return {
+        operationId: input.operationId,
+        sessionId: input.sessionId,
+        proposalId: input.proposalId,
+        expectedRevision: input.expectedRevision,
+        expectedStoreVersion: input.expectedStoreVersion,
+      };
+    case 'resume_execution':
+      return {
+        operationId: input.operationId,
+        sessionId: input.sessionId,
+        executionId: input.executionId,
+      };
+    case 'cancel_execution':
+      return {
+        operationId: input.operationId,
+        sessionId: input.sessionId,
+        executionId: input.executionId,
+        reason: PLAN_USER_CANCEL_REASON,
+      };
+  }
+}
+
 export interface PlanStore {
   readState(sessionId: string): Promise<PlanSessionState>;
+  readOperationReceipt(
+    sessionId: string,
+    operationId: string,
+    operationInput: unknown,
+  ): Promise<PlanEvent | undefined>;
   submitProposal(input: SubmitPlanProposalInput): Promise<PlanMutationResult>;
   requestRevision(input: RequestPlanRevisionInput): Promise<PlanMutationResult>;
   abandonProposal(input: AbandonPlanProposalInput): Promise<PlanMutationResult>;
   approveProposal(input: ApprovePlanProposalInput): Promise<PlanMutationResult>;
   updateExecution(input: UpdatePlanExecutionInput): Promise<PlanMutationResult>;
   cancelExecution(input: CancelPlanExecutionInput): Promise<PlanMutationResult>;
-  interruptActiveExecution(sessionId: string, reason: string): Promise<PlanMutationResult | null>;
-  resumeExecution(sessionId: string, executionId: string): Promise<PlanMutationResult>;
+  interruptActiveExecution(
+    sessionId: string,
+    reason: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult | null>;
+  resumeExecution(
+    sessionId: string,
+    executionId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult>;
 }
 
 export class PlanConflictError extends Error {

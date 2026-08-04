@@ -123,11 +123,11 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
               {copy.descriptionBeforeRetry} <strong>{copy.retry}</strong> {copy.descriptionBeforeReload}{' '}
               <strong>{copy.reload}</strong> {copy.descriptionAfterReload}
             </p>
-            <pre className="maka-error-stack" aria-label={copy.errorDetails}>
+            <pre className="maka-error-stack" role="group" aria-label={copy.errorDetails}>
               {safeStack}
             </pre>
             {errorInfo?.componentStack && (
-              <pre className="maka-error-stack" aria-label={copy.componentStack}>
+              <pre className="maka-error-stack" role="group" aria-label={copy.componentStack}>
                 {redactSecrets(errorInfo.componentStack.trim())}
               </pre>
             )}

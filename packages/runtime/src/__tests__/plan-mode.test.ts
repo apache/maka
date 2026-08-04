@@ -13,6 +13,7 @@ import type { MakaTool } from '../tool-runtime.js';
 describe('Plan Mode tool surface', () => {
   test('requires plain-text step titles and descriptions', () => {
     const submitPlan = buildSubmitPlanTool({} as never);
+    assert.equal(submitPlan.recoveryMode, 'idempotent');
     const schema = submitPlan.parameters as {
       safeParse(input: unknown): { success: boolean };
     };
@@ -41,6 +42,45 @@ describe('Plan Mode tool surface', () => {
       }).success,
       false,
     );
+    assert.equal(
+      schema.safeParse({
+        title: 'Plan',
+        steps: [{ id: 'step one', title: 'Inspect code', description: 'Read files.' }],
+      }).success,
+      false,
+    );
+    assert.equal(
+      schema.safeParse({
+        title: 'Plan',
+        steps: [
+          {
+            id: 'inspect',
+            title: 'Inspect code',
+            description: 'x'.repeat(16 * 1024 + 1),
+          },
+        ],
+      }).success,
+      false,
+    );
+    assert.equal(
+      schema.safeParse({
+        title: 'Plan',
+        steps: Array.from({ length: 16 }, (_, index) => ({
+          id: `step-${index}`,
+          title: `Step ${index}`,
+          description: 'x'.repeat(4_000),
+        })),
+      }).success,
+      false,
+    );
+    const lifecycleSteps = (descriptionBytes: number) =>
+      Array.from({ length: 50 }, (_, index) => ({
+        id: `step-${index}`,
+        title: `Step ${index}`,
+        description: 'x'.repeat(descriptionBytes),
+      }));
+    assert.equal(schema.safeParse({ title: 'Plan', steps: lifecycleSteps(900) }).success, true);
+    assert.equal(schema.safeParse({ title: 'Plan', steps: lifecycleSteps(1_100) }).success, false);
     assert.match(renderPlanModePrompt(), /plain text without Markdown formatting/);
   });
 

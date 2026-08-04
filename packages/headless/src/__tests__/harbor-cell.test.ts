@@ -23,12 +23,14 @@ import {
 import {
   BackendRegistry,
   PiAgentBackend,
+  buildToolResultArchiveResourceRef,
   type AgentBackend,
   type AiSdkBackendInput,
   type BackendFactoryContext,
   type InvocationResult,
   type PiAgentTransport,
   type ProviderRequestCaptureRecord,
+  type MakaTool,
   type SessionStore,
   type SynthesisCacheWriteInput,
   type ToolResultArchiveReader,
@@ -48,6 +50,8 @@ import {
   buildHarborCellContextBudgetBackendOptions,
   buildHarborCellContextBudgetPolicySnapshot,
   buildHarborCellTaskLedgerExperimentPolicy,
+  buildHarborCellToolResultArchiveResourceReader,
+  type RunHarborCellEnv,
   harborCellMaxStepsFromEnv,
   harborCellSoftTimeoutMsFromEnv,
   createHarborCellLocalToolExecutor,
@@ -3556,6 +3560,181 @@ describe('runHarborCell', () => {
     });
   });
 
+  test('Harbor env entrypoint binds ArchiveRead whenever it archives tool results', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const context = await runHarborCellCapturingBackendContext({
+        MAKA_INSTRUCTION: 'solve',
+        MAKA_WORKDIR: workspaceDir,
+        MAKA_OUTPUT_DIR: outputDir,
+        MAKA_STORAGE_ROOT: storageRoot,
+      });
+
+      assert.ok(
+        buildHarborCellContextBudgetBackendOptions({ MAKA_OUTPUT_DIR: outputDir })
+          .archiveToolResult,
+        'the default Harbor output dir resolves an archive dir, so the writer is on',
+      );
+      assert.ok(
+        context.productToolSurface?.tools.some((tool) => tool.name === 'ArchiveRead'),
+        'archived placeholders instruct the model to call ArchiveRead, so it must be bound',
+      );
+    });
+  });
+
+  test('Harbor env entrypoint leaves ArchiveRead unbound when it archives nothing', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const env: RunHarborCellEnv = {
+        MAKA_INSTRUCTION: 'solve',
+        MAKA_WORKDIR: workspaceDir,
+        MAKA_OUTPUT_DIR: outputDir,
+        MAKA_STORAGE_ROOT: storageRoot,
+        MAKA_CONTEXT_BUDGET: 'off',
+      };
+      const context = await runHarborCellCapturingBackendContext(env);
+
+      assert.equal(
+        buildHarborCellContextBudgetBackendOptions(env).archiveToolResult,
+        undefined,
+        'context budget off disables the archive writer',
+      );
+      assert.equal(
+        context.productToolSurface?.tools.some((tool) => tool.name === 'ArchiveRead'),
+        false,
+        'a cell that archives nothing must not offer the model a tool with no readable refs',
+      );
+    });
+  });
+
+  test('Harbor ArchiveRead reads back a tool result the cell archived', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const env: RunHarborCellEnv = {
+        MAKA_INSTRUCTION: 'solve',
+        MAKA_WORKDIR: workspaceDir,
+        MAKA_OUTPUT_DIR: outputDir,
+        MAKA_STORAGE_ROOT: storageRoot,
+      };
+      const context = await runHarborCellCapturingBackendContext(env);
+      const archiveToolResult = buildHarborCellContextBudgetBackendOptions(env).archiveToolResult;
+      assert.ok(archiveToolResult);
+
+      const serializedResult = JSON.stringify({ body: 'archived tool output' });
+      const bodySha256 = sha256(serializedResult);
+      const originalBytes = Buffer.byteLength(serializedResult, 'utf8');
+      const archived = await archiveToolResult({
+        sessionId: 'session-1',
+        runtimeEventId: 'rt-result',
+        turnId: 'turn-1',
+        toolCallId: 'tool-1',
+        toolName: 'Read',
+        result: { body: 'archived tool output' },
+        serializedResult,
+        originalEstimatedTokens: 99,
+        originalBytes,
+        rewriteVersion: 1,
+        reason: 'stale_tool_result_pruned_before_compact',
+        bodySha256,
+      });
+      assert.ok(archived?.artifactId);
+
+      const archiveRead = context.productToolSurface?.tools.find(
+        (tool) => tool.name === 'ArchiveRead',
+      );
+      assert.ok(archiveRead);
+      const output = (await archiveRead.impl(
+        {
+          ref: buildToolResultArchiveResourceRef({
+            artifactId: archived.artifactId,
+            bodySha256,
+            originalBytes,
+          }),
+          operation: 'read',
+        },
+        {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          cwd: workspaceDir,
+          toolCallId: 'archive-read-1',
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+        },
+      )) as { ok: boolean; content?: string };
+
+      assert.equal(output.ok, true, 'the ref the placeholder carries must resolve');
+      assert.match(String(output.content), /archived tool output/);
+    });
+  });
+
+  test('Harbor archive resource reader refuses every way a ref can fail to match', async () => {
+    await withDirs(async ({ outputDir }) => {
+      const env: RunHarborCellEnv = { MAKA_OUTPUT_DIR: outputDir };
+      const archiveToolResult = buildHarborCellContextBudgetBackendOptions(env).archiveToolResult;
+      const reader = buildHarborCellToolResultArchiveResourceReader(env);
+      assert.ok(archiveToolResult);
+      assert.ok(reader);
+
+      const serializedResult = JSON.stringify({ body: 'archived' });
+      const bodySha256 = sha256(serializedResult);
+      const originalBytes = Buffer.byteLength(serializedResult, 'utf8');
+      const archived = await archiveToolResult({
+        sessionId: 'session-1',
+        runtimeEventId: 'rt-result',
+        turnId: 'turn-1',
+        toolCallId: 'tool-1',
+        toolName: 'Read',
+        result: { body: 'archived' },
+        serializedResult,
+        originalEstimatedTokens: 9,
+        originalBytes,
+        rewriteVersion: 1,
+        reason: 'stale_tool_result_pruned_before_compact',
+        bodySha256,
+      });
+      assert.ok(archived?.artifactId);
+      // Mirrors the runtime resource path, which always addresses an archive by its
+      // exact recorded size; Harbor reads the whole record, so maxBytes never binds.
+      const valid = {
+        artifactId: archived.artifactId,
+        sessionId: 'session-1',
+        bodySha256,
+        originalBytes,
+        maxBytes: originalBytes,
+      };
+
+      const cases: readonly [string, typeof valid, string][] = [
+        ['escapes the archive dir', { ...valid, artifactId: '../escape.json' }, 'not_allowed'],
+        [
+          'names an artifact that was never written',
+          { ...valid, artifactId: 'absent.json' },
+          'not_found',
+        ],
+        ['belongs to another session', { ...valid, sessionId: 'session-2' }, 'session_mismatch'],
+        [
+          'claims a different size',
+          { ...valid, originalBytes: originalBytes + 1 },
+          'size_mismatch',
+        ],
+        [
+          'claims a different body hash',
+          { ...valid, bodySha256: sha256('other') },
+          'source_mismatch',
+        ],
+      ];
+      for (const [label, input, reason] of cases) {
+        const result = await reader.readArchivedToolResultResource(input);
+        assert.equal(result.ok, false, label);
+        assert.equal(result.ok === false && result.reason, reason, label);
+      }
+
+      await writeFile(
+        join(outputDir, 'tool-result-archives', archived.artifactId),
+        'not json',
+        'utf8',
+      );
+      const corrupt = await reader.readArchivedToolResultResource(valid);
+      assert.equal(corrupt.ok === false && corrupt.reason, 'corrupt');
+    });
+  });
+
   test('Harbor context budget env rejects explicit malformed positive integers', async () => {
     for (const raw of ['abc', '0', '-1', '1x']) {
       await withDirs(async ({ workspaceDir, artifactStore }) => {
@@ -4671,6 +4850,47 @@ describe('createHarborHttpToolExecutor', () => {
     }
   });
 
+  test('applies the operator command-timeout floor over the bridge too', async () => {
+    // MAKA_CELL_COMMAND_TIMEOUT_MS reached the local executor and was dropped on
+    // the floor here, so the same env var raised the per-command ceiling in
+    // container mode and did nothing in host-cell mode — the mode the benchmark
+    // actually runs. maka_agent.py forwards it either way.
+    const previousFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    try {
+      globalThis.fetch = async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ exitCode: 0, stdout: '', stderr: '' }), {
+          status: 200,
+        });
+      };
+      const executor = createMockedHarborHttpToolExecutor({
+        MAKA_HARBOR_TOOL_EXECUTOR_URL: 'http://127.0.0.1:1',
+        MAKA_HARBOR_TOOL_EXECUTOR_TOKEN: 'test-token',
+        MAKA_CELL_COMMAND_TIMEOUT_MS: '600000',
+      });
+
+      // A command that asks for nothing inherits the operator's floor.
+      await executor.exec({ command: 'make', cwd: '/workspace' });
+      assert.equal(bodies.at(-1)?.timeoutMs, 600_000);
+
+      // A command that asks for its own timeout still owns it, in both directions.
+      await executor.exec({ command: 'ls', cwd: '/workspace', timeoutMs: 5_000 });
+      assert.equal(bodies.at(-1)?.timeoutMs, 5_000);
+
+      // Unset leaves the field off entirely so the bridge's own default stands as
+      // the single fallback rather than being shadowed by a second one here.
+      const bare = createMockedHarborHttpToolExecutor({
+        MAKA_HARBOR_TOOL_EXECUTOR_URL: 'http://127.0.0.1:1',
+        MAKA_HARBOR_TOOL_EXECUTOR_TOKEN: 'test-token',
+      });
+      await bare.exec({ command: 'make', cwd: '/workspace' });
+      assert.equal(Object.hasOwn(bodies.at(-1) ?? {}, 'timeoutMs'), false);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   test('uses a long-running dispatcher without replacing active-tool cancellation', async () => {
     const previousFetch = globalThis.fetch;
     const controller = new AbortController();
@@ -4711,7 +4931,6 @@ describe('createHarborHttpToolExecutor', () => {
         command: 'sleep until cancelled',
         cwd: '/workspace',
         timeoutMs: 600_000,
-        timeoutSec: 600,
       });
     } finally {
       globalThis.fetch = previousFetch;
@@ -4837,6 +5056,34 @@ async function registerProjectedAiSdkBackend(
       snapshotImage: createReadImageSnapshotter(context.artifactStore),
     }),
   });
+}
+
+/**
+ * Drives the real env entrypoint and returns the backend context it assembled, so
+ * assertions observe production wiring rather than a projection rebuilt by the test.
+ */
+async function runHarborCellCapturingBackendContext(
+  env: RunHarborCellEnv,
+): Promise<HeadlessBackendContext> {
+  const seen: HeadlessBackendContext[] = [];
+  await runHarborCellFromEnv(
+    { MAKA_BACKEND: 'ai-sdk', MAKA_PROVIDER: 'openai', MAKA_MODEL: 'gpt-4o-mini', ...env },
+    {
+      registerBackends: (registry, context) => {
+        seen.push(context);
+        registry.register(
+          'ai-sdk',
+          (ctx) =>
+            new CellReportingBackend(
+              { sessionId: ctx.sessionId, header: ctx.header, store: ctx.store },
+              'ai-sdk',
+            ),
+        );
+      },
+    },
+  );
+  assert.ok(seen[0], 'expected the env entrypoint to register a backend');
+  return seen[0];
 }
 
 function testIdFactory(): () => string {

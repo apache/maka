@@ -125,7 +125,7 @@ export function ProviderCatalogPage(props: {
               data-status="ready"
               data-logged-in={card.isLoggedIn ? 'true' : undefined}
               startContent={<ProviderLogo type={card.providerType} />}
-              label={<span aria-label={providerCopy.oauthSection.cardAria(card.name, card.status, card.description)}>{card.name}</span>}
+              label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(card.name, card.status, card.description)}>{card.name}</span>}
               description={card.description}
               endContent={<ChevronRight size={15} aria-hidden="true" />}
               onClick={() => props.onPick({
@@ -145,7 +145,7 @@ export function ProviderCatalogPage(props: {
                 data-provider={type}
                 data-status="ready"
                 startContent={<ProviderLogo type={type} />}
-                label={<span aria-label={catalogCopy.cardAria(display.name, display.description)}>{display.name}</span>}
+                label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={catalogCopy.cardAria(display.name, display.description)}>{display.name}</span>}
                 description={display.description}
                 endContent={<ChevronRight size={15} aria-hidden="true" />}
                 onClick={() => props.onPick({ method: 'credentials', providerType: type, name: display.name })}

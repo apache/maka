@@ -92,8 +92,8 @@ supply their own boundary. See
    user's workspace directory. Its load-bearing boundary is the OS
    user account plus filesystem controls: directory mode 0o700,
    file mode 0o600, atomic writes, and no symlink/traversal escape.
-   Subscription OAuth tokens (Claude, Codex, GitHub Copilot, and the
-   Cursor/Antigravity previews) live in the same store: `credentials.json`
+   Subscription OAuth tokens (Claude, Codex, GitHub Copilot, xAI, and the
+   Antigravity preview) live in the same store: `credentials.json`
    is the single authority every surface — Desktop, TUI, headless —
    reads and writes, under the same OS-account and 0o700/0o600 boundary
    as other runtime credentials. Electron safeStorage is not part of

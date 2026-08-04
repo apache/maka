@@ -3,7 +3,7 @@ import { normalizeUserSessionName } from '@maka/core';
 
 const MAX_SOURCE_BYTES = 8 * 1024;
 const MAX_FALLBACK_CODE_POINTS = 42;
-const TITLE_GENERATION_TIMEOUT_MS = 15_000;
+export const SESSION_TITLE_GENERATION_TIMEOUT_MS = 15_000;
 
 export function sessionTitleSource(input: { text: string; displayText?: string }): string {
   const raw = input.displayText ?? input.text;
@@ -49,7 +49,7 @@ export async function generateSessionTitle(input: {
     const generateText: GenerateText =
       input.generateText ??
       (async (options) => aiGenerateText(options as Parameters<typeof aiGenerateText>[0]));
-    const abortSignal = AbortSignal.timeout(input.timeoutMs ?? TITLE_GENERATION_TIMEOUT_MS);
+    const abortSignal = AbortSignal.timeout(input.timeoutMs ?? SESSION_TITLE_GENERATION_TIMEOUT_MS);
     let onAbort!: () => void;
     const timeout = new Promise<never>((_resolve, reject) => {
       onAbort = () => reject(abortSignal.reason);
@@ -58,7 +58,7 @@ export async function generateSessionTitle(input: {
     const result = await Promise.race([
       generateText({
         model: input.model,
-        prompt: `Create a descriptive 5–10 word title for the user message below. Use the user's language; for Chinese and similar languages, use an equivalently brief natural title. Output only the title.\n\n${input.sourceText}`,
+        prompt: buildSessionTitlePrompt(input.sourceText),
         ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
         maxOutputTokens: 1024,
         abortSignal,
@@ -72,7 +72,11 @@ export async function generateSessionTitle(input: {
   }
 }
 
-function cleanGeneratedSessionTitle(text: string): string | undefined {
+export function buildSessionTitlePrompt(sourceText: string): string {
+  return `Create a descriptive 5–10 word title for the user message below. Use the user's language; for Chinese and similar languages, use an equivalently brief natural title. Output only the title.\n\n${sourceText}`;
+}
+
+export function cleanGeneratedSessionTitle(text: string): string | undefined {
   const firstLine = text
     .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '')
     .split(/\r?\n/)

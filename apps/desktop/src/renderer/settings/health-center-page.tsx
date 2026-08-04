@@ -90,11 +90,13 @@ export function HealthCenterPage() {
   return (
     <SettingsPage>
       <SettingsSection
-        description={(
-          <>
-            {copy.subtitle} <strong>{copy.validationWarning}</strong>
-          </>
-        )}
+        /* The header used to name the internal layer taxonomy — 配置 · 验证 ·
+           权限 · 功能 · 操作审批 · 记忆 · 运行态 · 存储 — and then draw the
+           distinction 「验证通过 ≠ 运行可用」 in bold. Both are how the health
+           model is built, not what the user came to find out. The layers are
+           still the page's own subheadings, where they read as grouping rather
+           than as a schema. */
+        description={copy.subtitle}
         action={(
           <div className="settingsFormRowControlCluster">
             <small className="settingsHealthMetaLabel">
@@ -109,7 +111,7 @@ export function HealthCenterPage() {
           </div>
         )}
       >
-        <p className="settingsHealthSummaryLine" aria-label={copy.summaryAria}>
+        <p className="settingsHealthSummaryLine" role="group" aria-label={copy.summaryAria}>
           {summaryParts.map((part) => (
             <span key={part.key} data-tone={part.count > 0 ? part.tone : 'neutral'}>
               {part.label} {part.count}
@@ -174,8 +176,24 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
           <span>{copy.signalMessage(signal)}</span>
           {detail && <small>{detail}</small>}
           <span className="settingsHealthSignalMeta">
-            <span>{copy.source}{copy.sources[signal.source]}</span>
-            <span>{copy.checked}<RelativeTime ts={signal.checkedAt} /></span>
+            {/* UX audit (owner msg `30f736ed`): every row used to repeat
+                「来源：能力快照 · 读取：1秒钟前」 under the header's own
+                「最近一次读取」.
+
+                Measured before cutting, because the spec asked whether any row
+                genuinely differs: across 14 signals every `checkedAt` was
+                exactly the snapshot's, delta 0 — so the per-row timestamp was
+                the same fact printed 14 more times, and it goes.
+
+                Source is not the same story: 12 rows read from the capability
+                snapshot, but one is a live connection test and one a runtime
+                probe, and "this was actually exercised" is worth saying. So it
+                shows only where it is not the page's default reading — the two
+                rows that carry information keep it, the twelve repetitions
+                stop. */}
+            {signal.source !== 'capability_snapshot' && (
+              <span>{copy.source}{copy.sources[signal.source]}</span>
+            )}
             {signal.blocksSend && <span data-tone="destructive">{copy.blocksSend}</span>}
             {signal.blocksCapability && <span data-tone="warning">{copy.blocksCapability}</span>}
           </span>

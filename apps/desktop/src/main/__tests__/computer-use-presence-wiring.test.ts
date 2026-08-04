@@ -317,14 +317,14 @@ describe('Computer Use presence is reachable from production', () => {
  */
 test('a lock reaches the tool layer through the real host and backend selection', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'maka-cu-lock-wire-'));
-  const binaryPath = join(dir, 'cua-driver');
+  const binaryPath = join(dir, 'maka-cu');
   writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n');
   chmodSync(binaryPath, 0o755);
   const manifestPath = join(dir, 'bundled-tools.json');
   writeFileSync(
     manifestPath,
     JSON.stringify({
-      cuaDriver: {
+      makaCu: {
         binarySha256: createHash('sha256').update(readFileSync(binaryPath)).digest('hex'),
         distributionReady: true,
       },

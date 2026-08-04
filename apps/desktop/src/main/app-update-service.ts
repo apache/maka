@@ -1,5 +1,5 @@
 import electronUpdater from 'electron-updater';
-import type { AppUpdater } from 'electron-updater';
+import type { AppUpdater, UpdateCheckResult } from 'electron-updater';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 
 export type AppUpdateProgress = {
@@ -34,30 +34,52 @@ export type AppUpdateStatus =
       releaseName?: string;
       downloadedFile?: string;
     }
-  | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
+  | { state: 'installing'; currentVersion: string; latestVersion: string }
+  | {
+      state: 'error';
+      currentVersion: string;
+      message: string;
+      operation: 'check' | 'download' | 'install';
+      latestVersion?: string;
+    };
+
+export type AppUpdateInstallRequest = {
+  /** User consent from the trusted desktop renderer; this is a UX boundary, not a security boundary. */
+  allowInterruptActiveTasks: boolean;
+};
+
+export type AppUpdateInstallResult =
+  | { ok: true }
+  | { ok: false; reason: 'active_tasks' }
+  | { ok: false; reason: 'not_downloaded' | 'install_failed' };
 
 export interface AppUpdateService {
+  start(): void;
+  dispose(): void;
   getStatus(): AppUpdateStatus;
-  checkForUpdates(): Promise<AppUpdateStatus>;
-  downloadUpdate(): Promise<AppUpdateStatus>;
-  installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }>;
+  retryUpdateDownload(): Promise<AppUpdateStatus>;
+  installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
   openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }>;
 }
 
 interface AppUpdateServiceDeps {
   currentVersion: string;
   isPackaged: boolean;
-  platform: NodeJS.Platform;
-  arch: string;
   openExternal(url: string): Promise<void>;
   updater?: AppUpdater;
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
+  hasActiveTasks: () => boolean;
+  clock?: {
+    setTimeout(callback: () => void, delayMs: number): unknown;
+    clearTimeout(handle: unknown): void;
+  };
 }
 
 const RELEASES_URL = 'https://github.com/Maka-Agent/maka-agent/releases/latest';
-const { autoUpdater } = electronUpdater;
+const FIRST_UPDATE_CHECK_DELAY_MS = 10_000;
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');
@@ -148,21 +170,70 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   let status: AppUpdateStatus = { state: 'idle', currentVersion: deps.currentVersion };
   let latestInfo: UpdateInfo | undefined;
   let checkInFlight: Promise<AppUpdateStatus> | null = null;
-  let downloadInFlight: Promise<AppUpdateStatus> | null = null;
-  const updater = deps.updater ?? autoUpdater;
+  let activeDownload: {
+    promise: Promise<string[]>;
+    cancellationToken?: UpdateCheckResult['cancellationToken'];
+    cancelledForRetry: boolean;
+  } | undefined;
+  let checkTimer: unknown;
+  let started = false;
+  let disposed = false;
+  // Resolve Electron's singleton lazily so tests can inject an updater without
+  // constructing electron-updater's AppAdapter in a plain Node process.
+  const updater = deps.updater ?? electronUpdater.autoUpdater;
+  const clock = deps.clock ?? {
+    setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  };
 
   const publish = (next: AppUpdateStatus): AppUpdateStatus => {
     status = next;
     deps.onStatusChange?.(next);
     return next;
   };
+  const currentStatus = (): AppUpdateStatus => status;
 
   const latestVersion = () =>
-    status.state === 'available' || status.state === 'downloading' || status.state === 'downloaded' || status.state === 'error'
+    status.state === 'available' || status.state === 'downloading' || status.state === 'downloaded' ||
+    status.state === 'installing' || status.state === 'error'
       ? status.latestVersion
       : updateInfoVersion(latestInfo);
 
-  updater.autoDownload = false;
+  const publishError = (
+    operation: Extract<AppUpdateStatus, { state: 'error' }>['operation'],
+    error: unknown,
+  ): AppUpdateStatus => publish({
+    state: 'error',
+    currentVersion: deps.currentVersion,
+    latestVersion: latestVersion(),
+    operation,
+    message: error instanceof Error ? error.message : String(error),
+  });
+
+  const trackAutoDownload = (result: UpdateCheckResult | null): void => {
+    if (!result?.downloadPromise) return;
+    const tracked = {
+      promise: result.downloadPromise,
+      cancellationToken: result.cancellationToken,
+      cancelledForRetry: false,
+    };
+    activeDownload = tracked;
+    void tracked.promise
+      .catch((error) => {
+        if (
+          activeDownload === tracked &&
+          !tracked.cancelledForRetry &&
+          status.state !== 'error'
+        ) {
+          publishError('download', error);
+        }
+      })
+      .finally(() => {
+        if (activeDownload === tracked) activeDownload = undefined;
+      });
+  };
+
+  updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
   updater.allowPrerelease = false;
   updater.logger = null;
@@ -215,82 +286,113 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     });
   });
   updater.on('error', (error) => {
-    publish({
-      state: 'error',
-      currentVersion: deps.currentVersion,
-      latestVersion: latestVersion(),
-      message: error instanceof Error ? error.message : String(error),
-    });
+    const operation = status.state === 'installing'
+      ? 'install'
+      : status.state === 'available' || status.state === 'downloading'
+        ? 'download'
+        : 'check';
+    publishError(operation, error);
   });
 
-  async function downloadUpdate(): Promise<AppUpdateStatus> {
+  async function checkForUpdates(allowDuringDownload = false): Promise<AppUpdateStatus> {
     if (deps.mockLatestVersion) {
-      return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, deps.mockState ?? 'downloaded'));
-    }
-    if (!deps.isPackaged) return status;
-    if (status.state === 'downloaded') return status;
-    if (downloadInFlight) return downloadInFlight;
-    const version = latestVersion() ?? deps.currentVersion;
-    publish({
-      state: 'downloading',
-      currentVersion: deps.currentVersion,
-      latestVersion: version,
-      progress: { percent: 0 },
-    });
-    downloadInFlight = updater
-      .downloadUpdate()
-      .then(() => status)
-      .catch((error) => publish({
-        state: 'error',
-        currentVersion: deps.currentVersion,
-        latestVersion: version,
-        message: error instanceof Error ? error.message : String(error),
-      }))
-      .finally(() => {
-        downloadInFlight = null;
-      });
-    return downloadInFlight;
-  }
-
-  async function checkForUpdates(): Promise<AppUpdateStatus> {
-    if (deps.mockLatestVersion) {
-      const next = mockStatus(deps.currentVersion, deps.mockLatestVersion, deps.mockState ?? 'downloading');
-      publish(next);
-      return next.state === 'available' ? downloadUpdate() : next;
+      return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, deps.mockState ?? 'downloading'));
     }
     if (!deps.isPackaged) {
       return publish({ state: 'not-available', currentVersion: deps.currentVersion });
     }
-    if (status.state === 'downloaded' || status.state === 'downloading') return status;
+    if (status.state === 'downloaded' || status.state === 'installing') return status;
+    if (status.state === 'downloading' && !allowDuringDownload) return status;
+    if (activeDownload && !allowDuringDownload) return status;
     if (checkInFlight) return checkInFlight;
     checkInFlight = updater
       .checkForUpdates()
-      .then(async (result) => {
-        if (result?.isUpdateAvailable) return downloadUpdate();
+      .then((result) => {
+        trackAutoDownload(result);
         return status;
       })
-      .catch((error) => publish({
-        state: 'error',
-        currentVersion: deps.currentVersion,
-        latestVersion: latestVersion(),
-        message: error instanceof Error ? error.message : String(error),
-      }))
+      .catch((error) => status.state === 'error' ? status : publishError('check', error))
       .finally(() => {
         checkInFlight = null;
       });
     return checkInFlight;
   }
 
-  async function installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }> {
+  const scheduleCheck = (delayMs: number): void => {
+    if (disposed) return;
+    checkTimer = clock.setTimeout(() => {
+      checkTimer = undefined;
+      void checkForUpdates().finally(() => {
+        scheduleCheck(UPDATE_CHECK_INTERVAL_MS);
+      });
+    }, delayMs);
+  };
+
+  function start(): void {
+    if (started || disposed) return;
+    started = true;
+    if (!deps.isPackaged && !deps.mockLatestVersion) return;
+    scheduleCheck(FIRST_UPDATE_CHECK_DELAY_MS);
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    if (checkTimer !== undefined) {
+      clock.clearTimeout(checkTimer);
+      checkTimer = undefined;
+    }
+  }
+
+  async function retryUpdateDownload(): Promise<AppUpdateStatus> {
     if (deps.mockLatestVersion) {
-      if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
+      return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, 'downloaded'));
+    }
+    if (!deps.isPackaged || status.state === 'downloaded' || status.state === 'installing') {
+      return status;
+    }
+    if (checkInFlight) await checkInFlight;
+    const download = activeDownload;
+    if (download) {
+      download.cancelledForRetry = true;
+      download.cancellationToken?.cancel();
+      await download.promise.catch(() => undefined);
+      const settled = currentStatus();
+      if (settled.state === 'downloaded' || settled.state === 'installing') return settled;
+    }
+    return checkForUpdates(true);
+  }
+
+  async function installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> {
+    if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
+    let hasActiveTasks: boolean;
+    try {
+      hasActiveTasks = deps.hasActiveTasks();
+    } catch (error) {
+      publishError('install', error);
+      return { ok: false, reason: 'install_failed' };
+    }
+    if (typeof hasActiveTasks !== 'boolean') {
+      publishError('install', new Error('Active task status is unavailable'));
+      return { ok: false, reason: 'install_failed' };
+    }
+    if (hasActiveTasks && !input.allowInterruptActiveTasks) {
+      return { ok: false, reason: 'active_tasks' };
+    }
+    if (deps.mockLatestVersion) {
       return { ok: true };
     }
-    if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
+    const version = latestVersion() ?? deps.currentVersion;
+    publish({ state: 'installing', currentVersion: deps.currentVersion, latestVersion: version });
     try {
       updater.quitAndInstall(false, true);
+      const installStatus = currentStatus();
+      if (installStatus.state === 'error' && installStatus.operation === 'install') {
+        return { ok: false, reason: 'install_failed' };
+      }
       return { ok: true };
-    } catch {
+    } catch (error) {
+      publishError('install', error);
       return { ok: false, reason: 'install_failed' };
     }
   }
@@ -309,9 +411,10 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   }
 
   return {
-    getStatus: () => status,
-    checkForUpdates,
-    downloadUpdate,
+    start,
+    dispose,
+    getStatus: currentStatus,
+    retryUpdateDownload,
     installUpdate,
     openUpdateDownload,
   };

@@ -138,12 +138,16 @@ export function VoiceRecognitionConnectionForm(props: {
           onClick={props.onCancel}
           label={copy.cancel}
         />
+        {/* The save button no longer reports its own busy state through the
+            label: clickAction gives it the spinner, aria-busy, and the
+            same-tick dedupe a save must have. `busy` remains the form-wide
+            lock that freezes the three fields and 取消 beside it. */}
         <Button
           variant="primary"
           type="button"
           isDisabled={busy}
-          onClick={() => void save()}
-          label={busy ? copy.recognitionConnectionSaving : copy.recognitionConnectionSave}
+          clickAction={() => save()}
+          label={copy.recognitionConnectionSave}
         />
       </div>
     </div>

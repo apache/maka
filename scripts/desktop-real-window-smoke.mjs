@@ -423,13 +423,14 @@ function buildProgrammaticResults(args, diagnostics) {
     },
     {
       check: PROGRAMMATIC_SMOKE_CHECKS[3],
-      ok: renderer.searchModalPresent === true && renderer.searchModalBackdropPresent === true,
-      note: `searchModalPresent=${renderer.searchModalPresent ?? 'unknown'} backdrop=${renderer.searchModalBackdropPresent ?? 'unknown'}`,
+      ok: renderer.searchModalPresent === true && renderer.searchModalOpen === true,
+      note: `searchModalPresent=${renderer.searchModalPresent ?? 'unknown'} open=${renderer.searchModalOpen ?? 'unknown'}`,
     },
     {
       check: PROGRAMMATIC_SMOKE_CHECKS[4],
       // Focus must land on a control trapped inside the search modal. Check
-      // this structurally (activeElement is inside `.maka-search-modal`) rather
+      // this structurally (activeElement is inside the stable search-modal
+      // contract root) rather
       // than by a class on the focused element — the autocomplete input's
       // implementation class is not part of this diagnostic contract.
       ok:

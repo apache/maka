@@ -144,7 +144,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   }, [address, copy, isBrowserPanelSessionCurrent, sessionId, toast]);
 
   return (
-    <div className="maka-browser-panel" aria-label={copy.panelAria}>
+    <div className="maka-browser-panel" role="region" aria-label={copy.panelAria}>
       <div className="maka-browser-toolbar">
         <Tooltip content={copy.back}>
           <IconButton

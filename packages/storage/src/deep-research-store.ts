@@ -35,6 +35,7 @@ export interface CreateDeepResearchStoreOptions {
 
 export interface SqliteDeepResearchStore extends DeepResearchStore {
   ready(): Promise<void>;
+  purgeSessionState(sessionId: string): Promise<void>;
   close(): void;
 }
 
@@ -80,6 +81,17 @@ class SqliteDeepResearchStoreImpl implements SqliteDeepResearchStore {
   async readEvents(sessionId: string): Promise<DeepResearchEvent[]> {
     assertSafeSessionId(sessionId);
     return readSqliteDeepResearchEvents(this.#lease.database, sessionId);
+  }
+
+  async purgeSessionState(sessionId: string): Promise<void> {
+    assertSafeSessionId(sessionId);
+    await chainWrite(this.writeQueues, sessionId, async () => {
+      this.#lease.transaction('write', () => {
+        this.#lease.database
+          .prepare('DELETE FROM workflow_deep_research_events WHERE session_id = ?')
+          .run(sessionId);
+      });
+    });
   }
 
   subscribe(listener: (event: DeepResearchChangedEvent) => void): () => void {

@@ -4,7 +4,6 @@
  * Command: astryx theme build src/renderer/astryx-theme/makaTheme.ts --out src/renderer/astryx-theme/maka.css
  */
 
-/// <reference path="./maka.variants.d.ts" />
 import type { DefinedTheme } from '@astryxdesign/core/theme';
 import type { IconRegistry } from '@astryxdesign/core/Icon';
 export declare const neutralIconRegistry: IconRegistry;

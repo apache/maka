@@ -8,11 +8,14 @@
  * `--workspaces a,b`: run only the selected workspace paths.
  *
  * Each workspace owns how its dist tests run via package.json `test:dist`.
- * This script owns scheduling, bounded process residency, and failure reporting.
+ * This script owns scheduling, bounded process residency, failure reporting, and
+ * the temp namespace each workspace's tests run in.
  */
 
 import { spawn as defaultSpawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,7 +27,27 @@ const defaultRepoRoot = dirname(dirname(scriptPath));
 // handled inside scripts/run-headless-tests.mjs; serial scheduling is extra
 // conservatism for root orchestration, not a claim that its suite shares FS
 // state with other packages.
-export const SERIAL_WORKSPACE_DIRS = ['packages/headless'];
+//
+// runtime and runtime-host join it as a TEMPORARY mitigation for #2132, and
+// the reason is worth stating precisely so this list does not become a
+// dumping ground: they do NOT contend over a shared resource. Measured, at
+// --concurrency 3 some run fails 3 times out of 3; at --concurrency 1 across
+// every workspace, 0 out of 2; and each package alone passes repeatedly. Two
+// tempting explanations were tested and are false — /tmp does not fill up
+// (331 -> 339 entries under load, readdir in 1ms) and leftover child
+// processes are not the cause (running them back to back passes 3 of 3).
+// What is left is saturation: three tests with fixed waits miss their window
+// when the machine is busy.
+//
+// So this buys a quiet review pipeline at the cost of wall clock, and it is
+// the wrong permanent answer — the fix is in those tests' timing assumptions
+// (#2132). Remove these two entries when that lands. The unrelated /tmp
+// isolation gap found during the same investigation is #2133.
+export const SERIAL_WORKSPACE_DIRS = [
+  'packages/headless',
+  'packages/runtime',
+  'packages/runtime-host',
+];
 export const DEFAULT_WORKSPACE_TIMEOUT_MS = 15 * 60_000;
 
 const PROCESS_TERMINATION_GRACE_MS = 1_000;
@@ -62,72 +85,101 @@ export async function runWorkspace(
   // Package-owned contract: each workspace declares how dist tests run.
   const command = 'npm run test:dist';
   const cwd = join(repoRoot, dir);
-  console.log(`\n[${name}] start: ${command}`);
-  const child = spawn(command, {
-    cwd,
-    stdio: 'inherit',
-    shell: true,
-    detached: process.platform !== 'win32',
-  });
-  const completion = new Promise((resolvePromise, reject) => {
-    let settled = false;
-    const settle = (fn) => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-    child.on('error', (err) => {
-      settle(() => reject(new Error(`[${name}] spawn failed: ${err.message}`)));
+  // Suites reach the temp directory through hundreds of `mkdtemp(tmpdir(), …)`
+  // calls across every package. Owning the namespace here means the whole tree
+  // goes away when the workspace process does, instead of each call site having
+  // to book-keep its own removal — a rule nothing enforces, and which years of
+  // accumulated `maka-*` directories in the user's tmpdir show is not kept.
+  const tempRoot = await mkdtemp(join(tmpdir(), `maka-test-${tempRootSlug(name)}-`));
+  // Everything after the tree exists runs under the finally that removes it, so
+  // no path out of this function — including a synchronous throw from spawn —
+  // can leave it behind.
+  let timeout;
+  let onAbort;
+  try {
+    console.log(`\n[${name}] start: ${command}`);
+    const child = spawn(command, {
+      cwd,
+      stdio: 'inherit',
+      shell: true,
+      detached: process.platform !== 'win32',
+      // TMPDIR is what os.tmpdir() reads on POSIX, TMP/TEMP on Windows.
+      env: { ...process.env, TMPDIR: tempRoot, TMP: tempRoot, TEMP: tempRoot },
     });
-    child.on('close', (code) => {
-      settle(() => {
-        if (code === 0) {
-          console.log(`[${name}] passed`);
-          resolvePromise(name);
-        } else {
-          reject(new Error(`[${name}] failed with code ${code}`));
-        }
+    const completion = new Promise((resolvePromise, reject) => {
+      let settled = false;
+      const settle = (fn) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+      child.on('error', (err) => {
+        settle(() => reject(new Error(`[${name}] spawn failed: ${err.message}`)));
+      });
+      child.on('close', (code) => {
+        settle(() => {
+          if (code === 0) {
+            console.log(`[${name}] passed`);
+            resolvePromise(name);
+          } else {
+            reject(new Error(`[${name}] failed with code ${code}`));
+          }
+        });
       });
     });
-  });
 
-  let stopReason;
-  let requestStop;
-  const stopRequested = new Promise((_resolve, reject) => {
-    requestStop = (reason) => {
-      if (stopReason) return;
-      stopReason = reason;
-      reject(reason);
-    };
-  });
-  const onAbort = () => requestStop(workspaceRunCancelledError());
-  signal?.addEventListener('abort', onAbort, { once: true });
-  const timeout = Number.isFinite(timeoutMs)
-    ? setTimeout(
-        () => requestStop(new Error(`[${name}] timed out after ${timeoutMs}ms`)),
-        timeoutMs,
-      )
-    : undefined;
-  if (signal?.aborted) onAbort();
+    let stopReason;
+    let requestStop;
+    const stopRequested = new Promise((_resolve, reject) => {
+      requestStop = (reason) => {
+        if (stopReason) return;
+        stopReason = reason;
+        reject(reason);
+      };
+    });
+    onAbort = () => requestStop(workspaceRunCancelledError());
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timeout = Number.isFinite(timeoutMs)
+      ? setTimeout(
+          () => requestStop(new Error(`[${name}] timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        )
+      : undefined;
+    if (signal?.aborted) onAbort();
 
-  try {
-    return await Promise.race([completion, stopRequested]);
-  } catch (error) {
-    if (error === stopReason) {
-      try {
-        await terminateWorkspace(child);
-      } catch (terminationError) {
-        throw new AggregateError(
-          [error, terminationError],
-          `[${name}] failed to terminate its test process tree`,
-        );
+    try {
+      return await Promise.race([completion, stopRequested]);
+    } catch (error) {
+      if (error === stopReason) {
+        try {
+          await terminateWorkspace(child);
+        } catch (terminationError) {
+          throw new AggregateError(
+            [error, terminationError],
+            `[${name}] failed to terminate its test process tree`,
+          );
+        }
       }
+      throw error;
     }
-    throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
-    signal?.removeEventListener('abort', onAbort);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+    // Normally the process tree is already down here: either it closed on its
+    // own or terminateWorkspace reaped it. When termination itself failed the
+    // tree is removed under a process that may still be writing — that run has
+    // already been declared failed and killed, so losing its scratch files is
+    // preferable to leaking the tree. Removal failure must not replace whatever
+    // this function was already reporting.
+    await rm(tempRoot, { recursive: true, force: true }).catch((error) => {
+      console.warn(`[${name}] could not remove ${tempRoot}: ${error.message}`);
+    });
   }
+}
+
+/** Workspace name reduced to what is safe in a temp directory prefix. */
+function tempRootSlug(name) {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '-');
 }
 
 async function runSerial(dirs, options) {
@@ -184,8 +236,34 @@ export async function runWorkspaceTests(options = {}) {
     await runSerial(workspaceDirs, runOptions);
   } else {
     const { parallel, serial } = partitionWorkspaces(workspaceDirs, serialDirs);
-    await runParallel(parallel, runOptions, concurrency);
-    await runSerial(serial, runOptions);
+    // The serial batch runs even when the parallel batch failed, and both
+    // results are reported together.
+    //
+    // It used to be a plain `await` pair, so one failing parallel workspace
+    // threw before the serial batch started and those suites silently did not
+    // run — the summary looked shorter and finished sooner, which reads as
+    // "faster and greener" rather than "three packages were skipped". That is
+    // the wrong direction for a runner whose entire job is to say what passed.
+    //
+    // Cancellation still stops everything at once: an aborted signal skips the
+    // serial batch, because there the caller has asked for no further work.
+    let parallelError;
+    try {
+      await runParallel(parallel, runOptions, concurrency);
+    } catch (error) {
+      parallelError = error;
+    }
+    if (runOptions.signal?.aborted) throw parallelError ?? workspaceRunCancelledError();
+    let serialError;
+    try {
+      await runSerial(serial, runOptions);
+    } catch (error) {
+      serialError = error;
+    }
+    const errors = [parallelError, serialError].filter(Boolean);
+    if (errors.length > 0) {
+      throw new Error(errors.map((error) => error?.message ?? String(error)).join('\n'));
+    }
   }
 }
 

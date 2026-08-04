@@ -29,7 +29,10 @@ const themeSource = path.join('src', 'renderer', 'astryx-theme', 'makaTheme.ts')
 const cssOut = path.join('src', 'renderer', 'astryx-theme', 'maka.css');
 // @astryxdesign/cli 0.2.0 stopped emitting maka.variants.d.ts (`astryx theme
 // build` now outputs css/js/d.ts only) — the file was tracked but never
-// imported, so it is gone with the upgrade.
+// imported, so it is gone with the upgrade. The CLI's maka.d.ts still opens
+// with a `/// <reference>` to it, though, so post-processing strips the
+// dangling line (#1980) — without it every `tsc` run that resolves maka.d.ts
+// leans on skipLibCheck to ignore the missing file.
 const generatedFiles = ['maka.css', 'maka.js', 'maka.d.ts'];
 const canonicalCommand =
   ' * Command: astryx theme build src/renderer/astryx-theme/makaTheme.ts --out ' +
@@ -75,9 +78,15 @@ export function stripResetLayer(css, file = cssOut) {
   return stripped.replace('*/\n', `*/\n\n${postProcessNote}`);
 }
 
+export function stripVariantsReference(dts) {
+  return dts.replace(/^\/\/\/\s*<reference\s+path="\.\/maka\.variants\.d\.ts"\s*\/>\s*\n/m, '');
+}
+
 function postProcessGeneratedFile(file, source) {
   const normalized = normalizeGeneratedHeader(source);
-  return file === 'maka.css' ? stripResetLayer(normalized, file) : normalized;
+  if (file === 'maka.css') return stripResetLayer(normalized, file);
+  if (file === 'maka.d.ts') return stripVariantsReference(normalized);
+  return normalized;
 }
 
 function generateTheme(output, stdio) {

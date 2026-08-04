@@ -6,8 +6,8 @@ export type WebSearchSettingsCopy = {
   statusAria: string; lastTest: string; enabledAria: string; key: string; envKeyHelp: string; savedKeyHelp: string;
   envPlaceholder: string; storedPlaceholder: string; keyPlaceholder: string; keyAria: string; actions: string; actionsHelp: string;
   saving: string; saveKey: string; testing: string; testKey: string; clearing: string; clearKey: string;
-  liveTitle: string; liveHelp: string; query: string; queryHelp: string; queryPlaceholder: string;
-  execute: string; executeHelp: string; searching: string; search: string; queryFailed(error: string): string; noResults: string; resultsAria: string;
+  testSearch: string; testSearchHelp: string; queryPlaceholder: string;
+  searching: string; search: string; queryFailed(error: string): string; noResults: string; resultsAria: string;
   disabledReasons: { noKey: string; disabled: string; noQuery: string };
   statuses: Record<WebSearchCredentialStatus, string> & { validEnabled: string; validDisabled: string; unknownEnabled: string };
   sources: { envWithSaved: string; env: string; saved: string; none: string };
@@ -20,13 +20,12 @@ const SETTINGS_WEB_SEARCH_COPY = {
     credentialsCleared: '已清空 Tavily 凭据', credentialsClearedDetail: '联网搜索已自动关闭。', credentialValid: 'Tavily 凭据可用', resultCount: (count) => `返回 ${count} 条结果。`,
     testFailed: 'Tavily 测试失败', testError: 'Tavily 测试出错', enabled: '启用联网搜索', enabledHelp: '开关启用后，界面里显式触发的查询才会真的请求 Tavily。模型不会自动调用。',
     statusAria: '联网搜索凭据状态', lastTest: '最近测试 ', enabledAria: '启用联网搜索', key: 'Tavily 密钥',
-    envKeyHelp: '当前使用环境变量 TAVILY_API_KEY / MAKA_TAVILY_API_KEY；如需改用保存的密钥，请移除环境变量后重启。', savedKeyHelp: '保存在主进程设置中，渲染器永远看不到明文。申请地址：',
+    envKeyHelp: '当前使用环境变量 TAVILY_API_KEY / MAKA_TAVILY_API_KEY；如需改用保存的密钥，请移除环境变量后重启。', savedKeyHelp: '密钥只保存在本机。申请地址：',
     envPlaceholder: '由环境变量提供', storedPlaceholder: '已保存（输入新密钥可替换）', keyPlaceholder: 'tvly-xxxxxxxx', keyAria: 'Tavily 密钥',
     actions: '凭据操作', actionsHelp: '保存后可以测试一次真实请求；清空凭据会同步关闭联网搜索。', saving: '保存中…', saveKey: '保存密钥', testing: '测试中…', testKey: '测试凭据', clearing: '清空中…', clearKey: '清空密钥',
-    liveTitle: '真实查询验证', liveHelp: '直接发一条真实查询，看到 Tavily 返回的标题 / 摘要 / 来源域名。结果只显示在此页面，不写入会话也不写入遥测。',
-    query: '查询', queryHelp: '输入一条用于验证联网搜索配置的真实请求。', queryPlaceholder: '例如：本周 AI 产品发布动态',
-    execute: '执行查询', executeHelp: '按钮可用时会走主进程 Tavily 请求并刷新下方结果。', searching: '搜索中…', search: '搜索', queryFailed: (error) => `查询失败：${error}`, noResults: '没有结果。', resultsAria: '联网搜索真实查询结果',
-    disabledReasons: { noKey: '先保存 Tavily 密钥，或设置 TAVILY_API_KEY 环境变量', disabled: '先启用联网搜索', noQuery: '输入查询后再搜索' },
+    testSearch: '测试搜索', testSearchHelp: '发一条真实查询，确认联网搜索是否配置可用。结果只显示在这里，不写入会话。', queryPlaceholder: '例如：本周 AI 产品发布动态',
+    searching: '搜索中…', search: '搜索', queryFailed: (error) => `查询失败：${error}`, noResults: '没有结果。', resultsAria: '联网搜索真实查询结果',
+    disabledReasons: { noKey: '先保存 Tavily 密钥', disabled: '先启用联网搜索', noQuery: '输入查询后再搜索' },
     statuses: { valid: '已验证', invalid_credentials: '密钥无效', rate_limited: 'Tavily 限流', timeout: '测试超时', network_error: '网络异常', not_configured: '等待配置', untested: '未测试', validEnabled: '已验证 · 已启用', validDisabled: '已验证 · 未启用', unknownEnabled: '未测试 · 已启用' },
     sources: { envWithSaved: '来源：环境变量（已保存密钥备用）', env: '来源：环境变量', saved: '来源：本机已保存密钥', none: '来源：未配置' },
     errors: { invalid_query: '请输入有效的搜索内容。', incognito_active: '无痕模式下无法使用联网搜索。', not_configured: '请先配置 Tavily 密钥并启用联网搜索。', invalid_credentials: 'Tavily 密钥无效，请更新后重试。', rate_limited: 'Tavily 请求过于频繁，请稍后重试。', network_error: '网络请求失败，请检查网络后重试。', timeout: 'Tavily 请求超时，请重试。', unsupported_provider: '当前配置不支持这个搜索引擎，请选择 Tavily 后重试。', experimental_disabled: '联网搜索实验功能当前已关闭。' },
@@ -36,13 +35,12 @@ const SETTINGS_WEB_SEARCH_COPY = {
     credentialsCleared: 'Tavily credentials cleared', credentialsClearedDetail: 'Web search was disabled automatically.', credentialValid: 'Tavily credentials work', resultCount: (count) => `Returned ${count} ${count === 1 ? 'result' : 'results'}.`,
     testFailed: 'Tavily test failed', testError: 'Tavily test error', enabled: 'Enable web search', enabledHelp: 'When enabled, only queries explicitly started in the interface call Tavily. The model does not invoke it automatically.',
     statusAria: 'Web search credential status', lastTest: 'Last tested ', enabledAria: 'Enable web search', key: 'Tavily key',
-    envKeyHelp: 'Currently using TAVILY_API_KEY / MAKA_TAVILY_API_KEY from the environment. Remove the environment variable and restart to use a saved key.', savedKeyHelp: 'Saved in main-process settings; the renderer never sees the clear text. Apply at:',
+    envKeyHelp: 'Currently using TAVILY_API_KEY / MAKA_TAVILY_API_KEY from the environment. Remove the environment variable and restart to use a saved key.', savedKeyHelp: 'The key is stored only on this machine. Apply at:',
     envPlaceholder: 'Provided by environment variable', storedPlaceholder: 'Saved (enter a new key to replace)', keyPlaceholder: 'tvly-xxxxxxxx', keyAria: 'Tavily key',
     actions: 'Credential actions', actionsHelp: 'After saving, test with a real request. Clearing credentials also disables web search.', saving: 'Saving…', saveKey: 'Save key', testing: 'Testing…', testKey: 'Test credentials', clearing: 'Clearing…', clearKey: 'Clear key',
-    liveTitle: 'Live query verification', liveHelp: 'Send a real query and inspect Tavily titles, snippets, and source domains. Results stay on this page and are not written to sessions or telemetry.',
-    query: 'Query', queryHelp: 'Enter a real query to verify the web search configuration.', queryPlaceholder: 'For example: AI product launches this week',
-    execute: 'Run query', executeHelp: 'When available, the button sends a main-process Tavily request and refreshes the results below.', searching: 'Searching…', search: 'Search', queryFailed: (error) => `Query failed: ${error}`, noResults: 'No results.', resultsAria: 'Web search live query results',
-    disabledReasons: { noKey: 'Save a Tavily key or set the TAVILY_API_KEY environment variable first', disabled: 'Enable web search first', noQuery: 'Enter a query before searching' },
+    testSearch: 'Test search', testSearchHelp: 'Send a real query to confirm web search is configured and working. Results appear here only and are not written to the conversation.', queryPlaceholder: 'For example: AI product launches this week',
+    searching: 'Searching…', search: 'Search', queryFailed: (error) => `Query failed: ${error}`, noResults: 'No results.', resultsAria: 'Web search live query results',
+    disabledReasons: { noKey: 'Save a Tavily key first', disabled: 'Enable web search first', noQuery: 'Enter a query before searching' },
     statuses: { valid: 'Verified', invalid_credentials: 'Invalid key', rate_limited: 'Rate limited by Tavily', timeout: 'Test timed out', network_error: 'Network error', not_configured: 'Needs setup', untested: 'Not tested', validEnabled: 'Verified · enabled', validDisabled: 'Verified · disabled', unknownEnabled: 'Not tested · enabled' },
     sources: { envWithSaved: 'Source: environment variable (saved key available as backup)', env: 'Source: environment variable', saved: 'Source: key saved on this device', none: 'Source: not configured' },
     errors: { invalid_query: 'Enter a valid search query.', incognito_active: 'Web search is unavailable in incognito mode.', not_configured: 'Configure a Tavily key and enable web search first.', invalid_credentials: 'The Tavily key is invalid. Update it and try again.', rate_limited: 'Tavily is receiving too many requests. Try again later.', network_error: 'The network request failed. Check your connection and try again.', timeout: 'The Tavily request timed out. Try again.', unsupported_provider: 'This search provider is not supported by the current configuration. Select Tavily and try again.', experimental_disabled: 'The experimental web search feature is currently disabled.' },

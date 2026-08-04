@@ -50,20 +50,42 @@ export function applyLocalSessionRead(
 }
 
 export function createSessionListRefresher(options: SessionListRefresherOptions): SessionListRefresher {
-  let latestRequestId = 0;
-  return {
-    async refresh(): Promise<SessionSummary[]> {
-      const requestId = ++latestRequestId;
+  let requestedGeneration = 0;
+  let completedGeneration = 0;
+  let activeRefresh: Promise<SessionSummary[]> | undefined;
+
+  const drainRefreshes = async (): Promise<SessionSummary[]> => {
+    let result = options.currentSessions();
+    while (completedGeneration < requestedGeneration) {
+      // Session events can arrive in bursts (especially while spawning a swarm). Keep one
+      // list IPC in flight and collapse everything that arrived during it into one trailing read.
+      const generation = requestedGeneration;
       try {
         const listed = await options.listSessions();
-        if (requestId !== latestRequestId) return options.currentSessions();
-        const next = applySessionReadOverrides(listed, options.readBoundaries());
-        options.commitSessions(next);
-        return next;
+        if (generation === requestedGeneration) {
+          result = applySessionReadOverrides(listed, options.readBoundaries());
+          options.commitSessions(result);
+        } else {
+          result = options.currentSessions();
+        }
       } catch (error) {
-        if (requestId === latestRequestId) options.onError(error);
-        return options.currentSessions();
+        if (generation === requestedGeneration) options.onError(error);
+        result = options.currentSessions();
       }
+      completedGeneration = generation;
+    }
+    return result;
+  };
+
+  return {
+    refresh(): Promise<SessionSummary[]> {
+      requestedGeneration += 1;
+      if (!activeRefresh) {
+        activeRefresh = drainRefreshes().finally(() => {
+          activeRefresh = undefined;
+        });
+      }
+      return activeRefresh;
     },
   };
 }

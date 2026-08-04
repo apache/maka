@@ -11,7 +11,7 @@ import {
   dequeueInteractionByRequestId,
   dequeueInteractionByToolUseId,
   enqueueInteraction,
-  reconcileSandboxBoundaryInteractions,
+  reconcileInteractions,
   type InteractionQueues,
 } from '../interaction-queue.js';
 
@@ -78,20 +78,28 @@ describe('composer interaction queue', () => {
     assert.equal(activeInteractionFor(queues, 's'), undefined);
   });
 
-  test('rehydration replaces only boundary prompts and preserves user questions', () => {
+  test('rehydration keeps the shown order and drops what the runtime settled', () => {
     let queues: InteractionQueues = {};
     queues = enqueueInteraction(queues, 's', boundary('stale'));
-    queues = enqueueInteraction(queues, 's', question('question'));
+    queues = enqueueInteraction(queues, 's', question('answered'));
     queues = enqueueInteraction(queues, 's', boundary('live'));
 
-    const reconciled = reconcileSandboxBoundaryInteractions(queues, 's', [
+    const reconciled = reconcileInteractions(queues, 's', [
       boundary('live'),
+      question('unseen'),
       boundary('new'),
     ]);
 
     assert.deepEqual(
       reconciled.s.map((interaction) => interaction.requestId),
-      ['question', 'live', 'new'],
+      ['live', 'unseen', 'new'],
     );
+  });
+
+  test('rehydration adds a question the surface never saw live', () => {
+    const reconciled = reconcileInteractions({}, 's', [question('missed')]);
+
+    assert.equal(activeInteractionFor(reconciled, 's')?.type, 'user_question_request');
+    assert.equal(activeInteractionFor(reconciled, 's')?.requestId, 'missed');
   });
 });

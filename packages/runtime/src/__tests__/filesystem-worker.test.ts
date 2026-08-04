@@ -195,6 +195,30 @@ describe('filesystem worker operations', () => {
     await assert.rejects(readFile(outsidePath, 'utf8'), { code: 'ENOENT' });
   });
 
+  test('denies a write through a dangling symlink the boundary does not cover', async () => {
+    // The worker enforces its own boundary rather than trusting the caller to
+    // have canonicalised the path: a link inside the root whose target does not
+    // exist yet cannot be realpath'd, and a write through it lands on the
+    // target, outside the root, while the boundary names only the link.
+    const root = await temporaryDirectory('maka-worker-dangling-root-');
+    const outside = await temporaryDirectory('maka-worker-dangling-outside-');
+    const link = join(root, 'dangling.txt');
+    const target = join(outside, 'not-yet.txt');
+    await symlink(target, link);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: link, content: 'blocked' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
+        link,
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    if (!response.ok) assert.equal(response.error.code, 'path_denied');
+    await assert.rejects(readFile(target, 'utf8'), { code: 'ENOENT' });
+  });
+
   test('fails when an approved target changes type before execution', async () => {
     const root = await temporaryDirectory('maka-worker-type-');
     const target = join(root, 'target');

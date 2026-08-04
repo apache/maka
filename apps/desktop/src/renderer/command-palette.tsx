@@ -1,6 +1,6 @@
 // apps/desktop/src/renderer/command-palette.tsx
 //
-// ⌘K / Ctrl+K command palette. Combines static actions (new chat, theme
+// ⌘K (Ctrl+K off macOS) command palette. Combines static actions (new chat, theme
 // switch, open settings, open keyboard help) with the live session list so
 // the user can fuzzy-search across both. Astryx owns the dialog, input,
 // listbox, keyboard navigation, focus, and dismissal.
@@ -20,6 +20,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { Kbd } from '@astryxdesign/core/Kbd';
+import { useHotkeys } from '@astryxdesign/core/hooks';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import type { Command, CommandKind } from './command-palette-types';
 import { getShellCopy } from './locales/shell-copy';
@@ -33,16 +34,16 @@ export { buildCommandList, buildSessionCommands } from './command-palette-comman
 export function useCommandPalette(): [boolean, () => void, () => void] {
   const [open, setOpen] = useState(false);
 
-  useEffect(() => {
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      if (event.key !== 'k' && event.key !== 'K') return;
-      event.preventDefault();
-      setOpen((prev) => !prev);
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  // `allowInInputs` because the palette's whole point is being reachable
+  // mid-sentence in the composer — the hook skips typing surfaces by default,
+  // which would have made ⌘K dead exactly where it is used most.
+  useHotkeys([
+    {
+      keys: 'mod+k',
+      allowInInputs: true,
+      onPress: () => setOpen((prev) => !prev),
+    },
+  ]);
 
   // Stable open/close identities: callers feed these into memoized callback
   // chains (the palette's command pipeline), so fresh closures per render

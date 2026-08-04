@@ -77,9 +77,11 @@ const siliconflowModelIds = toolCallingModelIds(
   GENERATED_MODELS_DEV_METADATA.siliconflow,
   ['moonshotai/Kimi-K2.6'],
 );
-const minimaxPlanModelIds = toolCallingModelIds('MiniMax', GENERATED_MODELS_DEV_METADATA.MiniMax, [
-  'MiniMax-M3',
-]);
+const minimaxPlanModelIds = toolCallingModelIds(
+  'MiniMax Coding Plan',
+  GENERATED_MODELS_DEV_METADATA['minimax-coding-plan'],
+  ['MiniMax-M3'],
+);
 
 const xai = GENERATED_MODELS_DEV_PROVIDER_FACTS.xai;
 if (xai.id !== 'xai') throw new Error('models.dev xAI provider facts are missing stable id xai');
@@ -320,9 +322,23 @@ const stepfunStepPlanModelIds = [
   'step-3.5-flash',
   'step-router-v1',
 ] as const;
-for (const id of stepfunStepPlanModelIds.slice(0, 3)) {
-  if (!GENERATED_MODELS_DEV_METADATA.stepfun[id]?.capabilities?.functionCalling) {
-    throw new Error(`models.dev StepFun snapshot is missing documented Step Plan model ${id}`);
+const stepfunStepPlan = GENERATED_MODELS_DEV_PROVIDER_FACTS['stepfun-step-plan'];
+if (stepfunStepPlan.id !== 'stepfun-step-plan') {
+  throw new Error(
+    'models.dev StepFun Step Plan provider facts are missing stable id stepfun-step-plan',
+  );
+}
+for (const id of stepfunStepPlanModelIds) {
+  if (!GENERATED_MODELS_DEV_METADATA['stepfun-step-plan'][id]?.capabilities?.functionCalling) {
+    throw new Error(
+      `models.dev StepFun Step Plan snapshot is missing documented Step Plan model ${id}`,
+    );
+  }
+}
+const kimiCodingPlanModelIds = ['k3', 'kimi-for-coding'] as const;
+for (const id of kimiCodingPlanModelIds) {
+  if (!GENERATED_MODELS_DEV_METADATA['kimi-coding-plan'][id]?.capabilities?.functionCalling) {
+    throw new Error(`models.dev Kimi Coding Plan snapshot is missing documented model ${id}`);
   }
 }
 const stepfunGlobal = GENERATED_MODELS_DEV_PROVIDER_FACTS['stepfun-ai'];
@@ -561,7 +577,7 @@ const opencodeFreeModelIds = [
   'nemotron-3-ultra-free',
   'deepseek-v4-flash-free',
   'north-mini-code-free',
-  'hy3-free',
+  'laguna-s-2.1-free',
 ] as const;
 for (const id of opencodeFreeModelIds) {
   const model = GENERATED_MODELS_DEV_METADATA.opencode[id];
@@ -627,6 +643,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://console.anthropic.com/settings/keys',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.anthropic.id,
     readyOrder: 1,
     catalogOrder: 9,
     recommendedOrder: 3,
@@ -637,7 +654,10 @@ const providerRegistry = {
     baseUrl: 'https://api.kimi.com/coding/v1',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['k3', 'kimi-for-coding'],
+    // kimi-for-coding / -highspeed intentionally have no thinking knob:
+    // models.dev declares no reasoning_options for them, so the effort
+    // control only appears for k3 / k3-256k. Not a sync gap.
+    fallbackModels: [...kimiCodingPlanModelIds],
     status: 'ready',
     protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
@@ -646,6 +666,7 @@ const providerRegistry = {
     catalogGroup: 'plans',
     catalogBadge: 'Coding',
     signupUrl: 'https://www.kimi.com/code/console',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['kimi-coding-plan'].id,
     readyOrder: 15,
     catalogOrder: 1,
     recommendedOrder: 5,
@@ -665,7 +686,7 @@ const providerRegistry = {
     catalogGroup: 'plans',
     catalogBadge: 'Coding',
     signupUrl: 'https://platform.minimax.io/subscribe/coding-plan',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.MiniMax.id,
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['minimax-coding-plan'].id,
     readyOrder: 17,
     catalogOrder: 2,
   },
@@ -762,6 +783,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://platform.openai.com/api-keys',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.openai.id,
     readyOrder: 2,
     catalogOrder: 10,
     recommendedOrder: 2,
@@ -781,6 +803,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://aistudio.google.com/app/apikey',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.google.id,
     readyOrder: 3,
     catalogOrder: 11,
     recommendedOrder: 4,
@@ -800,6 +823,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://platform.deepseek.com/api_keys',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.deepseek.id,
     readyOrder: 4,
     catalogOrder: 3,
     recommendedOrder: 6,
@@ -838,6 +862,7 @@ const providerRegistry = {
     catalogGroup: 'plans',
     catalogBadge: 'Coding',
     signupUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['zai-coding-plan'].id,
     readyOrder: 6,
     catalogOrder: 5,
   },
@@ -856,6 +881,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.MiniMax.id,
     readyOrder: 7,
     catalogOrder: 6,
   },
@@ -874,6 +900,7 @@ const providerRegistry = {
     catalogGroup: 'api',
     catalogBadge: 'API',
     signupUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['MiniMax-cn'].id,
     readyOrder: 8,
     catalogOrder: 7,
   },
@@ -1339,7 +1366,7 @@ const providerRegistry = {
     catalogGroup: 'plans',
     catalogBadge: 'Plan',
     signupUrl: 'https://platform.stepfun.com/interface-key',
-    modelsDevId: stepfun.id,
+    modelsDevId: stepfunStepPlan.id,
     readyOrder: 28,
     catalogOrder: 28,
   },
@@ -1745,6 +1772,7 @@ const providerRegistry = {
     modelDiscovery: { kind: 'protocol', auth: 'claude-subscription' },
     category: 'oauth',
     catalogBadge: 'Experimental',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.anthropic.id,
   },
   'openai-codex': {
     label: 'OpenAI OAuth (ChatGPT / Codex)',
@@ -1759,6 +1787,7 @@ const providerRegistry = {
     modelDiscovery: { kind: 'protocol', auth: 'openai-codex' },
     category: 'oauth',
     catalogBadge: 'Account',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.openai.id,
   },
   'gemini-cli': {
     label: 'Gemini CLI OAuth',
@@ -1773,6 +1802,7 @@ const providerRegistry = {
     modelDiscovery: { kind: 'protocol' },
     category: 'oauth',
     catalogBadge: 'Account',
+    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['gemini-cli'].id,
   },
 } satisfies Record<string, ProviderDefaults>;
 

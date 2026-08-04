@@ -47,7 +47,7 @@ import {
   enqueueInteraction,
   getConversationCopy,
   getSharedUiCopy,
-  reconcileSandboxBoundaryInteractions,
+  reconcileInteractions,
 } from '@maka/ui';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -75,6 +75,10 @@ import {
 import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
+import {
+  isAppUpdateInstallFailure,
+  requestDownloadedAppUpdate,
+} from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
@@ -85,7 +89,7 @@ import { useShellSearch } from './use-shell-search';
 import { useSessionGoal } from './use-session-goal';
 import { deriveStaleSessionIds } from './stale-sessions';
 import { deriveProjectGroups, deriveWorktreeSessionIds } from './session-project-grouping';
-import { deriveAppShellTurnViewModel } from './app-shell-turn-view-model';
+import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { deriveBranchBanner } from './branch-banner';
 import { readNavigationState, selectNavigation } from './nav-selection';
@@ -181,8 +185,6 @@ type ComposerImportOwner = {
  * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-
 /**
  * Module surfaces that own their whole column and render no workspace toolbar.
  * This used to be a `display: none` rule keyed on the detail panel's
@@ -240,6 +242,8 @@ function AppShellContent({
 }) {
   const toastApi = useToast();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
+  const updateInstallInFlightRef = useRef(false);
+  const notifiedInstallErrorRef = useRef<string | null>(null);
   const {
     sessions,
     authoritativeSessionIds,
@@ -276,11 +280,12 @@ function AppShellContent({
     setPendingSessionModelBySession,
     clearTurnTransientState,
   } = useAppShellSessionWorkspace(toastApi);
-  const sandboxBoundaryInteractionEpochRef = useRef(new Map<string, number>());
-  const markSandboxBoundaryInteractionChanged = useCallback((sessionId: string) => {
-    const epochs = sandboxBoundaryInteractionEpochRef.current;
+  const interactionHydrationEpochRef = useRef(new Map<string, number>());
+  const markInteractionChanged = useCallback((sessionId: string) => {
+    const epochs = interactionHydrationEpochRef.current;
     epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   }, []);
+
   const attachmentDraftKey = activeId ?? 'new-session';
   const {
     pendingAttachments,
@@ -378,33 +383,33 @@ function AppShellContent({
   const shellCopy = getShellCopy(uiLocale).app;
   const voiceCopy = getDesktopConversationCopy(uiLocale).voice;
   useEffect(() => {
+    if (!isAppUpdateInstallFailure(appUpdateStatus)) {
+      notifiedInstallErrorRef.current = null;
+      return;
+    }
+    if (notifiedInstallErrorRef.current === appUpdateStatus.message) return;
+    notifiedInstallErrorRef.current = appUpdateStatus.message;
+    toastApi.error(
+      shellCopy.updateInstallFailedTitle,
+      shellCopy.updateInstallManualFallback,
+    );
+  }, [appUpdateStatus, shellCopy, toastApi]);
+  useEffect(() => {
     let cancelled = false;
-    const refreshUpdateStatus = () => {
-      void window.maka.app
-        .checkForUpdates()
-        .then((next) => {
-          if (!cancelled) setAppUpdateStatus(next);
-        })
-        .catch(() => {
-          if (!cancelled) setAppUpdateStatus(null);
-        });
-    };
-
+    let receivedPush = false;
+    const unsubscribeUpdateStatus = window.maka.app.subscribeUpdateStatus((next) => {
+      receivedPush = true;
+      if (!cancelled) setAppUpdateStatus(next);
+    });
     void window.maka.app
       .updateStatus()
       .then((next) => {
-        if (!cancelled) setAppUpdateStatus(next);
+        if (!cancelled && !receivedPush) setAppUpdateStatus(next);
       })
       .catch(() => {});
-    const unsubscribeUpdateStatus = window.maka.app.subscribeUpdateStatus((next) => {
-      if (!cancelled) setAppUpdateStatus(next);
-    });
-    refreshUpdateStatus();
-    const interval = window.setInterval(refreshUpdateStatus, UPDATE_CHECK_INTERVAL_MS);
     return () => {
       cancelled = true;
       unsubscribeUpdateStatus();
-      window.clearInterval(interval);
     };
   }, []);
 
@@ -421,10 +426,21 @@ function AppShellContent({
     : undefined;
   const openUpdateDownload = useCallback(() => {
     if (appUpdateStatus?.state === 'downloaded') {
-      void window.maka.app
-        .installUpdate()
-        .then((result) => {
-          if (result.ok) return;
+      if (updateInstallInFlightRef.current) return;
+      updateInstallInFlightRef.current = true;
+      void requestDownloadedAppUpdate({
+        installUpdate: (input) => window.maka.app.installUpdate(input),
+        confirmActiveTasks: () => toastApi.confirm({
+          title: shellCopy.updateActiveTasksTitle,
+          description: shellCopy.updateActiveTasksDescription,
+          confirmLabel: shellCopy.updateActiveTasksConfirm,
+          cancelLabel: shellCopy.updateActiveTasksCancel,
+          destructive: true,
+        }),
+      })
+        .then((outcome) => {
+          if (outcome.kind !== 'failed') return;
+          if (outcome.reason === 'install_failed') return;
           toastApi.error(
             shellCopy.updateInstallFailedTitle,
             shellCopy.updateInstallManualFallback,
@@ -435,17 +451,30 @@ function AppShellContent({
             shellCopy.updateInstallFailedTitle,
             localizedShellErrorMessage(error, shellCopy.updateInstallFailedFallback, uiLocale),
           );
+        })
+        .finally(() => {
+          updateInstallInFlightRef.current = false;
         });
       return;
     }
-    if (appUpdateStatus?.state === 'available' || appUpdateStatus?.state === 'error') {
+    if (
+      appUpdateStatus?.state === 'available' ||
+      appUpdateStatus?.state === 'downloading' ||
+      appUpdateStatus?.state === 'error'
+    ) {
       void window.maka.app
-        .downloadUpdate()
-        .then((next) => setAppUpdateStatus(next))
+        .retryUpdateDownload()
+        .then((next) => {
+          if (next.state !== 'error') return;
+          toastApi.error(
+            shellCopy.updateRetryFailedTitle,
+            shellCopy.updateRetryFailedFallback,
+          );
+        })
         .catch((error) => {
           toastApi.error(
-            shellCopy.updateDownloadFailedTitle,
-            localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
+            shellCopy.updateRetryFailedTitle,
+            localizedShellErrorMessage(error, shellCopy.updateRetryFailedFallback, uiLocale),
           );
         });
       return;
@@ -900,22 +929,16 @@ function AppShellContent({
     }
   }
 
-  const {
-    turnFooterActionsByTurn,
-    turnFailedReasonLabels,
-    turnFailedRecoveryLabels,
-    turnLineageBadgesByTurn,
-    resumeCandidateTurnId,
-  } = useMemo(
-    () => deriveAppShellTurnViewModel({
-      activeId,
-      messages,
-      pendingTurnActions,
-      pendingKeyOf,
-      uiLocale,
-    }),
-    [activeId, messages, pendingTurnActions, uiLocale],
-  );
+  // Handed to ChatView, which calls it with the turns its transcript projection
+  // produced. The shell no longer materializes the transcript a second time to
+  // derive these props, so the turn objects the projection kept are also what
+  // keeps the props a memoized TurnView reads stable (#2030).
+  const deriveTurnPresentation = useAppShellTurnPresentation({
+    activeId,
+    pendingTurnActions,
+    pendingKeyOf,
+    uiLocale,
+  });
 
   // PR109e-e: click handler for lineage badge → scroll target turn into
   // view. Avoids pulling a separate ref-tracker: relies on the
@@ -1049,22 +1072,25 @@ function AppShellContent({
     reading: activeExecutionBoundaryReading,
     reload: reloadActiveExecutionBoundary,
   } = useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
+  // The session view only subscribes to the session it shows, so a request
+  // raised while another session was active never reaches this surface as a
+  // live event — and neither does one raised before the window existed. The
+  // runtime holds every unanswered request, so read them back whenever the
+  // active session changes (#2072).
   useEffect(() => {
     if (!activeId) return;
     let cancelled = false;
-    const hydrationEpoch = sandboxBoundaryInteractionEpochRef.current.get(activeId) ?? 0;
+    const hydrationEpoch = interactionHydrationEpochRef.current.get(activeId) ?? 0;
     void window.maka.sessions
-      .listActiveSandboxBoundaryRequests(activeId)
+      .listActiveInteractions(activeId)
       .then((requests) => {
         if (
           cancelled ||
-          (sandboxBoundaryInteractionEpochRef.current.get(activeId) ?? 0) !== hydrationEpoch
+          (interactionHydrationEpochRef.current.get(activeId) ?? 0) !== hydrationEpoch
         ) {
           return;
         }
-        setInteractionBySession((current) =>
-          reconcileSandboxBoundaryInteractions(current, activeId, requests),
-        );
+        setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
       })
       .catch(() => {});
     return () => {
@@ -1374,7 +1400,7 @@ function AppShellContent({
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
-    onSandboxBoundaryInteractionChanged: markSandboxBoundaryInteractionChanged,
+    onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
     toastApi,
@@ -1727,7 +1753,7 @@ function AppShellContent({
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
-    onSandboxBoundaryInteractionChanged: markSandboxBoundaryInteractionChanged,
+    onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
     toastApi,
@@ -1776,6 +1802,7 @@ function AppShellContent({
     clearSessionRendererState,
     createSession,
     handleConnectionEvent,
+    openHelp,
     openSettings,
     pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
     pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
@@ -2062,10 +2089,6 @@ function AppShellContent({
             workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
             workbarCollapsed={workbarCollapsed}
             onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
-            onOpenFeedback={() => openSettingsSection('about')}
-            onOpenPalette={openPalette}
-            onOpenHelp={openHelp}
-            onOpenHealth={() => openSettingsSection('health')}
           />
         )}
       </header>
@@ -2452,18 +2475,14 @@ function AppShellContent({
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
-                turnFooterActionsByTurn={turnFooterActionsByTurn}
+                deriveTurnPresentation={deriveTurnPresentation}
                 onTurnFooterAction={handleTurnFooterAction}
                 onEditUserMessage={(turnId) => { void beginEditUserMessage(turnId); }}
-                turnFailedReasonLabels={turnFailedReasonLabels}
-                turnFailedRecoveryLabels={turnFailedRecoveryLabels}
-                safeResumeAction={activeId && resumeCandidateTurnId ? {
-                  turnId: resumeCandidateTurnId,
+                safeResumeAction={activeId ? {
                   pending: resumePendingSessionId === activeId,
                   detail: resumeParkDescriptionBySession[activeId],
                   onResume: () => { void resumeInterruptedSession(); },
                 } : undefined}
-                turnLineageBadgesByTurn={turnLineageBadgesByTurn}
                 onLineageBadgeClick={handleLineageBadgeClick}
                 onReadAttachmentBytes={window.maka.attachments.readBytes}
                 scrollTargetTurn={
@@ -2588,6 +2607,7 @@ function AppShellContent({
         setUiLocalePreference={setUiLocalePreference}
         uiLocaleUpdateGate={uiLocaleUpdateGate}
         setUserLabel={setUserLabel}
+        setDefaultPermissionMode={setDefaultPermissionMode}
         settingsRequestedSection={settingsRequestedSection}
         settingsProviderCatalogOpen={settingsProviderCatalogOpen}
         settingsConnectionDetailSlug={settingsConnectionDetailSlug}
@@ -2596,6 +2616,7 @@ function AppShellContent({
           closeSettings();
           setNavSelection({ section: 'automations', module: 'daily-review' });
         }}
+        onOpenKeyboardHelp={openHelp}
         onOpenSettingsSession={(sessionId) => {
           closeSettings();
           openSessionInChat(sessionId);

@@ -568,12 +568,17 @@ export function VoiceModelsSettingsPage(props: {
         </FormLayout>
         </SettingsField>
       </SettingsSection>
-      <SettingsSection title={copy.statusAria}>
+      {/* UX audit (owner msg `30f736ed`): 采集上限 60秒·16MB and 通道
+          单声道·≤48kHz were implementation specs — the user cannot change
+          either, and knowing them changes nothing they do. 隐私 was a promise
+          rather than a status, so it reads as the group's own sentence.
+
+          What is left is the row with an action behind it (permission), the
+          self-check, and its result — which is the entire task this group
+          serves: "can my microphone be used". */}
+      <SettingsSection title={copy.statusAria} description={copy.statusHelp}>
         <div role="group" aria-label={copy.statusAria} className="settingsRowsGroup">
           <SettingRow title={copy.microphone} detail="" value={copy.permissions[permission]} />
-          <SettingRow title={copy.captureLimit} detail="" value={copy.durationSize(Math.round(caps.maxDurationMs / 1000), Math.round(caps.maxAudioBytes / 1024 / 1024))} />
-          <SettingRow title={copy.channels} detail="" value={copy.channelValue(Math.round(caps.maxSampleRate / 1000))} />
-          <SettingRow title={copy.privacy} detail="" value={copy.privacyValue} />
         </div>
         <SettingsActions>
           <Button
@@ -602,11 +607,6 @@ export function VoiceModelsSettingsPage(props: {
             </p>
           )}
         </SettingsField>
-      </SettingsSection>
-      <SettingsSection variant="bare" title={copy.boundary} description={copy.subtitle}>
-        <ul className="settingsFeatureStatusList" aria-label={copy.boundaryAria}>
-          {copy.boundaries.map((boundary) => <li key={boundary}>{boundary}</li>)}
-        </ul>
       </SettingsSection>
     </SettingsPage>
   );

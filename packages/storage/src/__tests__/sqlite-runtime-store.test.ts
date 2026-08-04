@@ -48,7 +48,7 @@ describe('SqliteRuntimeStore', () => {
 
       const legacy = new DatabaseSync(dbPath);
       legacy.exec(`
-        DROP TABLE headless_task_run_events;
+        DROP TABLE runtime_storage_root_binding;
         DROP TABLE runtime_workspace_heads;
         DROP TABLE runtime_workspace_versions;
         DROP TABLE runtime_workspace_epochs;
@@ -72,6 +72,57 @@ describe('SqliteRuntimeStore', () => {
             .prepare('PRAGMA table_info(runtime_continuation_claims)')
             .all() as Array<{ name: string }>;
           assert.ok(columns.some((column) => column.name === 'start_kind'));
+        } finally {
+          inspect.close();
+        }
+      } finally {
+        upgraded.close();
+      }
+    });
+  });
+
+  it('upgrades a populated mainline schema 8 database without losing headless task events', async () => {
+    await withStore(async (store, dbPath) => {
+      store.close();
+
+      const mainline = new DatabaseSync(dbPath);
+      mainline
+        .prepare(`
+          INSERT INTO headless_task_run_events(task_run_id, sequence, event_id, record_json)
+          VALUES (?, ?, ?, ?)
+        `)
+        .run('task-run-1', 0, 'headless-event-1', '{"kind":"started"}');
+      mainline.close();
+
+      const upgraded = createSqliteRuntimeStore(dbPath);
+      try {
+        assert.equal(upgraded.schemaVersion(), 9);
+        const inspect = new DatabaseSync(dbPath);
+        try {
+          assert.deepEqual(
+            inspect
+              .prepare(`
+                SELECT task_run_id, sequence, event_id, record_json
+                FROM headless_task_run_events
+              `)
+              .all()
+              .map((row) => ({ ...row })),
+            [
+              {
+                task_run_id: 'task-run-1',
+                sequence: 0,
+                event_id: 'headless-event-1',
+                record_json: '{"kind":"started"}',
+              },
+            ],
+          );
+          assert.deepEqual(
+            inspect
+              .prepare('PRAGMA table_info(runtime_storage_root_binding)')
+              .all()
+              .map((row) => (row as { name: string }).name),
+            ['singleton', 'root_id', 'protocol_version'],
+          );
         } finally {
           inspect.close();
         }
@@ -362,6 +413,25 @@ describe('SqliteRuntimeStore', () => {
         }),
         /duplicate_event_id/,
       );
+    });
+  });
+
+  it('validates a tool transition after unrelated invocation history', async () => {
+    await withStore(async (store) => {
+      const unrelated = functionCallEvent({
+        id: 'unrelated-event',
+        sessionId: 'session-2',
+        invocationId: 'invocation-2',
+        runId: 'run-2',
+        turnId: 'turn-2',
+        content: { kind: 'text', text: 'unrelated history' },
+      });
+      await store.appendRuntimeEvent(unrelated.sessionId, unrelated.runId, unrelated);
+
+      const result = await commitPrepared(store);
+
+      assert.equal(result.created, true);
+      assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
     });
   });
 

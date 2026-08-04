@@ -5,28 +5,42 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { tokenSummary } from './helpers/cell-output-fixtures.js';
+import { type HarborAgentEntry, harborAgentPhaseSec } from './helpers/harbor-agent-phase.js';
+import { competitorRepoFiles } from '../agent-repo-mount.js';
 import type { HarborCellExecutionIdentity, HarborCellOutput } from '../cell-output.js';
-import { FixedPromptBudgetExhaustedError, type TaskRunInput } from '../fixed-prompt-controller.js';
+import {
+  FixedPromptBudgetExhaustedError,
+  runFixedPromptController,
+  type FixedPromptTaskBudgetExhaustedEvent,
+  type TaskRunInput,
+} from '../fixed-prompt-controller.js';
+import { CODEX_TOOLCHAIN_SPEC } from '../codex-toolchain.js';
 import {
   buildHarborJobConfig,
   createHarborOracleQualifier,
   createHarborTaskRunner,
   HarborInfraError,
+  incompleteTerminalProviderRequest,
+  trialGradeSurvivingProviderOutage,
+  MAKA_SETTLEMENT_GRACE_SEC,
   type HarborProcessRunner,
   type HarborRunRequest,
   type HarborRunResult,
 } from '../harbor-task-runner.js';
 import {
+  harnessAgentImportPath,
   providerProxyClientAuthMode,
   providerProxyClientBaseUrl,
   providerProxyUpstreamAuthMode,
   providerProxyUsageProtocol,
 } from '../harness-agent-registry.js';
+import type { ProviderRequestTelemetry } from '../provider-auth-proxy.js';
 import { HARBOR_ORACLE_EXECUTION_POLICY } from '../harness-oracle-policy.js';
 import {
   CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
   CLAUDE_CODE_TOOLCHAIN_SPEC,
 } from '../claude-code-toolchain.js';
+import { REASONIX_TOOLCHAIN_FINGERPRINT, REASONIX_TOOLCHAIN_SPEC } from '../reasonix-toolchain.js';
 
 function cellOutput(overrides: Partial<HarborCellOutput> = {}): HarborCellOutput {
   return {
@@ -100,6 +114,16 @@ test('DeepSeek routes each CLI through its native wire protocol', () => {
     providerProxyClientBaseUrl('https://proxy.invalid/lease', 'claude-code', 'deepseek'),
     'https://proxy.invalid/lease/anthropic',
   );
+  // Reasonix speaks DeepSeek's OpenAI-compatible wire natively, so it needs no
+  // agent-specific auth, usage, or base-URL branch — only the registry entry.
+  assert.equal(providerProxyUsageProtocol('reasonix', 'deepseek'), 'openai-chat-sse');
+  assert.equal(providerProxyClientAuthMode('reasonix', 'deepseek'), 'bearer');
+  assert.equal(providerProxyUpstreamAuthMode('reasonix', 'deepseek'), 'bearer');
+  assert.equal(
+    providerProxyClientBaseUrl('https://proxy.invalid/lease', 'reasonix', 'deepseek'),
+    'https://proxy.invalid/lease',
+  );
+  assert.equal(harnessAgentImportPath('reasonix'), 'reasonix_agent:MakaReasonixAgent');
 });
 
 interface FakeOptions {
@@ -260,6 +284,51 @@ async function withRun<T>(
   } finally {
     await rm(base, { recursive: true, force: true });
   }
+}
+
+/** Drives the real Harbor runner through the controller so a trial directory on
+ * disk is projected into the WAL row the benchmark actually counts. */
+async function budgetExhaustedWalEvent(input: {
+  jobsDir: string;
+  repo: string;
+  opts: FakeOptions;
+}): Promise<FixedPromptTaskBudgetExhaustedEvent> {
+  const systemPromptPath = join(input.repo, 'system_prompt.md');
+  await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+  let id = 0;
+  const result = await runFixedPromptController({
+    runId: 'run-1',
+    roundId: 'round-1',
+    config: {
+      id: 'cfg',
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'deepseek',
+      model: 'deepseek-v4-flash',
+    },
+    systemPromptPath,
+    resultsJsonlPath: join(input.jobsDir, 'results.jsonl'),
+    tasks: [{ id: 'task-1', path: '/tasks/cobol-modernization' }],
+    taskRunner: createHarborTaskRunner({
+      makaRepoPath: input.repo,
+      jobsDir: input.jobsDir,
+      model: 'deepseek/deepseek-v4-flash',
+      runHarbor: fakeRunner({
+        trialResult: {
+          exception_info: {
+            exception_type: 'AgentTimeoutError',
+            exception_message: 'Agent execution timed out after 60.0 seconds',
+          },
+        },
+        ...input.opts,
+      }),
+    }),
+    now: () => 100,
+    newId: () => `id-${(id += 1)}`,
+  });
+  const event = result.events[0];
+  assert.equal(event?.type, 'task_budget_exhausted');
+  if (event?.type !== 'task_budget_exhausted') assert.fail('expected budget exhaustion event');
+  return event;
 }
 
 describe('createHarborTaskRunner', () => {
@@ -699,6 +768,68 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
+  test('scores a cell whose agent exited cleanly while a provider stream was open', async () => {
+    // Codex and Claude Code end their last turn by tearing down an in-flight
+    // stream, which the proxy records as `aborted`. The trial itself raises
+    // nothing and the verifier grades it, so the cell is evidence: reading that
+    // tail as an outage discarded passing competitor cells as infra failures.
+    await withRun(async ({ jobsDir, repo, keyFile }) => {
+      const upstream = createServer((_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+      });
+      await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+      const address = upstream.address();
+      assert.ok(address && typeof address !== 'string');
+      try {
+        const runner = createHarborTaskRunner({
+          makaRepoPath: repo,
+          jobsDir,
+          agent: 'codex',
+          codexToolchainPath: '/toolchain',
+          agentVersion: '0.146.0',
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          reasoningEffort: 'max',
+          apiKeyFile: keyFile,
+          agentEnv: { MAKA_BASE_URL: `http://127.0.0.1:${address.port}` },
+          runHarbor: async (request) => {
+            const proxyUrl = request.env?.MAKA_PROVIDER_PROXY_URL?.replace(
+              'host.docker.internal',
+              '127.0.0.1',
+            );
+            const proxyToken = request.env?.MAKA_PROVIDER_PROXY_TOKEN;
+            assert.ok(proxyUrl && proxyToken);
+            const abort = new AbortController();
+            const pending = fetch(`${proxyUrl}/chat/completions`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${proxyToken}` },
+              body: '{}',
+              signal: abort.signal,
+            });
+            const response = await pending;
+            assert.equal(response.status, 200);
+            abort.abort();
+            await response.body?.cancel().catch(() => {});
+            return fakeRunner({ reward: '1\n' })(request);
+          },
+        });
+
+        const output = await runner(runInput());
+
+        assert.equal(output.harbor.reward, 1);
+        const telemetry = JSON.parse(
+          await readFile(output.cell.providerTelemetryPath!, 'utf8'),
+        ) as { requests: Array<{ outcome: string }> };
+        assert.equal(telemetry.requests.at(-1)?.outcome, 'aborted');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+  });
+
   test('gives Codex an ephemeral OpenAI proxy without exposing the provider key file', async () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       const captured: { config?: Record<string, unknown> } = {};
@@ -708,7 +839,7 @@ describe('createHarborTaskRunner', () => {
         jobsDir,
         agent: 'codex',
         codexToolchainPath: '/toolchain',
-        agentVersion: '0.144.6',
+        agentVersion: '0.146.0',
         model: 'openai/gpt-5.6-sol',
         provider: 'openai',
         reasoningEffort: 'max',
@@ -753,7 +884,7 @@ describe('createHarborTaskRunner', () => {
           jobsDir,
           agent: 'codex',
           codexToolchainPath: '/toolchain',
-          agentVersion: '0.144.6',
+          agentVersion: '0.146.0',
           model: 'openai-codex/gpt-5.6-sol',
           provider: 'openai-codex',
           reasoningEffort: 'max',
@@ -1697,6 +1828,129 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
+  test('settles a timeout by its exception type when the harness rewords the message', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          exitCodeAfterArtifacts: 1,
+          reward: '1\n',
+          cell: cellOutput({ status: 'failed', errorClass: 'aborted' }),
+          trialResult: {
+            exception_info: {
+              // AgentTimeoutError is Harbor's own class, so the type settles it.
+              // The message is upstream prose and may be reworded at any time.
+              exception_type: 'AgentTimeoutError',
+              exception_message: 'Agent execution exceeded its 900s deadline',
+            },
+          },
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.equal(output.harbor.reward, 1);
+      assert.equal(output.cell.deadlineSettlement?.source, 'benchmark.deadline');
+    });
+  });
+
+  test('scores a graded trial the agent ended by exiting non-zero', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          exitCodeAfterArtifacts: 1,
+          reward: '1\n',
+          cell: cellOutput({ status: 'failed', errorClass: 'aborted' }),
+          trialResult: {
+            exception_info: {
+              exception_type: 'NonZeroAgentExitCodeError',
+              exception_message: 'agent exited 1',
+            },
+          },
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.equal(output.harbor.reward, 1);
+      assert.equal(output.harbor.verifier?.outcome, 'passed');
+      // No deadline ended this run, so nothing may claim one — the structured
+      // verifier grade is what makes the trial scoreable.
+      assert.equal(output.cell.deadlineSettlement, undefined);
+      assert.equal(output.cell.errorClass, 'aborted');
+    });
+  });
+
+  test('scores a graded-failed agent exit, not just a graded-passed one', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          exitCodeAfterArtifacts: 1,
+          reward: '0\n',
+          cell: cellOutput({ status: 'failed', errorClass: 'aborted' }),
+          trialResult: {
+            exception_info: {
+              exception_type: 'NonZeroAgentExitCodeError',
+              exception_message: 'agent exited 1',
+            },
+          },
+        }),
+      });
+
+      // A verdict settles the trial whichever way it went; scoring only the
+      // passes would quietly drop every graded failure from the denominator.
+      const output = await runner(runInput());
+      assert.equal(output.harbor.reward, 0);
+      assert.equal(output.harbor.verifier?.outcome, 'failed');
+    });
+  });
+
+  test('keeps an externally ended run that exited non-zero infra despite full artifacts', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          exitCodeAfterArtifacts: 1,
+          // Every artifact present and the verdict conclusive: the container
+          // died after the verifier ran. The agent still never got the run it
+          // was given, so this is not a fair sample at any reward.
+          //
+          // Scoped deliberately to the non-zero exit. Both harnesses swallow a
+          // recorded agent-phase exception and exit 0 (trial.py run()), and on
+          // that path an external termination with a full verdict still falls
+          // through and scores. That is defensible — the verifier did grade it,
+          // and the verifier only ever runs for an agent-owned termination in
+          // the first place — but it is not what this test pins.
+          reward: '0\n',
+          cell: cellOutput({ status: 'failed', errorClass: 'aborted' }),
+          trialResult: {
+            exception_info: {
+              exception_type: 'DockerExecError',
+              exception_message: 'container exec failed',
+            },
+          },
+        }),
+      });
+
+      await assert.rejects(runner(runInput()), (error: unknown) => {
+        assert.ok(error instanceof HarborInfraError);
+        assert.match(error.message, /harbor run exited 1/);
+        // The infra message has to name the trial exception: the WAL keeps only
+        // the message, so anything dropped here is unfindable after the run.
+        assert.match(error.message, /trial exception: DockerExecError: container exec failed/);
+        return true;
+      });
+    });
+  });
+
   test('returns the official verifier result after a non-zero Harbor timeout exit', async () => {
     await withRun(async ({ jobsDir, repo }) => {
       const timedCell = cellOutput({
@@ -1779,6 +2033,119 @@ describe('createHarborTaskRunner', () => {
         assert.deepEqual(error.artifactRefs?.tokenSummary, usageCheckpoint);
         return true;
       });
+    });
+  });
+
+  // The runner transports the verifier's artifacts verbatim; the controller
+  // decides what counts as a grade. So the contract under test here is only
+  // "readable artifacts travel, unreadable ones do not" — including reward 0,
+  // which is a real graded failure and must not be silently dropped.
+  for (const trial of [
+    {
+      name: 'a passing reward',
+      opts: { reward: '1.0\n' },
+      expected: { reward: 1, outcome: 'passed' },
+    },
+    { name: 'a zero reward', opts: { reward: '0\n' }, expected: { reward: 0, outcome: 'failed' } },
+    { name: 'no reward file', opts: {}, expected: undefined },
+    { name: 'an empty reward file', opts: { reward: '' }, expected: undefined },
+    { name: 'a non-numeric reward', opts: { reward: 'crashed\n' }, expected: undefined },
+    {
+      name: 'no verifier outcome file',
+      opts: { reward: '1.0\n', verifierOutcome: null },
+      expected: undefined,
+    },
+    {
+      name: 'a malformed verifier outcome',
+      opts: { reward: '1.0\n', verifierOutcome: { schemaVersion: 1, outcome: 'passed' } },
+      expected: undefined,
+    },
+  ] as const) {
+    test(`carries the verifier artifacts of a timed-out trial without cell output: ${trial.name}`, async () => {
+      await withRun(async ({ jobsDir, repo }) => {
+        const runner = createHarborTaskRunner({
+          makaRepoPath: repo,
+          jobsDir,
+          model: 'deepseek/deepseek-v4-flash',
+          runHarbor: fakeRunner({
+            ...trial.opts,
+            cell: null,
+            trialResult: {
+              exception_info: {
+                exception_type: 'AgentTimeoutError',
+                exception_message: 'Agent execution timed out after 60.0 seconds',
+              },
+            },
+          }),
+        });
+
+        await assert.rejects(runner(runInput()), (error: unknown) => {
+          assert.ok(error instanceof FixedPromptBudgetExhaustedError);
+          assert.equal(error.artifactRefs?.harbor?.reward, trial.expected?.reward);
+          assert.equal(error.artifactRefs?.harbor?.verifier?.outcome, trial.expected?.outcome);
+          return true;
+        });
+      });
+    });
+  }
+
+  // The reported defect end to end: the six dropped cells were exactly these
+  // artifacts on disk. Nothing else joins the runner's read of the trial dir to
+  // the WAL row the benchmark counts.
+  test('scores a timed-out trial the verifier graded, from trial dir to WAL', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const event = await budgetExhaustedWalEvent({
+        jobsDir,
+        repo,
+        opts: { reward: '1.0\n', cell: null },
+      });
+      assert.equal(event.passed, true);
+      assert.equal(event.scored, true);
+      assert.equal(event.eligible, true);
+      assert.equal(event.harbor?.reward, 1);
+    });
+  });
+
+  test('refuses to score a timed-out trial whose reward disagrees with its verifier outcome', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const event = await budgetExhaustedWalEvent({
+        jobsDir,
+        repo,
+        opts: {
+          reward: '1.0\n',
+          verifierOutcome: {
+            schemaVersion: 1,
+            outcome: 'failed',
+            attempts: [{ attempt: 1, classification: 'failed', durationMs: 1, reward: 0 }],
+          },
+          cell: null,
+        },
+      });
+      // The completed path rejects these same artifacts as infra
+      // (assertVerifierRewardAgreement); a missing self-report must not turn a
+      // corrupt scoring authority into a pass.
+      assert.equal(event.passed, false);
+      assert.equal(event.scored, false);
+    });
+  });
+
+  test('refuses to score a timed-out trial whose verifier never concluded', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const event = await budgetExhaustedWalEvent({
+        jobsDir,
+        repo,
+        opts: {
+          reward: '1.0\n',
+          verifierOutcome: {
+            schemaVersion: 1,
+            outcome: 'candidate_timeout',
+            attempts: [{ attempt: 1, classification: 'timeout', durationMs: 1 }],
+          },
+          cell: null,
+        },
+      });
+      assert.equal(event.passed, false);
+      assert.equal(event.scored, false);
     });
   });
 
@@ -2309,6 +2676,70 @@ describe('buildHarborJobConfig', () => {
     assert.equal(env.ANTHROPIC_API_KEY, undefined);
   });
 
+  test('pins the Reasonix adapter and official toolchain without serializing credentials', () => {
+    const config = buildHarborJobConfig(runInput(), {
+      makaRepoPath: '/repo',
+      jobsDir: '/jobs/x',
+      jobName: 'trial',
+      agent: 'reasonix',
+      model: 'deepseek/deepseek-v4-flash',
+      provider: 'deepseek',
+      reasoningEffort: 'max',
+      agentVersion: REASONIX_TOOLCHAIN_SPEC.reasonix.version,
+      reasonixToolchainPath: '/cache/reasonix-1.19.4-linux-x64',
+      dockerPlatform: 'linux/amd64',
+    });
+    const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
+    const env = agent.env as Record<string, string>;
+    const mounts = (config.environment as { mounts: Array<Record<string, unknown>> }).mounts;
+
+    assert.equal(agent.import_path, 'reasonix_agent:MakaReasonixAgent');
+    assert.equal(agent.model_name, 'deepseek-v4-flash');
+    assert.deepEqual(agent.kwargs, { version: REASONIX_TOOLCHAIN_SPEC.reasonix.version });
+    assert.equal(env.MAKA_REASONIX_TOOLCHAIN_FINGERPRINT, REASONIX_TOOLCHAIN_FINGERPRINT);
+    assert.equal(env.MAKA_REASONING_EFFORT, 'max');
+    assert.ok(
+      mounts.some(
+        (mount) =>
+          mount.source === '/cache/reasonix-1.19.4-linux-x64' &&
+          mount.target === '/opt/maka-reasonix-toolchain' &&
+          mount.read_only === true,
+      ),
+    );
+    assert.equal(env.DEEPSEEK_API_KEY, undefined);
+    assert.equal(env.MAKA_REASONIX_PROXY_TOKEN, undefined);
+  });
+
+  test('refuses a Reasonix arm whose adapter version drifts from the pinned toolchain', () => {
+    assert.throws(
+      () =>
+        buildHarborJobConfig(runInput(), {
+          makaRepoPath: '/repo',
+          jobsDir: '/jobs/x',
+          jobName: 'trial',
+          agent: 'reasonix',
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          agentVersion: '1.19.3',
+          reasonixToolchainPath: '/cache/reasonix-1.19.4-linux-x64',
+        }),
+      /Reasonix adapter version must match toolchain version 1\.19\.4/,
+    );
+    assert.throws(
+      () =>
+        buildHarborJobConfig(runInput(), {
+          makaRepoPath: '/repo',
+          jobsDir: '/jobs/x',
+          jobName: 'trial',
+          agent: 'reasonix',
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          agentVersion: REASONIX_TOOLCHAIN_SPEC.reasonix.version,
+        }),
+      /reasonixToolchainPath is required for the Reasonix adapter/,
+    );
+  });
+
   test('pins the Codex adapter and toolchain behind the host provider proxy', () => {
     const config = buildHarborJobConfig(runInput(), {
       makaRepoPath: '/repo',
@@ -2318,8 +2749,8 @@ describe('buildHarborJobConfig', () => {
       model: 'openai/gpt-5.6-sol',
       provider: 'openai',
       reasoningEffort: 'max',
-      agentVersion: '0.144.6',
-      codexToolchainPath: '/cache/codex-0.144.6-linux-x64',
+      agentVersion: '0.146.0',
+      codexToolchainPath: '/cache/codex-0.146.0-linux-x64',
       dockerPlatform: 'linux/amd64',
     } as unknown as Parameters<typeof buildHarborJobConfig>[1]);
     const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
@@ -2329,18 +2760,58 @@ describe('buildHarborJobConfig', () => {
     assert.equal(agent.name, undefined);
     assert.equal(agent.import_path, 'codex_agent:MakaCodexAgent');
     assert.equal(agent.model_name, 'gpt-5.6-sol');
-    assert.deepEqual(agent.kwargs, { version: '0.144.6', reasoning_effort: 'max' });
+    assert.deepEqual(agent.kwargs, { version: '0.146.0', reasoning_effort: 'max' });
     assert.match(env.MAKA_CODEX_TOOLCHAIN_FINGERPRINT, /^sha256:[a-f0-9]{64}$/);
     assert.ok(
       mounts.some(
         (mount) =>
-          mount.source === '/cache/codex-0.144.6-linux-x64' &&
+          mount.source === '/cache/codex-0.146.0-linux-x64' &&
           mount.target === '/opt/maka-codex-toolchain' &&
           mount.read_only === true,
       ),
     );
     assert.equal(env.OPENAI_API_KEY, undefined);
     assert.equal(env.CODEX_API_KEY, undefined);
+  });
+
+  test('withholds the repo tree from a competitor arm', () => {
+    const forAgent = (agent: 'maka' | 'codex' | 'claude-code') =>
+      (
+        buildHarborJobConfig(runInput(), {
+          makaRepoPath: '/repo',
+          jobsDir: '/jobs/x',
+          jobName: 'trial',
+          agent,
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          agentVersion:
+            agent === 'codex' ? '0.146.0' : CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version,
+          codexToolchainPath: '/cache/codex',
+          claudeCodeToolchainPath: '/cache/claude-code',
+        } as unknown as Parameters<typeof buildHarborJobConfig>[1]).environment as {
+          mounts: Array<Record<string, unknown>>;
+        }
+      ).mounts;
+
+    // Maka executes out of the tree, so it still gets the tree.
+    assert.ok(forAgent('maka').some((mount) => mount.target === '/opt/maka-agent'));
+
+    // A competitor gets the files it named and no directory to walk. Reverting
+    // to the shared tree mount re-opens the path Codex used in the #1970 run:
+    // read the pinned benchmark revision, fetch the task's reference solution.
+    for (const agent of ['codex', 'claude-code'] as const) {
+      const repoMounts = forAgent(agent).filter((mount) =>
+        String(mount.target).startsWith('/opt/maka-agent'),
+      );
+      assert.ok(
+        repoMounts.every((mount) => mount.target !== '/opt/maka-agent'),
+        `${agent} must not receive the repo root`,
+      );
+      assert.deepEqual(
+        repoMounts.map((mount) => mount.target),
+        competitorRepoFiles(agent).map((file) => `/opt/maka-agent/${file}`),
+      );
+    }
   });
 
   test('pins the Claude Code adapter and native toolchain behind the host provider proxy', () => {
@@ -2430,7 +2901,7 @@ describe('buildHarborJobConfig', () => {
           agent: 'codex',
           model: 'openai/gpt-5.6-sol',
           provider: 'openai',
-          agentVersion: '0.144.6',
+          agentVersion: '0.146.0',
         } as unknown as Parameters<typeof buildHarborJobConfig>[1]),
       /codexToolchainPath is required for the Codex adapter/,
     );
@@ -2446,7 +2917,7 @@ describe('buildHarborJobConfig', () => {
           agentVersion: '0.143.0',
           codexToolchainPath: '/toolchain',
         } as unknown as Parameters<typeof buildHarborJobConfig>[1]),
-      /Codex adapter version must match toolchain version 0\.144\.6/,
+      /Codex adapter version must match toolchain version 0\.146\.0/,
     );
   });
 
@@ -2537,16 +3008,96 @@ describe('buildHarborJobConfig', () => {
     assert.equal(env.MAKA_BACKEND, 'ai-sdk');
   });
 
-  test('mirrors the cell timeout into Harbor agent timeout', () => {
+  // Deadline assertions below go through harborAgentPhaseSec — Harbor's own
+  // resolution rule, modelled once in ./helpers/harbor-agent-phase.js and shared with
+  // the smoke producer's suite. See that file for why a field-shaped assertion
+  // is not enough.
+
+  test('resolves Maka a settlement tail past the task-declared agent timeout', () => {
+    // The regression this pins: publishing budget + grace on max_timeout_sec.
+    // Harbor folds that to min(1800, 1830) = 1800, so the cell was SIGKILLed at
+    // the instant it was supposed to begin writing maka-cell-output.json — and
+    // every timed-out Maka cell lost its already-authoritative verifier reward.
+    const declared = 1800;
     const config = buildHarborJobConfig(runInput(), {
       makaRepoPath: '/repo',
       jobsDir: '/jobs/x',
       jobName: 'trial',
       model: 'deepseek/deepseek-v4-flash',
-      agentEnv: { MAKA_CELL_TIMEOUT_SEC: '1800' },
+      agentEnv: { MAKA_CELL_TIMEOUT_SEC: String(declared) },
     });
-    const agent = (config.agents as Array<{ max_timeout_sec?: number }>)[0]!;
-    assert.equal(agent.max_timeout_sec, 1800);
+    const agent = (config.agents as HarborAgentEntry[])[0]!;
+    assert.equal(
+      harborAgentPhaseSec(config, declared),
+      declared + MAKA_SETTLEMENT_GRACE_SEC,
+      'Harbor must kill one settlement window after the model budget, not at it',
+    );
+    // A ceiling cannot raise a base, so leaving one behind can only re-clamp it.
+    assert.equal(agent.max_timeout_sec, undefined);
+  });
+
+  test('every arm gets the same model budget and only Maka a settlement tail', () => {
+    // Maka's cell stops calling the model one grace window before its own budget
+    // runs out; native CLIs run until Harbor cancels. Taking the grace out of the
+    // budget would hand Maka less model time than its competitors for the same task.
+    const configFor = (adapter: 'maka' | 'codex') =>
+      buildHarborJobConfig(runInput(), {
+        makaRepoPath: '/repo',
+        jobsDir: '/jobs/x',
+        jobName: 'trial',
+        model: 'deepseek/deepseek-v4-flash',
+        agentEnv: { MAKA_CELL_TIMEOUT_SEC: '1800' },
+        ...(adapter === 'codex'
+          ? {
+              agent: adapter,
+              agentVersion: CODEX_TOOLCHAIN_SPEC.codex.version,
+              codexToolchainPath: '/toolchains/codex',
+            }
+          : {}),
+      });
+
+    // Pin the window as a real quantity: with a zero grace every assertion below
+    // would hold for an implementation that gives no arm any settlement tail.
+    assert.ok(MAKA_SETTLEMENT_GRACE_SEC > 0, 'the settlement window must be a real window');
+
+    const makaConfig = configFor('maka');
+    const maka = (makaConfig.agents as HarborAgentEntry[])[0]!;
+    const makaPhase = harborAgentPhaseSec(makaConfig, 1800);
+    assert.equal(makaPhase, 1800 + MAKA_SETTLEMENT_GRACE_SEC);
+    // The budget the cell is handed is the model budget itself, on every path.
+    assert.equal(maka.env.MAKA_CELL_TIMEOUT_SEC, '1800');
+    assert.equal(maka.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, String(MAKA_SETTLEMENT_GRACE_SEC));
+    // Harbor kills at the agent phase, which is that budget plus the window.
+    assert.equal(makaPhase - Number(maka.env.MAKA_CELL_TIMEOUT_SEC), MAKA_SETTLEMENT_GRACE_SEC);
+
+    const codexConfig = configFor('codex');
+    const codex = (codexConfig.agents as HarborAgentEntry[])[0]!;
+    const codexPhase = harborAgentPhaseSec(codexConfig, 1800);
+    assert.equal(codexPhase, 1800);
+    assert.equal(codex.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, undefined);
+    // The whole asymmetry: Maka's phase is longer by exactly the window it
+    // spends settling, and both arms still call the model for the same 1800s.
+    assert.equal(makaPhase - codexPhase, MAKA_SETTLEMENT_GRACE_SEC);
+  });
+
+  test('an operator-widened settlement window is honoured, not overwritten', () => {
+    // The grace is a default, not a constant: a run that needs a longer tail
+    // must keep it, and the budget must widen with it so model time is unchanged.
+    const widened = MAKA_SETTLEMENT_GRACE_SEC + 45;
+    const config = buildHarborJobConfig(runInput(), {
+      makaRepoPath: '/repo',
+      jobsDir: '/jobs/x',
+      jobName: 'trial',
+      model: 'deepseek/deepseek-v4-flash',
+      agentEnv: {
+        MAKA_CELL_TIMEOUT_SEC: '1800',
+        MAKA_CELL_SETTLEMENT_GRACE_SEC: String(widened),
+      },
+    });
+    const agent = (config.agents as HarborAgentEntry[])[0]!;
+    assert.equal(agent.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, String(widened));
+    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, '1800');
+    assert.equal(harborAgentPhaseSec(config, 1800), 1800 + widened);
   });
 
   test('a malformed cell timeout falls back instead of failing the run', () => {
@@ -2575,7 +3126,9 @@ describe('buildHarborJobConfig', () => {
     for (const { raw, parsed } of cases) {
       const agentEnv: Record<string, string> =
         raw === undefined ? {} : { MAKA_CELL_TIMEOUT_SEC: raw };
-      const label = JSON.stringify(raw);
+      // String(): JSON.stringify(undefined) is undefined, and an undefined assert
+      // message throws ERR_INVALID_ARG_TYPE over the top of the real diff.
+      const label = String(JSON.stringify(raw));
 
       // A parse miss falls back to the task metadata timeout.
       const withMetadata = buildHarborJobConfig(
@@ -2594,9 +3147,7 @@ describe('buildHarborJobConfig', () => {
           model: 'deepseek/deepseek-v4-flash',
         },
       );
-      const metadataAgent = (
-        withMetadata.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
-      )[0]!;
+      const metadataAgent = (withMetadata.agents as HarborAgentEntry[])[0]!;
       assert.equal(metadataAgent.env.MAKA_CELL_TIMEOUT_SEC, String(parsed ?? 1234), label);
       assert.equal(
         metadataAgent.env.MAKA_STREAM_CONNECT_TIMEOUT_MS,
@@ -2608,7 +3159,11 @@ describe('buildHarborJobConfig', () => {
         String((parsed ?? 1234) * 1_000),
         label,
       );
-      assert.equal(metadataAgent.max_timeout_sec, parsed ?? 1234, label);
+      assert.equal(
+        harborAgentPhaseSec(withMetadata, 1234),
+        (parsed ?? 1234) + MAKA_SETTLEMENT_GRACE_SEC,
+        label,
+      );
 
       // Without metadata, a parsed value is rewritten into the env; a parse
       // miss passes the raw string through for the adapter's default.
@@ -2618,15 +3173,20 @@ describe('buildHarborJobConfig', () => {
         jobName: 'trial',
         model: 'deepseek/deepseek-v4-flash',
       });
-      const agent = (
-        withoutMetadata.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
-      )[0]!;
+      const agent = (withoutMetadata.agents as HarborAgentEntry[])[0]!;
       assert.equal(
         agent.env.MAKA_CELL_TIMEOUT_SEC,
         parsed !== undefined ? String(parsed) : raw,
         label,
       );
-      assert.equal(agent.max_timeout_sec, parsed, label);
+      // With nothing to derive a budget from, the phase must stay Harbor's own —
+      // the task's declared timeout, stood in for here by a sentinel.
+      const declaredSentinel = 4321;
+      assert.equal(
+        harborAgentPhaseSec(withoutMetadata, declaredSentinel),
+        parsed === undefined ? declaredSentinel : parsed + MAKA_SETTLEMENT_GRACE_SEC,
+        label,
+      );
     }
   });
 
@@ -2647,13 +3207,11 @@ describe('buildHarborJobConfig', () => {
         provider: 'zai-coding-plan',
       },
     );
-    const agent = (
-      config.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
-    )[0]!;
+    const agent = (config.agents as HarborAgentEntry[])[0]!;
     assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, '1234');
     assert.equal(agent.env.MAKA_STREAM_CONNECT_TIMEOUT_MS, '1234000');
     assert.equal(agent.env.MAKA_STREAM_IDLE_TIMEOUT_MS, '1234000');
-    assert.equal(agent.max_timeout_sec, 1234);
+    assert.equal(harborAgentPhaseSec(config, 1234), 1234 + MAKA_SETTLEMENT_GRACE_SEC);
   });
 
   test('merges per-attempt agent env into the Harbor agent config', () => {
@@ -2732,6 +3290,39 @@ describe('createHarborTaskRunner timeout', () => {
           },
         }),
       );
+      // The agent phase Harbor is handed is the model budget plus Maka's
+      // settlement window, so the watchdog has to outlast that sum — otherwise
+      // it can kill a trial that is still legitimately settling.
+      assert.equal(seenTimeout, (7_200 + MAKA_SETTLEMENT_GRACE_SEC + 1_320 + 15 * 60) * 1_000);
+    });
+  });
+
+  test('gives a native CLI arm no settlement window in the outer watchdog', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      let seenTimeout: number | undefined;
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        agent: 'codex',
+        agentVersion: CODEX_TOOLCHAIN_SPEC.codex.version,
+        codexToolchainPath: '/toolchains/codex',
+        runHarbor: async (request) => {
+          seenTimeout = request.timeoutMs;
+          return fakeRunner({ reward: '1\n' })(request);
+        },
+      });
+      await runner(
+        runInput({
+          task: {
+            id: 'task-1',
+            path: '/tasks/task-1',
+            metadata: { agentTimeoutSec: 7_200, verifierTimeoutSec: 600 },
+          },
+        }),
+      );
+      // Codex is cancelled at its own deadline with nothing to settle, so its
+      // watchdog must not carry Maka's window either.
       assert.equal(seenTimeout, (7_200 + 1_320 + 15 * 60) * 1_000);
     });
   });
@@ -2759,7 +3350,7 @@ describe('createHarborTaskRunner timeout', () => {
           },
         }),
       );
-      assert.equal(seenTimeout, (7_200 + 1_320 + 15 * 60) * 1_000);
+      assert.equal(seenTimeout, (7_200 + MAKA_SETTLEMENT_GRACE_SEC + 1_320 + 15 * 60) * 1_000);
     });
   });
 
@@ -2877,4 +3468,90 @@ describe('createHarborTaskRunner timeout', () => {
       await assert.rejects(runner(runInput()), HarborInfraError);
     });
   });
+});
+
+describe('incompleteTerminalProviderRequest', () => {
+  const request = (outcome: ProviderRequestTelemetry['outcome']): ProviderRequestTelemetry => ({
+    requestId: 1,
+    method: 'POST',
+    path: '/v1/messages',
+    outcome,
+    durationMs: 10,
+    bodyChunks: 1,
+    responseBytes: 10,
+    terminalEvent: outcome === 'completed',
+  });
+
+  test('accepts a completed tail request whether or not the trial settled', () => {
+    assert.equal(incompleteTerminalProviderRequest([request('completed')], false), undefined);
+    assert.equal(incompleteTerminalProviderRequest([request('completed')], true), undefined);
+  });
+
+  test('exempts a settled trial whose tail request the client tore down', () => {
+    // `aborted` is set from `signal.aborted` — it is what killing the agent
+    // looks like from the proxy, so a settled trial explains it.
+    assert.equal(incompleteTerminalProviderRequest([request('aborted')], true), undefined);
+  });
+
+  test('keeps a provider-side truncation infra even on a settled trial', () => {
+    // This is the boundary that keeps a provider outage out of the denominator
+    // instead of recording it as the agent's zero. `interrupted` (200 stream
+    // with no terminal event) and `failed` are the upstream's doing, and the
+    // agent phase ending does not explain either.
+    for (const outcome of ['interrupted', 'failed'] as const) {
+      assert.equal(
+        incompleteTerminalProviderRequest([request(outcome)], true)?.outcome,
+        outcome,
+        `${outcome} must stay infra`,
+      );
+    }
+  });
+
+  test('withholds a budget-exhausted grade when the provider cut the tail request short', () => {
+    // The grade is evidence only if the agent got the run it was given. A
+    // provider-side truncation says it did not, so the verdict does not travel
+    // — the same boundary that makes the settled path infra, applied where the
+    // trial ends as a budget exhaustion instead.
+    const grade = { reward: 1 };
+    assert.equal(trialGradeSurvivingProviderOutage(grade, [request('completed')]), grade);
+    assert.equal(trialGradeSurvivingProviderOutage(grade, [request('aborted')]), grade);
+    assert.equal(trialGradeSurvivingProviderOutage(grade, []), grade);
+    for (const outcome of ['interrupted', 'failed'] as const) {
+      assert.equal(
+        trialGradeSurvivingProviderOutage(grade, [request(outcome)]),
+        undefined,
+        `${outcome} must withhold the grade`,
+      );
+    }
+    assert.equal(trialGradeSurvivingProviderOutage(undefined, [request('completed')]), undefined);
+  });
+
+  test('keeps every non-completing tail request infra on an unsettled trial', () => {
+    for (const outcome of ['interrupted', 'failed', 'aborted'] as const) {
+      assert.equal(incompleteTerminalProviderRequest([request(outcome)], false)?.outcome, outcome);
+    }
+  });
+
+  test('reads only the last request', () => {
+    assert.equal(
+      incompleteTerminalProviderRequest([request('failed'), request('completed')], false),
+      undefined,
+    );
+    assert.equal(incompleteTerminalProviderRequest([], false), undefined);
+  });
+});
+
+test('the linux/amd64 compose override resolves host.docker.internal for in-container agents', async () => {
+  const compose = await readFile(
+    new URL('../../harbor/docker-compose-linux-amd64.yaml', import.meta.url),
+    'utf8',
+  );
+
+  // Docker Desktop injects this name; native Linux Docker does not. Codex and
+  // Claude Code dial it to reach the host credential proxy, so dropping the
+  // mapping fails both competitor arms before their first model step while the
+  // Maka host cell -- which uses loopback -- keeps passing. That asymmetry
+  // looks like a competitor defect rather than a harness one, so pin it here.
+  assert.match(compose, /extra_hosts:/);
+  assert.match(compose, /host\.docker\.internal:host-gateway/);
 });

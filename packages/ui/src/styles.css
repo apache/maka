@@ -285,10 +285,6 @@
 .maka-sandbox-blocked-copy[data-pending="true"] { cursor: progress; }
 .maka-sandbox-blocked-copy[data-copy-feedback="copied"] { border-color: oklch(from var(--link) l c h / 0.35); color: var(--link); }
 .maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
-.maka-daily-review-copy,
-.maka-daily-review-save { min-width: 64px; }
-.maka-daily-review-append { min-width: 80px; }
-.maka-daily-review-quick-run { min-width: 96px; }
 .maka-agent-preview-failure { color: var(--destructive); }
 .maka-automation-result-icon { display: inline; margin-right: 4px; vertical-align: text-bottom; }
 .maka-turn-status-icon { flex: 0 0 auto; }

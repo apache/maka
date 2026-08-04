@@ -1,5 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
+import { useHotkeys } from '@astryxdesign/core/hooks';
 import type {
+  ChatDefaultPermissionMode,
   LlmConnection,
   ProviderType,
   SettingsSection,
@@ -34,6 +36,7 @@ export function SettingsModal(props: {
   onUiLocalePreferenceChange(preference: UiLocalePreference): void;
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
+  onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
   /**
    * Force the modal to a specific section when it (re-)mounts or when the
    * value changes while already open. Used by the command palette so
@@ -49,6 +52,8 @@ export function SettingsModal(props: {
    * gracefully when the shell does not provide the jump.
    */
   onOpenDailyReview?(): void;
+  /** Opens the keyboard sheet; 关于 is its click-reachable home. */
+  onOpenKeyboardHelp?(): void;
   /**
    * Jump from diagnostics surfaces (usage rows, later run history) back to the
    * source conversation. Settings owns the table, shell owns navigation.
@@ -65,17 +70,19 @@ export function SettingsModal(props: {
   // focus away from anything open inside Settings while a session streams.
   const activeNavRef = useRef<HTMLButtonElement>(null);
 
-  // The Escape listener is safe to resubscribe on every onClose identity
-  // change (it only adds/removes a DOM listener, not a focus-stealing side
-  // effect), and keeping it keyed on `onClose` guarantees Escape always
-  // calls the current closure rather than a stale one.
-  useEffect(() => {
-    function onKey(event: globalThis.KeyboardEvent) {
-      if (event.key === 'Escape' && !event.defaultPrevented) props.onClose();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [props.onClose]);
+  // useHotkeys keeps its entries in a ref it refreshes every render, so Escape
+  // always calls the current `onClose` without the listener churning on that
+  // prop's identity (it is recreated on every AppShell render, i.e. per
+  // streamed token). It also skips defaultPrevented events, which is what the
+  // old `!event.defaultPrevented` check bought: a nested dialog that already
+  // consumed Escape closes itself, not the whole Settings surface.
+  //
+  // `allowInInputs` because Escape must close Settings from inside its own
+  // fields — the hook's default would have made Escape dead in every text box
+  // on the page.
+  useHotkeys([
+    { keys: 'escape', allowInInputs: true, onPress: () => props.onClose() },
+  ]);
 
   return (
     <div
@@ -97,12 +104,14 @@ export function SettingsModal(props: {
         onUiLocalePreferenceChange={props.onUiLocalePreferenceChange}
         uiLocaleUpdateGate={props.uiLocaleUpdateGate}
         onUserLabelChange={props.onUserLabelChange}
+        onDefaultPermissionModeChange={props.onDefaultPermissionModeChange}
         requestedSection={props.requestedSection}
         openProviderCatalog={props.openProviderCatalog}
         initialConnectionSlug={props.initialConnectionSlug}
         initialCreateProviderType={props.initialCreateProviderType}
         initialFocusRef={activeNavRef}
         onOpenDailyReview={props.onOpenDailyReview}
+        onOpenKeyboardHelp={props.onOpenKeyboardHelp}
         onOpenSession={props.onOpenSession}
       />
     </div>

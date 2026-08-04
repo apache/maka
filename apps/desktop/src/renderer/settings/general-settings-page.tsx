@@ -27,9 +27,6 @@ import {
   Banner,
 } from '@maka/ui';
 import { ProviderBrandMark } from './provider-brand-marks';
-import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
-import { WorkspaceInstructionsSection } from './memory-settings-sections';
-import { useWorkspaceInstructionsController } from './use-workspace-instructions-controller';
 import { buildCatalogChatModelChoices } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -43,18 +40,12 @@ export function GeneralSettingsPage(props: {
   connections: readonly LlmConnection[];
   defaultSlug: string | null;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
-  onReloadSettings(): Promise<void>;
   onRefreshConnections(): Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   const sections = getSettingsPreferencesCopy(locale).sections;
-  const memoryCopy = getMemorySettingsCopy(locale);
   const toast = useToast();
-  const workspaceInstructions = useWorkspaceInstructionsController({
-    onUpdate: props.onUpdate,
-    onReloadSettings: props.onReloadSettings,
-  });
   return (
     <SettingsPage>
       {/* Designer audit P2-13: identity fields (显示名称/界面语言/语气偏好)
@@ -69,10 +60,12 @@ export function GeneralSettingsPage(props: {
             label={copy.enableIncognito}
             isLabelHidden
             value={props.settings.privacy.incognitoActive}
-            onChange={(incognitoActive) => {
-              props.onUpdate({ privacy: { incognitoActive } }).catch((error: unknown) => {
+            changeAction={async (incognitoActive) => {
+              try {
+                await props.onUpdate({ privacy: { incognitoActive } });
+              } catch (error: unknown) {
                 toast.error(copy.incognitoFailed, settingsActionErrorMessage(error, locale));
-              });
+              }
             }}
           />}
         />
@@ -83,10 +76,28 @@ export function GeneralSettingsPage(props: {
             label={copy.notifications}
             isLabelHidden
             value={props.settings.notifications.runComplete}
-            onChange={(runComplete) => {
-              props.onUpdate({ notifications: { runComplete } }).catch((error: unknown) => {
+            changeAction={async (runComplete) => {
+              try {
+                await props.onUpdate({ notifications: { runComplete } });
+              } catch (error: unknown) {
                 toast.error(copy.notificationsFailed, settingsActionErrorMessage(error, locale));
-              });
+              }
+            }}
+          />}
+        />
+        <SettingsRow
+          label={copy.workspaceInstructions}
+          description={copy.workspaceInstructionsHelp}
+          end={<Switch
+            label={copy.workspaceInstructions}
+            isLabelHidden
+            value={props.settings.workspaceInstructions.enabled}
+            changeAction={async (enabled) => {
+              try {
+                await props.onUpdate({ workspaceInstructions: { enabled } });
+              } catch (error: unknown) {
+                toast.error(copy.workspaceInstructionsFailed, settingsActionErrorMessage(error, locale));
+              }
             }}
           />}
         />
@@ -98,29 +109,6 @@ export function GeneralSettingsPage(props: {
         permissionMode={props.settings.chatDefaults.permissionMode}
         onUpdate={props.onUpdate}
       />
-      <SettingsSection
-        title={memoryCopy.text.instructions}
-        description={memoryCopy.text.instructionsHelp}
-      >
-        <SettingsRow
-          label={memoryCopy.text.enableInstructions}
-          end={<Switch
-            label={memoryCopy.text.enableInstructions}
-            isLabelHidden
-            value={props.settings.workspaceInstructions.enabled}
-            isDisabled={workspaceInstructions.busy}
-            onChange={(enabled) => void workspaceInstructions.setEnabled(enabled)}
-          />}
-        />
-        <WorkspaceInstructionsSection
-          copy={memoryCopy}
-          state={workspaceInstructions.state}
-          disabled={workspaceInstructions.busy}
-          isActionPending={workspaceInstructions.isActionPending}
-          onOpen={workspaceInstructions.openFile}
-          onCreate={workspaceInstructions.createFile}
-        />
-      </SettingsSection>
       <SettingsSection title={sections.network} description={sections.networkHelp}>
         <NetworkProxySection settings={props.settings} onUpdate={props.onUpdate} />
       </SettingsSection>

@@ -49,7 +49,9 @@ export type AgentRunContinuationSource =
   | AgentRunContinuationSourceV2;
 
 export type RootExecutionDescriptor =
-  | { kind: 'external_message' }
+  | { kind: 'external_message'; inputDigest?: `sha256:${string}` }
+  | { kind: 'regenerate'; sourceTurnId: string }
+  | { kind: 'context_compact' }
   | { kind: 'automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {
@@ -160,6 +162,8 @@ export interface AgentRunHeader {
   agentGraphWakeId?: string;
   /** Durable delivery attempt for this host-authored supervisor turn. */
   agentGraphWakeAttemptId?: string;
+  /** Positive identity for a host-authored root that has no message lineage. */
+  rootExecutionKind?: 'context_compact';
   failureClass?: string;
   failureMessage?: string;
   abortSource?: string;
@@ -169,7 +173,13 @@ export interface AgentRunHeader {
 type HostedRootExecutionDescriptor = Extract<
   RootExecutionDescriptor,
   {
-    kind: 'automation' | 'goal' | 'agent_graph_supervisor_wake' | 'safe_boundary_continuation';
+    kind:
+      | 'regenerate'
+      | 'context_compact'
+      | 'automation'
+      | 'goal'
+      | 'agent_graph_supervisor_wake'
+      | 'safe_boundary_continuation';
   }
 >;
 
@@ -177,6 +187,46 @@ export function agentRunMatchesHostedRootExecution(
   run: AgentRunHeader,
   execution: HostedRootExecutionDescriptor,
 ): boolean {
+  if (execution.kind !== 'context_compact' && run.rootExecutionKind !== undefined) return false;
+  if (execution.kind === 'regenerate') {
+    return (
+      run.parentTurnId === execution.sourceTurnId &&
+      run.regeneratedFromTurnId === execution.sourceTurnId &&
+      run.parentRunId === undefined &&
+      run.resumedFromRunId === undefined &&
+      run.retriedFromRunId === undefined &&
+      run.agentId === undefined &&
+      run.agentName === undefined &&
+      run.retriedFromTurnId === undefined &&
+      run.branchOfTurnId === undefined &&
+      run.parentSessionId === undefined &&
+      run.continuationSource === undefined &&
+      run.automationId === undefined &&
+      run.goalId === undefined &&
+      run.agentGraphWakeId === undefined &&
+      run.agentGraphWakeAttemptId === undefined
+    );
+  }
+  if (execution.kind === 'context_compact') {
+    return (
+      run.rootExecutionKind === 'context_compact' &&
+      run.parentTurnId === undefined &&
+      run.regeneratedFromTurnId === undefined &&
+      run.parentRunId === undefined &&
+      run.resumedFromRunId === undefined &&
+      run.retriedFromRunId === undefined &&
+      run.agentId === undefined &&
+      run.agentName === undefined &&
+      run.retriedFromTurnId === undefined &&
+      run.branchOfTurnId === undefined &&
+      run.parentSessionId === undefined &&
+      run.continuationSource === undefined &&
+      run.automationId === undefined &&
+      run.goalId === undefined &&
+      run.agentGraphWakeId === undefined &&
+      run.agentGraphWakeAttemptId === undefined
+    );
+  }
   if (execution.kind === 'safe_boundary_continuation') {
     const source = run.continuationSource;
     return (
@@ -226,7 +276,10 @@ export function agentRunMatchesHostedRootExecution(
 
 function hostedRootAuthorityMatches(
   run: AgentRunHeader,
-  execution: Exclude<HostedRootExecutionDescriptor, { kind: 'safe_boundary_continuation' }>,
+  execution: Exclude<
+    HostedRootExecutionDescriptor,
+    { kind: 'regenerate' | 'context_compact' | 'safe_boundary_continuation' }
+  >,
 ): boolean {
   switch (execution.kind) {
     case 'automation':
@@ -306,8 +359,6 @@ export const AGENT_RUN_EVENT_TYPES = [
   'sandbox_denial_detected',
   'provider_request_captured',
   'provider_request_attempt_recorded',
-  // No current writer; shipped ledgers still carry it and strict reads must not reject them (#1942).
-  'usage_recorded',
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
   'active_full_compact_block_recorded',
@@ -323,8 +374,14 @@ export const AGENT_RUN_EVENT_TYPES = [
 
 export type AgentRunEventType = (typeof AGENT_RUN_EVENT_TYPES)[number];
 
+/**
+ * A decoded ledger record. The ledger is append-only and outlives any single build, so `type` is
+ * an open string: a reader must accept a type another version wrote, whether that version retired
+ * the writer or has not shipped yet (#1942). The envelope around `type` is still validated, so
+ * this tolerance does not extend to a record that gained or lost a field.
+ */
 export interface AgentRunEvent {
-  type: AgentRunEventType;
+  type: string;
   id: string;
   runId: string;
   sessionId: string;
@@ -332,6 +389,22 @@ export interface AgentRunEvent {
   ts: number;
   message?: string;
   data?: Record<string, unknown>;
+}
+
+/**
+ * What this build may append. `AGENT_RUN_EVENT_TYPES` is the emitted catalogue, not the readable
+ * one, so it stays free to shrink when a writer retires while a misspelled or retired type fails
+ * to compile at the append that would persist it.
+ */
+export interface EmittedAgentRunEvent extends AgentRunEvent {
+  type: AgentRunEventType;
+}
+
+const EMITTED_AGENT_RUN_EVENT_TYPES: ReadonlySet<string> = new Set(AGENT_RUN_EVENT_TYPES);
+
+/** Whether this build emits `type`, and so knows what its record means. */
+export function isEmittedAgentRunEventType(type: string): type is AgentRunEventType {
+  return EMITTED_AGENT_RUN_EVENT_TYPES.has(type);
 }
 
 const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
@@ -367,6 +440,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'goalId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
+    'rootExecutionKind',
     'failureClass',
     'failureMessage',
     'abortSource',
@@ -405,6 +479,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       isEffectiveOrchestrationSource(value.orchestrationSource)) &&
     (value.agentSwarmAuthorization === undefined ||
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
+    (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
     !(value.automationId !== undefined && value.goalId !== undefined) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
@@ -477,7 +552,8 @@ export function decodeAgentRunEvent(value: unknown): AgentRunEvent {
   if (
     !isRecord(value) ||
     !hasExactShape(value, AGENT_RUN_EVENT_SHAPE) ||
-    !(AGENT_RUN_EVENT_TYPES as readonly unknown[]).includes(value.type) ||
+    typeof value.type !== 'string' ||
+    value.type.trim().length === 0 ||
     typeof value.id !== 'string' ||
     typeof value.runId !== 'string' ||
     typeof value.sessionId !== 'string' ||
@@ -508,7 +584,7 @@ export interface AgentRunStore {
   appendEvent(
     sessionId: string,
     runId: string,
-    event: AgentRunEvent,
+    event: EmittedAgentRunEvent,
     options?: { durable?: boolean },
   ): Promise<void>;
   readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]>;

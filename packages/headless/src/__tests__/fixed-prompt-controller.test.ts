@@ -997,6 +997,9 @@ describe('fixed prompt controller', () => {
       assert.equal(result.events[0]?.type, 'task_budget_exhausted');
       assert.equal(result.events[0]?.eligible, true);
       assert.equal(result.events[0]?.passed, false);
+      // An exhaustion the verifier never graded carries no score, however clean
+      // its evidence: eligibility is about attribution, not about a verdict.
+      assert.equal(result.events[0]?.scored, false);
       assert.equal(result.events[0]?.expectedPromptHash, hashSystemPrompt('fixed prompt\n'));
       if (result.events[0]?.type !== 'task_budget_exhausted')
         assert.fail('expected budget exhaustion event');
@@ -1005,6 +1008,120 @@ describe('fixed prompt controller', () => {
         'budget_exhausted_before_cell_output',
       );
       assert.match(await readFile(resultsJsonlPath, 'utf8'), /"type":"task_budget_exhausted"/);
+    });
+  });
+
+  test('scores a budget exhaustion the verifier already graded', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        resultsTsvPath: join(dir, 'results.tsv'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        taskRunner: async () => {
+          throw new FixedPromptBudgetExhaustedError('agent timed out', undefined, {
+            harbor: {
+              reward: 1,
+              verifier: {
+                outcome: 'passed',
+                attempts: [{ attempt: 1, classification: 'passed', durationMs: 5, reward: 1 }],
+              },
+            },
+          });
+        },
+        now: () => 100,
+        newId: idFactory(),
+      });
+
+      const event = result.events[0];
+      assert.equal(event?.type, 'task_budget_exhausted');
+      if (event?.type !== 'task_budget_exhausted') assert.fail('expected budget exhaustion event');
+      assert.equal(event.passed, true);
+      assert.equal(event.scored, true);
+      assert.equal(event.eligible, true);
+      assert.equal(event.harbor?.reward, 1);
+    });
+  });
+
+  test('records a graded-zero budget exhaustion as scored but not passed', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        resultsTsvPath: join(dir, 'results.tsv'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        taskRunner: async () => {
+          throw new FixedPromptBudgetExhaustedError('agent timed out', undefined, {
+            harbor: {
+              reward: 0,
+              verifier: {
+                outcome: 'failed',
+                attempts: [{ attempt: 1, classification: 'failed', durationMs: 5, reward: 0 }],
+              },
+            },
+          });
+        },
+        now: () => 100,
+        newId: idFactory(),
+      });
+
+      const event = result.events[0];
+      assert.equal(event?.type, 'task_budget_exhausted');
+      if (event?.type !== 'task_budget_exhausted') assert.fail('expected budget exhaustion event');
+      assert.equal(event.passed, false);
+      assert.equal(event.scored, true);
+    });
+  });
+
+  test('leaves a graded budget exhaustion unscored when its evidence does not attest the arm', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        resultsTsvPath: join(dir, 'results.tsv'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        requireExecutionIdentity: true,
+        expectedPricingProfile: 'test-profile',
+        taskRunner: async () => {
+          throw new FixedPromptBudgetExhaustedError('agent timed out', undefined, {
+            harbor: {
+              reward: 1,
+              verifier: {
+                outcome: 'passed',
+                attempts: [{ attempt: 1, classification: 'passed', durationMs: 5, reward: 1 }],
+              },
+            },
+          });
+        },
+        now: () => 100,
+        newId: idFactory(),
+      });
+
+      const event = result.events[0];
+      assert.equal(event?.type, 'task_budget_exhausted');
+      if (event?.type !== 'task_budget_exhausted') assert.fail('expected budget exhaustion event');
+      assert.equal(event.passed, false);
+      assert.equal(event.scored, false);
+      assert.equal(event.eligible, false);
+      assert.equal(event.evidenceErrorClass, 'missing_execution_identity');
     });
   });
 

@@ -26,7 +26,12 @@ import {
   type TaskRunOutput,
   type TaskRunner,
 } from './fixed-prompt-controller.js';
-import type { HarborVerifierAttempt, HarborVerifierOutcome } from './fixed-prompt-wal-types.js';
+import { buildAgentRepoMounts } from './agent-repo-mount.js';
+import type {
+  HarborTrialGrade,
+  HarborVerifierAttempt,
+  HarborVerifierOutcome,
+} from './fixed-prompt-wal-types.js';
 import {
   HARBOR_ORACLE_EXECUTION_POLICY,
   HARBOR_ORACLE_MAX_ATTEMPTS,
@@ -75,10 +80,85 @@ import {
   CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
   CLAUDE_CODE_TOOLCHAIN_SPEC,
 } from './claude-code-toolchain.js';
+import {
+  REASONIX_TOOLCHAIN_CONTAINER_PATH,
+  REASONIX_TOOLCHAIN_FINGERPRINT,
+  REASONIX_TOOLCHAIN_SPEC,
+} from './reasonix-toolchain.js';
+
+import { agentPhaseTimeoutSec, settlementGraceSec } from './maka-settlement.js';
+
+export { MAKA_SETTLEMENT_GRACE_SEC } from './maka-settlement.js';
 
 const execFileAsync = promisify(execFile);
 
-const CONTAINER_MAKA_REPO = '/opt/maka-agent';
+/**
+ * Every competitor arm is pinned the same way: a prepared toolchain directory
+ * bind-mounted read-only, a version that must match the pinned spec, and a
+ * fingerprint the in-container adapter re-verifies before it runs. Only Maka
+ * runs from the repo mount, so it has no entry.
+ */
+const COMPETITOR_TOOLCHAINS: Readonly<
+  Record<
+    Exclude<HarnessAgentId, 'maka'>,
+    {
+      readonly label: string;
+      readonly optionKey: keyof Pick<
+        HarborTaskRunnerOptions,
+        | 'opencodeToolchainPath'
+        | 'kimiCodeToolchainPath'
+        | 'codexToolchainPath'
+        | 'claudeCodeToolchainPath'
+        | 'reasonixToolchainPath'
+      >;
+      readonly version: string;
+      readonly containerPath: string;
+      readonly fingerprint: string;
+      readonly fingerprintEnvKey: string;
+    }
+  >
+> = {
+  opencode: {
+    label: 'OpenCode',
+    optionKey: 'opencodeToolchainPath',
+    version: OPENCODE_TOOLCHAIN_SPEC.opencode.version,
+    containerPath: OPENCODE_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: OPENCODE_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT',
+  },
+  'kimi-code': {
+    label: 'Kimi Code',
+    optionKey: 'kimiCodeToolchainPath',
+    version: KIMI_CODE_TOOLCHAIN_SPEC.kimiCode.version,
+    containerPath: KIMI_CODE_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: KIMI_CODE_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_KIMI_CODE_TOOLCHAIN_FINGERPRINT',
+  },
+  codex: {
+    label: 'Codex',
+    optionKey: 'codexToolchainPath',
+    version: CODEX_TOOLCHAIN_SPEC.codex.version,
+    containerPath: CODEX_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: CODEX_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_CODEX_TOOLCHAIN_FINGERPRINT',
+  },
+  'claude-code': {
+    label: 'Claude Code',
+    optionKey: 'claudeCodeToolchainPath',
+    version: CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version,
+    containerPath: CLAUDE_CODE_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT',
+  },
+  reasonix: {
+    label: 'Reasonix',
+    optionKey: 'reasonixToolchainPath',
+    version: REASONIX_TOOLCHAIN_SPEC.reasonix.version,
+    containerPath: REASONIX_TOOLCHAIN_CONTAINER_PATH,
+    fingerprint: REASONIX_TOOLCHAIN_FINGERPRINT,
+    fingerprintEnvKey: 'MAKA_REASONIX_TOOLCHAIN_FINGERPRINT',
+  },
+};
 const TRIAL_CELL_OUTPUT = 'agent/maka-cell-output.json';
 const TRIAL_EXECUTION_IDENTITY = 'agent/maka-cell-execution-identity.json';
 const TRIAL_USAGE_CHECKPOINT = 'agent/maka-cell-usage-checkpoint.json';
@@ -98,15 +178,37 @@ const PROVIDER_REQUEST_TELEMETRY = 'provider-request-telemetry.json';
 /** Shared across runners: the last proxied provider request must have
  * completed. A 200 stream without its protocol terminal event means the
  * provider response is incomplete — the trial is an infra failure, never a
- * graded model failure. Complete timed-out trials settle by deadline, so
- * their truncated tail request is expected and exempt. */
+ * graded model failure.
+ *
+ * A settled trial's tail request is expected to be truncated, but only in one
+ * specific way: killing the agent tears the request down from the client side,
+ * which the proxy records as `aborted` (provider-auth-proxy.ts sets it from
+ * `signal.aborted`). `interrupted` and `failed` are the upstream's doing and
+ * are not explained by the agent phase ending, so they stay infra however the
+ * trial settled — that is what keeps a provider outage out of the denominator
+ * instead of scoring it as the agent's zero. */
 export function incompleteTerminalProviderRequest(
   providerTelemetry: readonly ProviderRequestTelemetry[],
-  completeTimedOutTrial: boolean,
+  agentPhaseSettled: boolean,
 ): ProviderRequestTelemetry | undefined {
-  if (completeTimedOutTrial) return undefined;
   const terminal = providerTelemetry.at(-1);
-  return terminal && terminal.outcome !== 'completed' ? terminal : undefined;
+  if (!terminal || terminal.outcome === 'completed') return undefined;
+  if (agentPhaseSettled && terminal.outcome === 'aborted') return undefined;
+  return terminal;
+}
+
+/** Shared across runners: a verdict is this arm's evidence only if the agent got
+ * the run it was given. A tail request the upstream cut short says it did not,
+ * so the grade does not travel — the same boundary that makes a settled trial
+ * infra, applied where the trial ends as a budget exhaustion instead. Without
+ * it, a provider outage that a verifier happened to pass would be recorded as a
+ * pass on the one path that skips the infra check. `aborted` stays exempt: the
+ * agent phase ended, and tearing the request down is what that looks like. */
+export function trialGradeSurvivingProviderOutage<T>(
+  grade: T | undefined,
+  providerTelemetry: readonly ProviderRequestTelemetry[],
+): T | undefined {
+  return incompleteTerminalProviderRequest(providerTelemetry, true) ? undefined : grade;
 }
 
 export class HarborInfraError extends Error {
@@ -165,6 +267,8 @@ export interface HarborTaskRunnerOptions {
   codexToolchainPath?: string;
   /** Prepared Claude Code native toolchain mounted read-only into task containers. */
   claudeCodeToolchainPath?: string;
+  /** Prepared Reasonix toolchain mounted read-only into task containers. */
+  reasonixToolchainPath?: string;
   /** Explicit Docker target platform shared by comparison arms. */
   dockerPlatform?: 'linux/amd64';
   /** Base directory under which each task gets an isolated per-task job dir. */
@@ -369,47 +473,88 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
       const resultPath = join(trialDir, TRIAL_RESULT);
       const hostEventsPath = join(trialDir, TRIAL_RUNTIME_EVENTS);
 
+      // Two facts decide an abnormally ended trial, in this order: who ended the
+      // agent phase (classifyTrialTermination, from the harness's own exception
+      // class) and whether the verifier reached a verdict. Harbor's
+      // single_step.py runs the verifier after any agent-phase exception, so an
+      // agent-owned termination can still carry an authoritative reward. An
+      // externally ended run never can — the agent did not get the run it was
+      // given — so its artifacts are not evidence and it stays infra below.
       const trialException = await readTrialException(resultPath);
+      const termination = classifyTrialTermination(trialException);
       let completeTimedOutTrial = false;
-      if (trialException && isBudgetExhaustedTrialException(trialException)) {
+      let verifierSettledTrial = false;
+      if (termination === 'agent_budget' || termination === 'agent_exit') {
         const [rewardArtifact, verifierArtifact, cellArtifact] = await Promise.all([
           readOptionalText(rewardPath),
           readOptionalText(join(trialDir, TRIAL_VERIFIER_OUTCOME)),
           readOptionalText(cellOutputPath),
         ]);
-        if (rewardArtifact === null || verifierArtifact === null || cellArtifact === null) {
-          const artifactRefs = await readTimedOutTrialArtifacts(
-            trialDir,
-            input.task.id,
-            runnerOptions.agent,
-            harborTraceMode(runnerOptions.agentEnv),
-          );
-          throw new FixedPromptBudgetExhaustedError(
-            `agent budget exhausted for task ${input.task.id}`,
-            trialException,
-            artifactRefs || providerTelemetry.length > 0
-              ? {
-                  ...(artifactRefs ?? {}),
-                  ...(providerTelemetry.length > 0 ? { providerTelemetryPath } : {}),
-                }
-              : undefined,
-          );
+        if (termination === 'agent_budget') {
+          if (rewardArtifact === null || verifierArtifact === null || cellArtifact === null) {
+            const artifactRefs = await readTimedOutTrialArtifacts(
+              trialDir,
+              input.task.id,
+              runnerOptions.agent,
+              harborTraceMode(runnerOptions.agentEnv),
+            );
+            // The exhaustion is the agent's fact; the verifier's verdict is the
+            // harness's. Both are true at once, so both travel — dropping the
+            // verdict because the agent never filed its self-report threw away a
+            // pass Harbor had already awarded.
+            const harbor = trialGradeSurvivingProviderOutage(
+              trialVerifierArtifacts(rewardArtifact, verifierArtifact, input.task.id),
+              providerTelemetry,
+            );
+            throw new FixedPromptBudgetExhaustedError(
+              `agent budget exhausted for task ${input.task.id}`,
+              formatTrialException(trialException),
+              {
+                ...(artifactRefs ?? {}),
+                ...(harbor ? { harbor } : {}),
+                ...(providerTelemetry.length > 0 ? { providerTelemetryPath } : {}),
+              },
+            );
+          }
+          completeTimedOutTrial = true;
+        } else {
+          // The agent's own process exited non-zero and the verifier graded the
+          // workspace it left: a real result. Keep the cell's own status and
+          // errorClass — nothing here is a deadline, so nothing may claim one —
+          // and let the structured verifier grade score it.
+          //
+          // The cell requirement is a known exclusion, not the veto fixed above:
+          // a graded agent-exit trial with no self-report has no truthful event
+          // to land in. It claims no deadline, so task_budget_exhausted would
+          // lie, and task_completed needs the runtimeRefs/steps only the cell
+          // attests. Until such a shape exists it stays infra. Widening it is a
+          // WAL taxonomy decision, tracked separately.
+          verifierSettledTrial =
+            rewardArtifact !== null &&
+            cellArtifact !== null &&
+            hasConclusiveVerifierOutcome(verifierArtifact);
         }
-        completeTimedOutTrial = true;
       }
-      if (result.exitCode !== 0 && !completeTimedOutTrial) {
+      if (result.exitCode !== 0 && !completeTimedOutTrial && !verifierSettledTrial) {
         throw new HarborInfraError(
-          `harbor run exited ${result.exitCode} for task ${input.task.id}`,
+          // WAL records only the message, so name the trial exception here: an
+          // infra bucket that silently swallows every timeout shape is exactly
+          // how the previous wording regression stayed invisible.
+          `harbor run exited ${result.exitCode} for task ${input.task.id}${trialExceptionSuffix(trialException)}`,
           tail(result.stderr || result.stdout),
         );
       }
+      // A trial that raised nothing ended its agent phase on its own terms, so it
+      // settles the tail request the same way the two abnormal shapes above do.
+      // Leaving it out read every clean exit that closed a stream mid-flight as
+      // an outage and threw the graded cell away.
       const terminalProviderRequest = incompleteTerminalProviderRequest(
         providerTelemetry,
-        completeTimedOutTrial,
+        termination === null || completeTimedOutTrial || verifierSettledTrial,
       );
       if (terminalProviderRequest) {
         throw new HarborInfraError(
-          `terminal provider request did not complete for task ${input.task.id}`,
+          `terminal provider request did not complete for task ${input.task.id}${trialExceptionSuffix(trialException)}`,
           [
             `outcome=${terminalProviderRequest.outcome}`,
             terminalProviderRequest.status !== undefined
@@ -647,7 +792,7 @@ function resolveHarborTimeoutMs(options: HarborTaskRunnerOptions, input: TaskRun
 }
 
 function resolveNativeHarborTimeoutMs(
-  options: Pick<HarborTaskRunnerOptions, 'timeoutMultiplier' | 'agentEnv'>,
+  options: Pick<HarborTaskRunnerOptions, 'timeoutMultiplier' | 'agentEnv' | 'agent'>,
   task: TaskRunInput['task'],
 ): number {
   const configuredCellTimeoutSec = lenientPositiveIntEnv(options.agentEnv?.MAKA_CELL_TIMEOUT_SEC);
@@ -656,7 +801,16 @@ function resolveNativeHarborTimeoutMs(
     configuredCellTimeoutSec ?? 0,
   );
   return resolveNativeTrialTimeoutMs({
-    nativePhasesSec: agentTimeoutSec + verifierPolicy(task).outerTimeoutSec,
+    // The agent phase Harbor is given is the model budget plus Maka's
+    // settlement window, so the watchdog bounds that same sum. It reads the
+    // runner-level env only, while the job config also sees per-attempt env —
+    // the shared setup/teardown grace is far wider than any window an operator
+    // would set, so the watchdog still outlasts the phase either way.
+    // Resolved through the shared rule so the two cannot drift in kind.
+    nativePhasesSec:
+      agentTimeoutSec +
+      settlementGraceSec(options.agent ?? 'maka', options.agentEnv) +
+      verifierPolicy(task).outerTimeoutSec,
     timeoutMultiplier: options.timeoutMultiplier ?? 1,
   });
 }
@@ -823,6 +977,10 @@ async function readVerifierOutcome(
       errorText(error),
     );
   }
+  return parseVerifierOutcome(value, taskId);
+}
+
+function parseVerifierOutcome(value: unknown, taskId: string): HarborVerifierOutcome {
   if (!isRecord(value) || value.schemaVersion !== 1) {
     throw new HarborInfraError(`verifier outcome is malformed for task ${taskId}`);
   }
@@ -966,83 +1124,30 @@ export function buildHarborJobConfig(
   const makaModel = modelIdForProvider(options.model, provider);
   const adapter = options.agent ?? 'maka';
   const agentModel = adapter === 'opencode' ? modelForOpenCode(options.model, provider) : makaModel;
-  if (adapter === 'opencode' && !options.opencodeToolchainPath) {
-    throw new Error('opencodeToolchainPath is required for the OpenCode adapter');
-  }
-  if (adapter === 'opencode' && options.agentVersion !== OPENCODE_TOOLCHAIN_SPEC.opencode.version) {
-    throw new Error(
-      `OpenCode adapter version must match toolchain version ${OPENCODE_TOOLCHAIN_SPEC.opencode.version}`,
-    );
-  }
-  if (adapter === 'kimi-code' && !options.kimiCodeToolchainPath) {
-    throw new Error('kimiCodeToolchainPath is required for the Kimi Code adapter');
-  }
-  if (
-    adapter === 'kimi-code' &&
-    options.agentVersion !== KIMI_CODE_TOOLCHAIN_SPEC.kimiCode.version
-  ) {
-    throw new Error(
-      `Kimi Code adapter version must match toolchain version ${KIMI_CODE_TOOLCHAIN_SPEC.kimiCode.version}`,
-    );
-  }
-  if (adapter === 'codex' && !options.codexToolchainPath) {
-    throw new Error('codexToolchainPath is required for the Codex adapter');
-  }
-  if (adapter === 'codex' && options.agentVersion !== CODEX_TOOLCHAIN_SPEC.codex.version) {
-    throw new Error(
-      `Codex adapter version must match toolchain version ${CODEX_TOOLCHAIN_SPEC.codex.version}`,
-    );
-  }
-  if (adapter === 'claude-code' && !options.claudeCodeToolchainPath) {
-    throw new Error('claudeCodeToolchainPath is required for the Claude Code adapter');
-  }
-  if (
-    adapter === 'claude-code' &&
-    options.agentVersion !== CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version
-  ) {
-    throw new Error(
-      `Claude Code adapter version must match toolchain version ${CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version}`,
-    );
+  const toolchain = adapter === 'maka' ? undefined : COMPETITOR_TOOLCHAINS[adapter];
+  if (toolchain) {
+    const toolchainPath = options[toolchain.optionKey];
+    if (!toolchainPath) {
+      throw new Error(`${toolchain.optionKey} is required for the ${toolchain.label} adapter`);
+    }
+    if (options.agentVersion !== toolchain.version) {
+      throw new Error(
+        `${toolchain.label} adapter version must match toolchain version ${toolchain.version}`,
+      );
+    }
   }
   const mounts: Array<Record<string, unknown>> = [
-    { type: 'bind', source: options.makaRepoPath, target: CONTAINER_MAKA_REPO, read_only: true },
-    ...(adapter === 'opencode'
+    ...buildAgentRepoMounts(adapter, options.makaRepoPath),
+    ...(toolchain
       ? [
           {
             type: 'bind',
-            source: options.opencodeToolchainPath!,
-            target: OPENCODE_TOOLCHAIN_CONTAINER_PATH,
+            source: options[toolchain.optionKey]!,
+            target: toolchain.containerPath,
             read_only: true,
           },
         ]
-      : adapter === 'kimi-code'
-        ? [
-            {
-              type: 'bind',
-              source: options.kimiCodeToolchainPath!,
-              target: KIMI_CODE_TOOLCHAIN_CONTAINER_PATH,
-              read_only: true,
-            },
-          ]
-        : adapter === 'codex'
-          ? [
-              {
-                type: 'bind',
-                source: options.codexToolchainPath!,
-                target: CODEX_TOOLCHAIN_CONTAINER_PATH,
-                read_only: true,
-              },
-            ]
-          : adapter === 'claude-code'
-            ? [
-                {
-                  type: 'bind',
-                  source: options.claudeCodeToolchainPath!,
-                  target: CLAUDE_CODE_TOOLCHAIN_CONTAINER_PATH,
-                  read_only: true,
-                },
-              ]
-            : []),
+      : []),
   ];
 
   const agentEnv: Record<string, string> = {
@@ -1058,17 +1163,8 @@ export function buildHarborJobConfig(
     agentEnv.MAKA_REASONING_EFFORT = options.reasoningEffort;
     if (adapter === 'opencode') agentEnv.MAKA_OPENCODE_VARIANT = options.reasoningEffort;
   }
-  if (adapter === 'opencode') {
-    agentEnv.MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT = OPENCODE_TOOLCHAIN_FINGERPRINT;
-  }
-  if (adapter === 'kimi-code') {
-    agentEnv.MAKA_KIMI_CODE_TOOLCHAIN_FINGERPRINT = KIMI_CODE_TOOLCHAIN_FINGERPRINT;
-  }
-  if (adapter === 'codex') {
-    agentEnv.MAKA_CODEX_TOOLCHAIN_FINGERPRINT = CODEX_TOOLCHAIN_FINGERPRINT;
-  }
-  if (adapter === 'claude-code') {
-    agentEnv.MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT = CLAUDE_CODE_TOOLCHAIN_FINGERPRINT;
+  if (toolchain) {
+    agentEnv[toolchain.fingerprintEnvKey] = toolchain.fingerprint;
   }
 
   if (options.pricing) {
@@ -1088,11 +1184,22 @@ export function buildHarborJobConfig(
   Object.assign(agentEnv, attemptAgentEnv ?? {});
   // Lenient by shared contract with the Python adapter: a malformed value must
   // fall back (metadata, then the adapter's default) rather than fail the run.
-  const cellTimeoutSec =
+  const modelBudgetSec =
     lenientPositiveIntEnv(agentEnv.MAKA_CELL_TIMEOUT_SEC) ?? input.task.metadata?.agentTimeoutSec;
-  if (cellTimeoutSec !== undefined) {
-    agentEnv.MAKA_CELL_TIMEOUT_SEC = String(cellTimeoutSec);
-    const streamTimeoutMs = cellTimeoutSec * 1_000;
+  // MAKA_CELL_TIMEOUT_SEC is the model budget on every path, so it is passed
+  // through untouched. Maka's cell stops calling the model when it runs out and
+  // then settles its artifacts, so its agent phase — the deadline Harbor kills
+  // at — is one window longer. Native CLIs have nothing to settle and get the
+  // budget itself, which is how every arm ends up with the same model time.
+  const graceSec = settlementGraceSec(adapter, agentEnv);
+  let agentPhaseSec: number | undefined;
+  if (modelBudgetSec !== undefined) {
+    agentPhaseSec = agentPhaseTimeoutSec(adapter, agentEnv, modelBudgetSec);
+    agentEnv.MAKA_CELL_TIMEOUT_SEC = String(modelBudgetSec);
+    if (adapter === 'maka') {
+      agentEnv.MAKA_CELL_SETTLEMENT_GRACE_SEC = String(graceSec);
+    }
+    const streamTimeoutMs = modelBudgetSec * 1_000;
     if (adapter === 'maka' && Number.isSafeInteger(streamTimeoutMs)) {
       // Harbor already owns the task-native hard deadline. Keep the runtime's
       // first-event and between-event watchdogs from imposing a shorter,
@@ -1145,7 +1252,13 @@ export function buildHarborJobConfig(
                 }
               : {},
         env: agentEnv,
-        ...(cellTimeoutSec !== undefined ? { max_timeout_sec: cellTimeoutSec } : {}),
+        // override_timeout_sec, not max_timeout_sec: Harbor resolves the agent
+        // phase as `min(override ?? task_declared, max ?? inf)`, so max_ can only
+        // ever lower the task's own timeout. Asking for budget + settlement
+        // through max_ resolved to the task timeout unchanged, which left Maka's
+        // settlement window mathematically unreachable — the cell was SIGKILLed
+        // at the instant it was supposed to start writing.
+        ...(agentPhaseSec !== undefined ? { override_timeout_sec: agentPhaseSec } : {}),
       },
     ],
     datasets: [],
@@ -1496,14 +1609,14 @@ async function readReward(rewardPath: string, resultPath: string, taskId: string
   } catch (error) {
     const trialException = await readTrialException(resultPath);
     if (trialException) {
-      if (isBudgetExhaustedTrialException(trialException)) {
+      if (classifyTrialTermination(trialException) === 'agent_budget') {
         throw new FixedPromptBudgetExhaustedError(
           `host cell budget exhausted for task ${taskId}`,
-          trialException,
+          formatTrialException(trialException),
         );
       }
       throw new HarborInfraError(
-        `Harbor trial failed before verifier reward for task ${taskId}: ${trialException}`,
+        `Harbor trial failed before verifier reward for task ${taskId}: ${formatTrialException(trialException)}`,
         errorText(error),
       );
     }
@@ -1520,12 +1633,22 @@ async function readReward(rewardPath: string, resultPath: string, taskId: string
   return reward;
 }
 
+/** How the agent phase ended, kept structured. Both harnesses record it in the
+ * trial result's `exception_info` in the same shape, and `exception_type` is
+ * Python's `type(e).__name__` — the harness's own exception classes, which are
+ * a stable fact. Flattening this to one string is what forced every downstream
+ * decision to re-derive the type by matching prose. */
+export interface TrialException {
+  type: string;
+  message: string;
+}
+
 /** Shared across runners: both harnesses record how the agent phase ended in
  * the trial result's `exception_info`, in the same shape. */
 export async function readTrialException(
   resultPath: string,
   fallbackType = 'HarborTrialError',
-): Promise<string | null> {
+): Promise<TrialException | null> {
   let raw: string;
   try {
     raw = await readFile(resultPath, 'utf8');
@@ -1545,15 +1668,95 @@ export async function readTrialException(
     typeof exceptionInfo.exception_type === 'string' ? exceptionInfo.exception_type : fallbackType;
   const message =
     typeof exceptionInfo.exception_message === 'string' ? exceptionInfo.exception_message : '';
-  return message ? `${type}: ${message}` : type;
+  return { type, message };
 }
 
-/** Shared across runners: the trial exceptions that mean the agent budget ran out (host cell deadline or harness AgentTimeoutError). */
-export function isBudgetExhaustedTrialException(message: string): boolean {
-  return (
-    /^RuntimeError: Maka host cell exceeded \d+(?:\.\d+)?s$/.test(message) ||
-    /^AgentTimeoutError: Agent execution timed out after \d+(?:\.\d+)? seconds$/.test(message)
-  );
+/** The `Type: message` rendering used in diagnostics. */
+export function formatTrialException(exception: TrialException | null): string | undefined {
+  if (!exception) return undefined;
+  return exception.message ? `${exception.type}: ${exception.message}` : exception.type;
+}
+
+/** Who ended the agent phase — the one fact that decides whether an abnormally
+ * ended trial can be scored at all.
+ *
+ * - `agent_budget`: the agent ran out of its own time. Harbor raises its own
+ *   `AgentTimeoutError` class, so the type alone is unambiguous; the host cell's
+ *   deadline arrives as a generic `RuntimeError`, so that one still needs its
+ *   message — legitimately, because this repo raises it (harbor/maka_agent.py)
+ *   and `harbor-adapter.test.ts` pins the two ends together.
+ * - `agent_exit`: the agent's own process ended non-zero. That is the agent's
+ *   behavior, so a verifier verdict on the workspace it left is a real result.
+ * - `external`: the harness, container, or anything else ended the run. The
+ *   agent never got the run it was given, so no artifact on disk makes it a
+ *   fair sample. Unrecognized types land here on purpose: an unknown terminator
+ *   is not evidence of a fair trial, and the recognized budget shapes are
+ *   matched by type, so nothing regresses when upstream rewords a message. */
+export type TrialTerminationOwner = 'agent_budget' | 'agent_exit' | 'external';
+
+const HOST_CELL_DEADLINE_MESSAGE = /^Maka host cell exceeded \d+(?:\.\d+)?s$/;
+
+/** Shared across runners. */
+export function classifyTrialTermination(
+  exception: TrialException | null,
+): TrialTerminationOwner | null {
+  if (!exception) return null;
+  if (exception.type === 'AgentTimeoutError') return 'agent_budget';
+  if (exception.type === 'RuntimeError' && HOST_CELL_DEADLINE_MESSAGE.test(exception.message))
+    return 'agent_budget';
+  if (exception.type === 'NonZeroAgentExitCodeError') return 'agent_exit';
+  return 'external';
+}
+
+/** What the verifier wrote about the trial, read straight from its own
+ * artifacts. It exists independently of `maka-cell-output.json`: that file is
+ * the agent's self-report, and an agent that ran out of budget mid-write never
+ * gets to file one, so a budget exhaustion can still carry the verdict Harbor
+ * reached. This only transports what is on disk — whether the two artifacts
+ * agree, and so whether they amount to a grade, is decided once by the
+ * controller's structuredVerifierGrade, the same judge the completed path uses.
+ * Artifacts that do not parse are not evidence and travel as nothing. */
+function trialVerifierArtifacts(
+  rewardArtifact: string | null,
+  verifierArtifact: string | null,
+  taskId: string,
+): HarborTrialGrade | undefined {
+  if (rewardArtifact === null || verifierArtifact === null) return undefined;
+  const reward = Number(rewardArtifact.trim());
+  if (rewardArtifact.trim().length === 0 || !Number.isFinite(reward)) return undefined;
+  try {
+    return { reward, verifier: parseVerifierOutcome(JSON.parse(verifierArtifact), taskId) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** A verifier outcome is authoritative evidence that the trial was graded only
+ * when it reached a verdict. `candidate_timeout` and `infra_failed` say the
+ * verifier itself did not conclude, so they never settle a trial whose agent
+ * phase already ended abnormally. Unreadable or malformed text is treated as no
+ * evidence — the caller's own reader raises the precise diagnosis on the paths
+ * that require a verdict. */
+function hasConclusiveVerifierOutcome(raw: string | null): boolean {
+  if (raw === null) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed)) return false;
+  return parsed.outcome === 'passed' || parsed.outcome === 'failed';
+}
+
+/** Names the trial exception inside an infra error message. The WAL keeps only
+ * the message, so an exception that never reaches it cannot be found by grep. */
+export function trialExceptionSuffix(trialException: TrialException | null): string {
+  const rendered = formatTrialException(trialException);
+  if (!rendered) return '';
+  const collapsed = rendered.replace(/\s+/g, ' ').trim();
+  const truncated = collapsed.length > 200 ? `${collapsed.slice(0, 200)}…` : collapsed;
+  return ` (trial exception: ${truncated})`;
 }
 
 /** Shared across runners: the same adapters write the same maka-cell-output.json

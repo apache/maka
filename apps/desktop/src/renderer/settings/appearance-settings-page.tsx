@@ -9,6 +9,8 @@ import {
   VStack,
 } from '@astryxdesign/core';
 import { SettingsField, SettingsPage, SettingsRow, SettingsSection } from './settings-section';
+import { SettingsExpandableRow } from './settings-expandable-row';
+import { getSettingsSharedCopy } from '../locales/settings-shared-copy';
 import type {
   AppSettings,
   PersonalizationSettings,
@@ -69,6 +71,9 @@ export function PersonalizationSettingsPage(props: {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).personalization;
   const sections = getSettingsPreferencesCopy(locale).sections;
+  const sharedCopy = getSettingsSharedCopy(locale);
+  // At most one row in the group is open — the template's own rule.
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
   // Persist the tone textarea this long after the user stops typing; blur
   // flushes immediately regardless.
   const TONE_AUTOSAVE_DEBOUNCE_MS = 800;
@@ -120,31 +125,34 @@ export function PersonalizationSettingsPage(props: {
 
   // Shared persist path for every personalization field. Locale has its own
   // last-write-wins lane so unrelated saves cannot steal rollback ownership.
-  async function persistPersonalization(patch: Partial<PersonalizationSettings>) {
+  // Returns whether the write landed. The autosaving fields ignore it — they
+  // have nowhere to put the answer — but a row that closes on save has to
+  // know, or a failed write collapses the row onto the old value and drops
+  // the draft with only a toast to show for it.
+  async function persistPersonalization(patch: Partial<PersonalizationSettings>): Promise<boolean> {
     const ticket = ++persistTicketRef.current;
     const localeTicket = patch.uiLocale === undefined ? null : ++localePersistTicketRef.current;
     persistPendingCountRef.current += 1;
     try {
       const result = await props.onUpdate({ personalization: patch });
-      if (!personalizationMountedRef.current) return;
+      // Saved. An unmounted page just has nowhere left to reflect it.
+      if (!personalizationMountedRef.current) return true;
       if (localeTicket !== null && localeTicket === localePersistTicketRef.current) {
         setUiLocale(result.settings.personalization.uiLocale);
       }
+      return true;
     } catch (error) {
-      if (!personalizationMountedRef.current) return;
+      if (!personalizationMountedRef.current) return false;
       if (localeTicket !== null && localeTicket === localePersistTicketRef.current) {
         setUiLocale(value.uiLocale);
       }
       if (ticket === persistTicketRef.current) {
         toast.error(copy.saveFailed, settingsActionErrorMessage(error, locale));
       }
+      return false;
     } finally {
       persistPendingCountRef.current = Math.max(0, persistPendingCountRef.current - 1);
     }
-  }
-
-  function flushDisplayName(nextValue: string) {
-    void persistPersonalization({ displayName: nextValue.trim().slice(0, 60) });
   }
 
   function persistLocale(next: UiLocalePreference) {
@@ -177,18 +185,46 @@ export function PersonalizationSettingsPage(props: {
           neighboring preferences; the full-width tone field uses the vertical
           row variant. */}
       <SettingsSection title={sections.identity} description={sections.identityHelp}>
-        <SettingsField>
+        {/* A name you set once and then read. A permanently-open input asked
+            the user to fill in something already filled in, and its blur-save
+            gave them no way to back out of a change. The row reports the
+            settled value and opens on demand; Cancel puts the draft back. */}
+        <SettingsExpandableRow
+          label={copy.displayName}
+          value={value.displayName || copy.displayNameUnset}
+          actionLabel={value.displayName ? copy.displayNameChange : copy.displayNameSet}
+          isEditing={expandedRow === 'displayName'}
+          canSave={displayName.trim() !== value.displayName}
+          saveLabel={sharedCopy.save}
+          cancelLabel={sharedCopy.cancel}
+          onEdit={() => {
+            setDisplayName(value.displayName);
+            setExpandedRow('displayName');
+          }}
+          onCancel={() => {
+            setDisplayName(value.displayName);
+            setExpandedRow(null);
+          }}
+          onSave={async () => {
+            // Only close on a write that landed: a failed save leaves the row
+            // open with the draft intact, which is the promise explicit saving
+            // makes and blur-autosave could not keep.
+            if (await persistPersonalization({ displayName: displayName.trim().slice(0, 60) })) {
+              setExpandedRow(null);
+            }
+          }}
+        >
           <TextInput
             type="text"
             value={displayName}
             onChange={(value) => setDisplayName(value.slice(0, 60))}
-            onBlur={() => flushDisplayName(displayName)}
             placeholder={copy.displayNamePlaceholder}
             label={copy.displayName}
             description={copy.displayNameHelp}
+            isLabelHidden
             width="100%"
           />
-        </SettingsField>
+        </SettingsExpandableRow>
 
         {/*
           PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`

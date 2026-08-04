@@ -341,10 +341,6 @@ function ModuleSurface(props: {
           workbarAvailable={false}
           workbarCollapsed
           onToggleWorkbar={noop}
-          onOpenFeedback={noop}
-          onOpenPalette={noop}
-          onOpenHelp={noop}
-          onOpenHealth={noop}
         />
         <ToastProvider>{props.children}</ToastProvider>
       </AppShellDetailPanel>

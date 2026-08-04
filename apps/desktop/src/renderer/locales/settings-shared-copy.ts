@@ -44,7 +44,7 @@ export type SettingsSharedCopy = {
     reviewSchedule: string;
     reviewScheduleHelp: string;
     buildInfo: string;
-    buildInfoHelp: string;
+    reference: string;
   };
 };
 
@@ -82,11 +82,11 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       searchBehavior: '搜索行为',
       searchBehaviorHelp: '什么时候发起搜索，以及每次取回多少结果。',
       dataLocation: '数据位置',
-      dataLocationHelp: '会话、设置与凭据在本机的存放位置。',
+      dataLocationHelp: '会话、设置、使用统计与凭据都以文件形式存放在本机的这个位置。',
       reviewSchedule: '回顾计划',
       reviewScheduleHelp: '每日回顾的生成时间与使用的模型。',
       buildInfo: '版本信息',
-      buildInfoHelp: '当前构建、运行时与平台。',
+      reference: '参考',
     },
   },
   en: {
@@ -122,11 +122,11 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       searchBehavior: 'Search behavior',
       searchBehaviorHelp: 'When a search runs, and how many results it returns.',
       dataLocation: 'Data location',
-      dataLocationHelp: 'Where conversations, settings, and credentials live on this machine.',
+      dataLocationHelp: 'Conversations, settings, usage statistics, and credentials are stored as files in this location on your machine.',
       reviewSchedule: 'Review schedule',
       reviewScheduleHelp: 'When the daily review runs, and which model writes it.',
       buildInfo: 'Build info',
-      buildInfoHelp: 'The current build, runtime, and platform.',
+      reference: 'Reference',
     },
   },
 } satisfies UiCatalog<SettingsSharedCopy>;

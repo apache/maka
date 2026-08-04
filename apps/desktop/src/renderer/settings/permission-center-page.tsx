@@ -20,6 +20,8 @@ import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core';
 import {
   Banner,
   Button,
+  Collapsible,
+  CollapsibleGroup,
   HStack,
   List,
   ListItem,
@@ -72,7 +74,6 @@ export function PermissionCenterPage() {
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [pendingPermAction, setPendingPermAction] = useState<string | null>(null);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const toast = useToast();
   const mountedRef = useMountedRef();
   const permissionActionGuard = useActionGuard<string>();
@@ -200,7 +201,7 @@ export function PermissionCenterPage() {
           </div>
         )}
       >
-        <p className="settingsHealthSummaryLine" aria-label={copy.summaryAria}>
+        <p className="settingsHealthSummaryLine" role="group" aria-label={copy.summaryAria}>
           <span data-tone="neutral">{copy.granted} {counts.granted}</span>
           <span data-tone={counts.pending > 0 ? 'warning' : 'neutral'}>{copy.pending} {counts.pending}</span>
           <span data-tone={counts.denied > 0 ? 'destructive' : 'neutral'}>{copy.denied} {counts.denied}</span>
@@ -235,27 +236,40 @@ export function PermissionCenterPage() {
         variant="bare"
         title={copy.capabilitiesSection}
         description={copy.capabilitiesHelp}
-        action={(
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setDiagnosticsOpen((open) => !open)}
-            aria-expanded={diagnosticsOpen}
-            label={diagnosticsOpen ? copy.collapseDetails : copy.expandDetails}
-          />
-        )}
       >
-        <List hasDividers aria-label={copy.capabilityListAria}>
-            {capabilities.capabilities.map((capability) => (
-              <CapabilityRow
-                key={capability.id}
-                capability={capability}
-                copy={copy}
-                locale={locale}
-                diagnosticsOpen={diagnosticsOpen}
-              />
-            ))}
-        </List>
+        {/* Each capability opens on its own, and only one at a time. The page
+            used to carry a single 展开详情 button that unfolded four
+            MetadataLists on EVERY row at once — a wall you had to scroll past
+            to reach the one capability you came to diagnose. `type="single"`
+            makes reading one row the default act; `hasDividers` +
+            `density="compact"` is the same edge-to-edge hairline row this
+            settings surface uses everywhere else, except now it is the
+            component's, not ours. `density` must be stated: hasDividers
+            silently defaults items to `balanced`. */}
+        {/* `role="group"` is load-bearing, not decoration. CollapsibleGroup's
+            wrapper is a bare div with no role of its own, and an aria-label on
+            a role-less element names nothing — ARIA prohibits naming `generic`.
+            The rows used to sit in a `List`, which ships `role="list"` and can
+            carry a name, so without this the section would have quietly lost
+            its accessible name in the move. `group` + aria-label is valid and
+            gives 功能能力列表 back. */}
+        <CollapsibleGroup
+          type="single"
+          hasDividers
+          density="compact"
+          role="group"
+          className="settingsCapabilityGroup"
+          aria-label={copy.capabilityListAria}
+        >
+          {capabilities.capabilities.map((capability) => (
+            <CapabilityRow
+              key={capability.id}
+              capability={capability}
+              copy={copy}
+              locale={locale}
+            />
+          ))}
+        </CollapsibleGroup>
       </SettingsSection>
 
       <Text type="supporting" size="sm" color="secondary">{copy.footnote}</Text>
@@ -314,20 +328,23 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
 }
 
 /**
- * One capability row.
+ * One capability row — a Collapsible whose trigger is the row and whose content
+ * is that capability's diagnostics.
  *
  * The four-layer breakdown, the required-permission list and the guidance list
  * used to be a `<dl>` and two `<ul>`s with ~180 lines of CSS giving them label
  * columns, tone colors and spacing. They are all "label → value" readouts, so
- * they are Astryx `MetadataList` now, and the diagnostics toggle simply chooses
- * whether to render them rather than driving a `data-diagnostics-open`
- * attribute that CSS then translated into a collapse.
+ * they are Astryx `MetadataList` now.
+ *
+ * The disclosure itself is no longer ours either: it was a page-level boolean
+ * that every row read, so opening one capability opened all of them. Collapsible
+ * owns the trigger button, aria-expanded, aria-controls, and the keyboard
+ * semantics; CollapsibleGroup owns "only one at a time".
  */
 function CapabilityRow(props: {
   capability: CapabilitySnapshot;
   copy: PermissionCenterCopy;
   locale: UiLocale;
-  diagnosticsOpen: boolean;
 }) {
   const { capability } = props;
   const { copy, locale } = props;
@@ -359,110 +376,126 @@ function CapabilityRow(props: {
   ];
 
   return (
-    <ListItem
+    <Collapsible
+      /* The group owns which row is open, keyed by this value. */
+      value={capability.id}
       data-readiness={capability.readiness}
-      /* Contract hook for the DiagnosticsExpanded story. It used to assert on
-         `.settingsCapabilityList[data-diagnostics-open]`, but the list is an
-         Astryx `List` now and Astryx does not forward arbitrary data-* to it;
-         ListItem does, and the row is where the disclosure actually lands. */
-      data-diagnostics={props.diagnosticsOpen ? 'open' : 'closed'}
-      /* The readiness Badge rides the LABEL row, not endContent. ListItem
-         centers endContent against the whole row, so with diagnostics expanded
-         the badge floated hundreds of pixels below the title it describes. */
-      label={(
-        <HStack gap={2} align="center">
-          <Text type="label" size="sm">{capabilityLabel}</Text>
-          <span className="settingsStatus">
-            <StatusDot variant={statusDotVariant(readinessCopy.tone)} label={readinessCopy.label} />
-            <span>{readinessCopy.label}</span>
-          </span>
-        </HStack>
-      )}
-      description={(
-        <VStack gap={2}>
-          <VStack gap={0.5}>
+      /* The `data-diagnostics` hook is gone with the page-level flag it
+         mirrored: open state now lives in CollapsibleGroup, and the row's own
+         trigger already publishes it as `aria-expanded`. The story asserts on
+         that instead — the component's real contract rather than an attribute
+         we maintained by hand for the test. */
+      /* The readiness dot rides the title line: the trigger is a row, and a
+         status that describes the capability belongs beside its name, not
+         centered against a block that grows when the row expands. */
+      trigger={(
+        <VStack gap={1} align="start">
+          <HStack gap={2} align="center">
+            <Text type="label" size="sm">{capabilityLabel}</Text>
+            <span className="settingsStatus">
+              <StatusDot variant={statusDotVariant(readinessCopy.tone)} label={readinessCopy.label} />
+              <span>{readinessCopy.label}</span>
+            </span>
+          </HStack>
+          <VStack gap={0.5} align="start">
             <Text type="code" size="xsm" color="secondary">{prettyCapabilityId(capability.id)}</Text>
             <Text type="supporting" size="sm" color="secondary">{readinessCopy.detail}</Text>
           </VStack>
-          {props.diagnosticsOpen ? (
-            <VStack gap={3}>
-              {/* Explicit 2 columns: `columns="multi"` laid every item out
-                  full width, so the five layers became five tall rows and the
-                  row grew ~5x. `label position: start` keeps each readout on
-                  one line (label left, value right) like the <dl> it replaced. */}
-              <MetadataList
-                columns={2}
-                label={{ position: 'start', width: 92 }}
-                aria-label={copy.layers.aria(capabilityLabel)}
-              >
-                {layers.map((layer) => (
-                  <MetadataListItem key={layer.label} label={layer.label}>
-                    {/* Stacked: MetadataListItem flows its children inline, so
-                        an unwrapped reason ran straight into the state value
-                        ("探测降级cua-driver 未响应握手…"). */}
-                    <VStack gap={0.5}>
-                      <Text type="body" size="sm">{layer.value}</Text>
-                      {layer.reason ? (
-                        <Text type="supporting" size="xsm" color="secondary">{layer.reason}</Text>
-                      ) : null}
-                    </VStack>
-                  </MetadataListItem>
-                ))}
-              </MetadataList>
-              {capability.osPermissions.length > 0 && (
-                <MetadataList
-                  columns={2}
-                  label={{ position: 'start', width: 92 }}
-                  aria-label={copy.requiredPermissionsAria(capabilityLabel)}
-                  title={copy.requiredPermissions}
-                >
-                  {capability.osPermissions.map((req) => (
-                    <MetadataListItem key={req.id} label={copy.osPermissions[req.id]?.label ?? req.id}>
-                      <span className="settingsStatus">
-                        <StatusDot variant={statusDotVariant(copy.osStates[req.status].tone)} label={copy.osStates[req.status].label} />
-                        <span>{copy.osStates[req.status].label}</span>
-                      </span>
-                    </MetadataListItem>
-                  ))}
-                </MetadataList>
-              )}
-              {guidance.length > 0 && (
-                <VStack gap={1}>
-                  <Text type="label" size="sm">{copy.guidance}</Text>
-                  <List aria-label={copy.guidanceAria(capabilityLabel)} density="compact">
-                    {guidance.map((item, index) => (
-                      <ListItem
-                        key={`${capability.id}-guidance-${index}`}
-                        label={<Text type="supporting" size="sm" color="secondary">{item}</Text>}
-                      />
-                    ))}
-                  </List>
-                </VStack>
-              )}
-              {/*
-                PR-UX-POLISH-1 commit 2 (yuejing UX audit + xuan
-                ROADMAP-SURFACE-0 + kenji boundary 1): unavailable pause/revoke
-                chips looked like disabled toggles, which violates the
-                capability presentation contract. Keep them hidden until there
-                are real actions.
-              */}
-              {capability.auditEvents.length === 0 ? (
-                <Text type="supporting" size="xsm" color="secondary">{copy.noAudit}</Text>
-              ) : (
-                <List aria-label={copy.auditAria(capabilityLabel)} density="compact">
-                  {capability.auditEvents.slice(-3).map((event, index) => (
-                    <ListItem
-                      key={`${capability.id}-audit-${index}`}
-                      label={<Text type="supporting" size="xsm" color="secondary">{event}</Text>}
-                    />
-                  ))}
-                </List>
-              )}
-            </VStack>
-          ) : null}
         </VStack>
       )}
-    />
+    >
+      {/* One step of indent, no card. These rows carry no icon column, so
+          without it the diagnostics share a left edge with the capability
+          name and read as sibling rows rather than as that row's detail.
+          A tinted or rounded container instead of the indent would be a
+          card inside a row list, which this surface does not do. */}
+      <div className="settingsCapabilityDetail">
+        <VStack gap={3}>
+          {/* Explicit 2 columns: `columns="multi"` laid every item out
+              full width, so the five layers became five tall rows and the
+              row grew ~5x. `label position: start` keeps each readout on
+              one line (label left, value right) like the <dl> it replaced. */}
+          <MetadataList
+            columns={2}
+            label={{ position: 'start', width: 92 }}
+            aria-label={copy.layers.aria(capabilityLabel)}
+          >
+            {layers.map((layer) => (
+              <MetadataListItem key={layer.label} label={layer.label}>
+                {/* Stacked: MetadataListItem flows its children inline, so
+                    an unwrapped reason ran straight into the state value
+                    ("探测降级maka-cu 未响应握手…"). */}
+                <VStack gap={0.5}>
+                  <Text type="body" size="sm">{layer.value}</Text>
+                  {layer.reason ? (
+                    <Text type="supporting" size="xsm" color="secondary">{layer.reason}</Text>
+                  ) : null}
+                </VStack>
+              </MetadataListItem>
+            ))}
+          </MetadataList>
+          {capability.osPermissions.length > 0 && (
+            <MetadataList
+              columns={2}
+              label={{ position: 'start', width: 92 }}
+              aria-label={copy.requiredPermissionsAria(capabilityLabel)}
+              title={copy.requiredPermissions}
+            >
+              {capability.osPermissions.map((req) => (
+                <MetadataListItem key={req.id} label={copy.osPermissions[req.id]?.label ?? req.id}>
+                  <span className="settingsStatus">
+                    <StatusDot variant={statusDotVariant(copy.osStates[req.status].tone)} label={copy.osStates[req.status].label} />
+                    <span>{copy.osStates[req.status].label}</span>
+                  </span>
+                </MetadataListItem>
+              ))}
+            </MetadataList>
+          )}
+          {guidance.length > 0 && (
+            <VStack gap={1}>
+              <Text type="label" size="sm">{copy.guidance}</Text>
+              <List aria-label={copy.guidanceAria(capabilityLabel)} density="compact">
+                {guidance.map((item, index) => (
+                  <ListItem
+                    key={`${capability.id}-guidance-${index}`}
+                    label={<Text type="supporting" size="sm" color="secondary">{item}</Text>}
+                  />
+                ))}
+              </List>
+            </VStack>
+          )}
+          {/*
+            PR-UX-POLISH-1 commit 2 (yuejing UX audit + xuan
+            ROADMAP-SURFACE-0 + kenji boundary 1): unavailable pause/revoke
+            chips looked like disabled toggles, which violates the
+            capability presentation contract. Keep them hidden until there
+            are real actions.
+          */}
+          {/* The audit slot carries its own sub-heading, the same way
+              所需系统权限 does. It used to be a lone 暂无审计记录 line with
+              nothing above it — an orphan, which is why it read as short of
+              breathing room; the gap was a symptom of the missing parent,
+              not of the spacing. With the label, empty and populated states
+              hang off the same heading and the two sub-groups are
+              parallel. */}
+          <VStack gap={1}>
+            <Text type="label" size="sm">{copy.auditSection}</Text>
+            {capability.auditEvents.length === 0 ? (
+              <Text type="supporting" size="xsm" color="secondary">{copy.noAudit}</Text>
+            ) : (
+              <List aria-label={copy.auditAria(capabilityLabel)} density="compact">
+                {capability.auditEvents.slice(-3).map((event, index) => (
+                  <ListItem
+                    key={`${capability.id}-audit-${index}`}
+                    label={<Text type="supporting" size="xsm" color="secondary">{event}</Text>}
+                  />
+                ))}
+              </List>
+            )}
+          </VStack>
+        </VStack>
+      </div>
+    </Collapsible>
   );
 }
 

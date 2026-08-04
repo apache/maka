@@ -21,7 +21,7 @@ export function SettingsSkeletonStack({
   lines?: ReadonlyArray<SkeletonLine>;
 }) {
   return (
-    <div className="settingsSkeletonStack" aria-busy="true" aria-label={label}>
+    <div className="settingsSkeletonStack" role="status" aria-busy="true" aria-label={label}>
       {lines.map((line, index) => (
         <Skeleton
           key={index}
@@ -38,7 +38,7 @@ export function SettingsSkeletonStack({
 export function SettingsSkeleton() {
   const copy = getSettingsSharedCopy(useUiLocale());
   return (
-    <div className="settingsLoadingSkeleton" aria-busy="true" aria-label={copy.loading}>
+    <div className="settingsLoadingSkeleton" role="status" aria-busy="true" aria-label={copy.loading}>
       <div className="settingsSkeletonStack">
         <Skeleton width="38%" height={16} radius="rounded" index={0} />
         <Skeleton height={92} radius={3} index={1} />

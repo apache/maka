@@ -34,6 +34,7 @@ describe('ModelAdapter.startStream onError', () => {
       messages: [{ role: 'user', content: 'hi' }],
       tools: {},
       activeTools: [],
+      onStreamActivity: () => {},
       abortSignal: new AbortController().signal,
       repairToolCall: async () => null,
     });
@@ -73,6 +74,7 @@ describe('ModelAdapter.startStream onError', () => {
       messages: [{ role: 'user', content: 'hi' }],
       tools: {},
       activeTools: [],
+      onStreamActivity: () => {},
       abortSignal: new AbortController().signal,
       repairToolCall: async () => null,
     });
@@ -106,6 +108,7 @@ describe('ModelAdapter.startStream onError', () => {
       messages: [{ role: 'user', content: 'hi' }],
       tools: {},
       activeTools: [],
+      onStreamActivity: () => {},
       system: 'sys',
       abortSignal: new AbortController().signal,
       repairToolCall: async () => null,
@@ -143,6 +146,7 @@ describe('ModelAdapter.startStream onError', () => {
         messages: [{ role: 'user', content: 'hi' }],
         tools: {},
         activeTools: [],
+        onStreamActivity: () => {},
         system: 'sys',
         abortSignal: new AbortController().signal,
         repairToolCall: async () => null,

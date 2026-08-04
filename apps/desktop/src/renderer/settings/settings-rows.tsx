@@ -1,7 +1,13 @@
 import type { ReactNode } from 'react';
 import { SettingsRow } from './settings-section';
 
-export function SettingRow(props: { title: string; detail: string; value: string; mono?: boolean; action?: ReactNode }) {
+/**
+ * `value` is optional: a row may exist for what it explains and what it lets
+ * you do, with nothing to read out. 输入历史 is one — naming its storage
+ * mechanism told the user nothing they could act on, and the action beside it
+ * is the whole point of the row.
+ */
+export function SettingRow(props: { title: string; detail: string; value?: string; mono?: boolean; action?: ReactNode }) {
   // `mono` means the value is machine text — a path, an id, a key. That is a
   // markup fact, and since the role table composes the code family for the
   // code element group, saying it in the markup is also what makes it render
@@ -28,13 +34,14 @@ export function SettingRow(props: { title: string; detail: string; value: string
       />
     );
   }
-  const value = <span className="settingsReadOnlyValue">{props.value}</span>;
+  const value = props.value ? <span className="settingsReadOnlyValue">{props.value}</span> : null;
+  const end = props.action ? <>{value}{props.action}</> : value;
   return (
     <SettingsRow
       label={props.title}
       description={props.detail || undefined}
       align="start"
-      end={props.action ? <>{value}{props.action}</> : value}
+      end={end ?? undefined}
     />
   );
 }

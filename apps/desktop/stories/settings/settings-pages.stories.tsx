@@ -311,19 +311,6 @@ function makeMemoryBridgeChannels(state: LocalMemoryState) {
       openLatestBackup: async () => ({ ok: true as const }),
       openBackup: async () => ({ ok: true as const }),
     },
-    workspaceInstructions: {
-      getState: async () => ({
-        files: [
-          { file: 'AGENTS.md', status: 'available', chars: 1_820, truncated: false },
-          { file: 'CLAUDE.md', status: 'missing', chars: 0, truncated: false },
-        ],
-        detectedCount: 1,
-        fileCharLimit: 20_000,
-        promptCharLimit: 8_000,
-      }),
-      openFile: async () => ({ ok: true as const }),
-      createFile: async () => ({ ok: true as const }),
-    },
   };
 }
 
@@ -415,7 +402,7 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
         state: 'degraded',
         source: 'runtime_probe',
         lastCheckedAt: NOW - 5 * 60_000,
-        reason: 'cua-driver 未响应握手，已回落到只读观察模式。',
+        reason: 'maka-cu 未响应握手，已回落到只读观察模式。',
       },
       osPermissions: [
         { id: 'accessibility', required: true, status: 'granted' },
@@ -501,15 +488,15 @@ const healthSignals: HealthSignal[] = [
     relatedCapabilityId: 'computer_use',
   },
   {
-    id: 'probe:cua-driver',
-    label: 'cua-driver 运行态探测',
+    id: 'probe:maka-cu',
+    label: 'maka-cu 运行态探测',
     scope: 'capability',
     layer: 'runtime_probe',
     status: 'warning',
     source: 'runtime_probe',
     checkedAt: NOW - 5 * 60_000,
     message: '探测超时，已回落到只读观察模式。',
-    detail: 'cua-driver 未在 3000ms 内完成握手；下一次探测会在功能被调用时自动触发。',
+    detail: 'maka-cu 未在 3000ms 内完成握手；下一次探测会在功能被调用时自动触发。',
     relatedCapabilityId: 'computer_use',
     blocksCapability: true,
   },
@@ -665,6 +652,15 @@ const subagentStorySettings = mergeSettings(createDefaultSettings(), {
         enabled: true,
       },
       {
+        id: 'orphaned-route',
+        name: '外部资料检索',
+        description: '连接被删除后仍处于启用状态，用于展示失效路由。',
+        profile: 'web_research',
+        connectionSlug: 'removed-connection',
+        model: 'legacy-search-model',
+        enabled: true,
+      },
+      {
         id: 'retired-researcher',
         name: '旧研究配置',
         description: '保留用于展示已停用配置。',
@@ -792,11 +788,17 @@ function SettingsStory(props: {
 
   return (
     <ToastProvider>
+      {/* `100dvh`, not `100%`: `SettingsSurface` is a `Layout height="fill"`,
+          which needs a bounded ancestor to hand its content pane a scroll
+          box. Under Storybook's fullscreen body a percentage height resolves
+          against an auto-height parent, so every page taller than the
+          viewport stretched the whole surface instead of scrolling inside it
+          — 权限与能力 reached 1942px in a 720px frame with no way down. */}
       <div
         data-maka-e2e-fixture="true"
         style={{
           background: 'var(--surface-canvas)',
-          height: '100%',
+          height: '100dvh',
           minHeight: 640,
         }}
       >
@@ -811,6 +813,7 @@ function SettingsStory(props: {
           onThemePaletteChange={setThemePalette}
           onUiLocalePreferenceChange={noop}
           uiLocaleUpdateGate={uiLocaleUpdateGate}
+          onDefaultPermissionModeChange={noop}
           requestedSection={props.section}
           initialFocusRef={initialFocusRef}
           onOpenDailyReview={noop}
@@ -907,24 +910,25 @@ export const Subagents: Story = {
   render: () => <SettingsStory section="subagents" />,
 };
 
-// Real path: Settings → Subagents at the minimum supported window width.
-export const SubagentsNarrow: Story = {
-  ...Subagents,
-  parameters: { viewport: { defaultViewport: 'mobile2' } },
-};
-
-// Real path: 设置 → 子 Agent → 添加子 Agent.
-export const SubagentEditorOpen: Story = {
+// Real path: 设置 → 子 Agent → 配置“实现与验证”. A second story because the
+// editor is a route level, not a disclosure: it replaces the list, shares no
+// content with it, and is where this page's pixel work happens. Landed on the
+// implementation preset because it renders the most of the level at once — the
+// settled read-only subagent_id, the capability warning, the degraded model
+// option, and the delete section. It renders them; what they must be is pinned
+// in the e2e journeys, not here.
+export const SubagentEditor: Story = {
   decorators: [withSubagentSettingsBridge],
   render: () => <SettingsStory section="subagents" />,
   play: async ({ canvasElement }) => {
     const button = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.trim() === '添加子 Agent',
+      (candidate) => candidate.getAttribute('aria-label') === '配置“实现与验证”',
     );
     await userEvent.click(button);
   },
 };
+
 // Real path: 设置 → 通用.
 export const General: Story = {
   decorators: [withSettingsBridge],
@@ -1046,21 +1050,30 @@ export const Data: Story = {
  * and the guidance block are hidden until diagnostics are expanded, so the collapsed story
  * gives those layouts no baseline at all — which is exactly where the remaining overflow
  * was hiding. Everything the collapsed story shows is still on screen here.
+ *
+ * The disclosure is per-row now (a CollapsibleGroup, one open at a time) rather than one
+ * page-level 展开详情 button, so the story opens the first capability instead — and asserts
+ * on the trigger's own `aria-expanded`, which is Collapsible's contract, rather than on a
+ * `data-diagnostics` attribute the page used to maintain by hand for this test.
  */
-// Real path: 设置 → 权限与能力 → 展开详情.
+// Real path: 设置 → 权限与能力 → 展开某个能力行.
 export const PermissionCenterDiagnosticsExpanded: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,
   play: async ({ canvasElement }) => {
-    const toggle = await waitForStoryButton(
+    // Scoped through `data-readiness` — the capability rows' own attribute — so
+    // the story cannot latch onto some other expandable button on the page.
+    const trigger = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.includes('展开详情') === true,
+      (candidate) =>
+        candidate.getAttribute('aria-expanded') === 'false' &&
+        candidate.closest('[data-readiness]') !== null,
     );
-    toggle.click();
+    trigger.click();
     await waitForStoryCondition(
       () =>
-        canvasElement.querySelector('[data-diagnostics="open"]') !== null,
-      'Permission Center story did not expand the capability diagnostics',
+        canvasElement.querySelector('[data-readiness] button[aria-expanded="true"]') !== null,
+      'Permission Center story did not expand a capability row',
     );
   },
 };

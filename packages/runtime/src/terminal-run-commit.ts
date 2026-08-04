@@ -2,6 +2,7 @@ import { isPartialRuntimeEvent, isTerminalRuntimeEvent } from '@maka/core';
 import type {
   AgentRunEvent,
   AgentRunHeader,
+  AgentRunEventType,
   AgentRunStore,
   RuntimeEvent,
   RuntimeEventStore,
@@ -329,7 +330,7 @@ export function hasTerminalAgentRunEvent(events: readonly Pick<AgentRunEvent, 't
   );
 }
 
-function terminalAgentRunEventType(status: TerminalAgentRunStatus): AgentRunEvent['type'] {
+function terminalAgentRunEventType(status: TerminalAgentRunStatus): AgentRunEventType {
   if (status === 'cancelled') return 'run_cancelled';
   if (status === 'failed') return 'run_failed';
   return 'run_completed';

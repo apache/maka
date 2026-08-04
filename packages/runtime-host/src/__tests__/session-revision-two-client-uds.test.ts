@@ -5,8 +5,14 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
-import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime';
+import {
+  decodeCanonicalToolResultContent,
+  type AgentGraphOperatorProvisionRequest,
+  type AgentRunHeader,
+  type RuntimeEvent,
+} from '@maka/core';
+import { agentGraphIdForRootSession, FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import {
@@ -36,6 +42,7 @@ const REVISION_TARGET_ID = 'revision-target';
 const ADMITTED_REVISION_TARGET_ID = 'admitted-revision-target';
 const LINEAGE_REVISION_TARGET_ID = 'lineage-revision-target';
 const LINEAGE_BRANCH_TARGET_ID = 'lineage-branch-target';
+const GRAPH_REVISION_TARGET_ID = 'graph-revision-target';
 
 test('two UDS Clients share exact retryable Session branch and revision authority', {
   skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
@@ -50,6 +57,8 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
     linkedChildSourceSessionId,
     metadataLinkedSourceSessionId,
     archivedOwnedSourceSessionId,
+    graphChildSessionId,
+    continuationSourceSessionId,
   } = await seedSource(root, capability);
   let host: ExecutionHostHandle | undefined;
   try {
@@ -61,6 +70,8 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
       linkedChildSourceSessionId,
       metadataLinkedSourceSessionId,
       archivedOwnedSourceSessionId,
+      graphChildSessionId,
+      continuationSourceSessionId,
     );
     await stopHost(host);
     host = undefined;
@@ -82,6 +93,8 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
       ADMITTED_REVISION_TARGET_ID,
       LINEAGE_REVISION_TARGET_ID,
       LINEAGE_BRANCH_TARGET_ID,
+      GRAPH_REVISION_TARGET_ID,
+      graphChildSessionId,
     );
   } finally {
     await terminateHost(host);
@@ -101,11 +114,30 @@ async function verifyConcurrentRevisionAuthority(
   linkedChildSourceSessionId: string,
   metadataLinkedSourceSessionId: string,
   archivedOwnedSourceSessionId: string,
+  graphChildSessionId: string,
+  continuationSourceSessionId: string,
 ): Promise<void> {
   const desktop = await connectClient(root, 'desktop');
   const tui = await connectClient(root, 'tui');
   try {
     const source = await querySession(desktop, sourceSessionId);
+    const continuationSource = await querySession(desktop, continuationSourceSessionId);
+    await assert.rejects(
+      desktop.request('session.branch.create', {
+        sourceSessionId: continuationSourceSessionId,
+        targetSessionId: 'continuation-copy-target',
+        sourceTurnId: 'continuation-parent-turn',
+        expectedSourceRevision: continuationSource.revision,
+      }),
+      operationError('operation_unavailable'),
+    );
+    assert.deepEqual(
+      await tui.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: 'continuation-copy-target',
+      }),
+      { kind: 'session', session: null },
+    );
     const linkedChildSource = await querySession(desktop, linkedChildSourceSessionId);
     await assert.rejects(
       desktop.request('session.branch.create', {
@@ -123,6 +155,29 @@ async function verifyConcurrentRevisionAuthority(
       }),
       { kind: 'session', session: null },
     );
+    const graphRevision = await desktop.request('session.revision.create', {
+      sourceSessionId: linkedChildSourceSessionId,
+      targetSessionId: GRAPH_REVISION_TARGET_ID,
+      sourceTurnId: 'linked-after-turn',
+      expectedSourceRevision: linkedChildSource.revision,
+    });
+    assert.equal(graphRevision.kind, 'committed');
+    if (graphRevision.kind !== 'committed') assert.fail('Graph revision must commit');
+    const copiedGraph = await tui.request('agent.graph.query', {
+      rootSessionId: GRAPH_REVISION_TARGET_ID,
+    });
+    assert.equal(copiedGraph.status, 'empty');
+    assert.deepEqual(copiedGraph.operators, []);
+    const sourceGraph = await desktop.request('agent.graph.query', {
+      rootSessionId: linkedChildSourceSessionId,
+    });
+    assert.equal(sourceGraph.status, 'completed');
+    assert.equal(sourceGraph.operators[0]?.childSessionId, graphChildSessionId);
+    await desktop.startTurn({
+      sessionId: GRAPH_REVISION_TARGET_ID,
+      turnId: 'graph-revision-new-turn',
+      content: { text: 'continue independently' },
+    });
     const metadataLinkedSource = await querySession(desktop, metadataLinkedSourceSessionId);
     await assert.rejects(
       desktop.request('session.branch.create', {
@@ -216,15 +271,17 @@ async function verifyConcurrentRevisionAuthority(
     assert.equal(revision.revisionIndex, 2);
     assert.equal(revision.revisionState, 'preparing');
 
+    const sourceAfterRevision = await querySession(tui, sourceSessionId);
+    const staleExpectedRevision = sourceAfterRevision.revision + 1;
     const stale = await tui.request('session.revision.create', {
       ...revisionInput,
       targetSessionId: 'stale-revision-target',
-      expectedSourceRevision: renamedSource.revision + 1,
+      expectedSourceRevision: staleExpectedRevision,
     });
     assert.deepEqual(stale, {
       kind: 'source_revision_conflict',
-      expectedRevision: renamedSource.revision + 1,
-      actualRevision: renamedSource.revision,
+      expectedRevision: staleExpectedRevision,
+      actualRevision: sourceAfterRevision.revision,
     });
     await assert.rejects(
       desktop.request('session.branch.create', {
@@ -338,6 +395,24 @@ async function verifySecondRestartRetention(root: string, sourceSessionId: strin
       'committed',
     );
     assert.equal(
+      (await querySession(recovered, GRAPH_REVISION_TARGET_ID)).revisionState,
+      'committed',
+    );
+    const archivedGraphRevision = requireSessionProjection(
+      await recovered.request('session.lifecycle.set', {
+        sessionId: GRAPH_REVISION_TARGET_ID,
+        state: 'archived',
+      }),
+    );
+    assert.equal(archivedGraphRevision.isArchived, true);
+    const restoredGraphRevision = requireSessionProjection(
+      await recovered.request('session.lifecycle.set', {
+        sessionId: GRAPH_REVISION_TARGET_ID,
+        state: 'active',
+      }),
+    );
+    assert.equal(restoredGraphRevision.isArchived, false);
+    assert.equal(
       (await querySession(recovered, LINEAGE_BRANCH_TARGET_ID)).parentSessionId,
       LINEAGE_REVISION_TARGET_ID,
     );
@@ -385,10 +460,13 @@ async function seedSource(
   linkedChildSourceSessionId: string;
   metadataLinkedSourceSessionId: string;
   archivedOwnedSourceSessionId: string;
+  graphChildSessionId: string;
+  continuationSourceSessionId: string;
 }> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire execution root for Session setup');
+  const graph = createAgentGraphControlStore(root);
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
@@ -434,6 +512,82 @@ async function seedSource(
       model: 'fake-model',
       permissionMode: 'ask',
     });
+    const continuationSource = await execution.sessionStore.create({
+      cwd: root,
+      name: 'Continuation Source Session',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    await execution.sessionStore.appendMessage(continuationSource.id, {
+      type: 'user',
+      id: 'continuation-parent-user',
+      turnId: 'continuation-parent-turn',
+      ts: 1,
+      text: 'retain the child continuation closure',
+    });
+    const continuationParent = agentRunHeader(
+      root,
+      continuationSource.id,
+      'continuation-parent-run',
+      'continuation-parent-invocation',
+      'continuation-parent-turn',
+    );
+    const continuationChild: AgentRunHeader = {
+      ...agentRunHeader(
+        root,
+        continuationSource.id,
+        'continuation-child-run',
+        'continuation-child-invocation',
+        'continuation-child-turn',
+      ),
+      parentRunId: continuationParent.runId,
+      agentId: 'child-agent',
+      agentName: 'Child Agent',
+      retriedFromRunId: continuationParent.runId,
+      retriedFromTurnId: continuationParent.turnId,
+      continuationSource: {
+        sourceInvocationId: continuationParent.invocationId!,
+        sourceRunId: continuationParent.runId,
+        sourceTurnId: continuationParent.turnId,
+        sourceRuntimeEventHighWater: 1,
+      },
+    };
+    for (const run of [continuationParent, continuationChild]) {
+      await execution.agentRunStore.createRun(run);
+      if (run.runId === continuationParent.runId) {
+        await execution.runtimeEventStore.appendRuntimeEvent(
+          run.sessionId,
+          run.runId,
+          runtimeEvent(run.sessionId, run.runId, run.invocationId!, run.turnId, {
+            id: 'continuation-parent-user',
+            role: 'user',
+            author: 'user',
+            content: { kind: 'text', text: 'retain the child continuation closure' },
+          }),
+        );
+      }
+      await execution.runtimeEventStore.appendRuntimeEvent(
+        run.sessionId,
+        run.runId,
+        runtimeEvent(run.sessionId, run.runId, run.invocationId!, run.turnId, {
+          id: `${run.runId}-terminal`,
+          status: 'completed',
+        }),
+      );
+    }
+    const persistedContinuationRuns = await execution.agentRunStore.listSessionRuns(
+      continuationSource.id,
+    );
+    const persistedContinuationChild = persistedContinuationRuns.find(
+      (run) => run.runId === continuationChild.runId,
+    );
+    assert.equal(persistedContinuationChild?.agentId, continuationChild.agentId);
+    assert.deepEqual(
+      persistedContinuationChild?.continuationSource,
+      continuationChild.continuationSource,
+    );
     const artifact = await artifacts.create({
       id: 'source-artifact',
       sessionId: source.id,
@@ -591,6 +745,147 @@ async function seedSource(
     for (const event of sourceRuntimeEvents) {
       await execution.runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
     }
+    const graphId = agentGraphIdForRootSession(linkedChildSource.id);
+    const graphWorkId = `graph_work_${'1'.repeat(32)}`;
+    const graphOperatorId = `graph_operator_${'2'.repeat(32)}`;
+    await graph.commitAgentGraphScheduleUpdate({
+      schemaVersion: 1,
+      updateId: `graph_update_${'3'.repeat(32)}`,
+      updateFingerprint: `sha256:${'4'.repeat(64)}`,
+      graphId,
+      source: {
+        sessionId: linkedChildSource.id,
+        runId: 'graph-root-run',
+        turnId: 'linked-turn',
+        toolCallId: 'graph-schedule-call',
+      },
+      addWork: [
+        {
+          workId: graphWorkId,
+          target: { kind: 'agent', agentId: 'worker' },
+          instruction: 'Complete the delegated task.',
+          inputIds: [],
+        },
+      ],
+      stop: [],
+    });
+    const graphProvision: AgentGraphOperatorProvisionRequest = {
+      schemaVersion: 1,
+      provisionId: `graph_provision_${'5'.repeat(32)}`,
+      provisionFingerprint: `sha256:${'6'.repeat(64)}`,
+      graphId,
+      workId: graphWorkId,
+      agentId: 'worker',
+      operatorId: graphOperatorId,
+      initialTurnId: 'graph-child-turn',
+      initialRunId: 'graph-child-run',
+      edges: [],
+    };
+    const graphChild = await execution.sessionStore.createAgentGraphOperator(
+      {
+        cwd: root,
+        name: 'Graph Worker',
+        backend: 'fake',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId: linkedChildSource.id,
+          spawnedBy: {
+            parentRunId: 'graph-root-run',
+            parentTurnId: 'linked-turn',
+            toolCallId: 'graph-schedule-call',
+          },
+          graph: { graphId, workId: graphWorkId, operatorId: graphOperatorId },
+          lifecycle: 'foreground',
+        },
+        subagentRuntime: {
+          schemaVersion: 1,
+          definitionVersion: 1,
+          agentId: 'worker',
+          agentName: 'Graph Worker',
+          profile: 'default',
+          systemPrompt: 'Complete the delegated task.',
+          toolNames: [],
+          categoryPolicy: {},
+        },
+        subagentSpawn: {
+          schemaVersion: 1,
+          requestFingerprint: '6'.repeat(64),
+          initialTurnId: 'graph-child-turn',
+          initialRunId: 'graph-child-run',
+        },
+      },
+      graphProvision,
+      1,
+    );
+    await artifacts.create({
+      id: 'graph-child-artifact',
+      sessionId: graphChild.header.id,
+      turnId: 'graph-child-turn',
+      name: 'graph-result.txt',
+      kind: 'file',
+      content: 'graph child result',
+      mimeType: 'text/plain',
+      source: 'tool_result',
+      now: 3,
+    });
+    await execution.agentRunStore.createRun(
+      agentRunHeader(
+        root,
+        graphChild.header.id,
+        'graph-child-run',
+        'graph-child-invocation',
+        'graph-child-turn',
+      ),
+    );
+    for (const event of [
+      runtimeEvent(
+        graphChild.header.id,
+        'graph-child-run',
+        'graph-child-invocation',
+        'graph-child-turn',
+        {
+          id: 'graph-child-output',
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'graph child output' },
+        },
+      ),
+      runtimeEvent(
+        graphChild.header.id,
+        'graph-child-run',
+        'graph-child-invocation',
+        'graph-child-turn',
+        { id: 'graph-child-terminal', ts: 2, status: 'completed' },
+      ),
+    ]) {
+      await execution.runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
+    }
+    const graphResult = {
+      kind: 'agent_swarm' as const,
+      status: 'completed' as const,
+      items: [
+        {
+          itemId: 'graph-item',
+          index: 0,
+          profile: 'default',
+          started: true,
+          childSessionId: graphChild.header.id,
+          agentId: 'worker',
+          agentName: 'Graph Worker',
+          turnId: 'graph-child-turn',
+          runId: 'graph-child-run',
+          status: 'completed' as const,
+          summary: 'done',
+          artifactIds: ['graph-child-artifact'],
+        },
+      ],
+      startedAt: 1,
+      completedAt: 2,
+      durationMs: 1,
+    };
     await execution.sessionStore.appendMessages(linkedChildSource.id, [
       {
         type: 'user',
@@ -606,18 +901,118 @@ async function seedSource(
         ts: 2,
         toolUseId: 'linked-call',
         isError: false,
-        content: {
-          kind: 'subagent',
-          childSessionId: 'linked-child-session',
-          agentName: 'worker',
-          turnId: 'linked-child-turn',
-          status: 'completed',
-          permissionMode: 'ask',
-          summary: 'done',
-          artifactIds: [],
-        },
+        content: graphResult,
+      },
+      {
+        type: 'user',
+        id: 'linked-after-user',
+        turnId: 'linked-after-turn',
+        ts: 3,
+        text: 'revise this later turn',
+      },
+      {
+        type: 'assistant',
+        id: 'linked-after-assistant',
+        turnId: 'linked-after-turn',
+        ts: 4,
+        text: 'later response',
+        modelId: 'fake-model',
       },
     ]);
+    for (const run of [
+      agentRunHeader(
+        root,
+        linkedChildSource.id,
+        'graph-root-run',
+        'graph-root-invocation',
+        'linked-turn',
+      ),
+      agentRunHeader(
+        root,
+        linkedChildSource.id,
+        'graph-after-run',
+        'graph-after-invocation',
+        'linked-after-turn',
+      ),
+    ]) {
+      await execution.agentRunStore.createRun(run);
+    }
+    const graphRootEvents = [
+      runtimeEvent(linkedChildSource.id, 'graph-root-run', 'graph-root-invocation', 'linked-turn', {
+        id: 'graph-root-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'delegate this' },
+      }),
+      runtimeEvent(linkedChildSource.id, 'graph-root-run', 'graph-root-invocation', 'linked-turn', {
+        id: 'graph-root-call',
+        ts: 1.5,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'linked-call',
+          name: 'agent_graph',
+          args: { task: 'delegate this' },
+        },
+      }),
+      runtimeEvent(linkedChildSource.id, 'graph-root-run', 'graph-root-invocation', 'linked-turn', {
+        id: 'graph-root-result',
+        ts: 2,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'linked-call',
+          name: 'agent_graph',
+          isError: false,
+          result: graphResult,
+        },
+      }),
+      runtimeEvent(linkedChildSource.id, 'graph-root-run', 'graph-root-invocation', 'linked-turn', {
+        id: 'graph-root-terminal',
+        ts: 2.5,
+        status: 'completed',
+      }),
+      runtimeEvent(
+        linkedChildSource.id,
+        'graph-after-run',
+        'graph-after-invocation',
+        'linked-after-turn',
+        {
+          id: 'graph-after-user',
+          ts: 3,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'revise this later turn' },
+        },
+      ),
+      runtimeEvent(
+        linkedChildSource.id,
+        'graph-after-run',
+        'graph-after-invocation',
+        'linked-after-turn',
+        { id: 'graph-after-terminal', ts: 4, status: 'completed' },
+      ),
+    ];
+    for (const event of graphRootEvents) {
+      await execution.runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
+    }
+    await graph.commitAgentGraphScheduleUpdate({
+      schemaVersion: 1,
+      updateId: `graph_update_${'7'.repeat(32)}`,
+      updateFingerprint: `sha256:${'8'.repeat(64)}`,
+      graphId,
+      source: {
+        sessionId: linkedChildSource.id,
+        runId: 'graph-root-run',
+        turnId: 'linked-turn',
+        toolCallId: 'graph-finish-call',
+      },
+      addWork: [],
+      stop: [],
+      finish: { resultIds: ['graph-item'], reason: 'complete' },
+    });
     await execution.sessionStore.appendMessage(metadataLinkedSource.id, {
       type: 'user',
       id: 'metadata-linked-user',
@@ -824,8 +1219,11 @@ async function seedSource(
       linkedChildSourceSessionId: linkedChildSource.id,
       metadataLinkedSourceSessionId: metadataLinkedSource.id,
       archivedOwnedSourceSessionId: archivedOwnedSource.id,
+      graphChildSessionId: graphChild.header.id,
+      continuationSourceSessionId: continuationSource.id,
     };
   } finally {
+    graph.close();
     await owner.close();
   }
 }
@@ -837,6 +1235,8 @@ async function verifyDurableBranch(
   admittedRevisionTargetId: string,
   lineageRevisionTargetId: string,
   lineageBranchTargetId: string,
+  graphRevisionTargetId: string,
+  graphChildSessionId: string,
 ): Promise<void> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -886,6 +1286,48 @@ async function verifyDurableBranch(
     assert.equal(
       (await execution.sessionStore.readHeaderSnapshot(lineageBranchTargetId)).parentSessionId,
       lineageRevisionTargetId,
+    );
+    const graphRevisionMessages =
+      await execution.sessionStore.readMessagesSnapshot(graphRevisionTargetId);
+    const graphResult = graphRevisionMessages.find(
+      (message) => message.type === 'tool_result' && message.content.kind === 'agent_swarm',
+    );
+    assert.ok(graphResult?.type === 'tool_result');
+    if (graphResult?.type !== 'tool_result' || graphResult.content.kind !== 'agent_swarm') {
+      assert.fail('Copied Graph revision must retain its canonical result');
+    }
+    assert.equal(graphResult.content.items[0]?.childSessionId, graphChildSessionId);
+    assert.equal(graphResult.content.items[0]?.runId, 'graph-child-run');
+    assert.deepEqual(graphResult.content.items[0]?.artifactIds, ['graph-child-artifact']);
+    const graphRevisionRuns = await execution.agentRunStore.listSessionRuns(graphRevisionTargetId);
+    const graphRevisionRun = graphRevisionRuns.find((run) => run.turnId === 'linked-turn');
+    assert.ok(graphRevisionRun);
+    const graphRuntimeResult = (
+      await execution.runtimeEventStore.readRuntimeEvents(
+        graphRevisionTargetId,
+        graphRevisionRun.runId,
+      )
+    ).find((event) => event.content?.kind === 'function_response')?.content;
+    assert.ok(graphRuntimeResult?.kind === 'function_response');
+    if (graphRuntimeResult?.kind !== 'function_response') {
+      assert.fail('Copied Graph revision must retain its RuntimeEvent result');
+    }
+    const runtimeGraphResult = decodeCanonicalToolResultContent(graphRuntimeResult.result);
+    assert.equal(runtimeGraphResult.kind, 'agent_swarm');
+    if (runtimeGraphResult.kind !== 'agent_swarm') {
+      assert.fail('Copied RuntimeEvent result must remain an Agent Graph result');
+    }
+    const runtimeGraphItem = runtimeGraphResult.items[0];
+    assert.equal(runtimeGraphItem?.childSessionId, graphChildSessionId);
+    assert.equal(runtimeGraphItem?.runId, 'graph-child-run');
+    assert.deepEqual(runtimeGraphItem?.artifactIds, ['graph-child-artifact']);
+    assert.equal(
+      (await artifacts.getInSession(graphChildSessionId, 'graph-child-artifact')).record?.id,
+      'graph-child-artifact',
+    );
+    assert.equal(
+      (await artifacts.listPage(graphRevisionTargetId, { offset: 0, limit: 10 })).total,
+      0,
     );
   } finally {
     await owner.close();

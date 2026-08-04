@@ -87,5 +87,10 @@ describe('deep research session profile', () => {
     ]) {
       assert.match(prompt, contract);
     }
+    assert.match(prompt, /ExploreAgent/);
+    assert.doesNotMatch(
+      buildDeepResearchSystemPromptFragment({ exploreAgentAvailable: false }),
+      /ExploreAgent/,
+    );
   });
 });

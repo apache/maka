@@ -66,6 +66,7 @@ describe('Artifact user-delete policy', () => {
       'deep_research',
       'subagent_writeback',
       'tool_result_archive',
+      'session_effect',
     ]);
     for (const source of ARTIFACT_SOURCES) {
       assert.equal(canUserDeleteArtifact({ source }), !protectedSources.has(source), source);

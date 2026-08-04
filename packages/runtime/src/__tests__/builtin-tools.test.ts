@@ -2100,6 +2100,83 @@ describe('builtin write tools path containment', () => {
     expect(await readFile(join(root, 'inside.txt'), 'utf8')).toBe('hello Maka');
   });
 
+  test('file tools stay usable when the session cwd is reached through a symlink', async () => {
+    // The session cwd itself sits under a symlink (macOS hands out `/var/...`
+    // tmpdirs whose realpath is `/private/var/...`, and workspace roots are often
+    // organised with symlinks). Containment must be decided in one path space, so
+    // absolute paths spelled through the link are inside — and escapes still are not.
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-symlink-cwd-')));
+    const workspace = join(base, 'workspace');
+    const outside = join(base, 'outside');
+    await mkdir(join(workspace, 'src'), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(workspace, 'src', 'inside.txt'), 'inside token\n', 'utf8');
+    await writeFile(join(outside, 'secret.txt'), 'secret\n', 'utf8');
+    await symlink(join(outside, 'secret.txt'), join(workspace, 'escape.txt'));
+    await symlink(outside, join(workspace, 'outside-link'));
+    const cwd = join(base, 'link-to-workspace');
+    await symlink(workspace, cwd);
+
+    const read = tool('Read');
+    const write = tool('Write');
+    const edit = tool('Edit');
+    const glob = tool('Glob');
+    const grep = tool('Grep');
+
+    expect(await runTool(read, { path: join(cwd, 'src', 'inside.txt') }, cwd)).toMatchObject({
+      content: 'inside token\n',
+    });
+    await runTool(write, { path: join(cwd, 'src', 'written.txt'), content: 'written\n' }, cwd);
+    expect(await readFile(join(workspace, 'src', 'written.txt'), 'utf8')).toBe('written\n');
+    await runTool(
+      edit,
+      { path: join(cwd, 'src', 'inside.txt'), old_string: 'token', new_string: 'edited' },
+      cwd,
+    );
+    expect(await readFile(join(workspace, 'src', 'inside.txt'), 'utf8')).toBe('inside edited\n');
+    expect(await runTool(glob, { pattern: '*.txt', cwd: join(cwd, 'src') }, cwd)).toMatchObject({
+      files: ['inside.txt', 'written.txt'],
+    });
+    const grepResult = await runTool(grep, { pattern: 'edited', path: join(cwd, 'src') }, cwd);
+    expect(JSON.stringify(grepResult).includes('inside.txt')).toBe(true);
+
+    // Resolving into the canonical space must not turn "follow a symlink out of
+    // the workspace" into a legal path.
+    await expectRejects(
+      runTool(read, { path: join(outside, 'secret.txt') }, cwd),
+      /Read path must stay inside/,
+    );
+    await expectRejects(
+      runTool(read, { path: join(cwd, 'escape.txt') }, cwd),
+      /Read path must stay inside/,
+    );
+    await expectRejects(
+      runTool(write, { path: join(cwd, 'escape.txt'), content: 'x' }, cwd),
+      /Write path must stay inside/,
+    );
+    await expectRejects(
+      runTool(write, { path: join(cwd, 'outside-link', 'new.txt'), content: 'x' }, cwd),
+      /Write path must stay inside/,
+    );
+    // A link whose target does not exist yet cannot be realpath'd, but a write
+    // through it still lands outside the workspace, so it must be followed by
+    // hand rather than treated as a plain missing leaf.
+    await symlink(join(outside, 'not-yet.txt'), join(workspace, 'dangling-escape.txt'));
+    await expectRejects(
+      runTool(write, { path: join(cwd, 'dangling-escape.txt'), content: 'x' }, cwd),
+      /Write path must stay inside/,
+    );
+    await expectRejects(access(join(outside, 'not-yet.txt')), /ENOENT|no such file/);
+    await expectRejects(
+      runTool(grep, { pattern: 'secret', path: join(cwd, 'outside-link') }, cwd),
+      /Grep path must stay inside/,
+    );
+    await expectRejects(
+      runTool(glob, { pattern: '*.txt', cwd: join(cwd, 'outside-link') }, cwd),
+      /Glob cwd path must stay inside/,
+    );
+  });
+
   test('concurrent Edits to the same file serialize — no lost update', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-edit-lock-'));
     const n = 20;
@@ -2154,6 +2231,37 @@ describe('builtin write tools path containment', () => {
     expect(results.every((r) => (r as { ok: boolean }).ok === true)).toBe(true);
     const expected = `${Array.from({ length: n }, (_, i) => `done-${String(i).padStart(2, '0')}`).join('\n')}\n`;
     expect(await readFile(join(root, 'data.txt'), 'utf8')).toBe(expected);
+  });
+
+  test('concurrent Edits through a symlinked cwd serialize on one key', async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-edit-symlink-')));
+    const workspace = join(base, 'workspace');
+    await mkdir(workspace, { recursive: true });
+    const cwd = join(base, 'link-to-workspace');
+    await symlink(workspace, cwd);
+    const n = 20;
+    const markers = Array.from({ length: n }, (_, i) => `marker-${String(i).padStart(2, '0')}`);
+    await writeFile(join(workspace, 'data.txt'), `${markers.join('\n')}\n`, 'utf8');
+    const edit = tool('Edit');
+    // The relative spelling resolves against the canonical cwd while the absolute
+    // one is spelled through the link. Unless the lock key canonicalises both, the
+    // two groups take different locks and clobber each other.
+    const results = await Promise.all(
+      markers.map((m, i) =>
+        runTool(
+          edit,
+          {
+            path: i % 2 === 0 ? 'data.txt' : join(cwd, 'data.txt'),
+            old_string: m,
+            new_string: `done-${String(i).padStart(2, '0')}`,
+          },
+          cwd,
+        ),
+      ),
+    );
+    expect(results.every((r) => (r as { ok: boolean }).ok === true)).toBe(true);
+    const expected = `${Array.from({ length: n }, (_, i) => `done-${String(i).padStart(2, '0')}`).join('\n')}\n`;
+    expect(await readFile(join(workspace, 'data.txt'), 'utf8')).toBe(expected);
   });
 
   test('Write then Edit on one file resolves inside the lock — the fresh file is found', async () => {

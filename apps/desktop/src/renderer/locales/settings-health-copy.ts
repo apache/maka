@@ -16,7 +16,6 @@ export type HealthCenterCopy = {
   readAgain: string;
   title: string;
   subtitle: string;
-  validationWarning: string;
   badge: string;
   lastRead: string;
   refresh: string;
@@ -30,7 +29,6 @@ export type HealthCenterCopy = {
   scopes: Record<HealthSignal['scope'], string>;
   sources: Record<HealthSignalSource, string>;
   source: string;
-  checked: string;
   blocksSend: string;
   blocksCapability: string;
   signalLabel(signal: HealthSignal): string;
@@ -63,8 +61,8 @@ const layersEn: HealthCenterCopy['layers'] = {
 const SETTINGS_HEALTH_COPY = {
   zh: {
     loading: '正在加载健康快照', readFailed: '无法读取健康快照', noData: '健康服务未返回数据。', readAgain: '重新读取',
-    title: '健康中心', subtitle: '按层级（配置 · 验证 · 权限 · 功能 · 操作审批 · 记忆 · 运行态 · 存储）展示当前快照。',
-    validationWarning: '验证通过 ≠ 运行可用', badge: '只读快照', lastRead: '最近一次读取：', refresh: '刷新', summaryAria: '健康摘要',
+    title: '健康中心', subtitle: '各项能力当前的运行状况检查。',
+    badge: '只读快照', lastRead: '最近一次读取：', refresh: '刷新', summaryAria: '健康摘要',
     blockers: { send: (count) => `${count} 条健康信号会阻塞发送`, capability: (count) => `${count} 条健康信号会阻塞能力` },
     layerAria: (label) => `${label}健康信号`, layerListAria: (label) => `${label}健康信号列表`,
     footnote: '本页不直接执行测试、修复或权限变更；它只汇总当前已记录的健康信号。需要处理问题时，请进入对应设置页或重新触发相关功能。',
@@ -72,15 +70,15 @@ const SETTINGS_HEALTH_COPY = {
     statuses: { ok: { label: '正常', tone: 'neutral' }, info: { label: '提示', tone: 'info' }, warning: { label: '警告', tone: 'warning' }, error: { label: '错误', tone: 'destructive' }, unknown: { label: '未知', tone: 'neutral' } },
     scopes: { app: '应用', llm_connection: 'LLM 连接', bot: '机器人', capability: '能力', storage: '存储' },
     sources: { connection_test: '连接测试', capability_snapshot: '能力快照', permission_snapshot: '权限快照', runtime_probe: '运行态探测', settings: '设置', storage: '本地存储' },
-    source: '来源：', checked: '读取：', blocksSend: '阻塞发送', blocksCapability: '阻塞能力',
+    source: '来源：', blocksSend: '阻塞发送', blocksCapability: '阻塞能力',
     signalLabel: (signal) => signal.label,
     signalMessage: (signal) => signal.message,
     signalDetail: (signal) => signal.detail,
   },
   en: {
     loading: 'Loading health snapshot', readFailed: 'Could not read health snapshot', noData: 'The health service returned no data.', readAgain: 'Read again',
-    title: 'Health center', subtitle: 'Current snapshot by layer: configuration, validation, permissions, feature state, action approval, memory, runtime, and storage.',
-    validationWarning: 'Validation passed ≠ runtime available', badge: 'Read-only snapshot', lastRead: 'Last read: ', refresh: 'Refresh', summaryAria: 'Health summary',
+    title: 'Health center', subtitle: 'How each capability is currently doing.',
+    badge: 'Read-only snapshot', lastRead: 'Last read: ', refresh: 'Refresh', summaryAria: 'Health summary',
     blockers: { send: (count) => `${count} health ${count === 1 ? 'signal blocks' : 'signals block'} sending`, capability: (count) => `${count} health ${count === 1 ? 'signal blocks' : 'signals block'} capabilities` },
     layerAria: (label) => `${label} health signals`, layerListAria: (label) => `${label} health signal list`,
     footnote: 'This page does not run tests, repairs, or permission changes. It only summarizes recorded health signals. Open the relevant settings page or retry the related feature to address an issue.',
@@ -88,7 +86,7 @@ const SETTINGS_HEALTH_COPY = {
     statuses: { ok: { label: 'Healthy', tone: 'neutral' }, info: { label: 'Info', tone: 'info' }, warning: { label: 'Warning', tone: 'warning' }, error: { label: 'Error', tone: 'destructive' }, unknown: { label: 'Unknown', tone: 'neutral' } },
     scopes: { app: 'App', llm_connection: 'LLM connection', bot: 'Bot', capability: 'Capability', storage: 'Storage' },
     sources: { connection_test: 'Connection test', capability_snapshot: 'Capability snapshot', permission_snapshot: 'Permission snapshot', runtime_probe: 'Runtime probe', settings: 'Settings', storage: 'Local storage' },
-    source: 'Source: ', checked: 'Read: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',
+    source: 'Source: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',
     signalLabel: englishSignalLabel,
     signalMessage: englishSignalMessage,
     signalDetail: englishSignalDetail,

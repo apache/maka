@@ -48,7 +48,7 @@ from the actions being judged. The first mismatch rejected valid AX evidence;
 the second allowed circular ownership proof.
 
 Both producers now emit one canonical schema. Desktop fixture identity is
-collected independently from the launcher-owned PID and cua-driver window
+collected independently from the launcher-owned PID and executor window
 inventory before model execution. Qualification waits for matching dispatch
 traces and requires each target to belong to that independent identity.
 
@@ -93,7 +93,7 @@ The first qualifying run completed with:
 The direct E2E tool exposure is deliberate. The default deferred `load_tools`
 path remains a separate product contract; the launcher narrows provider
 variables while still exercising the production tool implementation, permission
-engine, Runtime, Desktop host, and cua-driver backend.
+engine, Runtime, Desktop host, and executor backend.
 
 During this run, OpenAI Responses tool continuation exposed a product bug:
 server-side storage generated an `item_reference` in the second request without

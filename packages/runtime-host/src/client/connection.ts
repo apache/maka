@@ -16,20 +16,40 @@ import {
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type ClientSurface,
+  type ContextCompactInput,
+  type ContextCompactResult,
+  type ContextDiagnosticsQueryInput,
+  type ContextDiagnosticsResult,
+  type DeepResearchQueryInput,
+  type DeepResearchQueryResult,
+  type DailyReviewMutateInput,
+  type DailyReviewMutateResult,
+  type DailyReviewQueryInput,
+  type DailyReviewQueryResult,
   type HostOperationErrorCode,
   type HostIncompatible,
   type HostRegistration,
   type HostStatusResult,
   HOST_OPERATION_SPECS,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   type OperationInput,
   type OperationKey,
   type OperationOutput,
+  type PlanControlInput,
+  type PlanControlResult,
+  type PlanQueryInput,
+  type PlanQueryResult,
   type ProtocolRange,
   type RequestFrame,
   type ResponseFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
+  type SessionCwdRelocateInput,
+  type SessionRecapGenerateInput,
+  type SessionRecapGenerateResult,
+  type SessionUpdateResult,
   type TurnQueryInput,
+  type TurnRegenerateInput,
   type TurnResumePlan,
   type TurnResumeQueryInput,
   type TurnResumeStartInput,
@@ -125,6 +145,34 @@ export interface RuntimeHostConnection {
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  queryContextDiagnostics(
+    input: ContextDiagnosticsQueryInput,
+    timeoutMs?: number,
+  ): Promise<ContextDiagnosticsResult>;
+  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult>;
+  relocateSessionCwd(
+    input: SessionCwdRelocateInput,
+    timeoutMs?: number,
+  ): Promise<SessionUpdateResult>;
+  generateSessionRecap(
+    input: SessionRecapGenerateInput,
+    timeoutMs?: number,
+  ): Promise<SessionRecapGenerateResult>;
+  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult>;
+  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult>;
+  queryDeepResearch(
+    input: DeepResearchQueryInput,
+    timeoutMs?: number,
+  ): Promise<DeepResearchQueryResult>;
+  queryDailyReview(
+    input: DailyReviewQueryInput,
+    timeoutMs?: number,
+  ): Promise<DailyReviewQueryResult>;
+  mutateDailyReview(
+    input: DailyReviewMutateInput,
+    timeoutMs?: number,
+  ): Promise<DailyReviewMutateResult>;
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
   startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
@@ -300,6 +348,64 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.request('turn.stop', input, timeoutMs);
   }
 
+  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot> {
+    return this.request('turn.regenerate', input, timeoutMs);
+  }
+
+  queryContextDiagnostics(
+    input: ContextDiagnosticsQueryInput,
+    timeoutMs?: number,
+  ): Promise<ContextDiagnosticsResult> {
+    return this.request('context.diagnostics.query', input, timeoutMs);
+  }
+
+  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult> {
+    return this.request('context.compact', input, timeoutMs);
+  }
+
+  relocateSessionCwd(
+    input: SessionCwdRelocateInput,
+    timeoutMs?: number,
+  ): Promise<SessionUpdateResult> {
+    return this.request('session.cwd.relocate', input, timeoutMs);
+  }
+
+  generateSessionRecap(
+    input: SessionRecapGenerateInput,
+    timeoutMs?: number,
+  ): Promise<SessionRecapGenerateResult> {
+    return this.request('session.recap.generate', input, timeoutMs);
+  }
+
+  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult> {
+    return this.request('plan.query', input, timeoutMs);
+  }
+
+  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
+    return this.request('plan.control', input, timeoutMs);
+  }
+
+  queryDeepResearch(
+    input: DeepResearchQueryInput,
+    timeoutMs?: number,
+  ): Promise<DeepResearchQueryResult> {
+    return this.request('deep-research.query', input, timeoutMs);
+  }
+
+  queryDailyReview(
+    input: DailyReviewQueryInput,
+    timeoutMs?: number,
+  ): Promise<DailyReviewQueryResult> {
+    return this.request('daily-review.query', input, timeoutMs);
+  }
+
+  mutateDailyReview(
+    input: DailyReviewMutateInput,
+    timeoutMs?: number,
+  ): Promise<DailyReviewMutateResult> {
+    return this.request('daily-review.mutate', input, timeoutMs);
+  }
+
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
     return this.request('turn.resume.query', input, timeoutMs);
   }
@@ -332,8 +438,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           'Runtime Host returned a duplicate subscription identity',
         );
       }
-      const subscription = new ClientSessionSubscription(result, () =>
-        this.#closeSessionSubscription(result.subscriptionId),
+      const subscription = new ClientSessionSubscription(
+        result,
+        () => this.#closeSessionSubscription(result.subscriptionId),
+        (query) => this.request('session.transcript.query', query, timeoutMs),
       );
       this.#subscriptions.set(result.subscriptionId, subscription);
       return subscription;
@@ -635,12 +743,20 @@ export async function connectResolvedRuntimeHost(
     transport.destroy(handshakeTimeoutError);
   }, handshakeBudget);
   try {
+    const staleCompatibility = registration.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH;
+    const helloProtocol = staleCompatibility
+      ? {
+          min: Math.min(Number.MAX_SAFE_INTEGER, registration.protocolMax + 1),
+          max: Math.min(Number.MAX_SAFE_INTEGER, registration.protocolMax + 1),
+        }
+      : input.protocol;
     await transport.write({
       kind: 'hello',
       clientInstanceId: input.clientInstanceId,
       surface: input.surface,
-      protocolMin: input.protocol.min,
-      protocolMax: input.protocol.max,
+      protocolMin: helloProtocol.min,
+      protocolMax: helloProtocol.max,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
     });
     if (remainingTimeout(handshakeDeadline.at) === undefined) {
       throw handshakeDeadline.exhaustsElection
@@ -663,6 +779,9 @@ export async function connectResolvedRuntimeHost(
       return { kind: 'unavailable', reason: 'epoch_mismatch', registration };
     }
     if (handshake.kind === 'accepted') {
+      if (staleCompatibility || handshake.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+        throw new Error('Runtime Host accepted an incompatible schema epoch');
+      }
       if (
         handshake.selectedProtocol < input.protocol.min ||
         handshake.selectedProtocol > input.protocol.max ||
@@ -740,6 +859,8 @@ function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number |
     case 'agent.graph.stop':
     case 'connection.models.fetch':
     case 'connection.test.run':
+    case 'daily-review.mutate':
+    case 'session.recap.generate':
       // Completion effects own their deadlines and may wait for admitted work to settle.
       return undefined;
     default:

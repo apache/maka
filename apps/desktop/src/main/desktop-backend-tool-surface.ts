@@ -14,6 +14,7 @@ import {
 import {
   AGENT_TOOL_GROUP_ID,
   buildCancelPlanTool,
+  isDeepResearchToolAllowed,
   buildMcpTools,
   buildSubmitPlanTool,
   buildToolsForAgentDefinition,
@@ -247,21 +248,6 @@ export async function resolveDesktopBackendToolSurface(
     skillHost: productToolSurface.hostCapabilities,
     admitsAgentChildren: productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID),
   };
-}
-
-const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
-  'AskUserQuestion',
-  'Read',
-  'ArchiveRead',
-  'Glob',
-  'Grep',
-  'WebSearch',
-]);
-
-function isDeepResearchToolAllowed(tool: MakaTool): boolean {
-  return (
-    DEEP_RESEARCH_ALLOWED_TOOL_NAMES.has(tool.name) || tool.name.startsWith('deep_research_')
-  );
 }
 
 function modelSupportsVision(connection: LlmConnection, model: string): boolean {

@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react';
 import type {
+  ChatDefaultPermissionMode,
   LlmConnection,
   ProviderType,
   SettingsSection,
@@ -51,11 +52,13 @@ export function AppShellOverlays(props: {
   setUiLocalePreference: (preference: UiLocalePreference) => void;
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   setUserLabel(userLabel: string): void;
+  setDefaultPermissionMode(mode: ChatDefaultPermissionMode): void;
   settingsRequestedSection: SettingsSection | undefined;
   settingsProviderCatalogOpen: boolean;
   settingsConnectionDetailSlug: string | undefined;
   settingsCreateProviderType: ProviderType | undefined;
   onOpenDailyReview(): void;
+  onOpenKeyboardHelp(): void;
   onOpenSettingsSession(sessionId: string): void;
   helpOpen: boolean;
   closeHelp(): void;
@@ -91,6 +94,7 @@ export function AppShellOverlays(props: {
     setUiLocalePreference,
     uiLocaleUpdateGate,
     setUserLabel,
+    setDefaultPermissionMode,
     themePalette,
     themePref,
   } = props;
@@ -114,11 +118,13 @@ export function AppShellOverlays(props: {
             onUiLocalePreferenceChange={setUiLocalePreference}
             uiLocaleUpdateGate={uiLocaleUpdateGate}
             onUserLabelChange={setUserLabel}
+            onDefaultPermissionModeChange={setDefaultPermissionMode}
             requestedSection={settingsRequestedSection}
             openProviderCatalog={settingsProviderCatalogOpen}
             initialConnectionSlug={settingsConnectionDetailSlug}
             initialCreateProviderType={settingsCreateProviderType}
             onOpenDailyReview={props.onOpenDailyReview}
+            onOpenKeyboardHelp={props.onOpenKeyboardHelp}
             onOpenSession={props.onOpenSettingsSession}
           />
         </Suspense>

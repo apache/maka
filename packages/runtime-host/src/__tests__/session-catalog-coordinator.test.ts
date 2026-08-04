@@ -219,16 +219,8 @@ test('creation rejects reserved execution labels before claiming a Session ident
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('configuration update rejects Plan mode before invoking Runtime authority', async () => {
-  let transitionAttempts = 0;
-  const fixture = createFixture({
-    manager: {
-      transitionSessionConfiguration: async () => {
-        transitionAttempts += 1;
-        assert.fail('Plan mode must be rejected before Runtime transition');
-      },
-    },
-  });
+test('configuration update admits Plan mode through Runtime authority', async () => {
+  const fixture = createFixture();
   const input = configurationInput(fixture.sessionId, fixture.revision());
 
   const outcome = await fixture.coordinator.handlers['session.configuration.update'](
@@ -242,14 +234,14 @@ test('configuration update rejects Plan mode before invoking Runtime authority',
     context,
   );
 
-  assert.deepEqual(outcome, {
-    ok: false,
-    error: {
-      code: 'operation_unavailable',
-      message: 'Plan sessions are not yet supported by Runtime Host',
-    },
-  });
-  assert.equal(transitionAttempts, 0);
+  if (!outcome.ok || outcome.result.kind !== 'committed') {
+    assert.fail('Plan mode configuration did not commit');
+  }
+  if ('kind' in outcome.result.session) {
+    assert.fail('Plan mode configuration returned an unsupported Session projection');
+  }
+  assert.equal(outcome.result.session.collaborationMode, 'plan');
+  assert.equal(fixture.header().collaborationMode, 'plan');
   assert.equal(fixture.drainRequests(), 0);
 });
 
@@ -299,6 +291,104 @@ test('creation fingerprints and persists the canonical cwd behind a symlink', as
   }
 });
 
+test('cwd relocation canonicalizes once and commits through Runtime authority', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-relocate-cwd-'));
+  const target = join(root, 'target');
+  const link = join(root, 'link');
+  await mkdir(target);
+  await symlink(target, link, 'dir');
+  try {
+    const fixture = createFixture();
+    const expectedRevision = fixture.revision();
+    const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision,
+        cwd: link,
+      },
+      context,
+    );
+
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || outcome.result.kind !== 'committed') return;
+    if ('kind' in outcome.result.session) {
+      assert.fail('Relocated Session must remain wire-representable');
+    }
+    assert.equal(outcome.result.session.cwd, await realpath(target));
+    assert.equal(fixture.header().cwd, await realpath(target));
+    assert.equal(fixture.revision(), expectedRevision + 1);
+    assert.equal(fixture.drainRequests(), 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('cwd relocation reports a stale Session revision without mutating Runtime state', async () => {
+  let relocationAttempts = 0;
+  const fixture = createFixture({
+    manager: {
+      relocateSessionWorkspace: async () => {
+        relocationAttempts += 1;
+        assert.fail('Stale relocation must not enter Runtime authority');
+      },
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision() - 1,
+      cwd: process.cwd(),
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    result: {
+      kind: 'revision_conflict',
+      expectedRevision: fixture.revision() - 1,
+      actualRevision: fixture.revision(),
+    },
+  });
+  assert.equal(relocationAttempts, 0);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('same-cwd relocation still enters Runtime eligibility authority', async () => {
+  let relocationAttempts = 0;
+  const cwd = await realpath(process.cwd());
+  const fixture = createFixture({
+    cwd,
+    manager: {
+      relocateSessionWorkspace: async () => {
+        relocationAttempts += 1;
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session workspace cannot change while a Turn is active',
+        );
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      cwd,
+    },
+    context,
+  );
+
+  assert.equal(relocationAttempts, 1);
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'session_busy',
+      message: 'Session workspace cannot change while a Turn is active',
+    },
+  });
+});
+
 test('catalog paging stops before the encoded 48 KiB result boundary', async () => {
   const records = Array.from({ length: 32 }, (_, index) => {
     const header = {
@@ -341,6 +431,7 @@ test('catalog paging stops before the encoded 48 KiB result boundary', async () 
 function createFixture(
   options: {
     readonly labels?: readonly string[];
+    readonly cwd?: string;
     readonly stores?: Partial<CatalogStores>;
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly continuity?: Partial<SessionContinuity>;
@@ -349,6 +440,7 @@ function createFixture(
   const sessionId = 'session-1';
   let revision = 3;
   let header = sessionHeader(sessionId, options.labels ?? ['user-label']);
+  if (options.cwd) header = { ...header, cwd: options.cwd };
   let drains = 0;
 
   const stores: CatalogStores = {
@@ -386,6 +478,11 @@ function createFixture(
       revision += 1;
       return headerSnapshot(header, revision);
     },
+    relocateSessionWorkspace: async (_sessionId, input) => {
+      header = { ...header, cwd: input.cwd };
+      revision += 1;
+      return headerSnapshot(header, revision);
+    },
     ...options.manager,
   };
   const continuity: SessionContinuity = {
@@ -406,6 +503,7 @@ function createFixture(
     coordinator,
     sessionId,
     revision: () => revision,
+    header: () => header,
     drainRequests: () => drains,
   };
 }

@@ -10,6 +10,7 @@ import type {
 } from '@maka/core';
 import { isSessionInlineRun } from '@maka/core';
 import type {
+  ActiveInteractionRequestEvent,
   CompleteEvent,
   QueueEnqueueOutcome,
   QueueUpdateEvent,
@@ -133,6 +134,7 @@ export interface RuntimeKernelLike {
     options?: ResumeContinuationOptions,
   ): AsyncIterable<SessionEvent>;
   compactSession(sessionId: string, input?: CompactSessionInput): AsyncIterable<SessionEvent>;
+  preflightContextCompaction(sessionId: string): Promise<void>;
   startChildTurn(
     sessionId: string,
     input: ChildAgentTurnInput,
@@ -145,9 +147,7 @@ export interface RuntimeKernelLike {
   ): AsyncIterable<SessionEvent>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
-  listActiveSandboxBoundaryRequests?(
-    sessionId: string,
-  ): Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>>;
+  listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
   /** Queue a user message for mid-turn injection at the next step boundary. */
   steer(sessionId: string, text: string): QueueEnqueueOutcome;
@@ -180,6 +180,17 @@ export class SessionQuiescentMutationBusyError extends Error {
 
   constructor(readonly sessionIds: readonly string[]) {
     super('Session mutation cannot start while an execution claim is active');
+  }
+}
+
+export class RuntimeContextCompactError extends Error {
+  readonly name = 'RuntimeContextCompactError';
+
+  constructor(
+    readonly code: 'operation_unavailable' | 'session_busy',
+    message: string,
+  ) {
+    super(message);
   }
 }
 
@@ -381,11 +392,11 @@ interface BackendInvalidationState {
   failure?: Error;
 }
 
-interface SandboxBoundaryRequestOwner {
+interface InteractionRequestOwner {
   sessionId: string;
   turnId: string;
   generation: number;
-  request: Extract<SessionEvent, { type: 'sandbox_boundary_request' }>;
+  request: ActiveInteractionRequestEvent;
 }
 
 export class RuntimeKernel implements RuntimeKernelLike {
@@ -407,7 +418,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private readonly pendingContinuationSessions = new Set<string>();
   private readonly steeringBySession = new Map<string, SessionSteeringState>();
   private readonly backendInvalidations = new Map<string, BackendInvalidationState>();
-  private readonly sandboxBoundaryRequestOwners = new Map<string, SandboxBoundaryRequestOwner>();
+  private readonly interactionRequestOwners = new Map<string, InteractionRequestOwner>();
   private nextBackendGeneration = 0;
   private readonly interactionRuns = new Map<AgentRun, RuntimeInteractionRunBinding>();
 
@@ -933,6 +944,23 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
   }
 
+  async preflightContextCompaction(sessionId: string): Promise<void> {
+    const execution = this.takeExecutionClaim(sessionId);
+    try {
+      await this.enterExecutionClaim(execution);
+      if (this.hasActiveRuns(sessionId)) {
+        throw new RuntimeContextCompactError(
+          'session_busy',
+          'Cannot compact while a Turn is running',
+        );
+      }
+      const header = await this.deps.store.readHeader(sessionId);
+      await this.requireContextCompactionBackend(sessionId, header, execution);
+    } finally {
+      this.releaseExecutionClaim(execution);
+    }
+  }
+
   private async *compactSessionClaimed(
     sessionId: string,
     input: CompactSessionInput,
@@ -946,10 +974,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
       throw new Error('Runtime compaction minRecentTurns must be a non-negative safe integer');
     }
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
-      throw new Error('Runtime compaction requires AgentRunStore and RuntimeEventStore');
+      throw new RuntimeContextCompactError(
+        'operation_unavailable',
+        'Runtime compaction requires execution stores',
+      );
     }
     if (this.hasActiveRuns(sessionId)) {
-      throw new Error('Cannot compact while a turn is running; wait for the turn to finish.');
+      throw new RuntimeContextCompactError(
+        'session_busy',
+        'Cannot compact while a Turn is running',
+      );
     }
 
     const header = await this.deps.store.readHeader(sessionId);
@@ -958,6 +992,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       sessionId,
       header,
       userInput: { turnId, text: '' },
+      rootExecutionKind: 'context_compact',
+      ...(input.hostedRoot ? { runId: input.hostedRoot.runId } : {}),
       store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
@@ -989,22 +1025,29 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
 
     this.attachExecutionClaim(execution, run);
+    const owners = this.createRunOwnerScope(run, execution);
     let begin: Awaited<ReturnType<typeof run.beginOperation>>;
     try {
+      if (input.hostedRoot) {
+        owners.bindMessage(this.deps.messageAuthority, {
+          sessionId,
+          turnId,
+          runId: run.runId,
+        });
+      }
       begin = await this.runBackendActivation(() => run.beginOperation());
+      await input.hostedRoot?.onRunStarted?.();
       this.settleReservedExecutionClaim(execution, run, { ok: true });
     } catch (error) {
-      this.settleReservedExecutionClaim(execution, run, { ok: false, error });
-      await run.recordFailure(error);
-      await this.finalizeExecutionClaimRun(execution, run, () => run.finalize());
-      if (run.isStopped() && isExecutionCancellation(error, execution.cancellation)) return;
-      throw error;
+      await this.finalizeFailedRunStart(owners, run, execution, error);
+      return;
     }
 
     try {
       if (run.isStopped()) return;
-      if (!begin.backend.compactHistory)
-        throw new Error(`Backend ${header.backend} does not support runtime compaction`);
+      if (!begin.backend.compactHistory) {
+        throw new Error(`Backend ${header.backend} changed runtime compaction capability`);
+      }
       this.assertRunCanDispatch(run, begin.backend);
       const result = await begin.backend.compactHistory({
         turnId: run.turnId,
@@ -1066,8 +1109,28 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await run.recordFailure(error);
       throw error;
     } finally {
-      await this.finalizeExecutionClaimRun(execution, run, () => run.finalize());
+      const failures = new FailureCollector();
+      await failures.capture(() => owners.finalize());
+      await failures.capture(() => owners.releaseMessage());
+      failures.throwIfAny(`Runtime compaction cleanup failed for ${run.runId}`);
     }
+  }
+
+  private async requireContextCompactionBackend(
+    sessionId: string,
+    header: SessionHeader,
+    execution: PendingExecutionClaim,
+  ): Promise<BackendGeneration> {
+    const active = await this.runBackendActivation(() =>
+      this.ensureActive(sessionId, header, execution),
+    );
+    if (!active.backend.compactHistory) {
+      throw new RuntimeContextCompactError(
+        'operation_unavailable',
+        `Backend ${header.backend} does not support runtime compaction`,
+      );
+    }
+    return active;
   }
 
   async *startChildTurn(
@@ -1547,7 +1610,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           requireTerminalWrite: Boolean(this.deps.runtimeEventStore),
           allowInteractionResume: await interactionResumeAllowed(interactionRun, sessionEvent),
         });
-        this.observeSandboxBoundaryEvent(sessionId, begin.backend, sessionEvent);
+        this.observeInteractionEvent(sessionId, begin.backend, sessionEvent);
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
@@ -1650,7 +1713,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           },
         });
       } finally {
-        this.clearSandboxBoundaryRequestOwners(sessionId, run.turnId);
+        this.clearInteractionRequestOwners(sessionId, run.turnId);
         releaseExecutionAbort();
       }
     }
@@ -1721,7 +1784,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           requireTerminalWrite: true,
           allowInteractionResume: await interactionResumeAllowed(interactionRun, sessionEvent),
         });
-        this.observeSandboxBoundaryEvent(continuation.sessionId, begin.backend, sessionEvent);
+        this.observeInteractionEvent(continuation.sessionId, begin.backend, sessionEvent);
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
@@ -1818,7 +1881,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           releaseOwner: () => owners.releaseMessage(),
         });
       } finally {
-        this.clearSandboxBoundaryRequestOwners(continuation.sessionId, run.turnId);
+        this.clearInteractionRequestOwners(continuation.sessionId, run.turnId);
         releaseExecutionAbort();
       }
     }
@@ -2219,7 +2282,26 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await this.appendStopProjection(sessionId, operation.abortNote);
       operation.abortNoteProjected = true;
     }
+    // The Session projection above now reads as aborted. The ledger has to say
+    // the same thing before this stop reports success: a Run left non-terminal
+    // here stays that way, because the stream that would have finalized it is
+    // exactly the one the stop could not wake.
+    //
+    // Embedded owners only. A Hosted Run's terminal fact belongs to the Host's
+    // own terminal authority (#1359, #1996), which also parks provider-
+    // indeterminate Runs a stop must not resolve on its behalf.
     for (const target of stoppedRuns.values()) {
+      if (!this.deps.interactionAuthority) {
+        try {
+          await target.run?.settleStopTerminal();
+        } catch (error) {
+          // Leave the target unfinished so the operation stays pending and a
+          // retried stop settles it again, the same way a failed projection
+          // write is retried above.
+          failures.add(error);
+          continue;
+        }
+      }
       target.run?.completeStop();
       target.stopCompleted = true;
     }
@@ -2263,9 +2345,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     sessionId: string,
     response: SandboxBoundaryResponse,
   ): Promise<void> {
-    const key = sandboxBoundaryOwnerKey(sessionId, response.requestId);
-    const owner = this.sandboxBoundaryRequestOwners.get(key);
-    if (!owner) throw new Error(`No pending sandbox boundary request ${response.requestId}`);
+    const key = interactionOwnerKey(sessionId, response.requestId);
+    const owner = this.interactionRequestOwners.get(key);
+    if (owner?.request.type !== 'sandbox_boundary_request') {
+      throw new Error(`No pending sandbox boundary request ${response.requestId}`);
+    }
     const active = this.backendGenerations.get(owner.generation);
     if (
       !active ||
@@ -2273,16 +2357,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
       active.phase === 'terminated' ||
       active.phase === 'failed'
     ) {
-      this.sandboxBoundaryRequestOwners.delete(key);
+      this.interactionRequestOwners.delete(key);
       throw new Error(`Sandbox boundary request owner is unavailable: ${response.requestId}`);
     }
     await active.backend.respondToSandboxBoundary(response);
   }
 
-  listActiveSandboxBoundaryRequests(
-    sessionId: string,
-  ): Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>> {
-    return [...this.sandboxBoundaryRequestOwners.values()]
+  listActiveInteractions(sessionId: string): ActiveInteractionRequestEvent[] {
+    return [...this.interactionRequestOwners.values()]
       .filter((owner) => owner.sessionId === sessionId)
       .sort((left, right) => left.request.ts - right.request.ts)
       .map((owner) => owner.request);
@@ -2526,20 +2608,30 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
-  private observeSandboxBoundaryEvent(
+  /**
+   * Track every request a session can park on until its settlement ack lands,
+   * so a surface that was not mounted when the request streamed by can still
+   * read it back and render the prompt (#2072).
+   */
+  private observeInteractionEvent(
     sessionId: string,
     backend: AgentBackend,
     event: SessionEvent,
   ): void {
     if (
       event.type !== 'sandbox_boundary_request' &&
-      event.type !== 'sandbox_boundary_decision_ack'
+      event.type !== 'user_question_request' &&
+      event.type !== 'sandbox_boundary_decision_ack' &&
+      event.type !== 'user_question_answer_ack'
     ) {
       return;
     }
-    const key = sandboxBoundaryOwnerKey(sessionId, event.requestId);
-    if (event.type === 'sandbox_boundary_decision_ack') {
-      this.sandboxBoundaryRequestOwners.delete(key);
+    const key = interactionOwnerKey(sessionId, event.requestId);
+    if (
+      event.type === 'sandbox_boundary_decision_ack' ||
+      event.type === 'user_question_answer_ack'
+    ) {
+      this.interactionRequestOwners.delete(key);
       return;
     }
     const generation = [...this.backendGenerations.values()].find(
@@ -2550,19 +2642,19 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
     if (!generation) {
       throw new RuntimeInteractionInvariantError(
-        `Sandbox boundary request ${event.requestId} has no active backend owner`,
+        `Interaction request ${event.requestId} has no active backend owner`,
       );
     }
-    const existing = this.sandboxBoundaryRequestOwners.get(key);
+    const existing = this.interactionRequestOwners.get(key);
     if (
       existing &&
       (existing.generation !== generation.generation || existing.turnId !== event.turnId)
     ) {
       throw new RuntimeInteractionInvariantError(
-        `Sandbox boundary request ${event.requestId} has conflicting owners`,
+        `Interaction request ${event.requestId} has conflicting owners`,
       );
     }
-    this.sandboxBoundaryRequestOwners.set(key, {
+    this.interactionRequestOwners.set(key, {
       sessionId,
       turnId: event.turnId,
       generation: generation.generation,
@@ -2570,10 +2662,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
   }
 
-  private clearSandboxBoundaryRequestOwners(sessionId: string, turnId: string): void {
-    for (const [key, owner] of this.sandboxBoundaryRequestOwners) {
+  private clearInteractionRequestOwners(sessionId: string, turnId: string): void {
+    for (const [key, owner] of this.interactionRequestOwners) {
       if (owner.sessionId === sessionId && owner.turnId === turnId) {
-        this.sandboxBoundaryRequestOwners.delete(key);
+        this.interactionRequestOwners.delete(key);
       }
     }
   }
@@ -3767,7 +3859,7 @@ class FailureCollector {
   }
 }
 
-function sandboxBoundaryOwnerKey(sessionId: string, requestId: string): string {
+function interactionOwnerKey(sessionId: string, requestId: string): string {
   return `${sessionId}\0${requestId}`;
 }
 

@@ -233,7 +233,7 @@ export function ExploreAgentPreview(props: {
           </div>
         )}
         {continuationText.length > 0 && (
-          <div className={previewVariants({ part: 'agent-actions' })} aria-label={copy.followupActionsAriaLabel}>
+          <div className={previewVariants({ part: 'agent-actions' })} role="group" aria-label={copy.followupActionsAriaLabel}>
             <UiButton
               variant="ghost"
               size="sm"

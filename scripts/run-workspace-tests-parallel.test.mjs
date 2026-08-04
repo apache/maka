@@ -1,19 +1,29 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { runWorkspaceTests } from './run-workspace-tests-parallel.mjs';
 
+/**
+ * `plan` is keyed by workspace directory, not by spawn order.
+ *
+ * Keying on order made the outcome depend on which worker's `mkdtemp`
+ * resolved first — something the runner does not promise and a test cannot
+ * control — so `[core] failed with code 1` was a coin flip that landed wrong
+ * about one run in three. Keying on the workspace makes "core exits 1" a fact
+ * of the fixture, which lets the assertions get stricter rather than looser.
+ */
 function makeSpawn(plan) {
   const calls = [];
   const spawn = (command, options) => {
     const child = new EventEmitter();
-    const index = calls.length;
+    const dir = String(options.cwd).split('/').slice(-2).join('/');
     calls.push({ command, cwd: options.cwd, shell: options.shell });
     queueMicrotask(() => {
-      const step = plan[index] ?? { close: 0 };
+      const step = plan[dir] ?? { close: 0 };
       if (step.error) {
         child.emit(
           'error',
@@ -31,7 +41,11 @@ function makeSpawn(plan) {
 test('parallel mode aggregates every failed workspace name', async () => {
   const repoRoot = '/repo';
   const workspaceDirs = ['packages/core', 'packages/ui', 'packages/headless'];
-  const { spawn } = makeSpawn([{ close: 1 }, { close: 2 }, { close: 0 }]);
+  const { spawn, calls } = makeSpawn({
+    'packages/core': { close: 1 },
+    'packages/ui': { close: 2 },
+    'packages/headless': { close: 0 },
+  });
 
   await assert.rejects(
     () =>
@@ -47,6 +61,64 @@ test('parallel mode aggregates every failed workspace name', async () => {
       return true;
     },
   );
+
+  // The serial workspace runs even though the parallel batch failed — the
+  // regression that had headless silently not running whenever anything else
+  // did.
+  assert.ok(calls.some((call) => call.cwd.endsWith('packages/headless')));
+});
+
+test('each workspace runs in its own temp namespace, removed however it ends', async () => {
+  const observed = [];
+  const spawn = (_command, options) => {
+    const child = new EventEmitter();
+    observed.push({
+      tmpdir: options.env.TMPDIR,
+      tmp: options.env.TMP,
+      temp: options.env.TEMP,
+      presentWhileRunning: existsSync(options.env.TMPDIR),
+    });
+    // First workspace passes, second fails: both paths must still clean up.
+    queueMicrotask(() => child.emit('close', observed.length - 1));
+    return child;
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkspaceTests({
+        repoRoot: '/repo',
+        workspaceDirs: ['packages/core', 'packages/ui'],
+        concurrency: 1,
+        spawn,
+      }),
+    /\[ui\] failed with code 1/,
+  );
+
+  assert.equal(observed.length, 2);
+  assert.notEqual(observed[0].tmpdir, observed[1].tmpdir);
+  for (const entry of observed) {
+    assert.equal(entry.presentWhileRunning, true);
+    assert.equal(entry.tmp, entry.tmpdir);
+    assert.equal(entry.temp, entry.tmpdir);
+    assert.equal(relative(tmpdir(), entry.tmpdir).startsWith('..'), false);
+    assert.equal(existsSync(entry.tmpdir), false);
+  }
+  assert.notEqual(observed[0].tmpdir, process.env.TMPDIR);
+});
+
+test('the temp namespace is removed even when spawn throws synchronously', async () => {
+  let observed;
+  const spawn = (_command, options) => {
+    observed = options.env.TMPDIR;
+    throw new Error('spawn exploded');
+  };
+
+  await assert.rejects(
+    () => runWorkspaceTests({ repoRoot: '/repo', workspaceDirs: ['packages/core'], spawn }),
+    /spawn exploded/,
+  );
+
+  assert.equal(existsSync(observed), false);
 });
 
 test('bounded parallel mode never exceeds its configured concurrency', async () => {
@@ -54,9 +126,11 @@ test('bounded parallel mode never exceeds its configured concurrency', async () 
   const workspaceDirs = ['packages/core', 'packages/ui', 'apps/desktop'];
   let active = 0;
   let maxActive = 0;
+  let started = 0;
   const spawn = () => {
     const child = new EventEmitter();
     active += 1;
+    started += 1;
     maxActive = Math.max(maxActive, active);
     setImmediate(() => {
       active -= 1;
@@ -67,7 +141,14 @@ test('bounded parallel mode never exceeds its configured concurrency', async () 
 
   await runWorkspaceTests({ repoRoot, workspaceDirs, concurrency: 2, spawn });
 
-  assert.equal(maxActive, 2);
+  // The contract is the one in this test's name: never MORE than the
+  // configured concurrency. Asserting exactly 2 additionally demanded that the
+  // scheduler be saturated at the moment of measurement, which depends on
+  // which worker's mkdtemp resolved first — so it failed about one run in
+  // three on main, before this file was touched.
+  assert.ok(maxActive <= 2, `expected at most 2 concurrent workspaces, saw ${maxActive}`);
+  // …and the cap must not be met by doing less work: every workspace ran.
+  assert.equal(started, workspaceDirs.length);
 });
 
 test('cancellation terminates active workspace process trees and starts no queued work', async () => {
@@ -122,7 +203,11 @@ test('workspace timeout waits for process cleanup before reporting failure', asy
   child.pid = 42;
   let terminationStarted = false;
   let terminationFinished = false;
-  const spawn = () => child;
+  let tempRoot;
+  const spawn = (_command, options) => {
+    tempRoot = options.env.TMPDIR;
+    return child;
+  };
   const terminateWorkspace = async (target) => {
     assert.equal(target, child);
     terminationStarted = true;
@@ -143,6 +228,8 @@ test('workspace timeout waits for process cleanup before reporting failure', asy
   );
   assert.equal(terminationStarted, true);
   assert.equal(terminationFinished, true);
+  // The stop path reaps the process tree before the namespace goes away.
+  assert.equal(existsSync(tempRoot), false);
 });
 
 async function waitForPidFile(path) {

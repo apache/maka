@@ -13,8 +13,8 @@ describe('model-metadata vision capability', () => {
     // after it is absent from the table rather than listed as text-only.
     // Resolving absent to "no vision" silently drops the user's attachment and
     // turns an image tool result into a sentence about the model.
-    assert.deepEqual(lookupModelMetadata('anthropic', 'claude-opus-5'), {});
-    assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-5'), true);
+    assert.deepEqual(lookupModelMetadata('anthropic', 'claude-opus-6'), {});
+    assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-6'), true);
     assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-fable-1'), true);
   });
 
@@ -45,9 +45,9 @@ describe('model-metadata vision capability', () => {
     // claude-subscription reaches Anthropic's own models over the same
     // protocol and stores the same bare { id } entries, and it is usually
     // where a new Claude becomes usable first.
-    assert.deepEqual(lookupModelMetadata('claude-subscription', 'claude-opus-5'), {});
+    assert.deepEqual(lookupModelMetadata('claude-subscription', 'claude-opus-6'), {});
     assert.equal(
-      resolveModelVisionSupport('claude-subscription', undefined, 'claude-opus-5'),
+      resolveModelVisionSupport('claude-subscription', undefined, 'claude-opus-6'),
       true,
     );
     assert.equal(
@@ -65,7 +65,7 @@ describe('model-metadata vision capability', () => {
       'kimi-coding-plan',
     ] satisfies ProviderType[]) {
       assert.equal(
-        resolveModelVisionSupport(providerType, undefined, 'claude-opus-5'),
+        resolveModelVisionSupport(providerType, undefined, 'claude-opus-6'),
         false,
         providerType,
       );
@@ -74,21 +74,27 @@ describe('model-metadata vision capability', () => {
   });
 
   it('yields to what a connection reports, in both directions', () => {
-    const denied: ModelInfo[] = [{ id: 'claude-opus-5', capabilities: { vision: false } }];
-    assert.equal(resolveModelVisionSupport('anthropic', denied, 'claude-opus-5'), false);
+    const denied: ModelInfo[] = [{ id: 'claude-opus-6', capabilities: { vision: false } }];
+    assert.equal(resolveModelVisionSupport('anthropic', denied, 'claude-opus-6'), false);
     const granted: ModelInfo[] = [{ id: 'some-unlisted-model', capabilities: { vision: true } }];
     assert.equal(resolveModelVisionSupport('openai', granted, 'some-unlisted-model'), true);
   });
 
-  it('publishes the Kimi K3 Coding Plan limits and sole supported effort', () => {
+  it('publishes the Kimi Coding Plan K3 limits and effort levels from models.dev', () => {
     assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3'), {
       displayName: 'Kimi K3',
       lifecycle: 'active',
-      docsUrl: 'https://www.kimi.com/code/docs/en/kimi-code/models.html',
+      docsUrl: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
       contextWindow: 1_048_576,
       maxOutputTokens: 131_072,
-      capabilities: { reasoning: true, functionCalling: true, vision: true },
-      thinkingOptions: { efforts: ['max'] },
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    });
+    // k3-256k joined the snapshot with the same effort set; the wire contract
+    // test then requires every declared level to actually wire.
+    assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3-256k').thinkingOptions, {
+      efforts: ['low', 'high', 'max'],
     });
   });
 
@@ -108,15 +114,11 @@ describe('model-metadata vision capability', () => {
     assert.equal(kimi.maxOutputTokens, 32_000);
   });
 
-  it('reuses MiniMax snapshot facts for the Coding Plan access path', () => {
-    assert.deepEqual(
-      lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3'),
-      lookupModelMetadata('MiniMax', 'MiniMax-M3'),
-    );
-    assert.equal(
-      lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3').capabilities?.vision,
-      true,
-    );
+  it('publishes MiniMax Coding Plan snapshot facts with its own access-path docs', () => {
+    const metadata = lookupModelMetadata('minimax-coding-plan', 'MiniMax-M3');
+    assert.equal(metadata.capabilities?.vision, true);
+    assert.equal(metadata.thinkingOptions?.toggle, true);
+    assert.equal(metadata.docsUrl, 'https://platform.minimax.io/docs/token-plan/intro');
   });
 
   it('uses synchronized facts while preserving access-path overrides', () => {
@@ -141,7 +143,7 @@ describe('model-metadata vision capability', () => {
     assert.equal(lookupModelMetadata('openai', 'gpt-4o').capabilities?.vision, true);
     assert.equal(lookupModelMetadata('openai', 'gpt-5.5').capabilities?.vision, true);
     assert.equal(lookupModelMetadata('google', 'gemini-2.5-pro').capabilities?.vision, true);
-    assert.equal(lookupModelMetadata('zai-coding-plan', 'glm-5v-turbo').capabilities?.vision, true);
+    assert.equal(lookupModelMetadata('zai', 'glm-5v-turbo').capabilities?.vision, true);
     assert.equal(lookupModelMetadata('moonshot', 'kimi-k2.6').capabilities?.vision, true);
     assert.equal(
       lookupModelMetadata('kimi-coding-plan', 'kimi-for-coding').capabilities?.vision,
@@ -216,14 +218,8 @@ describe('resolveModelVisionSupport', () => {
   });
 
   it('falls back to metadata when the model list is empty or missing', () => {
-    assert.equal(
-      resolveModelVisionSupport('zai-coding-plan' as ProviderType, [], 'glm-5v-turbo'),
-      true,
-    );
-    assert.equal(
-      resolveModelVisionSupport('zai-coding-plan' as ProviderType, undefined, 'glm-5.2'),
-      false,
-    );
+    assert.equal(resolveModelVisionSupport('zai' as ProviderType, [], 'glm-5v-turbo'), true);
+    assert.equal(resolveModelVisionSupport('zai' as ProviderType, undefined, 'glm-5.2'), false);
   });
 });
 

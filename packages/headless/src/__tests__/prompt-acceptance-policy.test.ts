@@ -473,6 +473,27 @@ describe('prompt acceptance policy', () => {
     });
   });
 
+  test('counts a graded budget exhaustion as evidence and an ungraded one as lost coverage', () => {
+    // A timeout the verifier graded is a score, so it belongs in both rates. An
+    // ungraded one is the case the partition already handled: eligible, but
+    // nothing to score, so it drags coverage down and blocks calibration.
+    const summary = summarizePromptAcceptancePartition(
+      [
+        budgetExhausted('task-a', { passed: true, scored: true }),
+        budgetExhausted('task-b', { passed: false, scored: true }),
+        budgetExhausted('task-c'),
+      ],
+      ['task-a', 'task-b', 'task-c'],
+    );
+
+    assert.equal(summary.eligible, 3);
+    assert.equal(summary.scored, 2);
+    assert.equal(summary.passed, 1);
+    assert.equal(summary.passEligibleRate, 1 / 3);
+    assert.equal(summary.coverageRate, 2 / 3);
+    assert.deepEqual(summary.unscoredTaskIds, ['task-c']);
+  });
+
   test('discards flat held-in changes without requiring a positive noise margin', () => {
     const decision = decidePromptAcceptance({
       ...baseDecisionInput(),
@@ -778,6 +799,30 @@ function infraFailed(taskId: string): FixedPromptTaskWalEvent {
     eligible: false,
     errorClass: 'infra_error',
     error: 'container crashed',
+  };
+}
+
+function budgetExhausted(
+  taskId: string,
+  outcome: { passed?: boolean; scored?: boolean } = {},
+): FixedPromptTaskWalEvent {
+  const scored = outcome.scored ?? false;
+  return {
+    schemaVersion: 1,
+    type: 'task_budget_exhausted',
+    id: `event-${taskId}`,
+    ts: 1,
+    runId: 'run-1',
+    roundId: 'round-1',
+    taskId,
+    status: 'budget_exhausted',
+    passed: outcome.passed ?? false,
+    scored,
+    eligible: true,
+    errorClass: 'budget_exhausted',
+    error: 'agent budget exhausted',
+    expectedPromptHash: 'sha256:prompt',
+    ...(scored ? { harbor: { reward: outcome.passed ? 1 : 0 } } : {}),
   };
 }
 

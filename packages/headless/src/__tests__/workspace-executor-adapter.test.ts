@@ -140,6 +140,37 @@ describe('isolatedToolExecutorToWorkspaceExecutor', () => {
     );
   });
 
+  test('refuses host path scope instead of degrading the isolated workspace', async () => {
+    const isolated: IsolatedToolExecutor = {
+      async exec() {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    };
+    const executor = isolatedToolExecutorToWorkspaceExecutor(isolated);
+
+    for (const resolve of [executor.resolveWritablePath, executor.resolveExistingPath]) {
+      await assert.rejects(
+        () =>
+          resolve({
+            cwd: '/workspace',
+            path: '/tmp/out.txt',
+            label: 'Write',
+            scope: 'host',
+          }),
+        /cannot use host path scope/,
+      );
+    }
+    assert.deepEqual(
+      await executor.resolveWritablePath({
+        cwd: '/workspace',
+        path: 'out.txt',
+        label: 'Write',
+        scope: 'workspace',
+      }),
+      { path: '/workspace/out.txt' },
+    );
+  });
+
   test('exposes only supported workspace capabilities at the type boundary', () => {
     const isolated: IsolatedToolExecutor = {
       async exec() {

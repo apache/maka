@@ -19,7 +19,8 @@ import { isDeepResearchSession } from '@maka/core';
 import { Button, ButtonGroup, ChatMessage, ChatMessageList, EmptyState } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
-import { materializeChat, materializeTurns, overlayLiveTurn, overlayShellRunUpdates } from './materialize.js';
+import { materializeChat } from './materialize.js';
+import { useTranscriptProjection } from './use-transcript-projection.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   ModelContinuingIndicator,
@@ -28,7 +29,7 @@ import {
   TurnView,
   type ReadAttachmentBytes,
   type TurnFooterActionMeta,
-  type TurnLineageBadge,
+  type TurnPresentationDeriver,
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
 import { useUiLocale } from './locale-context.js';
@@ -115,13 +116,26 @@ export function ChatView(props: {
   messageLoadRetryPending?: boolean;
   onRetryMessages?(): void;
   /**
-   * PR109d-b: footer actions per turn, keyed by turnId. The renderer
-   * (apps/desktop/src/renderer/main.tsx) computes these from
-   * `deriveTurnFooterActions()` over each turn's `TurnStatus` + lineage
-   * state, then hands them in. Keeps the action policy with the
-   * consumer that has visibility into the full turn list.
+   * Per-turn presentation the consumer derives from the turns this view
+   * projected: footer actions, failed-turn labels, lineage badges, and which
+   * turn may be safely resumed. Action policy and enum-to-Chinese translation
+   * stay outside `@maka/ui`, but they read the SAME turn objects the transcript
+   * projection produced — so a turn the projection did not move can be answered
+   * from the consumer's cache, and the props a memoized `TurnView` compares
+   * keep identity for free rather than being interned afterwards (#2030).
+   *
+   * Called during render, once per projection step. It must be pure and
+   * idempotent for identical turns.
+   *
+   * It must also carry a cache that outlives a single render — the whole point
+   * is answering an unmoved turn from that cache. Purity and idempotence do not
+   * imply it: a deriver rebuilt in the render body satisfies both and silently
+   * gives back every re-render this projection exists to avoid, with no test
+   * turning red. Supply it from a hook that holds the derivation in a ref (see
+   * `useAppShellTurnPresentation`); the one-shot form is for callers with no
+   * render loop at all, such as stories.
    */
-  turnFooterActionsByTurn?: Record<string, ReadonlyArray<TurnFooterActionMeta>>;
+  deriveTurnPresentation?: TurnPresentationDeriver;
   onTurnFooterAction?: (turnId: string, actionId: TurnFooterActionMeta['id']) => void;
   /**
    * Edit-and-resend for a user turn. Desktop owns revision draft creation
@@ -129,20 +143,15 @@ export function ChatView(props: {
    */
   onEditUserMessage?: (turnId: string) => void;
   /**
-   * PR109e-d/e: per-turn metadata for failed banner + lineage badges.
-   * Renderer computes from materialized turns + lineage map + the
-   * generalized error-class mapping (`describeTurnErrorClass()`),
-   * keeping enum-to-Chinese translation outside @maka/ui.
+   * The safe-resume affordance, minus its target: which turn may be resumed is
+   * `deriveTurnPresentation`'s answer, so the shell supplies only the state and
+   * the callback and this view pairs them with that turn.
    */
-  turnFailedReasonLabels?: Record<string, string>;
-  turnFailedRecoveryLabels?: Record<string, string>;
   safeResumeAction?: {
-    turnId: string;
     pending: boolean;
     detail?: string;
     onResume(): void;
   };
-  turnLineageBadgesByTurn?: Record<string, TurnLineageBadge[]>;
   onLineageBadgeClick?: (targetTurnId: string) => void;
   /**
    * Search-result navigation target. The desktop shell owns session
@@ -206,12 +215,8 @@ export function ChatView(props: {
   onAskAboutSelection?(input: { text: string; turnId?: string }): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).chat;
-  // chat + storedTools survive for the empty-state and streaming-bubble
-  // paths; the main message log is now driven by `turns` (per @kenji UI-04
-  // turn-grouping projection).
-  // Persisted history and the live overlay are separate projections. Plain-text
-  // deltas only clone the active turn; settled turn identities stay stable so
-  // memoized TurnViews skip reconciliation on the hottest update path.
+  // chat survives for the empty-state path; the main message log is driven by
+  // `turns` (per @kenji UI-04 turn-grouping projection).
   const drainingMessageIdsKey = JSON.stringify(
     props.liveTurn?.steps.flatMap((step) => step.text ? [step.stepId] : []) ?? [],
   );
@@ -226,18 +231,23 @@ export function ChatView(props: {
     [drainingMessageIds, props.messages],
   );
   const chat = useMemo(() => materializeChat(visibleMessages), [visibleMessages]);
-  const settledTurns = useMemo(
-    () => materializeTurns(visibleMessages),
-    [visibleMessages],
-  );
-  const liveTurns = useMemo(
-    () => overlayLiveTurn(settledTurns, props.liveTurn),
-    [settledTurns, props.liveTurn],
-  );
-  const turns = useMemo(
-    () => overlayShellRunUpdates(liveTurns, props.shellRunUpdates ?? []),
-    [liveTurns, props.shellRunUpdates],
-  );
+  // The projection owns the derived turns, so a turn nothing said anything
+  // about keeps its object identity and its memoized TurnView skips — across
+  // deltas AND across the message refreshes that fire at every step/tool
+  // boundary (#2030).
+  const turns = useTranscriptProjection({
+    sessionId: props.activeSession?.id,
+    messages: visibleMessages,
+    liveTurn: props.liveTurn,
+    shellRunUpdates: props.shellRunUpdates,
+  });
+  // Derived FROM the projected turns, not beside them: the consumer keys its
+  // cache on the turn objects above, so a turn the projection kept hands back
+  // the same footer/badge objects and the memoized TurnView skips on every
+  // prop at once (#2030). Deriving it from `messages` instead made the
+  // transcript a second, independent authority whose outputs then had to be
+  // interned by value to line up again.
+  const turnPresentation = props.deriveTurnPresentation?.(turns);
   // #642 single render path: the in-flight answer is injected into the tail
   // turn's TurnView (the SAME node as the eventual committed turn) instead of a
   // separate streaming <section>, so live→settled is a data-source swap, not an
@@ -246,7 +256,9 @@ export function ChatView(props: {
   // starts, so `materializeTurns` already emits it — with an empty assistant
   // timeline — as `turns[last]`. Only the tail TurnView gets a fresh
   // `liveStreaming` object per delta (→ it alone re-renders); every sibling
-  // gets a stable `undefined` and its memo skips (the plain-text perf path).
+  // gets a stable `undefined` and its memo skips. That the sibling's `turn`
+  // prop is also stable is the projection's tested contract, not a property
+  // inferred from a chain of pure derivations (#2030).
   // A turn is "still live" — and must keep its non-actionable footer placeholder
   // instead of a clickable regenerate/branch — while ANY of text, thinking, OR a
   // tool is in flight. Deriving liveness from streamingText/thinkingText alone
@@ -285,17 +297,34 @@ export function ChatView(props: {
     ),
     [props.messages],
   );
-  const promptRailTurns = useMemo(
-    () =>
-      turns
-        .filter((turn) => (turn.user?.text ?? '').trim().length > 0)
-        .map((turn) => ({
-          turnId: turn.turnId,
-          label: turn.user?.text ?? '',
-          reply: turn.assistant?.text ?? '',
-        })),
-    [turns],
-  );
+  // The rail's entries change only when a turn's persisted prompt/answer text
+  // does, but `turns` gets a new array on every delta. Handing the previous
+  // array back when nothing it reads moved keeps the memoized rail — and its
+  // transcript-wide IntersectionObserver — out of the streaming path. The
+  // per-entry comparison is O(1) per turn because an unaffected turn keeps its
+  // object identity, so its text is the same string reference.
+  const promptRailTurnsRef = useRef<ReadonlyArray<{ turnId: string; label: string; reply: string }>>([]);
+  const promptRailTurns = useMemo(() => {
+    const next = turns
+      .filter((turn) => (turn.user?.text ?? '').trim().length > 0)
+      .map((turn) => ({
+        turnId: turn.turnId,
+        label: turn.user?.text ?? '',
+        reply: turn.assistant?.text ?? '',
+      }));
+    const previous = promptRailTurnsRef.current;
+    if (
+      previous.length === next.length
+      && next.every((entry, index) => {
+        const prior = previous[index]!;
+        return prior.turnId === entry.turnId && prior.label === entry.label && prior.reply === entry.reply;
+      })
+    ) {
+      return previous;
+    }
+    promptRailTurnsRef.current = next;
+    return next;
+  }, [turns]);
   // Stable event wrappers (advanced-use-latest): parent handlers are
   // recreated per render upstream; routing through refs keeps the
   // memoized TurnView's function props identity-stable without
@@ -466,19 +495,19 @@ export function ChatView(props: {
                     <TurnView
                       turn={turn}
                       userLabel={props.userLabel}
-                      footerActions={props.turnFooterActionsByTurn?.[turn.turnId]}
+                      footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}
                       onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
                       editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
                       editUserMessageDisabled={
                         streamingActive || props.activeSession?.status === 'running'
                       }
-                      failedReasonLabel={props.turnFailedReasonLabels?.[turn.turnId]}
-                      failedRecoveryLabel={props.turnFailedRecoveryLabels?.[turn.turnId]}
-                      safeResumeAction={props.safeResumeAction?.turnId === turn.turnId
+                      failedReasonLabel={turnPresentation?.failedReasonLabels[turn.turnId]}
+                      failedRecoveryLabel={turnPresentation?.failedRecoveryLabels[turn.turnId]}
+                      safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
                         ? props.safeResumeAction
                         : undefined}
-                      lineageBadges={props.turnLineageBadgesByTurn?.[turn.turnId]}
+                      lineageBadges={turnPresentation?.lineageBadgesByTurn[turn.turnId]}
                       onLineageBadgeClick={stableLineageBadgeClick}
                       onReadAttachmentBytes={props.onReadAttachmentBytes}
                       searchHighlighted={highlightedTurnId === turn.turnId}

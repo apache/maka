@@ -18,7 +18,10 @@ import {
 import { createSqliteShellRunStore } from '@maka/storage';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
-import { ShellRunPtyControlClosedError } from '../shell-run-contract.js';
+import {
+  ShellRunPtyControlClosedError,
+  type ShellRunProcessManagerInput,
+} from '../shell-run-contract.js';
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
 import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
 
@@ -1605,7 +1608,13 @@ describe('ShellRunProcessManager', () => {
     const cwd = await workspace();
     const dirtyWritten = join(cwd, 'dirty-written');
     const store = createSqliteShellRunStore(await workspace());
-    const manager = createManager(store, undefined, { flushIntervalMs: 1_000 });
+    // The test owns flush timing: no automatic flush fires until it says so, so the
+    // "not yet committed" window cannot be closed by a periodic flush racing the clock.
+    const flushes = manualFlushScheduler();
+    const manager = createManager(store, undefined, {
+      flushIntervalMs: 60_000,
+      scheduleFlush: flushes.schedule,
+    });
     const initial = await manager.runBackgroundBash(
       shellInput({
         cwd,
@@ -1630,7 +1639,9 @@ describe('ShellRunProcessManager', () => {
         setInterval(() => {}, 1000);
       `),
         pty: true,
-        timeoutMs: 5_000,
+        // Far past the test's own waits: a run timeout would finalize the record and
+        // advance the revision the assertions below pin.
+        timeoutMs: 120_000,
       }),
     );
     assert.equal(initial.kind, 'shell_run');
@@ -1668,6 +1679,10 @@ describe('ShellRunProcessManager', () => {
       abort.abort();
       await assert.rejects(control, /aborted before the control operation was committed/);
 
+      // The contract: the aborted control restores the trailing flush instead of
+      // dropping it, so a flush is pending again and commits the PTY output once it runs.
+      await waitUntil(() => flushes.pending());
+      flushes.runPending();
       await waitUntil(async () => {
         const durable = await store.readShellRun('session-1', 'shell-run-1');
         return (
@@ -2241,6 +2256,7 @@ function createManager(
     killGraceMs?: number;
     flushIntervalMs?: number;
     pipeOutputDrainMs?: number;
+    scheduleFlush?: ShellRunProcessManagerInput['scheduleFlush'];
   } = {},
 ): ShellRunProcessManager {
   let id = 0;
@@ -2255,6 +2271,27 @@ function createManager(
     ...(onShellRunUpdate ? { onShellRunUpdate } : {}),
     ...options,
   });
+}
+
+/** Holds automatic flushes until the test runs them, replacing wall-clock flush timing. */
+function manualFlushScheduler(): {
+  schedule: (run: () => void, delayMs: number) => () => void;
+  pending: () => boolean;
+  runPending: () => void;
+} {
+  const pending = new Set<() => void>();
+  return {
+    schedule: (run) => {
+      pending.add(run);
+      return () => pending.delete(run);
+    },
+    pending: () => pending.size > 0,
+    runPending: () => {
+      const due = [...pending];
+      pending.clear();
+      for (const run of due) run();
+    },
+  };
 }
 
 async function createTestManager(

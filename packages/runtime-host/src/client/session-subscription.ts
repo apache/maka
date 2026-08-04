@@ -3,6 +3,8 @@ import {
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
+  type SessionTranscriptQueryInput,
+  type SessionTranscriptQueryResult,
 } from '../protocol/index.js';
 
 const MAX_CLIENT_QUEUED_FRAMES = 32;
@@ -14,7 +16,8 @@ export type RuntimeHostSubscriptionFailureReason =
   | 'correlation_changed'
   | 'projection_revision_invalid'
   | 'slow_consumer'
-  | 'connection_closed';
+  | 'connection_closed'
+  | 'transcript_expired';
 
 export class RuntimeHostSubscriptionError extends Error {
   constructor(
@@ -26,10 +29,19 @@ export class RuntimeHostSubscriptionError extends Error {
   }
 }
 
+function bufferLength(chunks: readonly Buffer[]): number {
+  return chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export interface RuntimeHostSessionSubscription extends AsyncIterable<SubscriptionFrame> {
   readonly hostEpoch: string;
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
+  loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
   close(): Promise<void>;
 }
 
@@ -45,6 +57,9 @@ export class ClientSessionSubscription
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
   readonly #requestClose: () => Promise<void>;
+  readonly #queryTranscript: (
+    input: SessionTranscriptQueryInput,
+  ) => Promise<SessionTranscriptQueryResult>;
   readonly #expectedSessionId: string;
   readonly #queue: QueuedFrame[] = [];
   #queuedBytes = 0;
@@ -60,8 +75,13 @@ export class ClientSessionSubscription
   #done = false;
   #doneAfterQueue = false;
   #closeTask: Promise<void> | undefined;
+  #transcriptTask: Promise<unknown[]> | undefined;
 
-  constructor(result: SubscriptionOpenResult, requestClose: () => Promise<void>) {
+  constructor(
+    result: SubscriptionOpenResult,
+    requestClose: () => Promise<void>,
+    queryTranscript: (input: SessionTranscriptQueryInput) => Promise<SessionTranscriptQueryResult>,
+  ) {
     this.hostEpoch = result.hostEpoch;
     this.subscriptionId = result.subscriptionId;
     this.snapshot = result.snapshot;
@@ -69,6 +89,7 @@ export class ClientSessionSubscription
     this.#expectedSequence = result.nextSequence;
     this.#latestProjectionRevision = result.snapshot.projectionRevision;
     this.#requestClose = requestClose;
+    this.#queryTranscript = queryTranscript;
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
@@ -104,6 +125,84 @@ export class ClientSessionSubscription
     if (this.#done || this.#terminalError) return Promise.resolve();
     if (!this.#closeTask) this.#closeTask = this.#requestClose();
     return this.#closeTask;
+  }
+
+  loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]> {
+    this.#transcriptTask ??= this.#loadTranscript().catch((error: unknown) => {
+      this.#transcriptTask = undefined;
+      throw error;
+    });
+    return this.#transcriptTask.then((messages) => messages.map(decodeMessage));
+  }
+
+  async #loadTranscript(): Promise<unknown[]> {
+    let result = await this.#queryTranscript({
+      kind: 'start',
+      subscriptionId: this.subscriptionId,
+    });
+    let snapshotId: string | undefined;
+    let messageCount: number | undefined;
+    let chunks: Buffer[] = [];
+    const messages: unknown[] = [];
+    while (true) {
+      if (result.kind === 'snapshot_expired') {
+        throw new RuntimeHostSubscriptionError(
+          'transcript_expired',
+          'Session transcript snapshot expired before it was consumed',
+        );
+      }
+      if (result.sessionId !== this.#expectedSessionId) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript belongs to a different Session',
+        );
+      }
+      snapshotId ??= result.snapshotId;
+      messageCount ??= result.messageCount;
+      if (result.snapshotId !== snapshotId || result.messageCount !== messageCount) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript snapshot identity changed',
+        );
+      }
+      if (result.messageCount === 0) return [];
+      if (result.messageIndex !== messages.length || result.byteOffset !== bufferLength(chunks)) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Session transcript chunk position changed',
+        );
+      }
+      chunks.push(Buffer.from(result.data, 'base64'));
+      if (result.next?.messageIndex !== result.messageIndex) {
+        const bytes = Buffer.concat(chunks);
+        let decoded: unknown;
+        try {
+          decoded = JSON.parse(bytes.toString('utf8')) as unknown;
+        } catch (cause) {
+          throw new RuntimeHostSubscriptionError(
+            'correlation_changed',
+            `Session transcript message is invalid JSON: ${errorMessage(cause)}`,
+          );
+        }
+        messages.push(decoded);
+        chunks = [];
+      }
+      if (!result.next) {
+        if (messages.length !== messageCount) {
+          throw new RuntimeHostSubscriptionError(
+            'correlation_changed',
+            'Session transcript ended before every message was received',
+          );
+        }
+        return messages;
+      }
+      result = await this.#queryTranscript({
+        kind: 'continue',
+        subscriptionId: this.subscriptionId,
+        snapshotId,
+        ...result.next,
+      });
+    }
   }
 
   accept(frame: SubscriptionFrame): void {

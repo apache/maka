@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { PROVIDER_DEFAULTS, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
+import {
+  buildDeepResearchSystemPromptFragment,
+  isDeepResearchSession,
+} from '@maka/core/explore-agent';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
+import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
-import type { SessionHeader } from '@maka/core/session';
 import {
   filterModelVisibleTaskLedgerTasks,
   renderTaskLedgerPromptText,
@@ -18,28 +20,32 @@ import {
   buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
   buildPersonalizationPromptFragment,
+  buildCancelPlanTool,
   buildPricingLookup,
   buildProviderOptions,
+  buildSubmitPlanTool,
   buildSessionEnvironmentPromptFragment,
   buildSkillAgentToolFromInventory,
   buildSkillSearchAgentToolFromInventory,
   buildSkillsPromptFragmentFromInventoryWithReport,
   buildTaskLedgerTools,
+  buildUpdatePlanTool,
   buildWorkspaceInstructionsPromptFragment,
   createProviderRequestCaptureRecorder,
   createProxiedFetchTransport,
   getAIModel,
-  generateGoalEvaluationModelCall,
-  llmCallUsageFields,
+  isDeepResearchToolAllowed,
   projectEffectiveProductToolSurface,
-  recordLlmCall,
   recordToolInvocation,
   resolveProjectGitInfo,
   resolveSelectedModelContextWindow,
+  renderInterruptedPlanContext,
+  renderPlanExecutionPrompt,
+  renderPlanModePrompt,
+  selectCollaborationTools,
   SkillShadowSelectionTracker,
   type BackendFactoryContext,
   type BuildBuiltinToolsOptions,
-  type GoalEvaluatorResource,
   type MakaTool,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
@@ -69,9 +75,10 @@ import type {
 import {
   createHostOAuthModelFetch,
   type HostOAuthExecutionAuthority,
-  type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
+import type { HostExecutionArtifactServices } from './execution-artifacts.js';
+import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 const CHILD_INSTRUCTION_BOUNDARY = [
@@ -112,6 +119,14 @@ export interface HostExecutionModelCompositionInput {
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
+  readonly plan?: {
+    readonly store: PlanStore;
+    readonly state: PlanSessionState;
+    readonly mode: 'agent' | 'plan';
+  };
+  readonly deepResearch?: {
+    readonly tools: readonly MakaTool[];
+  };
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -129,21 +144,40 @@ export function createHostExecutionModelComposition(
         input.automationTool,
         input.goalTools,
         input.parentAgentTools,
+        input.plan,
+        input.deepResearch?.tools,
       );
+  const clientCapabilityTools = input.boundTools ? [] : (input.clientCapabilities?.tools ?? []);
+  const unscopedCandidateTools = [...defaultTools, ...clientCapabilityTools];
+  const candidateTools = input.deepResearch
+    ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
+    : unscopedCandidateTools;
+  const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
+  const selectedTools = input.plan
+    ? selectCollaborationTools({
+        mode: input.plan.mode,
+        tools: candidateTools,
+        hasActiveExecution: activeExecution !== undefined,
+      })
+    : candidateTools;
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
-    tools: defaultTools,
+    tools: selectedTools,
     policy: { economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS },
   });
   // A bound tool list is an exact child/local activation ceiling. Dynamic
   // capabilities must be included by the authority that constructs that list,
   // never appended here.
-  const clientCapabilityTools = input.boundTools ? [] : (input.clientCapabilities?.tools ?? []);
-  const tools = [...productSurface.tools, ...clientCapabilityTools];
+  const tools = [...productSurface.tools];
   assertUniqueToolNames(tools);
   const toolAvailability = mergeToolAvailability(
     productSurface.toolAvailability,
-    input.boundTools ? [] : (input.clientCapabilities?.groups ?? []),
+    input.boundTools
+      ? []
+      : filterToolGroups(
+          input.clientCapabilities?.groups ?? [],
+          new Set(tools.map(({ name }) => name)),
+        ),
   );
   const childInstruction = input.childInstruction?.trim();
 
@@ -185,6 +219,12 @@ export function createHostExecutionModelComposition(
         skills.text,
         workspaceInstructions,
         promptState.memory,
+        input.plan?.mode === 'plan' ? renderPlanModePrompt() : undefined,
+        input.deepResearch
+          ? buildDeepResearchSystemPromptFragment({
+              exploreAgentAvailable: tools.some(({ name }) => name === 'ExploreAgent'),
+            })
+          : undefined,
       ]);
     },
     turnTailPrompt: async (context: HostModelPromptContext) => {
@@ -201,7 +241,13 @@ export function createHostExecutionModelComposition(
           includeArchived: false,
         }),
       );
-      return joinFragments([environment, renderTaskLedgerTail(tasks)]) ?? environment;
+      return (
+        joinFragments([
+          environment,
+          renderTaskLedgerTail(tasks),
+          input.plan ? renderPlanTail(input.plan.state, input.plan.mode) : undefined,
+        ]) ?? environment
+      );
     },
   });
 }
@@ -215,6 +261,7 @@ export interface HostAiSdkBackendInput {
   readonly memory: HostMemoryCoordinator;
   readonly taskLedger: TaskLedgerStore;
   readonly artifacts: InteractiveArtifactStoreWriter;
+  readonly executionArtifacts: HostExecutionArtifactServices;
   readonly usage: InteractiveUsageStoresWriter;
   readonly requestDrain: () => void;
   readonly clientCapabilities: HostClientCapabilityCoordinator;
@@ -226,175 +273,9 @@ export interface HostAiSdkBackendInput {
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
   readonly childAgents?: HostChildAgentBackendCapabilities;
+  readonly planStore?: PlanStore;
+  readonly deepResearchTools?: readonly MakaTool[];
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
-}
-
-export interface HostGoalEvaluatorInput {
-  readonly runtimePolicy: RuntimePolicyStoresWriter;
-  readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
-  readonly usage: InteractiveUsageStoresWriter;
-  readonly requestDrain: () => void;
-  readonly readSessionHeader: (sessionId: string) => Promise<SessionHeader>;
-  readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
-  readonly now?: () => number;
-  readonly newId?: () => string;
-}
-
-/** Creates a tool-free Goal judge on the Session's canonical connection and model. */
-export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEvaluatorResource {
-  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
-  const now = input.now ?? Date.now;
-  const newId = input.newId ?? randomUUID;
-  let telemetryDrainRequested = false;
-  const telemetry = {
-    insertLlmCall: async (
-      record: Parameters<typeof input.usage.telemetry.recordLlmCall>[0],
-    ): Promise<void> => {
-      try {
-        await input.usage.telemetry.recordLlmCall(record);
-      } catch (error) {
-        if (!telemetryDrainRequested) {
-          telemetryDrainRequested = true;
-          input.requestDrain();
-        }
-        throw error;
-      }
-    },
-  };
-  return createOwnedGoalEvaluator({
-    evaluate: async (prompt, sessionId, signal) => {
-      const header = await readDuringBackendCreation(
-        () => input.readSessionHeader(sessionId),
-        signal,
-      );
-      const [target, pricingSnapshot] = await Promise.all([
-        readDuringBackendCreation(
-          () =>
-            resolveExecutionTarget(
-              header,
-              input.runtimePolicy,
-              input.oauthCredentials,
-              createFetchTransport,
-            ),
-          signal,
-        ),
-        readDuringBackendCreation(() => input.usage.pricing.snapshot(), signal),
-      ]);
-      const pricing = buildPricingLookup(pricingSnapshot.overrides);
-      const transport = createFetchTransport(
-        toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
-      );
-      let apiKey = target.apiKey;
-      let modelFetch: typeof fetch = transport.fetch;
-      try {
-        if (target.oauthBinding) {
-          const initialOAuthTokens = await readDuringBackendCreation(
-            () => target.oauthBinding!.resolve(),
-            signal,
-          );
-          apiKey = initialOAuthTokens.access_token;
-          modelFetch = createHostOAuthModelFetch({
-            binding: target.oauthBinding,
-            initialTokens: initialOAuthTokens,
-            connection: target.connection,
-            sessionId,
-            modelId: target.model,
-            claudeDeviceId: input.claudeDeviceId,
-            fetchFn: transport.fetch,
-          });
-        }
-        const startedAt = now();
-        const callId = `goal_evaluation_${sessionId}_${newId()}`;
-        const baseRecord = {
-          sessionId,
-          callKind: 'goal_evaluation' as const,
-          callId,
-          connectionSlug: target.connection.slug,
-          providerId: target.connection.providerType,
-          modelId: target.model,
-          startedAt,
-        };
-        try {
-          const result = await generateGoalEvaluationModelCall({
-            model: getAIModel({
-              connection: target.connection,
-              apiKey,
-              modelId: target.model,
-              fetch: modelFetch,
-            }),
-            prompt,
-            abortSignal: signal,
-            providerOptions: buildProviderOptions(
-              target.connection,
-              target.model,
-              header.thinkingLevel,
-            ),
-          });
-          await recordLlmCall(
-            { repo: telemetry, lookupPricing: pricing },
-            {
-              ...baseRecord,
-              ...(result.usage
-                ? llmCallUsageFields(result.usage)
-                : { inputTokens: 0, outputTokens: 0 }),
-              ...(result.finishReason && !result.usage
-                ? { rawFinishReason: result.finishReason }
-                : {}),
-              latencyMs: Math.max(0, now() - startedAt),
-              status: 'success',
-            },
-          );
-          return result.text;
-        } catch (error) {
-          await recordLlmCall(
-            { repo: telemetry, lookupPricing: pricing },
-            {
-              ...baseRecord,
-              inputTokens: 0,
-              outputTokens: 0,
-              latencyMs: Math.max(0, now() - startedAt),
-              status: signal.aborted ? 'aborted' : 'error',
-              errorClass: evaluatorErrorClass(error),
-            },
-          );
-          throw error;
-        }
-      } finally {
-        await transport.close();
-      }
-    },
-  });
-}
-
-function createOwnedGoalEvaluator(
-  evaluator: Pick<GoalEvaluatorResource, 'evaluate'>,
-): GoalEvaluatorResource {
-  const active = new Set<Promise<void>>();
-  let closing = false;
-  let closeTask: Promise<void> | undefined;
-  return {
-    evaluate: (prompt, sessionId, signal) => {
-      if (closing) return Promise.reject(new Error('Goal evaluator is closing'));
-      const task = evaluator.evaluate(prompt, sessionId, signal);
-      const settled = task.then(
-        () => undefined,
-        () => undefined,
-      );
-      active.add(settled);
-      void settled.finally(() => active.delete(settled));
-      return task;
-    },
-    close: () => {
-      closing = true;
-      closeTask ??= Promise.all([...active]).then(() => undefined);
-      return closeTask;
-    },
-  };
-}
-
-function evaluatorErrorClass(error: unknown): string {
-  return error instanceof Error ? error.name : 'UnknownError';
 }
 
 /** Builds one real provider backend from canonical Host state. */
@@ -451,7 +332,15 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     ? undefined
     : input.clientCapabilities.snapshotForSession(input.context.sessionId);
   let modelComposition: HostExecutionModelComposition;
+  let planState: PlanSessionState | undefined;
   try {
+    planState =
+      input.planStore && !input.context.tools
+        ? await readDuringBackendCreation(
+            () => input.planStore!.readState(input.context.sessionId),
+            input.context.abortSignal,
+          )
+        : undefined;
     const rootTools =
       input.resolveRootTools && !input.context.tools && !input.context.header.subagentParent
         ? await readDuringBackendCreation(
@@ -473,6 +362,18 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       ...(input.goalTools ? { goalTools: input.goalTools } : {}),
       ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
+      ...(planState && input.planStore
+        ? {
+            plan: {
+              store: input.planStore,
+              state: planState,
+              mode: input.context.header.collaborationMode ?? 'agent',
+            },
+          }
+        : {}),
+      ...(isDeepResearchSession(input.context.header.labels) && !input.context.tools
+        ? { deepResearch: { tools: requireDeepResearchTools(input.deepResearchTools) } }
+        : {}),
       skillBudget: {
         contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
       },
@@ -584,7 +485,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     return new HostAiSdkBackend(
       {
         sessionId: input.context.sessionId,
-        header: { ...input.context.header, model: target.model },
+        header: {
+          ...input.context.header,
+          model: target.model,
+          permissionMode:
+            input.context.header.collaborationMode === 'plan'
+              ? 'explore'
+              : input.context.header.permissionMode,
+        },
         appendMessage:
           input.context.appendMessage ??
           ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
@@ -608,6 +516,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         modelFactory,
         tools: [...modelComposition.tools],
         toolAvailability: modelComposition.toolAvailability,
+        ...(planState && !input.context.tools
+          ? {
+              planTraceContext: buildPlanTraceContext(
+                planState,
+                input.context.header.collaborationMode ?? 'agent',
+              ),
+            }
+          : {}),
         ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
         contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
@@ -623,6 +539,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           artifactStore: input.artifacts,
           sessionId: input.context.sessionId,
         }),
+        recordToolArtifacts: input.executionArtifacts.recordToolArtifacts,
+        archiveToolResult: input.executionArtifacts.archiveToolResult,
+        readToolResultArchive: input.executionArtifacts.readToolResultArchive,
         loadHistoryCompactCheckpoint: input.context.loadHistoryCompactCheckpoint,
         summarizeHistoryCompact: buildLlmHistorySummarizer({
           resolveModel: () =>
@@ -671,34 +590,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     }
     throw error;
   }
-}
-
-function readDuringBackendCreation<T>(
-  read: () => Promise<T>,
-  abortSignal?: AbortSignal,
-): Promise<T> {
-  if (!abortSignal) return read();
-  if (abortSignal.aborted) return Promise.reject(backendCreationAbortReason(abortSignal));
-
-  let onAbort: (() => void) | undefined;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(backendCreationAbortReason(abortSignal));
-    abortSignal.addEventListener('abort', onAbort, { once: true });
-  });
-  const pending = Promise.resolve().then(() => {
-    if (abortSignal.aborted) throw backendCreationAbortReason(abortSignal);
-    return read();
-  });
-  return Promise.race([pending, aborted]).finally(() => {
-    if (onAbort) abortSignal.removeEventListener('abort', onAbort);
-  });
-}
-
-function backendCreationAbortReason(abortSignal: AbortSignal): unknown {
-  return (
-    abortSignal.reason ??
-    new DOMException('Runtime Host backend creation was aborted', 'AbortError')
-  );
 }
 
 class HostAiSdkBackend extends AiSdkBackend {
@@ -751,82 +642,6 @@ function assertUniqueToolNames(tools: readonly MakaTool[]): void {
   }
 }
 
-interface ResolvedExecutionTarget {
-  readonly connection: RuntimeExecutionConnection;
-  readonly model: string;
-  readonly apiKey: string;
-  readonly oauthBinding?: HostOAuthExecutionBinding;
-  readonly networkProxy: RuntimePolicy['networkProxy'];
-  readonly proxySecret?: string;
-}
-
-async function resolveExecutionTarget(
-  header: BackendFactoryContext['header'],
-  runtimePolicy: RuntimePolicyStoresWriter,
-  oauthCredentials: HostOAuthExecutionAuthority,
-  createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
-): Promise<ResolvedExecutionTarget> {
-  const resolved = await runtimePolicy.operations.resolveExecutionConnection(
-    header.llmConnectionSlug,
-  );
-  if (resolved.kind !== 'ready') {
-    throw new Error(`Runtime Host model connection is not ready: ${resolved.kind}`);
-  }
-  const provider = PROVIDER_DEFAULTS[resolved.connection.providerType];
-  if (!provider || provider.runtimeAdapter.kind === 'unavailable') {
-    throw new Error('Runtime Host model provider is not executable');
-  }
-  const model = header.model.trim();
-  const modelInfo = resolved.connection.models.find((candidate) => candidate.id === model);
-  if (!model || !resolved.connection.enabledModelIds.includes(model) || !modelInfo) {
-    throw new Error('Runtime Host Session model is not enabled by its canonical connection');
-  }
-  if (isModelExplicitlyUnsupportedForChat(modelInfo)) {
-    throw new Error('Runtime Host Session model is not chat-capable');
-  }
-
-  const connection: RuntimeExecutionConnection = {
-    slug: resolved.connection.slug,
-    providerType: resolved.connection.providerType,
-    ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
-    defaultModel: model,
-    models: [...resolved.connection.models],
-  };
-  if (provider.authKind === 'oauth_token') {
-    const material = resolved.secretMaterial.connection;
-    if (!material) throw new Error('Runtime Host OAuth credential is not configured');
-    const refreshProxy = toRuntimePolicyProxy(
-      resolved.networkProxy,
-      resolved.secretMaterial.networkProxy?.secret,
-    );
-    return {
-      connection,
-      model,
-      apiKey: '',
-      oauthBinding: oauthCredentials.bind({
-        providerType: resolved.connection.providerType,
-        connectionSlug: resolved.connection.slug,
-        material,
-        createRefreshTransport: () => createFetchTransport(refreshProxy),
-      }),
-      networkProxy: resolved.networkProxy,
-      ...(resolved.secretMaterial.networkProxy
-        ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
-        : {}),
-    };
-  }
-
-  return {
-    connection,
-    model,
-    apiKey: resolved.secretMaterial.connection?.secret ?? '',
-    networkProxy: resolved.networkProxy,
-    ...(resolved.secretMaterial.networkProxy
-      ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
-      : {}),
-  };
-}
-
 function buildDefaultHostTools(
   taskLedger: TaskLedgerStore,
   inventoryFor: SkillInventoryResolver,
@@ -835,10 +650,26 @@ function buildDefaultHostTools(
   automationTool?: MakaTool,
   goalTools: readonly MakaTool[] = [],
   parentAgentTools: readonly MakaTool[] = [],
+  plan?: HostExecutionModelCompositionInput['plan'],
+  deepResearchTools: readonly MakaTool[] = [],
 ): MakaTool[] {
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
   const taskTools = buildTaskLedgerTools({ store: taskLedger });
+  const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
+  const interruptedExecution = plan
+    ? [...plan.state.executions].reverse().find((execution) => execution.status === 'interrupted')
+    : undefined;
+  const planTools = !plan
+    ? []
+    : plan.mode === 'plan'
+      ? [buildSubmitPlanTool(plan.store, interruptedExecution?.executionId)]
+      : activeExecution
+        ? [
+            buildUpdatePlanTool(plan.store, activeExecution.executionId),
+            buildCancelPlanTool(plan.store, activeExecution.executionId),
+          ]
+        : [];
   const toolNames = [
     ...builtins.map((tool) => tool.name),
     ...hostTools.map((tool) => tool.name),
@@ -849,6 +680,8 @@ function buildDefaultHostTools(
     ...(automationTool ? [automationTool.name] : []),
     ...goalTools.map((tool) => tool.name),
     ...parentAgentTools.map((tool) => tool.name),
+    ...planTools.map((tool) => tool.name),
+    ...deepResearchTools.map((tool) => tool.name),
   ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
@@ -866,7 +699,62 @@ function buildDefaultHostTools(
     ...(automationTool ? [automationTool] : []),
     ...goalTools,
     ...parentAgentTools,
+    ...planTools,
+    ...deepResearchTools,
   ];
+}
+
+function requireDeepResearchTools(tools: readonly MakaTool[] | undefined): readonly MakaTool[] {
+  if (!tools) throw new Error('Runtime Host Deep Research tools are not composed');
+  return tools;
+}
+
+function renderPlanTail(state: PlanSessionState, mode: 'agent' | 'plan'): string | undefined {
+  const active = activePlanExecution(state);
+  const execution =
+    active ??
+    (mode === 'plan'
+      ? [...state.executions].reverse().find((candidate) => candidate.status === 'interrupted')
+      : undefined);
+  if (!execution) return undefined;
+  const proposal = state.proposals.find(
+    (candidate) => candidate.proposalId === execution.proposalId,
+  );
+  if (!proposal) return undefined;
+  return active
+    ? renderPlanExecutionPrompt({ proposal, execution: active })
+    : renderInterruptedPlanContext({ proposal, execution });
+}
+
+function filterToolGroups(groups: readonly ToolGroup[], names: ReadonlySet<string>): ToolGroup[] {
+  return groups.flatMap((group) => {
+    const toolNames = group.toolNames.filter((name) => names.has(name));
+    return toolNames.length > 0 ? [{ ...group, toolNames }] : [];
+  });
+}
+
+function buildPlanTraceContext(
+  state: PlanSessionState,
+  mode: 'agent' | 'plan',
+): {
+  mode: 'agent' | 'plan';
+  storeVersion: number;
+  planId?: string;
+  proposalId?: string;
+  executionId?: string;
+} {
+  const execution = activePlanExecution(state);
+  return {
+    mode,
+    storeVersion: state.storeVersion,
+    ...(execution
+      ? {
+          planId: execution.planId,
+          proposalId: execution.proposalId,
+          executionId: execution.executionId,
+        }
+      : {}),
+  };
 }
 
 function createTurnSkillInventoryResolver(

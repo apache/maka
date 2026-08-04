@@ -17,6 +17,9 @@ function createTestSetup() {
   let canFireThrows = false;
   let injectResult: AutomationFireResult = { runId: 'run-x', ok: true };
   let injectRejects = false;
+  let injectTurnFn:
+    | ((sessionId: string, prompt: string, automationId: string) => Promise<AutomationFireResult>)
+    | undefined;
   let createFreshRunFn:
     | ((prompt: string, automationId: string) => Promise<AutomationFireResult>)
     | undefined;
@@ -36,6 +39,7 @@ function createTestSetup() {
     },
     injectTurn: async (sessionId, prompt, automationId) => {
       fired.push({ sessionId, prompt, automationId });
+      if (injectTurnFn) return injectTurnFn(sessionId, prompt, automationId);
       if (injectRejects) throw new Error('injectTurn error');
       return injectResult;
     },
@@ -88,6 +92,17 @@ function createTestSetup() {
     },
     setInjectResult: (r: AutomationFireResult) => {
       injectResult = r;
+    },
+    setInjectTurn: (
+      fn:
+        | ((
+            sessionId: string,
+            prompt: string,
+            automationId: string,
+          ) => Promise<AutomationFireResult>)
+        | undefined,
+    ) => {
+      injectTurnFn = fn;
     },
     setCreateFreshRun: (
       fn: ((prompt: string, automationId: string) => Promise<AutomationFireResult>) | undefined,
@@ -318,6 +333,33 @@ describe('AutomationScheduler', () => {
     assert.ok(t.timers.length > 0);
     t.scheduler.dispose();
     assert.equal(t.timers.length, 0);
+  });
+
+  test('reports activity until an in-flight fire settles', async () => {
+    const t = createTestSetup();
+    const automation = t.manager.create({
+      kind: 'heartbeat',
+      name: 'test',
+      prompt: 'p',
+      sessionId: 'sess-1',
+      schedule: { type: 'interval', seconds: 30 },
+    });
+    assert.ok(!('error' in automation));
+    let settle!: (result: AutomationFireResult) => void;
+    t.setInjectTurn(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+    t.advanceTime(31_000);
+    t.scheduler.start();
+    await t.runTick();
+
+    assert.equal(t.scheduler.hasInFlight(), true);
+    settle({ runId: 'run-1', ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(t.scheduler.hasInFlight(), false);
   });
 
   test('does not fire expired automations', async () => {

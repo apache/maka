@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { Badge, List, ListItem } from '@astryxdesign/core';
+import { Badge, Link, List, ListItem } from '@astryxdesign/core';
 import { Sparkles } from '@maka/ui/icons';
 import {
   Banner,
@@ -9,8 +9,8 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { SettingRow } from './settings-rows';
 import { SettingsActions, SettingsPage, SettingsSection } from './settings-section';
+import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
@@ -25,7 +25,10 @@ const PLATFORM_LABEL: Record<string, string> = {
   linux: 'Linux',
 };
 
-export function AboutSettingsPage() {
+/** Where 复制环境信息 is meant to be pasted (owner msg `36501869`). */
+const ISSUE_TRACKER_URL = 'https://github.com/maka-agent/maka-agent/issues';
+
+export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).about;
   const sharedCopy = getSettingsSharedCopy(locale);
@@ -84,7 +87,6 @@ export function AboutSettingsPage() {
   }
 
   const platformPretty = PLATFORM_LABEL[info.platform] ?? info.platform;
-  const platformLine = `${platformPretty} ${info.osRelease} · ${info.arch}`;
 
   async function copyEnvSummary() {
     if (!info) return;
@@ -161,26 +163,43 @@ export function AboutSettingsPage() {
           {copy.privacyPoints.map((point) => <ListItem key={point} label={<>{point}</>} />)}
         </List>
       </SettingsSection>
-      <SettingsSection title={sharedCopy.groups.buildInfo} description={sharedCopy.groups.buildInfoHelp}>
-        <SettingRow
-          title={copy.runtime}
-          detail={copy.runtimeDetail}
-          value={`Electron ${info.electronVersion} · Node ${info.nodeVersion} · Chrome ${info.chromeVersion}`}
-        />
-        <SettingRow title={copy.platform} detail={copy.platformDetail} value={platformLine} />
-        <SettingRow
-          title={copy.workspace}
-          detail={copy.workspaceDetail}
-          value={info.workspacePath}
-          mono
-        />
-        <SettingRow
-          title={copy.storage}
-          detail={copy.storageDetail}
-          value={copy.local}
-        />
+      {/* UX audit (owner msg `30f736ed`): this group used to print Electron /
+          Node / Chrome, OS + arch, the workspace path, and "storage: local" as
+          four readout rows. The only task any of it serves is "send my
+          environment to a developer", and the 复制环境信息 button already does
+          that task completely — the rows were the button's payload, spread out
+          for the user to read and then not act on.
+
+          The workspace path also had a second home on the 数据 page, which is
+          the one that can actually open and copy it, and "storage: local" only
+          repeated a line the privacy list above already makes.
+
+          What is left is the version itself (in the hero above) and the one
+          action. */}
+      {/* The keyboard sheet's home. It used to be reachable only from the
+          titlebar's `…` drawer and from two shortcuts — which made the panel
+          that lists the shortcuts openable only by shortcut. It is reference
+          material about the app, so it belongs on 关于, and this is the entry
+          a mouse can find. */}
+      {props.onOpenKeyboardHelp && (
+        <SettingsSection title={sharedCopy.groups.reference}>
+          <SettingRow
+            title={copy.keyboardShortcuts}
+            detail={copy.keyboardShortcutsHelp}
+            action={(
+              <Button variant="ghost" size="sm" onClick={props.onOpenKeyboardHelp} label={copy.keyboardShortcutsOpen} />
+            )}
+          />
+        </SettingsSection>
+      )}
+      <SettingsSection title={sharedCopy.groups.buildInfo}>
         <SettingsActions>
           <Button variant="primary" isDisabled={copyingEnvSummary} aria-describedby={envSummaryHelpId} onClick={() => void copyEnvSummary()} label={copyingEnvSummary ? copy.copying : copy.copyEnvironment} />
+          {/* The loop this button was always half of. Its help line has always
+              said "paste it into an issue report", but nothing in the app said
+              where — the old 问题反馈 menu item just reopened this page. Now
+              copy, open, paste. */}
+          <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">{copy.reportIssueLabel}</Link>
           <p id={envSummaryHelpId}>
             {copy.copyHelp}
           </p>

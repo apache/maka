@@ -15,7 +15,10 @@ import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
-import { commitWorkspaceBaselineInternal } from '../workspace-version-authority-internal.js';
+import {
+  bindWorkspaceBaselineAuthorityStoreRootInternal,
+  commitWorkspaceBaselineInternal,
+} from '../workspace-version-authority-internal.js';
 
 const CRASH_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
   path: '/workspace/README.md',
@@ -220,6 +223,7 @@ async function runCrashChild(mode: string): Promise<void> {
   };
   const store = createSqliteRuntimeStore(dbPath, { failpoint });
   if (mode === 'inside_workspace_baseline' || mode === 'after_workspace_baseline_commit') {
+    bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
     await commitWorkspaceBaselineInternal(store, workspaceBaselineInput());
     if (mode === 'after_workspace_baseline_commit') blockUntilKilled();
     throw new Error(`Workspace baseline crash mode ${mode} missed its failpoint`);

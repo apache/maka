@@ -3,6 +3,7 @@ import type {
   ComputerUseBoundAction,
   ComputerUseFrameIdentity,
   ComputerUseObservationIdentity,
+  ComputerUseRect,
   ComputerUseWindowIdentity,
   CuAction,
   CuPoint,
@@ -28,6 +29,15 @@ export type CuaActionRejectionReason =
   | 'stale_epoch'
   | 'stale_frame'
   | 'duplicate_action'
+  // The same action again, where the first attempt was refused before anything
+  // was dispatched. Its own label because the recovery is the opposite one:
+  // `duplicate_action` means "it may already have taken effect, look", and this
+  // means "it did not, and the window is as it was". Both used to come back as
+  // `duplicate_action`, so the sentence that followed a retired action told the
+  // model to observe for a change that provably had not happened — directly
+  // contradicting the refusal it had just been given, which said the frame was
+  // still current and observing again was the round trip to skip.
+  | 'retired_action'
   | 'action_not_claimed';
 
 export type CuaActionClaimResult = { ok: true } | { ok: false; reason: CuaActionRejectionReason };
@@ -41,6 +51,13 @@ export class CuaFrameState {
   private currentFrame: CuaObservation | undefined;
   private readonly claimedActions = new Set<string>();
   private readonly consumedActions = new Set<string>();
+  /**
+   * The subset of `consumedActions` that never reached the window.
+   *
+   * Kept apart because the two produce opposite instructions, and the model was
+   * being given the wrong one half the time.
+   */
+  private readonly retiredActions = new Set<string>();
 
   constructor(private readonly createFrameId: (epoch: number) => string = () => randomUUID()) {}
 
@@ -68,7 +85,10 @@ export class CuaFrameState {
 
   claimAction(action: CuaBoundAction): CuaActionClaimResult {
     if (this.consumedActions.has(action.fingerprint)) {
-      return { ok: false, reason: 'duplicate_action' };
+      return {
+        ok: false,
+        reason: this.retiredActions.has(action.fingerprint) ? 'retired_action' : 'duplicate_action',
+      };
     }
     const rejection = this.validateAction(action);
     if (rejection) return { ok: false, reason: rejection };
@@ -86,11 +106,52 @@ export class CuaFrameState {
       return { ok: false, reason: 'action_not_claimed' };
     }
     this.consumedActions.add(action.fingerprint);
+    this.retiredActions.delete(action.fingerprint);
     return { ok: true, epoch: this.invalidate() };
+  }
+
+  /**
+   * Record that an action was tried and leave the frame alive.
+   *
+   * For a refusal the executor never dispatched. `confirmAction` invalidates,
+   * because an action that ran may have changed the window the frame describes
+   * — but one that was refused before any dispatch changed nothing, and
+   * invalidating on its behalf costs the model an `observe` to get back a frame
+   * that was never stale. Measured on a real save-as-PDF run: three rounds of
+   * `click_element` → refused → `click_element` → `reobserve_required` →
+   * `observe`, 9 of 23 calls, before it found the route.
+   *
+   * The action is still retired rather than released, so sending the same one
+   * again is `duplicate_action` — which is the truth, and is a better answer
+   * than letting it be refused identically forever.
+   */
+  retireAction(action: CuaBoundAction): CuaActionConfirmationResult {
+    const rejection = this.validateAction(action);
+    if (rejection) return { ok: false, reason: rejection };
+    if (!this.claimedActions.has(action.fingerprint)) {
+      return { ok: false, reason: 'action_not_claimed' };
+    }
+    this.claimedActions.delete(action.fingerprint);
+    this.consumedActions.add(action.fingerprint);
+    this.retiredActions.add(action.fingerprint);
+    return { ok: true, epoch: this.epoch };
   }
 
   isConsumed(frame: CuaFrameIdentity, actionFingerprint: string): boolean {
     return this.consumedActions.has(
+      bindCuaAction(frame, actionFingerprint, this.requireTarget(frame)).fingerprint,
+    );
+  }
+
+  /**
+   * Whether a consumed action was retired rather than dispatched.
+   *
+   * The companion to `isConsumed`, for the pre-check that refuses a repeat
+   * before it is bound: "already sent" and "already refused without being sent"
+   * are the same lookup and opposite instructions.
+   */
+  wasRetired(frame: CuaFrameIdentity, actionFingerprint: string): boolean {
+    return this.retiredActions.has(
       bindCuaAction(frame, actionFingerprint, this.requireTarget(frame)).fingerprint,
     );
   }
@@ -148,15 +209,49 @@ export function fingerprintCuaSemanticAction(
   return JSON.stringify([type, elementId, value]);
 }
 
+/**
+ * Where the cursor should be shown for an element action, from the element's
+ * own observed frame.
+ *
+ * Element frames arrive in the same screen coordinates as the window's bounds
+ * — `validateSemanticElementVisibility` compares one against the other
+ * directly — so the centre needs no transform, only the containment check that
+ * validator applies. Outside the window the frame is stale or the element has
+ * moved, and no point at all is better than sending the cursor somewhere the
+ * action will be refused from anyway.
+ */
+function elementPresentationPoint(
+  observation: CuaObservation,
+  frame: ComputerUseRect | undefined,
+): CuPoint | undefined {
+  const bounds = observation.target.bounds;
+  if (!frame || !bounds) return undefined;
+  if (frame.width <= 0 || frame.height <= 0) return undefined;
+  const point = { x: frame.x + frame.width / 2, y: frame.y + frame.height / 2 };
+  if (point.x < bounds.x || point.x >= bounds.x + bounds.width) return undefined;
+  if (point.y < bounds.y || point.y >= bounds.y + bounds.height) return undefined;
+  return point;
+}
+
 export function bindCuaSemanticActionToObservation(
   observation: CuaObservation,
-  input: { type: string; elementId?: string; value?: string },
+  input: {
+    type: string;
+    elementId?: string;
+    value?: string;
+    /** The observed frame of `elementId`, when the observation reported one. */
+    elementFrame?: ComputerUseRect;
+  },
 ): CuaBoundAction {
+  const presentationScreenPoint = elementPresentationPoint(observation, input.elementFrame);
   return bindCuaAction(
     observation,
     fingerprintCuaSemanticAction(input.type, input.elementId, input.value),
     observation.target,
-    input.elementId ? { elementId: input.elementId } : {},
+    {
+      ...(input.elementId ? { elementId: input.elementId } : {}),
+      ...(presentationScreenPoint ? { presentationScreenPoint } : {}),
+    },
   );
 }
 

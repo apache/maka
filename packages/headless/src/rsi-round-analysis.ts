@@ -192,14 +192,22 @@ function taskTransitions(
 function taskOutcome(event: FixedPromptTaskWalEvent | undefined): RsiTaskOutcome {
   if (!event) return 'missing';
   if (event.type === 'task_infra_failed') return 'infra';
-  if (event.type === 'task_budget_exhausted') return 'budget';
   if (event.type === 'task_plumbing_failed') return 'plumbing';
+  // A budget exhaustion the verifier graded carries a real score, so it reads
+  // as that score. `budget` is for the ones that ran out with no verdict —
+  // otherwise a graded pass would be attributed to the prompt as a flip away
+  // from passing.
+  if (event.type === 'task_budget_exhausted' && !(event.eligible && event.scored)) return 'budget';
   if (!event.eligible || !event.scored) return 'unscored';
   return event.passed ? 'pass' : 'fail';
 }
 
+/** Coverage is whether the round produced a score for the task, so it asks the
+ * event's own fields rather than its type. A verifier-graded budget exhaustion
+ * is covered: the score exists, and calling it a coverage regression would
+ * charge the candidate prompt for evidence that is on disk. */
 function isCovered(event: FixedPromptTaskWalEvent | undefined): boolean {
-  return event?.type === 'task_completed' && event.eligible && event.scored;
+  return event !== undefined && event.eligible && event.scored;
 }
 
 function safeErrorClassGroups(

@@ -317,6 +317,104 @@ const RULES = [
       return offenders;
     },
   },
+  {
+    name: 'aria-label-on-generic',
+    /**
+     * Catches `aria-label` / `aria-labelledby` on an element whose role
+     * cannot carry a name. ARIA prohibits naming the `generic` role, so a
+     * label on a bare `<div>` or `<span>` is not a weak name — it is no name
+     * at all, and assistive tech never reads it. The failure is silent: the
+     * markup looks labelled and reviews read as if it were.
+     *
+     * This is how the Permission Center lost its capability list's name when
+     * the rows moved from Astryx `List` (`role="list"`, nameable) to a
+     * `CollapsibleGroup` whose wrapper is a role-less div (PR #2100).
+     *
+     * Before deleting a flagged label, check whether it is naming something
+     * ELSE. The accessible-name algorithm walks descendants, so a label on an
+     * inner span still lands in an interactive ancestor's name-from-content —
+     * and for Astryx's Item it is the only thing that can, because Item puts
+     * consumer props on its outer wrapper and renders a separate invisible
+     * <button> as the click target. Prefer moving the label onto the element
+     * that is actually interactive; where the component gives you no way to do
+     * that, the inner label IS the mechanism and belongs in an a11y-allow.
+     *
+     * Scope, and its honest limit: only intrinsic lowercase elements are
+     * judged. A capitalized component may set its own role internally — `List`
+     * does — so flagging `<SomeComponent aria-label>` would be guesswork and
+     * a flood of false positives. That means this rule would NOT have caught
+     * the #2100 regression itself, which was a component. It catches the
+     * directly checkable half; the component half stays a review question.
+     *
+     * Only tags whose implicit role is `generic` (or otherwise name-prohibited)
+     * are listed. Tags with a nameable implicit role — nav, section, img,
+     * table, ul, svg, form, … — are legitimately labelled and never flagged.
+     */
+    scan(text) {
+      const offenders = [];
+      const stripped = text.replace(/\/\/.*$/gm, '');
+      // Implicit role is `generic` (or presentational): naming is prohibited.
+      const NAME_PROHIBITED = new Set([
+        'div',
+        'span',
+        'p',
+        'pre',
+        'code',
+        'em',
+        'strong',
+        'small',
+        'b',
+        'i',
+        'u',
+        's',
+        'mark',
+        'q',
+        'cite',
+        'dfn',
+        'abbr',
+        'time',
+        'data',
+        'kbd',
+        'samp',
+        'var',
+        'figcaption',
+        'sub',
+        'sup',
+      ]);
+      const OPEN_RE = /<([a-z][a-zA-Z0-9-]*)((?:[^<>{}]|\{(?:[^{}]|\{[^{}]*\})*\})*?)\/?>/g;
+      let match;
+      while ((match = OPEN_RE.exec(stripped))) {
+        const tag = match[1];
+        const attrs = match[2] ?? '';
+        if (!NAME_PROHIBITED.has(tag)) continue;
+        if (!/\baria-label(?:ledby)?\s*=/.test(attrs)) continue;
+        // An explicit role makes the element nameable — that is the fix.
+        if (/\brole\s*=/.test(attrs)) continue;
+        // Spread props may carry a role we cannot see (`{...props}`); assume
+        // the author knows and stay quiet rather than cry wolf.
+        if (/\{\s*\.\.\./.test(attrs)) continue;
+        // Offsets index into `stripped`, and comment removal preserves
+        // newlines, so line numbers must be counted there too — counting in
+        // `text` drifts by every comment character removed before the match.
+        const lineIndex = stripped.slice(0, match.index).split('\n').length;
+        // The allow comment lives in the ORIGINAL source (stripping removed
+        // the `//` form), so look it up by line rather than by offset. Inside
+        // a JSX tag a `//` comment is not legal, so the JSX block form
+        // `{/* a11y-allow: … */}` on the line above counts too — otherwise the
+        // escape hatch would be unusable exactly where this rule fires.
+        const sourceLines = text.split('\n');
+        const declLines = sourceLines
+          .slice(Math.max(0, lineIndex - 2), lineIndex - 1 + match[0].split('\n').length)
+          .join('\n');
+        if (/(?:\/\/|\{\s*\/\*)\s*a11y-allow:/.test(declLines)) continue;
+        offenders.push({
+          line: lineIndex,
+          snippet: `<${tag}> carries aria-label but has no role that can hold a name`,
+        });
+      }
+      return offenders;
+    },
+  },
 ];
 
 /**

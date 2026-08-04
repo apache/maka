@@ -330,7 +330,7 @@ export function DailyReviewPanel(props: {
           aria-busy={loading}
           data-refreshing={loading ? 'true' : undefined}
         >
-          <div className="maka-daily-review-metrics" aria-label={copy.overview.ariaLabel(displayedRangeLabel)}>
+          <div className="maka-daily-review-metrics" role="group" aria-label={copy.overview.ariaLabel(displayedRangeLabel)}>
             <DailyReviewMetric label={copy.overview.conversations} value={totals?.sessionCount.toString() ?? '0'} />
             <DailyReviewMetric label={copy.overview.requests} value={totals?.requestCount.toString() ?? '0'} />
             <DailyReviewMetric label={copy.overview.tokens} value={(totals?.totalTokens ?? 0).toLocaleString(intlLocale)} />

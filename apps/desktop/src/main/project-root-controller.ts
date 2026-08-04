@@ -8,8 +8,8 @@ export interface CurrentProjectSelection {
 
 /**
  * Owns the "current project root" selection shared across the app/window,
- * git, workspace-search, workspace-instructions, and session-entry IPC
- * surfaces. Project management updates the project id and path together, and
+ * git, workspace-search, and session-entry IPC surfaces. Project management
+ * updates the project id and path together, and
  * every other surface reads that same selection snapshot.
  *
  * Extracted from the former `registerIpc()` closures so the state has one owner

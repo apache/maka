@@ -64,6 +64,8 @@ function SkillLibraryPanel(props: {
   togglingSkillId?: string | null;
   deletingSkillId?: string | null;
   searchQuery?: string;
+  /** Clears the module-header search box (owned by the outer panel). */
+  onClearSearch?: () => void;
   managedSkillSources?: ManagedSkillSourceEntry[];
   bundledSkillCatalog?: BundledSkillCatalogEntry[];
   onInstallBundledSkill?(id: string): void | Promise<void>;
@@ -291,7 +293,7 @@ function SkillLibraryPanel(props: {
         className="maka-skill-section-row"
         title={<span className="maka-skill-section-label">{copy.market.official}</span>}
         action={
-          <div className="maka-skill-filter-actions" aria-label={copy.market.sourceActions}>
+          <div className="maka-skill-filter-actions" role="group" aria-label={copy.market.sourceActions}>
             <UiButton
               variant="secondary"
               size="sm"
@@ -309,6 +311,9 @@ function SkillLibraryPanel(props: {
           description={normalizedSkillQuery
             ? copy.market.emptySearchBody
             : copy.market.emptyBody}
+          actions={normalizedSkillQuery && props.onClearSearch
+            ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={props.onClearSearch} />
+            : undefined}
           className="maka-skill-installed-empty"
         />
       ) : marketSources.length === 0 ? (
@@ -316,6 +321,17 @@ function SkillLibraryPanel(props: {
           icon={<Search />}
           title={copy.market.emptySearchTitle}
           description={copy.market.emptyFilterBody}
+          actions={(
+            <UiButton
+              variant="ghost"
+              size="sm"
+              label={copy.market.clearFilters}
+              onClick={() => {
+                setMarketCategory(MARKET_CATEGORY_ALL);
+                props.onClearSearch?.();
+              }}
+            />
+          )}
           className="maka-skill-installed-empty"
         />
       ) : (
@@ -381,6 +397,9 @@ function SkillLibraryPanel(props: {
           icon={<Search />}
           title={copy.builtin.noMatchTitle}
           description={copy.builtin.noMatchBody}
+          actions={props.onClearSearch
+            ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={props.onClearSearch} />
+            : undefined}
           className="maka-skill-installed-empty"
         />
       ) : (
@@ -840,19 +859,23 @@ export function SkillsModuleMain(props: {
               placeholder={copy.page.search}
             />
           </div>
+          {/* clickAction draws the in-flight state on the button itself, so
+              刷新 stops renaming itself to 刷新中… . `pendingSkillAction` stays:
+              it is what tells the library below which row is busy, which is a
+              pane-wide fact no single button holds. */}
           <UiButton
             className="maka-skill-header-utility"
             variant="secondary"
-            onClick={() => void runSkillAction('folder', props.onOpenSkillsFolder)}
+            clickAction={() => runSkillAction('folder', props.onOpenSkillsFolder)}
             isDisabled={!props.onOpenSkillsFolder || skillActionBusy}
             label={copy.page.openFolder}
           />
           <UiButton
             className="maka-skill-header-utility"
             variant="secondary"
-            onClick={() => void runSkillAction('refresh', props.onRefreshSkills)}
+            clickAction={() => runSkillAction('refresh', props.onRefreshSkills)}
             isDisabled={!props.onRefreshSkills || skillActionBusy}
-            label={pendingSkillAction === 'refresh' ? copy.page.refreshing : copy.page.refresh}
+            label={copy.page.refresh}
           />
         </div>
         }
@@ -883,6 +906,7 @@ export function SkillsModuleMain(props: {
         togglingSkillId={pendingSkillAction?.startsWith('runtime:set:') ? pendingSkillAction.slice('runtime:set:'.length) : null}
         deletingSkillId={pendingSkillAction?.startsWith('delete:') ? pendingSkillAction.slice('delete:'.length) : null}
         searchQuery={skillSearchQuery}
+        onClearSearch={() => setSkillSearchQuery('')}
       />
     </main>
   );

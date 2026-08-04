@@ -125,7 +125,11 @@ it('keeps non-allowlisted external schemes inert', () => {
     assert.doesNotMatch(markup, /<a\b/, href);
     if (href.startsWith('file:') || href.startsWith('custom:')) {
       assert.match(markup, /data-reason="unsafe-scheme"/, href);
-      assert.match(markup, /aria-label="Unsafe link"/, href);
+      // The affordance is the `title` tooltip, not an aria-label: the span is
+      // role-less, so a name on it was never announced. Asserting on title
+      // keeps the guarantee that the reason reaches the user at all.
+      assert.match(markup, /title="Unsafe link"/, href);
+      assert.doesNotMatch(markup, /aria-label="Unsafe link"/, href);
     }
   }
 });

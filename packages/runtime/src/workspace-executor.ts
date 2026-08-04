@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs';
 import { exec } from 'node:child_process';
 import { glob as nodeGlob } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve } from 'node:path';
-import { isPathInside } from './path-containment.js';
+import { isAbsolute, resolve } from 'node:path';
+import { isPathInside, realpathAllowMissing } from './path-containment.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
@@ -81,10 +81,22 @@ export interface WorkspaceWriteFileResult {
   bytes: number;
 }
 
+/**
+ * Which path space a resolution may land in.
+ *
+ * `workspace` keeps the resolved path inside the session cwd; `host` accepts
+ * any canonical path on the host. This is a *mechanism* parameter: the caller
+ * decides it from the active ExecutionBoundary, so no executor has to carry a
+ * containment policy of its own. Executors whose transport cannot express host
+ * paths (a remote or isolated workspace) reject `host` explicitly.
+ */
+export type WorkspacePathScope = 'workspace' | 'host';
+
 export interface WorkspaceResolvePathInput {
   cwd: string;
   path: string;
   label: string;
+  scope: WorkspacePathScope;
 }
 
 export interface WorkspaceResolvePathResult {
@@ -245,15 +257,24 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async resolveExistingPath(input: WorkspaceResolvePathInput): Promise<WorkspaceResolvePathResult> {
-    return { path: await resolveExistingInsideCwd(input.cwd, input.path, input.label) };
+    return {
+      path: await resolveExistingPathInScope(input.cwd, input.path, input.label, input.scope),
+    };
   }
 
   async resolveWritablePath(input: WorkspaceResolvePathInput): Promise<WorkspaceResolvePathResult> {
-    return { path: await resolveWritableInsideCwd(input.cwd, input.path, input.label) };
+    return {
+      path: (await canonicalPathInScope(input.cwd, input.path, input.label, input.scope)).path,
+    };
   }
 
   async writeLockKey(input: WorkspaceWriteLockKeyInput): Promise<WorkspaceWriteLockKeyResult> {
-    return { key: resolve(await fs.realpath(input.cwd), input.path) };
+    // The resolvers' canonicalisation without their containment check, so every
+    // spelling of one file — relative, absolute, or through a symlink — takes
+    // the same lock. Escapes are rejected by the resolvers inside the lock, not
+    // here. Sharing the canonicalisation is what keeps the lock-key space and
+    // the resolved-path space from drifting apart.
+    return { key: (await canonicalPathUnderCwd(input.cwd, input.path)).path };
   }
 
   async globFiles(input: WorkspaceGlobInput): Promise<WorkspaceGlobResult> {
@@ -294,48 +315,75 @@ function shellEscape(arg: string): string {
   return `'${arg.replaceAll("'", "'\\''")}'`;
 }
 
-async function resolveWritableInsideCwd(
+/**
+ * Canonical session cwd and the canonical path `inputPath` names under it, with
+ * no containment check — the single place that decides which path space every
+ * caller works in. Both the root and the candidate are realpath'd, the candidate
+ * through its deepest existing ancestor since the target may not exist yet.
+ * Comparing a realpath'd root against a merely resolved candidate rejected every
+ * legitimate absolute path whenever the session cwd sat under a symlink — macOS
+ * tmpdirs (`/var` → `/private/var`) and symlinked workspace roots.
+ */
+async function canonicalPathUnderCwd(
   cwd: string,
   inputPath: string,
-  label: string,
-): Promise<string> {
+): Promise<{ root: string; path: string }> {
   const root = await fs.realpath(cwd);
-  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
-
-  if (!isPathInside(root, candidate)) {
-    throw new Error(
-      `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
-        `received ${JSON.stringify(inputPath)}.`,
-    );
-  }
-
-  const parent = await fs.realpath(dirname(candidate));
-  if (!isPathInside(root, parent)) {
-    throw new Error(`${label} path must stay inside session cwd`);
-  }
-
-  return candidate;
+  const requested = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
+  return { root, path: await realpathAllowMissing(requested) };
 }
 
-async function resolveExistingInsideCwd(
+/**
+ * The same canonical path, rejected unless it stays inside the session cwd when
+ * the caller asked for `workspace` scope. Following the symlinks does not weaken
+ * containment: a link inside the cwd that points out of it resolves to its
+ * outside target and is rejected.
+ *
+ * Under `host` scope the canonicalisation is identical and only the containment
+ * assertion is skipped, so both scopes work in one path space and a scope change
+ * cannot move a path.
+ */
+async function canonicalPathInScope(
   cwd: string,
   inputPath: string,
   label: string,
-): Promise<string> {
-  const root = await fs.realpath(cwd);
-  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
+  scope: WorkspacePathScope,
+): Promise<{ root: string; path: string }> {
+  const { root, path } = await canonicalPathUnderCwd(cwd, inputPath);
+  if (scope === 'host') return { root, path };
+  return { root, path: assertInsideCwd(root, path, inputPath, label) };
+}
 
+async function resolveExistingPathInScope(
+  cwd: string,
+  inputPath: string,
+  label: string,
+  scope: WorkspacePathScope,
+): Promise<string> {
+  const { root, path: candidate } = await canonicalPathInScope(cwd, inputPath, label, scope);
+  if (scope === 'host') return await fs.realpath(candidate);
+  // The read/search callers depend on the target existing; surface that here
+  // rather than as a downstream open/spawn failure.
+  //
+  // Do not drop the second assertion: it closes the window between the two
+  // awaits, where a segment that was missing during canonicalisation can become
+  // a symlink out of the cwd before the realpath runs. It is deliberately
+  // defence-in-depth and no deterministic test can drive that race, so nothing
+  // will fail if it is removed.
+  return assertInsideCwd(root, await fs.realpath(candidate), inputPath, label);
+}
+
+function assertInsideCwd(
+  root: string,
+  candidate: string,
+  inputPath: string,
+  label: string,
+): string {
   if (!isPathInside(root, candidate)) {
     throw new Error(
       `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
-        `received ${JSON.stringify(inputPath)}.`,
+        `received ${JSON.stringify(inputPath)}, which resolves to ${JSON.stringify(candidate)}.`,
     );
   }
-
-  const target = await fs.realpath(candidate);
-  if (!isPathInside(root, target)) {
-    throw new Error(`${label} path must stay inside session cwd`);
-  }
-
-  return target;
+  return candidate;
 }

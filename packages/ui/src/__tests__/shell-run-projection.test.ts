@@ -6,7 +6,8 @@ import type {
   ShellRunUpdate,
   StoredMessage,
 } from '@maka/core';
-import { materializeTurns, overlayLiveTurn, overlayShellRunUpdates } from '../materialize.js';
+import { materializeTurns } from '../materialize.js';
+import { createTranscriptProjection } from '../transcript-projection.js';
 import type { LiveTurnProjection } from '../live-turn-projection.js';
 
 const REF = 'maka://runtime/background-tasks/pty-1';
@@ -57,12 +58,13 @@ describe('ShellRun UI projection', () => {
   });
 
   test('keeps a durable background update ahead of a stale live turn result', () => {
-    const settled = materializeTurns([
+    const messages: StoredMessage[] = [
       toolCall('bash-1', 'turn-1', 'Bash', { command: 'job', pty: true }, 1),
       toolResult('bash-1', 'turn-1', shellRun(1), 2),
       { type: 'user', id: 'user-2', turnId: 'turn-2', ts: 3, text: 'next' },
-    ]);
-    const unrelatedTurn = settled[1];
+    ];
+    const projection = createTranscriptProjection();
+    const unrelatedTurn = projection.project({ messages })[1];
     const update: ShellRunUpdate = {
       sessionId: 'session-1',
       ownership: { kind: 'local' },
@@ -70,7 +72,7 @@ describe('ShellRun UI projection', () => {
       sourceToolCallId: 'bash-1',
       result: shellRunSnapshot(3, { status: 'completed', completedAt: 5, exitCode: 0 }),
     };
-    const durable = overlayShellRunUpdates(settled, [update]);
+    const durable = projection.project({ messages, shellRunUpdates: [update] });
     assert.equal(durable[1], unrelatedTurn);
     assert.equal(durable[0]?.tools[0]?.status, 'completed');
 
@@ -89,7 +91,8 @@ describe('ShellRun UI projection', () => {
         }],
       }],
     };
-    const overlaid = overlayLiveTurn(durable, live);
+    const overlaid = projection.project({ messages, liveTurn: live, shellRunUpdates: [update] });
+    assert.equal(overlaid[1], unrelatedTurn, 'the live overlay must not disturb an unrelated turn');
     const result = overlaid[0]?.tools[0]?.result;
     assert.equal(result?.kind === 'shell_run' ? result.revision : undefined, 3);
     assert.equal(result?.kind === 'shell_run' ? result.status : undefined, 'completed');
@@ -118,7 +121,8 @@ describe('ShellRun UI projection', () => {
       result: shellRunSnapshot(1),
     };
 
-    const turns = overlayShellRunUpdates(overlayLiveTurn([], live), [update]);
+    const turns = createTranscriptProjection()
+      .project({ messages: [], liveTurn: live, shellRunUpdates: [update] });
     const result = turns[0]?.tools[0]?.result;
     assert.equal(result?.kind, 'shell_run');
     assert.equal(result?.kind === 'shell_run' ? result.output?.mode : undefined, 'pty');
@@ -131,11 +135,11 @@ describe('ShellRun UI projection', () => {
   });
 
   test('marks a running ShellRun inherited from a source session as detached', () => {
-    const settled = materializeTurns([
+    const messages: StoredMessage[] = [
       toolCall('bash-1', 'turn-1', 'Bash', { command: 'job', pty: true }, 1),
       toolResult('bash-1', 'turn-1', shellRun(1), 2),
-    ]);
-    const turns = overlayShellRunUpdates(settled, [{
+    ];
+    const turns = createTranscriptProjection().project({ messages, shellRunUpdates: [{
       sessionId: 'branch-session',
       ownership: {
         kind: 'source_owned',
@@ -145,20 +149,20 @@ describe('ShellRun UI projection', () => {
       sourceTurnId: 'turn-1',
       sourceToolCallId: 'bash-1',
       result: shellRunSnapshot(2),
-    }]);
+    }] });
 
     assert.equal(turns[0]?.tools[0]?.shellRunSource, 'owned');
     assert.equal(turns[0]?.tools[0]?.result?.kind === 'shell_run'
       ? turns[0]?.tools[0]?.result?.status
       : undefined, 'running');
 
-    const unavailable = overlayShellRunUpdates(settled, [{
+    const unavailable = createTranscriptProjection().project({ messages, shellRunUpdates: [{
       sessionId: 'branch-session',
       ownership: { kind: 'source_unavailable', sourceSessionId: 'source-session' },
       sourceTurnId: 'turn-1',
       sourceToolCallId: 'bash-1',
       result: shellRunSnapshot(2),
-    }]);
+    }] });
     assert.equal(unavailable[0]?.tools[0]?.shellRunSource, 'unavailable');
   });
 });

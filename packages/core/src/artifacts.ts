@@ -14,6 +14,7 @@ export const ARTIFACT_SOURCES = [
   'user_upload',
   'export',
   'snapshot',
+  'session_effect',
   'fixture',
 ] as const;
 
@@ -76,6 +77,7 @@ const ARTIFACT_USER_DELETE_ALLOWED_BY_SOURCE = {
   user_upload: true,
   export: true,
   snapshot: true,
+  session_effect: false,
   fixture: true,
 } as const satisfies Record<ArtifactSource, boolean>;
 

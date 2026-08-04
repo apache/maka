@@ -1,4 +1,9 @@
-import { SKILL_INVOCATION_TOKEN_SOURCE, type InlineReference } from '@maka/core';
+import {
+  INLINE_REFERENCE_LABEL_MAX_LENGTH,
+  INLINE_REFERENCE_MAX_COUNT,
+  SKILL_INVOCATION_TOKEN_SOURCE,
+  type InlineReference,
+} from '@maka/core';
 import type { LoadedSkillInstructions, LoadSkillInstructionsResult } from './skills.js';
 
 export type SkillInvocationMode = 'explicit' | 'model_tool';
@@ -74,16 +79,23 @@ export function skillInvocationInlineReferences(
   }
   const references: InlineReference[] = [];
   for (const match of displayText.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))) {
+    if (references.length === INLINE_REFERENCE_MAX_COUNT) break;
     const receipt = receiptByTokenName.get(match[1].toLowerCase());
     if (!receipt) continue;
     references.push({
       kind: 'skill',
       value: match[0],
-      label: receipt.name,
+      label: truncateWithoutSplittingSurrogate(receipt.name, INLINE_REFERENCE_LABEL_MAX_LENGTH),
       start: match.index,
     });
   }
   return references;
+}
+
+function truncateWithoutSplittingSurrogate(value: string, maxCodeUnits: number): string {
+  const truncated = value.slice(0, maxCodeUnits);
+  const lastCodeUnit = truncated.charCodeAt(truncated.length - 1);
+  return lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff ? truncated.slice(0, -1) : truncated;
 }
 
 export function failedSkillInvocationReceipt(

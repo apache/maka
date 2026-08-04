@@ -95,6 +95,7 @@ export type {
   CreateSqlitePlanStoreOptions,
   SqlitePlanStore,
 } from './plan-store.js';
+export * from './plan-authority.js';
 export { createSqliteTaskLedgerStore } from './task-ledger-store.js';
 export type {
   ConversationTaskLedgerCopyInput,
@@ -110,8 +111,14 @@ export type {
   DeepResearchStore,
   SqliteDeepResearchStore,
 } from './deep-research-store.js';
+export {
+  authenticateInteractiveDeepResearchStoreWriter,
+  openInteractiveDeepResearchStoreForWrite,
+} from './deep-research-authority.js';
+export type { InteractiveDeepResearchStoreWriter } from './deep-research-authority.js';
 export * from './config-transfer.js';
 export * from './automation-store.js';
+export * from './daily-review-authority.js';
 export * from './automation-authority.js';
 export * from './sqlite-runtime-store.js';
 export * from './runtime-event-persistence.js';
@@ -122,8 +129,9 @@ export * from './workspace-identity.js';
 export * from './memory-bundle-store.js';
 export * from './long-term-memory-store.js';
 export * from './project-catalog.js';
+export * from './project-session-backfill.js';
 export * from './git-worktree-child-executor.js';
-export * from './git-workspace-service.js';
+export * from './managed-workspace-owner.js';
 export * from './session-bundle-policy.js';
 export * from './session-bundle-contract.js';
 export * from './session-bundle-manifest.js';

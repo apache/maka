@@ -1,12 +1,6 @@
 import {
-  CircleGauge,
-  Grid3X3,
-  HelpCircle,
-  MessageCircleQuestion,
-  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightClose,
   PanelRightOpen,
   Search,
 } from '@maka/ui/icons';
@@ -14,17 +8,13 @@ import {
   IconButton,
   useUiLocale,
 } from '@maka/ui';
-import {
-  DropdownMenu,
-  DropdownMenuItem,
-} from '@astryxdesign/core/DropdownMenu';
 import { Icon } from '@astryxdesign/core/Icon';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import {
   SideNavCollapseButton,
   type SideNavImperativeCollapseHandle,
 } from '@astryxdesign/core/SideNav';
-import { useRef, useState, type RefObject } from 'react';
+import type { RefObject } from 'react';
 import { getShellCopy } from './locales/shell-copy';
 
 /**
@@ -47,7 +37,7 @@ export function AppShellTopbarActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   return (
-    <div className="maka-shell-topbar-rail" data-maka-contract="shell-topbar-rail" aria-label={copy.windowActions}>
+    <div className="maka-shell-topbar-rail" data-maka-contract="shell-topbar-rail" role="group" aria-label={copy.windowActions}>
       <Tooltip content={copy.searchConversations}>
         <IconButton
           label={copy.searchConversations}
@@ -82,69 +72,43 @@ export function AppShellTopbarActions(props: {
   );
 }
 
+/**
+ * The titlebar's right edge.
+ *
+ * It used to also carry a `…` menu holding 问题反馈 / 打开命令面板 / 打开帮助 /
+ * 打开健康中心 — a drawer of four things that each belong somewhere else.
+ * 健康中心 was a duplicate of the Settings nav entry, 问题反馈 only opened
+ * Settings → 关于, and the other two now have real homes: the keyboard sheet is
+ * a row on 关于, and the palette keeps ⌘K, which that sheet documents.
+ *
+ * What is left is the workbar toggle, and only while the workbar is closed —
+ * open, the toggle lives in the workbar's own tab row, beside the thing it
+ * closes. So this bar renders nothing at all rather than holding an empty
+ * no-drag rectangle open in the titlebar.
+ */
 export function AppShellWorkspaceTopActions(props: {
   workbarAvailable: boolean;
   workbarCollapsed: boolean;
   onToggleWorkbar(): void;
-  onOpenFeedback(): void;
-  onOpenPalette(): void;
-  onOpenHelp(): void;
-  onOpenHealth(): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
-  const workbarLabel = props.workbarCollapsed ? copy.expandWorkbar : copy.collapseWorkbar;
-  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-
-  const scheduleAfterMenuClose = (intent: () => void) => {
-    pendingMenuIntentRef.current = intent;
-  };
+  // Open, the toggle is the workbar's own; closed, this is the only way back.
+  if (!props.workbarAvailable || !props.workbarCollapsed) return null;
 
   return (
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <DropdownMenu
-        isMenuOpen={menuOpen}
-        onOpenChange={(open) => {
-          setMenuOpen(open);
-          if (open) return;
-          const intent = pendingMenuIntentRef.current;
-          pendingMenuIntentRef.current = null;
-          if (intent) window.requestAnimationFrame(intent);
-        }}
-        button={{
-          label: copy.moreActions,
-          icon: <ChromeIcon icon={MoreHorizontal} />,
-          isIconOnly: true,
-          variant: 'ghost',
-          size: 'md',
-          className: 'maka-titlebar-action',
-        }}
-      >
-          <DropdownMenuItem icon={<ChromeIcon icon={MessageCircleQuestion} />} label={copy.feedback} onClick={() => scheduleAfterMenuClose(props.onOpenFeedback)} />
-          <DropdownMenuItem icon={<ChromeIcon icon={Grid3X3} />} label={copy.openCommandPalette} onClick={() => scheduleAfterMenuClose(props.onOpenPalette)} />
-          <DropdownMenuItem icon={<ChromeIcon icon={HelpCircle} />} label={copy.openHelp} onClick={() => scheduleAfterMenuClose(props.onOpenHelp)} />
-          <DropdownMenuItem icon={<ChromeIcon icon={CircleGauge} />} label={copy.openHealth} onClick={() => scheduleAfterMenuClose(props.onOpenHealth)} />
-      </DropdownMenu>
-      {props.workbarAvailable && (
-        <Tooltip content={workbarLabel}>
-          <IconButton
-            label={workbarLabel}
-            icon={
-              props.workbarCollapsed ? (
-                <ChromeIcon icon={PanelRightOpen} />
-              ) : (
-                <ChromeIcon icon={PanelRightClose} />
-              )
-            }
-            variant="ghost"
-            size="md"
-            className="maka-titlebar-action"
-            onClick={props.onToggleWorkbar}
-            aria-expanded={!props.workbarCollapsed}
-          />
-        </Tooltip>
-      )}
+      <Tooltip content={copy.expandWorkbar}>
+        <IconButton
+          label={copy.expandWorkbar}
+          icon={<ChromeIcon icon={PanelRightOpen} />}
+          variant="ghost"
+          size="md"
+          className="maka-titlebar-action"
+          onClick={props.onToggleWorkbar}
+          aria-expanded={false}
+        />
+      </Tooltip>
     </div>
   );
 }

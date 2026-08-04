@@ -256,7 +256,7 @@ export function normalizeLocalMemorySettings(input: unknown): LocalMemorySetting
 
 export function defaultLocalMemoryMarkdown(now = Date.now()): string {
   const exampleContent =
-    '这里写你希望 Maka 记住的长期偏好。默认不会注入给 agent；需要在设置里单独开启“agent 可读取本地记忆”。';
+    '这里写你希望 Maka 记住的长期偏好。默认不会提供给模型；需要在设置里单独开启“模型上下文可读取”。';
   const exampleId = stableLocalMemoryEntryId(exampleContent, now);
   return [
     '# Maka Memory',

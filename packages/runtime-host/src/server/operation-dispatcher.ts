@@ -36,8 +36,14 @@ export type OperationHandlerMap = {
 export type DomainOperationKey = Exclude<OperationKey, 'host.status'>;
 export type TurnOperationKey = Extract<
   OperationKey,
-  'turn.start' | 'turn.query' | 'turn.stop' | 'turn.resume.query' | 'turn.resume.start'
+  | 'turn.start'
+  | 'turn.query'
+  | 'turn.stop'
+  | 'turn.regenerate'
+  | 'turn.resume.query'
+  | 'turn.resume.start'
 >;
+export type ContextOperationKey = Extract<OperationKey, `context.${string}`>;
 export type RuntimePolicyOperationKey = Extract<
   OperationKey,
   `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`
@@ -56,7 +62,7 @@ export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.insp
 export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
 export type SessionContinuityOperationKey = Extract<
   OperationKey,
-  'subscription.open' | 'subscription.close'
+  'subscription.open' | 'subscription.close' | 'session.transcript.query'
 >;
 export type SessionRevisionOperationKey = Extract<
   OperationKey,
@@ -66,9 +72,13 @@ export type SessionRetirementOperationKey = Extract<
   OperationKey,
   'session.lifecycle.set' | 'session.remove'
 >;
+export type SessionEffectOperationKey = Extract<OperationKey, 'session.recap.generate'>;
 export type SessionCatalogOperationKey = Exclude<
   Extract<OperationKey, `session.${string}`>,
-  SessionRevisionOperationKey | SessionRetirementOperationKey
+  | SessionContinuityOperationKey
+  | SessionRevisionOperationKey
+  | SessionRetirementOperationKey
+  | SessionEffectOperationKey
 >;
 export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
@@ -79,8 +89,12 @@ export type OAuthOperationKey = Extract<OperationKey, `oauth.${string}`>;
 export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resource.${string}`>;
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
 export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
+export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
+export type DeepResearchOperationKey = Extract<OperationKey, `deep-research.${string}`>;
+export type DailyReviewOperationKey = Extract<OperationKey, `daily-review.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
+export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
 export type ConnectionEffectOperationHandlerMap = Pick<
   OperationHandlerMap,
@@ -110,6 +124,7 @@ export type SessionRetirementOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionRetirementOperationKey
 >;
+export type SessionEffectOperationHandlerMap = Pick<OperationHandlerMap, SessionEffectOperationKey>;
 export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
@@ -125,6 +140,9 @@ export type ClientCapabilityOperationHandlerMap = Pick<
   ClientCapabilityOperationKey
 >;
 export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, AutomationOperationKey>;
+export type PlanOperationHandlerMap = Pick<OperationHandlerMap, PlanOperationKey>;
+export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
+export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]

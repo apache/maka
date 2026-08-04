@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, nativeTheme, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -166,7 +166,6 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
   async function createWindow(signal: AbortSignal): Promise<void> {
     if (signal.aborted) return;
     await mkdir(workspaceRoot, { recursive: true });
-    installApplicationMenu();
     // Restore previously-saved bounds when available; first launch and
     // legacy installs both fall back to the default 1240x820 frame. After
     // load, validate the saved x/y against the current display layout — if
@@ -610,8 +609,8 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
         readyState: document.readyState,
         title: document.title,
         appFramePresent: Boolean(document.querySelector('.appFrame')),
-        searchModalPresent: Boolean(document.querySelector('.maka-search-modal')),
-        searchModalBackdropPresent: Boolean(document.querySelector('dialog.maka-search-modal[open]')),
+        searchModalPresent: Boolean(document.querySelector('[data-maka-contract="search-modal"]')),
+        searchModalOpen: Boolean(document.querySelector('dialog[data-maka-contract="search-modal"][open]')),
         errorBoundaryPresent: Boolean(document.querySelector('.maka-error-surface')),
         bodyTextLength: document.body?.innerText?.trim().length ?? 0,
         bodyTextSample: document.body?.innerText?.trim().slice(0, 240) ?? '',
@@ -651,7 +650,7 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
             backgroundColor: style.backgroundColor,
           };
         })(),
-        activeElementInSearchModal: Boolean(document.activeElement && document.activeElement.closest && document.activeElement.closest('.maka-search-modal')),
+        activeElementInSearchModal: Boolean(document.activeElement && document.activeElement.closest && document.activeElement.closest('[data-maka-contract="search-modal"]')),
         activeElement: document.activeElement ? {
           tagName: document.activeElement.tagName,
           className: typeof document.activeElement.className === 'string' ? document.activeElement.className : '',
@@ -666,8 +665,4 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
     .catch((err: unknown) => {
       console.log(`[real-window-smoke] diagnostic ${JSON.stringify({ ...windowState, rendererError: errorMessage(err) })}`);
     });
-}
-
-function installApplicationMenu(): void {
-  Menu.setApplicationMenu(null);
 }

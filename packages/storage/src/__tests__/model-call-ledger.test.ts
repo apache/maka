@@ -214,11 +214,7 @@ describe('re-projecting a run the read model fell behind on', () => {
     });
   });
 
-  test('an undecodable authority event is counted out, not dropped with the marker', async () => {
-    // Clearing the marker is right — it will not decode next pass either, and
-    // holding the run would stall every later repair behind it. But the call
-    // was real, so the count has to leave with the result or it vanishes from
-    // the totals and the pending count at the same time.
+  test('an undecodable authority event keeps durable incomplete evidence', async () => {
     await withLedger(async (ledger) => {
       await ledger.markRunPendingReprojection('session-1', 'run-1');
 
@@ -231,8 +227,9 @@ describe('re-projecting a run the read model fell behind on', () => {
       });
 
       assert.equal(result.unreadableEvents, 1);
-      assert.equal(result.repaired, 1);
-      assert.deepEqual(ledger.pendingReprojections(), []);
+      assert.equal(result.repaired, 0);
+      assert.equal(result.remaining, 1);
+      assert.equal(ledger.pendingReprojections().length, 1);
     });
   });
 
@@ -252,6 +249,7 @@ describe('re-projecting a run the read model fell behind on', () => {
         ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
         ['good'],
       );
+      assert.equal(ledger.pendingReprojections().length, 1);
     });
   });
 });

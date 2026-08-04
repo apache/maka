@@ -79,11 +79,15 @@ export function SessionSidebarFooter(props: {
   const updatePercent = Math.round(props.updateReminder?.progressPercent ?? 0);
   const updateLabel = props.updateReminder?.state === 'downloaded'
     ? copy.restartUpdate
+    : props.updateReminder?.state === 'error'
+      ? copy.retryUpdate
     : props.updateReminder?.state === 'downloading'
       ? `${updatePercent}%`
       : copy.update;
   const updateTitle = props.updateReminder?.state === 'downloaded'
     ? copy.updateDownloaded(props.updateReminder.latestVersion)
+    : props.updateReminder?.state === 'error'
+      ? copy.updateFailed(props.updateReminder.latestVersion)
     : props.updateReminder?.state === 'downloading'
       ? copy.downloadingUpdate(updatePercent)
       : props.updateReminder
@@ -113,7 +117,6 @@ export function SessionSidebarFooter(props: {
           variant="ghost"
           width="100%"
           onClick={props.onOpenUpdate}
-          isDisabled={props.updateReminder.state === 'downloading'}
         >
           {props.updateReminder.state === 'downloading' && <span className="maka-sidebar-update-progress" aria-hidden="true" />}
           <span>{updateLabel}</span>

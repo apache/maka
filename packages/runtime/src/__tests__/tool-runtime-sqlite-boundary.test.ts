@@ -24,11 +24,10 @@ describe('ToolRuntime with real SQLite boundary', () => {
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
-        getCurrentRunId: () => 'run-1',
-        getCurrentInvocationId: () => 'invocation-1',
+        runId: 'run-1',
+        invocationId: 'invocation-1',
         runtimeCommitSink: store,
       });
-      runtime.beginTurn('turn-1');
       const published: SessionEvent[] = [];
       const eventSink = {
         push: (event: SessionEvent) => published.push(event),
@@ -68,7 +67,12 @@ describe('ToolRuntime with real SQLite boundary', () => {
         abortSignal: new AbortController().signal,
         eventSink,
       });
-      assert.match(JSON.stringify(rejected.result), /exclusive tool agent_swarm/i);
+      // The refusal says nothing ran before it says why, and it names the tool
+      // that held the step — the same wording swarm-orchestration asserts.
+      assert.match(
+        JSON.stringify(rejected.result),
+        /Tool agent_output did not run: agent_swarm cannot share an assistant step/i,
+      );
 
       const memory = createSessionEventMapMemory();
       for (const event of published) {
@@ -109,8 +113,8 @@ describe('ToolRuntime with real SQLite boundary', () => {
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
-        getCurrentRunId: () => 'run-1',
-        getCurrentInvocationId: () => 'invocation-1',
+        runId: 'run-1',
+        invocationId: 'invocation-1',
         runtimeCommitSink: store,
       });
       const tool: MakaTool = {
@@ -197,8 +201,8 @@ describe('ToolRuntime with real SQLite boundary', () => {
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
-        getCurrentRunId: () => 'run-1',
-        getCurrentInvocationId: () => 'invocation-1',
+        runId: 'run-1',
+        invocationId: 'invocation-1',
         runtimeCommitSink: store,
       });
       const published: SessionEvent[] = [];

@@ -28,7 +28,6 @@ import { OpenAiCodexService } from './oauth/openai-codex-service.js';
 import { createOpenAiCodexE2eFixtureService } from './openai-codex-e2e-fixture.js';
 import { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
 import { XaiOAuthService } from './oauth/xai-oauth-service.js';
-import { CursorSubscriptionService } from './oauth/cursor-subscription-service.js';
 import { AntigravitySubscriptionService } from './oauth/antigravity-subscription-service.js';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import { ok } from '@maka/core/result';
@@ -75,6 +74,7 @@ import {
   createMcpConfigStore,
   createSqliteModelCallLedger,
   createSqliteTelemetryRepo,
+  resetIncompatibleOperationalStateDatabase,
 } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
@@ -115,13 +115,15 @@ import { registerPlanReminderIpc } from './plan-reminders-ipc-main.js';
 import { registerWorkspaceResourcesIpc } from './workspace-resources-ipc-main.js';
 import type { NewSessionSkillContext } from './workspace-resources-ipc-main.js';
 import { registerDailyReviewIpc } from './daily-review-ipc-main.js';
+import { registerInspectorIpc } from './inspector-ipc-main.js';
 import { registerUsageIpc } from './usage-ipc-main.js';
 import { registerWebSearchIpc } from './web-search-ipc-main.js';
 import { registerNotificationsIpc } from './notifications-ipc-main.js';
 import { registerAppIpc } from './app-ipc-main.js';
+import { createAppUpdateService } from './app-update-service.js';
+import { hasInterruptibleUpdateWork } from './app-update-activity.js';
 import { registerGitIpc } from './git-ipc-main.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
-import { registerWorkspaceInstructionsIpc } from './workspace-instructions-ipc-main.js';
 import { registerOnboardingIpc } from './onboarding-ipc-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
 import {
@@ -161,6 +163,7 @@ import {
 } from './project-context-root.js';
 import { isComputerUseRealModelE2e, isE2e, isIsolatedE2e } from './startup-context.js';
 import { resolveDesktopStorageRoot } from './storage-root-startup.js';
+import { startupStep, whileAwaitingPerson } from './startup-step.js';
 import { openDesktopExecutionStoreWiring } from './execution-store-wiring.js';
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
@@ -197,19 +200,27 @@ try {
   }
   throw error;
 }
-const workspaceRoot = join(app.getPath('userData'), 'workspaces', e2eFixture?.workspaceName ?? 'default');
+const userDataDir = app.getPath('userData');
+const workspaceRoot = join(userDataDir, 'workspaces', e2eFixture?.workspaceName ?? 'default');
 const credentialStore = createFileCredentialStore(workspaceRoot);
 if (e2eFixture) {
   console.log(`[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`);
   await seedE2eFixture({ workspaceRoot, fixture: e2eFixture, credentialStore });
 } else {
-  const storageRoot = await resolveDesktopStorageRoot(workspaceRoot, {
-    confirmRepair: confirmDesktopStorageRootRepair,
-  });
+  const storageRoot = await startupStep(
+    'storage root',
+    resolveDesktopStorageRoot(workspaceRoot, {
+      confirmRepair: confirmDesktopStorageRootRepair,
+    }),
+  );
   if (!storageRoot) {
     app.exit(0);
     await new Promise<never>(() => {});
   }
+}
+
+if (resetIncompatibleOperationalStateDatabase(workspaceRoot)) {
+  console.warn('[startup] cleared incompatible operational state');
 }
 
 async function confirmDesktopStorageRootRepair(): Promise<boolean> {
@@ -221,18 +232,25 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
   // on any platform (macOS modal loops block CDP evaluation, Linux does not).
   console.log('[storage-root] root-identity conflict; parking at repair dialog');
   const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === 'zh';
-  const { response } = await dialog.showMessageBox({
-    type: 'warning',
-    title: isChinese ? 'Maka 工作区需要修复' : 'Maka workspace needs repair',
-    message: isChinese ? 'Maka 无法验证这个工作区。' : 'Maka cannot verify this workspace.',
-    detail: isChinese
-      ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
-      : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
-    buttons: isChinese ? ['修复工作区', '退出'] : ['Repair Workspace', 'Exit'],
-    defaultId: 1,
-    cancelId: 1,
-    noLink: true,
-  });
+  // The person owns this delay, so the startup reporter stops calling it a
+  // hang — otherwise reading the dialog for four seconds prints "still waiting
+  // on storage root" at somebody who is looking straight at the reason. It
+  // still says once that an answer is expected, which is the only line printed
+  // when this dialog fails to appear at all.
+  const { response } = await whileAwaitingPerson(
+    dialog.showMessageBox({
+      type: 'warning',
+      title: isChinese ? 'Maka 工作区需要修复' : 'Maka workspace needs repair',
+      message: isChinese ? 'Maka 无法验证这个工作区。' : 'Maka cannot verify this workspace.',
+      detail: isChinese
+        ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
+        : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
+      buttons: isChinese ? ['修复工作区', '退出'] : ['Repair Workspace', 'Exit'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    }),
+  );
   return response === 0;
 }
 // 保持系统唤醒 (settings.system.keepSystemAwake): holds an Electron
@@ -243,14 +261,23 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const store = createSessionStore(workspaceRoot);
 const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
-const projectCatalog = createProjectCatalog(workspaceRoot);
+const projectCatalog = createProjectCatalog(workspaceRoot, {
+  onLegacyImportFailure: (error) =>
+    console.error('[projects] projects.json could not be imported:', error),
+});
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
 const planStore = createSqlitePlanStore(workspaceRoot);
-const executionStoreWiring = await openDesktopExecutionStoreWiring(workspaceRoot);
+const executionStoreWiring = await startupStep(
+  'execution store',
+  openDesktopExecutionStoreWiring(workspaceRoot),
+);
 const { runStore, shellRunStore } = executionStoreWiring;
-const runtimePersistence = await openRuntimeEventPersistence({
-  workspaceRoot,
-});
+const runtimePersistence = await startupStep(
+  'runtime event persistence',
+  openRuntimeEventPersistence({
+    workspaceRoot,
+  }),
+);
 const runtimeEventStore = runtimePersistence.runtimeEventStore;
 const connectionStore = createConnectionStore(workspaceRoot);
 const settingsStore = createSettingsStore(workspaceRoot);
@@ -291,7 +318,7 @@ const claudeSubscription = new ClaudeSubscriptionService({
   openExternal: (url) => shell.openExternal(url),
   credentialStore,
 });
-// PR-MODEL-OAUTH-ALL-0: Codex / Cursor / Antigravity subscription
+// PR-MODEL-OAUTH-ALL-0: Codex / Antigravity subscription
 // services. Same shape as `claudeSubscription` — main-process only,
 // IPC payloads never carry tokens, each gated behind its own
 // MAKA_*_EXPERIMENTAL env var. Antigravity is a `preview` placeholder
@@ -382,11 +409,6 @@ const voiceIpcService = createVoiceIpcService({
 function hasConnectionSecret(connection: LlmConnection): Promise<boolean> {
   return oauthModelConnections.hasConnectionSecret(connection);
 }
-const cursorSubscription = new CursorSubscriptionService({
-  userDataDir: app.getPath('userData'),
-  openExternal: (url) => shell.openExternal(url),
-  credentialStore,
-});
 const antigravitySubscription = new AntigravitySubscriptionService({
   userDataDir: app.getPath('userData'),
   openExternal: (url) => shell.openExternal(url),
@@ -627,6 +649,11 @@ function focusOrCreateMainWindow(signal: AbortSignal): void {
   }
 }
 const safeSendToRenderer = mainWindowController.send;
+const updateMockState = process.env.MAKA_UPDATE_MOCK_STATE === 'available' ||
+  process.env.MAKA_UPDATE_MOCK_STATE === 'downloading' ||
+  process.env.MAKA_UPDATE_MOCK_STATE === 'downloaded'
+  ? process.env.MAKA_UPDATE_MOCK_STATE
+  : undefined;
 taskLedgerStore.subscribe((event) => safeSendToRenderer('tasks:changed', event));
 deepResearchStore.subscribe((event) => safeSendToRenderer('deepResearch:changed', event));
 const deepResearchTools = buildDeepResearchTools({
@@ -642,6 +669,19 @@ const shellRuns = new ShellRunProcessManager({
   onShellRunUpdate: (update) => {
     safeSendToRenderer('shell-runs:update', update);
   },
+});
+const updateService = createAppUpdateService({
+  currentVersion: app.getVersion(),
+  isPackaged: app.isPackaged,
+  openExternal: (url) => shell.openExternal(url),
+  mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
+  mockState: updateMockState,
+  onStatusChange: (status) => safeSendToRenderer('app:updateStatusChanged', status),
+  hasActiveTasks: () => hasInterruptibleUpdateWork({
+    sessionActivities,
+    automationScheduler: automationWiring.scheduler,
+    shellRuns,
+  }),
 });
 const {
   persistToolArtifacts,
@@ -734,8 +774,8 @@ function ensureUsageReady(): Promise<void> {
 const previousBotStatus = new Map<BotProvider, Pick<BotStatus, 'readiness' | 'reason'>>();
 let botIncoming: ReturnType<typeof createBotIncomingMainService>;
 // Single authority for the "current project root" selection, shared across the
-// app/window, git, workspace-search, workspace-instructions, and session-entry
-// IPC surfaces. botIncoming and automation cron runs read the current
+// app/window, git, workspace-search, and session-entry IPC surfaces.
+// botIncoming and automation cron runs read the current
 // selection through the thin `resolveCurrentProjectRoot` adapter below.
 const projectRootController = createProjectRootController({
   lastProjectPathFile: join(workspaceRoot, 'last-project-path.json'),
@@ -1053,11 +1093,11 @@ function registerIpc(): void {
     buildInfo,
     e2eFixture,
     projectManagement,
+    updateService,
   });
   registerMemoryIpc({ localMemory });
   registerConfigIpc({ connectionStore, settingsStore, credentialStore, workspaceRoot });
   registerNotificationsIpc({ settingsStore, mainWindowController, e2e: isE2e });
-  registerWorkspaceInstructionsIpc({ getCurrentProjectRoot: currentProjectRoot });
   registerWorkspaceResourcesIpc({
     workspaceRoot,
     artifactStore,
@@ -1123,7 +1163,6 @@ function registerIpc(): void {
     openAiCodex,
     githubCopilotSubscription,
     xaiOAuth,
-    cursorSubscription,
     antigravitySubscription,
     isClaudeSubscriptionAuthenticatedState,
     syncClaudeSubscriptionConnection,
@@ -1206,6 +1245,12 @@ function registerIpc(): void {
       : {}),
   });
   registerDailyReviewIpc({ dailyReview, dailyReviewArchiveStore, mainWindowController });
+  registerInspectorIpc({
+    ipcMain,
+    readSessionRuntimeEvents: (sessionId) => runtimeEventStore.readSessionRuntimeEvents(sessionId),
+    listSessionRuns: (sessionId) => runStore.listSessionRuns(sessionId),
+    readRunEvents: (sessionId, runId) => runStore.readEvents(sessionId, runId),
+  });
   registerUsageIpc({
     ipcMain,
     settingsStore,
@@ -1419,6 +1464,7 @@ registerIpc();
 wireAppLifecycle({
   startHidden,
   e2eFixture,
+  userDataDir,
   workspaceRoot,
   sessionStore: store,
   projectCatalog,
@@ -1433,6 +1479,7 @@ wireAppLifecycle({
   botRegistry,
   planReminders,
   dailyReview,
+  updateService,
   automationWiring,
   goalWiring,
   computerUse,
@@ -1459,13 +1506,7 @@ wireAppLifecycle({
 });
 
 function computerUseCapabilityInput() {
-  // Whichever executor was selected reports its own shape: cua-driver an
-  // action/capture role pair, maka-cu (§11) a single supervised child. Reading
-  // only `serviceState` meant a ready maka-cu backend produced `undefined`
-  // here, and the card said "not available" while its own availability half
-  // said the opposite.
-  const executorState =
-    computerUse.backend?.serviceState?.() ?? computerUse.backend?.executorState?.();
+  const executorState = computerUse.backend?.executorState?.();
   return {
     backendId: computerUse.backendId,
     health: computerUseServiceHealth(computerUse.backendId, executorState),

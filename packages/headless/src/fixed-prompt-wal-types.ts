@@ -27,6 +27,15 @@ export interface HarborVerifierOutcome {
   attempts: HarborVerifierAttempt[];
 }
 
+/** What the harness's verifier wrote about a trial. One shape from the runner's
+ * read of the trial directory through to the WAL, so the grade contract cannot
+ * drift along the way. Whether it amounts to a score is decided in one place,
+ * by structuredVerifierGrade. */
+export interface HarborTrialGrade {
+  reward: number;
+  verifier?: HarborVerifierOutcome;
+}
+
 export interface FixedPromptTaskCompletedEvent {
   schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
   type: 'task_completed';
@@ -108,8 +117,13 @@ export interface FixedPromptTaskBudgetExhaustedEvent {
   resumeFingerprint?: string;
   taskId: string;
   status: 'budget_exhausted';
-  passed: false;
-  scored: false;
+  /** A trial can exhaust its budget and still be graded: the harness runs the
+   * verifier after the agent-phase exception. `scored` is the authority — it is
+   * true only when the verifier's artifacts agreed on a verdict. `harbor` also
+   * travels with a verdict that was rejected, so its presence alone says
+   * nothing; read `scored` before trusting the reward. */
+  passed: boolean;
+  scored: boolean;
   eligible: boolean;
   errorClass: 'budget_exhausted';
   error: string;
@@ -133,6 +147,7 @@ export interface FixedPromptTaskBudgetExhaustedEvent {
   taskToolSummary?: HarborCellTaskToolSummary;
   steps?: number;
   durationMs?: number;
+  harbor?: HarborTrialGrade;
 }
 
 export interface FixedPromptTaskPlumbingFailedEvent {

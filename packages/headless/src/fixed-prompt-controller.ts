@@ -17,6 +17,7 @@ import {
   type FixedPromptTaskPlumbingFailedEvent,
   type FixedPromptTaskWalEvent,
   type FixedPromptWalEvent,
+  type HarborTrialGrade,
   type HarborVerifierOutcome,
   type UnscoredCellFailureClass,
 } from './fixed-prompt-wal-types.js';
@@ -37,6 +38,7 @@ export type {
   FixedPromptTaskPlumbingFailedEvent,
   FixedPromptTaskWalEvent,
   FixedPromptWalEvent,
+  HarborTrialGrade,
   HarborVerifierAttempt,
   HarborVerifierOutcome,
   PromptCandidateCommittedEvent,
@@ -114,6 +116,10 @@ export interface FixedPromptBudgetExhaustedArtifactRefs {
   tokenSummary?: HarborCellTokenSummary;
   cellOutput?: HarborTaskRunCellOutput;
   executionIdentity?: HarborCellExecutionIdentity;
+  /** The verifier's own verdict on the workspace the exhausted agent left. It is
+   * the harness's authoritative artifact, so it survives a missing cell output —
+   * the agent's self-report is not what grades a trial. */
+  harbor?: HarborTrialGrade;
 }
 
 export class FixedPromptBudgetExhaustedError extends Error {
@@ -1097,6 +1103,21 @@ function taskBudgetExhaustedEvent(input: {
   const traceEventsPath = artifactRefs.traceEventsPath ?? cellOutput?.traceEventsPath;
   const providerTelemetryPath =
     artifactRefs.providerTelemetryPath ?? cellOutput?.providerTelemetryPath;
+  // The runner transports the verifier's artifacts; scoring authority is decided
+  // here, by the same two functions the completed path uses. structuredVerifierGrade
+  // is what rejects a reward that disagrees with its own verifier outcome, so a
+  // missing self-report cannot turn a corrupt scoring authority into a pass. No
+  // deadline is claimed: without a cell there is no attested settlement, and the
+  // verdict alone is what grades the trial. Evidence that fails to attest this
+  // arm keeps it unscored — a grade nobody can attribute is not this arm's grade.
+  const harbor = evidenceFailure === undefined ? artifactRefs.harbor : undefined;
+  const { passed, scored } = taskCompletedScoringProjection({
+    status: 'failed',
+    reward: harbor?.reward ?? 0,
+    errorClass: 'budget_exhausted',
+    deadlineSettled: false,
+    verifierGrade: structuredVerifierGrade(harbor),
+  });
   return {
     schemaVersion: FIXED_PROMPT_WAL_SCHEMA_VERSION,
     type: 'task_budget_exhausted',
@@ -1107,11 +1128,12 @@ function taskBudgetExhaustedEvent(input: {
     ...(input.resumeFingerprint ? { resumeFingerprint: input.resumeFingerprint } : {}),
     taskId: input.taskId,
     status: 'budget_exhausted',
-    passed: false,
-    scored: false,
+    passed,
+    scored,
     eligible: evidenceFailure === undefined,
     errorClass: 'budget_exhausted',
     error: errorMessage(input.error),
+    ...(harbor ? { harbor } : {}),
     ...(evidenceFailure
       ? {
           evidenceErrorClass: evidenceFailure.errorClass,
@@ -1292,7 +1314,8 @@ function budgetExhaustedArtifactRefs(error: unknown): FixedPromptBudgetExhausted
         refs.runtimeEventsUnavailableReason ||
         refs.tokenSummary ||
         refs.cellOutput ||
-        refs.executionIdentity)
+        refs.executionIdentity ||
+        refs.harbor)
     )
       return refs;
   }

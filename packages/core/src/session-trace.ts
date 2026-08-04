@@ -228,6 +228,15 @@ export interface SessionTraceCoverage {
   /** Turn ids with aggregate usage but no canonical record behind it. */
   turnsMissingModelCalls: string[];
   /**
+   * Canonical records the reader could not read or decode.
+   *
+   * Counted rather than dropped: spend the trace cannot show is the difference
+   * between a gap that is visible and one that is not. The unit is deliberately
+   * loose — a run whose events cannot be read at all counts as one, because
+   * nothing is known about how many records it held. Read it as a floor.
+   */
+  unreadableRecords: number;
+  /**
    * Turn ids where the aggregate usage stands for more runtime steps than there
    * are main model calls on record. A shortfall this narrow is still only what
    * the ledgers disagree about — it is a floor on what is missing, not a count.

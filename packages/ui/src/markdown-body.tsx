@@ -318,7 +318,6 @@ function MarkdownLink(props: { href: string; children: ReactNode }) {
       <span
         data-reason="internal-invalid"
         title={copy.invalidInternalLink}
-        aria-label={copy.invalidInternalLink}
       >
         {children}
       </span>
@@ -341,7 +340,6 @@ function MarkdownLink(props: { href: string; children: ReactNode }) {
     <span
       data-reason="unsafe-scheme"
       title={copy.unsafeLink}
-      aria-label={copy.unsafeLink}
     >
       {children}
     </span>

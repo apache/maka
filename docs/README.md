@@ -43,7 +43,6 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Evidence classes](./computer-use-evidence-classes.md)
 - [Provider evidence contract](./computer-use-provider-evidence.md)
 - [Host events contract](./computer-use-host-events-contract.md)
-- [cua-driver artifact integrity](./cua-driver-artifact-integrity.md)
 
 ### Frontend and validation
 

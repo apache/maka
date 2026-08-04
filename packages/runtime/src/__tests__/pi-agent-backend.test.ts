@@ -337,7 +337,7 @@ describe('PiAgentBackend skeleton', () => {
       app: 'Example',
       window_id: 42,
       observation_id: 'frame-1',
-      text: '<text>',
+      text: '<text:11>',
       coordinate: [123, 456],
     };
     assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, expected);

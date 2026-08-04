@@ -620,7 +620,10 @@ describe('local MEMORY.md contract', () => {
     const parsed = parseLocalMemoryMarkdown(defaultLocalMemoryMarkdown(1700000000000));
     assert.equal(parsed.safeMode, false);
     assert.equal(parsed.entries.length, 1);
-    assert.equal(parsed.entries[0]?.id, 'mem-5de3e38c014ca2d7');
+    // Content-addressed: the id is a hash of the template body, so it moves
+    // whenever the seed copy does. Recomputed from the source, not copied out
+    // of a failure message.
+    assert.equal(parsed.entries[0]?.id, 'mem-e060c48e23fe4573');
     assert.equal(parsed.entries[0]?.origin, 'manual');
   });
 });

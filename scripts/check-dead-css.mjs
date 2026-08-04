@@ -3,12 +3,18 @@
  * check-dead-css — detect CSS classes and design tokens with zero consumers.
  *
  * Classes: parses all .css files under apps/desktop/src/renderer/styles/
- * (including the settings/ sub-directory) for class selectors, then greps the
- * renderer and packages/ui/src source for consumers.
+ * (including the settings/ sub-directory) plus maka-tokens.css and
+ * packages/ui/src/styles.css (the component-library sheet imported into the
+ * product CSS) for class selectors, then searches the renderer and
+ * packages/ui/src source for consumers. A consumer is an exact class-name match: `maka-shell` in source
+ * does not keep `.maka-shell-rail` alive, and `maka-shell-rail` does not keep
+ * `.maka-shell` alive (#1980).
  *
  * Tokens: parses the custom properties declared in maka-tokens.css and sweeps
- * every renderer stylesheet plus the source tree for var() reads. Tokens
- * derive from one another, so the token sheet counts as its own consumer.
+ * every renderer stylesheet plus the source tree for var() reads. Reads
+ * inside the token sheet itself only count when they can fire: a read in a
+ * class rule counts when that rule's classes have consumers, and a read in
+ * another token's value counts when that token is itself live (#1980).
  *
  * Known limitations:
  *   - Dynamic class names (template-string concatenation) cause false
@@ -51,6 +57,11 @@ const EXTRA_TOKEN_CONSUMER_FILES = [
   resolve(REPO_ROOT, 'node_modules', '@astryxdesign', 'core', 'dist', 'theme', 'tokens.stylex.js'),
 ];
 const TOKEN_FILE = resolve(RENDERER_ROOT, 'maka-tokens.css');
+/** The component-library sheet — imported into the product CSS, so its
+ * classes are product classes and join the dead-class scan. Deliberately not
+ * the whole of packages/ui/src: the only other stylesheets there would be
+ * generated ones, which own no hand-written product classes. */
+const UI_STYLE_FILE = resolve(REPO_ROOT, 'packages', 'ui', 'src', 'styles.css');
 const SOURCE_ROOTS = [
   resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer'),
   resolve(REPO_ROOT, 'packages', 'ui', 'src'),
@@ -109,6 +120,11 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // Rendered by Astryx's own Collapsible; chat-message.css targets it to give
   // reasoning/tool disclosures one trigger dialect inside the turn body (#1768).
   'astryx-collapsible-trigger',
+  // Astryx's Item (themeProps class on every settings row). rows.css squares
+  // its corners inside an open row group: Item ships a 10px radius for its
+  // standalone chip use, and our hairline is a border on the Item itself, so
+  // the radius bent the divider at both ends.
+  'astryx-item',
   // Rendered by `useTriggerMenu` for the composer's `@` / `/` menus.
   // composer-mention.css caps its width: upstream sets a 180px floor and no
   // ceiling, and our rows carry a non-wrapping second line.
@@ -128,6 +144,12 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   'settingsPaletteSwatch-dusk',
   'settingsPaletteSwatch-sand',
   'settingsPaletteSwatch-mono',
+  // Markdown code-block density variants — composed at runtime via
+  // `maka-markdown-code-${props.density}` in markdown-body.tsx and
+  // mermaid-diagram.tsx, so the per-density names never appear as string
+  // literals. Keep in sync with the density prop's values.
+  'maka-markdown-code-default',
+  'maka-markdown-code-compact',
 ]);
 
 /**
@@ -152,6 +174,12 @@ const RESERVED_SCALE_TOKENS = new Set([
   '--border-width-accent',
   // Zero rung of the spacing ruler.
   '--space-0',
+  // Easing vocabulary (see the motion governance comment in maka-tokens.css):
+  // --ease-out-strong for feedback/state changes, --ease-in-out-strong for
+  // on-screen movement. The movement curve lost its last consumer with the
+  // dead shell recipes (#1980), but deleting the named curve is what invites
+  // the next bare cubic-bezier.
+  '--ease-in-out-strong',
 ]);
 
 async function readCssFiles(dir) {
@@ -184,7 +212,7 @@ function stripCssComments(css) {
   return css.replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
-function collectClassSelectors(css) {
+export function collectClassSelectors(css) {
   const selectors = new Set();
   for (const match of stripCssComments(css).matchAll(/\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)/g)) {
     const cls = match[1];
@@ -199,7 +227,7 @@ function collectClassSelectors(css) {
  * indentation — several tokens share a line in the compact blocks. `--x` inside
  * `var(--x)` is preceded by `(` and never matches.
  */
-function collectTokenDefinitions(css) {
+export function collectTokenDefinitions(css) {
   const tokens = new Set();
   for (const match of stripCssComments(css).matchAll(/(?:^|[{;])\s*(--[a-z0-9-]+)\s*:/gm)) {
     tokens.add(match[1]);
@@ -208,7 +236,7 @@ function collectTokenDefinitions(css) {
 }
 
 /** Custom properties read through var(). */
-function collectTokenReferences(text) {
+export function collectTokenReferences(text) {
   const refs = new Set();
   for (const match of text.matchAll(/var\(\s*(--[a-z0-9-]+)/g)) {
     refs.add(match[1]);
@@ -216,12 +244,105 @@ function collectTokenReferences(text) {
   return refs;
 }
 
+/**
+ * Whether `cls` appears in `blob` as a whole class name. `\b` alone treats a
+ * hyphen as a boundary, so it would let `maka-shell-rail` keep `.maka-shell`
+ * alive; class names extend across hyphens, so both ends must be checked
+ * against the class-name alphabet.
+ */
+export function hasExactConsumer(blob, cls) {
+  return new RegExp(`(?<![\\w-])${cls.replaceAll('-', '\\-')}(?![\\w-])`).test(blob);
+}
+
+/**
+ * Leaf rules (`selector { declarations }`) of a stylesheet, with at-rule
+ * wrappers (@media, @supports, …) flattened away. Good enough for the token
+ * sheet's shapes; not a general CSS parser.
+ */
+export function parseLeafRules(css) {
+  const rules = [];
+  const walk = (text) => {
+    let cursor = 0;
+    while (cursor < text.length) {
+      const open = text.indexOf('{', cursor);
+      if (open === -1) return;
+      const selector = text.slice(cursor, open).trim();
+      let depth = 1;
+      let close = open + 1;
+      while (close < text.length && depth > 0) {
+        if (text[close] === '{') depth += 1;
+        else if (text[close] === '}') depth -= 1;
+        close += 1;
+      }
+      const body = text.slice(open + 1, close - 1);
+      if (body.includes('{')) walk(body);
+      else rules.push({ selector, body });
+      cursor = close;
+    }
+  };
+  walk(stripCssComments(css));
+  return rules;
+}
+
+/**
+ * var() reads inside the token sheet, attributed to the context that can make
+ * them fire. A read in a class rule's declaration only counts when every
+ * class in the rule's selector has a consumer — a rule whose classes are dead
+ * never applies, so it must not keep its tokens alive. A read inside another
+ * token's value is a derivation edge: it counts only once the deriving token
+ * is live (resolved by `resolveLiveTokens`).
+ */
+export function analyzeTokenSheet(css, isClassLive) {
+  const derivations = new Map();
+  const liveReads = new Set();
+  for (const rule of parseLeafRules(css)) {
+    // A comma group applies when ANY branch matches, and a branch matches
+    // only when ALL of its classes exist somewhere.
+    const ruleLive = rule.selector
+      .split(',')
+      .some((branch) => [...collectClassSelectors(branch)].every(isClassLive));
+    if (!ruleLive) continue;
+    for (const declaration of rule.body.split(';')) {
+      const definition = declaration.match(/^\s*(--[a-z0-9-]+)\s*:/);
+      const reads = collectTokenReferences(declaration);
+      if (definition) {
+        const existing = derivations.get(definition[1]) ?? new Set();
+        for (const read of reads) existing.add(read);
+        derivations.set(definition[1], existing);
+      } else {
+        for (const read of reads) liveReads.add(read);
+      }
+    }
+  }
+  return { derivations, liveReads };
+}
+
+/** Close the externally-seeded live set over the sheet's derivation edges. */
+export function resolveLiveTokens(externalReads, { derivations, liveReads }) {
+  const live = new Set([...externalReads, ...liveReads]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [from, reads] of derivations) {
+      if (!live.has(from)) continue;
+      for (const read of reads) {
+        if (!live.has(read)) {
+          live.add(read);
+          changed = true;
+        }
+      }
+    }
+  }
+  return live;
+}
+
 async function main() {
   const checkMode = process.argv.includes('--check');
 
-  // Collect all CSS class selectors
+  // Collect all CSS class selectors. The token sheet owns product classes
+  // too (shell recipes historically hid there — #1980), so it joins the scan.
   const cssFiles = await readCssFiles(STYLES_DIR);
-  for (const file of EXTRA_STYLE_FILES) {
+  for (const file of [...EXTRA_STYLE_FILES, TOKEN_FILE, UI_STYLE_FILE]) {
     cssFiles.push(file);
   }
   const allClasses = new Set();
@@ -245,28 +366,29 @@ async function main() {
   }
   const storyBlob = stories.join('\n');
 
-  // Find dead classes (zero consumers)
+  // Find dead classes (zero consumers, exact class-name match)
+  const isClassLive = (cls) => DYNAMIC_STYLE_HOOKS.has(cls) || hasExactConsumer(sourceBlob, cls);
   const dead = [];
   for (const cls of [...allClasses].sort()) {
-    if (DYNAMIC_STYLE_HOOKS.has(cls)) continue;
-    // Search for the class name as a string literal in source
-    if (!sourceBlob.includes(cls)) {
+    if (!isClassLive(cls)) {
       dead.push(cls);
     }
   }
 
   // Find dead tokens (declared in the product sheet, read by nobody).
   // A token's consumers are spread across every stylesheet, not just the ones
-  // that own classes, so the reference sweep covers all renderer CSS plus the
-  // token sheet itself (tokens routinely derive from one another).
+  // that own classes. Reads inside the token sheet itself only count when
+  // they can fire (live class rule, or derivation from a live token) — a
+  // token read exclusively by dead rules is dead with them (#1980).
   const tokenCss = await readFile(TOKEN_FILE, 'utf8');
   const definedTokens = collectTokenDefinitions(tokenCss);
-  const referenced = collectTokenReferences(tokenCss);
+  const referenced = new Set();
   const tokenCssFiles = [...EXTRA_STYLE_FILES, ...EXTRA_TOKEN_CONSUMER_FILES];
   for (const root of TOKEN_CONSUMER_ROOTS) {
     tokenCssFiles.push(...(await readCssFiles(root)));
   }
   for (const file of tokenCssFiles) {
+    if (file === TOKEN_FILE) continue;
     for (const ref of collectTokenReferences(await readFile(file, 'utf8'))) {
       referenced.add(ref);
     }
@@ -277,11 +399,12 @@ async function main() {
   for (const ref of collectTokenReferences(storyBlob)) {
     referenced.add(ref);
   }
+  const liveTokens = resolveLiveTokens(referenced, analyzeTokenSheet(tokenCss, isClassLive));
 
   const deadTokens = [];
   for (const token of [...definedTokens].sort()) {
     if (RESERVED_SCALE_TOKENS.has(token)) continue;
-    if (!referenced.has(token)) deadTokens.push(token);
+    if (!liveTokens.has(token)) deadTokens.push(token);
   }
 
   if (dead.length === 0 && deadTokens.length === 0) {
@@ -356,7 +479,10 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('check-dead-css: ERROR', err.message);
-  process.exit(1);
-});
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((err) => {
+    console.error('check-dead-css: ERROR', err.message);
+    process.exit(1);
+  });
+}

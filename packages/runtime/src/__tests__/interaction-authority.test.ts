@@ -2,6 +2,7 @@ import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createWorkspaceWritePermissionProfile, type SandboxBoundarySettlement } from '@maka/core';
+import type { HostedInteractionBridge } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
 
@@ -128,8 +129,7 @@ describe('Runtime Interaction authority seam', () => {
       }),
       RUN,
     );
-    const runtime = toolRuntime(events);
-    runtime.beginTurn(RUN.turnId, binding);
+    const runtime = toolRuntime(events, binding);
     const pending = settleTool(
       runtime,
       buildAskUserQuestionTool(),
@@ -164,19 +164,19 @@ describe('Runtime Interaction authority seam', () => {
     assert.equal(settled, false);
     assert.throws(
       () =>
-        runtime.respondToUserQuestion(RUN.turnId, {
+        runtime.respondToUserQuestion({
           requestId: question!.requestId,
           answers: ['Yes'],
         }),
       RuntimeInteractionInvariantError,
     );
-    assert.equal(runtime.pendingUserQuestionCount(RUN.turnId), 1);
+    assert.equal(runtime.pendingUserQuestionCount(), 1);
     await question!.applyAnswer({ answers: ['Yes'] });
     assert.deepEqual(await pending, {
       answers: [{ question: 'Continue?', answer: 'Yes' }],
     });
 
-    runtime.endTurn(RUN.turnId);
+    runtime.endTurn();
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -276,8 +276,7 @@ describe('Runtime Interaction authority seam', () => {
       }),
       RUN,
     );
-    const runtime = toolRuntime(events);
-    runtime.beginTurn(RUN.turnId, binding);
+    const runtime = toolRuntime(events, binding);
     const execute = settleTool(
       runtime,
       buildAskUserQuestionTool(),
@@ -361,7 +360,7 @@ describe('Runtime Interaction authority seam', () => {
       true,
     );
 
-    runtime.endTurn(RUN.turnId);
+    runtime.endTurn();
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -385,9 +384,7 @@ describe('Runtime Interaction authority seam', () => {
       }),
       RUN,
     );
-    let currentRunId: string | undefined = RUN.runId;
-    const runtime = toolRuntime(events, () => currentRunId);
-    runtime.beginTurn(RUN.turnId, binding);
+    const runtime = toolRuntime(events, binding);
     const pending = settleTool(
       runtime,
       buildAskUserQuestionTool(),
@@ -412,8 +409,7 @@ describe('Runtime Interaction authority seam', () => {
     binding.assertPendingAdmission(published);
 
     const rejected = assert.rejects(pending, /turn_stopped/);
-    currentRunId = undefined;
-    runtime.endTurn(RUN.turnId, 'aborted');
+    runtime.endTurn('aborted');
     await immediate();
     assert.deepEqual(log, []);
     await binding.close('turn_stopped');
@@ -436,8 +432,7 @@ describe('Runtime Interaction authority seam', () => {
       }),
       RUN,
     );
-    const runtime = toolRuntime(events);
-    runtime.beginTurn(RUN.turnId, binding);
+    const runtime = toolRuntime(events, binding);
     await assert.rejects(
       settleTool(
         runtime,
@@ -460,12 +455,12 @@ describe('Runtime Interaction authority seam', () => {
         error.requestId === 'runtime-2' &&
         error.reason === 'invalid_request',
     );
-    assert.equal(runtime.pendingUserQuestionCount(RUN.turnId), 0);
+    assert.equal(runtime.pendingUserQuestionCount(), 0);
     assert.equal(
       events.some((event) => event.type === 'user_question_request'),
       false,
     );
-    runtime.endTurn(RUN.turnId);
+    runtime.endTurn();
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -523,10 +518,12 @@ function authority(
 
 function toolRuntime(
   events: SessionEvent[],
-  getCurrentRunId: () => string | undefined = () => RUN.runId,
+  hostedInteraction?: HostedInteractionBridge,
 ): ToolRuntime {
   let id = 0;
   return createTestToolRuntime({
+    turnId: RUN.turnId,
+    ...(hostedInteraction ? { hostedInteraction } : {}),
     sessionId: RUN.sessionId,
     header: header(),
     connection: { providerType: 'openai', slug: 'c' } as never,
@@ -535,7 +532,7 @@ function toolRuntime(
     newId: () => `runtime-${++id}`,
     now: () => 1,
     getPermissionPauseTarget: () => null,
-    getCurrentRunId,
+    runId: RUN.runId,
     recordToolInvocation: () => void events,
   });
 }

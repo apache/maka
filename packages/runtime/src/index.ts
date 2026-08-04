@@ -10,9 +10,11 @@ export {
   BackendRegistry,
   SessionConfigurationRevisionConflictError,
   SessionConfigurationTransitionError,
+  RuntimeRegenerateTurnError,
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
+export { RuntimeContextCompactError } from './runtime-kernel.js';
 export type { ModelMessage, JSONValue } from './model-protocol.js';
 export type {
   CompactSessionInput,
@@ -22,6 +24,7 @@ export type {
   SessionConfigurationStoreUpdate,
   SessionConfigurationTransitionRequest,
   SessionConfigurationTransitionErrorCode,
+  RegenerateTurnSource,
   SessionStore,
   StrictRecoveryAgentRunStore,
   StrictRecoverySessionStore,
@@ -55,8 +58,14 @@ export type {
   CloneConversationRuntimeLedgerInput,
   CloneConversationRuntimeLedgerResult,
   ConversationCopyArtifactReferenceMap,
+  ConversationCopyExternalChildReferences,
+  ConversationCopyLinkedChildReference,
   ConversationCopySlice,
   ConversationRuntimeLedgerCopyPlan,
+} from './conversation-copy.js';
+export {
+  collectConversationCopyLinkedChildReferences,
+  conversationCopyLinkedChildReferences,
 } from './conversation-copy.js';
 export type { SubagentExecutionRef } from './subagent-execution.js';
 export {
@@ -407,6 +416,7 @@ export type {
 } from './pi-agent-backend.js';
 
 export { buildBuiltinTools } from './builtin-tools.js';
+export { buildArchiveReadTool } from './archive-read-tool.js';
 export { queryTavily } from './tavily-search.js';
 export { buildWebSearchTool } from './web-search-tool.js';
 export type {
@@ -431,7 +441,11 @@ export type {
   ToolResultArchiveResourceReadInput,
   ToolResultArchiveResourceRequest,
 } from './tool-result-archive-resource.js';
-export { buildComputerUseTools, adaptToCuAction } from './computer-use-tools.js';
+export {
+  buildComputerUseTools,
+  adaptToCuAction,
+  DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS,
+} from './computer-use-tools.js';
 export {
   convertOpenAIComputerAction,
   openAIComputerActionSchema,
@@ -783,6 +797,7 @@ export {
   DEEP_RESEARCH_STATUS_TOOL_NAME,
   DEEP_RESEARCH_UPDATE_CHECKLIST_TOOL_NAME,
   buildDeepResearchTools,
+  isDeepResearchToolAllowed,
   renderDeepResearchRunStatus,
 } from './deep-research-tools.js';
 export type {
@@ -815,7 +830,14 @@ export type {
 } from './stream-watchdog.js';
 
 export { getAIModel, buildProviderOptions } from './model-factory.js';
-export { fallbackSessionTitle, generateSessionTitle, sessionTitleSource } from './session-title.js';
+export {
+  buildSessionTitlePrompt,
+  cleanGeneratedSessionTitle,
+  fallbackSessionTitle,
+  generateSessionTitle,
+  sessionTitleSource,
+  SESSION_TITLE_GENERATION_TIMEOUT_MS,
+} from './session-title.js';
 export type { ModelFactoryInput as GetAIModelInput } from './model-factory.js';
 export {
   extractOAuthSubscriptionAccessToken,
@@ -1004,6 +1026,7 @@ export {
   validateHistoryCompactBlockShape,
   validateSynthesisCacheBlockShape,
 } from './context-budget.js';
+export { stableToolResultArchiveArtifactId } from './tool-result-archive.js';
 export type {
   ArchivedToolResultReason,
   BudgetedRuntimeContext,
@@ -1154,6 +1177,7 @@ export {
   getBuiltinPricing,
   llmCallUsageFields,
   recordLlmCall,
+  recordLlmCallStrict,
   recordToolInvocation,
 } from './telemetry/index.js';
 export type {
@@ -1249,6 +1273,7 @@ export {
   applyArchivedToolResultReadModelStatuses,
   compareRuntimeReadModelMessages,
   classifyRuntimeEventTerminalFact,
+  isHardRuntimeEventReadModelDiagnostic,
 } from './runtime-event-read-model.js';
 export type {
   ArchivedToolResultReadModelStatus,
@@ -1452,15 +1477,7 @@ export type {
 // ───────────────────────────────────────────────────────────────────────────
 export {
   buildWorkspaceInstructionsPromptFragment,
-  getWorkspaceInstructionsState,
   WORKSPACE_INSTRUCTION_FILES,
-  MAX_WORKSPACE_INSTRUCTION_FILE_CHARS,
-  MAX_WORKSPACE_INSTRUCTIONS_PROMPT_CHARS,
-} from './system-prompt/workspace-instructions.js';
-export type {
-  WorkspaceInstructionFileStatus,
-  WorkspaceInstructionFileState,
-  WorkspaceInstructionsState,
 } from './system-prompt/workspace-instructions.js';
 export {
   buildPersonalizationPromptFragment,
@@ -1550,6 +1567,17 @@ export type {
   GoalEvaluatorDeps,
   GoalEvaluatorResource,
 } from './goal-evaluator.js';
+export { generateToolFreeModelCall } from './tool-free-model-call.js';
+export type {
+  ToolFreeModelCallContent,
+  ToolFreeModelCallInput,
+  ToolFreeModelCallResult,
+} from './tool-free-model-call.js';
+export {
+  buildSessionRecapMessages,
+  cleanSessionRecapText,
+  SESSION_RECAP_INSTRUCTION,
+} from './session-recap.js';
 export {
   buildGoalTools,
   GOAL_SET_TOOL_NAME,
@@ -1660,6 +1688,7 @@ export {
   composeSkillInvocationMessage,
   parseSkillInvocationTokens,
   prepareSkillInvocationMessage,
+  prepareSkillInvocationMessageFromInventory,
   SKILL_INVOCATION_TOKEN_SOURCE,
   stripSkillInvocationTokens,
 } from './skill-invocation.js';

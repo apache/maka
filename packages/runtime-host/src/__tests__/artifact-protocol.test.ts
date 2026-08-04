@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
+  ARTIFACT_INGEST_CHUNK_MAX_BYTES,
   ARTIFACT_MIME_TYPE_MAX_BYTES,
   ARTIFACT_NAME_MAX_BYTES,
   ARTIFACT_PAGE_MAX_ITEMS,
@@ -21,11 +22,15 @@ import { encodeArtifactProjection } from '../protocol/artifact.js';
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Artifact protocol', () => {
-  test('registers only the closed ready query and delete operations', () => {
+  test('registers the closed ready ingest, query, and delete operations', () => {
     assert.deepEqual(
       Object.keys(HOST_OPERATION_SPECS).filter((key) => key.startsWith('artifact.')),
-      ['artifact.query', 'artifact.delete'],
+      ['artifact.ingest', 'artifact.query', 'artifact.delete'],
     );
+    assert.deepEqual(metadata('artifact.ingest'), {
+      mode: 'command',
+      availability: 'ready',
+    });
     assert.deepEqual(metadata('artifact.query'), {
       mode: 'query',
       availability: 'ready',
@@ -61,6 +66,134 @@ describe('Artifact protocol', () => {
       () => request('artifact.delete', { sessionId: 'session-1', artifactId: 'a', purge: true }),
       isInvalidFrame,
     );
+  });
+
+  test('bounds chunked attachment publication below the frame limit', () => {
+    const bytes = Buffer.alloc(ARTIFACT_INGEST_CHUNK_MAX_BYTES, 7);
+    const digest = `sha256:${'a'.repeat(64)}`;
+    assert.doesNotThrow(() =>
+      request('artifact.ingest', {
+        kind: 'begin',
+        sessionId: 'session-1',
+        uploadId: 'upload-1',
+        name: 'fixture.bin',
+        mimeType: 'application/octet-stream',
+        totalBytes: bytes.byteLength,
+        contentSha256: digest,
+      }),
+    );
+    assert.doesNotThrow(() =>
+      response('artifact.ingest', {
+        kind: 'committed',
+        uploadId: 'upload-1',
+        attachment: {
+          kind: 'other',
+          name: 'fixture.bin',
+          mimeType: 'application/octet-stream',
+          bytes: bytes.byteLength,
+          ref: {
+            kind: 'session_file',
+            sessionId: 'session-1',
+            relativePath: 'attachment-1',
+          },
+        },
+      }),
+    );
+    assert.throws(
+      () =>
+        response('artifact.ingest', {
+          kind: 'committed',
+          uploadId: 'upload-1',
+          attachment: {
+            kind: 'other',
+            name: 'fixture.bin',
+            mimeType: 'application/octet-stream',
+            bytes: bytes.byteLength,
+            ref: { kind: 'external_file', absolutePath: '/tmp/fixture.bin' },
+          },
+        }),
+      isInvalidFrame,
+    );
+    assert.doesNotThrow(() =>
+      request('artifact.ingest', {
+        kind: 'chunk',
+        sessionId: 'session-1',
+        uploadId: 'upload-1',
+        offset: 0,
+        chunkBase64: bytes.toString('base64'),
+      }),
+    );
+    assert.doesNotThrow(() =>
+      request('artifact.ingest', {
+        kind: 'commit',
+        sessionId: 'session-1',
+        uploadId: 'upload-1',
+      }),
+    );
+    const frame = encodeProtocolFrame({
+      requestId: 'artifact-ingest-chunk',
+      operation: 'artifact.ingest',
+      input: {
+        kind: 'chunk',
+        sessionId: 'session-1',
+        uploadId: 'upload-1',
+        offset: 0,
+        chunkBase64: bytes.toString('base64'),
+      },
+    });
+    assert.ok(frame.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES);
+
+    for (const chunkBase64 of [
+      Buffer.alloc(ARTIFACT_INGEST_CHUNK_MAX_BYTES + 1).toString('base64'),
+      'not-base64',
+      'YQ',
+      '',
+    ]) {
+      assert.throws(
+        () =>
+          request('artifact.ingest', {
+            kind: 'chunk',
+            sessionId: 'session-1',
+            uploadId: 'upload-1',
+            offset: 0,
+            chunkBase64,
+          }),
+        isInvalidFrame,
+      );
+    }
+    assert.throws(
+      () =>
+        request('artifact.ingest', {
+          kind: 'begin',
+          sessionId: 'session-1',
+          uploadId: 'upload-1',
+          name: 'fixture.bin',
+          mimeType: 'application/octet-stream',
+          totalBytes: 1,
+          contentSha256: `sha256:${'A'.repeat(64)}`,
+        }),
+      isInvalidFrame,
+    );
+    for (const field of [
+      { name: 'bad\nname.bin' },
+      { mimeType: 'application/octet-stream\ninvalid' },
+      { mimeType: 'x'.repeat(257) },
+    ]) {
+      assert.throws(
+        () =>
+          request('artifact.ingest', {
+            kind: 'begin',
+            sessionId: 'session-1',
+            uploadId: 'upload-1',
+            name: 'fixture.bin',
+            mimeType: 'application/octet-stream',
+            totalBytes: 1,
+            contentSha256: digest,
+            ...field,
+          }),
+        isInvalidFrame,
+      );
+    }
   });
 
   test('keeps operation failures closed and typed', () => {
@@ -242,16 +375,19 @@ function validArtifact() {
   };
 }
 
-function metadata(key: 'artifact.query' | 'artifact.delete') {
+function metadata(key: 'artifact.ingest' | 'artifact.query' | 'artifact.delete') {
   const { mode, availability } = HOST_OPERATION_SPECS[key];
   return { mode, availability };
 }
 
-function request(operation: 'artifact.query' | 'artifact.delete', input: unknown): void {
+function request(
+  operation: 'artifact.ingest' | 'artifact.query' | 'artifact.delete',
+  input: unknown,
+): void {
   decodeClientFrame({ requestId: 'request', operation, input });
 }
 
-function response(operation: 'artifact.query', result: unknown): void {
+function response(operation: 'artifact.ingest' | 'artifact.query', result: unknown): void {
   decodeHostFrame({ requestId: 'response', operation, ok: true, result });
 }
 

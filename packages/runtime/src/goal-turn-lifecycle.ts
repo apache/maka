@@ -25,6 +25,11 @@ export class SessionActivityRegistry {
     return this.states.get(sessionId)?.whenIdle;
   }
 
+  /** Whether any host-owned session work is currently active. */
+  hasActive(): boolean {
+    return this.states.size > 0;
+  }
+
   reserve(sessionId: string): SessionActivityLease {
     let state = this.states.get(sessionId);
     if (!state) {

@@ -11,6 +11,7 @@ import type {
   ShellRunProcessManager,
 } from '@maka/runtime';
 import type { McpClientManager } from '@maka/mcp';
+import { backfillSessionProjects } from '@maka/storage';
 import type {
   createConnectionStore,
   createProjectCatalog,
@@ -36,9 +37,12 @@ import type { DesktopExecutionStoreWiring } from './execution-store-wiring.js';
 import type { assembleDesktopTools } from './tool-assembly.js';
 import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
+import type { AppUpdateService } from './app-update-service.js';
 import { createAppQuitCoordinator } from './app-quit-coordinator.js';
+import { installApplicationMenu } from './application-menu.js';
 import { resolveDockPresentation } from './dock-presentation.js';
 import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
+import { retireCursorSubscriptionCredentials } from './oauth/cursor-subscription-retirement.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 export interface AppLifecycleDeps {
@@ -50,6 +54,7 @@ export interface AppLifecycleDeps {
   // review would leave no way back.
   startHidden: boolean;
   e2eFixture: ReturnType<typeof resolveE2eFixture>;
+  userDataDir: string;
   workspaceRoot: string;
   sessionStore: ReturnType<typeof createSessionStore>;
   projectCatalog: ReturnType<typeof createProjectCatalog>;
@@ -64,6 +69,7 @@ export interface AppLifecycleDeps {
   botRegistry: BotRegistry;
   planReminders: ReturnType<typeof createPlanReminderMainService>;
   dailyReview: ReturnType<typeof createDailyReviewMainService>;
+  updateService: AppUpdateService;
   automationWiring: ReturnType<typeof createMainAutomationWiring>;
   goalWiring: ReturnType<typeof createMainGoalWiring>;
   computerUse: AssembledTools['computerUse'];
@@ -108,8 +114,8 @@ export interface AppLifecycleDeps {
 /**
  * Startup / lifecycle cluster extracted from main.ts (arch R6). Pure move of the
  * post-`registerIpc()` tail: the `app.whenReady()` startup flow (dock icon,
- * fixture seeding, credential startup, window creation, background startup),
- * `runCredentialStartup` / `runBackgroundStartup` / `ensureBootstrapConnection` /
+ * fixture seeding, window creation, background startup),
+ * `runBackgroundStartup` / `ensureBootstrapConnection` /
  * `recoverInterruptedSessionsOnStartup`, the `window-all-closed` and `before-quit`
  * handlers, and `runBeforeQuitCleanup`. Startup ORDER is the product, so the
  * bodies stay behaviorally identical to their in-main.ts originals; every
@@ -122,6 +128,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   const {
     startHidden,
     e2eFixture,
+    userDataDir,
     workspaceRoot,
     sessionStore,
     projectCatalog,
@@ -136,6 +143,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     botRegistry,
     planReminders,
     dailyReview,
+    updateService,
     automationWiring,
     goalWiring,
     computerUse,
@@ -180,6 +188,23 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     } catch {
       // Best-effort: startup should still reach the renderer so users can inspect
       // and repair any remaining local session state.
+    }
+  }
+
+  async function resolveSessionProjectsOnStartup(): Promise<void> {
+    try {
+      const result = await backfillSessionProjects({
+        sessions: sessionStore,
+        catalog: projectCatalog,
+      });
+      for (const failure of result.failures) {
+        console.error(`[projects] could not resolve ${failure.cwd}: ${failure.reason}`);
+      }
+      if (result.resolved > 0) emitSessionsChanged('migrated');
+    } catch (error) {
+      // Best-effort: an unresolved project only affects sidebar grouping, and
+      // the sessions themselves must still reach the renderer.
+      console.error('[projects] session project resolution failed:', error);
     }
   }
 
@@ -233,6 +258,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
         }
       }
     }
+    updateService.start();
 
     // The renderer's first IPC calls (session enumeration, settings read,
     // connection listing)
@@ -246,6 +272,28 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // here after store construction would detach the canonical database.
     const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
     if (!initialWindowSignal) return;
+    // The application menu is app-scoped, not window-scoped: install it once
+    // here (before the first window, surviving window close on macOS) instead
+    // of inside createWindow. A null menu on macOS leaves Cmd+Q and the Edit
+    // roles without any handler; Windows/Linux keep it suppressed so the
+    // renderer's shell chrome and Ctrl+N / Ctrl+, shortcuts stay untouched.
+    // Menu commands route to the renderer through one typed channel when a
+    // window exists, or re-create the window when there is none (quit-phase
+    // no-op via the coordinator).
+    installApplicationMenu({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      dispatch: (command) => {
+        if (mainWindowController.hasOpenWindows()) {
+          mainWindowController.send('window:command', { id: command });
+        } else {
+          // Deliberately drop the command: re-creating the window is what the
+          // user asked for by acting on the menu, and replaying stale commands
+          // after startup would be surprising (accepted trade-off, #2088).
+          quitCoordinator.focusOrCreateWindow();
+        }
+      },
+    });
     app.on('second-instance', quitCoordinator.focusOrCreateWindow);
     app.on('activate', quitCoordinator.focusOrCreateWindow);
     backgroundStartup = runBackgroundStartup();
@@ -283,6 +331,9 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
 
     // E2e-fixture seeding happens synchronously in `whenReady` before the
     // window opens (see there for why); only the real bootstrap runs here.
+    await step('retired Cursor credentials', () =>
+      retireCursorSubscriptionCredentials({ userDataDir, credentialStore }),
+    );
     if (!e2eFixture) {
       await step('bootstrap connection', () => ensureBootstrapConnection());
     }
@@ -302,6 +353,9 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     }
     await step('usage readiness', () => ensureUsageReady());
     await step('session recovery', () => recoverInterruptedSessionsOnStartup());
+    // After recovery: an interrupted session must come back before the sidebar
+    // learns how to group it, and resolution costs a git probe per directory.
+    await step('project resolution', () => resolveSessionProjectsOnStartup());
     let botRegistryReady = false;
     if (settings) {
       const resolved = settings;
@@ -334,6 +388,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   app.on('before-quit', quitCoordinator.handleBeforeQuit);
 
   async function runBeforeQuitCleanup(): Promise<void> {
+    updateService.dispose();
     try {
       await backgroundStartup;
     } catch (error) {

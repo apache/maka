@@ -126,7 +126,6 @@ export interface ConversationCopy {
     newChatTitle: (label: string) => string;
     configureAriaLabel: (label: string) => string;
     configureTitle: string;
-    currentAriaLabel: (label: string) => string;
   };
   permissions: {
     mode: Record<PermissionMode, { label: string; hint: string }>;
@@ -350,7 +349,7 @@ const CONVERSATION_COPY = {
       pinnedSession: (connection, model) => `本会话固定模型：${connection} · ${model}`,
       switchTitle: (title) => `${title}。设置里的默认模型只影响新建会话；这里会更新当前会话。`,
       newChatAriaLabel: (label) => `选择新对话模型，当前 ${label}`, newChatTitle: (label) => `新对话使用的模型：${label}`,
-      configureAriaLabel: (label) => `配置模型连接，当前 ${label}`, configureTitle: '配置模型连接', currentAriaLabel: (label) => `当前模型：${label}`,
+      configureAriaLabel: (label) => `配置模型连接，当前 ${label}`, configureTitle: '配置模型连接',
     },
     permissions: {
       mode: {
@@ -492,7 +491,7 @@ const CONVERSATION_COPY = {
       pinnedSession: (connection, model) => `Model fixed for this conversation: ${connection} · ${model}`,
       switchTitle: (title) => `${title}. The default model in Settings affects only new conversations; this updates the current conversation.`,
       newChatAriaLabel: (label) => `Choose a model for the new conversation, currently ${label}`, newChatTitle: (label) => `Model for the new conversation: ${label}`,
-      configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections', currentAriaLabel: (label) => `Current model: ${label}`,
+      configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections',
     },
     permissions: {
       mode: {

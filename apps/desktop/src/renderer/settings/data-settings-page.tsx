@@ -194,15 +194,17 @@ export function DataSettingsPage() {
           value={info?.workspacePath ?? (infoError ? copy.rows.loadValueFailed : copy.rows.loading)}
           mono
         />
-        <SettingRow
-          title={copy.rows.storage}
-          detail={copy.rows.storageDetail}
-          value={copy.rows.localFiles}
-        />
+        {/* UX audit (owner msg `30f736ed`): the 存储引擎 row read
+            「存储引擎 · 本地文件」— a privacy claim, not a setting, and the
+            group description above already makes it. It moved into that
+            description; the row is gone.
+
+            输入历史 keeps its row because it has an action, but not its right
+            value: 「本机 localStorage」named an implementation, and there is
+            nothing a user does with that name. */}
         <SettingRow
           title={copy.rows.history}
           detail={copy.rows.historyDetail}
-          value={copy.rows.localStorage}
         />
         {/* Detail audit: was two wrapped rows with 打开文件夹 wearing primary
             (a utility action) and destructive 清空输入历史 dressed neutral.
@@ -292,11 +294,17 @@ export function DataSettingsPage() {
           />
         </SettingsField>
         <SettingsActions>
-          <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void exportConfig()} label={configBusy === 'export' ? copy.exporting : copy.exportConfig} />
+          {/* clickAction owns the in-flight affordance: same-tick dedupe, the
+              delayed spinner, aria-busy, and the live-region announcement — a
+              label that swapped to 导出中… said the same thing in a way a
+              screen reader had to re-read the button to notice. `configBusy`
+              stays because it is the *cross-button* rule (one config operation
+              at a time), which is not a thing a single control can know. */}
+          <Button variant="primary" isDisabled={configBusy !== null} clickAction={() => exportConfig()} label={copy.exportConfig} />
           {/* One primary per action row: export is the action this section
               is titled after; import is the inverse operation and reads
               secondary. Two filled buttons recommended neither. */}
-          <Button variant="secondary" isDisabled={configBusy !== null} onClick={() => void importConfig()} label={configBusy === 'import' ? copy.importing : copy.importConfig} />
+          <Button variant="secondary" isDisabled={configBusy !== null} clickAction={() => importConfig()} label={copy.importConfig} />
         </SettingsActions>
       </SettingsSection>
     </SettingsPage>

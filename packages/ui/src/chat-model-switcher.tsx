@@ -207,7 +207,7 @@ export function ModelChipStatic(props: { label: string; onOpenSettings?: () => v
     );
   }
   return (
-    <span className="maka-composer-model-chip" aria-label={copy.currentAriaLabel(props.label)} title={props.label}>
+    <span className="maka-composer-model-chip" title={props.label}>
       <span className="maka-composer-model-chip-text">{props.label}</span>
       <span className="maka-composer-model-status" aria-hidden="true" />
     </span>

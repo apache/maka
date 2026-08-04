@@ -9,10 +9,7 @@ import type { RefObject } from 'react';
 
    Starts true (not false) so reads during the first render — before
    effects run — already report "mounted"; the effect re-arms it for
-   StrictMode's mount → unmount → remount double-invoke. Not for
-   lifecycle-scoped guards (use-workspace-instructions-controller owns a
-   variant conditioned on a lifecycle counter — that one is not
-   boilerplate and stays local). */
+   StrictMode's mount → unmount → remount double-invoke. */
 export function useMountedRef(): RefObject<boolean> {
   const mountedRef = useRef(true);
   useEffect(() => {

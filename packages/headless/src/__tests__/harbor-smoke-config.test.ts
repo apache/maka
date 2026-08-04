@@ -8,6 +8,8 @@ import {
   resolveSmokeRunTargets,
   type SmokeManifest,
 } from '../harbor-smoke-config.js';
+import { MAKA_SETTLEMENT_GRACE_SEC } from '../maka-settlement.js';
+import { type HarborAgentEntry, harborAgentPhaseSec } from './helpers/harbor-agent-phase.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 
@@ -65,7 +67,189 @@ describe('harbor smoke config generation', () => {
     assert.equal(env.MAKA_MAX_STEPS, '100');
     assert.equal(env.MAKA_CELL_TIMEOUT_SEC, '7200');
     assert.equal(env.MAKA_HARBOR_AGENT_TIMEOUT_SEC, undefined);
-    assert.equal(config.agent_timeout_multiplier, 8);
+  });
+
+  // Every deadline assertion below goes through harborAgentPhaseSec — Harbor's
+  // own resolution rule, modelled once in ./helpers/harbor-agent-phase.js and
+  // shared with the fixed-prompt producer's suite.
+  const MAKA_PROFILES = [
+    'maka-basic',
+    'maka-heavy',
+    'maka-heavy-prune',
+    'maka-prune-default',
+    'maka-stale-off',
+    'maka-retrieval-on',
+  ];
+
+  // Two declared timeouts that bracket every shipped cell budget from both
+  // sides. Naming a pair rather than one is the point: with the phase published
+  // absolutely it cannot depend on the declared timeout at all, and one value
+  // cannot express independence.
+  const DECLARED_BELOW_SEC = 600;
+  const DECLARED_ABOVE_SEC = 12_000;
+
+  test('the smoke agent phase outlasts the cell budget by the settlement window', async () => {
+    // The regression this pins: publishing budget + grace on max_timeout_sec.
+    // For maka-basic on the default 900s task Harbor folded that to
+    // min(900, 3630) * 4 = 3600 — the cell budget exactly, so the cell was
+    // SIGKILLed at the instant it stopped calling the model and began writing
+    // maka-cell-output.json, and a scored trial read as an infra failure.
+    const manifest = await loadManifest();
+    for (const profileName of MAKA_PROFILES) {
+      const { config } = buildSmokeJobConfig({
+        manifest,
+        profileName,
+        overrides: { jobName: 'job' },
+      });
+      const agent = (config.agents as HarborAgentEntry[])[0]!;
+      const budget = Number(agent.env.MAKA_CELL_TIMEOUT_SEC);
+      for (const declared of [DECLARED_BELOW_SEC, DECLARED_ABOVE_SEC]) {
+        assert.equal(
+          harborAgentPhaseSec(config, declared),
+          budget + MAKA_SETTLEMENT_GRACE_SEC,
+          `${profileName} @ declared=${declared}`,
+        );
+      }
+      // A ceiling cannot raise a base, so leaving one behind can only re-clamp it.
+      assert.equal(agent.max_timeout_sec, null, profileName);
+      // 1.0, not null: null makes Harbor fall back to the job-level
+      // timeout_multiplier, which would rescale the absolute phase we just
+      // published. The manifest test below proves the difference is real.
+      assert.equal(config.agent_timeout_multiplier, 1.0, profileName);
+    }
+  });
+
+  test('a job-level timeout multiplier cannot rescale the published smoke phase', async () => {
+    // timeoutMultiplier is a supported manifest knob, and Harbor reaches for it
+    // whenever agent_timeout_multiplier is null. Pinning agent_timeout_multiplier
+    // at 1.0 is what keeps the number we publish the number Harbor kills at;
+    // leaving it null here would resolve 3630 * 0.5 = 1815 — under the cell's own
+    // 3600s budget, which is the very kill this fix exists to prevent.
+    const manifest = await loadManifest();
+    const scaled: SmokeManifest = {
+      ...manifest,
+      defaults: { ...manifest.defaults, timeoutMultiplier: 0.5 },
+    };
+    const { config } = buildSmokeJobConfig({
+      manifest: scaled,
+      profileName: 'maka-basic',
+      overrides: { jobName: 'job' },
+    });
+    assert.equal(config.timeout_multiplier, 0.5);
+    assert.equal(harborAgentPhaseSec(config, 900), 3600 + MAKA_SETTLEMENT_GRACE_SEC);
+  });
+
+  test('an operator-widened settlement window widens the smoke phase', async () => {
+    const manifest = await loadManifest();
+    const widened = MAKA_SETTLEMENT_GRACE_SEC * 3;
+    const profile = manifest.profiles!['maka-basic']!;
+    const patched: SmokeManifest = {
+      ...manifest,
+      profiles: {
+        ...manifest.profiles,
+        'maka-basic': {
+          ...profile,
+          agent: {
+            ...profile.agent,
+            env: {
+              ...profile.agent!.env,
+              MAKA_CELL_SETTLEMENT_GRACE_SEC: String(widened),
+            },
+          },
+        },
+      },
+    };
+    const { config } = buildSmokeJobConfig({
+      manifest: patched,
+      profileName: 'maka-basic',
+      overrides: { jobName: 'job' },
+    });
+    const agent = (config.agents as HarborAgentEntry[])[0]!;
+    // The cell reads the same env, so both sides of the window move together.
+    assert.equal(agent.env.MAKA_CELL_SETTLEMENT_GRACE_SEC, String(widened));
+    assert.equal(harborAgentPhaseSec(config, 900), 3600 + widened);
+  });
+
+  test('every smoke arm gets the same model budget and only Maka a settlement tail', async () => {
+    // The one number that has to be identical across arms for --compare to mean
+    // anything is the model budget. opencode has no cell budget of its own, so
+    // its multiplier stays the only control that can buy it the same 3600s — and
+    // nothing else in the suite ties the two arms together.
+    const manifest = await loadManifest();
+    const configFor = (profileName: string) =>
+      buildSmokeJobConfig({ manifest, profileName, overrides: { jobName: 'job' } }).config;
+
+    const maka = configFor('maka-basic');
+    const opencode = configFor('opencode');
+    const budget = Number((maka.agents as HarborAgentEntry[])[0]!.env.MAKA_CELL_TIMEOUT_SEC);
+
+    // On the dataset's default task both arms call the model for the same budget.
+    assert.equal(harborAgentPhaseSec(opencode, 900), budget);
+    assert.equal(opencode.agent_timeout_multiplier, 4);
+    assert.equal((opencode.agents as HarborAgentEntry[])[0]!.override_timeout_sec, null);
+
+    // The whole asymmetry: only the Maka cell has artifacts to settle.
+    assert.ok(MAKA_SETTLEMENT_GRACE_SEC > 0, 'the settlement window must be a real window');
+    assert.equal(
+      harborAgentPhaseSec(maka, 900) - harborAgentPhaseSec(opencode, 900),
+      MAKA_SETTLEMENT_GRACE_SEC,
+    );
+  });
+
+  test('the oracle profile gets neither a settlement window nor a multiplier', async () => {
+    const manifest = await loadManifest();
+    const { config } = buildSmokeJobConfig({
+      manifest,
+      profileName: 'oracle',
+      overrides: { jobName: 'job' },
+    });
+    const agent = (config.agents as HarborAgentEntry[])[0]!;
+    assert.equal(agent.max_timeout_sec, null);
+    assert.equal(agent.override_timeout_sec, null);
+    // The phase is the task's own declared timeout, untouched.
+    assert.equal(harborAgentPhaseSec(config, 900), 900);
+  });
+
+  test('--agent-timeout-sec moves the whole phase, not just the cell budget', async () => {
+    const manifest = await loadManifest();
+    const { config } = buildSmokeJobConfig({
+      manifest,
+      profileName: 'maka-heavy',
+      overrides: { jobName: 'job', agentTimeoutSec: '180' },
+    });
+    const agent = (config.agents as HarborAgentEntry[])[0]!;
+    assert.equal(agent.env.MAKA_CELL_TIMEOUT_SEC, '180');
+    // Pre-fix this resolved to min(900, 210) * 8 = 1680 — an operator asking for
+    // a 3-minute smoke run got a 28-minute one, and never saw the kill at all.
+    assert.equal(harborAgentPhaseSec(config, 900), 180 + MAKA_SETTLEMENT_GRACE_SEC);
+  });
+
+  test('a maka profile with an unparseable cell budget falls back to the multiplier', async () => {
+    // Nothing absolute to publish, so Harbor's own base has to stand — clamping
+    // it to a phase we could not derive would be worse than leaving it alone.
+    const manifest = await loadManifest();
+    const profile = manifest.profiles!['maka-basic']!;
+    const patched: SmokeManifest = {
+      ...manifest,
+      profiles: {
+        ...manifest.profiles,
+        'maka-basic': {
+          ...profile,
+          agent: {
+            ...profile.agent,
+            env: { ...profile.agent!.env, MAKA_CELL_TIMEOUT_SEC: 'nope' },
+          },
+        },
+      },
+    };
+    const { config } = buildSmokeJobConfig({
+      manifest: patched,
+      profileName: 'maka-basic',
+      overrides: { jobName: 'job' },
+    });
+    assert.equal((config.agents as HarborAgentEntry[])[0]!.override_timeout_sec, null);
+    assert.equal(config.agent_timeout_multiplier, 4);
+    assert.equal(harborAgentPhaseSec(config, 900), 3600);
   });
 
   test('--model override targets MAKA_MODEL for maka and model_name for non-maka', async () => {

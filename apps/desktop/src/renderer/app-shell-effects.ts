@@ -1,4 +1,5 @@
 import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
+import { useHotkeys } from '@astryxdesign/core/hooks';
 import type {
   ConnectionEvent,
   PlanReminder,
@@ -32,6 +33,7 @@ import {
 } from './session-event-health';
 import { settledSessionTransientIds } from './settled-session-transients.js';
 import type { SessionWorkbarTab } from './session-workbar-layout.js';
+import type { WindowCommand } from '../preload/bridge-contract.js';
 import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
@@ -188,6 +190,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   clearSessionRendererState: (sessionId: string) => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
+  openHelp: () => void;
   openSettings: () => void;
   pendingPermissionModeChangesRef: RefBox<Set<string>>;
   pendingSessionModelChangesRef: RefBox<Set<string>>;
@@ -224,6 +227,18 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
     options.handleConnectionEvent(event);
+  });
+  // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
+  // Shortcuts here through one channel. The renderer already owns these
+  // implementations; the menu is only a second entry surface. The keydown
+  // path (useHotkeys below) stays active on every platform: on macOS AppKit
+  // resolves the menu accelerator before the web contents sees the keydown,
+  // so a real keypress dispatches exactly once, while CDP-injected test keys
+  // still reach this handler for the renderer path.
+  const handleWindowCommand = useEffectEvent((command: WindowCommand) => {
+    if (command.id === 'newTask') void options.createSession();
+    else if (command.id === 'openSettings') options.openSettings();
+    else if (command.id === 'openHelp') options.openHelp();
   });
   const handleSessionChange = useEffectEvent(
     (event: SessionChangedEvent) => {
@@ -269,9 +284,6 @@ export function useAppShellBootstrapSubscriptions(options: {
     }
     },
   );
-  const handleOpenSettings = useEffectEvent(() => {
-    options.openSettings();
-  });
   const handlePlanChange = useEffectEvent(() => {
     void options.refreshPlanReminders();
   });
@@ -289,23 +301,31 @@ export function useAppShellBootstrapSubscriptions(options: {
       },
     });
   });
-  const handleKeyDown = useEffectEvent((event: globalThis.KeyboardEvent) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === ',') {
-      event.preventDefault();
-      options.openSettings();
-    }
-    // ⌘/Ctrl+N — new task, mirroring the sidebar 新任务 row (whose kbd hint
-    // advertises this). Plain N only: shift/alt combos stay free.
-    if (
-      (event.metaKey || event.ctrlKey) &&
-      !event.shiftKey &&
-      !event.altKey &&
-      (event.key === 'n' || event.key === 'N')
-    ) {
-      event.preventDefault();
-      void options.createSession();
-    }
-  });
+  // Both shortcuts fire while the composer has focus — they always did, and
+  // that is the point of a global new-task / settings key — so both opt out of
+  // the hook's default "stay silent while typing" rule.
+  //
+  // The shiftKey bail keeps the original "plain N only" contract: useHotkeys
+  // ignores shift state unless the combo names it, and there is no way to spell
+  // "must NOT be shifted", so the entry matches ⇧⌘N and the handler declines
+  // it. Net app behavior is unchanged (⇧⌘N did nothing before and does nothing
+  // now); the only residual difference is that the hook has already called
+  // preventDefault() by the time we decline.
+  useHotkeys([
+    {
+      keys: 'mod+,',
+      allowInInputs: true,
+      onPress: () => options.openSettings(),
+    },
+    {
+      keys: 'mod+n',
+      allowInInputs: true,
+      onPress: (event) => {
+        if (event.shiftKey) return;
+        void options.createSession();
+      },
+    },
+  ]);
   const markRendererMounted = useEffectEvent(() => {
     options.rendererMountedRef.current = true;
   });
@@ -337,20 +357,18 @@ export function useAppShellBootstrapSubscriptions(options: {
       void options.refreshConnections();
     });
     const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
-    const unsubscribeOpenSettings = window.maka.appWindow.subscribeOpenSettings(handleOpenSettings);
     const unsubscribePlanChanges = window.maka.plans.subscribeChanges(handlePlanChange);
     const unsubscribePlanDue = window.maka.plans.subscribeDue(handlePlanDue);
+    const unsubscribeWindowCommand = window.maka.appWindow.subscribeCommand(handleWindowCommand);
     markRendererMounted();
-    window.addEventListener('keydown', handleKeyDown);
     return () => {
       cleanupPendingRefs();
       unsubscribeConnections();
       unsubscribeSettingsExternal();
       unsubscribeSessionChanges();
-      unsubscribeOpenSettings();
       unsubscribePlanChanges();
       unsubscribePlanDue();
-      window.removeEventListener('keydown', handleKeyDown);
+      unsubscribeWindowCommand();
     };
   }, []);
 }

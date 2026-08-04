@@ -12,6 +12,7 @@ import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { useUiLocale } from './locale-context.js';
 import { type ToolActivityItem, type ToolOutputChunk } from './materialize.js';
 import { isConnectorTool, resolveToolDisplayName } from './tool-activity/display-name.js';
+import { computerActionLabel } from './tool-activity/computer-action-label.js';
 import {
   extractErrorText,
   isAutomationTool,
@@ -278,7 +279,11 @@ export function ToolTrow({ items }: { items: ToolActivityItem[] }) {
   if (items.length === 0) return null;
   const calls: ChatToolCallItem[] = items.map((item) => ({
     key: item.toolUseId,
-    name: resolveToolDisplayName(item, locale),
+    // The name is what a person reads to tell one call from the next, and for
+    // Computer Use the display name is "Maka Computer" — a noun, identical on
+    // every row of a ten-call turn. A label derived from the call's own
+    // arguments says what happened instead.
+    name: computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     status: astryxToolStatus(item),
     target: item.intent ? formatToolIntent(item.intent) : undefined,
     duration: formatDuration(item.durationMs) ?? undefined,
@@ -378,7 +383,7 @@ function ToolOutputStream(props: {
           >
             {chunk.text}
             {chunk.redacted && (
-              <span className="maka-tool-output-redacted" aria-label={copy.redactedAriaLabel}>
+              <span className="maka-tool-output-redacted">
                 {' '}{copy.redacted}
               </span>
             )}

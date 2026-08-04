@@ -1,4 +1,5 @@
 import { RetryError } from 'ai';
+import { isAuthenticationErrorText } from '@maka/core/redaction';
 
 /**
  * Structured provider error identifiers that mean the INPUT exceeded the
@@ -309,7 +310,7 @@ export function classifyError(error: unknown): string {
   // ("generate"/"separate" are not rate limits) while still matching the
   // rate_limit/RateLimitError identifier spellings.
   if (/\brate\b|rate[_-]?limit/.test(text)) return 'RateLimit';
-  if (text.includes('auth')) return 'Auth';
+  if (isAuthenticationErrorText(text)) return 'Auth';
   if (text.includes('timeout')) return 'Timeout';
   if (
     text.includes('network') ||

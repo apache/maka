@@ -32,8 +32,11 @@ test('every repository path the provenance record names still exists', async () 
       ),
   );
 
+  // A floor, not a count. It exists so that a regex that silently stops
+  // matching cannot make this test vacuously pass; it moved from 10 to 8 when
+  // cua-driver's two paths left the record with the executor itself.
   assert.ok(
-    candidates.size >= 10,
+    candidates.size >= 8,
     `expected the record to name real paths, found ${candidates.size}`,
   );
 
@@ -61,13 +64,14 @@ test('the record accounts for every executor the manifest pins', async () => {
   const manifest = JSON.parse(
     await readFile(new URL('apps/desktop/bundled-tools.json', repoRoot), 'utf8'),
   );
-  // cua-driver is a third-party binary that is redistributed, so §1 has to keep
-  // pointing at a notice that travels with it.
-  assert.ok(manifest.cuaDriver, 'the manifest still pins cua-driver');
-  assert.match(document, /resources\/licenses\/cua-driver/);
-  // maka-cu is Maka's own and unsigned, so §1 says so rather than listing it as
-  // a redistributed component — and the manifest must agree that it does not
-  // ship.
+  // One executor, and it is Maka's own. The assertion is written as "no other
+  // key" rather than "makaCu exists" because the thing worth catching is a
+  // second executor being pinned without §1 gaining a row for it — which is
+  // exactly how a third-party binary starts shipping unnoticed.
+  assert.deepEqual(Object.keys(manifest), ['makaCu']);
   assert.match(document, /maka-cu/);
+  // Unsigned, so it does not ship, so §1 has no redistributed executor to
+  // carry a notice for.
   assert.equal(manifest.makaCu?.distributionReady, false);
+  assert.doesNotMatch(document, /resources\/licenses\/cua-driver/);
 });

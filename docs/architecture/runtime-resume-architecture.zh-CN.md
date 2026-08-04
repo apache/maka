@@ -767,6 +767,18 @@ flowchart LR
 
 Runtime host 使用 strict recovery stores 执行 startup repair。严格模式不会把 unreadable ledger 吞成 best-effort fallback，适合服务端 composition 在接收新写入前建立清楚的恢复边界。
 
+### Managed workspace execution admission（M1.1）
+
+Resume 的 workspace plane 已经有一层 storage-owned 的执行准入地基，但它还没有接入 Runtime host：
+
+- baseline open 只返回绑定 `ManagedWorkspaceOwner` 的 opaque handle，不公开 raw cwd；
+- 每次 admission 都重新证明 storage-root identity、exact SQLite canonical head 和 exact Git receipt/binding/HEAD/tree/ownership；普通生产路径只在签发 scope 前做一次最终 Git verification；
+- 一次 admission 签发一个 callback-scoped、`workspaceEffect: none` 的 opaque scope；同一 handle 可以并发多个只读 scope；
+- `close()` 拒绝新 admission，并等待所有 active scope drain；callback 退出后 scope 立即失效，伪造与过期分别返回 typed `managed_workspace_execution_scope_invalid` / `managed_workspace_execution_scope_expired`；
+- crash harness 可配置 preliminary-verification failpoint，但该测试路径仍须再次通过 final verification 才能签发 scope。
+
+这只证明 cooperating Maka writer 下的 proof-to-scope seam，不等于 workspace-bound resume 已可用。M1.2 仍须提供真实的 storage-internal worker consumer、managed/attached typed profile、只读工具 allowlist、callback 内 reentrant `close()` guard，以及 tool operations → managed owner → root owner 的关闭顺序。在这些门完成前，Desktop、CLI、Runtime host 都不得获得 raw managed cwd，Write/Edit/Bash/未知工具必须 fail closed，也不得从 managed mode 静默 fallback 到 attached checkout。详细合同见 [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
+
 ### Headless / Harbor
 
 当前 Runtime resume 可以提供 immutable history high-water 和 replay gate，但 timeout Attempt 的真正恢复还必须绑定：

@@ -11,7 +11,7 @@ import type {
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  SandboxBoundaryRequestEvent,
+  ActiveInteractionRequestEvent,
   SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
@@ -79,14 +79,7 @@ import type {
   DeepResearchRun,
   LocalMemoryEntryPreview,
 } from '@maka/core';
-import type {
-  PricingConfig,
-  UsageBucket,
-  UsageGroupBy,
-  UsageLogRow,
-  UsageQuery,
-  UsageSummaryV2,
-} from '@maka/core/usage-stats/types';
+import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
@@ -118,27 +111,6 @@ export interface OnboardingSnapshot {
   sessions: import('@maka/core').SessionSummary[];
   connections: import('@maka/core').LlmConnection[];
   defaultSlug: string | null;
-}
-
-export type WorkspaceInstructionFileStatus =
-  | 'available'
-  | 'missing'
-  | 'blocked'
-  | 'empty'
-  | 'unreadable';
-
-export interface WorkspaceInstructionFileState {
-  file: string;
-  status: WorkspaceInstructionFileStatus;
-  chars: number;
-  truncated: boolean;
-}
-
-export interface WorkspaceInstructionsState {
-  files: WorkspaceInstructionFileState[];
-  detectedCount: number;
-  fileCharLimit: number;
-  promptCharLimit: number;
 }
 
 export type RendererIngestInput =
@@ -201,7 +173,30 @@ export type AppUpdateStatus =
       releaseName?: string;
       downloadedFile?: string;
     }
-  | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
+  | { state: 'installing'; currentVersion: string; latestVersion: string }
+  | {
+      state: 'error';
+      currentVersion: string;
+      message: string;
+      operation: 'check' | 'download' | 'install';
+      latestVersion?: string;
+    };
+
+export type AppUpdateInstallRequest = {
+  /** User consent from the trusted desktop renderer; this is a UX boundary, not a security boundary. */
+  allowInterruptActiveTasks: boolean;
+};
+
+export type AppUpdateInstallResult =
+  | { ok: true }
+  | { ok: false; reason: 'active_tasks' }
+  | { ok: false; reason: 'not_downloaded' | 'install_failed' };
+
+/**
+ * Commands dispatched by the native application menu (see
+ * main/application-menu.ts). The renderer owns the implementations.
+ */
+export type WindowCommand = { id: 'newTask' | 'openSettings' | 'openHelp' };
 
 export interface MakaBridge {
 
@@ -267,9 +262,7 @@ export interface MakaBridge {
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
-    listActiveSandboxBoundaryRequests(
-      sessionId: string,
-    ): Promise<SandboxBoundaryRequestEvent[]>;
+    listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<
@@ -456,11 +449,6 @@ export interface MakaBridge {
     openLatestBackup(): Promise<{ ok: true } | { ok: false; message: string }>;
     openBackup(kind: 'save' | 'reset' | 'restore'): Promise<{ ok: true } | { ok: false; message: string }>;
   };
-  workspaceInstructions: {
-    getState(): Promise<WorkspaceInstructionsState>;
-    openFile(file: string): Promise<{ ok: true } | { ok: false; message: string }>;
-    createFile(file: string): Promise<{ ok: true } | { ok: false; message: string }>;
-  };
   attachments: {
     pickFiles(): Promise<
       | { ok: true; files: { approvalId: string; name: string; mimeType?: string; size: number }[] }
@@ -545,25 +533,6 @@ export interface MakaBridge {
     refreshTokens(): Promise<SubscriptionActionResult>;
     logout(): Promise<SubscriptionActionResult>;
   };
-  cursorSubscription: {
-    isExperimentalEnabled(): Promise<boolean>;
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
-    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult>;
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
-    getAccountState(): Promise<{
-      provider: 'cursor-subscription';
-      runtimeState:
-        | 'not_logged_in'
-        | 'authorizing'
-        | 'authenticated'
-        | 'refreshing'
-        | 'refresh_failed';
-      errorMessage?: string;
-    }>;
-    refreshTokens(): Promise<SubscriptionActionResult>;
-    logout(): Promise<SubscriptionActionResult>;
-  };
   antigravitySubscription: {
     isExperimentalEnabled(): Promise<boolean>;
     getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
@@ -601,13 +570,9 @@ export interface MakaBridge {
     ): () => void;
     subscribeDue(handler: (reminder: PlanReminder) => void): () => void;
   };
-  usage: {
-    summary(query: UsageQuery): Promise<Result<UsageSummaryV2>>;
-    buckets(query: UsageQuery & { groupBy: UsageGroupBy }): Promise<Result<UsageBucket[]>>;
-    logs(query: UsageQuery & { offset?: number; limit?: number }): Promise<Result<{ rows: UsageLogRow[]; total: number }>>;
-    listPricing(): Promise<Result<PricingConfig[]>>;
-    putPricing(pricing: PricingConfig): Promise<Result<PricingConfig>>;
-    resetPricing(modelKey: string): Promise<Result<void>>;
+  inspector: {
+    /** Read-only per-session causal trace (#1625). */
+    trace(sessionId: string): Promise<Result<SessionTrace>>;
   };
   webSearch: {
     query(input: {
@@ -623,12 +588,8 @@ export interface MakaBridge {
     getConfig?(): Promise<DailyReviewConfig>;
     setConfig?(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig>;
     runOnce?(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }>;
-    list?(): Promise<DailyReviewArchiveSummary[]>;
-    get?(archiveId: string): Promise<DailyReviewArchive | null>;
-    delete?(archiveId: string): Promise<void>;
     listArchives?(): Promise<DailyReviewArchiveSummary[]>;
     getArchive?(archiveId: string): Promise<DailyReviewArchive | null>;
-    deleteArchive?(archiveId: string): Promise<void>;
     saveMarkdownToFile(input: {
       markdown: string;
       defaultName: string;
@@ -644,7 +605,6 @@ export interface MakaBridge {
      */
   };
   appWindow: {
-    subscribeOpenSettings(handler: () => void): () => void;
     setTitlebarControlsVisible(visible: boolean): Promise<void>;
     setThemeSource(themePref: ThemePreference): Promise<void>;
     // PR-WINDOW-TITLEBAR-0: re-sync the native Windows titleBarOverlay
@@ -653,6 +613,9 @@ export interface MakaBridge {
     // PR-SHOW-AFTER-FIRST-COMMIT: signal main after the first React commit
     // so the hidden window is revealed (see main-window.ts).
     notifyRendererReady(): Promise<void>;
+    // PR-2088: main-to-renderer route for native-menu commands. Returns an
+    // unsubscribe; a command sent before this subscription exists is dropped.
+    subscribeCommand(handler: (command: WindowCommand) => void): () => void;
   };
   config: {
     export(input: { categories: ConfigCategory[] }): Promise<
@@ -691,9 +654,8 @@ export interface MakaBridge {
     }>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
-    checkForUpdates(): Promise<AppUpdateStatus>;
-    downloadUpdate(): Promise<AppUpdateStatus>;
-    installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }>;
+    retryUpdateDownload(): Promise<AppUpdateStatus>;
+    installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
     openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }>;
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;

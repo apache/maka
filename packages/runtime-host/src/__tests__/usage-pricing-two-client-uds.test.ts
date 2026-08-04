@@ -3,8 +3,12 @@ import { lstat, mkdtemp, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { PRICING_MODEL_KEY_MAX_CHARS } from '@maka/core/usage-stats/pricing';
+import {
+  comparePricingModelKeys,
+  PRICING_MODEL_KEY_MAX_CHARS,
+} from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
+import { BUILTIN_PRICING } from '@maka/runtime';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   createHeadlessRootLease,
@@ -19,6 +23,7 @@ import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.
 import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ClientSurface,
+  type EffectivePricingEntry,
   type PricingQueryResult,
 } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
@@ -285,6 +290,141 @@ test('pricing root identity failure requests drain while expected failures do no
   });
 });
 
+test('pricing query rejects continue offsets at and past the effective catalog end', async () => {
+  await withUsageAuthority('pricing-offset', async ({ stores }) => {
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+    );
+    const entryCount = builtinPricingEntries().length;
+    assert.ok(entryCount > 0, 'the Runtime must expose at least one built-in price');
+
+    for (const offset of [entryCount, entryCount + 1]) {
+      assert.deepEqual(
+        await coordinator.handlers['pricing.query'](
+          { kind: 'continue', revision: 0, offset },
+          CONNECTION_CONTEXT,
+        ),
+        {
+          ok: false,
+          error: { code: 'invalid_request', message: 'Pricing offset is invalid' },
+        },
+      );
+    }
+  });
+});
+
+test('deleting absent pricing overrides is unchanged and preserves revision', async () => {
+  await withUsageAuthority('pricing-delete-absent', async ({ stores }) => {
+    let invalidations = 0;
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        invalidations += 1;
+      },
+      new RuntimePolicyActivationGate(),
+    );
+    const builtin = BUILTIN_PRICING[0];
+    assert.ok(builtin, 'the Runtime must expose at least one built-in price');
+
+    for (const modelKey of ['provider:missing', builtin.modelKey]) {
+      assert.deepEqual(
+        await coordinator.handlers['pricing.mutate'](
+          {
+            expectedRevision: 0,
+            mutation: { kind: 'delete', modelKey },
+          },
+          CONNECTION_CONTEXT,
+        ),
+        { ok: true, result: { kind: 'unchanged', revision: 0 } },
+      );
+    }
+
+    assert.deepEqual(await stores.pricing.snapshot(), { revision: 0, overrides: [] });
+    assert.equal(invalidations, 0);
+  });
+});
+
+test('pricing query projects built-in and custom authority with reset effects', async () => {
+  await withUsageAuthority('effective-pricing', async ({ stores }) => {
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+    );
+    const builtin = BUILTIN_PRICING[0];
+    assert.ok(builtin, 'the Runtime must expose at least one built-in price');
+
+    const initial = await readCoordinatorPricing(coordinator);
+    assert.deepEqual(initial.entries, builtinPricingEntries());
+
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 0,
+          mutation: { kind: 'upsert', pricing: builtin },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      { ok: true, result: { kind: 'committed', revision: 1 } },
+    );
+    const customOnly = pricing('acme:custom-only', 0.8);
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 1,
+          mutation: { kind: 'upsert', pricing: customOnly },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      { ok: true, result: { kind: 'committed', revision: 2 } },
+    );
+
+    const customized = await readCoordinatorPricing(coordinator);
+    assert.deepEqual(
+      customized.entries.find((entry) => entry.pricing.modelKey === builtin.modelKey),
+      { pricing: builtin, source: 'custom', resetEffect: 'restore_builtin' },
+    );
+    assert.deepEqual(
+      customized.entries.find((entry) => entry.pricing.modelKey === customOnly.modelKey),
+      { pricing: customOnly, source: 'custom', resetEffect: 'become_unpriced' },
+    );
+
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 2,
+          mutation: { kind: 'delete', modelKey: builtin.modelKey },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      { ok: true, result: { kind: 'committed', revision: 3 } },
+    );
+    const reset = await readCoordinatorPricing(coordinator);
+    assert.deepEqual(
+      reset.entries.find((entry) => entry.pricing.modelKey === builtin.modelKey),
+      { pricing: builtin, source: 'builtin' },
+    );
+
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 3,
+          mutation: { kind: 'delete', modelKey: customOnly.modelKey },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      { ok: true, result: { kind: 'committed', revision: 4 } },
+    );
+    const deleted = await readCoordinatorPricing(coordinator);
+    assert.equal(
+      deleted.entries.some((entry) => entry.pricing.modelKey === customOnly.modelKey),
+      false,
+    );
+  });
+});
+
 describe('production Usage/Pricing UDS', () => {
   test('two clients share usage projection and one revision-CAS pricing authority', {
     skip: process.platform === 'win32',
@@ -369,7 +509,7 @@ describe('production Usage/Pricing UDS', () => {
         kind: 'page',
         revision: 0,
         offset: 0,
-        overrides: [],
+        entries: builtinPricingEntries(),
         nextOffset: null,
       });
       const decomposedModelKey = 'e\u0301';
@@ -431,11 +571,16 @@ describe('production Usage/Pricing UDS', () => {
       ]);
       assert.deepEqual(tuiPricing, desktopPricing);
       assert.equal(desktopPricing.revision, 2);
+      const customEntries = desktopPricing.entries.filter(
+        (entry): entry is Extract<EffectivePricingEntry, { source: 'custom' }> =>
+          entry.source === 'custom',
+      );
       assert.deepEqual(
-        desktopPricing.overrides.map((item) => item.modelKey),
+        customEntries.map((entry) => entry.pricing.modelKey),
         [decomposedModelKey, composedModelKey],
       );
-      assert.notEqual(desktopPricing.overrides[0]?.modelKey, desktopPricing.overrides[1]?.modelKey);
+      assert.ok(customEntries.every((entry) => entry.resetEffect === 'become_unpriced'));
+      assert.notEqual(customEntries[0]?.pricing.modelKey, customEntries[1]?.pricing.modelKey);
 
       let revision = desktopPricing.revision;
       for (let index = 0; index < 126; index += 1) {
@@ -494,11 +639,11 @@ describe('production Usage/Pricing UDS', () => {
       ]);
       assert.deepEqual(fullTuiPricing, fullDesktopPricing);
       assert.equal(fullDesktopPricing.revision, 129);
-      assert.equal(fullDesktopPricing.overrides.length, 128);
+      assert.equal(fullDesktopPricing.entries.length, builtinPricingEntries().length + 128);
       assert.ok(fullDesktopPricing.pageCount > 1);
       assert.equal(
-        fullDesktopPricing.overrides.filter(
-          (item) => item.modelKey.length === PRICING_MODEL_KEY_MAX_CHARS,
+        fullDesktopPricing.entries.filter(
+          (entry) => entry.pricing.modelKey.length === PRICING_MODEL_KEY_MAX_CHARS,
         ).length,
         126,
       );
@@ -529,7 +674,8 @@ describe('production Usage/Pricing UDS', () => {
       ]);
       assert.deepEqual(pricingFromSecondClient, pricingAfterRestart);
       assert.equal(pricingAfterRestart.revision, 129);
-      assert.equal(pricingAfterRestart.overrides.length, 128);
+      assert.deepEqual(pricingAfterRestart.entries, fullDesktopPricing.entries);
+      assert.equal(pricingAfterRestart.entries.length, builtinPricingEntries().length + 128);
       assert.ok(pricingAfterRestart.pageCount > 1);
       assert.equal(usageAfterRestart.summary.kind, 'summary');
       if (usageAfterRestart.summary.kind === 'summary') {
@@ -609,13 +755,13 @@ async function readUsage(client: RuntimeHostConnection) {
 
 async function readPricing(client: RuntimeHostConnection): Promise<{
   revision: number;
-  overrides: readonly Readonly<PricingConfig>[];
+  entries: readonly EffectivePricingEntry[];
   pageCount: number;
 }> {
   const first = requirePricingPage(
     await client.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
   );
-  const overrides = [...first.overrides];
+  const entries = [...first.entries];
   let nextOffset = first.nextOffset;
   let pageCount = 1;
   while (nextOffset !== null) {
@@ -628,11 +774,29 @@ async function readPricing(client: RuntimeHostConnection): Promise<{
     );
     assert.equal(page.revision, first.revision);
     assert.equal(page.offset, nextOffset);
-    overrides.push(...page.overrides);
+    entries.push(...page.entries);
     nextOffset = page.nextOffset;
     pageCount += 1;
   }
-  return { revision: first.revision, overrides, pageCount };
+  return { revision: first.revision, entries, pageCount };
+}
+
+async function readCoordinatorPricing(
+  coordinator: HostUsagePricingCoordinator,
+): Promise<Extract<PricingQueryResult, { kind: 'page' }>> {
+  const outcome = await coordinator.handlers['pricing.query'](
+    { kind: 'start' },
+    CONNECTION_CONTEXT,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) throw new Error('Expected an effective pricing page');
+  return requirePricingPage(outcome.result);
+}
+
+function builtinPricingEntries(): readonly EffectivePricingEntry[] {
+  return [...BUILTIN_PRICING]
+    .sort((left, right) => comparePricingModelKeys(left.modelKey, right.modelKey))
+    .map((pricing) => ({ pricing, source: 'builtin' }));
 }
 
 function requirePricingPage(

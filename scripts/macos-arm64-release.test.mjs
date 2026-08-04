@@ -48,3 +48,46 @@ test('release tooling fails closed on unsupported hosts, signing, and architectu
     /arm64/,
   );
 });
+
+test('the packaged app is checked for every unsigned helper that could still be in a tree', async () => {
+  // `apps/desktop/resources/bin` is gitignored, so removing a helper from the
+  // repository does not remove it from the machine of anyone who prepared it
+  // once. Dropping its forbid alongside the source is how a leftover ad-hoc
+  // binary gets into a build that then fails notarization as a whole.
+  const { verifyPackagedMacApp } = await import(
+    new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
+  );
+  const desktopManifest = JSON.parse(
+    await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'),
+  );
+  const forbidden = [];
+  // Everything before the forbids has to pass, so the run that fails is the
+  // architecture check that comes after them.
+  await assert.rejects(
+    verifyPackagedMacApp('/tmp/Maka.app', {
+      run: async (command, args) => {
+        if (command === 'plutil') {
+          if (args[1] === 'CFBundleIdentifier') return { stdout: 'com.maka.desktop\n' };
+          if (args[1] === 'CFBundleShortVersionString') {
+            return { stdout: `${desktopManifest.version}\n` };
+          }
+          return { stdout: 'Maka\n' };
+        }
+        if (command === 'lipo') return { stdout: 'x86_64\n', stderr: '' };
+        return { stdout: '', stderr: '' };
+      },
+      requirePath: async () => {},
+      forbidPath: async (path) => {
+        forbidden.push(path);
+      },
+      smokeRenderer: async () => {},
+    }),
+    /arm64/,
+  );
+  for (const helper of ['cua-driver', 'maka-cu', 'officecli']) {
+    assert.ok(
+      forbidden.some((path) => path.endsWith(`/${helper}`)),
+      `${helper} is not among the paths the packaged app is checked against`,
+    );
+  }
+});

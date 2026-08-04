@@ -68,23 +68,6 @@ export function localMemoryPromptPreviewBlockedReason(state: LocalMemoryState, c
   return '';
 }
 
-export function workspaceInstructionStatusLabel(status: string, chars: number, truncated: boolean, copy: MemorySettingsCopy): string {
-  switch (status) {
-    case 'available':
-      return copy.instructionAvailable(chars, truncated);
-    case 'missing':
-      return copy.instructionStatuses.missing;
-    case 'blocked':
-      return copy.instructionStatuses.blocked;
-    case 'empty':
-      return copy.instructionStatuses.empty;
-    case 'unreadable':
-      return copy.instructionStatuses.unreadable;
-    default:
-      return copy.instructionStatuses.unknown;
-  }
-}
-
 export function memoryStatusTone(status: LocalMemoryState['status']): 'success' | 'info' | 'warning' | 'destructive' {
   switch (status) {
     case 'ok': return 'success';

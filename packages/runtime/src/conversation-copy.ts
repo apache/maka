@@ -2,13 +2,18 @@ import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunStore,
+  EmittedAgentRunEvent,
   RuntimeEvent,
   RuntimeEventStore,
   StorageRef,
   StoredMessage,
   ToolResultContent,
 } from '@maka/core';
-import { decodeCanonicalToolResultContent, isSessionInlineRun } from '@maka/core';
+import {
+  decodeCanonicalToolResultContent,
+  isEmittedAgentRunEventType,
+  isSessionInlineRun,
+} from '@maka/core';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import {
   buildHistoryCompactCheckpoint,
@@ -21,6 +26,7 @@ import {
   commitTerminalRunWithRuntimeFact,
 } from './terminal-run-commit.js';
 import { buildToolOperationId } from './runtime-commit-sink.js';
+import { isContinuationStartRuntimeEvent } from './runtime-event-read-model.js';
 import {
   buildToolResultArchiveResourceRef,
   parseToolResultArchiveResourceRef,
@@ -42,11 +48,32 @@ interface ConversationCopyIdentityMap {
   readonly targetSessionId: string;
 }
 
+export interface ConversationCopyExternalChildReferences {
+  readonly runIds: ReadonlySet<string>;
+  readonly artifactIds: ReadonlySet<string>;
+}
+
+export interface ConversationCopyLinkedChildReference {
+  readonly childSessionId: string;
+  readonly runId?: string;
+  readonly resumedFromRunId?: string;
+  readonly turnId?: string;
+  readonly artifactIds: readonly string[];
+  readonly status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_for_user';
+  readonly failureClass?: string;
+}
+
 export type ConversationCopyArtifactReferenceMap =
   | (ConversationCopyIdentityMap & {
       readonly mode: 'exact';
       readonly artifactIds: ReadonlyMap<string, string>;
       readonly relativePaths: ReadonlyMap<string, string>;
+      readonly linkedChildren:
+        | { readonly mode: 'reject' }
+        | {
+            readonly mode: 'preserve_validated';
+            readonly references: ReadonlyMap<string, ConversationCopyExternalChildReferences>;
+          };
     })
   | (ConversationCopyIdentityMap & {
       readonly mode: 'preserve_external';
@@ -205,12 +232,30 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
       return { run, runtimeEvents: events, operationalEvents };
     }),
   );
-  return {
+  const plan = {
     sourceSessionId: input.sourceSessionId,
     copyTurnIds,
     inlineRuntimeEvents: [...input.sourceEvents],
     runs,
   };
+  assertConversationRuntimeLedgerCopySupported(plan);
+  return plan;
+}
+
+function assertConversationRuntimeLedgerCopySupported(
+  plan: ConversationRuntimeLedgerCopyPlan,
+): void {
+  const unsupported = plan.runs.some(
+    ({ run, runtimeEvents }) =>
+      run.continuationSource !== undefined || runtimeEvents.some(isContinuationStartRuntimeEvent),
+  );
+  if (!unsupported) return;
+
+  const error = new Error(
+    'Conversation copy contains durable runtime authority facts that require typed identity rewriting',
+  ) as Error & { code: string };
+  error.code = 'branch_runtime_fact_rewrite_unsupported';
+  throw error;
 }
 
 export async function cloneConversationRuntimeLedger(
@@ -428,6 +473,7 @@ async function loadConversationCopyRunEvents(
 export function archivedToolResultContainsConversationOwnedReferences(
   serializedResult: string,
   sourceSessionId: string,
+  externalChildReferences?: ReadonlyMap<string, ConversationCopyExternalChildReferences>,
 ): boolean {
   const value = deserializeToolResultArchive(serializedResult);
   if (isArchivedToolResultPlaceholder(value)) return true;
@@ -444,22 +490,93 @@ export function archivedToolResultContainsConversationOwnedReferences(
     return content.ref.kind === 'session_file' && content.ref.sessionId === sourceSessionId;
   }
   if (content.kind === 'subagent') {
-    return (
-      content.childSessionId !== undefined ||
-      content.runId !== undefined ||
-      content.artifactIds.length > 0
-    );
+    const [linked] = conversationCopyLinkedChildReferences(content);
+    if (linked) {
+      return !linkedChildReferencesAreExternal(linked, externalChildReferences);
+    }
+    return content.runId !== undefined || content.artifactIds.length > 0;
   }
   if (content.kind === 'agent_swarm') {
-    return content.items.some(
-      (item) =>
-        item.childSessionId !== undefined ||
-        item.runId !== undefined ||
-        item.resumedFromRunId !== undefined ||
-        item.artifactIds.length > 0,
+    if (
+      content.items.some(
+        (item) =>
+          !item.childSessionId &&
+          (item.runId !== undefined ||
+            item.resumedFromRunId !== undefined ||
+            item.artifactIds.length > 0),
+      )
+    ) {
+      return true;
+    }
+    return conversationCopyLinkedChildReferences(content).some(
+      (linked) => !linkedChildReferencesAreExternal(linked, externalChildReferences),
     );
   }
   return false;
+}
+
+export function conversationCopyLinkedChildReferences(
+  content: ToolResultContent,
+): readonly ConversationCopyLinkedChildReference[] {
+  if (content.kind === 'subagent') {
+    if (!content.childSessionId) return [];
+    return [
+      {
+        childSessionId: content.childSessionId,
+        ...(content.runId ? { runId: content.runId } : {}),
+        turnId: content.turnId,
+        artifactIds: content.artifactIds,
+        status: content.status,
+        ...(content.failureClass ? { failureClass: content.failureClass } : {}),
+      },
+    ];
+  }
+  if (content.kind !== 'agent_swarm') return [];
+  return content.items.flatMap((item) =>
+    item.childSessionId
+      ? [
+          {
+            childSessionId: item.childSessionId,
+            ...(item.runId ? { runId: item.runId } : {}),
+            ...(item.resumedFromRunId ? { resumedFromRunId: item.resumedFromRunId } : {}),
+            ...(item.turnId ? { turnId: item.turnId } : {}),
+            artifactIds: item.artifactIds,
+            status: item.status,
+            ...(item.failureClass ? { failureClass: item.failureClass } : {}),
+          },
+        ]
+      : [],
+  );
+}
+
+export function collectConversationCopyLinkedChildReferences(input: {
+  readonly messages: readonly StoredMessage[];
+  readonly runtimeEvents: readonly RuntimeEvent[];
+  readonly archivedResults: readonly string[];
+}): readonly ConversationCopyLinkedChildReference[] {
+  const references: ConversationCopyLinkedChildReference[] = [];
+  const add = (value: unknown): void => {
+    if (isArchivedToolResultPlaceholder(value)) return;
+    try {
+      references.push(
+        ...conversationCopyLinkedChildReferences(decodeCanonicalToolResultContent(value)),
+      );
+    } catch {
+      // Opaque tool results have no typed linked-child references.
+    }
+  };
+  for (const message of input.messages) {
+    if (message.type === 'tool_result') {
+      references.push(...conversationCopyLinkedChildReferences(message.content));
+    }
+  }
+  for (const event of input.runtimeEvents) {
+    if (event.content?.kind === 'function_response') add(event.content.result);
+  }
+  for (const serializedResult of input.archivedResults) {
+    add(deserializeToolResultArchive(serializedResult));
+  }
+  return references;
 }
 
 function cloneAgentRunEvent(
@@ -475,7 +592,7 @@ function cloneAgentRunEvent(
   checkpointIds: Map<string, string>,
   operationalEventIds: ReadonlyMap<string, string>,
   providerTraceIds: ReadonlyMap<string, string>,
-): AgentRunEvent | null {
+): EmittedAgentRunEvent | null {
   if (event.type === 'event_corrupt') {
     throw new Error(`Cannot copy corrupt AgentRun event ${event.id}`);
   }
@@ -703,7 +820,12 @@ function toolOperationIdMap(
   return result;
 }
 
-function isCopiedAgentRunEvent(event: AgentRunEvent): boolean {
+function isCopiedAgentRunEvent(event: AgentRunEvent): event is EmittedAgentRunEvent {
+  // The rewriters below know which of this build's payloads carry source-owned references. A type
+  // this build does not emit cannot even be checked for them, so it is dropped rather than carried
+  // into the target with source identities intact. The ledger's `type` is open, so such an event
+  // may predate a retired writer or postdate this build entirely (#1942).
+  if (!isEmittedAgentRunEventType(event.type)) return false;
   // Active/semantic blocks hash the exact provider-visible source. Rewriting
   // target-owned RuntimeEvent and Artifact references invalidates that
   // evidence, so a copied Session starts without these derived diagnostics.
@@ -978,28 +1100,46 @@ function rewriteToolResultContent(
     return {
       ...content,
       ...(content.runId
-        ? { runId: rewriteOwnedId(content.runId, references.runIds, 'AgentRun') }
+        ? {
+            runId: rewriteLinkedRunId(
+              content.runId,
+              content.childSessionId,
+              references,
+              'AgentRun',
+            ),
+          }
         : {}),
-      artifactIds: rewriteArtifactIds(content.artifactIds, references),
+      artifactIds: rewriteLinkedArtifactIds(
+        content.artifactIds,
+        content.childSessionId,
+        references,
+      ),
     };
   }
   if (content.kind === 'agent_swarm') {
     return {
       ...content,
-      items: content.items.map((item) => ({
-        ...item,
-        ...(item.runId ? { runId: rewriteOwnedId(item.runId, references.runIds, 'AgentRun') } : {}),
-        ...(item.resumedFromRunId
-          ? {
-              resumedFromRunId: rewriteOwnedId(
-                item.resumedFromRunId,
-                references.runIds,
-                'AgentRun',
-              ),
-            }
-          : {}),
-        artifactIds: rewriteArtifactIds(item.artifactIds, references),
-      })),
+      items: content.items.map((item) => {
+        return {
+          ...item,
+          ...(item.runId
+            ? {
+                runId: rewriteLinkedRunId(item.runId, item.childSessionId, references, 'AgentRun'),
+              }
+            : {}),
+          ...(item.resumedFromRunId
+            ? {
+                resumedFromRunId: rewriteLinkedRunId(
+                  item.resumedFromRunId,
+                  item.childSessionId,
+                  references,
+                  'resumed AgentRun',
+                ),
+              }
+            : {}),
+          artifactIds: rewriteLinkedArtifactIds(item.artifactIds, item.childSessionId, references),
+        };
+      }),
     };
   }
   return content;
@@ -1026,6 +1166,75 @@ function rewriteArtifactIds(
   references: ConversationCopyArtifactReferenceMap,
 ): readonly string[] {
   return artifactIds.map((artifactId) => rewriteOwnedArtifactId(artifactId, references));
+}
+
+function validatedExternalChildReferences(
+  childSessionId: string,
+  references: ConversationCopyMessageReferenceMap,
+): ConversationCopyExternalChildReferences | undefined {
+  if (references.mode === 'preserve_external') return undefined;
+  if (references.linkedChildren.mode === 'reject') {
+    throw new Error(`Conversation copy cannot retain linked child Session ${childSessionId}`);
+  }
+  const external = references.linkedChildren.references.get(childSessionId);
+  if (!external) {
+    throw new Error(`Conversation copy is missing linked child Session ${childSessionId}`);
+  }
+  return external;
+}
+
+function rewriteLinkedRunId(
+  sourceId: string,
+  childSessionId: string | undefined,
+  references: ConversationCopyMessageReferenceMap,
+  kind: string,
+): string {
+  if (!childSessionId) return rewriteOwnedId(sourceId, references.runIds, kind);
+  const external = validatedExternalChildReferences(childSessionId, references);
+  return external ? preserveExternalId(sourceId, external.runIds, kind) : sourceId;
+}
+
+function rewriteLinkedArtifactIds(
+  sourceIds: readonly string[],
+  childSessionId: string | undefined,
+  references: ConversationCopyMessageReferenceMap,
+): readonly string[] {
+  if (!childSessionId) return rewriteArtifactIds(sourceIds, references);
+  const external = validatedExternalChildReferences(childSessionId, references);
+  return external ? preserveExternalIds(sourceIds, external.artifactIds, 'Artifact') : sourceIds;
+}
+
+function preserveExternalIds(
+  sourceIds: readonly string[],
+  externalIds: ReadonlySet<string>,
+  kind: string,
+): readonly string[] {
+  return sourceIds.map((sourceId) => preserveExternalId(sourceId, externalIds, kind));
+}
+
+function preserveExternalId(
+  sourceId: string,
+  externalIds: ReadonlySet<string>,
+  kind: string,
+): string {
+  if (!externalIds.has(sourceId)) {
+    throw new Error(`Conversation copy is missing external ${kind} ${sourceId}`);
+  }
+  return sourceId;
+}
+
+function linkedChildReferencesAreExternal(
+  linked: ConversationCopyLinkedChildReference,
+  externalChildReferences?: ReadonlyMap<string, ConversationCopyExternalChildReferences>,
+): boolean {
+  const external = externalChildReferences?.get(linked.childSessionId);
+  return (
+    external !== undefined &&
+    [linked.runId, linked.resumedFromRunId]
+      .filter((id): id is string => !!id)
+      .every((runId) => external.runIds.has(runId)) &&
+    linked.artifactIds.every((artifactId) => external.artifactIds.has(artifactId))
+  );
 }
 
 function rewriteStorageRef(

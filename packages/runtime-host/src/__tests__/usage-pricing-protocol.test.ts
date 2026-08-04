@@ -7,7 +7,7 @@ import {
   comparePricingModelKeys,
   PRICING_MODEL_KEY_MAX_CHARS,
 } from '@maka/core/usage-stats/pricing';
-import type { UsageBucket } from '@maka/core/usage-stats/types';
+import type { PricingConfig, UsageBucket } from '@maka/core/usage-stats/types';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -28,6 +28,7 @@ import {
   USAGE_PAGE_MAX_BYTES,
   USAGE_PAGE_MAX_ITEMS,
   USAGE_PROJECTION_TEXT_MAX_BYTES,
+  type EffectivePricingEntry,
   type LlmUsageLogProjection,
   type ToolUsageLogProjection,
 } from '../protocol/index.js';
@@ -425,14 +426,14 @@ describe('Usage/Pricing protocol', () => {
         kind: 'page',
         revision: 3,
         offset: 0,
-        overrides: [pricing('m')],
+        entries: [customPricingEntry('m')],
         nextOffset: 1,
       }),
       {
         kind: 'page',
         revision: 3,
         offset: 0,
-        overrides: [pricing('m')],
+        entries: [customPricingEntry('m')],
         nextOffset: 1,
       },
     );
@@ -446,12 +447,23 @@ describe('Usage/Pricing protocol', () => {
     );
     assert.throws(
       () =>
+        pricingResponse('pricing.query', {
+          kind: 'page',
+          revision: 0,
+          offset: 0,
+          overrides: [pricing('m')],
+          nextOffset: null,
+        }),
+      invalidFrame,
+    );
+    assert.throws(
+      () =>
         encodePricingQueryResult({
           kind: 'page',
           revision: 0,
           offset: 0,
-          overrides: Array.from({ length: PRICING_PAGE_MAX_ITEMS + 1 }, (_, index) =>
-            pricing(`model-${index}`),
+          entries: Array.from({ length: PRICING_PAGE_MAX_ITEMS + 1 }, (_, index) =>
+            customPricingEntry(`model-${index}`),
           ),
           nextOffset: null,
         }),
@@ -462,21 +474,21 @@ describe('Usage/Pricing protocol', () => {
         kind: 'page',
         revision: 1,
         offset: 2,
-        overrides: [],
+        entries: [],
         nextOffset: 2,
       },
       {
         kind: 'page',
         revision: 1,
         offset: 2,
-        overrides: [pricing('m')],
+        entries: [customPricingEntry('m')],
         nextOffset: 4,
       },
       {
         kind: 'page',
         revision: 1,
         offset: 0,
-        overrides: [pricing('z'), pricing('a')],
+        entries: [customPricingEntry('z'), customPricingEntry('a')],
         nextOffset: null,
       },
       {
@@ -486,6 +498,24 @@ describe('Usage/Pricing protocol', () => {
       },
     ]) {
       assert.throws(() => pricingResponse('pricing.query', result), invalidFrame);
+    }
+    for (const entry of [
+      { pricing: pricing('m'), source: 'builtin', resetEffect: 'restore_builtin' },
+      { pricing: pricing('m'), source: 'custom' },
+      { pricing: pricing('m'), source: 'custom', resetEffect: 'invalid' },
+      { pricing: pricing('m'), source: 'unknown' },
+    ]) {
+      assert.throws(
+        () =>
+          pricingResponse('pricing.query', {
+            kind: 'page',
+            revision: 1,
+            offset: 0,
+            entries: [entry],
+            nextOffset: null,
+          }),
+        invalidFrame,
+      );
     }
     for (const result of [
       { kind: 'committed', revision: 1 },
@@ -512,23 +542,23 @@ describe('Usage/Pricing protocol', () => {
       kind: 'page',
       revision: 2,
       offset: 0,
-      overrides: [pricing(decomposed), pricing(composed)],
+      entries: [customPricingEntry(decomposed), customPricingEntry(composed)],
       nextOffset: null,
     });
     assert.equal(page.kind, 'page');
     if (page.kind !== 'page') throw new Error('Expected a pricing page');
     assert.deepEqual(
-      page.overrides.map((item) => item.modelKey),
+      page.entries.map((item) => item.pricing.modelKey),
       [decomposed, composed],
     );
-    assert.notEqual(page.overrides[0]?.modelKey, page.overrides[1]?.modelKey);
+    assert.notEqual(page.entries[0]?.pricing.modelKey, page.entries[1]?.pricing.modelKey);
     assert.throws(
       () =>
         encodePricingQueryResult({
           kind: 'page',
           revision: 2,
           offset: 0,
-          overrides: [pricing(composed), pricing(decomposed)],
+          entries: [customPricingEntry(composed), customPricingEntry(decomposed)],
           nextOffset: null,
         }),
       invalidFrame,
@@ -536,20 +566,20 @@ describe('Usage/Pricing protocol', () => {
   });
 
   test('bounds a page of maximum-length CJK pricing items below the frame limit', () => {
-    const cjkOverrides = Array.from({ length: PRICING_PAGE_MAX_ITEMS }, (_, index) =>
-      maximumCjkPricing(index),
-    ).sort((left, right) => comparePricingModelKeys(left.modelKey, right.modelKey));
+    const cjkEntries = Array.from({ length: PRICING_PAGE_MAX_ITEMS }, (_, index) =>
+      customPricingConfigEntry(maximumCjkPricing(index)),
+    ).sort((left, right) => comparePricingModelKeys(left.pricing.modelKey, right.pricing.modelKey));
     const maximumPage = encodePricingQueryResult({
       kind: 'page',
       revision: Number.MAX_SAFE_INTEGER,
       offset: 0,
-      overrides: cjkOverrides.slice(0, 86),
-      nextOffset: 86,
+      entries: cjkEntries.slice(0, 77),
+      nextOffset: 77,
     });
     assert.equal(maximumPage.kind, 'page');
     if (maximumPage.kind !== 'page') throw new Error('Expected a pricing page');
-    assert.equal(maximumPage.overrides[0]?.modelKey.length, PRICING_MODEL_KEY_MAX_CHARS);
-    assert.ok(Buffer.byteLength(maximumPage.overrides[0]!.modelKey, 'utf8') > 128);
+    assert.equal(maximumPage.entries[0]?.pricing.modelKey.length, PRICING_MODEL_KEY_MAX_CHARS);
+    assert.ok(Buffer.byteLength(maximumPage.entries[0]!.pricing.modelKey, 'utf8') > 128);
     const pageBytes = Buffer.byteLength(JSON.stringify(maximumPage), 'utf8');
     assert.ok(pageBytes <= PRICING_PAGE_MAX_BYTES);
     assert.ok(
@@ -566,8 +596,8 @@ describe('Usage/Pricing protocol', () => {
           kind: 'page',
           revision: Number.MAX_SAFE_INTEGER,
           offset: 0,
-          overrides: cjkOverrides.slice(0, 87),
-          nextOffset: 87,
+          entries: cjkEntries.slice(0, 78),
+          nextOffset: 78,
         }),
       invalidFrame,
     );
@@ -792,6 +822,24 @@ function assertDistinctBoundedIdentities(values: readonly (string | undefined)[]
 
 function pricing(modelKey: string) {
   return { modelKey, inputUsdPer1M: 1, outputUsdPer1M: 2 };
+}
+
+function customPricingEntry(
+  modelKey: string,
+  resetEffect: 'restore_builtin' | 'become_unpriced' = 'become_unpriced',
+): EffectivePricingEntry {
+  return customPricingConfigEntry(pricing(modelKey), resetEffect);
+}
+
+function customPricingConfigEntry(
+  config: PricingConfig,
+  resetEffect: 'restore_builtin' | 'become_unpriced' = 'become_unpriced',
+): EffectivePricingEntry {
+  return {
+    pricing: config,
+    source: 'custom',
+    resetEffect,
+  };
 }
 
 function maximumCjkPricing(index: number) {

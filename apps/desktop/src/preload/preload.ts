@@ -6,8 +6,10 @@ import type {
   PermissionActionResult,
   PermissionOverlayStartResult,
   RendererIngestInput,
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
   AppUpdateStatus,
-  WorkspaceInstructionsState,
+  WindowCommand,
 } from './bridge-contract.js';
 import type {
   ConnectionEvent,
@@ -22,7 +24,7 @@ import type {
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  SandboxBoundaryRequestEvent,
+  ActiveInteractionRequestEvent,
   SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
@@ -90,14 +92,7 @@ import type {
   DeepResearchChangedEvent,
   DeepResearchRun,
 } from '@maka/core';
-import type {
-  PricingConfig,
-  UsageBucket,
-  UsageGroupBy,
-  UsageLogRow,
-  UsageQuery,
-  UsageSummaryV2,
-} from '@maka/core/usage-stats/types';
+import type { SessionTrace } from '@maka/core/session-trace';
 import type {
   AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
@@ -251,10 +246,8 @@ const makaBridge = {
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
       return ipcRenderer.invoke('sessions:readExecutionBoundary', sessionId);
     },
-    listActiveSandboxBoundaryRequests(
-      sessionId: string,
-    ): Promise<SandboxBoundaryRequestEvent[]> {
-      return ipcRenderer.invoke('sessions:listActiveSandboxBoundaryRequests', sessionId);
+    listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]> {
+      return ipcRenderer.invoke('sessions:listActiveInteractions', sessionId);
     },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return ipcRenderer.invoke('sessions:listTurns', sessionId);
@@ -576,17 +569,6 @@ const makaBridge = {
       return ipcRenderer.invoke('memory:openBackup', kind);
     },
   },
-  workspaceInstructions: {
-    getState(): Promise<WorkspaceInstructionsState> {
-      return ipcRenderer.invoke('workspaceInstructions:getState');
-    },
-    openFile(file: string): Promise<{ ok: true } | { ok: false; message: string }> {
-      return ipcRenderer.invoke('workspaceInstructions:openFile', file);
-    },
-    createFile(file: string): Promise<{ ok: true } | { ok: false; message: string }> {
-      return ipcRenderer.invoke('workspaceInstructions:createFile', file);
-    },
-  },
   attachments: {
     pickFiles(): Promise<
       | { ok: true; files: { approvalId: string; name: string; mimeType?: string; size: number }[] }
@@ -655,12 +637,12 @@ const makaBridge = {
       return ipcRenderer.invoke('claude-subscription:logout');
     },
   },
-  // PR-MODEL-OAUTH-ALL-0: Codex / Cursor / Antigravity subscription
+  // PR-MODEL-OAUTH-ALL-0: Codex / Antigravity subscription
   // bridges. Same shape as `claudeSubscription` (no token-shaped
   // fields, opaque authRequestId, action-result envelopes). Each
   // service's state snapshot is provider-specific because the
   // upstream auth claims differ (Codex carries JWT account_id /
-  // plan; Cursor has no public profile; Antigravity is preview-only).
+  // plan; Antigravity is preview-only).
   openAiCodex: {
     isExperimentalEnabled(): Promise<boolean> {
       return ipcRenderer.invoke('openai-codex:is-experimental-enabled');
@@ -744,36 +726,6 @@ const makaBridge = {
     },
     logout(): Promise<SubscriptionActionResult> {
       return ipcRenderer.invoke('github-copilot:logout');
-    },
-  },
-  cursorSubscription: {
-    isExperimentalEnabled(): Promise<boolean> {
-      return ipcRenderer.invoke('cursor-subscription:is-experimental-enabled');
-    },
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return ipcRenderer.invoke('cursor-subscription:get-auth-url');
-    },
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult> {
-      return ipcRenderer.invoke('cursor-subscription:open-auth-url', authRequestId);
-    },
-    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult> {
-      return ipcRenderer.invoke('cursor-subscription:complete-authorization', authRequestId);
-    },
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }> {
-      return ipcRenderer.invoke('cursor-subscription:cancel-authorization', authRequestId);
-    },
-    getAccountState(): Promise<{
-      provider: 'cursor-subscription';
-      runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated' | 'refreshing' | 'refresh_failed';
-      errorMessage?: string;
-    }> {
-      return ipcRenderer.invoke('cursor-subscription:get-account-state');
-    },
-    refreshTokens(): Promise<SubscriptionActionResult> {
-      return ipcRenderer.invoke('cursor-subscription:refresh-tokens');
-    },
-    logout(): Promise<SubscriptionActionResult> {
-      return ipcRenderer.invoke('cursor-subscription:logout');
     },
   },
   antigravitySubscription: {
@@ -932,24 +884,10 @@ const makaBridge = {
       return ipcRenderer.invoke('notifications:runEnded', payload);
     },
   },
-  usage: {
-    summary(query: UsageQuery): Promise<Result<UsageSummaryV2>> {
-      return ipcRenderer.invoke('usage:summary', query);
-    },
-    buckets(query: UsageQuery & { groupBy: UsageGroupBy }): Promise<Result<UsageBucket[]>> {
-      return ipcRenderer.invoke('usage:buckets', query);
-    },
-    logs(query: UsageQuery & { offset?: number; limit?: number }): Promise<Result<{ rows: UsageLogRow[]; total: number }>> {
-      return ipcRenderer.invoke('usage:logs', query);
-    },
-    listPricing(): Promise<Result<PricingConfig[]>> {
-      return ipcRenderer.invoke('usage:pricing:list');
-    },
-    putPricing(pricing: PricingConfig): Promise<Result<PricingConfig>> {
-      return ipcRenderer.invoke('usage:pricing:put', pricing);
-    },
-    resetPricing(modelKey: string): Promise<Result<void>> {
-      return ipcRenderer.invoke('usage:pricing:reset', modelKey);
+  inspector: {
+    /** Read-only per-session causal trace (#1625). Never writes runtime state. */
+    trace(sessionId: string): Promise<Result<SessionTrace>> {
+      return ipcRenderer.invoke('inspector:trace', sessionId);
     },
   },
   dailyReview: {
@@ -965,23 +903,11 @@ const makaBridge = {
     runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
       return ipcRenderer.invoke('daily-review:runOnce', input);
     },
-    list(): Promise<DailyReviewArchiveSummary[]> {
-      return ipcRenderer.invoke('daily-review:list');
-    },
     listArchives(): Promise<DailyReviewArchiveSummary[]> {
       return ipcRenderer.invoke('daily-review:list');
     },
-    get(archiveId: string): Promise<DailyReviewArchive | null> {
-      return ipcRenderer.invoke('daily-review:get', archiveId);
-    },
     getArchive(archiveId: string): Promise<DailyReviewArchive | null> {
       return ipcRenderer.invoke('daily-review:get', archiveId);
-    },
-    delete(archiveId: string): Promise<void> {
-      return ipcRenderer.invoke('daily-review:delete', archiveId);
-    },
-    deleteArchive(archiveId: string): Promise<void> {
-      return ipcRenderer.invoke('daily-review:delete', archiveId);
     },
     /**
      * PR-DAILY-REVIEW-EXPORT-FILE-0: render the markdown in the renderer
@@ -1012,11 +938,6 @@ const makaBridge = {
     },
   },
   appWindow: {
-    subscribeOpenSettings(handler: () => void): () => void {
-      const listener = () => handler();
-      ipcRenderer.on('window:openSettings', listener);
-      return () => ipcRenderer.off('window:openSettings', listener);
-    },
     setTitlebarControlsVisible(visible: boolean): Promise<void> {
       return ipcRenderer.invoke('window:setTitlebarControlsVisible', visible);
     },
@@ -1032,6 +953,14 @@ const makaBridge = {
     // React commit so the hidden window can be revealed. Fire-and-forget.
     notifyRendererReady(): Promise<void> {
       return ipcRenderer.invoke('window:notifyRendererReady');
+    },
+    // PR-2088: main-to-renderer route for native-menu commands (New Task /
+    // Settings / Keyboard Shortcuts). The `ipcRenderer.on`/`off` idiom keeps
+    // an HMR or shell remount from stacking duplicate listeners.
+    subscribeCommand(handler: (command: WindowCommand) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, command: WindowCommand) => handler(command);
+      ipcRenderer.on('window:command', listener);
+      return () => ipcRenderer.off('window:command', listener);
     },
   },
   config: {
@@ -1083,14 +1012,11 @@ const makaBridge = {
     updateStatus(): Promise<AppUpdateStatus> {
       return ipcRenderer.invoke('app:updateStatus');
     },
-    checkForUpdates(): Promise<AppUpdateStatus> {
-      return ipcRenderer.invoke('app:checkForUpdates');
+    retryUpdateDownload(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:retryUpdateDownload');
     },
-    downloadUpdate(): Promise<AppUpdateStatus> {
-      return ipcRenderer.invoke('app:downloadUpdate');
-    },
-    installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }> {
-      return ipcRenderer.invoke('app:installUpdate');
+    installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> {
+      return ipcRenderer.invoke('app:installUpdate', input);
     },
     openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }> {
       return ipcRenderer.invoke('app:openUpdateDownload');

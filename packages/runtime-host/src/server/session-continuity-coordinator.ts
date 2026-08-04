@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SessionEvent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import {
   encodeProtocolFrame,
   RUNTIME_HOST_MAX_FRAME_BYTES,
@@ -13,6 +14,8 @@ import {
   type SessionDeltaFrame,
   type SessionEventFrame,
   type SessionToolEvent,
+  type SessionTranscriptQueryInput,
+  type OperationOutcome,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
   type TurnSnapshot,
@@ -28,6 +31,7 @@ import type {
   SessionContinuityFrameSink,
   SessionContinuityService,
 } from './session-continuity-service.js';
+import { TranscriptSnapshotStore } from './transcript-snapshot-store.js';
 
 const MAX_CONNECTION_SUBSCRIPTIONS = 16;
 const MAX_SUBSCRIBER_QUEUED_FRAMES = 32;
@@ -52,10 +56,16 @@ export type ReadCanonicalSessionProjection = (
   sessionId: string,
 ) => Promise<CanonicalSessionProjection | null>;
 
+export type ReadSessionTranscript = (
+  sessionId: string,
+  rootTurn: TurnSnapshot | null,
+) => Promise<readonly StoredMessage[]>;
+
 interface SessionProjectionState {
   canonical: CanonicalSessionProjection;
   revision: number;
   subscribers: Map<string, Subscriber>;
+  assistantOffsets: Map<string, number>;
   terminalPublicationFence?: TerminalPublicationFence;
 }
 
@@ -120,15 +130,19 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             error: { code: 'not_found', message: 'Session subscription was not found' },
           };
     },
+    'session.transcript.query': (input, context) =>
+      this.#queryTranscript(context.connectionId, input),
   };
 
   readonly #connections = new Map<string, ConnectionState>();
   readonly #sessions = new Map<string, SessionProjectionState>();
   readonly #subscriptions = new Map<string, Subscriber>();
+  readonly #transcriptSnapshots = new TranscriptSnapshotStore();
   readonly #pendingRefreshes = new Map<string, PendingRefresh>();
   readonly #pendingAgentGraphChanges = new Map<string, PendingAgentGraphChange>();
   readonly #hostEpoch: string;
   readonly #readCanonical: ReadCanonicalSessionProjection;
+  readonly #readTranscript: ReadSessionTranscript | undefined;
   #closed = false;
 
   constructor(
@@ -136,9 +150,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     readCanonical: ReadCanonicalSessionProjection,
     private readonly sessionAdmission: SessionAdmissionGate,
     private readonly onPublicationFailure: (error: unknown) => void = () => undefined,
+    readTranscript?: ReadSessionTranscript,
   ) {
     this.#hostEpoch = hostEpoch;
     this.#readCanonical = readCanonical;
+    this.#readTranscript = readTranscript;
   }
 
   attachConnection(
@@ -323,6 +339,9 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
+        for (const key of state.assistantOffsets.keys()) {
+          if (key.startsWith(`${runId}\0`)) state.assistantOffsets.delete(key);
+        }
         this.#broadcastProjection(state, snapshot);
         if (state.subscribers.size === 0) this.#sessions.delete(sessionId);
       },
@@ -348,9 +367,13 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     ) {
       return;
     }
-    await this.sessionAdmission.run(sessionId, () => {
-      const state = this.#sessions.get(sessionId);
-      if (!state || state.subscribers.size === 0) return;
+    await this.sessionAdmission.run(sessionId, async () => {
+      let state = this.#sessions.get(sessionId);
+      if (!state) {
+        const canonical = await this.#readCanonicalProjection(sessionId);
+        if (!canonical) throw new Error('Runtime event belongs to a missing Session');
+        state = this.#commitCanonical(sessionId, canonical).state;
+      }
       const rootTurn = state.canonical.rootTurn;
       if (
         !rootTurn ||
@@ -365,8 +388,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         const kind: SessionAssistantDelta['kind'] =
           event.type === 'text_delta' ? 'text' : 'thinking';
+        const offsetKey = assistantOffsetKey(runId, kind, event.messageId);
+        const startOffset = state.assistantOffsets.get(offsetKey) ?? 0;
+        state.assistantOffsets.set(offsetKey, startOffset + event.text.length);
         for (const subscriber of state.subscribers.values()) {
-          this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind);
+          this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset);
         }
         return;
       }
@@ -399,6 +425,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           for (const subscriber of state.subscribers.values()) {
             this.#enqueueSessionRemoved(subscriber);
           }
+          this.#transcriptSnapshots.deleteSession(sessionId);
           this.#sessions.delete(sessionId);
         },
         admission,
@@ -412,6 +439,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     for (const connectionId of [...this.#connections.keys()]) this.#closeConnection(connectionId);
     this.#sessions.clear();
     this.#subscriptions.clear();
+    this.#transcriptSnapshots.close();
     this.#pendingRefreshes.clear();
     this.#pendingAgentGraphChanges.clear();
   }
@@ -492,6 +520,59 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     }
   }
 
+  async #queryTranscript(
+    connectionId: string,
+    input: SessionTranscriptQueryInput,
+  ): Promise<OperationOutcome<'session.transcript.query'>> {
+    const subscriber = this.#ownedSubscriber(connectionId, input.subscriptionId);
+    if (!subscriber) {
+      return {
+        ok: false,
+        error: { code: 'not_found', message: 'Session subscription was not found' },
+      };
+    }
+    if (!this.#readTranscript) {
+      return {
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'Session transcript is unavailable' },
+      };
+    }
+    if (input.kind === 'continue') {
+      return this.#transcriptSnapshots.continue({
+        connectionId,
+        subscriptionId: input.subscriptionId,
+        snapshotId: input.snapshotId,
+        cursor: { messageIndex: input.messageIndex, byteOffset: input.byteOffset },
+      });
+    }
+    const readTranscript = this.#readTranscript;
+    return this.sessionAdmission.run(subscriber.sessionId, async () => {
+      if (this.#ownedSubscriber(connectionId, input.subscriptionId) !== subscriber) {
+        return transcriptSubscriptionNotFound();
+      }
+      try {
+        const messages = await readTranscript(
+          subscriber.sessionId,
+          this.#sessions.get(subscriber.sessionId)?.canonical.rootTurn ?? null,
+        );
+        if (this.#ownedSubscriber(connectionId, input.subscriptionId) !== subscriber) {
+          return transcriptSubscriptionNotFound();
+        }
+        return this.#transcriptSnapshots.start({
+          connectionId,
+          subscriptionId: subscriber.subscriptionId,
+          sessionId: subscriber.sessionId,
+          messages,
+        });
+      } catch {
+        return {
+          ok: false,
+          error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
+        };
+      }
+    });
+  }
+
   #activate(connectionId: string, subscriptionId: string): void {
     const subscriber = this.#ownedSubscriber(connectionId, subscriptionId);
     if (!subscriber || subscriber.activated || subscriber.phase === 'closed') return;
@@ -527,6 +608,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       if (subscriber) this.#removeSubscriber(subscriber);
     }
     this.#connections.delete(connectionId);
+    this.#transcriptSnapshots.deleteConnection(connectionId);
   }
 
   #enqueue(subscriber: Subscriber, frame: SubscriptionFrame): void {
@@ -584,17 +666,26 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     runId: string,
     event: Extract<RuntimeSessionTransientEvent, { type: 'text_delta' | 'thinking_delta' }>,
     kind: SessionAssistantDelta['kind'],
+    startOffset: number,
   ): void {
     let chunk = '';
     let rawBytes = 0;
     let wireBytes = 0;
+    let emittedCharacters = 0;
     const frame = (text: string): SessionDeltaFrame => ({
       kind: 'subscription.session_delta',
       hostEpoch: this.#hostEpoch,
       subscriptionId: subscriber.subscriptionId,
       sequence: subscriber.nextSequence,
       sessionId,
-      delta: { kind, turnId: event.turnId, runId, messageId: event.messageId, text },
+      delta: {
+        kind,
+        turnId: event.turnId,
+        runId,
+        messageId: event.messageId,
+        startOffset: startOffset + emittedCharacters,
+        text,
+      },
     });
     let wireLimit = wireTextByteLimit(frame(''));
     for (const character of event.text) {
@@ -606,6 +697,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           wireBytes + wireCharacterBytes > wireLimit)
       ) {
         this.#enqueue(subscriber, frame(chunk));
+        emittedCharacters += chunk.length;
         if (subscriber.phase !== 'open') return;
         chunk = '';
         rawBytes = 0;
@@ -684,6 +776,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     const state = this.#sessions.get(subscriber.sessionId);
     const removed = state?.subscribers.delete(subscriber.subscriptionId);
     this.#subscriptions.delete(subscriber.subscriptionId);
+    this.#transcriptSnapshots.deleteSubscription(subscriber.subscriptionId);
     this.#connections
       .get(subscriber.connectionId)
       ?.subscriptionIds.delete(subscriber.subscriptionId);
@@ -705,7 +798,8 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       if (
         this.#sessions.get(sessionId) === state &&
         state.subscribers.size === 0 &&
-        !state.terminalPublicationFence
+        !state.terminalPublicationFence &&
+        (!state.canonical.rootTurn || isTerminalTurn(state.canonical.rootTurn))
       ) {
         this.#sessions.delete(sessionId);
       }
@@ -738,7 +832,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     }
     if (!state) {
       const value = createSessionContinuitySnapshot(canonical, 1);
-      state = { canonical, revision: 1, subscribers: new Map() };
+      state = { canonical, revision: 1, subscribers: new Map(), assistantOffsets: new Map() };
       this.#sessions.set(sessionId, state);
       return { changed: true, state, value };
     }
@@ -788,6 +882,21 @@ function slowConsumerFrameBytes(subscriber: Subscriber, hostEpoch: string): numb
     sequence: subscriber.nextSequence + 1,
     reason: 'slow_consumer',
   }).byteLength;
+}
+
+function assistantOffsetKey(
+  runId: string,
+  kind: SessionAssistantDelta['kind'],
+  messageId: string,
+): string {
+  return `${runId}\0${kind}\0${messageId}`;
+}
+
+function transcriptSubscriptionNotFound(): OperationOutcome<'session.transcript.query'> {
+  return {
+    ok: false,
+    error: { code: 'not_found', message: 'Session subscription was not found' },
+  };
 }
 
 function terminalFrameByteBudget(subscriber: Subscriber, hostEpoch: string): number {

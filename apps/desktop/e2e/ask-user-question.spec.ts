@@ -1,6 +1,29 @@
 import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime';
 import { test, expect, COMPOSER_INPUT } from './fixtures.js';
 
+test('rehydrates a prompt the surface never received live', async ({ window: page }) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(FAKE_ASK_USER_QUESTION_PROMPT);
+  await composer.press('Enter');
+
+  const prompt = page.locator('.maka-user-question-prompt');
+  await expect(prompt).toBeVisible();
+
+  // Reloading throws away every event this surface ever saw while the runtime
+  // keeps the turn parked on the question. Without a read-back the prompt is
+  // gone for good and the run can never be answered (#2072).
+  await page.reload();
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page
+    .getByRole('navigation', { name: '对话列表' })
+    .locator('[data-session-id]')
+    .first()
+    .click();
+
+  await expect(prompt).toBeVisible();
+  await expect(prompt.getByText('1 / 3', { exact: true })).toBeVisible();
+});
+
 test('answers three questions and continues the same fake-backend turn', async ({ window: page }) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(FAKE_ASK_USER_QUESTION_PROMPT);

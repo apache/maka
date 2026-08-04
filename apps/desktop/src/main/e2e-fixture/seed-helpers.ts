@@ -54,6 +54,18 @@ export const LONG_SIDEBAR_SESSION_PREFIX = 'e2e-fixture-sidebar-long-';
 export const LONG_SIDEBAR_SESSION_COUNT = 60;
 
 /**
+ * Deterministic project seed for the long-sidebar scenarios. The sidebar's
+ * 按项目 grouping used to depend on the app's ASYNC self-registration of the
+ * workspace as a project — an interaction race the rename e2e sometimes lost
+ * (only the 未归属项目 pseudo-group existed, so its 项目操作 trigger never
+ * mounted and the click waited 30s). Seeding the catalog + linking the three
+ * newest sessions makes the project row exist by construction.
+ */
+export const LONG_SIDEBAR_PROJECT_ID = 'e2e-fixture-project';
+export const LONG_SIDEBAR_PROJECT_NAME = '示例项目';
+export const LONG_SIDEBAR_PROJECT_SESSION_COUNT = 3;
+
+/**
  * Scenarios that share the long-sidebar (60-session) on-disk seed.
  * Kept as a Set so future scenarios reusing the same seed can be
  * registered in one place. Mirrors `TURN_CONTROL_SCENARIOS`.
@@ -100,6 +112,8 @@ export function header(input: {
   isArchived?: boolean;
   isFlagged?: boolean;
   orchestrationMode?: SessionHeader['orchestrationMode'];
+  /** Links the session to a seeded project record (sidebar 按项目 grouping). */
+  projectId?: string;
 }): SessionHeader {
   return {
     id: input.id,
@@ -117,6 +131,7 @@ export function header(input: {
     ...(input.blockedReason ? { blockedReason: input.blockedReason } : {}),
     statusUpdatedAt: input.lastMessageAt,
     hasUnread: input.hasUnread ?? false,
+    ...(input.projectId ? { projectId: input.projectId } : {}),
     ...(input.orchestrationMode ? { orchestrationMode: input.orchestrationMode } : {}),
     backend: input.backend ?? 'ai-sdk',
     llmConnectionSlug: input.connection,

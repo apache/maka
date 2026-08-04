@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, readdir, realpath, mkdtemp, rm } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -165,22 +165,14 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
         }),
         operationError('invalid_request'),
       );
-      await assert.rejects(
-        desktop.request('session.create', {
-          sessionId: 'unsupported-plan-session',
-          cwd: root,
-          modelTarget: { kind: 'default' },
-          collaborationMode: 'plan',
-        }),
-        operationError('operation_unavailable'),
-      );
-      assert.deepEqual(
-        await desktop.request('session.catalog.query', {
-          kind: 'get',
-          sessionId: 'unsupported-plan-session',
-        }),
-        { kind: 'session', session: null },
-      );
+      const planSession = await desktop.request('session.create', {
+        sessionId: 'plan-session',
+        cwd: root,
+        modelTarget: { kind: 'default' },
+        collaborationMode: 'plan',
+      });
+      if ('kind' in planSession) assert.fail('Plan Session must be wire-representable');
+      assert.equal(planSession.collaborationMode, 'plan');
 
       const policy = await tui.request('runtime.policy.query', {});
       const changedPolicy = await tui.request('runtime.policy.mutate', {
@@ -299,6 +291,35 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       const narrowedSession = requireSessionProjection(narrowedConfiguration.session);
       assert.equal(narrowedSession.permissionMode, 'explore');
 
+      const firstCwd = join(base, 'workspace-first');
+      const secondCwd = join(base, 'workspace-second');
+      await Promise.all([mkdir(firstCwd), mkdir(secondCwd)]);
+      const relocationOutcomes = await Promise.all([
+        desktop.relocateSessionCwd({
+          sessionId: narrowedSession.id,
+          expectedRevision: narrowedSession.revision,
+          cwd: firstCwd,
+        }),
+        tui.relocateSessionCwd({
+          sessionId: narrowedSession.id,
+          expectedRevision: narrowedSession.revision,
+          cwd: secondCwd,
+        }),
+      ]);
+      assert.deepEqual(relocationOutcomes.map((outcome) => outcome.kind).sort(), [
+        'committed',
+        'revision_conflict',
+      ]);
+      const relocated = relocationOutcomes.find((outcome) => outcome.kind === 'committed');
+      assert.ok(relocated);
+      if (relocated?.kind !== 'committed') assert.fail('One Session relocation must commit');
+      const relocatedSession = requireSessionProjection(relocated.session);
+      assert.ok(
+        relocatedSession.cwd === (await realpath(firstCwd)) ||
+          relocatedSession.cwd === (await realpath(secondCwd)),
+      );
+      assert.deepEqual(await querySession(tui, narrowedSession.id), relocatedSession);
+
       await setDefaultModel(desktop, connectionId, WIRE_OVERSIZED_MODEL_ID);
       const rejectedSessionId = 'wire-oversized-default-model';
       await assert.rejects(
@@ -318,19 +339,19 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       );
       await assert.rejects(
         desktop.request('session.configuration.update', {
-          sessionId: narrowedSession.id,
-          expectedRevision: narrowedSession.revision,
+          sessionId: relocatedSession.id,
+          expectedRevision: relocatedSession.revision,
           configuration: {
             modelTarget: { kind: 'default' },
             thinkingLevel: null,
-            permissionMode: narrowedSession.permissionMode,
-            collaborationMode: narrowedSession.collaborationMode,
-            orchestrationMode: narrowedSession.orchestrationMode,
+            permissionMode: relocatedSession.permissionMode,
+            collaborationMode: relocatedSession.collaborationMode,
+            orchestrationMode: relocatedSession.orchestrationMode,
           },
         }),
         operationError('invalid_request'),
       );
-      assert.deepEqual(await querySession(desktop, narrowedSession.id), narrowedSession);
+      assert.deepEqual(await querySession(desktop, relocatedSession.id), relocatedSession);
       await setDefaultModel(tui, connectionId, 'gpt-5');
 
       const read = requireSessionProjection(
@@ -373,7 +394,7 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       if (continuation.kind !== 'page') {
         assert.fail('Stable Session catalog continuation must return a page');
       }
-      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 5);
+      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 6);
 
       const filteredStart = await desktop.request('session.catalog.query', {
         kind: 'list_start',
@@ -1012,6 +1033,7 @@ async function sendCreateWithoutReadingResponse(
     surface: 'desktop',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
+    compatibilityEpoch: 1,
   });
   const handshake = decodeHostFrame(await transport.read(2_000));
   assert.ok('kind' in handshake);

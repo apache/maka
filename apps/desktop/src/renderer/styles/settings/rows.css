@@ -22,6 +22,23 @@
   border-block-start: var(--border-width-hairline) solid var(--border);
 }
 
+/* …and the row must be square for that hairline to read as one line.
+   Astryx's Item ships `border-radius: 10px` for its standalone use — a
+   rounded chip that highlights on hover. Our divider is a border on the Item
+   itself, and a border follows its element's corners, so the line curved
+   down at both ends: a straight middle with two hooks, which reads as two
+   different divider systems meeting. (Reported by owner; measured at
+   runtime as radius 10px + border-block-start 1px on `.astryx-item`.)
+
+   In an edge-to-edge row group the row is not a chip — it spans the column,
+   so its hover highlight should span it too. Zeroing the radius is therefore
+   the whole fix: do NOT wrap the row to preserve rounded hover, which would
+   reintroduce the chip the open idiom removed. */
+.settingsRows > .astryx-item,
+.settingsRowsGroup > .astryx-item {
+  border-radius: 0;
+}
+
 /* Form blocks inside a row group (SettingsField / SettingsActions): block
    padding only — the open idiom has no inline inset, so fields stay flush
    with the section heading and the Item rows around them. */
@@ -123,4 +140,13 @@
     height: auto;
     min-height: 2rem;
   }
+}
+
+/* The expanded half of SettingsExpandableRow: the editor the caller supplies,
+   then its Save / Cancel pair. A grid rather than margins so the gap is the
+   row group's own rhythm and the editor keeps the field block's full width. */
+.settingsExpandableEditor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
 }

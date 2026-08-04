@@ -49,3 +49,26 @@
   background: oklch(from var(--destructive) l c h / 0.10);
   color: var(--destructive);
 }
+
+/* The capability rows are Astryx Collapsibles whose trigger stacks three lines
+   (name + status, id, readiness sentence). Astryx centers the trigger's chevron
+   against that whole block, which parks it beside the id line — the chevron
+   ends up pointing at the least important row of the three. Top-align it and
+   give it the title line's height so it centers on the name instead. */
+.settingsCapabilityGroup .astryx-collapsible-trigger {
+  align-items: flex-start;
+}
+
+.settingsCapabilityGroup .astryx-collapsible-trigger > :last-child {
+  /* One line box of the capability name (`Text type="label" size="sm"`), so the
+     chevron's own internal centering resolves onto that first line. */
+  height: calc(var(--font-size-sm) * var(--text-label-leading));
+}
+
+/* One indent step for a row's diagnostics. These rows have no icon column, so
+   without it the layer readouts share a left edge with the capability name and
+   read as sibling rows rather than as that row's detail. Indent only — a tint
+   or a rounded container here would be a card nested inside a row list. */
+.settingsCapabilityDetail {
+  padding-inline-start: var(--space-4);
+}

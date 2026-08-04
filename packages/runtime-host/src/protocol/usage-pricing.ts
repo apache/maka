@@ -239,12 +239,27 @@ export type PricingQueryInput =
   | { readonly kind: 'start' }
   | { readonly kind: 'continue'; readonly revision: number; readonly offset: number };
 
+/**
+ * Effective for one Host epoch: `revision` pins persisted overrides, while the
+ * bundled table is fixed by the running Host build.
+ */
+export type EffectivePricingEntry =
+  | {
+      readonly pricing: Readonly<PricingConfig>;
+      readonly source: 'builtin';
+    }
+  | {
+      readonly pricing: Readonly<PricingConfig>;
+      readonly source: 'custom';
+      readonly resetEffect: 'restore_builtin' | 'become_unpriced';
+    };
+
 export type PricingQueryResult =
   | {
       readonly kind: 'page';
       readonly revision: number;
       readonly offset: number;
-      readonly overrides: readonly Readonly<PricingConfig>[];
+      readonly entries: readonly EffectivePricingEntry[];
       readonly nextOffset: number | null;
     }
   | {
@@ -459,33 +474,34 @@ export function decodePricingQueryResult(value: unknown): PricingQueryResult {
     'kind',
     'revision',
     'offset',
-    'overrides',
+    'entries',
     'nextOffset',
   ]);
-  if (!Array.isArray(exact.overrides) || exact.overrides.length > PRICING_PAGE_MAX_ITEMS) {
-    throw invalidProtocolFrame('Pricing overrides exceed item limit');
+  if (!Array.isArray(exact.entries) || exact.entries.length > PRICING_PAGE_MAX_ITEMS) {
+    throw invalidProtocolFrame('Pricing entries exceed item limit');
   }
-  const overrides = exact.overrides.map(decodePricingConfig);
+  const entries = exact.entries.map(decodeEffectivePricingEntry);
   if (
-    overrides.some(
+    entries.some(
       (item, index) =>
-        index > 0 && comparePricingModelKeys(overrides[index - 1]!.modelKey, item.modelKey) >= 0,
+        index > 0 &&
+        comparePricingModelKeys(entries[index - 1]!.pricing.modelKey, item.pricing.modelKey) >= 0,
     )
   ) {
-    throw invalidProtocolFrame('Pricing overrides are not canonically ordered');
+    throw invalidProtocolFrame('Pricing entries are not canonically ordered');
   }
   const offset = requireCount(exact.offset, 'pricing offset');
   const nextOffset =
     exact.nextOffset === null ? null : requireCount(exact.nextOffset, 'pricing next offset');
-  const advancedOffset = offset + overrides.length;
-  if (nextOffset !== null && (overrides.length === 0 || nextOffset !== advancedOffset)) {
+  const advancedOffset = offset + entries.length;
+  if (nextOffset !== null && (entries.length === 0 || nextOffset !== advancedOffset)) {
     throw invalidProtocolFrame('Pricing page does not make canonical progress');
   }
   const decoded: PricingQueryResult = {
     kind: 'page',
     revision: requireCount(exact.revision, 'pricing revision'),
     offset,
-    overrides,
+    entries,
     nextOffset,
   };
   assertJsonBytes(decoded, PRICING_PAGE_MAX_BYTES, 'Pricing page');
@@ -493,6 +509,30 @@ export function decodePricingQueryResult(value: unknown): PricingQueryResult {
 }
 
 export const encodePricingQueryResult = decodePricingQueryResult;
+
+function decodeEffectivePricingEntry(value: unknown): EffectivePricingEntry {
+  const entry = requireRecord(value, 'effective pricing entry');
+  if (entry.source === 'builtin') {
+    const exact = requireExactRecord(entry, 'built-in pricing entry', ['pricing', 'source']);
+    return { pricing: decodePricingConfig(exact.pricing), source: 'builtin' };
+  }
+  if (entry.source === 'custom') {
+    const exact = requireExactRecord(entry, 'custom pricing entry', [
+      'pricing',
+      'source',
+      'resetEffect',
+    ]);
+    if (exact.resetEffect !== 'restore_builtin' && exact.resetEffect !== 'become_unpriced') {
+      throw invalidProtocolFrame('Invalid custom pricing reset effect');
+    }
+    return {
+      pricing: decodePricingConfig(exact.pricing),
+      source: 'custom',
+      resetEffect: exact.resetEffect,
+    };
+  }
+  throw invalidProtocolFrame('Invalid effective pricing source');
+}
 
 export function decodePricingMutateInput(value: unknown): PricingMutateInput {
   const input = requireExactRecord(value, 'pricing mutation input', [

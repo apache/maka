@@ -27,9 +27,11 @@ describe('Goal turn lifecycle', () => {
     const registry = new SessionActivityRegistry();
     const first = registry.reserve('session-1');
     const second = registry.reserve('session-1');
+    const automation = registry.reserve('session-2');
     const firstIdle = registry.whenIdle('session-1');
     assert.ok(firstIdle);
     assert.equal(registry.reserveIfIdle('session-1'), undefined);
+    assert.equal(registry.hasActive(), true);
 
     let acquired = false;
     const nextPromise = registry.acquire('session-1').then((lease) => {
@@ -50,6 +52,9 @@ describe('Goal turn lifecycle', () => {
     assert.ok(registry.whenIdle('session-1'));
     next.release();
     assert.equal(registry.whenIdle('session-1'), undefined);
+    assert.equal(registry.hasActive(), true);
+    automation.release();
+    assert.equal(registry.hasActive(), false);
   });
 
   test('aborts a queued exclusive admission without acquiring after the session becomes idle', async () => {

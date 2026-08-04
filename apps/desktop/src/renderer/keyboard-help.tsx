@@ -1,14 +1,15 @@
 // apps/desktop/src/renderer/keyboard-help.tsx
 //
 // Discoverable keyboard cheat sheet. Modal triggered by `?` (when no input is
-// focused) or `⌘/` / `Ctrl+/`. Lists every shortcut the renderer reacts to so
+// focused) or `⌘/` (`Ctrl+/` off macOS). Lists every shortcut the renderer reacts to so
 // users don't need to scrape the README. Astryx Dialog owns focus trapping,
 // Esc, and focus restoration.
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Keyboard } from '@maka/ui/icons';
 import { useUiLocale } from '@maka/ui';
 import { Kbd } from '@astryxdesign/core/Kbd';
+import { useHotkeys } from '@astryxdesign/core/hooks';
 import {
   Dialog,
   DialogHeader,
@@ -48,27 +49,16 @@ function toAstryxKeyToken(key: string): string {
 export function useKeyboardHelp(): [boolean, () => void, () => void] {
   const [open, setOpen] = useState(false);
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey) {
-        if (event.key === '/' || event.key === '?') {
-          event.preventDefault();
-          setOpen((prev) => !prev);
-        }
-        return;
-      }
-      if (event.key !== '?') return;
-      // Skip if the user is typing in a text field so `?` still types.
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
-      }
-      event.preventDefault();
-      setOpen(true);
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  // The hand-written "is the user typing?" guard is gone: skipping
+  // input/textarea/select/contenteditable is what useHotkeys does by default,
+  // and it is the only reason the bare `?` entry needs no guard of its own —
+  // `?` must still type itself into the composer. The two modified combos opt
+  // back in, matching the old code, which reached them before its guard.
+  useHotkeys([
+    { keys: 'mod+/', allowInInputs: true, onPress: () => setOpen((prev) => !prev) },
+    { keys: 'mod+?', allowInInputs: true, onPress: () => setOpen((prev) => !prev) },
+    { keys: '?', onPress: () => setOpen(true) },
+  ]);
 
   return [open, () => setOpen(false), () => setOpen(true)];
 }

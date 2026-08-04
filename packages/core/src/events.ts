@@ -36,6 +36,11 @@ import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 export const TOOL_OUTPUT_STREAMS = ['stdout', 'stderr'] as const;
 export const TOOL_OUTPUT_DELTA_MAX_CHARS = 8192;
 export const TOOL_ACTIVITY_KINDS = [
+  // Driving the user's own machine is not "a tool call". It has its own risk,
+  // its own approval classes and its own place in a transcript, and reading it
+  // under the same gear icon as everything else hides the one activity a person
+  // most wants to pick out at a glance.
+  'computer',
   'read',
   'search',
   'websearch',
@@ -829,6 +834,13 @@ export interface SandboxBoundaryRequestEvent extends BaseEvent {
   justification: string;
   expansion: SandboxBoundaryExpansion;
 }
+
+/**
+ * The requests a session can park on while it waits for the user. Both are
+ * registered by RuntimeKernel while unanswered, so a surface that missed the
+ * live event can rehydrate the prompt instead of stranding the run.
+ */
+export type ActiveInteractionRequestEvent = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
 
 export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   type: 'sandbox_boundary_decision_ack';

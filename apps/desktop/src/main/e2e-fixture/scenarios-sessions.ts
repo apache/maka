@@ -2,6 +2,8 @@ import type { SessionHeader, StoredMessage } from '@maka/core';
 import {
   header,
   HEALTHY_SESSION_ID,
+  LONG_SIDEBAR_PROJECT_ID,
+  LONG_SIDEBAR_PROJECT_SESSION_COUNT,
   LONG_SIDEBAR_SESSION_COUNT,
   LONG_SIDEBAR_SESSION_PREFIX,
   LONG_TRANSCRIPT_SESSION_ID,
@@ -540,6 +542,9 @@ export function longSidebarSessions(now: number): Array<{ header: SessionHeader;
       now,
       lastMessageAt,
       status: 'active',
+      ...(i < LONG_SIDEBAR_PROJECT_SESSION_COUNT
+        ? { projectId: LONG_SIDEBAR_PROJECT_ID }
+        : {}),
     });
     const userTs = lastMessageAt - 30_000;
     const assistantTs = lastMessageAt;

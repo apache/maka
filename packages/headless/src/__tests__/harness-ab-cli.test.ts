@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { TERMINAL_BENCH_2_1_TASK_IDS } from '../harness-ab-manifest.js';
+import { buildHarborJobConfig } from '../harbor-task-runner.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -97,8 +98,8 @@ test('harness A/B uses one safe execution default and accepts per-run overrides'
     armExecution: 'sequential',
   });
   assert.throws(
-    () => resolveHarnessAbExecutionPolicy('5', undefined, 30),
-    /MAKA_HARNESS_AB_PAIR_CONCURRENCY must be an integer between 1 and 4/,
+    () => resolveHarnessAbExecutionPolicy('17', undefined, 30),
+    /MAKA_HARNESS_AB_PAIR_CONCURRENCY must be an integer between 1 and 16/,
   );
   assert.throws(
     () => resolveHarnessAbExecutionPolicy(undefined, 'together', 30),
@@ -282,10 +283,6 @@ test('harness A/B records its configured execution policy in the manifest', asyn
   assert.equal(selection.limit, 89);
   assert.equal(manifest.maxConcurrency, 2);
   assert.equal(manifest.maxConcurrentAttempts, 4);
-  assert.throws(
-    () => resolveHarnessAbExecutionPolicy('5', undefined, selection.taskIds.length),
-    /MAKA_HARNESS_AB_PAIR_CONCURRENCY must be an integer between 1 and 4/,
-  );
 });
 
 test('harness Oracle environment selects the linux/amd64 image manifest digest', async () => {
@@ -427,7 +424,7 @@ test('harness A/B defaults to pinned Kimi Code and keeps OpenCode selectable', a
   assert.equal(resolveHarnessCompetitorProfile('opencode').version, '1.17.18');
   const codexProfile = resolveHarnessCompetitorProfile('codex');
   const codexComposition = resolveHarnessComposition({ competitor: 'codex' });
-  assert.equal(codexProfile.version, '0.144.6');
+  assert.equal(codexProfile.version, '0.146.0');
   assert.deepEqual(codexComposition.runtimeProfile, {
     id: 'openai-codex-gpt-5.6-sol-xhigh',
     provider: 'openai-codex',
@@ -731,6 +728,9 @@ test('harness CLI freezes the synchronized DeepSeek three-way composition', asyn
   );
 });
 
+// Baselines move only when arm identity genuinely changes; the current values
+// cover the settlement-grace and externalSystemPrompt corrections, which both
+// alter what an arm actually runs with.
 test('harness composition preserves historical manifest fingerprints', async () => {
   const { buildHarnessAbManifest, resolveHarnessComposition } = await import(
     new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
@@ -740,31 +740,31 @@ test('harness composition preserves historical manifest fingerprints', async () 
       name: 'Terminal-Bench Kimi Code',
       composition: { competitor: 'kimi-code' },
       pierVersion: null,
-      fingerprint: 'sha256:c1f1f4ef3c1de99a4f20ba71f5deddc144f942d5cdb1d9b1223b2ac65e551f9b',
+      fingerprint: 'sha256:6469fb00ceeec168799d67bb84d73a288cd7b68e118f36398185a298278fe2ab',
     },
     {
       name: 'Terminal-Bench OpenCode',
       composition: { competitor: 'opencode' },
       pierVersion: null,
-      fingerprint: 'sha256:700267bbe62f37892d72c2b6ee327dd37632b3f0563a755e693681730a07bb68',
+      fingerprint: 'sha256:375894a49ddfe2a2ce2c195c2b0f14075be4416135bb63e2382b400efc9f460b',
     },
     {
       name: 'Terminal-Bench Codex',
       composition: { competitor: 'codex' },
       pierVersion: null,
-      fingerprint: 'sha256:176c2b12f36b6a78e7558d79a43bc7f12a0073afb8b1e893d0178bccf6d23de4',
+      fingerprint: 'sha256:d8907d44340a1ee4b2f35b015ce78faa527b6b6c4fcefb553556eb9011f54bb6',
     },
     {
       name: 'DeepSWE Kimi Code',
       composition: { benchmark: 'deep-swe-1.1', competitor: 'kimi-code' },
       pierVersion: '0.3.0',
-      fingerprint: 'sha256:4a3979f0ccf085063e9cd812444d3739d9f792bac58397eac25ba76120785779',
+      fingerprint: 'sha256:4e4b8fb414b9f3ba9ebe0697592cdc4f9cf20c2bad46d73a6f11c35670e9266a',
     },
     {
       name: 'DeepSWE Codex',
       composition: { benchmark: 'deep-swe-1.1', competitor: 'codex' },
       pierVersion: '0.3.0',
-      fingerprint: 'sha256:e61cf1e48747d6fafc696f334ea609e62d00e98e8b79db2352964aafca128c25',
+      fingerprint: 'sha256:afb6a70de939312d998a613a62647842dff85addcd265fdfd4bceadf42ec1688',
     },
   ] as const;
 
@@ -778,6 +778,58 @@ test('harness composition preserves historical manifest fingerprints', async () 
     });
     assert.equal(manifest.fingerprint, expected.fingerprint, expected.name);
   }
+});
+
+test('Reasonix comparison freezes the DeepSeek runtime, toolchain, and run identity', async () => {
+  const {
+    buildHarnessAbManifest,
+    buildHarnessExecutionProfile,
+    resolveHarnessAbRunId,
+    resolveHarnessComposition,
+    resolveHarnessCompetitorToolchain,
+    resolveHarnessCompetitorToolchainPath,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const composition = resolveHarnessComposition({ competitor: 'reasonix' });
+  const { competitorProfile, runtimeProfile } = composition;
+  // The competitor axis alone selects the DeepSeek runtime; both arms then
+  // share one model, effort, pricing source, and execution policy.
+  assert.equal(runtimeProfile.id, 'deepseek-v4-flash-max');
+  const manifest = buildHarnessAbManifest({
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition,
+  });
+  assert.deepEqual(manifest.metadata.model, {
+    provider: 'deepseek',
+    id: 'deepseek-v4-flash',
+    reasoningEffort: 'max',
+  });
+  assert.equal(manifest.arms[0].id, 'maka');
+  assert.equal(manifest.arms[1].id, 'reasonix');
+  assert.equal(manifest.arms[1].metadata.config.adapter, 'reasonix_agent:MakaReasonixAgent');
+  assert.equal(manifest.arms[1].metadata.config.billingMode, 'metered');
+  assert.equal(manifest.metadata.pricing.source, runtimeProfile.pricing.source);
+  assert.equal(
+    resolveHarnessAbRunId(composition),
+    'deepseek-v4-flash-maka-vs-reasonix-tbench-2.1-full-v1',
+  );
+  assert.match(
+    resolveHarnessCompetitorToolchainPath('/run', competitorProfile),
+    new RegExp(
+      `reasonix-1\\.19\\.4-${competitorProfile.toolchainFingerprint.slice(7, 19)}-linux-x64$`,
+    ),
+  );
+  const toolchain = resolveHarnessCompetitorToolchain('/run', competitorProfile, {
+    MAKA_HARNESS_AB_REASONIX_TOOLCHAIN: '/prepared/reasonix',
+  });
+  assert.equal(toolchain.path, '/prepared/reasonix');
+  assert.equal(toolchain.prepare.name, 'prepareReasonixToolchain');
+  assert.equal(competitorProfile.runnerToolchainOption, 'reasonixToolchainPath');
+  assert.equal(
+    buildHarnessExecutionProfile(runtimeProfile).modelSpec,
+    'deepseek/deepseek-v4-flash',
+  );
 });
 
 test('Codex comparison freezes the OpenAI model, pricing, and run identity', async () => {
@@ -1448,7 +1500,53 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
   // No executor key for Harbor benchmarks: the manifest payload (and with it
   // the resume fingerprint) must stay byte-identical to historical runs.
   assert.equal('executor' in tbenchManifest.metadata.benchmark, false);
-  assert.equal('agentSettlementGraceSec' in tbenchManifest.metadata.benchmark, false);
+  // The settlement grace is executor-independent: both runners give the Maka arm
+  // the same window on top of the task-native model budget, so both manifests
+  // must record it.
+  assert.equal(tbenchManifest.metadata.benchmark.agentSettlementGraceSec, 30);
+  // Anchor the declared window to what the runner actually hands out. Recording
+  // the constant alone would stay green even if every arm got no window at all.
+  const anchorBudgetSec = 1800;
+  const anchorAgent = (
+    buildHarborJobConfig(
+      {
+        runId: 'run-1',
+        roundId: 'round-1',
+        task: {
+          id: 'task-1',
+          path: '/tasks/task-1',
+          metadata: { agentTimeoutSec: anchorBudgetSec },
+        },
+        config: {
+          id: 'cfg',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+        },
+        systemPrompt: 'PROMPT\n',
+      },
+      { makaRepoPath: '/repo', jobsDir: '/jobs/x', jobName: 'trial', model: 'deepseek/v4' },
+    ).agents as Array<{ env: Record<string, string>; override_timeout_sec?: number }>
+  )[0]!;
+  // override_timeout_sec, not max_timeout_sec: Harbor folds the latter in as
+  // `min(base, max)`, so a tail published there resolves back to the task's own
+  // declared timeout and the settlement window never exists.
+  assert.equal(
+    anchorAgent.override_timeout_sec! - Number(anchorAgent.env.MAKA_CELL_TIMEOUT_SEC),
+    tbenchManifest.metadata.benchmark.agentSettlementGraceSec,
+  );
+  // Every arm is handed MAKA_SYSTEM_PROMPT but only the Maka cell applies it, so
+  // the arm identity has to say so in a readable field rather than only inside a
+  // hash. Asserting both arms keeps the asymmetry itself under test.
+  for (const manifestUnderTest of [manifest, pierManifest, tbenchManifest]) {
+    assert.equal(
+      manifestUnderTest.arms[0].metadata.config.externalSystemPrompt,
+      'default-headless',
+    );
+    for (const competitor of manifestUnderTest.arms.slice(1)) {
+      assert.equal(competitor.metadata.config.externalSystemPrompt, 'none');
+    }
+  }
 });
 
 test('harness A/B benchmark profiles bind their executor and resolve from env', async () => {

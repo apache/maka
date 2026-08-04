@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
+import { realpathAllowMissing } from './path-containment.js';
 import {
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
   validateSandboxBoundaryExpansion,
@@ -71,23 +72,6 @@ export async function normalizeSandboxBoundaryExpansion(
   });
   if (!normalized.ok) throw new Error(normalized.message);
   return normalized.expansion;
-}
-
-async function realpathAllowMissing(target: string): Promise<string> {
-  let cursor = target;
-  const missing: string[] = [];
-  while (true) {
-    try {
-      const realParent = await fs.realpath(cursor);
-      return resolve(realParent, ...missing.reverse());
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      const parent = dirname(cursor);
-      if (parent === cursor) throw error;
-      missing.push(cursor.slice(parent.length + (parent === '/' ? 0 : 1)));
-      cursor = parent;
-    }
-  }
 }
 
 async function targetTypeFor(path: string): Promise<NormalizedSandboxBoundaryPath['targetType']> {

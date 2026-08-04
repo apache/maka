@@ -5,6 +5,12 @@ export type SubagentProfile = (typeof SUBAGENT_PROFILES)[number];
 
 export const MAX_SUBAGENT_PRESETS = 64;
 export const SUBAGENT_PRESET_ID_MAX_CHARS = 128;
+// Normalization DROPS a preset whose name is too long and TRUNCATES a
+// description that is, so any editor writing these fields has to enforce the
+// same numbers — silently losing the preset the user just saved is the
+// alternative. Exported for exactly that.
+export const SUBAGENT_PRESET_NAME_MAX_CHARS = 128;
+export const SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS = 1_000;
 const SAFE_SUBAGENT_PRESET_ID = /^[A-Za-z0-9._:-]+$/;
 
 /** User-approved model route for one catalog subagent capability. */
@@ -56,7 +62,7 @@ export function normalizeSubagentSettings(input: unknown): SubagentSettings {
       !isSubagentProfile(value.profile) ||
       typeof value.name !== 'string' ||
       value.name.trim().length < 1 ||
-      value.name.trim().length > 128 ||
+      value.name.trim().length > SUBAGENT_PRESET_NAME_MAX_CHARS ||
       typeof value.connectionSlug !== 'string' ||
       value.connectionSlug.trim().length < 1 ||
       value.connectionSlug.trim().length > 128 ||
@@ -74,7 +80,9 @@ export function normalizeSubagentSettings(input: unknown): SubagentSettings {
       id,
       name: value.name.trim(),
       description:
-        typeof value.description === 'string' ? value.description.trim().slice(0, 1_000) : '',
+        typeof value.description === 'string'
+          ? value.description.trim().slice(0, SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS)
+          : '',
       profile: value.profile,
       connectionSlug: value.connectionSlug.trim(),
       model: value.model.trim(),

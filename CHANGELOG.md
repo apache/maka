@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+## 0.1.4 - 2026-08-04
+
+### Highlights
+
+- Rebuilt Computer Use around `maka-cu` as the executor that actually runs:
+  rewrote what the model reads (observation, action surface, refusals), made the
+  agent cursor land where it is aimed, mirrored the driven window instead of
+  competing for the screen, and let a model read back the call it made.
+- Gave driving the computer its own conversation row, stopped a run when the
+  machine locks, and kept the machine awake while it runs.
+- Made SQLite the sole operational authority in storage, moved the project
+  catalog into the operational database, and converged concurrent fresh WAL
+  initialization.
+- Extended Runtime Host ownership over input and artifact preparation,
+  interactive session actions, safe-boundary continuation authority, and
+  sandbox boundary interactions.
+- Added a session trace as a workbar Inspector tab, projected over both ledgers.
+- Added configurable subagent model routing with its own settings page, and
+  raised agent swarm concurrency to 32 ways.
+- Added Mermaid rendering to Markdown.
+- Switched Codex OAuth to the ChatGPT device-code flow and added Grok PKCE.
+
+### Performance
+
+- Streamed the transcript incrementally instead of re-deriving it per token.
+- Subscribed to session UI state at the granularity each surface reads, and
+  stopped idle-session event-health polling from re-rendering the whole shell.
+
+### Reliability and developer experience
+
+- Fixed turn execution scope isolation, streamed tool-call delta resolution
+  against live aliases, streamed tool calls dropped when a gateway skips index
+  0, tool-free child summaries, and AgentRun ledgers written by other versions.
+- Made macOS development permission grants reliable and the dev TCC grant
+  durable behind an opt-in, and made startup say which step has not come back.
+- Told a refused tool call what to do next, not just what went wrong.
+- Derived thinking-strength controls from models.dev reasoning options, and
+  unified cron expression authority.
+- Continued the Astryx redesign across Settings, the subagent page, the
+  extensions page, plan reminders, skill chips and empty states, and the
+  composer model and voice controls.
+- Put every headless benchmark arm under the same tool surface and model
+  budget, registered `ArchiveRead` for Harbor-archived tool results, and
+  required validated verifier grades.
+- Routed CI into dedicated lanes for heavy suites and the alignment audit, and
+  measured Computer Use rendering changes against recorded trajectories.
+
+### Removed
+
+- Removed `cua-driver` now that `maka-cu` is the Computer Use executor.
+- Removed isolated runtime utilities and the Cursor subscription integration.
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP.
+- Computer Use remains excluded from this release.
+
 ## 0.1.3 - 2026-08-03
 
 ### Highlights

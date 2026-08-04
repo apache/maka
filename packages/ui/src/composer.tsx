@@ -1231,7 +1231,7 @@ export const Composer = forwardRef<
           isDisabled={props.disabled}
           drawer={drawerTokenCount > 0 ? (
             <ChatComposerDrawer count={drawerTokenCount} label={copy.addContext}>
-              <div className="maka-composer-context-drawer" aria-label={copy.addContext}>
+              <div className="maka-composer-context-drawer" role="group" aria-label={copy.addContext}>
                 {props.pendingQuotes?.map((quote, index) => (
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}

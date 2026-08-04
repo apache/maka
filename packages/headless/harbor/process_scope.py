@@ -15,25 +15,30 @@ COMMAND_SCOPE_ROOT = "/tmp/maka-harbor-command-scopes"
 async def cleanup_process_scope(
     agent: Any, environment: Any, scope: str
 ) -> None:
-    first_error: BaseException | None = None
-    try:
-        await agent.exec_as_agent(
-            environment,
-            command=scoped_process_cleanup_command(scope, "TERM"),
-        )
-    except BaseException as error:
-        first_error = error
-    await asyncio.sleep(0.2)
-    try:
-        await agent.exec_as_agent(
-            environment,
-            command=scoped_process_cleanup_command(scope, "KILL"),
-        )
-    except BaseException as error:
-        if first_error is None:
-            first_error = error
-    if first_error is not None:
-        raise first_error
+    """Reap the scope's leftovers. Callers run this from a `finally` while the
+    agent's own exception is in flight, so raising here would replace the real
+    failure with the teardown's — which is how agent timeouts were being
+    recorded as infrastructure failures. Cancellation still propagates."""
+    for signal in ("TERM", "KILL"):
+        try:
+            await agent.exec_as_agent(
+                environment,
+                command=scoped_process_cleanup_command(scope, signal),
+            )
+        except Exception as error:  # noqa: BLE001 - teardown is best effort.
+            logger = getattr(agent, "logger", None)
+            if logger is not None:
+                # Reporting the failure must not become one: an exception from
+                # here escapes the same `finally` and rewrites the same agent
+                # failure this function exists to preserve.
+                try:
+                    logger.warning(
+                        "process scope %s %s cleanup failed: %s", scope, signal, error
+                    )
+                except Exception:  # noqa: BLE001 - logging is best effort too.
+                    pass
+        if signal == "TERM":
+            await asyncio.sleep(0.2)
 
 
 def scoped_command(command: str, scope: str, command_id: str) -> str:

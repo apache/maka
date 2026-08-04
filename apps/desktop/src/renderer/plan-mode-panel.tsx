@@ -236,6 +236,8 @@ export function PlanExecutionPanel(props: {
                 <span
                   className="plan-execution-step-marker"
                   data-status={step.status}
+                  /* The span renders a status glyph, so the label IS its content. */
+                  role="img"
                   aria-label={executionStepStatusLabel(step.status)}
                   title={executionStepStatusLabel(step.status)}
                 >

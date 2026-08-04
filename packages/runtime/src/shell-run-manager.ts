@@ -154,7 +154,7 @@ interface LiveShellRunBase {
   termination?: TerminationLifecycle;
   pendingStops: Set<PendingStop>;
   timeoutTimer?: NodeJS.Timeout;
-  flushTimer?: NodeJS.Timeout;
+  cancelFlush?: () => void;
   flushInFlight?: Promise<ShellRunRecord>;
   persistChain: Promise<void>;
   persistFailure?: Error;
@@ -228,6 +228,7 @@ export class ShellRunProcessManager
   private readonly killGraceMs: number;
   private readonly exitAcknowledgementMs: number;
   private readonly pipeOutputDrainMs: number;
+  private readonly scheduleFlush: (run: () => void, delayMs: number) => () => void;
   private reservedShellRuns = 0;
   private reservedPtyRuns = 0;
   private shuttingDown = false;
@@ -243,6 +244,12 @@ export class ShellRunProcessManager
     this.exitAcknowledgementMs =
       input.exitAcknowledgementMs ?? DEFAULT_PROCESS_TERMINATION_GRACE_MS;
     this.pipeOutputDrainMs = input.pipeOutputDrainMs ?? DEFAULT_PIPE_OUTPUT_DRAIN_MS;
+    this.scheduleFlush =
+      input.scheduleFlush ??
+      ((run, delayMs) => {
+        const timer = setTimeout(run, delayMs);
+        return () => clearTimeout(timer);
+      });
   }
 
   async runBackgroundBash(input: ShellRunBashInput): Promise<ShellRunToolResult> {
@@ -918,27 +925,28 @@ export class ShellRunProcessManager
   private scheduleAutomaticFlush(live: LiveShellRun): void {
     if (live.finalizeOnce || live.driverExit || live.integrityFailure || live.persistFailure)
       return;
-    if (live.flushInFlight || live.flushTimer) return;
+    if (live.flushInFlight || live.cancelFlush) return;
     if (live.mode === 'pipes') {
       if (live.pendingFlushChars >= this.flushBytes) {
         this.queueAutomaticFlush(live);
       } else {
-        live.flushTimer = setTimeout(() => {
-          live.flushTimer = undefined;
+        live.cancelFlush = this.scheduleFlush(() => {
+          live.cancelFlush = undefined;
           this.queueAutomaticFlush(live);
         }, this.flushIntervalMs);
       }
       return;
     }
+    // Real elapsed time, not the injected `now()`: this paces flushes against the wall
+    // clock, while `now()` only stamps records and is a plain counter under test.
     const elapsed = Date.now() - live.lastSnapshotWallTime;
-    const delay = Math.max(0, this.flushIntervalMs - elapsed);
-    if (delay === 0) this.queueAutomaticFlush(live);
-    else {
-      live.flushTimer = setTimeout(() => {
-        live.flushTimer = undefined;
+    live.cancelFlush = this.scheduleFlush(
+      () => {
+        live.cancelFlush = undefined;
         this.queueAutomaticFlush(live);
-      }, delay);
-    }
+      },
+      Math.max(0, this.flushIntervalMs - elapsed),
+    );
   }
 
   private queueAutomaticFlush(live: LiveShellRun): void {
@@ -969,9 +977,9 @@ export class ShellRunProcessManager
     snapshotBarrier?: Promise<SnapshotAtCut | undefined>,
   ): Promise<ShellRunRecord> {
     if (live.integrityFailure || live.driverExit) return live.finished.join();
-    if (live.flushTimer) {
-      clearTimeout(live.flushTimer);
-      live.flushTimer = undefined;
+    if (live.cancelFlush) {
+      live.cancelFlush();
+      live.cancelFlush = undefined;
     }
     if (live.mode === 'pipes') live.pendingFlushChars = 0;
     const task = this.queuePersist(live, {}, snapshotBarrier ? { snapshotBarrier } : {});
@@ -1675,9 +1683,9 @@ export class ShellRunProcessManager
 
   private clearLiveTimers(live: LiveShellRun): void {
     if (live.timeoutTimer) clearTimeout(live.timeoutTimer);
-    if (live.flushTimer) clearTimeout(live.flushTimer);
+    live.cancelFlush?.();
     live.timeoutTimer = undefined;
-    live.flushTimer = undefined;
+    live.cancelFlush = undefined;
   }
 
   private sessionTerminationEpoch(sessionId: string): number {

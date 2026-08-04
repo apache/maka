@@ -17,6 +17,10 @@ type Story = StoryObj<typeof meta>;
 export const RetainedFunctionalMotion: Story = {
   render: () => (
     <div style={{ alignItems: 'end', display: 'grid', gap: 24, gridTemplateColumns: 'repeat(2, minmax(96px, 1fr))' }}>
+      {/* This story is the keyframe's only consumer since the product's
+          `.maka-shimmer` recipe died (#1980), so the keyframe lives here
+          rather than in maka-tokens.css. */}
+      <style>{'@keyframes maka-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }'}</style>
       <div style={{ alignItems: 'center', display: 'grid', gap: 8, justifyItems: 'center' }}>
         <Spinner style={{ height: 20, width: 20 }} />
         <span style={{ color: 'var(--foreground-secondary)', fontSize: 12, fontWeight: 600 }}>Spinner</span>

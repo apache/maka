@@ -21,6 +21,8 @@ export interface SkillsCopy {
     emptySearchBody: string;
     emptyBody: string;
     emptyFilterBody: string;
+    clearSearch: string;
+    clearFilters: string;
     sourceFallback: string;
   };
   tabs: { ariaLabel: string; market: string; builtin: string; installed: string };
@@ -142,7 +144,6 @@ export interface SkillsCopy {
     actions: string;
     search: string;
     openFolder: string;
-    refreshing: string;
     refresh: string;
   };
 }
@@ -150,7 +151,7 @@ export interface SkillsCopy {
 const SKILLS_COPY = {
   zh: {
     categories: { '内容创作': '内容创作', '数据与AI': '数据与 AI', '设计与UI': '设计与 UI', 'DevOps与部署': 'DevOps 与部署', '文档与写作': '文档与写作', '效率工具': '效率工具', '研究与分析': '研究与分析' },
-    market: { categoryAll: '全部分类', sortName: '排序：名称', sortRecent: '排序：最近', controls: '市场筛选与排序', categoryFilter: '按分类筛选市场技能', sortAriaLabel: '市场技能排序方式', ariaLabel: '技能市场', official: '官方精选', sourceActions: '来源库操作', importLocal: '导入本地 Skill', emptySearchTitle: '没有匹配的市场技能', emptyTitle: '来源库还是空的', emptySearchBody: '换一个关键词，或清空搜索查看全部来源。', emptyBody: '导入一个含 SKILL.md 的本地文件，它会作为可安装的来源出现在这里。', emptyFilterBody: '换一个分类或关键词，或清空筛选查看全部来源。', sourceFallback: '本地来源库 Skill。' },
+    market: { categoryAll: '全部分类', sortName: '排序：名称', sortRecent: '排序：最近', controls: '市场筛选与排序', categoryFilter: '按分类筛选市场技能', sortAriaLabel: '市场技能排序方式', ariaLabel: '技能市场', official: '官方精选', sourceActions: '来源库操作', importLocal: '导入本地 Skill', emptySearchTitle: '没有匹配的市场技能', emptyTitle: '来源库还是空的', emptySearchBody: '换一个关键词，或清空搜索查看全部来源。', emptyBody: '导入一个含 SKILL.md 的本地文件，它会作为可安装的来源出现在这里。', emptyFilterBody: '换一个分类或关键词，或清空筛选查看全部来源。', clearSearch: '清空搜索', clearFilters: '清空筛选', sourceFallback: '本地来源库 Skill。' },
     tabs: { ariaLabel: '技能视图', market: '市场', builtin: '内置', installed: '已安装' },
     banner: { ariaLabel: '精选技能', title: '为你精选的职场技能', body: '涵盖写作、效率、设计、数据分析等场景，将陆续上线，敬请期待。', review: '复盘', reviewDetail: '总结沉淀', documents: '文档', documentsDetail: '审阅润色', publish: '发布', publishDetail: '检查清单' },
     install: { action: (name) => `安装 ${name}`, installedTitle: '已安装到当前工作区', installed: '已安装', notInstalled: '未安装' },
@@ -161,11 +162,11 @@ const SKILLS_COPY = {
     review: { ariaLabel: 'Skill 更新审查', title: '更新审查', source: (id) => `来源 ${id}`, managedSource: '受管理来源', hasBaseline: '已有基线', missingBaseline: '缺少基线', lineTransition: (current, source) => `${current} → ${source} 行`, changedLines: (count) => `${count} 行不同`, warning: '工作区副本已有本地修改。继续更新会用来源库版本覆盖当前 SKILL.md。', workspace: '当前工作区', sourceVersion: '来源库版本', cancel: '取消', overwrite: '覆盖本地修改', update: '更新到来源版本' },
     description: { document: '创建、编辑、检查文档内容。', presentation: '创建、编辑、检查演示文稿。', spreadsheet: '创建、编辑、分析表格数据。', image: '生成或编辑图片素材。', browser: '打开、检查、操作网页界面。', macos: '辅助构建和调试 macOS 应用。', fallback: '打开技能文件查看适用场景。' },
     status: { metadataError: '元数据异常', managed: { source_missing: '来源缺失', update_available: '可更新', local_modified: '本地已修改', metadata_error: '元数据异常', up_to_date: '受管理', not_managed: '受管理' }, modified: '已修改', bundled: '内置', local: '本地', stateError: '状态异常', enabled: '已启用', disabled: '已停用' },
-    page: { title: '技能', subtitle: '安装与管理技能，在对话中扩展 Maka 的能力。', actions: '技能操作', search: '搜索技能', openFolder: '打开目录', refreshing: '刷新中…', refresh: '刷新' },
+    page: { title: '技能', subtitle: '安装与管理技能，在对话中扩展 Maka 的能力。', actions: '技能操作', search: '搜索技能', openFolder: '打开目录', refresh: '刷新' },
   },
   en: {
     categories: { '内容创作': 'Content creation', '数据与AI': 'Data & AI', '设计与UI': 'Design & UI', 'DevOps与部署': 'DevOps & deployment', '文档与写作': 'Documents & writing', '效率工具': 'Productivity', '研究与分析': 'Research & analysis' },
-    market: { categoryAll: 'All categories', sortName: 'Sort: Name', sortRecent: 'Sort: Recent', controls: 'Marketplace filters and sorting', categoryFilter: 'Filter marketplace skills by category', sortAriaLabel: 'Marketplace skill sort order', ariaLabel: 'Skill marketplace', official: 'Official picks', sourceActions: 'Source library actions', importLocal: 'Import local Skill', emptySearchTitle: 'No matching marketplace skills', emptyTitle: 'The source library is empty', emptySearchBody: 'Try another keyword or clear search to see all sources.', emptyBody: 'Import a local file containing SKILL.md to make it available as an installable source.', emptyFilterBody: 'Try another category or keyword, or clear the filters.', sourceFallback: 'Local source-library Skill.' },
+    market: { categoryAll: 'All categories', sortName: 'Sort: Name', sortRecent: 'Sort: Recent', controls: 'Marketplace filters and sorting', categoryFilter: 'Filter marketplace skills by category', sortAriaLabel: 'Marketplace skill sort order', ariaLabel: 'Skill marketplace', official: 'Official picks', sourceActions: 'Source library actions', importLocal: 'Import local Skill', emptySearchTitle: 'No matching marketplace skills', emptyTitle: 'The source library is empty', emptySearchBody: 'Try another keyword or clear search to see all sources.', emptyBody: 'Import a local file containing SKILL.md to make it available as an installable source.', emptyFilterBody: 'Try another category or keyword, or clear the filters.', clearSearch: 'Clear search', clearFilters: 'Clear filters', sourceFallback: 'Local source-library Skill.' },
     tabs: { ariaLabel: 'Skill views', market: 'Marketplace', builtin: 'Built in', installed: 'Installed' },
     banner: { ariaLabel: 'Featured skills', title: 'Featured workplace skills', body: 'Writing, productivity, design, and data-analysis skills are coming soon.', review: 'Review', reviewDetail: 'Capture insights', documents: 'Documents', documentsDetail: 'Review and refine', publish: 'Publish', publishDetail: 'Checklists' },
     install: { action: (name) => `Install ${name}`, installedTitle: 'Installed in this workspace', installed: 'Installed', notInstalled: 'Not installed' },
@@ -176,7 +177,7 @@ const SKILLS_COPY = {
     review: { ariaLabel: 'Skill update review', title: 'Update review', source: (id) => `Source ${id}`, managedSource: 'Managed source', hasBaseline: 'Baseline available', missingBaseline: 'No baseline', lineTransition: (current, source) => `${current} → ${source} lines`, changedLines: (count) => `${count} ${count === 1 ? 'line differs' : 'lines differ'}`, warning: 'The workspace copy has local changes. Continuing will replace the current SKILL.md with the source version.', workspace: 'Current workspace', sourceVersion: 'Source version', cancel: 'Cancel', overwrite: 'Overwrite local changes', update: 'Update to source version' },
     description: { document: 'Create, edit, and inspect documents.', presentation: 'Create, edit, and inspect presentations.', spreadsheet: 'Create, edit, and analyze spreadsheet data.', image: 'Generate or edit images.', browser: 'Open, inspect, and operate web interfaces.', macos: 'Build and debug macOS apps.', fallback: 'Open the skill file to see when to use it.' },
     status: { metadataError: 'Metadata error', managed: { source_missing: 'Source missing', update_available: 'Update available', local_modified: 'Locally modified', metadata_error: 'Metadata error', up_to_date: 'Managed', not_managed: 'Managed' }, modified: 'Modified', bundled: 'Built in', local: 'Local', stateError: 'State error', enabled: 'Enabled', disabled: 'Disabled' },
-    page: { title: 'Skills', subtitle: 'Install and manage skills to extend Maka in conversations.', actions: 'Skill actions', search: 'Search skills', openFolder: 'Open folder', refreshing: 'Refreshing…', refresh: 'Refresh' },
+    page: { title: 'Skills', subtitle: 'Install and manage skills to extend Maka in conversations.', actions: 'Skill actions', search: 'Search skills', openFolder: 'Open folder', refresh: 'Refresh' },
   },
 } satisfies UiCatalog<SkillsCopy>;
 

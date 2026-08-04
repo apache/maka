@@ -222,8 +222,12 @@ function riskTaskOutcome(from: RsiTaskOutcome, to: RsiTaskOutcome): RsiRiskTaskO
 function taskOutcome(event: FixedPromptTaskWalEvent | undefined): RsiTaskOutcome {
   if (!event) return 'missing';
   if (event.type === 'task_infra_failed') return 'infra';
-  if (event.type === 'task_budget_exhausted') return 'budget';
   if (event.type === 'task_plumbing_failed') return 'plumbing';
+  // A budget exhaustion the verifier graded carries a real score, so it reads
+  // as that score. `budget` is for the ones that ran out with no verdict —
+  // otherwise a graded pass would be attributed to the prompt as a flip away
+  // from passing.
+  if (event.type === 'task_budget_exhausted' && !(event.eligible && event.scored)) return 'budget';
   if (!event.eligible || !event.scored) return 'unscored';
   return event.passed ? 'pass' : 'fail';
 }

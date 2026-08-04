@@ -1,16 +1,20 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import {
+  IconButton,
   TaskLedgerPanel,
   deriveTaskLedgerPanelModel,
   useUiLocale,
   type ChatModelChoice,
 } from '@maka/ui';
+import { PanelRightClose } from '@maka/ui/icons';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import type { SessionSummary } from '@maka/core';
 import { ArtifactPane } from './artifact-pane';
 import { BrowserPanel } from './browser-panel';
 import { QuoteCompanionPanel } from './quote-companion-panel';
+import { SessionInspectorPanel } from './session-inspector-panel';
 import type { SessionWorkbarTab } from './session-workbar-layout';
 import { useSessionTasks } from './use-session-tasks';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -69,6 +73,21 @@ export function SessionWorkbar(props: {
           label={copy.sectionsAriaLabel}
           size="sm"
           dividers={['bottom']}
+          /* The close control sits with the tabs it closes, not on its own
+             strip in the titlebar. The titlebar keeps a toggle only while the
+             workbar is shut, where it is the one way back. */
+          endContent={(
+            <Tooltip content={copy.collapse}>
+              <IconButton
+                label={copy.collapse}
+                icon={<PanelRightClose size={15} aria-hidden="true" />}
+                variant="ghost"
+                size="sm"
+                onClick={props.onDismiss}
+                aria-expanded
+              />
+            </Tooltip>
+          )}
           startContent={
             <TabList
               className="maka-session-workbar-tab-list"
@@ -89,6 +108,7 @@ export function SessionWorkbar(props: {
                 label={copy.files}
                 endContent={<span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{artifactCount}</span>}
               />
+              <Tab value="inspector" label={copy.inspector} />
               {props.quote && <Tab value="quote" label={copy.quoteTab} />}
             </TabList>
           }
@@ -106,6 +126,12 @@ export function SessionWorkbar(props: {
         </div>
         <div hidden={props.activeTab !== 'files'} className="maka-session-workbar-panel">
           <ArtifactPane sessionId={props.sessionId} onCountChange={setArtifactCount} onDismiss={props.onDismiss} />
+        </div>
+        <div hidden={props.activeTab !== 'inspector'} className="maka-session-workbar-panel">
+          <SessionInspectorPanel
+            sessionId={props.sessionId}
+            active={!props.hidden && props.activeTab === 'inspector'}
+          />
         </div>
         {props.quote && (
           <div

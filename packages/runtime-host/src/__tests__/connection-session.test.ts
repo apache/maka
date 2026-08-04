@@ -697,6 +697,7 @@ async function openAcceptedTransport(
     surface: 'tui',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
+    compatibilityEpoch: 1,
   });
   const handshake = decodeHostFrame(await transport.read(1_000));
   assert.ok('kind' in handshake);

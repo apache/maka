@@ -73,6 +73,13 @@ export function isHardRuntimeEventReadModelDiagnostic(diagnostic: {
   return RUNTIME_EVENT_READ_MODEL_DIAGNOSTIC_SEVERITY[diagnostic.code] === 'hard';
 }
 
+export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
+  return (
+    event.actions?.stateDelta?.continuationStart === true ||
+    event.actions?.continuationStart !== undefined
+  );
+}
+
 /**
  * Codes that mean the projection did not claim an event, at either severity.
  *
@@ -299,10 +306,7 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
-    if (
-      event.actions?.stateDelta?.continuationStart === true ||
-      event.actions?.continuationStart !== undefined
-    ) {
+    if (isContinuationStartRuntimeEvent(event)) {
       // Continuation start is a canonical lineage/recovery fact with no
       // legacy chat row. Its following model events own the visible output.
       projected = true;

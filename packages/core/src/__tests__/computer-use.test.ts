@@ -149,6 +149,76 @@ describe('Computer Use foundation contract', () => {
     assert.equal(summary.observationId?.includes('sk-test-observation'), false);
   });
 
+  /**
+   * The identifier shape `[A-Za-z0-9._:-]{1,256}` is also the shape of an API
+   * key, so admitting an element id by shape is not on its own a privacy
+   * boundary. `computerUseModelCallArgs` is what `ToolRuntime` persists as the
+   * Computer Use call's arguments, what the model reads back as its own history
+   * and what both renderers turn into a row; arguments are not validated before
+   * it runs, so a model that put a key under `element_id` reaches it. Remove
+   * the redaction and this test goes red.
+   */
+  test('a secret-shaped element id is redacted on the same terms as an app name', () => {
+    for (const secret of [
+      'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvWxYz01',
+      'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+    ]) {
+      const asElement = computerUseModelCallArgs({
+        action: 'click_element',
+        app: 'Example',
+        window_id: 42,
+        observation_id: 'frame-7',
+        element_id: secret,
+      });
+      const asApp = computerUseModelCallArgs({
+        action: 'click_element',
+        window_id: 42,
+        observation_id: 'frame-7',
+        app: secret,
+      });
+      assert.equal(asElement.element_id?.includes(secret), false);
+      assert.equal(asElement.element_id, asApp.app);
+    }
+    // An ordinary element id is untouched: redaction must not cost the row the
+    // one field that tells two clicks in a turn apart.
+    assert.equal(
+      computerUseModelCallArgs({ action: 'click_element', element_id: 'e12' }).element_id,
+      'e12',
+    );
+  });
+
+  /**
+   * `observation_id` was the one identifier on this projection that skipped
+   * `redactSecrets`, so a secret-shaped value under that key reached the
+   * persisted call, the `tool_start` event and the model's own replayed history
+   * verbatim, while the same string under `app` or `element_id` did not.
+   *
+   * The reason it looked unsafe to redact is that the model quotes this id back
+   * on its next call, so rewriting it could break the observe-then-act loop.
+   * It cannot: the executor mints these with `randomUUID`, and a UUID carries no
+   * run of 40-plus hex characters, so `redactSecrets` leaves it alone. Anything
+   * it does rewrite was never an id this host handed out.
+   */
+  test('a secret-shaped observation id is redacted, and a real one is not', () => {
+    const secret = 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvWxYz01';
+    const asObservation = computerUseModelCallArgs({
+      action: 'click_element',
+      observation_id: secret,
+      element_id: 'e12',
+    });
+    const asApp = computerUseModelCallArgs({ action: 'click_element', app: secret });
+    assert.equal(asObservation.observation_id?.includes(secret), false);
+    assert.equal(asObservation.observation_id, asApp.app);
+
+    // The shape the executor actually mints survives, or the model cannot name
+    // the observation it just read and every bound action stops working.
+    const minted = '3f2b1c9e-4a5d-6e7f-8091-a2b3c4d5e6f7';
+    assert.equal(
+      computerUseModelCallArgs({ action: 'click_element', observation_id: minted }).observation_id,
+      minted,
+    );
+  });
+
   test('approval scope separates read, screenshot, and mutation classes', () => {
     const metadata = computerUseApprovalScopeKey({
       action: 'observe',
@@ -316,6 +386,13 @@ describe('the call as the model reads it back', () => {
   test('the same argument name stays withheld where it carries screen or typed text', () => {
     // select_text names a substring of what the window is showing, and type
     // carries whatever a person asked to be written. Same key, opposite origin.
+    //
+    // The placeholder carries the value's length and not the value. A bare
+    // `<text>` was a fill-in-the-blank, and `text`/`value` are
+    // `z.string().max(8000)` with no lower bound and no pattern — so it was a
+    // legal call at the wire schema and at the strict union both, and a model
+    // replaying its own set_value typed those six characters into the user's
+    // field. `COMPUTER_USE_WITHHELD_VALUE` is what the tool refuses on.
     expect(
       computerUseModelCallArgs({
         action: 'select_text',
@@ -323,10 +400,10 @@ describe('the call as the model reads it back', () => {
         element_id: 'e12',
         text: 'account balance 4,213.55',
       }).text,
-    ).toBe('<text>');
+    ).toBe('<text:24>');
     expect(
       computerUseModelCallArgs({ action: 'type', observation_id: 'obs-1', text: 'hunter2' }).text,
-    ).toBe('<text>');
+    ).toBe('<text:7>');
     expect(
       computerUseModelCallArgs({
         action: 'set_value',
@@ -334,7 +411,7 @@ describe('the call as the model reads it back', () => {
         element_id: 'e12',
         value: 'hunter2',
       }).value,
-    ).toBe('<text>');
+    ).toBe('<text:7>');
   });
 
   test('an argument the model sent keeps its key even when its value is withheld', () => {
@@ -399,7 +476,7 @@ describe('the call as the model reads it back', () => {
     expect(
       computerUseModelCallArgs({ action: 'left_click', observation_id: 'obs-1', coordinate: 'x' })
         .coordinate,
-    ).toBe('<text>');
+    ).toBe('<text:1>');
   });
 
   test('an action the tool cannot accept is reported as the model sent it', () => {
@@ -408,15 +485,20 @@ describe('the call as the model reads it back', () => {
     // Here it erased the one thing this record is for — a model whose call was
     // rejected for naming an action the schema does not carry could not connect
     // the rejection to what it had sent.
+    //
+    // Written with `element_sequence`, which was the real example of a name the
+    // schema did not carry until the branch that adds the executor carried it.
+    // A test for an unknown action has to name one that stays unknown, or it
+    // asserts the catalog's contents by accident and fails the day it grows.
     const projected = computerUseModelCallArgs({
-      action: 'element_sequence',
+      action: 'summon_the_window',
       observation_id: 'obs-1',
       text: 'account balance 4,213.55',
     });
-    expect(projected.action).toBe('element_sequence');
-    // It is still not a known action, so nothing about it is treated as plain.
-    expect(projected.text).toBe('<text>');
-    expect(computerUseApprovalSummary({ action: 'element_sequence' }).action).toBe('unknown');
+    expect(projected.action).toBe('summon_the_window');
+    // It is not a known action, so nothing about it is treated as plain.
+    expect(projected.text).toBe('<text:24>');
+    expect(computerUseApprovalSummary({ action: 'summon_the_window' }).action).toBe('unknown');
   });
 
   test('a non-string action is the only thing left that reads as unknown', () => {

@@ -12,6 +12,7 @@ import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
 } from '../sqlite-runtime-store.js';
+import { bindWorkspaceBaselineAuthorityStoreRootInternal } from '../workspace-version-authority-internal.js';
 
 const WORKER_READY_TIMEOUT_MS = 15_000;
 const WORKER_EXECUTION_TIMEOUT_MS = 30_000;
@@ -162,6 +163,40 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
+  it('allows concurrent operational owners to initialize the same fresh WAL database', async () => {
+    for (let round = 0; round < 12; round += 1) {
+      const root = await mkdtemp(join(tmpdir(), 'maka-operational-fresh-open-race-'));
+      const dbPath = join(root, 'runtime.sqlite');
+      const startPath = join(root, 'start');
+      try {
+        const results = await runOpenWorkers(dbPath, startPath, 'operational_open_only');
+        assert.deepEqual(
+          results.map(({ code }) => code),
+          [0, 0],
+          `fresh concurrent operational open failed in round ${round + 1}: ${JSON.stringify(results)}`,
+        );
+
+        const database = new DatabaseSync(dbPath, { readOnly: true });
+        try {
+          assert.equal(
+            (database.prepare('PRAGMA journal_mode').get() as { journal_mode: string })
+              .journal_mode,
+            'wal',
+          );
+          assert.equal(
+            (database.prepare('PRAGMA user_version').get() as { user_version: number })
+              .user_version,
+            SQLITE_RUNTIME_SCHEMA_VERSION,
+          );
+        } finally {
+          database.close();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('makes an exact concurrent workspace baseline open idempotent', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const results = await runWorkers(dbPath, startPath, [
@@ -220,7 +255,7 @@ describe('SQLite recovery authority multi-process races', () => {
       const db = new DatabaseSync(dbPath);
       try {
         db.exec(
-          "DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE headless_task_run_events; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
+          "DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE headless_task_run_events; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
         );
       } finally {
         db.close();
@@ -261,6 +296,7 @@ async function withPreparedDatabase(
   const startPath = join(root, 'start');
   const store = createSqliteRuntimeStore(dbPath);
   try {
+    bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
     await store.commitToolPrepared(preparedCommit());
     await store.appendRuntimeEvent('session-1', 'continuation-source-run', {
       id: 'continuation-source-user',
@@ -323,10 +359,14 @@ async function runWorkers(
   }
 }
 
-async function runOpenWorkers(dbPath: string, startPath: string): Promise<WorkerResult[]> {
+async function runOpenWorkers(
+  dbPath: string,
+  startPath: string,
+  mode = 'open_only',
+): Promise<WorkerResult[]> {
   const stopPath = `${startPath}.stop`;
-  const workers = ['open_only', 'open_only'].map((mode) =>
-    startWorker(dbPath, startPath, mode, stopPath),
+  const workers = [mode, mode].map((workerMode) =>
+    startWorker(dbPath, startPath, workerMode, stopPath),
   );
   try {
     await withTimeout(

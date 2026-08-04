@@ -1,18 +1,24 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
-import { createCuaDriverBackend } from '../packages/computer-use/dist/index.js';
+import { createMakaCuBackend } from '../packages/computer-use/dist/index.js';
 import { buildComputerUseTools } from '../packages/runtime/dist/index.js';
 
 const repoRoot = new URL('..', import.meta.url).pathname;
-const binaryPath = join(repoRoot, 'apps/desktop/resources/bin/cua-driver');
+const binaryPath = join(repoRoot, 'apps/desktop/resources/bin/maka-cu');
 const labRoot = '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
 const expectedAppPath = join(labRoot, 'test-app/build/Codex CUA Lab.app');
 const statePath = join(labRoot, 'test-app/runtime/state.json');
 const temporaryDirectory = process.env.MAKA_CU_RESTART_TEMP_DIR;
 const oldPID = Number(process.env.MAKA_CU_RESTART_OLD_PID);
 const soakRounds = Number(process.env.MAKA_CU_RESTART_SOAK_ROUNDS);
-const expectedBinarySha256 = '683dad5cccb47dd0a8bb5d534d62fbb9e6edfb1cded232509cf4c2b190066040';
+// The digest the manifest pins, rather than a copy of it: a hardcoded digest
+// here goes stale the first time the executor is rebuilt, and the failure it
+// produces is "refusing to spawn an unrecognized binary", which reads like a
+// tampering alarm rather than like a stale constant.
+const expectedBinarySha256 = JSON.parse(
+  await readFile(join(repoRoot, 'apps', 'desktop', 'bundled-tools.json'), 'utf8'),
+).makaCu.binarySha256;
 
 const resolvedTemporaryDirectory = resolve(temporaryDirectory ?? '');
 const temporaryRelativePath = relative(resolve(tmpdir()), resolvedTemporaryDirectory);
@@ -52,13 +58,9 @@ async function waitForJson(path, label, timeoutMs = 15_000) {
 const traces = [];
 const idFlow = [];
 let latestObservationGeometry;
-const backend = createCuaDriverBackend({
+const backend = createMakaCuBackend({
   binaryPath,
-  hostBundleId: 'com.maka.desktop',
   expectedBinarySha256,
-  expectedServerName: 'cua-driver',
-  expectedServerVersion: '0.7.1',
-  expectedProtocolVersion: '2025-06-18',
   timeoutMs: 10_000,
   onTrace(event) {
     traces.push(event);
@@ -209,7 +211,7 @@ try {
   const seenHostPIDs = new Set();
   const seenWebContentPIDs = new Set();
   let currentPID = oldPID;
-  let serviceGenerations;
+  let serviceGeneration;
   for (let round = 1; round <= soakRounds; round += 1) {
     const currentState = await readState();
     if (
@@ -336,23 +338,21 @@ try {
       throw new Error(`round ${round} fresh process action violated its oracle`);
     }
 
-    const serviceState = backend.serviceState();
-    for (const role of ['action', 'capture']) {
-      if (serviceState[role].restartAttempts !== 0) {
-        throw new Error(`round ${round} ${role} service consumed restart budget`);
-      }
+    // maka-cu is one child, not the two roles cua-driver split action and
+    // capture across, so this reads one snapshot and compares one generation.
+    // It was still shaped like the old backend: `backend.serviceState()` does
+    // not exist, so this threw a TypeError on round 1 — inside the try, after
+    // the real work had already succeeded, so the harness wrote an ok:false
+    // report for a passing real-machine run.
+    const executorState = backend.executorState();
+    if (executorState.restartAttempts !== 0) {
+      throw new Error(`round ${round} executor consumed restart budget`);
     }
-    const generations = {
-      action: serviceState.action.generation,
-      capture: serviceState.capture.generation,
-    };
-    if (!serviceGenerations) {
-      serviceGenerations = generations;
-    } else if (
-      generations.action !== serviceGenerations.action ||
-      generations.capture !== serviceGenerations.capture
-    ) {
-      throw new Error(`round ${round} unexpectedly restarted cua-driver services`);
+    const generation = executorState.generation;
+    if (serviceGeneration === undefined) {
+      serviceGeneration = generation;
+    } else if (generation !== serviceGeneration) {
+      throw new Error(`round ${round} unexpectedly restarted the maka-cu executor`);
     }
 
     report.cases.push({
@@ -370,7 +370,7 @@ try {
         outcome: freshOccluded ? 'fail_closed_occluded' : 'ax_set_value_succeeded',
         mutation: ['', freshField?.value],
       },
-      serviceGenerations: generations,
+      executorGeneration: generation,
     });
     currentPID = newPID;
     tools.clearSession('process-restart-e2e');
@@ -382,7 +382,7 @@ try {
   report.evidence = {
     seenHostPIDs: [...seenHostPIDs],
     seenWebContentPIDs: [...seenWebContentPIDs],
-    serviceGenerations,
+    executorGeneration: serviceGeneration,
     idFlow,
     traceTypes: traces.map((event) => event.type),
   };

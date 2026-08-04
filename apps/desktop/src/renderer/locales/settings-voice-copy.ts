@@ -14,20 +14,11 @@ export type VoiceSettingsCopy = {
   aria: string;
   title: string;
   badge: string;
-  subtitle: string;
   statusAria: string;
+  statusHelp: string;
   microphone: string;
-  captureLimit: string;
-  durationSize(seconds: number, megabytes: number): string;
-  channels: string;
-  channelValue(khz: number): string;
-  privacy: string;
-  privacyValue: string;
   checking: string;
   run: string;
-  boundary: string;
-  boundaryAria: string;
-  boundaries: readonly [string, string, string];
   permissions: Record<VoicePermissionStatus, string>;
   validation: Record<'duration_exceeded' | 'audio_too_large' | 'invalid_audio_shape' | 'permission_not_granted' | 'default', string>;
   duration(seconds: string): string;
@@ -62,7 +53,6 @@ export type VoiceSettingsCopy = {
   recognitionConnectionModel: string;
   recognitionConnectionModelPlaceholder: string;
   recognitionConnectionSave: string;
-  recognitionConnectionSaving: string;
   recognitionConnectionUpdated: string;
   recognitionConnectionUpdatedDetail(connection: string, model: string): string;
   recognitionConnectionUpdateFailed: string;
@@ -85,24 +75,11 @@ const SETTINGS_VOICE_COPY = {
     aria: '语音模型',
     title: '语音模型',
     badge: '本地自检',
-    subtitle: '这页现在可以验证麦克风权限和本地录音链路。语音转写和语音朗读模型必须遵守这个边界：转写结果必须先回到消息输入框，由用户编辑确认后才能发送；音频样本默认不落盘。',
     statusAria: '语音能力状态',
+    statusHelp: '麦克风只在自检时录一小段，用完即丢弃；配置语音转写模型前不会把音频发往任何服务，转写结果也会先回到输入框、由你确认后再发送。',
     microphone: '麦克风权限',
-    captureLimit: '采集上限',
-    durationSize: (seconds, megabytes) => `${seconds} 秒 · ${megabytes} MB`,
-    channels: '通道',
-    channelValue: (khz) => `单声道 · ≤ ${khz} kHz`,
-    privacy: '隐私',
-    privacyValue: '不保存音频 · 不进遥测',
     checking: '自检中…',
     run: '运行录音自检',
-    boundary: '当前边界',
-    boundaryAria: '语音能力边界说明',
-    boundaries: [
-      '录音样本只在本机内存里用于计算时长和大小；自检结束后立即停止采集并丢弃样本。',
-      '配置语音转写模型之前，不会把音频传给任何云端服务。',
-      '转写文本只进入消息输入框草稿；用户发送前必须能编辑。',
-    ],
     permissions: {
       granted: '已授权',
       denied: '已拒绝',
@@ -150,7 +127,6 @@ const SETTINGS_VOICE_COPY = {
     recognitionConnectionModel: 'ASR 模型 ID',
     recognitionConnectionModelPlaceholder: '例如 FunAudioLLM/SenseVoiceSmall',
     recognitionConnectionSave: '保存配置',
-    recognitionConnectionSaving: '保存中…',
     recognitionConnectionUpdated: '语音识别配置已更新',
     recognitionConnectionUpdatedDetail: (connection, model) => `${connection} · ${model}`,
     recognitionConnectionUpdateFailed: '修改语音识别连接失败',
@@ -171,24 +147,11 @@ const SETTINGS_VOICE_COPY = {
     aria: 'Voice models',
     title: 'Voice models',
     badge: 'Local check',
-    subtitle: 'Verify microphone permission and the local recording pipeline here. Speech-to-text and text-to-speech models must preserve this boundary: transcripts return to the message composer for editing and confirmation before sending, and audio samples are not saved by default.',
     statusAria: 'Voice capability status',
+    statusHelp: 'The microphone records only a short sample during the self-check and discards it immediately. No audio leaves this machine until you configure a speech-to-text model, and transcripts return to the composer for you to confirm before sending.',
     microphone: 'Microphone permission',
-    captureLimit: 'Capture limit',
-    durationSize: (seconds, megabytes) => `${seconds} seconds · ${megabytes} MB`,
-    channels: 'Channels',
-    channelValue: (khz) => `Mono · ≤ ${khz} kHz`,
-    privacy: 'Privacy',
-    privacyValue: 'Audio not saved · excluded from telemetry',
     checking: 'Checking…',
     run: 'Run recording check',
-    boundary: 'Current boundary',
-    boundaryAria: 'Voice capability boundaries',
-    boundaries: [
-      'The recording sample is used only in local memory to calculate duration and size; capture stops and the sample is discarded when the check ends.',
-      'Audio is never sent to a cloud service before a speech-to-text model is configured.',
-      'Transcribed text enters only the message composer draft and remains editable before sending.',
-    ],
     permissions: {
       granted: 'Granted',
       denied: 'Denied',
@@ -236,7 +199,6 @@ const SETTINGS_VOICE_COPY = {
     recognitionConnectionModel: 'ASR model ID',
     recognitionConnectionModelPlaceholder: 'For example, FunAudioLLM/SenseVoiceSmall',
     recognitionConnectionSave: 'Save configuration',
-    recognitionConnectionSaving: 'Saving…',
     recognitionConnectionUpdated: 'Speech recognition configuration updated',
     recognitionConnectionUpdatedDetail: (connection, model) => `${connection} · ${model}`,
     recognitionConnectionUpdateFailed: 'Could not update speech recognition connection',

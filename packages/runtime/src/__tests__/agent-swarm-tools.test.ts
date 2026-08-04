@@ -1511,7 +1511,7 @@ function buildRuntime(
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
-    getCurrentRunId: () => 'parent-run',
+    runId: 'parent-run',
     spawnChildSession,
     ...(options.traceEvents ? { getRunTrace: () => testTrace(options.traceEvents!) } : {}),
     ...(options.recordToolInvocation ? { recordToolInvocation: options.recordToolInvocation } : {}),

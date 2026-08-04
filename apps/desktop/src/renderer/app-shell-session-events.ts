@@ -40,7 +40,7 @@ export function createAppShellSessionEventHandlers(options: {
   refreshSessions: () => Promise<unknown>;
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
-  onSandboxBoundaryInteractionChanged?: (sessionId: string) => void;
+  onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
   showModelSetupToast: (description: string, reason?: string) => void;
@@ -55,7 +55,7 @@ export function createAppShellSessionEventHandlers(options: {
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
-    onSandboxBoundaryInteractionChanged,
+    onInteractionChanged,
     onExecutionBoundaryChanged,
     showModelSetupToast,
     toastApi,
@@ -123,14 +123,21 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
         break;
       case 'sandbox_boundary_request':
-        onSandboxBoundaryInteractionChanged?.(sessionId);
+      case 'user_question_request':
+        onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
-      case 'user_question_request':
-        setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
+      // The runtime drops its owner on this ack, not on the tool result that
+      // follows it, so this is where the request stops being answerable — the
+      // same point its boundary sibling settles on, below.
+      case 'user_question_answer_ack':
+        onInteractionChanged?.(sessionId);
+        setInteractionBySession((current) =>
+          dequeueInteractionByRequestId(current, sessionId, event.requestId),
+        );
         break;
       case 'sandbox_boundary_decision_ack':
-        onSandboxBoundaryInteractionChanged?.(sessionId);
+        onInteractionChanged?.(sessionId);
         // #1611: an approved expansion changes only the boundary's revision —
         // no session field moves — so the boundary read model has to be told,
         // or the permission label keeps describing the permissions the session
@@ -145,7 +152,7 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId);
         break;
       case 'error':
-        onSandboxBoundaryInteractionChanged?.(sessionId);
+        onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (activeIdRef.current === sessionId) {
           if (isNoRealConnectionEvent(event)) {
@@ -161,13 +168,13 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'abort':
-        onSandboxBoundaryInteractionChanged?.(sessionId);
+        onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'complete': {
-        onSandboxBoundaryInteractionChanged?.(sessionId);
+        onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
           const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;

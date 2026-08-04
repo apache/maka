@@ -3,7 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core';
+import type {
+  AgentRunEvent,
+  AgentRunHeader,
+  AgentRunStore,
+  EmittedAgentRunEvent,
+} from '@maka/core';
 import { createSqliteAgentRunStore } from '@maka/storage';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 
@@ -217,7 +222,7 @@ function attemptEvent(
   inputTokens: number | undefined,
   contextWindow: number,
   segments: Array<Record<string, unknown>> = [],
-): AgentRunEvent {
+): EmittedAgentRunEvent {
   const turnId = `turn-${runId}`;
   return {
     type: 'provider_request_attempt_recorded',
@@ -255,7 +260,7 @@ function checkpointEvent(
   eventCount: number,
   turnCount: number,
   estimatedTokens: number,
-): AgentRunEvent {
+): EmittedAgentRunEvent {
   return {
     type: 'history_compact_checkpoint_recorded',
     id: `checkpoint-${ts}`,

@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,8 +34,12 @@ export function runHeadlessTests(options = {}) {
   const tempDir = mkdtempSync(join(tmpdir(), 'maka-headless-test-env-'));
   const credentialsPath = join(tempDir, 'credentials.json');
   const globalConfigPath = join(tempDir, 'gitconfig');
+  // Unlike the XDG directories, which the code under test creates on demand,
+  // this one has to exist before a test calls mkdtemp() against it.
+  const tempTmpDir = join(tempDir, 'tmp');
 
   try {
+    mkdirSync(tempTmpDir, { recursive: true });
     writeFileSync(credentialsPath, '{"version":1,"values":{}}\n', {
       encoding: 'utf8',
       mode: 0o600,
@@ -51,6 +55,13 @@ export function runHeadlessTests(options = {}) {
         ),
         HOME: tempDir,
         USERPROFILE: tempDir,
+        // Keeps `mkdtemp(tmpdir(), …)` inside the tree this script already
+        // removes, so a direct run isolates temp state the same way the
+        // workspace runner does. TMPDIR is read by os.tmpdir() on POSIX,
+        // TMP/TEMP on Windows.
+        TMPDIR: tempTmpDir,
+        TMP: tempTmpDir,
+        TEMP: tempTmpDir,
         XDG_CONFIG_HOME: join(tempDir, 'config'),
         XDG_DATA_HOME: join(tempDir, 'data'),
         XDG_STATE_HOME: join(tempDir, 'state'),
@@ -65,7 +76,12 @@ export function runHeadlessTests(options = {}) {
     if (result.error) throw result.error;
     return result.status ?? 1;
   } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    // A cleanup failure must not replace the suite's own result.
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`could not remove ${tempDir}: ${error.message}`);
+    }
   }
 }
 

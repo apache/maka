@@ -1,21 +1,12 @@
 import type { Page } from '@playwright/test';
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { expect, test, COMPOSER_INPUT, waitForInvocableSkills } from './fixtures';
 
 async function createStarterSkillAndReload(page: Page): Promise<void> {
   const result = await page.evaluate(() => window.maka.skills.createStarter());
   expect(result.ok).toBe(true);
   await page.reload();
   await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
-  // The `/` menu lists what the renderer has projected, and that projection is
-  // refreshed asynchronously after load. Wait for the Skill to be invocable so
-  // an empty first search is never mistaken for a missing suggestion.
-  await expect
-    .poll(async () =>
-      (await page.evaluate(() => window.maka.skills.listInvocable(undefined))).map(
-        (skill) => skill.id,
-      ),
-    )
-    .toContain('starter-skill');
+  await waitForInvocableSkills(page, ['starter-skill']);
 }
 
 /** The staged Skill's inline chip, addressed by the token it serializes to. */
@@ -75,8 +66,9 @@ test('slash suggestions in a Deep Research session drop non-research Skills', as
   await expect(listbox).not.toContainText('Deep Research Only');
   await composer.fill('');
 
-  await page.getByRole('button', { name: '更多操作' }).click();
-  await page.getByRole('menuitem', { name: '打开命令面板' }).click();
+  // ⌘K is the palette's only entry now — the 更多操作 menu that used to hold
+  // a 打开命令面板 item is gone. ControlOrMeta covers CI's Linux and macOS.
+  await page.keyboard.press('ControlOrMeta+KeyK');
   await page.getByRole('dialog', { name: '命令面板' }).getByRole('option', { name: /新建深度研究/ }).click();
   await expect(page.getByLabel('深度研究，只读探索').filter({ visible: true })).toBeVisible();
 
@@ -196,10 +188,12 @@ test('staged Skills come back as chips after leaving and returning', async ({
   const pick = async (query: string, name: RegExp) => {
     await composer.click();
     await composer.pressSequentially(` /${query}`);
-    await expect(
-      page.getByRole('listbox', { name: '技能' }).getByRole('option', { name }),
-    ).toBeVisible();
-    await composer.press('Enter');
+    const option = page.getByRole('listbox', { name: '技能' }).getByRole('option', { name });
+    await expect(option).toBeVisible();
+    // This journey owns draft restoration, while keyboard selection is covered
+    // separately. Select the exact option without coupling setup to the
+    // popover's transient highlighted-item state under concurrent workers.
+    await option.click();
   };
 
   await composer.fill('alpha-marker');
@@ -210,6 +204,9 @@ test('staged Skills come back as chips after leaving and returning', async ({
   await composer.pressSequentially('run it');
   await pick('workspace', /Workspace Only/);
   await expect(projectChip).toContainText('Project Only');
+  // Both chips must land before navigating away: leaving while the second
+  // token is still committing races the draft snapshot and loses the chip.
+  await expect(workspaceChip).toContainText('Workspace Only');
 
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   const sidebar = page.getByRole('navigation', { name: '对话列表' });

@@ -32,10 +32,10 @@ export type McpCopy = {
   editor: {
     importTitle: string; editTitle(id: string): string; addTitle: string; importSubtitle: string; manualSubtitle: string;
     modeAria: string; manual: string; pasteJson: string; jsonConfig: string; jsonHelp: string; cancel: string;
-    importing: string; importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
+    importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
     serverId: string; serverIdHelp: string; command: string; arguments: string; argumentsPlaceholder: string; argumentsHelp: string; advanced: string;
     workingDirectory: string; workingDirectoryPlaceholder: string; environment: string; environmentHelp: string;
-    url: string; headers: string; headersHelp: string; saving: string; saveConnect: string;
+    url: string; headers: string; headersHelp: string; saveConnect: string;
     required: string; invalidUrl: string;
     transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
   };
@@ -77,13 +77,13 @@ const MCP_COPY = {
     editor: {
       importTitle: '通过 JSON 导入', editTitle: (id) => `编辑 ${id}`, addTitle: '添加 MCP', importSubtitle: '粘贴 mcpServers 配置，同名 server 会被更新。',
       manualSubtitle: '配置保存在当前工作区的 mcp.json。', modeAria: 'MCP 添加方式', manual: '手动配置', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
-      jsonHelp: '支持完整 mcpServers 配置或直接的 server map。未在本次导入中出现的已有 MCP 会保留。', cancel: '取消', importing: '导入中…', importConnect: '导入并连接',
+      jsonHelp: '支持完整 mcpServers 配置或直接的 server map。未在本次导入中出现的已有 MCP 会保留。', cancel: '取消', importConnect: '导入并连接',
       transportAria: 'MCP transport 类型', localStdio: '本地 stdio', remoteUrl: '远程 URL',
       serverId: '服务器 ID', serverIdHelp: '稳定标识，也会进入 tool name。', command: '命令', arguments: '参数',
       argumentsPlaceholder: '每行一个 argument\n-y\n@modelcontextprotocol/server-filesystem\n/path/to/folder', argumentsHelp: '每行作为独立 argument，不经过 shell interpolation。',
       advanced: '高级设置', workingDirectory: '工作目录', workingDirectoryPlaceholder: '可选，例如 /path/to/project',
       environment: '环境变量', environmentHelp: '每行一个 KEY=value。', url: 'MCP URL', headers: 'HTTP 请求头', headersHelp: '每行一个 Header=value。',
-      saving: '保存中…', saveConnect: '保存并连接',
+      saveConnect: '保存并连接',
       required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。',
       transportLabel: '传输协议', transportAuto: '自动回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
     },
@@ -123,13 +123,13 @@ const MCP_COPY = {
     editor: {
       importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP', importSubtitle: 'Paste an mcpServers configuration; servers with matching names will be updated.',
       manualSubtitle: 'Configuration is saved in mcp.json for the current workspace.', modeAria: 'MCP add method', manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
-      jsonHelp: 'Supports a complete mcpServers configuration or a server map. Existing MCP servers omitted from this import are preserved.', cancel: 'Cancel', importing: 'Importing…', importConnect: 'Import and connect',
+      jsonHelp: 'Supports a complete mcpServers configuration or a server map. Existing MCP servers omitted from this import are preserved.', cancel: 'Cancel', importConnect: 'Import and connect',
       transportAria: 'MCP transport type', localStdio: 'Local stdio', remoteUrl: 'Remote URL',
       serverId: 'Server ID', serverIdHelp: 'A stable identifier that also appears in tool names.', command: 'Command', arguments: 'Arguments',
       argumentsPlaceholder: 'One argument per line\n-y\n@modelcontextprotocol/server-filesystem\n/path/to/folder', argumentsHelp: 'Each line is a separate argument and does not use shell interpolation.',
       advanced: 'Advanced settings', workingDirectory: 'Working directory', workingDirectoryPlaceholder: 'Optional, for example /path/to/project',
       environment: 'Environment', environmentHelp: 'One KEY=value entry per line.', url: 'MCP URL', headers: 'HTTP headers', headersHelp: 'One Header=value entry per line.',
-      saving: 'Saving…', saveConnect: 'Save and connect',
+      saveConnect: 'Save and connect',
       required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.',
       transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
     },

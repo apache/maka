@@ -18,6 +18,11 @@ import {
 
 const execAsync = promisify(nodeExec);
 
+// Container mode's fallback when no command and no operator asks for a timeout.
+// Its host-cell counterpart is maka_agent.py's _BRIDGE_DEFAULT_TIMEOUT_SEC: two
+// enforcers in two processes, so two constants, but the same cell must not be
+// killed at different times depending on which isolation mode ran it. Change
+// both or neither.
 export const HARBOR_CELL_DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 
 // The bridge returns response headers only after the isolated command exits.
@@ -37,10 +42,20 @@ export function createHarborHttpToolExecutor(
 ): IsolatedToolExecutor {
   const baseUrl = requiredHarborEnv(env, 'MAKA_HARBOR_TOOL_EXECUTOR_URL');
   const token = requiredHarborEnv(env, 'MAKA_HARBOR_TOOL_EXECUTOR_TOKEN');
+  // The same floor the local executor applies, for the same reason: a task that
+  // builds or tests for longer than the default must be able to say so once
+  // instead of losing every command to it. Left unread, this env var worked in
+  // container mode and was silently inert in host-cell mode — the adapter
+  // forwards it either way. Unset stays unset so the bridge's own default
+  // (maka_agent.py _BRIDGE_DEFAULT_TIMEOUT_SEC) remains the single fallback.
+  const operatorDefaultTimeoutMs = numericEnv(env.MAKA_CELL_COMMAND_TIMEOUT_MS);
   return {
     exec: async (input, control) => {
-      const timeoutSec =
-        input.timeoutMs === undefined ? undefined : Math.max(1, Math.ceil(input.timeoutMs / 1000));
+      // timeoutMs is the field the bridge reads (maka_agent.py _ToolExecutorServer
+      // takes payload["timeoutMs"]); the timeoutSec that used to ride alongside it
+      // was never read by anything, and sitting next to the live field is how the
+      // env var above looked handled while doing nothing.
+      const timeoutMs = input.timeoutMs ?? operatorDefaultTimeoutMs;
       const response = await fetchImpl(new URL('/exec', baseUrl), {
         method: 'POST',
         headers: {
@@ -49,7 +64,7 @@ export function createHarborHttpToolExecutor(
         },
         body: JSON.stringify({
           ...input,
-          ...(timeoutSec !== undefined ? { timeoutSec } : {}),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         }),
         signal: control?.abortSignal,
         dispatcher: harborHttpDispatcher,

@@ -157,6 +157,40 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
   });
 });
 
+test('startup recovery replays an admitted regenerate with its source lineage', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const firstHost = await fixture.startHost();
+    const first = await connectClient(fixture.root, 'desktop');
+    const sourceTurnId = randomUUID();
+    const regeneratedTurnId = randomUUID();
+    await first.startTurn({
+      sessionId: fixture.sessionId,
+      turnId: sourceTurnId,
+      content: quotedContent('recover this regeneration'),
+    });
+    await waitForTerminalTurn(first, fixture.sessionId, sourceTurnId);
+    await first.close();
+    await fixture.stopHost(firstHost);
+
+    const admitted = await fixture.seedRegenerateAdmissionWithoutRun(
+      sourceTurnId,
+      regeneratedTurnId,
+    );
+    const successorHost = await fixture.startHost();
+    const successor = await connectClient(fixture.root, 'tui');
+    const terminal = await waitForTerminalTurn(successor, fixture.sessionId, regeneratedTurnId);
+    assert.equal(terminal.runId, admitted.runId);
+    await successor.close();
+    await fixture.stopHost(successorHost);
+
+    const ledger = await fixture.readTurn(regeneratedTurnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.userMessages.length, 1);
+    assert.equal(ledger.runs[0]?.parentTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.regeneratedFromTurnId, sourceTurnId);
+  });
+});
+
 test('a fresh quoted Turn preserves durable and Runtime handoff content', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();

@@ -288,7 +288,7 @@ export function PlanReminderPanel(props: {
           headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
           contentClassName="maka-plan-heading"
           actions={
-            <div className="maka-plan-top-actions" aria-label={copy.page.actionsAriaLabel}>
+            <div className="maka-plan-top-actions" role="group" aria-label={copy.page.actionsAriaLabel}>
               <UiButton
                 variant="primary"
                 onClick={openCreateReminderDialog}
@@ -434,7 +434,7 @@ export function PlanReminderPanel(props: {
                 actions={<UiButton variant="ghost" label={copy.page.clearSearch} onClick={() => setListQuery('')} isDisabled={!normalizedListQuery} />}
               />
             ) : (
-              <div className="maka-plan-list" aria-label={copy.page.listAriaLabel}>
+              <div className="maka-plan-list" role="group" aria-label={copy.page.listAriaLabel}>
                 {sortedReminders.map((reminder) => {
                   const reminderActionPrefix = `${reminder.id}:`;
                   const reminderActionPending = Array.from(pendingActionKeys).some((key) => key.startsWith(reminderActionPrefix));
@@ -593,7 +593,7 @@ export function PlanReminderPanel(props: {
                 description={copy.page.noRunsBody}
               />
             ) : (
-              <div className="maka-plan-run-list" aria-label={copy.page.runsAriaLabel}>
+              <div className="maka-plan-run-list" role="group" aria-label={copy.page.runsAriaLabel}>
                 {visibleRunEntries.map(({ reminder, run }) => (
                   <article key={`${reminder.id}:${run.id}`} className="maka-plan-run-row">
                     <span className="maka-plan-status" data-status={run.status}>

@@ -85,6 +85,48 @@ describe('summarizeAbComparison', () => {
     assert.equal(result.taskLevel.losses, 1);
   });
 
+  // A graded budget exhaustion now decides A/B outcomes, so pin what it does to
+  // the paired layer, not just the arm-level rate: this is the consumer the
+  // rescued cells actually reach.
+  test('counts a graded budget exhaustion as a pass and lets it decide a pair', () => {
+    const gradedTimeout = {
+      ...budgetExhausted('long-task'),
+      passed: true,
+      scored: true,
+      harbor: {
+        reward: 1,
+        verifier: {
+          outcome: 'passed' as const,
+          attempts: [{ attempt: 1, classification: 'passed' as const, durationMs: 5, reward: 1 }],
+        },
+      },
+    };
+    const result = summarizeAbComparison({
+      runId: 'ab-run',
+      roundId: 'ab-summary',
+      baselineArmId: 'maka-baseline',
+      candidateArmId: 'candidate',
+      evaluationTaskIds: ['long-task'],
+      baselineRuns: [[gradedTimeout]],
+      candidateRuns: [[completed('long-task', false)]],
+    });
+
+    assert.equal(result.baseline.valid, 1);
+    assert.equal(result.baseline.budgetExhausted, 1);
+    assert.equal(result.baseline.passed, 1);
+    assert.equal(result.baseline.passRate, 1);
+    // The pair is evaluated and lost by the candidate — a graded timeout is not
+    // excluded from the denominator, and it is not a free tie.
+    assert.equal(result.pairedAttempts.evaluatedPairs, 1);
+    assert.equal(result.pairedAttempts.baselinePassed, 1);
+    assert.equal(result.pairedAttempts.candidatePassed, 0);
+    assert.equal(result.pairedAttempts.losses, 1);
+    assert.equal(result.pairedAttempts.wins, 0);
+    // It is still budget-shaped, so the non-budget conditional view excludes it.
+    assert.deepEqual(result.pairedAttempts.budgetExcludedPairIds, ['long-task#r0']);
+    assert.equal(result.pairedAttempts.nonBudgetEvaluatedPairs, 0);
+  });
+
   test('classifies a scored completed benchmark deadline as budget exhausted', () => {
     const deadlineFailure = {
       ...completed('long-task', false),

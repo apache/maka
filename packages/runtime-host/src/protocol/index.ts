@@ -27,18 +27,25 @@ export { RuntimeHostProtocolError } from './errors.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
 export * from './automation.js';
+export * from './daily-review.js';
 export * from './client-capability.js';
 export * from './goal.js';
+export * from './plan.js';
 export * from './execution-inspect.js';
 export * from './message.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-retirement.js';
+export * from './session-transcript.js';
 export * from './task-ledger.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
+// The wire version remains v0 before the first release. This independent epoch
+// lets a new Client retire a stale same-version Host whose closed schema is no
+// longer safe to use.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 1 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such
@@ -58,6 +65,8 @@ export interface ClientHello {
   surface: ClientSurface;
   protocolMin: number;
   protocolMax: number;
+  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
+  compatibilityEpoch: number;
 }
 
 export interface HostAccepted {
@@ -65,6 +74,8 @@ export interface HostAccepted {
   hostEpoch: string;
   connectionId: string;
   selectedProtocol: number;
+  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
+  compatibilityEpoch: number;
   state: Exclude<HostLifecycleState, 'draining'>;
 }
 
@@ -73,6 +84,8 @@ export interface HostIncompatible {
   hostEpoch: string;
   protocolMin: number;
   protocolMax: number;
+  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
+  compatibilityEpoch: number;
   state: HostLifecycleState;
   replacement: 'blocked_by_residency' | 'wait_for_idle_exit';
 }
@@ -99,6 +112,8 @@ export interface HostRegistration {
   endpoint: string;
   protocolMin: number;
   protocolMax: number;
+  /** A missing pre-epoch v0 registration field is decoded as epoch 0. */
+  compatibilityEpoch: number;
   state: HostLifecycleState;
   pid: number;
   createdAt: string;
@@ -138,6 +153,7 @@ export function decodeClientFrame(value: unknown): ClientFrame {
       surface: requireSurface(frame.surface),
       protocolMin,
       protocolMax,
+      compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
     } satisfies ClientHello;
   }
   if (isClientCapabilityClientFrameKind(frame.kind)) {
@@ -154,6 +170,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
       hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
       connectionId: requireId(frame.connectionId, 'connectionId'),
       selectedProtocol: requireProtocolVersion(frame.selectedProtocol, 'selectedProtocol'),
+      compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
       state: requireAcceptedState(frame.state),
     } satisfies HostAccepted;
   }
@@ -166,6 +183,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
       hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
       protocolMin,
       protocolMax,
+      compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
       state: requireHostLifecycleState(frame.state),
       replacement: requireReplacement(frame.replacement),
     } satisfies HostIncompatible;
@@ -206,6 +224,10 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     endpoint: requireString(registration.endpoint, 'endpoint', 512),
     protocolMin,
     protocolMax,
+    compatibilityEpoch:
+      registration.compatibilityEpoch === undefined
+        ? 0
+        : requireCompatibilityEpoch(registration.compatibilityEpoch),
     state: requireHostLifecycleState(registration.state),
     pid,
     createdAt: requireString(registration.createdAt, 'createdAt', 64),
@@ -286,6 +308,16 @@ function requireProtocolVersion(value: unknown, label: string): number {
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return value as number;
+}
+
+function requireCompatibilityEpoch(value: unknown): number {
+  const epoch = requireProtocolVersion(value, 'compatibilityEpoch');
+  if (epoch > 1_000_000) throw invalidProtocolFrame('Invalid compatibilityEpoch');
+  return epoch;
+}
+
+function decodeCompatibilityEpoch(value: unknown): number {
+  return value === undefined ? 0 : requireCompatibilityEpoch(value);
 }
 
 function requireSurface(value: unknown): ClientSurface {

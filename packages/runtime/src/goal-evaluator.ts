@@ -12,8 +12,8 @@
  */
 
 import { truncateGoalText, type GoalTextLimit } from './goal-state.js';
-import { normalizeAiSdkUsage, type AiSdkUsageLike } from './model-adapter.js';
-import { rawFinishReasonString, type NormalizedUsage } from './model-protocol.js';
+import type { NormalizedUsage } from './model-protocol.js';
+import { generateToolFreeModelCall } from './tool-free-model-call.js';
 
 export interface GoalEvaluation {
   /** Condition is satisfied — stop, success. */
@@ -71,27 +71,13 @@ export interface GoalEvaluationModelResult {
 export async function generateGoalEvaluationModelCall(
   input: GoalEvaluationModelInput,
 ): Promise<GoalEvaluationModelResult> {
-  const ai = (await import('ai')) as unknown as {
-    generateText(options: Record<string, unknown>): Promise<{
-      text: string;
-      usage?: AiSdkUsageLike;
-      finishReason?: unknown;
-    }>;
-  };
-  const result = await ai.generateText({
+  return generateToolFreeModelCall({
     model: input.model,
     prompt: input.prompt,
     ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
     ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
     maxOutputTokens: 1_024,
   });
-  const usage = normalizeAiSdkUsage(result.usage, { rawFinishReason: result.finishReason });
-  const finishReason = rawFinishReasonString(result.finishReason);
-  return {
-    text: result.text,
-    ...(usage ? { usage } : {}),
-    ...(finishReason ? { finishReason } : {}),
-  };
 }
 
 const DEFAULT_EVALUATOR_TIMEOUT_MS = 30_000;

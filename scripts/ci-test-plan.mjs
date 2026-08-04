@@ -53,18 +53,17 @@ function isStorybookPath(path) {
 }
 
 const EXTENDED_SCRIPT_FILES = new Set([
-  'scripts/check-cua-driver-bundle.mjs',
+  'scripts/cu-process-restart-e2e.mjs',
+  'scripts/cu-process-restart-harness.test.mjs',
   'scripts/cu-provider-matrix.mjs',
   'scripts/cu-provider-matrix.test.mjs',
   'scripts/cu-real-model-fixture.mjs',
   'scripts/cu-real-model-launcher.mjs',
   'scripts/cu-real-model-launcher.test.mjs',
-  'scripts/cua-driver-provenance.test.mjs',
   'scripts/macos-arm64-release.test.mjs',
   'scripts/measure-session-bundle.mjs',
   'scripts/measure-session-bundle.test.mjs',
   'scripts/package-macos-arm64.mjs',
-  'scripts/prepare-cua-driver.mjs',
   'scripts/verify-macos-arm64-dmg.mjs',
 ]);
 

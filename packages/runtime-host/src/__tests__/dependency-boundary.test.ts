@@ -25,10 +25,12 @@ const allowedHostExternalImports = new Set([
 const allowedServerExternalImports = new Set([
   ...allowedHostExternalImports,
   '@maka/core/agent-run',
+  '@maka/core/attachments',
   '@maka/core/artifacts',
   '@maka/core/automation',
   '@maka/core/backend-types',
   '@maka/core/events',
+  '@maka/core/explore-agent',
   '@maka/core/interaction',
   '@maka/core/llm-connections',
   '@maka/core/local-memory',
@@ -38,28 +40,36 @@ const allowedServerExternalImports = new Set([
   '@maka/core/model-metadata',
   '@maka/core/model-thinking',
   '@maka/core/oauth-subscription',
+  '@maka/core/plan',
+  '@maka/core/deep-research-run',
+  '@maka/core/daily-review',
   '@maka/core/redaction',
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
   '@maka/core/runtime-inputs',
   '@maka/core/sandbox-boundary',
   '@maka/core/session',
+  '@maka/core/session-revisions',
   '@maka/core/session-name',
   '@maka/core/shell-run',
   '@maka/core/subagent-workspace',
   '@maka/core/task-ledger',
   '@maka/core/usage-ledger-merge',
+  '@maka/core/usage-stats/pricing',
   '@maka/core/usage-stats/types',
   '@maka/runtime',
   '@maka/storage/agent-graph-control-store',
   '@maka/storage/artifact-stores',
   '@maka/storage/automation-authority',
+  '@maka/storage/deep-research-authority',
+  '@maka/storage/daily-review-authority',
   '@maka/storage/model-call-ledger',
   '@maka/storage/execution-stores',
   '@maka/storage/git-worktree-child-executor',
   '@maka/storage/interaction-store',
   '@maka/storage/long-term-memory-store',
   '@maka/storage/memory-bundle-store',
+  '@maka/storage/plan-authority',
   '@maka/storage/runtime-policy-stores',
   '@maka/storage/shell-run-authority',
   '@maka/storage/task-ledger-authority',
@@ -76,12 +86,15 @@ const allowedExternalImports = {
     '@maka/core/automation',
     '@maka/core/collaboration',
     '@maka/core/events',
+    '@maka/core/deep-research-run',
+    '@maka/core/daily-review',
     '@maka/core/execution-inspect',
     '@maka/core/goal',
     '@maka/core/interaction',
     '@maka/core/local-memory',
     '@maka/core/model-thinking',
     '@maka/core/orchestration',
+    '@maka/core/plan',
     '@maka/core/permission',
     '@maka/core/runtime-policy',
     '@maka/core/session',
@@ -195,9 +208,11 @@ test('the production Candidate dependency graph remains non-serving', () => {
       if (
         specifier === '@maka/runtime' ||
         specifier === '@maka/storage/agent-graph-control-store' ||
+        specifier === '@maka/storage/deep-research-authority' ||
         specifier === '@maka/storage/execution-stores' ||
         specifier === '@maka/storage/long-term-memory-store' ||
         specifier === '@maka/storage/memory-bundle-store' ||
+        specifier === '@maka/storage/plan-authority' ||
         specifier === '@maka/storage/runtime-policy-stores' ||
         specifier === '@maka/storage/task-ledger-authority'
       ) {

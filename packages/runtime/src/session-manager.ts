@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import type {
+  ActiveInteractionRequestEvent,
   SessionEvent,
   CompleteEvent,
   TextDeltaEvent,
@@ -23,8 +24,9 @@ import type {
   PermissionRequestEvent,
   QueueEnqueueOutcome,
   ShellRunUpdate,
+  MessageContent,
 } from '@maka/core/events';
-import { messageContentsEqual } from '@maka/core/events';
+import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
 import type {
   SessionHeader,
   SessionBlockedReason,
@@ -60,11 +62,14 @@ import type {
 } from '@maka/core';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import type {
-  ApprovePlanProposalInput,
-  PlanMutationResult,
-  PlanSessionState,
-  PlanStore,
+import {
+  PLAN_USER_ABANDON_REASON,
+  PLAN_USER_CANCEL_REASON,
+  PlanConflictError,
+  type ApprovePlanProposalInput,
+  type PlanMutationResult,
+  type PlanSessionState,
+  type PlanStore,
 } from '@maka/core/plan';
 import {
   DEFAULT_SESSION_NAME,
@@ -120,6 +125,7 @@ import {
   cloneConversationRuntimeLedger as cloneConversationLedger,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
+  type ConversationRuntimeLedgerCopyPlan,
 } from './conversation-copy.js';
 import { firstRuntimeRepairRunId, RuntimeLedgerRepair } from './runtime-ledger-repair.js';
 import {
@@ -229,8 +235,7 @@ export interface StopSessionInput {
   mode?: BackendStopMode;
 }
 
-export interface CompactSessionInput {
-  turnId?: string;
+interface CompactSessionOptions {
   /**
    * Override the configured recent-turn tail. Supervisor overflow recovery
    * uses zero because the failed wake turn itself can contain the oversized
@@ -238,6 +243,19 @@ export interface CompactSessionInput {
    */
   minRecentTurns?: number;
 }
+
+export type CompactSessionInput =
+  | (CompactSessionOptions & {
+      turnId?: string;
+      hostedRoot?: never;
+    })
+  | (CompactSessionOptions & {
+      turnId: string;
+      hostedRoot: {
+        runId: string;
+        onRunStarted?: () => void | Promise<void>;
+      };
+    });
 
 export type PlanSafeBoundaryContinuationInput = Omit<RuntimeContinuationPlannerInput, 'sessionId'>;
 
@@ -573,6 +591,22 @@ export class SessionConfigurationRevisionConflictError extends Error {
   }
 }
 
+export class RuntimeRegenerateTurnError extends Error {
+  readonly name = 'RuntimeRegenerateTurnError';
+
+  constructor(
+    readonly code: 'not_found' | 'operation_conflict',
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export interface RegenerateTurnSource {
+  readonly sourceTurnId: string;
+  readonly content: MessageContent;
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   createSubagent(
@@ -610,6 +644,11 @@ export interface SessionStore {
   appendMessage(sessionId: string, m: StoredMessage): Promise<void>;
   appendMessages(sessionId: string, ms: StoredMessage[]): Promise<void>;
   updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader>;
+  updateHeaderVersioned?(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+    expectedRevision: number,
+  ): Promise<VersionedSessionHeader>;
   readHeaderRecordSnapshot?(sessionId: string): Promise<VersionedSessionHeader>;
   updateSessionConfiguration?(
     sessionId: string,
@@ -1099,6 +1138,75 @@ export class SessionManager {
     return next;
   }
 
+  async relocateSessionWorkspace(
+    sessionId: string,
+    input: { readonly expectedRevision: number; readonly cwd: string },
+  ): Promise<VersionedSessionHeader> {
+    const updateHeaderVersioned = this.deps.store.updateHeaderVersioned?.bind(this.deps.store);
+    const readHeaderRecordSnapshot = this.deps.store.readHeaderRecordSnapshot?.bind(
+      this.deps.store,
+    );
+    if (!updateHeaderVersioned || !readHeaderRecordSnapshot) {
+      throw new SessionConfigurationTransitionError(
+        'operation_unavailable',
+        'Session workspace relocation authority is unavailable',
+      );
+    }
+    const next = await this.runSessionQuiescentMutation([sessionId], async () => {
+      if (this.runtimeKernel.hasActiveRuns(sessionId)) {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session workspace cannot change while a Turn is active',
+        );
+      }
+      const current = await readHeaderRecordSnapshot(sessionId);
+      if (current.revision !== input.expectedRevision) {
+        throw new SessionConfigurationRevisionConflictError(
+          input.expectedRevision,
+          current.revision,
+        );
+      }
+      if (current.header.isArchived || current.header.status === 'archived') {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Archived Session workspace cannot be relocated',
+        );
+      }
+      if (current.header.subagentWorkspace || current.header.subagentParent) {
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'Managed child Session workspaces cannot be relocated',
+        );
+      }
+      if (current.header.status === 'waiting_for_user') {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session has a pending Interaction',
+        );
+      }
+      if (current.header.cwd === input.cwd) return current;
+
+      const shellRunClose = await this.deps.shellRuns?.terminateSession(sessionId);
+      let committed: VersionedSessionHeader;
+      try {
+        await this.runtimeKernel.disposeBackend(sessionId);
+        committed = await updateHeaderVersioned(
+          sessionId,
+          { cwd: input.cwd },
+          input.expectedRevision,
+        );
+      } catch (error) {
+        if (shellRunClose) this.deps.shellRuns?.rollbackSessionClose(shellRunClose);
+        throw error;
+      }
+      if (shellRunClose) await this.deps.shellRuns?.commitSessionClose(shellRunClose);
+      this.deps.shellRuns?.resumeSession(sessionId);
+      return committed;
+    });
+    this.runtimeKernel.updateCachedHeader(sessionId, next.header);
+    return next;
+  }
+
   async getMessages(sessionId: string): Promise<StoredMessage[]> {
     return (await this.getSessionView(sessionId)).messages;
   }
@@ -1444,11 +1552,9 @@ export class SessionManager {
     return this.deps.store.readExecutionBoundary(sessionId);
   }
 
-  async listActiveSandboxBoundaryRequests(
-    sessionId: string,
-  ): Promise<Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>>> {
+  async listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]> {
     await this.deps.store.readHeader(sessionId);
-    return this.runtimeKernel.listActiveSandboxBoundaryRequests?.(sessionId) ?? [];
+    return this.runtimeKernel.listActiveInteractions?.(sessionId) ?? [];
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
@@ -1674,10 +1780,17 @@ export class SessionManager {
     return this.requirePlanStore().readState(sessionId);
   }
 
+  hasPlanAuthority(): boolean {
+    return this.deps.planStore !== undefined;
+  }
+
   async setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const from = previous.collaborationMode ?? 'agent';
     if (from === mode) return headerToSummary(previous);
+    if (mode === 'plan' && previous.subagentParent) {
+      throw new PlanConflictError('Linked child Sessions cannot enter Plan mode');
+    }
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
       throw new Error('当前对话正在运行，等结束后再切换协作模式。');
     }
@@ -1732,94 +1845,121 @@ export class SessionManager {
     return headerToSummary(next);
   }
 
-  async requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanMutationResult> {
-    const result = await this.requirePlanStore().requestRevision({ sessionId, proposalId });
-    const header = await this.deps.store.readHeader(sessionId);
-    if ((header.collaborationMode ?? 'agent') !== 'plan') {
-      const next = await this.deps.store.updateHeader(sessionId, { collaborationMode: 'plan' });
-      this.runtimeKernel.updateCachedHeader(sessionId, next);
-    }
-    await this.runtimeKernel.disposeBackend(sessionId);
+  async requestPlanRevision(
+    sessionId: string,
+    proposalId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult> {
+    const input = {
+      sessionId,
+      proposalId,
+      ...(operationId ? { operationId } : {}),
+    };
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, input);
+    if (!replay) await this.runtimeKernel.disposeBackend(sessionId);
+    const result = await this.requirePlanStore().requestRevision(input);
+    await this.finalizePlanCollaborationMode(sessionId, 'plan');
     return result;
   }
 
-  async abandonPlanProposal(sessionId: string, proposalId: string): Promise<PlanMutationResult> {
-    const header = await this.deps.store.readHeader(sessionId);
-    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前对话仍在运行，无法放弃计划。');
-    }
-    if (header.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，无法放弃计划。');
-    }
-    const result = await this.requirePlanStore().abandonProposal({
+  async abandonPlanProposal(
+    sessionId: string,
+    proposalId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult> {
+    const input = {
       sessionId,
       proposalId,
-      reason: 'User exited Plan Mode before approval.',
-    });
-    const from = header.collaborationMode ?? 'agent';
-    const next = await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' });
-    if (from !== 'agent') {
-      await this.deps.store.appendMessage(sessionId, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'mode_change',
-        data: { dimension: 'collaboration', from, to: 'agent' },
-      } satisfies SystemNoteMessage);
+      reason: PLAN_USER_ABANDON_REASON,
+      ...(operationId ? { operationId } : {}),
+    };
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, input);
+    const header = await this.deps.store.readHeader(sessionId);
+    if (!replay && this.runtimeKernel.hasActiveRuns(sessionId)) {
+      throw new PlanConflictError('Cannot abandon a Plan while the Session is running');
     }
-    this.runtimeKernel.updateCachedHeader(sessionId, next);
-    await this.runtimeKernel.disposeBackend(sessionId);
+    if (!replay && header.status === 'waiting_for_user') {
+      throw new PlanConflictError('Cannot abandon a Plan while an Interaction is pending');
+    }
+    if (!replay) await this.runtimeKernel.disposeBackend(sessionId);
+    const result = await this.requirePlanStore().abandonProposal(input);
+    await this.finalizePlanAbandonment(sessionId, operationId, replay);
     return result;
   }
 
   async approvePlan(input: ApprovePlanProposalInput): Promise<PlanMutationResult> {
+    const replay = await this.isPlanOperationReplay(input.sessionId, input.operationId, input);
     const header = await this.deps.store.readHeader(input.sessionId);
-    if (this.runtimeKernel.hasActiveRuns(input.sessionId)) {
-      throw new Error('当前对话仍在运行，无法批准计划。');
+    if (!replay && this.runtimeKernel.hasActiveRuns(input.sessionId)) {
+      throw new PlanConflictError('Cannot approve a Plan while the Session is running');
     }
-    if (header.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，无法批准计划。');
+    if (!replay && header.status === 'waiting_for_user') {
+      throw new PlanConflictError('Cannot approve a Plan while an Interaction is pending');
     }
+    if (!replay) await this.runtimeKernel.disposeBackend(input.sessionId);
     const result = await this.requirePlanStore().approveProposal(input);
-    const next = await this.deps.store.updateHeader(input.sessionId, {
-      collaborationMode: 'agent',
-    });
-    this.runtimeKernel.updateCachedHeader(input.sessionId, next);
-    await this.runtimeKernel.disposeBackend(input.sessionId);
+    await this.finalizePlanCollaborationMode(input.sessionId, 'agent');
     return result;
   }
 
-  async resumePlanExecution(sessionId: string, executionId: string): Promise<PlanMutationResult> {
-    const result = await this.requirePlanStore().resumeExecution(sessionId, executionId);
-    const next = await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' });
-    this.runtimeKernel.updateCachedHeader(sessionId, next);
-    await this.runtimeKernel.disposeBackend(sessionId);
-    return result;
-  }
-
-  async cancelPlanExecution(sessionId: string, executionId: string): Promise<PlanMutationResult> {
-    const planStore = this.requirePlanStore();
-    const state = await planStore.readState(sessionId);
-    const execution = state.executions.find((item) => item.executionId === executionId);
-    if (execution?.status !== 'interrupted') {
-      throw new Error('只有已中断的计划可以从这里放弃。');
-    }
-    const result = await planStore.cancelExecution({
+  async resumePlanExecution(
+    sessionId: string,
+    executionId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult> {
+    const input = { sessionId, executionId };
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, input);
+    if (!replay) await this.runtimeKernel.disposeBackend(sessionId);
+    const result = await this.requirePlanStore().resumeExecution(
       sessionId,
       executionId,
-      reason: 'User abandoned the interrupted plan.',
-    });
-    await this.runtimeKernel.disposeBackend(sessionId);
+      operationId,
+    );
+    await this.finalizePlanCollaborationMode(sessionId, 'agent');
+    return result;
+  }
+
+  async cancelPlanExecution(
+    sessionId: string,
+    executionId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult> {
+    const planStore = this.requirePlanStore();
+    const input = {
+      sessionId,
+      executionId,
+      reason: PLAN_USER_CANCEL_REASON,
+      ...(operationId ? { operationId } : {}),
+    };
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, input);
+    if (!replay) {
+      const state = await planStore.readState(sessionId);
+      const execution = state.executions.find((item) => item.executionId === executionId);
+      if (execution?.status !== 'interrupted') {
+        throw new PlanConflictError('Only an interrupted Plan execution can be abandoned');
+      }
+      await this.runtimeKernel.disposeBackend(sessionId);
+    }
+    const result = await planStore.cancelExecution(input);
     return result;
   }
 
   async interruptActivePlanExecution(
     sessionId: string,
     reason: string,
+    operationId?: string,
   ): Promise<PlanMutationResult | null> {
-    const result = await this.requirePlanStore().interruptActiveExecution(sessionId, reason);
-    if (result) await this.runtimeKernel.disposeBackend(sessionId);
-    return result;
+    const planStore = this.requirePlanStore();
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, {
+      sessionId,
+      reason,
+    });
+    if (!replay) {
+      const state = await planStore.readState(sessionId);
+      if (!state.activeExecutionId) return null;
+      await this.runtimeKernel.disposeBackend(sessionId);
+    }
+    return planStore.interruptActiveExecution(sessionId, reason, operationId);
   }
 
   async remove(sessionId: string): Promise<void> {
@@ -2128,6 +2268,10 @@ export class SessionManager {
     input: CompactSessionInput = {},
   ): AsyncIterable<SessionEvent> {
     yield* this.runtimeKernel.compactSession(sessionId, input);
+  }
+
+  async preflightContextCompaction(sessionId: string): Promise<void> {
+    await this.runtimeKernel.preflightContextCompaction(sessionId);
   }
 
   async *startChildTurn(
@@ -4414,7 +4558,11 @@ export class SessionManager {
     admittedAt: number;
     execution: Exclude<
       RootExecutionDescriptor,
-      { kind: 'external_message' } | { kind: 'automation' } | { kind: 'safe_boundary_continuation' }
+      | { kind: 'external_message' }
+      | { kind: 'regenerate' }
+      | { kind: 'context_compact' }
+      | { kind: 'automation' }
+      | { kind: 'safe_boundary_continuation' }
     >;
   }): Promise<void> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
@@ -4646,33 +4794,58 @@ export class SessionManager {
   ): AsyncIterable<SessionEvent> {
     const execution = this.runtimeKernel.claimExecution(sessionId);
     try {
-      // retry semantics merged into regenerate (#546): regenerate now accepts
-      // failed/aborted turns too, not just completed — one action re-runs the
-      // turn regardless of how the previous attempt ended.
-      const source = await this.requireTurnForAction(
-        sessionId,
-        input.sourceTurnId,
-        ['failed', 'aborted', 'completed'],
-        'regenerate',
-      );
-      const user = await this.requireUserMessageForTurn(sessionId, source.turnId);
+      const source = await this.prepareRegenerateTurn(sessionId, input.sourceTurnId);
       yield* this.sendMessage(
         sessionId,
         {
           turnId: input.turnId ?? this.deps.newId(),
-          text: user.text,
-          ...(user.displayText !== undefined ? { displayText: user.displayText } : {}),
-          ...(user.attachments ? { attachments: user.attachments } : {}),
-          ...(user.quotes ? { quotes: user.quotes } : {}),
-          ...(user.inlineReferences ? { inlineReferences: user.inlineReferences } : {}),
-          parentTurnId: source.turnId,
-          regeneratedFromTurnId: source.turnId,
+          ...source.content,
+          parentTurnId: source.sourceTurnId,
+          regeneratedFromTurnId: source.sourceTurnId,
         },
         { execution },
       );
     } finally {
       execution.release();
     }
+  }
+
+  async prepareRegenerateTurn(
+    sessionId: string,
+    sourceTurnId: string,
+  ): Promise<RegenerateTurnSource> {
+    const view = await this.getSessionView(sessionId);
+    const source = view.turns.find((candidate) => candidate.turnId === sourceTurnId);
+    if (!source) {
+      throw new RuntimeRegenerateTurnError(
+        'not_found',
+        `Cannot regenerate unknown Turn ${sourceTurnId}`,
+      );
+    }
+    if (
+      source.status !== 'failed' &&
+      source.status !== 'aborted' &&
+      source.status !== 'completed'
+    ) {
+      throw new RuntimeRegenerateTurnError(
+        'operation_conflict',
+        `Cannot regenerate Turn ${sourceTurnId} while it is ${source.status}`,
+      );
+    }
+    const user = view.messages.find(
+      (message): message is UserMessage =>
+        message.type === 'user' && message.turnId === sourceTurnId,
+    );
+    if (!user) {
+      throw new RuntimeRegenerateTurnError(
+        'operation_conflict',
+        `Turn ${sourceTurnId} has no UserMessage`,
+      );
+    }
+    return {
+      sourceTurnId,
+      content: normalizeMessageContent(user),
+    };
   }
 
   async branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
@@ -4725,7 +4898,7 @@ export class SessionManager {
     copied: StoredMessage[],
     input: ReviseBeforeTurnInput,
   ): Promise<SessionSummary> {
-    this.assertConversationRuntimeLedgerCloneSupported(sourceView, copied);
+    const plan = await this.prepareConversationRuntimeLedgerClone(sessionId, sourceView, copied);
     const [header, boundary] = await Promise.all([
       this.deps.store.readHeader(sessionId),
       this.deps.store.readExecutionBoundary(sessionId),
@@ -4765,12 +4938,7 @@ export class SessionManager {
       boundary,
     );
     try {
-      const rewritten = await this.cloneConversationRuntimeLedger(
-        sessionId,
-        next.id,
-        sourceView,
-        copied,
-      );
+      const rewritten = await this.cloneConversationRuntimeLedger(next.id, copied, plan);
       if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
       await this.deps.store.appendMessage(next.id, {
         type: 'system_note',
@@ -4801,7 +4969,7 @@ export class SessionManager {
     copied: StoredMessage[],
     input: BranchFromTurnInput,
   ): Promise<SessionSummary> {
-    this.assertConversationRuntimeLedgerCloneSupported(sourceView, copied);
+    const plan = await this.prepareConversationRuntimeLedgerClone(sessionId, sourceView, copied);
     const [header, boundary] = await Promise.all([
       this.deps.store.readHeader(sessionId),
       this.deps.store.readExecutionBoundary(sessionId),
@@ -4826,12 +4994,7 @@ export class SessionManager {
       boundary,
     );
     try {
-      const rewritten = await this.cloneConversationRuntimeLedger(
-        sessionId,
-        next.id,
-        sourceView,
-        copied,
-      );
+      const rewritten = await this.cloneConversationRuntimeLedger(next.id, copied, plan);
       if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
       await this.deps.store.appendMessage(next.id, {
         type: 'system_note',
@@ -5034,6 +5197,70 @@ export class SessionManager {
     return next;
   }
 
+  private async isPlanOperationReplay(
+    sessionId: string,
+    operationId: string | undefined,
+    operationInput: unknown,
+  ): Promise<boolean> {
+    if (!operationId) return false;
+    return (
+      (await this.requirePlanStore().readOperationReceipt(
+        sessionId,
+        operationId,
+        operationInput,
+      )) !== undefined
+    );
+  }
+
+  private async finalizePlanCollaborationMode(
+    sessionId: string,
+    mode: CollaborationMode,
+  ): Promise<void> {
+    const header = await this.deps.store.readHeader(sessionId);
+    const changed = (header.collaborationMode ?? 'agent') !== mode;
+    const next = changed
+      ? await this.deps.store.updateHeader(sessionId, { collaborationMode: mode })
+      : header;
+    this.runtimeKernel.updateCachedHeader(sessionId, next);
+  }
+
+  private async finalizePlanAbandonment(
+    sessionId: string,
+    operationId: string | undefined,
+    replay: boolean,
+  ): Promise<void> {
+    const header = await this.deps.store.readHeader(sessionId);
+    const from = header.collaborationMode ?? 'agent';
+    const changed = from !== 'agent';
+    const next = changed
+      ? await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' })
+      : header;
+    this.runtimeKernel.updateCachedHeader(sessionId, next);
+
+    if (!changed && !replay) return;
+    if (!operationId) {
+      await this.deps.store.appendMessage(sessionId, {
+        type: 'system_note',
+        id: this.deps.newId(),
+        ts: this.deps.now(),
+        kind: 'mode_change',
+        data: { dimension: 'collaboration', from, to: 'agent' },
+      } satisfies SystemNoteMessage);
+      return;
+    }
+
+    const noteId = planAbandonmentNoteId(operationId);
+    const messages = await this.deps.store.readMessages(sessionId);
+    if (messages.some((message) => message.id === noteId)) return;
+    await this.deps.store.appendMessage(sessionId, {
+      type: 'system_note',
+      id: noteId,
+      ts: this.deps.now(),
+      kind: 'mode_change',
+      data: { dimension: 'collaboration', from: 'plan', to: 'agent' },
+    } satisfies SystemNoteMessage);
+  }
+
   private requirePlanStore(): PlanStore {
     if (!this.deps.planStore) throw new Error('Plan Mode is unavailable on this surface');
     return this.deps.planStore;
@@ -5056,6 +5283,12 @@ export class SessionManager {
     nextMode: CollaborationMode,
   ): Promise<void> {
     if ((current.collaborationMode ?? 'agent') === nextMode) return;
+    if (nextMode === 'plan' && current.subagentParent) {
+      throw new SessionConfigurationTransitionError(
+        'operation_unavailable',
+        'Linked child Sessions cannot enter Plan mode',
+      );
+    }
     const planStore = this.deps.planStore;
     if (!planStore) {
       throw new SessionConfigurationTransitionError(
@@ -5125,14 +5358,6 @@ export class SessionManager {
     return turn;
   }
 
-  private async requireUserMessageForTurn(sessionId: string, turnId: string): Promise<UserMessage> {
-    const user = (await this.getSessionView(sessionId)).messages.find(
-      (message): message is UserMessage => message.type === 'user' && message.turnId === turnId,
-    );
-    if (!user) throw new Error(`Turn ${turnId} has no user message`);
-    return user;
-  }
-
   private async getSessionView(
     sessionId: string,
     projectionCache: RuntimeReadModelProjectionCache = this.deps.store,
@@ -5178,26 +5403,33 @@ export class SessionManager {
     );
   }
 
-  private async cloneConversationRuntimeLedger(
+  private async prepareConversationRuntimeLedgerClone(
     sourceSessionId: string,
-    childSessionId: string,
     sourceView: RuntimeReadModelSessionView,
     copiedMessages: readonly StoredMessage[],
-  ): Promise<readonly StoredMessage[]> {
-    if (!this.deps.runStore || !this.deps.runtimeEventStore) return copiedMessages;
-    const plan = await prepareConversationRuntimeLedgerCopy({
+  ): Promise<ConversationRuntimeLedgerCopyPlan | undefined> {
+    if (!this.deps.runStore || !this.deps.runtimeEventStore) return undefined;
+    return prepareConversationRuntimeLedgerCopy({
       sourceSessionId,
       sourceEvents: sourceView.events,
       copiedMessages,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
     });
+  }
+
+  private async cloneConversationRuntimeLedger(
+    childSessionId: string,
+    copiedMessages: readonly StoredMessage[],
+    plan: ConversationRuntimeLedgerCopyPlan | undefined,
+  ): Promise<readonly StoredMessage[]> {
+    if (!plan || !this.deps.runStore || !this.deps.runtimeEventStore) return copiedMessages;
     const copied = await cloneConversationLedger({
       plan,
       copiedMessages,
       referenceMap: {
         mode: 'preserve_external',
-        sourceSessionId,
+        sourceSessionId: plan.sourceSessionId,
         targetSessionId: childSessionId,
       },
       runStore: this.deps.runStore,
@@ -5216,48 +5448,6 @@ export class SessionManager {
         `Conversation copy ${sessionId} failed and could not be removed`,
       );
     }
-    throw error;
-  }
-
-  /**
-   * PR B3 will provide typed identity rewriting for authority-bearing facts.
-   * Until then, fail before creating the target session: shallow-copying any
-   * of these facts would produce a readable-looking conversation whose durable
-   * operation/continuation identities still point at the source session.
-   */
-  private assertConversationRuntimeLedgerCloneSupported(
-    sourceView: RuntimeReadModelSessionView,
-    copiedMessages: readonly StoredMessage[],
-  ): void {
-    const copiedTurnIds = new Set<string>();
-    for (const message of copiedMessages) {
-      if ('turnId' in message && typeof message.turnId === 'string') {
-        copiedTurnIds.add(message.turnId);
-      }
-    }
-    if (copiedTurnIds.size === 0) return;
-
-    const selectedRuns = new Set(
-      sourceView.runs.filter((run) => copiedTurnIds.has(run.turnId)).map((run) => run.runId),
-    );
-    const unsupportedRun = sourceView.runs.find(
-      (run) => selectedRuns.has(run.runId) && run.continuationSource !== undefined,
-    );
-    const unsupportedEvent = sourceView.events.find(
-      (event) =>
-        selectedRuns.has(event.runId) &&
-        copiedTurnIds.has(event.turnId) &&
-        (event.actions?.continuationStart !== undefined ||
-          event.actions?.toolDispatch !== undefined ||
-          event.actions?.toolRecovery !== undefined ||
-          event.refs?.operationId !== undefined),
-    );
-    if (!unsupportedRun && !unsupportedEvent) return;
-
-    const error = new Error(
-      'Conversation copy contains durable runtime authority facts that require typed identity rewriting',
-    ) as Error & { code: string };
-    error.code = 'branch_runtime_fact_rewrite_unsupported';
     throw error;
   }
 
@@ -5603,6 +5793,10 @@ export class SessionManager {
     if (latest && isTerminalTurnStatus(latest.status) && latest.status === status) return;
     await this.appendTurnState(sessionId, decision.turnId, status, decision.lineage, options);
   }
+}
+
+function planAbandonmentNoteId(operationId: string): string {
+  return `plan-abandonment-${createHash('sha256').update(operationId).digest('hex')}`;
 }
 
 function resumeFeatureDisabledPlan(): SafeBoundaryContinuationPlan {

@@ -7,26 +7,14 @@
 /* Astryx convergence: the orphaned voice hero vocabulary
    (.settingsFeatureStatusPage / Hero / Icon / HeroHeading) is deleted — the
    voice page moved onto the SettingsSection kit and nothing consumed it.
-   .settingsFeatureStatusList below is still used by the voice 边界 list. */
+   .settingsFeatureStatusList went the same way with the voice 边界 list, whose
+   three developer-facing bullets became one sentence on the status group. */
 
 .settingsBackButton {
   justify-content: flex-start;
   -webkit-app-region: no-drag;
 }
 
-
-.settingsFeatureStatusList {
-  font: var(--maka-text-supporting);
-  margin: 0;
-  padding: 0 0 0 var(--space-3);
-  display: grid;
-  gap: var(--space-1);
-  color: var(--foreground-secondary);
-}
-
-.settingsFeatureStatusList li::marker {
-  color: var(--muted-foreground);
-}
 
 
 .settingsLoadingSkeleton {
@@ -43,7 +31,7 @@
    pull the page header into the same centered max-w-3xl column as the
    content. Before this, the header sat in `.settingsMainPane` padding
    (~34px from pane edge), while the row cards lived in the centered
-   640px column — the title
+   content column — the title
    and content were visibly misaligned. Drop the mainpane padding to
    thin top/bottom so the header + content can both share the centered
    column. */

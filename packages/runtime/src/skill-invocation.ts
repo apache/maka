@@ -6,7 +6,7 @@ import {
   type LoadedSkillInstructions,
   type LoadSkillInstructionsResult,
 } from './skills-context.js';
-import { scanSkills, type SkillSource } from './skills-discovery.js';
+import { scanSkills, type ScannedSkill, type SkillSource } from './skills-discovery.js';
 import {
   boundSkillInvocationRequest,
   failedSkillInvocationReceipt,
@@ -220,6 +220,39 @@ export async function prepareSkillInvocationMessage(input: {
   source: SkillSource;
   host?: HostCapabilities;
 }): Promise<PreparedSkillInvocationMessage> {
+  return prepareSkillInvocation({
+    text: input.text,
+    ...(input.skillIds ? { skillIds: input.skillIds } : {}),
+    resolve: (requests) => resolveSkillInvocations(input.source, input.host, requests),
+  });
+}
+
+/** Prepare explicit invocation against one Host-owned immutable inventory read. */
+export async function prepareSkillInvocationMessageFromInventory(input: {
+  text: string;
+  skillIds?: readonly string[];
+  inventory: readonly ScannedSkill[];
+  host?: HostCapabilities;
+}): Promise<PreparedSkillInvocationMessage> {
+  const inventory = [...input.inventory];
+  return prepareSkillInvocation({
+    text: input.text,
+    ...(input.skillIds ? { skillIds: input.skillIds } : {}),
+    resolve: (requests) =>
+      Promise.resolve(
+        requests.map((request) => ({
+          request,
+          result: loadSkillInstructionsFromScan(inventory, request, input.host),
+        })),
+      ),
+  });
+}
+
+async function prepareSkillInvocation(input: {
+  text: string;
+  skillIds?: readonly string[];
+  resolve(requests: readonly string[]): Promise<SkillInvocationResolution[]>;
+}): Promise<PreparedSkillInvocationMessage> {
   const passthrough: PreparedSkillInvocationMessage = {
     disposition: 'passthrough',
     sendText: input.text,
@@ -247,7 +280,7 @@ export async function prepareSkillInvocationMessage(input: {
     new Set(tokens.map((token) => token.name.toLowerCase())),
   );
   try {
-    const resolved = await resolveSkillInvocations(input.source, input.host, requests);
+    const resolved = await input.resolve(requests);
     const loaded: LoadedSkillInstructions[] = [];
     const loadedIds = new Set<string>();
     const failures: SkillInvocationFailure[] = [];

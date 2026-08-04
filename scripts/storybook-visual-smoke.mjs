@@ -21,12 +21,16 @@ const REQUIRED_PRODUCT_SURFACES = Object.freeze([
   'dailyReview',
   'sessionContext',
   'composer',
+  // The autoplay contract (#1981): if plays stop running, they also stop
+  // failing, so the harness carries a story that positively proves execution.
+  'playContract',
 ]);
 
 const PRODUCT_CHECKS = new Set([
   'composer-focus-ownership',
   'plan-reminder-row',
   'session-context-layer',
+  'play-executed',
 ]);
 
 function fail(message) {
@@ -298,6 +302,20 @@ async function smokeStory(page, baseUrl, job, options = {}) {
             }
           }
         }
+        // #1981: the play-contract story's play flips this marker. If it is
+        // still pending, Storybook stopped autoplaying play functions — which
+        // also means throwing plays no longer fail this harness, so the
+        // regression must surface here, positively.
+        if (checks.includes('play-executed')) {
+          const proof = root?.querySelector('[data-play-proof]');
+          if (!(proof instanceof HTMLElement)) {
+            failures.push('play contract story rendered without its proof node');
+          } else if (proof.dataset.playProof !== 'executed') {
+            failures.push(
+              'play function did not execute — the Storybook autoplay contract (FIDELITY.md) is broken',
+            );
+          }
+        }
         if (checks.includes('composer-focus-ownership')) {
           const editor = document.querySelector('.maka-composer-editor > [contenteditable="true"]');
           const composer = editor?.closest('[data-maka-contract="composer-inner"]');
@@ -534,13 +552,12 @@ const MIME_TYPES = {
   '.woff2': 'font/woff2',
 };
 
-async function startStaticServer(staticDir) {
+export async function startStaticServer(staticDir) {
   const root = resolve(staticDir);
   const server = createServer(async (request, response) => {
+    let requestPath;
     try {
-      const requestPath = decodeURIComponent(
-        new URL(request.url ?? '/', 'http://localhost').pathname,
-      );
+      requestPath = decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname);
       const target = resolve(root, `.${requestPath === '/' ? '/index.html' : requestPath}`);
       if (relative(root, target).startsWith('..')) {
         response.writeHead(403).end();
@@ -553,6 +570,10 @@ async function startStaticServer(staticDir) {
       });
       createReadStream(target).pipe(response);
     } catch {
+      if (requestPath === '/favicon.ico') {
+        response.writeHead(204, { 'cache-control': 'no-store' }).end();
+        return;
+      }
       response.writeHead(404).end('Not found');
     }
   });

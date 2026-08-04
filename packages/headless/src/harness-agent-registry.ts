@@ -1,7 +1,13 @@
 import { PROVIDER_DEFAULTS, type ProviderType } from '@maka/core/llm-connections';
 import type { ProviderAuthProxyMode, ProviderUsageProtocol } from './provider-auth-proxy.js';
 
-export type HarnessAgentId = 'maka' | 'opencode' | 'kimi-code' | 'codex' | 'claude-code';
+export type HarnessAgentId =
+  | 'maka'
+  | 'opencode'
+  | 'kimi-code'
+  | 'codex'
+  | 'claude-code'
+  | 'reasonix';
 
 const HARNESS_AGENT_IMPORT_PATHS: Readonly<Record<HarnessAgentId, string>> = {
   maka: 'maka_agent:MakaAgent',
@@ -9,6 +15,7 @@ const HARNESS_AGENT_IMPORT_PATHS: Readonly<Record<HarnessAgentId, string>> = {
   'kimi-code': 'kimi_code_agent:MakaKimiCodeAgent',
   codex: 'codex_agent:MakaCodexAgent',
   'claude-code': 'claude_code_agent:MakaClaudeCodeAgent',
+  reasonix: 'reasonix_agent:MakaReasonixAgent',
 };
 
 export function harnessAgentImportPath(agent: HarnessAgentId): string {

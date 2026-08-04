@@ -87,18 +87,24 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
   await expect(image).toHaveCSS('width', '64px');
   await expect(bubble).toContainText('sending mixed attachments');
 
-  const [fileBox, iconBox, imageBox, bubbleBox] = await Promise.all([
+  const [fileBox, imageBox, bubbleBox] = await Promise.all([
     fileToken.boundingBox(),
-    fileIcon.boundingBox(),
     image.boundingBox(),
     bubble.boundingBox(),
   ]);
   expect(fileBox).not.toBeNull();
-  expect(iconBox).not.toBeNull();
   expect(imageBox).not.toBeNull();
   expect(bubbleBox).not.toBeNull();
-  expect(iconBox!.y).toBeGreaterThanOrEqual(fileBox!.y);
-  expect(iconBox!.y + iconBox!.height).toBeLessThanOrEqual(fileBox!.y + fileBox!.height);
+  // The token declares display:inline-flex + align-items:center; as a flex
+  // item of the attachment row it computes display:flex (blockification) on
+  // every platform. Assert the centering contract, not geometry: token height
+  // resolves from line-height, which varies with font metrics (Linux CI can
+  // drop below the 16px icon, overflowing a correctly centered icon by 2px).
+  // A tolerance-based centerline check was rejected — a baseline regression
+  // drifts exactly 2.00px, the tolerance boundary. display:flex is load-
+  // bearing: align-items computes as declared even on non-flex boxes.
+  await expect(fileToken).toHaveCSS('display', 'flex');
+  await expect(fileToken).toHaveCSS('align-items', 'center');
   expect(fileBox!.y + fileBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
   expect(imageBox!.y + imageBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
 

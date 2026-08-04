@@ -36,6 +36,7 @@ import {
   type AgentRunEventType,
   type AgentRunHeader,
   type AgentRunStore,
+  type EmittedAgentRunEvent,
   type AttachmentRef,
   type MessageContent,
   type RootExecutionDescriptor,
@@ -350,7 +351,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
   async appendEvent(
     sessionId: string,
     runId: string,
-    event: AgentRunEvent,
+    event: EmittedAgentRunEvent,
     _options: { durable?: boolean } = {},
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
@@ -1233,7 +1234,9 @@ function assertRootTurnAdmissionSerializedSize(serialized: string): void {
 function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const execution = admission.execution;
   const providerRetry = execution.kind === 'linked_child_provider_retry';
-  const safeBoundaryContinuation = execution.kind === 'safe_boundary_continuation';
+  const inputlessExecution =
+    execution.kind === 'safe_boundary_continuation' || execution.kind === 'context_compact';
+  const messageLessExecution = inputlessExecution || providerRetry;
   if (execution.kind === 'agent_graph_supervisor_wake') {
     if (
       admission.turnOrchestration?.mode !== 'graph' ||
@@ -1248,17 +1251,12 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
       'Invalid root turn admission contract: orchestration override is not authorized for this execution',
     );
   }
-  if (safeBoundaryContinuation && admission.userMessageId !== null) {
+  if ((admission.userMessageId === null) !== messageLessExecution) {
     throw new Error(
-      'Invalid root turn admission contract: safe-boundary continuation omits UserMessage',
+      'Invalid root turn admission contract: execution has an invalid UserMessage requirement',
     );
   }
-  if (!safeBoundaryContinuation && (admission.userMessageId === null) !== providerRetry) {
-    throw new Error(
-      'Invalid root turn admission contract: only linked child provider retry omits UserMessage',
-    );
-  }
-  if ((admission.normalizedInput === null) !== safeBoundaryContinuation) {
+  if ((admission.normalizedInput === null) !== inputlessExecution) {
     throw new Error(
       'Invalid root turn admission contract: execution has an invalid input requirement',
     );
@@ -1302,6 +1300,11 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   ) {
     throw new Error(
       'Invalid root turn admission contract: safe-boundary continuation identity is invalid',
+    );
+  }
+  if (execution.kind === 'regenerate' && execution.sourceTurnId === admission.turnId) {
+    throw new Error(
+      'Invalid root turn admission contract: regenerate source Turn cannot be the admitted Turn',
     );
   }
   if (
@@ -1366,8 +1369,25 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
+    if (hasExactKeys(value, ['kind'])) return Object.freeze({ kind: 'external_message' });
+    if (!hasExactKeys(value, ['kind', 'inputDigest']) || !isSha256Digest(value.inputDigest)) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'external_message', inputDigest: value.inputDigest });
+  }
+  if (value.kind === 'regenerate') {
+    if (
+      !hasExactKeys(value, ['kind', 'sourceTurnId']) ||
+      typeof value.sourceTurnId !== 'string' ||
+      !isSafeId(value.sourceTurnId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'regenerate', sourceTurnId: value.sourceTurnId });
+  }
+  if (value.kind === 'context_compact') {
     if (!hasExactKeys(value, ['kind'])) throw new Error('Invalid root execution descriptor');
-    return Object.freeze({ kind: 'external_message' });
+    return Object.freeze({ kind: 'context_compact' });
   }
   if (value.kind === 'automation') {
     if (

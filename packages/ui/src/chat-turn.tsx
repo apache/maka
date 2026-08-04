@@ -640,6 +640,21 @@ export interface TurnLineageBadge {
   direction: 'forward' | 'reverse';
 }
 
+/**
+ * Everything a consumer derives per turn and hands back for rendering. Each
+ * map is keyed by `turnId`; a turn absent from a map simply has nothing there.
+ */
+export interface TurnPresentation {
+  footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>>;
+  failedReasonLabels: Record<string, string>;
+  failedRecoveryLabels: Record<string, string>;
+  lineageBadgesByTurn: Record<string, TurnLineageBadge[]>;
+  /** The turn a safe resume would restart, when the shell offers one. */
+  resumeCandidateTurnId?: string;
+}
+
+export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnPresentation;
+
 function TurnFooterActions(props: {
   actions: ReadonlyArray<TurnFooterActionMeta>;
   onAction?: (actionId: TurnFooterActionMeta['id']) => void;

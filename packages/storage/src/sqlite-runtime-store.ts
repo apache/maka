@@ -205,6 +205,7 @@ export class SqliteRuntimeStore
   readonly workspaceVersionAuthorityCapability = WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
   private readonly db: DatabaseSync;
   private readonly databaseLease?: OperationalStateDatabaseLease;
+  private toolLedgerHealth: ToolLedgerHealth | undefined;
   private closed = false;
 
   constructor(
@@ -221,7 +222,10 @@ export class SqliteRuntimeStore
       assertRecoveryAuthorityCapability(this.db);
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
-      if (!options.readOnly) this.registerWorkspaceBaselineAuthorityWriter();
+      if (!options.readOnly) {
+        this.registerWorkspaceBaselineAuthorityWriter(options.databaseLease.databasePath);
+        this.refreshToolLedgerHealth();
+      }
       return;
     }
     const DatabaseSync = loadDatabaseSync();
@@ -244,7 +248,10 @@ export class SqliteRuntimeStore
       assertRecoveryAuthorityCapability(this.db);
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
-      if (!options.readOnly) this.registerWorkspaceBaselineAuthorityWriter();
+      if (!options.readOnly) {
+        this.registerWorkspaceBaselineAuthorityWriter(path);
+        this.refreshToolLedgerHealth();
+      }
     } catch (error) {
       this.db.close();
       this.closed = true;
@@ -864,9 +871,11 @@ export class SqliteRuntimeStore
 
   async #commitWorkspaceBaseline(
     input: WorkspaceBaselineAuthorityInput,
+    rootId: string,
   ): Promise<WorkspaceBaselineCommitResult> {
     const events = buildWorkspaceBaselineAuthorityEvents(input);
     return this.transaction(() => {
+      this.#assertWorkspaceStorageRootBinding(rootId);
       const existingBaselines = this.readCanonicalWorkspaceBaselinesSync();
       const existing = existingBaselines.find(
         (candidate) =>
@@ -929,10 +938,77 @@ export class SqliteRuntimeStore
     });
   }
 
-  private registerWorkspaceBaselineAuthorityWriter(): void {
-    registerWorkspaceBaselineAuthorityWriterInternal(this, (input) =>
-      this.#commitWorkspaceBaseline(input),
+  private registerWorkspaceBaselineAuthorityWriter(databasePath: string): void {
+    const readWorkspaceHead = this.readWorkspaceHead.bind(this);
+    registerWorkspaceBaselineAuthorityWriterInternal(
+      this,
+      databasePath,
+      (input, rootId) => this.#commitWorkspaceBaseline(input, rootId),
+      (rootId) => this.#bindWorkspaceStorageRoot(rootId),
+      readWorkspaceHead,
     );
+  }
+
+  #bindWorkspaceStorageRoot(rootId: string): void {
+    this.transaction(() => {
+      const existing = this.#readWorkspaceStorageRootBinding();
+      if (existing) {
+        if (existing.root_id !== rootId || existing.protocol_version !== 1) {
+          throw new Error(
+            'Workspace authority database belongs to a different durable storage root',
+          );
+        }
+        return;
+      }
+      if (this.#databaseHasLogicalStateBeforeRootBinding()) {
+        throw new Error('Unbound operational data require explicit storage-root adoption');
+      }
+      this.db
+        .prepare(`
+          INSERT INTO runtime_storage_root_binding(singleton, root_id, protocol_version)
+          VALUES (1, ?, 1)
+        `)
+        .run(rootId);
+    });
+  }
+
+  #assertWorkspaceStorageRootBinding(rootId: string): void {
+    const existing = this.#readWorkspaceStorageRootBinding();
+    if (!existing || existing.root_id !== rootId || existing.protocol_version !== 1) {
+      throw new Error('Workspace authority database durable storage-root binding changed');
+    }
+  }
+
+  #readWorkspaceStorageRootBinding(): { root_id: string; protocol_version: number } | undefined {
+    return this.db
+      .prepare(`
+        SELECT root_id, protocol_version
+        FROM runtime_storage_root_binding
+        WHERE singleton = 1
+      `)
+      .get() as { root_id: string; protocol_version: number } | undefined;
+  }
+
+  #databaseHasLogicalStateBeforeRootBinding(): boolean {
+    const metadataTables = new Set([
+      'operational_schema_migrations',
+      'runtime_capabilities',
+      'runtime_storage_root_binding',
+    ]);
+    const tables = this.db
+      .prepare(`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+      `)
+      .all() as Array<{ name: string }>;
+    for (const { name } of tables) {
+      if (metadataTables.has(name)) continue;
+      const quotedName = `"${name.replaceAll('"', '""')}"`;
+      if (this.db.prepare(`SELECT 1 FROM ${quotedName} LIMIT 1`).get()) return true;
+    }
+    return false;
   }
 
   async readWorkspaceEpoch(
@@ -2052,13 +2128,21 @@ export class SqliteRuntimeStore
     candidateEvents: readonly RuntimeEvent[],
     expectedTransition: Parameters<typeof validateToolLedgerTransition>[0]['expectedTransition'],
   ): void {
-    const rows = this.db
-      .prepare(`
-        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-        FROM runtime_events
-        ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
-      `)
-      .all() as unknown as RuntimeEventStorageRow[];
+    this.assertWorkspaceToolLedgerHealthy();
+    // Tool-call identity is scoped by invocation. Reading unrelated invocations here turns
+    // concurrent subagents into repeated whole-workspace scans without strengthening the
+    // transition check; event and operation uniqueness remain enforced by SQLite keys.
+    const rows: RuntimeEventStorageRow[] = [];
+    const invocationIds = [...new Set(candidateEvents.map((event) => event.invocationId))].sort();
+    const readInvocation = this.db.prepare(`
+      SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+      FROM runtime_events
+      WHERE invocation_id = ?
+      ORDER BY event_seq ASC, event_id ASC
+    `);
+    for (const invocationId of invocationIds) {
+      rows.push(...(readInvocation.all(invocationId) as unknown as RuntimeEventStorageRow[]));
+    }
     const validation = validateToolLedgerTransition({
       existingEvents: rows.map(decodeRuntimeEventStorageRow),
       candidateEvents: candidateEvents.map(canonicalizeRuntimeEventForStorage),
@@ -2069,6 +2153,42 @@ export class SqliteRuntimeStore
         `Tool ledger transition rejected: ${validation.code} at ${validation.eventId}`,
       );
     }
+  }
+
+  private assertWorkspaceToolLedgerHealthy(): void {
+    const dataVersion = this.runtimeDataVersion();
+    if (!this.toolLedgerHealth || this.toolLedgerHealth.dataVersion !== dataVersion) {
+      this.refreshToolLedgerHealth();
+    }
+    const health = this.toolLedgerHealth!;
+    if (health.decodeFailure) throw health.decodeFailure.error;
+    if (health.issue) {
+      throw new Error(
+        `Tool ledger transition rejected: ${health.issue.code} at ${health.issue.eventId}`,
+      );
+    }
+  }
+
+  private refreshToolLedgerHealth(): void {
+    const dataVersion = this.runtimeDataVersion();
+    try {
+      const rows = this.db
+        .prepare(`
+          SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+          FROM runtime_events
+          ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
+        `)
+        .all() as unknown as RuntimeEventStorageRow[];
+      const scan = scanToolLedger(rows.map(decodeRuntimeEventStorageRow));
+      this.toolLedgerHealth = { dataVersion, issue: scan.issues[0] };
+    } catch (error) {
+      this.toolLedgerHealth = { dataVersion, decodeFailure: { error } };
+    }
+  }
+
+  private runtimeDataVersion(): number {
+    const row = this.db.prepare('PRAGMA data_version').get() as { data_version: number };
+    return row.data_version;
   }
 
   private assertInvocationIdentity(events: readonly RuntimeEvent[]): void {
@@ -2431,6 +2551,12 @@ export class SqliteRuntimeStore
       .get(operationId) as ToolOperationRow | undefined;
     return row ? toolOperationFromRow(row) : undefined;
   }
+}
+
+interface ToolLedgerHealth {
+  dataVersion: number;
+  issue?: ReturnType<typeof scanToolLedger>['issues'][number];
+  decodeFailure?: { error: unknown };
 }
 
 interface ToolOperationRow {

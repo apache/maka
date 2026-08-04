@@ -193,7 +193,7 @@ async function enterQuery(canvasElement: HTMLElement, selector: string, value: s
   await wait(260);
 }
 
-// Real path: ⌘K (or 更多操作 → 打开命令面板) → the palette with commands grouped by kind.
+// Real path: ⌘K → the palette with commands grouped by kind.
 export const CommandPaletteGroupedResults: Story = {
   render: () => (
     <CommandPaletteFrame

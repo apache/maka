@@ -51,6 +51,32 @@ describe('RSI round analysis', () => {
     ]);
   });
 
+  test('reads a graded budget exhaustion as the score it carries, not as lost coverage', async () => {
+    // A verifier-graded timeout has a score. Reporting it as a coverage
+    // regression and a pass→budget flip would blame the candidate prompt for
+    // evidence that exists and says the task passed.
+    const analysis = await analyzeRsiRound({
+      heldInTaskIds: ['task-a', 'task-b', 'task-c'],
+      lastKeptEvents: [
+        completed({ taskId: 'task-a', passed: true }),
+        completed({ taskId: 'task-b', passed: true }),
+        completed({ taskId: 'task-c', passed: true }),
+      ],
+      candidateEvents: [
+        budgetExhausted({ taskId: 'task-a', passed: true, scored: true }),
+        budgetExhausted({ taskId: 'task-b', passed: false, scored: true }),
+        budgetExhausted({ taskId: 'task-c' }),
+      ],
+    });
+
+    assert.deepEqual(analysis.transitionVsLastKept, [
+      { taskId: 'task-b', from: 'pass', to: 'fail' },
+      { taskId: 'task-c', from: 'pass', to: 'budget' },
+    ]);
+    // Only the ungraded one actually lost coverage.
+    assert.deepEqual(analysis.coverageRegressionTaskIds, ['task-c']);
+  });
+
   test('only reports coverage regression when last kept was covered', async () => {
     const analysis = await analyzeRsiRound({
       heldInTaskIds: ['task-a', 'task-b', 'task-c'],
@@ -723,6 +749,31 @@ function plumbingFailed(input: {
     runtimeEventsPath: input.runtimeEventsPath ?? '/tmp/runtime-events.jsonl',
     ...(input.traceEventsPath ? { traceEventsPath: input.traceEventsPath } : {}),
     harbor: { reward: 0 },
+  };
+}
+
+function budgetExhausted(input: {
+  taskId: string;
+  passed?: boolean;
+  scored?: boolean;
+}): FixedPromptTaskWalEvent {
+  const scored = input.scored ?? false;
+  return {
+    schemaVersion: 1,
+    type: 'task_budget_exhausted',
+    id: `${input.taskId}-budget`,
+    ts: 1,
+    runId: 'run-1',
+    roundId: 'round-1',
+    taskId: input.taskId,
+    status: 'budget_exhausted',
+    passed: input.passed ?? false,
+    scored,
+    eligible: true,
+    errorClass: 'budget_exhausted',
+    error: 'agent budget exhausted',
+    expectedPromptHash: 'sha256:prompt',
+    ...(scored ? { harbor: { reward: input.passed ? 1 : 0 } } : {}),
   };
 }
 

@@ -131,7 +131,7 @@ export function SessionHistoryList(props: {
 
   // Outer SideNav is the sole navigation landmark; this is scroll content only.
   return (
-    <div className="maka-session-list" aria-label={sessionListTitle} onKeyDown={handleListKeyDown}>
+    <div className="maka-session-list" role="group" aria-label={sessionListTitle} onKeyDown={handleListKeyDown}>
       {props.heading ? (
         <SideNavSection
           title={props.heading}

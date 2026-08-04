@@ -370,6 +370,10 @@ export async function verifyPackagedMacApp(
   await requirePath(join(resources, 'licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'));
   await forbidPath(join(resources, 'tools', 'officecli'));
   await forbidPath(join(resources, 'licenses', 'officecli'));
+  // cua-driver is gone from this repository, and these two forbids stay for the
+  // same reason the officecli ones next to them do: `apps/desktop/resources/bin`
+  // is gitignored, so a binary a developer prepared before this change is still
+  // sitting in their tree and would be packaged without anything noticing.
   await forbidPath(join(resources, 'bin', 'cua-driver'));
   await forbidPath(join(resources, 'tools', 'cua-driver'));
   // maka-cu is built from source locally and is not signed, so it may not be in
