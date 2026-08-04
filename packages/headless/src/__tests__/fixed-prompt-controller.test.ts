@@ -3332,17 +3332,11 @@ describe('fixed prompt controller', () => {
       const resultsJsonlPath = join(dir, 'results.jsonl');
       const heldInTaskIds = ['apple', 'Banana', 'cherry', 'Date'];
       const localeCompareHash = `sha256:${createHash('sha256')
-        .update(
-          JSON.stringify(
-            [...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b)),
-          ),
-        )
+        .update(JSON.stringify([...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b))))
         .digest('hex')}`;
       const codepointHash = `sha256:${createHash('sha256')
         .update(
-          JSON.stringify(
-            [...new Set(heldInTaskIds)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
-          ),
+          JSON.stringify([...new Set(heldInTaskIds)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))),
         )
         .digest('hex')}`;
       assert.notEqual(localeCompareHash, codepointHash);
@@ -3360,9 +3354,7 @@ describe('fixed prompt controller', () => {
           summary: 'legacy candidate',
           promptHash: 'sha256:prompt',
           heldInTaskSetHash: localeCompareHash,
-          heldInTaskIds: [...new Set(heldInTaskIds)].sort((a, b) =>
-            a.localeCompare(b),
-          ),
+          heldInTaskIds: [...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b)),
           candidateRationaleHash: 'sha256:rationale',
           candidateRationale: {
             failurePattern: 'held_in_within_noise',
