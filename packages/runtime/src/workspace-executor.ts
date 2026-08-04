@@ -81,10 +81,22 @@ export interface WorkspaceWriteFileResult {
   bytes: number;
 }
 
+/**
+ * Which path space a resolution may land in.
+ *
+ * `workspace` keeps the resolved path inside the session cwd; `host` accepts
+ * any canonical path on the host. This is a *mechanism* parameter: the caller
+ * decides it from the active ExecutionBoundary, so no executor has to carry a
+ * containment policy of its own. Executors whose transport cannot express host
+ * paths (a remote or isolated workspace) reject `host` explicitly.
+ */
+export type WorkspacePathScope = 'workspace' | 'host';
+
 export interface WorkspaceResolvePathInput {
   cwd: string;
   path: string;
   label: string;
+  scope: WorkspacePathScope;
 }
 
 export interface WorkspaceResolvePathResult {
@@ -245,11 +257,15 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async resolveExistingPath(input: WorkspaceResolvePathInput): Promise<WorkspaceResolvePathResult> {
-    return { path: await resolveExistingInsideCwd(input.cwd, input.path, input.label) };
+    return {
+      path: await resolveExistingPathInScope(input.cwd, input.path, input.label, input.scope),
+    };
   }
 
   async resolveWritablePath(input: WorkspaceResolvePathInput): Promise<WorkspaceResolvePathResult> {
-    return { path: (await canonicalPathInsideCwd(input.cwd, input.path, input.label)).path };
+    return {
+      path: (await canonicalPathInScope(input.cwd, input.path, input.label, input.scope)).path,
+    };
   }
 
   async writeLockKey(input: WorkspaceWriteLockKeyInput): Promise<WorkspaceWriteLockKeyResult> {
@@ -318,25 +334,34 @@ async function canonicalPathUnderCwd(
 }
 
 /**
- * The same canonical path, rejected unless it stays inside the session cwd.
- * Following the symlinks does not weaken containment: a link inside the cwd that
- * points out of it resolves to its outside target and is rejected.
+ * The same canonical path, rejected unless it stays inside the session cwd when
+ * the caller asked for `workspace` scope. Following the symlinks does not weaken
+ * containment: a link inside the cwd that points out of it resolves to its
+ * outside target and is rejected.
+ *
+ * Under `host` scope the canonicalisation is identical and only the containment
+ * assertion is skipped, so both scopes work in one path space and a scope change
+ * cannot move a path.
  */
-async function canonicalPathInsideCwd(
+async function canonicalPathInScope(
   cwd: string,
   inputPath: string,
   label: string,
+  scope: WorkspacePathScope,
 ): Promise<{ root: string; path: string }> {
   const { root, path } = await canonicalPathUnderCwd(cwd, inputPath);
+  if (scope === 'host') return { root, path };
   return { root, path: assertInsideCwd(root, path, inputPath, label) };
 }
 
-async function resolveExistingInsideCwd(
+async function resolveExistingPathInScope(
   cwd: string,
   inputPath: string,
   label: string,
+  scope: WorkspacePathScope,
 ): Promise<string> {
-  const { root, path: candidate } = await canonicalPathInsideCwd(cwd, inputPath, label);
+  const { root, path: candidate } = await canonicalPathInScope(cwd, inputPath, label, scope);
+  if (scope === 'host') return await fs.realpath(candidate);
   // The read/search callers depend on the target existing; surface that here
   // rather than as a downstream open/spawn failure.
   //

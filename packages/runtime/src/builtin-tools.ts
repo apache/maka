@@ -23,7 +23,6 @@ import {
   type StorageRef,
   type PermissionProfile,
 } from '@maka/core';
-import { computeEditedSource } from './edit-replace.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import {
   buildManagedBashTool,
@@ -44,6 +43,12 @@ import {
   type WorkspaceExecResult,
   type WorkspaceExecutor,
 } from './workspace-executor.js';
+import {
+  createBoundaryFilesystemExecutor,
+  type FilesystemExecuteInput,
+  type FilesystemExecutor,
+  type FilesystemWriteLockKeyInput,
+} from './filesystem-executor.js';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
 // re-export only keeps back-compat for callers that imported from
@@ -143,6 +148,12 @@ export interface BuildBuiltinToolsOptions {
   sandboxManager?: SandboxManager;
   /** Sandboxed worker used for all local filesystem tools. */
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
+  /**
+   * Boundary-driven filesystem authority for the file tools. Composed from
+   * `executor` and `filesystemWorker` when omitted, which is what every
+   * production caller wants; inject only to replace both backends at once.
+   */
+  filesystem?: FilesystemExecutor;
   /** Host-surface gate for Edit. Defaults to enabled. */
   includeEdit?: boolean;
   /** Test/embedding override. Production callers use the current process platform. */
@@ -158,6 +169,13 @@ export interface BuildBuiltinToolsOptions {
 
 export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
   const executor = options.executor ?? createLocalWorkspaceExecutor();
+  const filesystem =
+    options.filesystem ??
+    createBoundaryFilesystemExecutor({
+      workspace: executor,
+      ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
+      ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
+    });
   const executionFacts = executor.facts;
   const readDescription = `Read a text file${options.snapshotImage ? ' or supported image' : ''} from disk${options.runtimeResources ? ', or read a whole runtime resource using ref' : ''}.`;
   const pathField = z
@@ -305,54 +323,16 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         if (runtimeRef === 'runtime') {
           throw new Error('Runtime resources must be read with the ref parameter, not path');
         }
-        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
-        if (filesystemWorker) {
-          const canonicalCwd = canonicalExistingPath(cwd);
-          const result = await filesystemWorker.execute({
-            operation: {
-              kind: 'read',
-              path,
-              ...(offset !== undefined ? { offset } : {}),
-              ...(limit !== undefined ? { limit } : {}),
-            },
-            cwd: canonicalCwd,
-            ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
-            mode: ctx.permissionMode ?? 'ask',
-            ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
-            ...(abortSignal ? { abortSignal } : {}),
-          });
-          if (result.kind === 'read_image') {
-            if (!options.snapshotImage)
-              throw new Error('Read image snapshots are not available in this toolset.');
-            const ref = await options.snapshotImage({
-              sessionId,
-              turnId: ctx.turnId,
-              name: basename(path),
-              bytes: Buffer.from(result.base64, 'base64'),
-              mimeType: result.mimeType,
-            });
-            return { kind: 'image' as const, mimeType: result.mimeType, ref };
-          }
-          if (result.kind !== 'read')
-            throw internalFilesystemReadFailure(
-              'Read',
-              'no file content came back',
-              'the file is empty or missing',
-            );
-          return { content: result.content };
-        }
-        const { path: resolvedPath } = await executor.resolveExistingPath({
-          cwd,
-          path,
-          label: 'Read',
+        const result = await filesystem.execute({
+          operation: {
+            kind: 'read',
+            path,
+            ...(offset !== undefined ? { offset } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+          },
+          ...filesystemCall(ctx),
         });
-        const result = await executor.readFile({
-          cwd,
-          path: resolvedPath,
-          ...(offset !== undefined ? { offset } : {}),
-          ...(limit !== undefined ? { limit } : {}),
-        });
-        if ('bytes' in result) {
+        if (result.kind === 'read_image') {
           if (!options.snapshotImage)
             throw new Error('Read image snapshots are not available in this toolset.');
           const ref = await options.snapshotImage({
@@ -364,53 +344,36 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           });
           return { kind: 'image' as const, mimeType: result.mimeType, ref };
         }
-        return result;
+        if (result.kind !== 'read')
+          throw internalFilesystemReadFailure(
+            'Read',
+            'no file content came back',
+            'the file is empty or missing',
+          );
+        return { content: result.content };
       },
     },
     {
       name: 'Write',
       activityKind: 'edit',
       description:
-        'Write content to a file using a path relative to the session cwd. ' +
-        'Absolute paths and parent traversal are rejected. Subject to permission policy.',
+        'Write content to a file. Relative paths resolve from the session cwd; ' +
+        'how far outside it a path may reach is decided by the session permissions.',
       parameters: z.object({
-        path: z
-          .string()
-          .describe(
-            'Path relative to the session cwd. Absolute paths and parent traversal are rejected.',
-          ),
+        path: z.string().describe('A file path; relative paths are resolved from the session cwd'),
         content: z.string(),
       }),
       executionFacts,
       impl: async ({ path, content }, ctx) => {
-        const { cwd } = ctx;
-        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
-        const canonicalCwd = filesystemWorker ? canonicalExistingPath(cwd) : cwd;
-        const key = filesystemWorker
-          ? await fileToolWriteLockKey(canonicalCwd, path)
-          : (await executor.writeLockKey({ cwd, path })).key;
+        const key = await filesystem.writeLockKey(filesystemLockTarget(ctx, path));
         return await withFileWriteLock(key, async () => {
-          if (filesystemWorker) {
-            const result = await filesystemWorker.execute({
-              operation: { kind: 'write', path, content },
-              cwd: canonicalCwd,
-              ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
-              mode: ctx.permissionMode ?? 'ask',
-              ...(options.permissionProfile
-                ? { permissionProfile: options.permissionProfile }
-                : {}),
-              ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
-            });
-            if (result.kind !== 'write')
-              throw internalFilesystemWriteFailure('Write', 'the file was written');
-            return { ok: result.ok, path: result.path, bytes: result.bytes };
-          }
-          const { path: resolvedPath } = await executor.resolveWritablePath({
-            cwd,
-            path,
-            label: 'Write',
+          const result = await filesystem.execute({
+            operation: { kind: 'write', path, content },
+            ...filesystemCall(ctx),
           });
-          return await executor.writeFile({ cwd, path: resolvedPath, content });
+          if (result.kind !== 'write')
+            throw internalFilesystemWriteFailure('Write', 'the file was written');
+          return { ok: result.ok, path: result.path, bytes: result.bytes };
         });
       },
     },
@@ -430,58 +393,22 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       executionFacts,
       impl: async ({ path, old_string, new_string }, ctx) => {
-        const { cwd } = ctx;
-        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
-        const canonicalCwd = filesystemWorker ? canonicalExistingPath(cwd) : cwd;
-        const key = filesystemWorker
-          ? await fileToolWriteLockKey(canonicalCwd, path)
-          : (await executor.writeLockKey({ cwd, path })).key;
+        const key = await filesystem.writeLockKey(filesystemLockTarget(ctx, path));
         return await withFileWriteLock(key, async () => {
-          if (filesystemWorker) {
-            const result = await filesystemWorker.execute({
-              operation: {
-                kind: 'edit',
-                path,
-                oldString: old_string,
-                newString: new_string,
-              },
-              cwd: canonicalCwd,
-              ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
-              mode: ctx.permissionMode ?? 'ask',
-              ...(options.permissionProfile
-                ? { permissionProfile: options.permissionProfile }
-                : {}),
-              ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
-            });
-            if (result.kind !== 'edit')
-              throw internalFilesystemWriteFailure(
-                'Edit',
-                'the edit was applied',
-                'a different old_string will not help',
-              );
-            return {
-              ok: result.ok,
-              path: result.path,
-              replacements: result.replacements,
-              matchedVia: result.matchedVia,
-              startLine: result.startLine,
-              endLine: result.endLine,
-            };
-          }
-          const { path: resolvedPath } = await executor.resolveExistingPath({
-            cwd,
-            path,
-            label: 'Edit',
+          const result = await filesystem.execute({
+            operation: { kind: 'edit', path, oldString: old_string, newString: new_string },
+            ...filesystemCall(ctx),
           });
-          const read = await executor.readFile({ cwd, path: resolvedPath });
-          if ('bytes' in read) throw new Error('Edit does not support image files.');
-          const current = read.content;
-          const result = computeEditedSource(current, old_string, new_string, path);
-          await executor.writeFile({ cwd, path: resolvedPath, content: result.content });
+          if (result.kind !== 'edit')
+            throw internalFilesystemWriteFailure(
+              'Edit',
+              'the edit was applied',
+              'a different old_string will not help',
+            );
           return {
-            ok: true,
-            path: resolvedPath,
-            replacements: 1,
+            ok: result.ok,
+            path: result.path,
+            replacements: result.replacements,
             matchedVia: result.matchedVia,
             startLine: result.startLine,
             endLine: result.endLine,
@@ -512,68 +439,16 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       executionFacts,
       impl: async ({ path, sort_keys }, ctx) => {
-        const { cwd } = ctx;
-        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
-        const canonicalCwd = filesystemWorker ? canonicalExistingPath(cwd) : cwd;
-        const key = filesystemWorker
-          ? await fileToolWriteLockKey(canonicalCwd, path)
-          : (await executor.writeLockKey({ cwd, path })).key;
+        const key = await filesystem.writeLockKey(filesystemLockTarget(ctx, path));
         return await withFileWriteLock(key, async () => {
-          if (filesystemWorker) {
-            const result = await filesystemWorker.execute({
-              operation: { kind: 'format_json', path, sortKeys: sort_keys ?? false },
-              cwd: canonicalCwd,
-              ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
-              mode: ctx.permissionMode ?? 'ask',
-              ...(options.permissionProfile
-                ? { permissionProfile: options.permissionProfile }
-                : {}),
-              ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
-            });
-            if (result.kind !== 'format_json') {
-              throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
-            }
-            return result;
-          }
-          const { path: resolvedPath } = await executor.resolveExistingPath({
-            cwd,
-            path,
-            label: 'FormatJson',
+          const result = await filesystem.execute({
+            operation: { kind: 'format_json', path, sortKeys: sort_keys ?? false },
+            ...filesystemCall(ctx),
           });
-          const read = await executor.readFile({ cwd, path: resolvedPath });
-          if ('bytes' in read) throw new Error('FormatJson does not support image files.');
-          const original = read.content;
-          const bytesBefore = Buffer.byteLength(original, 'utf8');
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(original);
-          } catch (e) {
-            return {
-              ok: false,
-              valid: false,
-              error: `FormatJson: invalid JSON: ${(e as Error).message}`,
-              path: resolvedPath,
-              bytesBefore,
-              byteDelta: 0,
-              changed: false,
-            };
+          if (result.kind !== 'format_json') {
+            throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
           }
-          const value = sort_keys ? sortKeysDeep(parsed) : parsed;
-          const formatted = JSON.stringify(value, null, 2);
-          const { bytes: bytesAfter } = await executor.writeFile({
-            cwd,
-            path: resolvedPath,
-            content: formatted,
-          });
-          return {
-            ok: true,
-            path: resolvedPath,
-            valid: true,
-            bytesBefore,
-            bytesAfter,
-            byteDelta: bytesAfter - bytesBefore,
-            changed: formatted !== original,
-          };
+          return result;
         });
       },
     },
@@ -597,33 +472,17 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       executionFacts,
       impl: async ({ pattern, cwd: relCwd }, ctx) => {
-        const { cwd } = ctx;
-        assertRelativeGlobPattern(pattern);
-        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
-        if (filesystemWorker) {
-          const canonicalCwd = canonicalExistingPath(cwd);
-          const result = await filesystemWorker.execute({
-            operation: { kind: 'glob', path: relCwd ?? '.', pattern, limit: 200 },
-            cwd: canonicalCwd,
-            ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
-            mode: ctx.permissionMode ?? 'ask',
-            ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
-            ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
-          });
-          if (result.kind !== 'glob')
-            throw internalFilesystemReadFailure(
-              'Glob',
-              'no file list came back',
-              'no files match the pattern',
-            );
-          return { files: result.files };
-        }
-        const { path: base } = await executor.resolveExistingPath({
-          cwd,
-          path: relCwd ?? '.',
-          label: 'Glob cwd',
+        const result = await filesystem.execute({
+          operation: { kind: 'glob', path: relCwd ?? '.', pattern, limit: 200 },
+          ...filesystemCall(ctx),
         });
-        return await executor.globFiles({ cwd: base, pattern, limit: 200 });
+        if (result.kind !== 'glob')
+          throw internalFilesystemReadFailure(
+            'Glob',
+            'no file list came back',
+            'no files match the pattern',
+          );
+        return { files: result.files };
       },
     },
     {
@@ -637,77 +496,53 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       executionFacts,
       impl: async ({ pattern, path, glob }, ctx) => {
-        const { cwd, abortSignal } = ctx;
-        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
-        if (filesystemWorker) {
-          const canonicalCwd = canonicalExistingPath(cwd);
-          const result = await filesystemWorker.execute({
-            operation: {
-              kind: 'grep',
-              path: path ?? '.',
-              pattern,
-              ...(glob ? { glob } : {}),
-              maxCountPerFile: 50,
-              limit: 200,
-              timeoutMs: GREP_TIMEOUT_MS,
-            },
-            cwd: canonicalCwd,
-            ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
-            mode: ctx.permissionMode ?? 'ask',
-            ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
-            ...(abortSignal ? { abortSignal } : {}),
-          });
-          if (result.kind !== 'grep')
-            throw internalFilesystemReadFailure(
-              'Grep',
-              'no search result came back',
-              'the pattern is absent',
-            );
-          return { matches: result.matches };
-        }
-        const { path: searchPath } = await executor.resolveExistingPath({
-          cwd,
-          path: path ?? '.',
-          label: 'Grep',
-        });
         // Self-bound: ripgrep finishes in well under a second normally, but a
         // pathological tree (network mount, /proc, a FIFO) could hang it. The
         // stream watchdog no longer caps tool execution, so each spawning tool
         // must carry its own wall-clock timeout and honour the turn's abort.
-        return await executor.grepFiles({
-          cwd,
-          pattern,
-          path: searchPath,
-          ...(glob ? { glob } : {}),
-          maxCountPerFile: 50,
-          limit: 200,
-          timeoutMs: GREP_TIMEOUT_MS,
-          ...(abortSignal ? { abortSignal } : {}),
+        const result = await filesystem.execute({
+          operation: {
+            kind: 'grep',
+            path: path ?? '.',
+            pattern,
+            ...(glob ? { glob } : {}),
+            maxCountPerFile: 50,
+            limit: 200,
+            timeoutMs: GREP_TIMEOUT_MS,
+          },
+          ...filesystemCall(ctx),
         });
+        if (result.kind !== 'grep')
+          throw internalFilesystemReadFailure(
+            'Grep',
+            'no search result came back',
+            'the pattern is absent',
+          );
+        return { matches: result.matches };
       },
     },
   ];
   return tools.filter((tool) => options.includeEdit !== false || tool.name !== 'Edit');
 }
 
-function filesystemWorkerForExecution(
-  worker: Pick<FilesystemWorkerClient, 'execute'> | undefined,
+/** The per-call context every file tool hands to the filesystem authority. */
+function filesystemCall(
   ctx: MakaToolContext,
-): Pick<FilesystemWorkerClient, 'execute'> | undefined {
-  if (ctx.executionBoundary?.kind === 'bypass' || ctx.executionBoundary?.kind === 'external') {
-    return undefined;
-  }
-  if (worker) return worker;
-  if (ctx.executionBoundary?.kind !== 'managed') return undefined;
-  throw new SandboxCommandError({
-    domain: 'filesystem',
-    stage: 'capability',
-    reason: 'requires_bypass',
-    recoverable: false,
-    profileName: ctx.executionBoundary.profile.name ?? ctx.executionBoundary.profile.type,
-    message:
-      'Managed filesystem execution is unavailable because the sandboxed worker cannot be enforced.',
-  });
+): Pick<FilesystemExecuteInput, 'cwd' | 'executionBoundary' | 'permissionMode' | 'abortSignal'> {
+  return {
+    cwd: ctx.cwd,
+    ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
+    ...(ctx.permissionMode ? { permissionMode: ctx.permissionMode } : {}),
+    ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
+  };
+}
+
+function filesystemLockTarget(ctx: MakaToolContext, path: string): FilesystemWriteLockKeyInput {
+  return {
+    cwd: ctx.cwd,
+    path,
+    ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
+  };
 }
 
 interface ExecutorBashSandboxOptions {
@@ -1175,16 +1010,6 @@ function effectivePermissionProfile(
   return { profile: compiled.profile, workspaceRoots: compiled.workspaceRoots };
 }
 
-async function fileToolWriteLockKey(cwd: string, path: string): Promise<string> {
-  const target = await normalizeSandboxBoundaryPath({
-    path,
-    access: 'write',
-    scope: 'exact',
-    cwd,
-  });
-  return target.enforcementPath;
-}
-
 function terminalError(
   message: string,
   result: Pick<WorkspaceExecResult, 'stdout' | 'stderr' | 'stdoutTruncated' | 'stderrTruncated'> & {
@@ -1223,12 +1048,6 @@ function terminalError(
   return error;
 }
 
-function assertRelativeGlobPattern(pattern: string): void {
-  if (isAbsolute(pattern) || pattern.split(/[\\/]+/).includes('..')) {
-    throw new Error('Glob pattern must stay inside session cwd');
-  }
-}
-
 export function classifyRuntimeResourceRef(path: string): 'runtime' | 'file' | 'unsupported' {
   let url: URL;
   try {
@@ -1248,18 +1067,4 @@ export function classifyRuntimeResourceRef(path: string): 'runtime' | 'file' | '
     return 'unsupported';
   }
   return 'runtime';
-}
-
-// Object.fromEntries creates own data properties, so special keys like
-// "__proto__" are preserved instead of triggering the inherited setter.
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, sortKeysDeep((value as Record<string, unknown>)[key])]),
-    );
-  }
-  return value;
 }

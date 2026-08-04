@@ -84,6 +84,15 @@ async function isolatedWriteFile(
 async function isolatedResolvePath(
   input: WorkspaceResolvePathInput,
 ): Promise<WorkspaceResolvePathResult> {
+  // Host scope is not a policy this adapter may relax: the isolated workspace is
+  // the whole filesystem its backend can address, so a host path has no meaning
+  // here. Rejecting it loudly keeps a bypass boundary from silently degrading
+  // into host access through an isolated executor.
+  if (input.scope === 'host') {
+    throw new Error(
+      `${input.label} cannot use host path scope: the isolated workspace executor only addresses paths inside its workspace.`,
+    );
+  }
   return { path: resolveIsolatedWorkspacePath(input.cwd, input.path, input.label) };
 }
 
