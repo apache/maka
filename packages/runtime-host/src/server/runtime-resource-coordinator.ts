@@ -47,6 +47,7 @@ const MAX_CONTROL_REPLAYS = 128;
 
 interface RuntimeResourceSessionReader {
   listShellRunUpdates(sessionId: string): Promise<ShellRunUpdate[]>;
+  getShellRunUpdate(sessionId: string, ref: string): Promise<ShellRunUpdate | null>;
 }
 
 interface RuntimeResourceHeaderReader {
@@ -69,6 +70,7 @@ export interface HostRuntimeResourceCoordinatorInput {
   readonly sessionAdmission: SessionAdmissionGate;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain: () => void;
+  readonly onProjectionChanged?: (update: ShellRunUpdate) => void;
 }
 
 interface ControllerState {
@@ -104,6 +106,7 @@ export class HostRuntimeResourceCoordinator
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #requestDrain: () => void;
+  readonly #onProjectionChanged: (update: ShellRunUpdate) => void;
   readonly #resourceQueue = new ResourceSerialQueue();
   readonly #controllers = new Map<string, ControllerState>();
   readonly #controllerResources = new Map<string, string>();
@@ -118,6 +121,7 @@ export class HostRuntimeResourceCoordinator
     this.#sessionAdmission = input.sessionAdmission;
     this.#acquireResidency = input.acquireResidency;
     this.#requestDrain = input.requestDrain;
+    this.#onProjectionChanged = input.onProjectionChanged ?? (() => undefined);
   }
 
   runForegroundBash(input: ShellRunBashInput): ReturnType<ShellRunLauncher['runForegroundBash']> {
@@ -194,6 +198,7 @@ export class HostRuntimeResourceCoordinator
     if (!isActiveShellRunStatus(update.result.status)) {
       this.#releaseController(resourceKey(update.sessionId, update.result.ref));
     }
+    this.#onProjectionChanged(update);
   }
 
   releaseConnection(connectionId: string): void {
@@ -240,6 +245,24 @@ export class HostRuntimeResourceCoordinator
         this.#requestDrain();
         return queryFailure('internal_failure', 'Session state is unavailable');
       }
+      if (input.kind === 'get') {
+        try {
+          const resource = await this.#sessions.getShellRunUpdate(input.sessionId, input.ref);
+          const canonical = resource ? (canonicalRuntimeResources([resource])[0] ?? null) : null;
+          return {
+            ok: true,
+            result: decodeRuntimeResourceQueryResult({
+              kind: 'resource',
+              sessionId: input.sessionId,
+              revision: runtimeResourceRevision(canonical ? [canonical] : []),
+              resource: canonical,
+            }),
+          };
+        } catch {
+          this.#requestDrain();
+          return queryFailure('internal_failure', 'Runtime Resource state is unavailable');
+        }
+      }
       let updates: ShellRunUpdate[];
       try {
         updates = await this.#sessions.listShellRunUpdates(input.sessionId);
@@ -250,17 +273,6 @@ export class HostRuntimeResourceCoordinator
       try {
         const resources = canonicalRuntimeResources(updates);
         const revision = runtimeResourceRevision(resources);
-        if (input.kind === 'get') {
-          return {
-            ok: true,
-            result: decodeRuntimeResourceQueryResult({
-              kind: 'resource',
-              sessionId: input.sessionId,
-              revision,
-              resource: resources.find((resource) => resource.result.ref === input.ref) ?? null,
-            }),
-          };
-        }
         if (input.kind === 'list_continue' && input.revision !== revision) {
           return {
             ok: true,

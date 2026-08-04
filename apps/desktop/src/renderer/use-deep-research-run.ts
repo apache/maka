@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { DeepResearchRun } from '@maka/core';
+import type { DeepResearchClientProgress } from '@maka/core';
 
 export function useDeepResearchRun(
   sessionId: string | undefined,
   enabled: boolean,
-): DeepResearchRun | undefined {
-  const [run, setRun] = useState<DeepResearchRun>();
+): DeepResearchClientProgress | undefined {
+  const [run, setRun] = useState<DeepResearchClientProgress>();
 
   useEffect(() => {
     let active = true;

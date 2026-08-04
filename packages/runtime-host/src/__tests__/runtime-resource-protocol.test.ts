@@ -7,6 +7,10 @@ import {
 } from '@maka/core';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import {
+  decodeSubscriptionFrame,
+  SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
+} from '../protocol/session-continuity.js';
+import {
   decodeRuntimeResourceControllerAcquireInput,
   decodeRuntimeResourceControllerAcquireResult,
   decodeRuntimeResourceControllerControlInput,
@@ -232,6 +236,44 @@ describe('Runtime Resource protocol', () => {
     );
     assertInvalid(() => decodeRuntimeResourceStopResult(oversized));
   });
+});
+
+test('Runtime Resource invalidations batch lightweight unique identities', () => {
+  const resources = Array.from({ length: SESSION_RUNTIME_RESOURCE_CHANGES_MAX }, (_, index) => ({
+    sourceSessionId: 'source-session',
+    ref: `maka://runtime/background-tasks/shell-${index}`,
+  }));
+  assert.deepEqual(
+    decodeSubscriptionFrame({
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      sessionId: 'child-session',
+      domain: 'runtime_resource',
+      resources,
+    }),
+    {
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      sessionId: 'child-session',
+      domain: 'runtime_resource',
+      resources,
+    },
+  );
+  assertInvalid(() =>
+    decodeSubscriptionFrame({
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      sessionId: 'child-session',
+      domain: 'runtime_resource',
+      resources: [resources[0], resources[0]],
+    }),
+  );
 });
 
 function resourceUpdate(overrides: Partial<ShellRunUpdate> = {}): ShellRunUpdate {

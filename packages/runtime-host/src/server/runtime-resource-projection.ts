@@ -18,15 +18,19 @@ const TRUNCATED_FIELD_MARKER = '[runtime resource field truncated]';
 
 export function canonicalRuntimeResources(resources: readonly ShellRunUpdate[]): ShellRunUpdate[] {
   return resources
-    .map((resource) => ({
-      ...structuredClone(resource),
-      result: boundedState(resource.result),
-    }))
+    .map(boundedRuntimeResourceUpdate)
     .sort(
       (left, right) =>
         left.result.ref.localeCompare(right.result.ref) ||
         left.sourceToolCallId.localeCompare(right.sourceToolCallId),
     );
+}
+
+function boundedRuntimeResourceUpdate(update: ShellRunUpdate): ShellRunUpdate {
+  return {
+    ...structuredClone(update),
+    result: boundedState(update.result),
+  };
 }
 
 export function runtimeResourceRevision(

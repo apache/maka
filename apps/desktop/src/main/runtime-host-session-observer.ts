@@ -4,10 +4,12 @@ import type {
   SessionEvent,
   StoredMessage,
 } from '@maka/core';
+import type { AgentGraphClientChangedEvent } from '@maka/runtime';
 import type {
   InteractionAnsweredSnapshot,
   InteractionPendingSnapshot,
   SessionMessageQueueProjection,
+  SessionDomainChange,
   SessionContinuitySnapshot,
   SteeringMessageSnapshot,
   SubscriptionFrame,
@@ -36,6 +38,8 @@ export interface RuntimeHostSessionObserverDeps {
     sessionId: string,
     extra?: { turnId?: string },
   ) => void;
+  emitSessionDomainChanged?: (change: SessionDomainChange) => void;
+  emitAgentGraphChanged?: (event: AgentGraphClientChangedEvent) => void;
   now?: () => number;
 }
 
@@ -90,12 +94,16 @@ export class RuntimeHostSessionObserver {
   readonly #observers = new Map<string, ObserverRegistration>();
   readonly #client: SessionObserverClient;
   readonly #emitSessionsChanged: RuntimeHostSessionObserverDeps['emitSessionsChanged'];
+  readonly #emitSessionDomainChanged: (change: SessionDomainChange) => void;
+  readonly #emitAgentGraphChanged: (event: AgentGraphClientChangedEvent) => void;
   readonly #now: () => number;
   #closed = false;
 
   constructor(deps: RuntimeHostSessionObserverDeps) {
     this.#client = deps.client;
     this.#emitSessionsChanged = deps.emitSessionsChanged;
+    this.#emitSessionDomainChanged = deps.emitSessionDomainChanged ?? (() => undefined);
+    this.#emitAgentGraphChanged = deps.emitAgentGraphChanged ?? (() => undefined);
     this.#now = deps.now ?? Date.now;
   }
 
@@ -433,8 +441,21 @@ export class RuntimeHostSessionObserver {
       this.#acceptProjection(state, frame.snapshot);
       return;
     }
+    if (frame.kind === 'subscription.session_domain_changed') {
+      this.#emitSessionDomainChanged(
+        frame.domain === 'runtime_resource'
+          ? { sessionId: frame.sessionId, domain: frame.domain, resources: frame.resources }
+          : { sessionId: frame.sessionId, domain: frame.domain },
+      );
+      return;
+    }
     if (frame.kind === 'subscription.agent_graph_changed') {
-      this.#emitSessionsChanged('status-change', state.sessionId);
+      this.#emitAgentGraphChanged({
+        schemaVersion: 1,
+        rootSessionId: frame.rootSessionId,
+        graphId: frame.graphId,
+        reason: frame.reason,
+      });
       return;
     }
     if (frame.reason === 'session_removed') {
@@ -451,6 +472,9 @@ export class RuntimeHostSessionObserver {
   #acceptProjection(state: ObservedSessionState, snapshot: SessionContinuitySnapshot): void {
     const previous = state.snapshot;
     state.snapshot = structuredClone(snapshot);
+    if (!sameGoal(previous?.goal, snapshot.goal)) {
+      this.#emitSessionsChanged('goal-change', state.sessionId);
+    }
     for (const interaction of newlyPendingInteractions(previous, snapshot)) {
       for (const event of projectInteractionRequest(interaction, this.#now())) {
         this.#broadcast(state.sessionId, event);
@@ -796,6 +820,14 @@ function sameTerminalTurn(previous: TurnSnapshot | null | undefined, next: TurnS
     previous.runId === next.runId &&
     previous.terminalEventId === next.terminalEventId
   );
+}
+
+function sameGoal(
+  previous: SessionContinuitySnapshot['goal'] | undefined,
+  next: SessionContinuitySnapshot['goal'],
+): boolean {
+  if (previous === null || previous === undefined) return next === null;
+  return next !== null && previous.goalId === next.goalId && previous.revision === next.revision;
 }
 
 function abortReason(source: string): Extract<SessionEvent, { type: 'abort' }>['reason'] {

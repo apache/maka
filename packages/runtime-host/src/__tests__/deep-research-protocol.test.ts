@@ -41,6 +41,7 @@ const snapshot = {
   reportSections: [{ key: 'conclusion' as const, status: 'pending' as const }],
   recentInspectedRefs: [{ kind: 'file' as const, locator: 'src/main.ts', label: null }],
   workerRunIds: ['worker.run:1'],
+  blockers: [],
   reportArtifactId: null,
   implementationPrompt: null,
 };

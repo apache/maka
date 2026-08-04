@@ -353,6 +353,90 @@ test('projects Host queue revisions and newly delivered steering messages', asyn
   await observer.close();
 });
 
+test('publishes Host sidecar and graph invalidations without inventing Session status changes', async () => {
+  const events = new AsyncFrameQueue();
+  const sessionChanges: Array<{ reason: string; sessionId: string }> = [];
+  const domainChanges: Array<{ sessionId: string; domain: string }> = [];
+  const graphChanges: unknown[] = [];
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+    },
+    emitSessionsChanged: (reason, sessionId) => sessionChanges.push({ reason, sessionId }),
+    emitSessionDomainChanged: (change) => domainChanges.push(change),
+    emitAgentGraphChanged: (event) => graphChanges.push(event),
+  });
+  await observer.observe('session-1', 'observer-1', eventTarget(11));
+
+  events.push({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: continuitySnapshot({
+      projectionRevision: 2,
+      goal: {
+        goalId: 'goal-1',
+        revision: 1,
+        sessionId: 'session-1',
+        condition: 'Finish the adapter',
+        status: 'active',
+        setAt: 1,
+        iterations: 0,
+        maxIterations: 20,
+        consecutiveNoProgress: 0,
+        blockCap: 8,
+        tokenBudget: null,
+        tokensSpent: 0,
+        lastReason: null,
+        achievedAt: null,
+        pausedAt: null,
+      },
+    }),
+  });
+  events.push({
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    sessionId: 'session-1',
+    domain: 'plan',
+  });
+  events.push({
+    kind: 'subscription.agent_graph_changed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 3,
+    rootSessionId: 'session-1',
+    graphId: 'graph-1',
+    reason: 'runtime_activity',
+  });
+  await waitFor(() => graphChanges.length === 1);
+
+  assert.deepEqual(domainChanges, [{ sessionId: 'session-1', domain: 'plan' }]);
+  assert.ok(
+    sessionChanges.some(
+      (change) => change.reason === 'goal-change' && change.sessionId === 'session-1',
+    ),
+  );
+  assert.deepEqual(graphChanges, [
+    {
+      schemaVersion: 1,
+      rootSessionId: 'session-1',
+      graphId: 'graph-1',
+      reason: 'runtime_activity',
+    },
+  ]);
+  await observer.close();
+});
+
 function continuitySnapshot(
   overrides: Partial<SessionContinuitySnapshot> = {},
 ): SessionContinuitySnapshot {
