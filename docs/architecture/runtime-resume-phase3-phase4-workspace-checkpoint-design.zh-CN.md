@@ -570,11 +570,10 @@ M1 拆成独立不变量，避免一次 PR 同时跨越 host lifecycle、runtime
    `close()` 必须等待全部 active scope drain；普通生产 admission 只做一次最终 Git verification，preliminary
    verification 仅存在于配置 crash failpoint 的 production-shaped 测试路径；过期或伪造 scope 通过 typed
    `ManagedWorkspaceExecutionAuthorityError` 的稳定 code fail closed；
-2. **M1.2a owner-bound worker bridge**：storage-internal bridge 只能用同 owner 的 active scope 解析 cwd，
-   且在 M2 前只允许 Read/Glob/Grep；mutation 与未知 operation 在 worker dispatch 前 fail closed；
-3. **M1.2b runtime-host composition**：建立 managed/attached typed profile 与 startup/drain/shutdown 顺序，
-   关闭顺序固定为 tool operations → managed owner → root owner；
-4. **M1.3 environment provisioning**：单独设计 ignored dependency、secret 与 scratch overlay。M1.1 不复制
+2. **M1.2 owner-bound worker 与 runtime-host composition**：storage-internal bridge 只能用同 owner 的 active
+   scope 解析 cwd，M2 前只允许 Read/Glob/Grep；建立不可混淆的 managed/attached typed profile 与
+   startup/drain/shutdown 顺序，关闭顺序固定为 tool operations → managed owner → root owner；
+3. **M1.3 environment provisioning**：单独设计 ignored dependency、secret 与 scratch overlay。M1.1 不复制
    `.env`、`node_modules` 或 build output，也不以 attached checkout silent fallback 掩盖能力缺失。
 
 M1.1 合同见

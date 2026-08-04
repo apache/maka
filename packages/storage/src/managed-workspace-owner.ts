@@ -114,6 +114,7 @@ export type {
   ManagedWorkspaceFilesystemWorker,
   ManagedWorkspaceReadOnlyOperation,
   ManagedWorkspaceReadOnlyResult,
+  VerifiedGitRuntimeInput,
 };
 
 const owners = new WeakMap<InteractiveRootOwner, object>();

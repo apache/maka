@@ -1,6 +1,6 @@
 # Managed Workspace Execution Admission v1：M1.1 可撤销 scope 门
 
-- 状态：M1.1 已实现；M1.2a owner-bound worker bridge 当前切片；尚无 runtime-host / Desktop / CLI 生产消费者
+- 状态：M1.1 已实现；M1.2 owner-bound worker bridge 与 runtime-host composition 当前切片；尚未由 Desktop/CLI 默认启用
 - 更新日期：2026-08-04
 - 主要不变量：同一个 `ManagedWorkspaceOwner` 只能用其亲自签发的进程内 execution handle 创建 active
   execution scope；一次 admission 只签发一个 scope，但同一 handle 允许多个只读 admission 并发。每次创建
@@ -126,19 +126,23 @@ verification 中断后，重启只能经完整 reopen/revalidate 获得新 scope
 | callback drain | 支持 | 支持 | 支持 |
 | process crash 后重新准入 | 支持 | 支持 | 支持（进程级；不宣称断电 durability） |
 | external drift quarantine | 支持 | 支持 | 有限支持，沿用 Git artifact owner 的 Windows 保证 |
+| managed Read/Glob/Grep worker bridge | 需要可用的 Linux sandbox backend；缺失时 fail closed | 支持 seatbelt worker | 当前不支持；managed Host composition fail closed，不回退 host-local |
+| runtime-host lifecycle composition | 支持 | 支持 | 支持生命周期与 typed profile，但 managed I/O 因 worker 不可用而拒绝 |
 | power-loss durability | 不承诺 | 不承诺 | 不承诺 |
 
 ## 7. 后续切片
 
-1. M1.2a：owner-bound storage worker bridge 消费 active scope 并在内部解析 cwd；公共 caller 仍不获得 path。
+1. M1.2：owner-bound storage worker bridge 消费 active scope 并在内部解析 cwd；公共 caller 仍不获得 path。
    managed profile 在 M2 前只允许 `workspaceEffect: none` 的 Read/Glob/Grep；Write/Edit/Format/Bash/未知工具在
    worker dispatch 前 fail closed。无 ownerToken 的 inspect API 仅保留在显式 test support 中；callback 内
-   reentrant `owner.close()` 由 execution-context guard 拒绝。
-2. M1.2b：独立平铺 PR 完成 runtime-host managed/attached typed profile 和 startup/drain/shutdown 组合；关闭顺序为
-   tool operations → managed owner → root owner。M1.2a 合并不等于 Desktop/CLI 已启用 managed execution。
-3. M1.3：显式 dependency/secret/scratch provisioning；首版若无法安全提供则保持
+   reentrant `owner.close()` 由 execution-context guard 拒绝。runtime-host 使用不可混淆的 attached/managed
+   typed profile；managed profile 只携带 opaque handle，绝不携带 attached cwd，也绝不 fallback。Host 先 drain
+   tool operations，再关闭 workspace composition/managed owner，最后由 kernel 关闭 root owner。只有显式提供
+   verified Git runtime 且 sandbox filesystem worker 可用时才组合 managed owner；否则保持未启用或 fail closed。
+2. M1.3：显式 dependency/secret/scratch provisioning；首版若无法安全提供则保持
    `canonical_tree_only_v1`，不能 silent fallback。
-4. M2：mutation candidate capture/accept；T1 前冻结 profile/base version，SQLite 原子接受 tool outcome
+3. M2：mutation candidate capture/accept；T1 前冻结 profile/base version，SQLite 原子接受 tool outcome
    与 successor workspace version。
 
-在 M1.2b 出现真实 runtime-host 生产消费者前，本切片不默认开启 managed execution，也不改变 attached mode。
+M1.2 提供真实 runtime-host composition seam，但本切片不修改 Desktop/CLI 默认配置，因此不默认开启 managed
+execution，也不改变 attached mode。bundled Git 的发行与 launcher 参数接线仍是独立发布能力，不得回退系统 Git。
