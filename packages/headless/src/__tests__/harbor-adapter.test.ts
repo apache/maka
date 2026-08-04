@@ -28,6 +28,10 @@ function validContextEnvValue(key: string): string {
   return '1';
 }
 
+async function readRepoFile(relativePath: string): Promise<string> {
+  return readFile(resolve(repoRoot, relativePath), 'utf8');
+}
+
 describe('Harbor adapter contract', () => {
   test('Maka trajectory builder preserves multi-step tool pairing and fails closed to a summary', (t: TestContext) => {
     const providerOptionsEvent = decodeRuntimeEvent({

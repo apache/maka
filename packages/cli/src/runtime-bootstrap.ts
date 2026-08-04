@@ -85,7 +85,7 @@ import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { fetchProviderModels } from '@maka/runtime';
 import { createApiKeyOnboardingSurface, type MakaOnboardingSurface } from './onboarding.js';
 import { isActiveShellRunStatus, resolveModelVisionSupport } from '@maka/core';
-import type { EditingProtocol } from '@maka/core/apply-patch';
+import { resolveEditingProtocolEnv, type EditingProtocol } from '@maka/core/apply-patch';
 import type { ModelChoice, ReadySessionTarget } from './connection-target.js';
 import {
   listReadyModelChoices,
@@ -1141,9 +1141,9 @@ export async function createMakaCliRuntimeContext(
 }
 
 function editingProtocolFromEnv(value: string | undefined): EditingProtocol {
-  if (value === undefined || value === '') return 'edit_write';
-  if (value === 'edit_write' || value === 'apply_patch') return value;
-  throw new Error('MAKA_EDITING_PROTOCOL must be "edit_write" or "apply_patch"');
+  // CLI sessions default to Edit/Write; an explicit env override is the only
+  // way to reach apply_patch.
+  return resolveEditingProtocolEnv(value) ?? 'edit_write';
 }
 
 export async function getOrCreateCliClaudeDeviceId(

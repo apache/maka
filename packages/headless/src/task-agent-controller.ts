@@ -362,6 +362,9 @@ export async function runTaskOnceWithStorage(
           ? { thinkingLevel: effectiveConfig.thinkingLevel }
           : {}),
         permissionMode: 'ask',
+        ...(effectiveConfig.editingProtocol
+          ? { editingProtocol: effectiveConfig.editingProtocol }
+          : {}),
         ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
         name: `task:${config.id}:${task.id}`,
       },

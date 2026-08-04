@@ -12,6 +12,21 @@ export function isEditingProtocol(value: unknown): value is EditingProtocol {
 }
 
 /**
+ * Parse the MAKA_EDITING_PROTOCOL environment value. Undefined/empty means
+ * "no override" (callers apply their own default); any other value must be a
+ * valid protocol or the process is misconfigured. One parser for CLI, Desktop,
+ * and Headless so the three hosts cannot drift.
+ */
+export function resolveEditingProtocolEnv(
+  value: string | undefined,
+  label = 'MAKA_EDITING_PROTOCOL',
+): EditingProtocol | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (isEditingProtocol(value)) return value;
+  throw new Error(`${label} must be "edit_write" or "apply_patch"`);
+}
+
+/**
  * Grammar (lenient around heredoc wrappers):
  *   *** Begin Patch
  *   *** Add File: <path>
@@ -57,8 +72,6 @@ export interface ApplyPatchUpdateChunk {
 
 export interface ApplyPatchParseResult {
   hunks: ApplyPatchHunk[];
-  /** Canonical patch text (without heredoc wrappers). */
-  patch: string;
 }
 
 export type ApplyPatchParseError =
@@ -318,7 +331,6 @@ export function parseApplyPatch(input: string): ApplyPatchParseOutcome {
     ok: true,
     value: {
       hunks,
-      patch: lines.join('\n') + (trimmed.endsWith('\n') ? '\n' : ''),
     },
   };
 }

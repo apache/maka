@@ -196,9 +196,8 @@ async function settlePrepared(
           bytes: written.bytes,
         });
       } catch (error) {
-        if (shouldRethrowBoundaryError(error, completed.length - 1)) {
-          // Destination already written — treat as partial, not a clean rethrow.
-        }
+        // Destination already written — treat as partial, not a clean rethrow:
+        // the error is captured below instead of propagating to ToolRuntime.
         failure = error instanceof Error ? error.message : String(error);
         operations.push({
           operation: 'move',

@@ -1197,7 +1197,10 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
   return {
     async lockKey(path) {
       if (filesystemWorker) {
-        await assertApplyPatchPathContained(canonicalCwd, path);
+        // Delete/Move address a directory entry, never the link target; the
+        // worker resolves the operand the same way. Following the final link
+        // here would reject an escaping symlink before its op ever runs.
+        await assertApplyPatchPathContained(canonicalCwd, path, false);
         return fileToolWriteLockKey(canonicalCwd, path);
       }
       return (await input.executor.writeLockKey({ cwd, path })).key;
@@ -1379,14 +1382,11 @@ async function preflightApplyPatchPermissions(input: {
       cwd: input.canonicalCwd,
       followFinalSymlink: false,
     });
-    const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
+    const runtimeWritableRoots = await filesystemWorkerRuntimeWritableRoots({
       platform,
       access: 'write',
       enforcementPath: target.enforcementPath,
       targetType: target.targetType,
-      ...(isPathInside(input.canonicalCwd, target.enforcementPath)
-        ? { workspaceRoot: input.canonicalCwd }
-        : {}),
     });
     const pathContext = {
       workspaceRoots: compiled.workspaceRoots,

@@ -13,7 +13,6 @@ import {
 } from '@maka/core';
 
 import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
-import { isPathInside } from '../path-containment.js';
 import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
@@ -178,14 +177,11 @@ export class FilesystemWorkerClient {
           : compilePermissionProfile({ mode: input.mode ?? 'ask', cwd: canonicalCwd });
     const effectiveProfile = compiled.profile;
     const platform = this.input.platform ?? process.platform;
-    const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
+    const runtimeWritableRoots = await filesystemWorkerRuntimeWritableRoots({
       platform,
       access,
       enforcementPath: target.enforcementPath,
       targetType: target.targetType,
-      ...(isPathInside(canonicalCwd, target.enforcementPath)
-        ? { workspaceRoot: canonicalCwd }
-        : {}),
     });
     const pathContext = {
       workspaceRoots: compiled.workspaceRoots,
@@ -441,20 +437,46 @@ export class FilesystemWorkerClient {
 }
 
 /** @internal Runtime-only widening for a trusted, single-operation worker. */
-export function filesystemWorkerRuntimeWritableRoots(input: {
+export async function filesystemWorkerRuntimeWritableRoots(input: {
   platform: SandboxPlatform;
   access: 'read' | 'write';
   enforcementPath: string;
   targetType: FilesystemWorkerTarget['targetType'];
-  workspaceRoot?: string;
-}): readonly string[] | undefined {
+}): Promise<readonly string[] | undefined> {
   if (input.platform !== 'linux' || input.access !== 'write' || input.targetType !== 'missing') {
     return undefined;
   }
-  // A create may need several parent directories. The worker still validates
-  // the exact operation boundary before mutating; this runtime-only root merely
-  // gives that one trusted worker enough kernel access to mkdir the path.
-  return [input.workspaceRoot ?? dirname(input.enforcementPath)];
+  // A create may need several missing parent directories. Grant the one
+  // trusted worker kernel access to the deepest existing ancestor of the
+  // target only; the worker still validates the exact operation boundary
+  // before mutating, and it can mkdir the remaining chain from that ancestor.
+  // This stays as narrow as the mkdir chain requires instead of widening
+  // every create-mode write (including the Write tool) to the whole session
+  // workspace root.
+  return [await deepestExistingAncestor(input.enforcementPath)];
+}
+
+async function deepestExistingAncestor(path: string): Promise<string> {
+  let cursor = path;
+  for (;;) {
+    try {
+      return await realpath(cursor);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = dirname(cursor);
+      if (parent === cursor) return parent;
+      cursor = parent;
+    }
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+  );
 }
 
 function deriveWorkerProfile(

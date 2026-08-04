@@ -19,7 +19,7 @@ import type {
   OrchestrationMode,
   ThinkingLevel,
 } from '@maka/core';
-import type { EditingProtocol } from '@maka/core/apply-patch';
+import { resolveEditingProtocolEnv, type EditingProtocol } from '@maka/core/apply-patch';
 
 /**
  * A unit of work the lab runs a Config against. Field names lean toward
@@ -174,11 +174,9 @@ export interface Config {
 
 export function editingProtocolFromValue(
   value: string | undefined,
-  label = 'editingProtocol',
+  label = 'MAKA_EDITING_PROTOCOL',
 ): EditingProtocol | undefined {
-  if (value === undefined || value === '') return undefined;
-  if (value === 'edit_write' || value === 'apply_patch') return value;
-  throw new Error(`${label} must be "edit_write" or "apply_patch"`);
+  return resolveEditingProtocolEnv(value, label);
 }
 
 export interface HeavyTaskModeConfig {

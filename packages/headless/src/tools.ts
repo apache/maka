@@ -901,6 +901,23 @@ existing_target() {
   printf '%s\n' "$real"
 }
 
+# Delete/Move operands address a directory entry, never the link target
+# (matches the shared ApplyPatch engine's lstat/delete semantics): canonicalize
+# the parent, check containment, then hand back the entry itself without
+# following a final symlink.
+delete_operand() {
+  input_path=$1
+  label=$2
+  target=$root/$input_path
+  parent=$(dirname "$target")
+  base=$(basename "$target")
+  parent_real=$(cd -P "$parent" 2>/dev/null && pwd -P) || fail "$label must stay inside workspace"
+  inside_workspace "$parent_real" || fail "$label must stay inside workspace"
+  entry=$parent_real/$base
+  [ -e "$entry" ] || [ -L "$entry" ] || fail "$label does not exist: $input_path"
+  printf '%s\n' "$entry"
+}
+
 writable_target() {
   input_path=$1
   label=$2
@@ -1044,8 +1061,8 @@ printf '%s' "$2" > "$target"
 
 const DELETE_SCRIPT = `${COMMON_SHELL_HELPERS}
 root=$(pwd -P) || exit 1
-target=$(existing_target "$1" 'Delete path') || exit 1
-[ -f "$target" ] || fail 'Delete path must be a regular file'
+target=$(delete_operand "$1" 'Delete path') || exit 1
+[ -f "$target" ] || [ -L "$target" ] || fail 'Delete path must be a regular file'
 rm -f "$target"
 `;
 

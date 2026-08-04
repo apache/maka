@@ -418,19 +418,21 @@ describe('filesystem worker Linux path context', () => {
     assert.equal(hasArgTriple(processInput.argv, '--bind', parent, parent), false);
   });
 
-  test('requests a trusted parent mount only for a missing write target', () => {
+  test('requests a trusted parent mount only for a missing write target', async () => {
     const target = join(tmpdir(), 'maka-linux-worker-parent', 'new.txt');
     assert.deepEqual(
-      filesystemWorkerRuntimeWritableRoots({
+      await filesystemWorkerRuntimeWritableRoots({
         platform: 'linux',
         access: 'write',
         enforcementPath: target,
         targetType: 'missing',
       }),
-      [join(tmpdir(), 'maka-linux-worker-parent')],
+      // The deepest existing ancestor, not the whole workspace root: mkdir
+      // chains start there and the worker revalidates the exact boundary.
+      [await realpath(tmpdir())],
     );
     assert.equal(
-      filesystemWorkerRuntimeWritableRoots({
+      await filesystemWorkerRuntimeWritableRoots({
         platform: 'darwin',
         access: 'write',
         enforcementPath: target,
@@ -439,7 +441,7 @@ describe('filesystem worker Linux path context', () => {
       undefined,
     );
     assert.equal(
-      filesystemWorkerRuntimeWritableRoots({
+      await filesystemWorkerRuntimeWritableRoots({
         platform: 'linux',
         access: 'read',
         enforcementPath: target,

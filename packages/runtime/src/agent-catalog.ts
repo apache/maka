@@ -300,19 +300,45 @@ export function buildToolsForAgentDefinition(
   definition: AgentRuntimeDefinition = LOCAL_READ_AGENT_DEFINITION,
 ): MakaTool[] {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  const out: MakaTool[] = [];
+  return buildToolNamesForAgentDefinition(definition, byName).map(
+    (name) => byName.get(name)!,
+  );
+}
+
+/**
+ * The exact tool-name list `buildToolsForAgentDefinition` will emit for this
+ * definition against these host tools. Durable child snapshots must store this
+ * list (never the raw definition tools) so resume/retry/restore length checks
+ * compare like with like; the projection is idempotent, so re-projecting an
+ * already-projected snapshot is a no-op.
+ */
+export function projectDefinitionToolNames(
+  definition: AgentRuntimeDefinition,
+  tools: readonly MakaTool[],
+): string[] {
+  return buildToolNamesForAgentDefinition(
+    definition,
+    new Map(tools.map((tool) => [tool.name, tool])),
+  );
+}
+
+function buildToolNamesForAgentDefinition(
+  definition: AgentRuntimeDefinition,
+  byName: ReadonlyMap<string, MakaTool>,
+): string[] {
+  const out: string[] = [];
   for (const name of projectDefinitionToolNamesToAvailableSurface(definition, byName)) {
     const tool = byName.get(name);
     if (!tool) continue;
-    out.push(tool);
+    out.push(name);
   }
   const applyPatch = byName.get('ApplyPatch');
   if (
     applyPatch &&
-    !out.some((tool) => tool.name === 'ApplyPatch') &&
+    !out.includes('ApplyPatch') &&
     evaluateAgentDefinitionToolAccess(definition, applyPatch).decision === 'allow'
   ) {
-    out.push(applyPatch);
+    out.push('ApplyPatch');
   }
   return out;
 }

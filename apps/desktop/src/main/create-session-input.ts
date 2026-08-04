@@ -31,6 +31,7 @@ import {
   isCollaborationMode,
   isEditingProtocol,
   isOrchestrationMode,
+  resolveEditingProtocolEnv as resolveEditingProtocolEnvValue,
 } from '@maka/core';
 
 import { resolveDefaultPermissionMode } from './permission-mode-default.js';
@@ -64,9 +65,9 @@ const SESSION_MODE_SEEDS = {
 } satisfies Record<SessionStartMode, SessionModeSeed>;
 
 export function resolveEditingProtocolEnv(value: string | undefined): EditingProtocol {
-  if (value === undefined || value === '') return 'edit_write';
-  if (isEditingProtocol(value)) return value;
-  throw new Error('MAKA_EDITING_PROTOCOL must be "edit_write" or "apply_patch"');
+  // Desktop sessions default to Edit/Write; an explicit env override is the
+  // only way to reach apply_patch.
+  return resolveEditingProtocolEnvValue(value) ?? 'edit_write';
 }
 
 /**

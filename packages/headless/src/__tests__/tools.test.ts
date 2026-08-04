@@ -1764,6 +1764,39 @@ describe('isolated headless tools', () => {
     }
   });
 
+  test('ApplyPatch Delete removes the symlink entry and leaves its target intact', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('file symlink creation is not reliably available on Windows CI');
+      return;
+    }
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-headless-apply-patch-delete-link-'));
+    const outside = await mkdtemp(join(tmpdir(), 'maka-headless-apply-patch-delete-outside-'));
+    try {
+      await writeFile(join(outside, 'secret.txt'), 'secret\n', 'utf8');
+      await symlink(join(outside, 'secret.txt'), join(cwd, 'escape.txt'));
+      const apply = tool(execBackedTools(process.env, 'apply_patch'), 'ApplyPatch');
+
+      const result = await apply.impl(
+        {
+          patch:
+            '*** Begin Patch\n' +
+            '*** Delete File: escape.txt\n' +
+            '*** End Patch\n',
+        },
+        toolCtx(cwd),
+      );
+      // Entry-delete semantics: the link itself is removed, matching the
+      // shared engine's lstat/delete contract, without following it to the
+      // file outside the workspace.
+      assert.equal((result as { ok: boolean }).ok, true);
+      await assert.rejects(() => stat(join(cwd, 'escape.txt')), { code: 'ENOENT' });
+      assert.equal(await readFile(join(outside, 'secret.txt'), 'utf8'), 'secret\n');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   test('isolated file tools reject path escapes before executor invocation', async () => {
     let calls = 0;
     const tools = buildIsolatedHeadlessTools({

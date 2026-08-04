@@ -35,6 +35,7 @@ import {
   evaluateAgentDefinitionAvailability,
   evaluateAgentDefinitionToolAccess,
   listBuiltinAgentDefinitions,
+  projectDefinitionToolNames,
   requireBuiltinAgentDefinitionByProfile,
 } from '../agent-catalog.js';
 import { AGENT_SWARM_TOOL_NAME } from '../agent-swarm-tools.js';
@@ -352,6 +353,38 @@ describe('subagent tools', () => {
         (tool) => tool.name,
       ),
     ).toEqual(['Read', 'Glob', 'Grep', 'ApplyPatch', 'Bash']);
+  });
+
+  test('durable child snapshots store the projected surface, not raw definition tools', () => {
+    const parentScopedTools = childAgentToolsWithinEditingProtocol(
+      buildChildAgentTools(buildBuiltinTools()),
+      'apply_patch',
+    );
+    const projected = projectDefinitionToolNames(IMPLEMENTATION_AGENT_DEFINITION, parentScopedTools);
+
+    // The snapshot must equal what resume/retry/restore rebuilds from the
+    // snapshot: buildToolsForAgentDefinition against the same host tools.
+    expect(projected).toEqual(['Read', 'Glob', 'Grep', 'ApplyPatch', 'Bash']);
+    expect(projected).toEqual(
+      buildToolsForAgentDefinition(parentScopedTools, IMPLEMENTATION_AGENT_DEFINITION).map(
+        (tool) => tool.name,
+      ),
+    );
+
+    // Projecting an already-projected snapshot (the resume path re-projects
+    // snapshot.toolNames) must be a no-op, or the strict length invariant
+    // fails on the second round trip.
+    const snapshotTools = projected.map((name) => testCatalogTool(name, 'file_write'));
+    expect(projectDefinitionToolNames(IMPLEMENTATION_AGENT_DEFINITION, snapshotTools)).toEqual(
+      projected,
+    );
+    expect(
+      buildToolsForAgentDefinition(snapshotTools, {
+        id: IMPLEMENTATION_AGENT_ID,
+        permissionMode: 'ask',
+        tools: projected,
+      }).length,
+    ).toBe(projected.length);
   });
 
   test('agent definition availability depends on exposed tools, not legacy parent modes', () => {
