@@ -89,6 +89,7 @@ import { assertDesktopExecutionBoundary } from './desktop-execution-admission.js
 import { createFileCredentialStore } from './credential-store.js';
 import { bindOnboardingDeps, createOnboardingService } from './onboarding-service.js';
 import { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
+import { projectEmbeddedDeepResearch } from './deep-research-desktop-projection.js';
 import { resolveE2eFixture, seedE2eFixture } from './e2e-fixture.js';
 import { resolveBuildInfo } from './build-info.js';
 import { resolveShellEnv } from './shell-env.js';
@@ -1087,8 +1088,8 @@ const onboardingService = createOnboardingService(
 
 function registerIpc(): void {
   const currentProjectRoot = resolveCurrentProjectRoot;
-  ipcMain.handle('deepResearch:get', (_event, sessionId: string) =>
-    deepResearchStore.read(sessionId));
+  ipcMain.handle('deepResearch:get', async (_event, sessionId: string) =>
+    projectEmbeddedDeepResearch(await deepResearchStore.read(sessionId)));
   registerMcpIpcMain({
     ipcMain,
     store: mcpConfigStore,

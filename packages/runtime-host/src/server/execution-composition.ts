@@ -125,6 +125,7 @@ export async function createExecutionRuntimeHostComposition(
     | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
+  let unsubscribeTaskLedger: (() => void) | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
@@ -198,11 +199,15 @@ export async function createExecutionRuntimeHostComposition(
       sessions: {
         listShellRunUpdates: (sessionId) =>
           requireSessionManager(manager).listShellRunUpdates(sessionId),
+        getShellRunUpdate: (sessionId, ref) =>
+          requireSessionManager(manager).getShellRunUpdate(sessionId, ref),
       },
       sessionHeaders: stores.sessionStore,
       sessionAdmission,
       acquireResidency: context.acquireResidency,
       requestDrain: context.requestDrain,
+      onProjectionChanged: (update) =>
+        requireContinuity(continuity).enqueueRuntimeResourceChanged(update),
     });
     const executionArtifacts = createHostExecutionArtifactServices({
       artifacts: openedArtifactStore,
@@ -298,12 +303,16 @@ export async function createExecutionRuntimeHostComposition(
       createSessionTranscriptReader({ stores, canonicalPermissionOutcomes }),
     );
     const continuityCoordinator = continuity;
+    unsubscribeTaskLedger = taskLedger.subscribe(({ sessionId }) =>
+      continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'task'),
+    );
     deepResearch = new HostDeepResearchCoordinator({
       store: openedDeepResearchStore,
       artifacts: openedArtifactStore,
       sessions: stores.sessionStore,
       sessionAdmission,
-      onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+      onProjectionChanged: (sessionId) =>
+        continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'deep_research'),
     });
     dailyReview = new HostDailyReviewCoordinator({
       store: openedDailyReviewStore,
@@ -774,6 +783,8 @@ export async function createExecutionRuntimeHostComposition(
       isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       refreshContinuity: (sessionId, lease) =>
         continuityCoordinator.refreshCanonical(sessionId, lease),
+      onProjectionChanged: (sessionId) =>
+        continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'plan'),
       requestDrain: context.requestDrain,
     });
     const executionInspect = new HostExecutionInspectCoordinator(stores);
@@ -1019,6 +1030,7 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          unsubscribeTaskLedger?.();
           taskLedgerStore?.close();
         } catch (error) {
           errors.push(error);
@@ -1107,6 +1119,7 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
+      unsubscribeTaskLedger?.();
       taskLedgerStore?.close();
     } catch (closeError) {
       errors.push(closeError);

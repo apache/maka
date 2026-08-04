@@ -16,6 +16,8 @@ __pycache__/
 skills-lock.json
 # PR-IR-01 captured screenshots — generated artifacts, not committed.
 apps/desktop/tests/screenshots/
+# Generated real-window smoke reports contain machine-local paths and PIDs.
+apps/desktop/tests/real-window-smoke/
 deepseek.key
 
 # Generated Computer Use executor binary; provenance metadata stays tracked.

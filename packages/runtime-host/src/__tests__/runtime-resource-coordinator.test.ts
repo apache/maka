@@ -112,10 +112,33 @@ describe('Host Runtime Resource coordinator', () => {
     );
     assert.equal(heavy.ok, true);
     assert.ok(Buffer.byteLength(JSON.stringify(heavy), 'utf8') < RUNTIME_RESOURCE_RESULT_MAX_BYTES);
+    assert.equal(harness.listReadCount, 0);
+    assert.equal(harness.pointReadCount, 2);
     if (!heavy.ok || heavy.result.kind !== 'resource') return;
     const output = heavy.result.resource?.result.output;
     assert.equal(output?.mode, 'pipes');
     assert.equal(output?.mode === 'pipes' && output.stdoutTruncated, true);
+  });
+
+  test('uses point reads for a full invalidation batch without rebuilding the list', async () => {
+    const harness = createHarness();
+    harness.updates = Array.from({ length: 64 }, (_, index) => resourceUpdate(index));
+
+    const results = await Promise.all(
+      harness.updates.map((update) =>
+        harness.coordinator.handlers['runtime.resource.query'](
+          { kind: 'get', sessionId: SESSION_ID, ref: update.result.ref },
+          connection('connection-1'),
+        ),
+      ),
+    );
+
+    assert.equal(
+      results.every((result) => result.ok && result.result.kind === 'resource'),
+      true,
+    );
+    assert.equal(harness.pointReadCount, 64);
+    assert.equal(harness.listReadCount, 0);
   });
 
   test('drains for canonical state failure but keeps projection failure scoped to its query', async () => {
@@ -338,6 +361,8 @@ function createHarness() {
     stopCount: 0,
     terminateCount: 0,
     drainCount: 0,
+    listReadCount: 0,
+    pointReadCount: 0,
     stateReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
   };
@@ -409,8 +434,14 @@ function createHarness() {
     manager,
     sessions: {
       listShellRunUpdates: async () => {
+        state.listReadCount += 1;
         if (state.stateReadFailure) throw state.stateReadFailure;
         return structuredClone(state.updates);
+      },
+      getShellRunUpdate: async (_sessionId, ref) => {
+        state.pointReadCount += 1;
+        if (state.stateReadFailure) throw state.stateReadFailure;
+        return structuredClone(state.updates.find((update) => update.result.ref === ref) ?? null);
       },
     },
     sessionHeaders: {

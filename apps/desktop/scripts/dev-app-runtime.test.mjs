@@ -267,7 +267,7 @@ test('installs the payload where Electron will actually load it', () => {
     assert.equal(existsSync(join(payload, 'stale-from-an-older-build.js')), false);
     // Production constants, not test doubles, are what reach the bootstrap.
     const source = readFileSync(join(payload, manifest.main), 'utf8');
-    assert.match(source, /apps[/\\]desktop/);
+    assert.match(source, /apps[/\\]+desktop/);
     assert.match(source, /Maka Dev-[0-9a-f]{12}/);
   } finally {
     rmSync(bundle, { recursive: true, force: true });
@@ -295,13 +295,13 @@ test('publishes the environment file atomically and privately', () => {
     assert.equal(written.env.VITE_DEV_SERVER_URL, 'http://localhost:5173');
     assert.equal(written.userDataDir, '/tmp/custom-profile');
     assert.deepEqual(written.electronArgs, ['--enable-logging', '--remote-debugging-port=9222']);
-    assert.equal(statSync(file).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600);
     // Rewriting must not require any prior ownership handshake, must leave no
     // temporary behind, and must not widen the mode.
     writeDevelopmentEnvironment({ ...content, env: {} }, { file });
     assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).env, {});
     assert.deepEqual(readdirSync(dir), ['dev-env.json']);
-    assert.equal(statSync(file).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -435,7 +435,7 @@ test('escapes regex metacharacters so a path is matched literally', () => {
   assert.equal(toProcessMatchPattern('/a[b]/c+d'), '/a\\[b\\]/c\\+d');
 });
 
-test('the real probe survives a hostile bundle path', () => {
+test('the real probe survives a hostile bundle path', { skip: process.platform !== 'darwin' }, () => {
   // Against the actual matcher, not a copy of the escaping regex: unescaped,
   // the unbalanced '[' makes pgrep exit 2, which the probe turns into a throw.
   assert.equal(
