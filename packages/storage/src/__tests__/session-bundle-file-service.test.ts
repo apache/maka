@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   chmod,
+  link as createHardLink,
   lstat,
   mkdir,
   mkdtemp,
@@ -182,6 +183,39 @@ test('concurrent publications never overwrite an existing destination', async ()
     await readFile(join(destinationRoot, 'workspace', 'run.sh'), 'utf8'),
     '#!/bin/sh\necho ok\n',
   );
+});
+
+test('binds pack publication and cleanup to the hashed temporary inode', async () => {
+  const fixture = await createFixture();
+  await writeFile(join(fixture.workspaceRoot, 'large.bin'), randomBytes(8 * 1024 * 1024));
+  const destination = join(fixture.root, 'inode-bound.tar.zst');
+  const replacementResultPath = join(fixture.root, 'replacement-result.json');
+  const replacerPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'session-bundle-pack-temp-replacer.js',
+  );
+  const replacer = spawn(process.execPath, [replacerPath, fixture.root, replacementResultPath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  await once(replacer.stdout, 'data');
+  const packing = packFixture(destination, fixture, {
+    ...limits,
+    maxCompressedBytes: 16 * 1024 * 1024,
+    maxDecompressedTarBytes: 16 * 1024 * 1024,
+    maxPayloadBytes: 16 * 1024 * 1024,
+    maxFileBytes: 10 * 1024 * 1024,
+  });
+  const [replacerCode] = (await once(replacer, 'exit')) as [number | null];
+  assert.equal(replacerCode, 0);
+  const { capturedPath, temporaryPath } = JSON.parse(
+    await readFile(replacementResultPath, 'utf8'),
+  ) as { capturedPath: string; temporaryPath: string };
+
+  await assertBundleRejects(packing, 'source_changed');
+  await assert.rejects(lstat(destination), { code: 'ENOENT' });
+  assert.equal(await readFile(temporaryPath, 'utf8'), 'EVIL');
+  assert.equal((await lstat(capturedPath)).isFile(), true);
 });
 
 test('rejects corrupted payloads and transport mismatches without publishing hydration', async () => {
@@ -467,6 +501,14 @@ test('rejects source links, identity mismatch, and existing destinations', async
     'unsupported_entry',
   );
   await rm(join(fixture.stateRoot, 'linked.bin'));
+
+  const hardLinkPath = join(fixture.workspaceRoot, 'hard-linked.bin');
+  await createHardLink(join(fixture.stateRoot, 'session.bin'), hardLinkPath);
+  await assertBundleRejects(
+    packFixture(join(fixture.root, 'hard-linked.tar.zst'), fixture),
+    'unsupported_entry',
+  );
+  await rm(hardLinkPath);
 
   if (process.platform === 'linux') {
     const invalidUtf8Path = Buffer.concat([

@@ -15,7 +15,7 @@ import {
   type FileHandle,
 } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { PassThrough, Readable, Transform } from 'node:stream';
+import { PassThrough, Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { constants as zlibConstants, createZstdCompress, createZstdDecompress } from 'node:zlib';
 import { unlock, waitForLock } from 'fs-native-extensions';
@@ -84,9 +84,14 @@ const publicationLockGates = new Map<string, Promise<void>>();
 interface FileFingerprint {
   dev: bigint;
   ino: bigint;
+  nlink: bigint;
   size: bigint;
   mtimeNs: bigint;
   ctimeNs: bigint;
+}
+
+interface PackPublicationState {
+  destinationLinked: boolean;
 }
 
 interface PackDirectoryEntry {
@@ -305,6 +310,9 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
     `.${basename(validated.destination)}${PACK_TEMP_MARKER}${randomUUID()}.tmp`,
   );
   let handle: FileHandle | undefined;
+  let temporaryFingerprint: FileFingerprint | undefined;
+  let published = false;
+  const publicationState: PackPublicationState = { destinationLinked: false };
   const archiveHash = createHash('sha256');
   const compressedMeter = new HashingQuotaTransform(
     archiveHash,
@@ -313,15 +321,21 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
     'pack',
   );
   let generatedTarBytes = 0;
-  let output: ReturnType<FileHandle['createWriteStream']> | undefined;
+  let output: OpenFileHandleWritable | undefined;
 
   try {
-    handle = await open(temporaryPath, 'wx', 0o600);
-    output = handle.createWriteStream({ autoClose: false, emitClose: false });
+    handle = await open(temporaryPath, 'wx+', 0o600);
+    const createdMetadata = await handle.stat({ bigint: true });
+    if (!createdMetadata.isFile()) throw ioError('pack');
+    temporaryFingerprint = fingerprint(createdMetadata);
+    output = new OpenFileHandleWritable(handle, 'pack');
     const tar = Readable.from(
-      meterGeneratedTar(generateSessionBundleTar(manifestBytes, entries), (bytes) => {
-        generatedTarBytes += bytes;
-      }),
+      meterGeneratedTar(
+        generateSessionBundleTar(manifestBytes, entries, validated.limits),
+        (bytes) => {
+          generatedTarBytes += bytes;
+        },
+      ),
     );
     await pipeline(
       tar,
@@ -340,12 +354,26 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
     await handle.sync();
     output.destroy();
     output = undefined;
-    await handle.close();
-    handle = undefined;
-    await publishPackFileNoReplace(temporaryPath, validated.destination);
+    const archiveDigest = `sha256:${archiveHash.digest('hex')}` as Sha256Digest;
+    const hashedFingerprint = await assertPackTemporaryBound(
+      handle,
+      temporaryPath,
+      temporaryFingerprint,
+      compressedMeter.bytes,
+    );
+    await publishPackFileNoReplace(
+      handle,
+      temporaryPath,
+      validated.destination,
+      hashedFingerprint,
+      archiveDigest,
+      compressedMeter.bytes,
+      publicationState,
+    );
+    published = true;
     return {
       path: validated.destination,
-      archiveDigest: `sha256:${archiveHash.digest('hex')}` as Sha256Digest,
+      archiveDigest,
       compressedBytes: compressedMeter.bytes,
       decompressedTarBytes,
       payloadBytes: tree.payloadBytes,
@@ -353,8 +381,15 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
     };
   } finally {
     output?.destroy();
+    if (!published && publicationState.destinationLinked && temporaryFingerprint !== undefined) {
+      await removeOwnedPackPublication(validated.destination, parent, temporaryFingerprint).catch(
+        () => {},
+      );
+    }
+    if (temporaryFingerprint !== undefined) {
+      await removeOwnedPackTemporary(temporaryPath, parent, temporaryFingerprint).catch(() => {});
+    }
     await handle?.close().catch(() => {});
-    await removeOwnedPackTemporary(temporaryPath, parent).catch(() => {});
   }
 }
 
@@ -428,6 +463,12 @@ async function scanPackDirectory(
         'Session bundle source contains an unsupported filesystem entry',
       );
     }
+    if (metadata.nlink !== 1n) {
+      throw new SessionBundleFileError(
+        'unsupported_entry',
+        'Session bundle source contains a hard-linked file',
+      );
+    }
 
     const path = `${archiveDirectory}${childName}`;
     validatePackPath(path, limits);
@@ -467,7 +508,11 @@ async function inspectPackFile(
   const handle = await openPackSourceFile(sourcePath);
   try {
     const before = await handle.stat({ bigint: true });
-    if (!before.isFile() || !sameFingerprint(scannedFingerprint, fingerprint(before))) {
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      !sameFingerprint(scannedFingerprint, fingerprint(before))
+    ) {
       throw sourceChanged();
     }
     const hash = createHash('sha256');
@@ -486,6 +531,7 @@ async function inspectPackFile(
     if (
       observed !== size ||
       !after.isFile() ||
+      after.nlink !== 1n ||
       !sameFingerprint(scannedFingerprint, fingerprint(after))
     ) {
       throw sourceChanged();
@@ -503,6 +549,7 @@ async function inspectPackFile(
 async function* generateSessionBundleTar(
   manifestBytes: Buffer,
   entries: readonly PackEntry[],
+  limits: SessionBundleLimits,
 ): AsyncGenerator<Buffer> {
   yield Buffer.from(
     encodeSessionBundleUstarHeaderV1({
@@ -528,7 +575,7 @@ async function* generateSessionBundleTar(
       if ('bytes' in entry) {
         yield entry.bytes;
       } else if (isPackDiskFileEntry(entry)) {
-        yield* readVerifiedPackFile(entry);
+        yield* readVerifiedPackFile(entry, limits);
       } else {
         throw new SessionBundleFileError(
           'integrity_mismatch',
@@ -545,24 +592,37 @@ function isPackDiskFileEntry(entry: PackEntry): entry is PackDiskFileEntry {
   return entry.canonical.kind === 'file' && 'sourcePath' in entry;
 }
 
-async function* readVerifiedPackFile(entry: PackDiskFileEntry): AsyncGenerator<Buffer> {
+async function* readVerifiedPackFile(
+  entry: PackDiskFileEntry,
+  limits: SessionBundleLimits,
+): AsyncGenerator<Buffer> {
   const handle = await openPackSourceFile(entry.sourcePath);
   try {
     const before = await handle.stat({ bigint: true });
-    if (!before.isFile() || !sameFingerprint(entry.fingerprint, fingerprint(before))) {
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      !sameFingerprint(entry.fingerprint, fingerprint(before))
+    ) {
       throw sourceChanged();
     }
     const hash = createHash('sha256');
     let observed = 0;
-    for await (const value of handle.createReadStream({
-      autoClose: false,
-      emitClose: false,
-      highWaterMark: PACK_FILE_CHUNK_BYTES,
-    })) {
-      const chunk = Buffer.from(value);
-      observed = safeAdd(observed, chunk.byteLength, 'source_changed');
-      hash.update(chunk);
-      yield chunk;
+    if (entry.canonical.size > 0) {
+      for await (const value of handle.createReadStream({
+        autoClose: false,
+        emitClose: false,
+        start: 0,
+        end: entry.canonical.size - 1,
+        highWaterMark: PACK_FILE_CHUNK_BYTES,
+      })) {
+        const chunk = Buffer.from(value);
+        observed = safeAdd(observed, chunk.byteLength, 'source_changed');
+        if (observed > entry.canonical.size) throw sourceChanged();
+        assertQuota('pack', limits, 'maxFileBytes', observed);
+        hash.update(chunk);
+        yield chunk;
+      }
     }
     const after = await handle.stat({ bigint: true });
     const digest = `sha256:${hash.digest('hex')}`;
@@ -570,6 +630,7 @@ async function* readVerifiedPackFile(entry: PackDiskFileEntry): AsyncGenerator<B
       observed !== entry.canonical.size ||
       digest !== entry.canonical.contentDigest ||
       !after.isFile() ||
+      after.nlink !== 1n ||
       !sameFingerprint(entry.fingerprint, fingerprint(after))
     ) {
       throw sourceChanged();
@@ -1049,6 +1110,26 @@ class HashingQuotaTransform extends CountingQuotaTransform {
   }
 }
 
+class OpenFileHandleWritable extends Writable {
+  constructor(
+    private readonly handle: FileHandle,
+    private readonly operation: 'pack' | 'hydrate',
+  ) {
+    super();
+  }
+
+  override _write(
+    value: Buffer | Uint8Array,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    writeAll(this.handle, Buffer.from(value), this.operation).then(
+      () => callback(),
+      (error: unknown) => callback(error as Error),
+    );
+  }
+}
+
 /** Remove the empty frame Node's streaming compressor appends after multi-chunk input. */
 class CanonicalZstdOutputTransform extends Transform {
   #tail = Buffer.alloc(0);
@@ -1410,14 +1491,95 @@ async function assertDestinationMissing(
   throw destinationExists(operation);
 }
 
-async function publishPackFileNoReplace(temporaryPath: string, destination: string): Promise<void> {
+async function assertPackTemporaryBound(
+  handle: FileHandle,
+  temporaryPath: string,
+  expectedIdentity: FileFingerprint,
+  expectedBytes: number,
+): Promise<FileFingerprint> {
+  const [handleMetadata, pathMetadata] = await Promise.all([
+    handle.stat({ bigint: true }),
+    lstat(temporaryPath, { bigint: true }),
+  ]);
+  const handleFingerprint = fingerprint(handleMetadata);
+  if (
+    !handleMetadata.isFile() ||
+    !pathMetadata.isFile() ||
+    handleMetadata.nlink !== 1n ||
+    pathMetadata.nlink !== 1n ||
+    handleMetadata.size !== BigInt(expectedBytes) ||
+    !sameFilesystemNode(expectedIdentity, handleFingerprint) ||
+    !sameFingerprint(handleFingerprint, fingerprint(pathMetadata))
+  ) {
+    throw packPublicationChanged();
+  }
+  return handleFingerprint;
+}
+
+async function publishPackFileNoReplace(
+  handle: FileHandle,
+  temporaryPath: string,
+  destination: string,
+  hashedFingerprint: FileFingerprint,
+  expectedDigest: Sha256Digest,
+  expectedBytes: number,
+  state: PackPublicationState,
+): Promise<void> {
   try {
     // Both paths are siblings, so a hard link is an atomic no-replace publication.
     await link(temporaryPath, destination);
+    state.destinationLinked = true;
   } catch (error) {
     if (isErrno(error, 'EEXIST')) throw destinationExists('pack');
     throw error;
   }
+
+  const [beforeHandle, beforeDestination] = await Promise.all([
+    handle.stat({ bigint: true }),
+    lstat(destination, { bigint: true }),
+  ]);
+  const verificationFingerprint = fingerprint(beforeHandle);
+  if (
+    !beforeHandle.isFile() ||
+    !beforeDestination.isFile() ||
+    beforeHandle.size !== BigInt(expectedBytes) ||
+    !sameFilesystemNode(hashedFingerprint, verificationFingerprint) ||
+    !sameFingerprint(verificationFingerprint, fingerprint(beforeDestination))
+  ) {
+    throw packPublicationChanged();
+  }
+
+  const actualDigest = await digestOpenPackFile(handle, expectedBytes);
+  const [afterHandle, afterDestination] = await Promise.all([
+    handle.stat({ bigint: true }),
+    lstat(destination, { bigint: true }),
+  ]);
+  if (
+    actualDigest !== expectedDigest ||
+    !afterHandle.isFile() ||
+    !afterDestination.isFile() ||
+    !sameFingerprint(verificationFingerprint, fingerprint(afterHandle)) ||
+    !sameFingerprint(fingerprint(afterHandle), fingerprint(afterDestination))
+  ) {
+    throw packPublicationChanged();
+  }
+}
+
+async function digestOpenPackFile(
+  handle: FileHandle,
+  expectedBytes: number,
+): Promise<Sha256Digest> {
+  const hash = createHash('sha256');
+  const buffer = Buffer.alloc(Math.min(PACK_FILE_CHUNK_BYTES, Math.max(expectedBytes, 1)));
+  let position = 0;
+  while (position < expectedBytes) {
+    const length = Math.min(buffer.byteLength, expectedBytes - position);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    if (bytesRead <= 0) throw packPublicationChanged();
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+  return `sha256:${hash.digest('hex')}` as Sha256Digest;
 }
 
 async function withDestinationPublicationLock<T>(
@@ -1513,11 +1675,15 @@ function hydrationPath(stagingRoot: string, archivePath: string): string {
   return join(stagingRoot, ...logical.split('/'));
 }
 
-async function writeAll(handle: FileHandle, chunk: Buffer): Promise<void> {
+async function writeAll(
+  handle: FileHandle,
+  chunk: Buffer,
+  operation: 'pack' | 'hydrate' = 'hydrate',
+): Promise<void> {
   let offset = 0;
   while (offset < chunk.byteLength) {
     const result = await handle.write(chunk, offset, chunk.byteLength - offset, null);
-    if (result.bytesWritten <= 0) throw ioError('hydrate');
+    if (result.bytesWritten <= 0) throw ioError(operation);
     offset += result.bytesWritten;
   }
 }
@@ -1550,13 +1716,40 @@ async function removeOwnedHydrationStaging(
   await rm(stagingRoot, { recursive: true });
 }
 
-async function removeOwnedPackTemporary(path: string, parent: string): Promise<void> {
+async function removeOwnedPackTemporary(
+  path: string,
+  parent: string,
+  expectedFingerprint: FileFingerprint,
+): Promise<void> {
   if (dirname(path) !== parent || !basename(path).includes(PACK_TEMP_MARKER)) return;
-  const metadata = await lstat(path).catch((error: unknown) => {
+  await removeOwnedPackFile(path, expectedFingerprint);
+}
+
+async function removeOwnedPackPublication(
+  path: string,
+  parent: string,
+  expectedFingerprint: FileFingerprint,
+): Promise<void> {
+  if (dirname(path) !== parent) return;
+  await removeOwnedPackFile(path, expectedFingerprint);
+}
+
+async function removeOwnedPackFile(
+  path: string,
+  expectedFingerprint: FileFingerprint,
+): Promise<void> {
+  const metadata = await lstat(path, { bigint: true }).catch((error: unknown) => {
     if (isErrno(error, 'ENOENT')) return undefined;
     throw error;
   });
-  if (metadata === undefined || !metadata.isFile() || metadata.isSymbolicLink()) return;
+  if (
+    metadata === undefined ||
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    !sameFilesystemNode(expectedFingerprint, fingerprint(metadata))
+  ) {
+    return;
+  }
   await rm(path);
 }
 
@@ -1573,6 +1766,7 @@ function fingerprint(metadata: BigIntStats): FileFingerprint {
   return {
     dev: metadata.dev,
     ino: metadata.ino,
+    nlink: metadata.nlink,
     size: metadata.size,
     mtimeNs: metadata.mtimeNs,
     ctimeNs: metadata.ctimeNs,
@@ -1583,6 +1777,7 @@ function sameFingerprint(left: FileFingerprint, right: FileFingerprint): boolean
   return (
     left.dev === right.dev &&
     left.ino === right.ino &&
+    left.nlink === right.nlink &&
     left.size === right.size &&
     left.mtimeNs === right.mtimeNs &&
     left.ctimeNs === right.ctimeNs
@@ -1627,6 +1822,13 @@ function sourceChanged(): SessionBundleFileError {
   return new SessionBundleFileError(
     'source_changed',
     'Session bundle source changed while it was being consumed',
+  );
+}
+
+function packPublicationChanged(): SessionBundleFileError {
+  return new SessionBundleFileError(
+    'source_changed',
+    'Session bundle pack output changed before publication completed',
   );
 }
 
