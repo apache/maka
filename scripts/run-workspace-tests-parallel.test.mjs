@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { runWorkspaceTests } from './run-workspace-tests-parallel.mjs';
 
@@ -47,6 +48,44 @@ test('parallel mode aggregates every failed workspace name', async () => {
       return true;
     },
   );
+});
+
+test('each workspace runs in its own temp namespace, removed however it ends', async () => {
+  const observed = [];
+  const spawn = (_command, options) => {
+    const child = new EventEmitter();
+    observed.push({
+      tmpdir: options.env.TMPDIR,
+      tmp: options.env.TMP,
+      temp: options.env.TEMP,
+      presentWhileRunning: existsSync(options.env.TMPDIR),
+    });
+    // First workspace passes, second fails: both paths must still clean up.
+    queueMicrotask(() => child.emit('close', observed.length - 1));
+    return child;
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkspaceTests({
+        repoRoot: '/repo',
+        workspaceDirs: ['packages/core', 'packages/ui'],
+        concurrency: 1,
+        spawn,
+      }),
+    /\[ui\] failed with code 1/,
+  );
+
+  assert.equal(observed.length, 2);
+  assert.notEqual(observed[0].tmpdir, observed[1].tmpdir);
+  for (const entry of observed) {
+    assert.equal(entry.presentWhileRunning, true);
+    assert.equal(entry.tmp, entry.tmpdir);
+    assert.equal(entry.temp, entry.tmpdir);
+    assert.equal(relative(tmpdir(), entry.tmpdir).startsWith('..'), false);
+    assert.equal(existsSync(entry.tmpdir), false);
+  }
+  assert.notEqual(observed[0].tmpdir, process.env.TMPDIR);
 });
 
 test('bounded parallel mode never exceeds its configured concurrency', async () => {

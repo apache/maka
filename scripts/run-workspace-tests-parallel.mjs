@@ -8,11 +8,14 @@
  * `--workspaces a,b`: run only the selected workspace paths.
  *
  * Each workspace owns how its dist tests run via package.json `test:dist`.
- * This script owns scheduling, bounded process residency, and failure reporting.
+ * This script owns scheduling, bounded process residency, failure reporting, and
+ * the temp namespace each workspace's tests run in.
  */
 
 import { spawn as defaultSpawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -62,12 +65,20 @@ export async function runWorkspace(
   // Package-owned contract: each workspace declares how dist tests run.
   const command = 'npm run test:dist';
   const cwd = join(repoRoot, dir);
+  // Suites reach the temp directory through hundreds of `mkdtemp(tmpdir(), …)`
+  // calls across every package. Owning the namespace here means the whole tree
+  // goes away when the workspace process does, instead of each call site having
+  // to book-keep its own removal — a rule nothing enforces, and which years of
+  // accumulated `maka-*` directories in the user's tmpdir show is not kept.
+  const tempRoot = await mkdtemp(join(tmpdir(), `maka-test-${tempRootSlug(name)}-`));
   console.log(`\n[${name}] start: ${command}`);
   const child = spawn(command, {
     cwd,
     stdio: 'inherit',
     shell: true,
     detached: process.platform !== 'win32',
+    // TMPDIR is what os.tmpdir() reads on POSIX, TMP/TEMP on Windows.
+    env: { ...process.env, TMPDIR: tempRoot, TMP: tempRoot, TEMP: tempRoot },
   });
   const completion = new Promise((resolvePromise, reject) => {
     let settled = false;
@@ -127,7 +138,15 @@ export async function runWorkspace(
   } finally {
     if (timeout) clearTimeout(timeout);
     signal?.removeEventListener('abort', onAbort);
+    // Runs after terminateWorkspace, so the process tree is already down and
+    // nothing is still writing into the tree being removed.
+    await rm(tempRoot, { recursive: true, force: true });
   }
+}
+
+/** Workspace name reduced to what is safe in a temp directory prefix. */
+function tempRootSlug(name) {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '-');
 }
 
 async function runSerial(dirs, options) {

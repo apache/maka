@@ -24,6 +24,9 @@ test('runHeadlessTests isolates user state and removes its temporary files', () 
       XDG_STATE_HOME: '/host/state',
       XDG_CACHE_HOME: '/host/cache',
       APPDATA: '/host/appdata',
+      TMPDIR: '/host/tmp',
+      TMP: '/host/tmp',
+      TEMP: '/host/tmp',
       GIT_CONFIG_GLOBAL: '/host/gitconfig',
       GIT_CONFIG_NOSYSTEM: '0',
       GROQ_API_KEY: 'secret',
@@ -69,9 +72,17 @@ test('runHeadlessTests isolates user state and removes its temporary files', () 
         'APPDATA',
         'MAKA_CREDENTIALS_PATH',
         'GIT_CONFIG_GLOBAL',
+        'TMPDIR',
+        'TMP',
+        'TEMP',
       ]) {
         assert.equal(relative(tempDir, options.env[name]).startsWith('..'), false);
       }
+      // mkdtemp() against os.tmpdir() fails unless the directory already exists,
+      // so this one cannot be left for the code under test to create.
+      assert.equal(statSync(options.env.TMPDIR).isDirectory(), true);
+      assert.equal(options.env.TMP, options.env.TMPDIR);
+      assert.equal(options.env.TEMP, options.env.TMPDIR);
 
       credentialsPath = options.env.MAKA_CREDENTIALS_PATH;
       assert.equal(readFileSync(credentialsPath, 'utf8'), '{"version":1,"values":{}}\n');
