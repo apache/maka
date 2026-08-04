@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, nativeTheme, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -166,7 +166,6 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
   async function createWindow(signal: AbortSignal): Promise<void> {
     if (signal.aborted) return;
     await mkdir(workspaceRoot, { recursive: true });
-    installApplicationMenu();
     // Restore previously-saved bounds when available; first launch and
     // legacy installs both fall back to the default 1240x820 frame. After
     // load, validate the saved x/y against the current display layout — if
@@ -666,8 +665,4 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
     .catch((err: unknown) => {
       console.log(`[real-window-smoke] diagnostic ${JSON.stringify({ ...windowState, rendererError: errorMessage(err) })}`);
     });
-}
-
-function installApplicationMenu(): void {
-  Menu.setApplicationMenu(null);
 }

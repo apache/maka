@@ -7,6 +7,7 @@ import type {
   PermissionOverlayStartResult,
   RendererIngestInput,
   AppUpdateStatus,
+  WindowCommand,
 } from './bridge-contract.js';
 import type {
   ConnectionEvent,
@@ -952,6 +953,14 @@ const makaBridge = {
     // React commit so the hidden window can be revealed. Fire-and-forget.
     notifyRendererReady(): Promise<void> {
       return ipcRenderer.invoke('window:notifyRendererReady');
+    },
+    // PR-2088: main-to-renderer route for native-menu commands (New Task /
+    // Settings / Keyboard Shortcuts). The `ipcRenderer.on`/`off` idiom keeps
+    // an HMR or shell remount from stacking duplicate listeners.
+    subscribeCommand(handler: (command: WindowCommand) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, command: WindowCommand) => handler(command);
+      ipcRenderer.on('window:command', listener);
+      return () => ipcRenderer.off('window:command', listener);
     },
   },
   config: {

@@ -1770,6 +1770,7 @@ function AppShellContent({
     clearSessionRendererState,
     createSession,
     handleConnectionEvent,
+    openHelp,
     openSettings,
     pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
     pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,

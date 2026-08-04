@@ -175,6 +175,12 @@ export type AppUpdateStatus =
     }
   | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
 
+/**
+ * Commands dispatched by the native application menu (see
+ * main/application-menu.ts). The renderer owns the implementations.
+ */
+export type WindowCommand = { id: 'newTask' | 'openSettings' | 'openHelp' };
+
 export interface MakaBridge {
 
   tasks: {
@@ -592,6 +598,9 @@ export interface MakaBridge {
     // PR-SHOW-AFTER-FIRST-COMMIT: signal main after the first React commit
     // so the hidden window is revealed (see main-window.ts).
     notifyRendererReady(): Promise<void>;
+    // PR-2088: main-to-renderer route for native-menu commands. Returns an
+    // unsubscribe; a command sent before this subscription exists is dropped.
+    subscribeCommand(handler: (command: WindowCommand) => void): () => void;
   };
   config: {
     export(input: { categories: ConfigCategory[] }): Promise<

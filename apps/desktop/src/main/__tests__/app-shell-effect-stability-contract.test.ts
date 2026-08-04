@@ -638,6 +638,7 @@ function BootstrapSubscriptionProbe(props: {
     clearSessionRendererState: () => {},
     createSession: () => {},
     handleConnectionEvent: props.onConnectionEvent,
+    openHelp: () => {},
     openSettings: () => {},
     pendingPermissionModeChangesRef: props.refs.pendingPermissionModeChangesRef,
     pendingSessionModelChangesRef: props.refs.pendingSessionModelChangesRef,
@@ -916,6 +917,9 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
         projectPath: '/workspace/relocated',
         projectGit: { isGitRepo: false },
       }),
+    },
+    appWindow: {
+      subscribeCommand: () => noop,
     },
     connections: {
       subscribeEvents(callback: (event: ConnectionEvent) => void) {

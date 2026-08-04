@@ -33,6 +33,7 @@ import {
 } from './session-event-health';
 import { settledSessionTransientIds } from './settled-session-transients.js';
 import type { SessionWorkbarTab } from './session-workbar-layout.js';
+import type { WindowCommand } from '../preload/bridge-contract.js';
 import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
@@ -189,6 +190,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   clearSessionRendererState: (sessionId: string) => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
+  openHelp: () => void;
   openSettings: () => void;
   pendingPermissionModeChangesRef: RefBox<Set<string>>;
   pendingSessionModelChangesRef: RefBox<Set<string>>;
@@ -225,6 +227,18 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
     options.handleConnectionEvent(event);
+  });
+  // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
+  // Shortcuts here through one channel. The renderer already owns these
+  // implementations; the menu is only a second entry surface. The keydown
+  // path (useHotkeys below) stays active on every platform: on macOS AppKit
+  // resolves the menu accelerator before the web contents sees the keydown,
+  // so a real keypress dispatches exactly once, while CDP-injected test keys
+  // still reach this handler for the renderer path.
+  const handleWindowCommand = useEffectEvent((command: WindowCommand) => {
+    if (command.id === 'newTask') void options.createSession();
+    else if (command.id === 'openSettings') options.openSettings();
+    else if (command.id === 'openHelp') options.openHelp();
   });
   const handleSessionChange = useEffectEvent(
     (event: SessionChangedEvent) => {
@@ -345,6 +359,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
     const unsubscribePlanChanges = window.maka.plans.subscribeChanges(handlePlanChange);
     const unsubscribePlanDue = window.maka.plans.subscribeDue(handlePlanDue);
+    const unsubscribeWindowCommand = window.maka.appWindow.subscribeCommand(handleWindowCommand);
     markRendererMounted();
     return () => {
       cleanupPendingRefs();
@@ -353,6 +368,7 @@ export function useAppShellBootstrapSubscriptions(options: {
       unsubscribeSessionChanges();
       unsubscribePlanChanges();
       unsubscribePlanDue();
+      unsubscribeWindowCommand();
     };
   }, []);
 }

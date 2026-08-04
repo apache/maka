@@ -38,6 +38,7 @@ import type { assembleDesktopTools } from './tool-assembly.js';
 import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { createAppQuitCoordinator } from './app-quit-coordinator.js';
+import { installApplicationMenu } from './application-menu.js';
 import { resolveDockPresentation } from './dock-presentation.js';
 import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
 import { retireCursorSubscriptionCredentials } from './oauth/cursor-subscription-retirement.js';
@@ -267,6 +268,25 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // here after store construction would detach the canonical database.
     const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
     if (!initialWindowSignal) return;
+    // The application menu is app-scoped, not window-scoped: install it once
+    // here (before the first window, surviving window close on macOS) instead
+    // of inside createWindow. A null menu on macOS leaves Cmd+Q and the Edit
+    // roles without any handler; Windows/Linux keep it suppressed so the
+    // renderer's shell chrome and Ctrl+N / Ctrl+, shortcuts stay untouched.
+    // Menu commands route to the renderer through one typed channel when a
+    // window exists, or re-create the window when there is none (quit-phase
+    // no-op via the coordinator).
+    installApplicationMenu({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      dispatch: (command) => {
+        if (mainWindowController.hasOpenWindows()) {
+          mainWindowController.send('window:command', { id: command });
+        } else {
+          quitCoordinator.focusOrCreateWindow();
+        }
+      },
+    });
     app.on('second-instance', quitCoordinator.focusOrCreateWindow);
     app.on('activate', quitCoordinator.focusOrCreateWindow);
     backgroundStartup = runBackgroundStartup();
