@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { BackendKind, ProviderType } from '@maka/core';
 import { PROVIDER_DEFAULTS, normalizeProviderType } from '@maka/core';
+import { resolveMakaWorkspaceRoot } from '@maka/storage';
 import type { Config, Task } from './contracts.js';
 import {
   type HarborCellExecutionIdentity,
@@ -877,35 +877,11 @@ export function applyConnectionDefaults(env: Record<string, string | undefined>)
 }
 
 export function resolveDefaultConnectionsPath(): string {
-  const home = homedir();
-  switch (process.platform) {
-    case 'darwin':
-      return join(
-        home,
-        'Library',
-        'Application Support',
-        'Maka',
-        'workspaces',
-        'default',
-        'llm-connections.json',
-      );
-    case 'win32':
-      return join(
-        process.env.APPDATA ?? join(home, 'AppData', 'Roaming'),
-        'Maka',
-        'workspaces',
-        'default',
-        'llm-connections.json',
-      );
-    default:
-      return join(
-        process.env.XDG_CONFIG_HOME ?? join(home, '.config'),
-        'Maka',
-        'workspaces',
-        'default',
-        'llm-connections.json',
-      );
-  }
+  // Route through the shared workspace-path authority (@maka/storage) instead
+  // of re-deriving the per-platform application-data root here. This file no
+  // longer hand-rolls the darwin/win32/linux branches — and the authority uses
+  // win32 path joining on Windows, which the old copy got wrong (posix join).
+  return join(resolveMakaWorkspaceRoot(), 'llm-connections.json');
 }
 
 function parseModelSpec(
