@@ -163,6 +163,14 @@ async function runBootstrap({ envFileContent, omitMainEntry } = {}) {
   // shared between these tests; snapshot it so cases stay independent.
   const previousEnv = { ...process.env };
   try {
+    // Each run measures what the bootstrap assigns from its published file.
+    // Do not mistake the developer shell's forwarded values for that output.
+    const publishedEnvironmentKeys = new Set([
+      ...Object.keys(selectDevelopmentEnvironment(process.env)),
+      'VITE_DEV_SERVER_URL',
+    ]);
+    for (const key of publishedEnvironmentKeys) delete process.env[key];
+
     nodeModule(bootstrapFile);
     const cwd = process.cwd();
     // The import settles on the next tick; poll rather than guess a tick count.
@@ -219,14 +227,26 @@ test('adopts a published environment file: env, userData override, switches', as
 
 test('ignores an unreadable or wrong-schema environment file instead of failing to boot', async () => {
   const wrongSchema = JSON.stringify({ schemaVersion: 999, env: { OPENAI_API_KEY: 'leak' } });
-  for (const content of ['not json at all', wrongSchema]) {
-    const { calls, loaded, root } = await runBootstrap({ envFileContent: content });
-    assert.deepEqual(calls.find(([kind]) => kind === 'setPath'), [
-      'setPath',
-      'userData',
-      join(root, 'default-user-data'),
-    ]);
-    assert.equal(loaded.apiKey, null);
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  const previousViteUrl = process.env.VITE_DEV_SERVER_URL;
+  process.env.OPENAI_API_KEY = 'ambient-openai-key';
+  process.env.VITE_DEV_SERVER_URL = 'http://ambient.invalid';
+  try {
+    for (const content of ['not json at all', wrongSchema]) {
+      const { calls, loaded, root } = await runBootstrap({ envFileContent: content });
+      assert.deepEqual(calls.find(([kind]) => kind === 'setPath'), [
+        'setPath',
+        'userData',
+        join(root, 'default-user-data'),
+      ]);
+      assert.equal(loaded.apiKey, null);
+      assert.equal(loaded.viteUrl, null);
+    }
+  } finally {
+    if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousApiKey;
+    if (previousViteUrl === undefined) delete process.env.VITE_DEV_SERVER_URL;
+    else process.env.VITE_DEV_SERVER_URL = previousViteUrl;
   }
 });
 
