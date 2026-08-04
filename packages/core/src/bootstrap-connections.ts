@@ -61,6 +61,19 @@ export function isHistoricalOpenCodeFreeSeed(
   );
 }
 
+/** Whether a connection still represents Maka's single-model managed seed. */
+export function isManagedOpenCodeFreeSeed(connection: LlmConnection): boolean {
+  return (
+    connection.slug === 'opencode-free' &&
+    connection.name === 'OpenCode Free' &&
+    connection.providerType === 'opencode-free' &&
+    !connection.baseUrl &&
+    connection.models === undefined &&
+    connection.enabledModelIds?.length === 1 &&
+    connection.enabledModelIds[0] === connection.defaultModel
+  );
+}
+
 const ANTHROPIC_ENV_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
   slug: 'env-anthropic',
   name: 'Anthropic (env)',

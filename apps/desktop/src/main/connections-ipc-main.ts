@@ -2,6 +2,7 @@ import type { IpcMain } from 'electron';
 import {
   buildConnectionModelCatalogEntries,
   generalizedErrorMessageChinese,
+  isManagedOpenCodeFreeSeed,
   normalizeConnectionBaseUrl,
 } from '@maka/core';
 import type {
@@ -231,7 +232,18 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
       };
     }
     const result = await testConnection(connection, apiKey ?? '', opts?.model);
-    await connectionStore.update(slug, connectionTestStatusPatch(result));
+    const healthyFreeModel = result.ok ? result.modelTested : undefined;
+    const adoptsHealthyFreeModel =
+      healthyFreeModel !== undefined &&
+      !opts?.model?.trim() &&
+      healthyFreeModel !== connection.defaultModel &&
+      isManagedOpenCodeFreeSeed(connection);
+    await connectionStore.update(slug, {
+      ...connectionTestStatusPatch(result),
+      ...(adoptsHealthyFreeModel
+        ? { defaultModel: healthyFreeModel, enabledModelIds: [healthyFreeModel] }
+        : {}),
+    });
     emitConnectionListChanged();
     return result;
   });

@@ -18,6 +18,7 @@ import { describe, it } from 'node:test';
 import {
   OPENCODE_FREE_DEFAULT_MODEL,
   isHistoricalOpenCodeFreeSeed,
+  isManagedOpenCodeFreeSeed,
   resolveBootstrapConnections,
 } from '../bootstrap-connections.js';
 
@@ -52,6 +53,9 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
       providerType: 'opencode-free' as const,
       defaultModel: 'big-pickle',
       enabledModelIds: ['big-pickle'],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
     };
 
     assert.equal(isHistoricalOpenCodeFreeSeed(historical), true);
@@ -67,5 +71,7 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
       false,
     );
     assert.equal(isHistoricalOpenCodeFreeSeed({ ...historical, models: [] }), false);
+    assert.equal(isManagedOpenCodeFreeSeed(historical), true);
+    assert.equal(isManagedOpenCodeFreeSeed({ ...historical, name: 'My free connection' }), false);
   });
 });

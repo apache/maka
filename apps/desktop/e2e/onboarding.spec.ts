@@ -54,7 +54,7 @@ test('first run connects a provider and starts the first task without workspace 
   await expect(onboarding).toHaveCount(0);
   await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
   await expect(page.getByRole('button', { name: /选择新对话模型/ })).toHaveAccessibleName(
-    /Big Pickle/,
+    /Nemotron 3 Ultra Free/,
   );
 
   await page.locator(COMPOSER_INPUT).fill('完成首次任务');

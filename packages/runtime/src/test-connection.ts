@@ -129,6 +129,53 @@ async function testConnectionStrict(
   if (!testModel) {
     return { ok: false, errorMessage: 'No model to test' };
   }
+  if (connection.providerType === 'opencode-free' && !model?.trim()) {
+    const candidates = [
+      ...new Set([...connectionEnabledModelIds(connection), ...defaults.fallbackModels]),
+    ];
+    let lastFailure: ConnectionTestResult | undefined;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]!;
+      const remainingMs = CONNECTION_TEST_TIMEOUT_MS - (Date.now() - t0);
+      if (remainingMs <= 0) break;
+      const remainingCandidates = candidates.length - index;
+      const attemptTimeoutMs = Math.max(1_000, Math.floor(remainingMs / remainingCandidates));
+      try {
+        const result = await testConnectionModel(
+          connection,
+          secret,
+          candidate,
+          fetchFn,
+          t0,
+          attemptTimeoutMs,
+        );
+        if (result.ok) return result;
+        lastFailure = result;
+      } catch (error) {
+        lastFailure = connectionTestFailure(error, t0, true);
+      }
+    }
+    return (
+      lastFailure ?? {
+        ok: false,
+        errorMessage: 'No OpenCode Free model responded within the connection-test budget',
+        errorClass: 'provider_unavailable',
+        latencyMs: Date.now() - t0,
+      }
+    );
+  }
+
+  return await testConnectionModel(connection, secret, testModel, fetchFn, t0);
+}
+
+async function testConnectionModel(
+  connection: ConnectionEffectConnection,
+  secret: string,
+  testModel: string,
+  fetchFn: ConnectionEffectFetch | undefined,
+  t0: number,
+  timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
+): Promise<ConnectionTestResult> {
   const { adapter, baseUrl, apiProtocol } = resolveModelRuntime(connection, testModel);
 
   switch (adapter.kind) {
@@ -142,11 +189,11 @@ async function testConnectionStrict(
         openAiAdapterApiProtocol(testModel, connection.providerType);
       return resolvedApiProtocol === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
-        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn);
+        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
     }
     case 'openai-codex':
     case 'openai-compatible':
-      return await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn);
+      return await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
     case 'github-copilot':
       return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
     case 'google':
@@ -287,6 +334,7 @@ async function probeOpenAI(
   model: string,
   t0: number,
   fetchFn: ConnectionEffectFetch | undefined,
+  timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
   if (connection.providerType === 'openai-codex') {
     // Codex Subscription credentials are ChatGPT account-scoped OAuth
@@ -309,11 +357,30 @@ async function probeOpenAI(
       max_tokens: 16,
       messages: [{ role: 'user', content: 'Hi' }],
     }),
-    timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
+    timeoutMs,
   });
   if (!r.ok) return httpFailure(r, t0);
+  if (connection.providerType === 'opencode-free') {
+    const body = await r.readJson<unknown>();
+    if (!isOpenAIChatCompletion(body)) {
+      return {
+        ok: false,
+        errorMessage: 'OpenCode Free returned no valid chat completion',
+        errorClass: 'provider_unavailable',
+        latencyMs: Date.now() - t0,
+        modelTested: model,
+      };
+    }
+    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
+  }
   await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
+}
+
+function isOpenAIChatCompletion(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const choices = (value as { choices?: unknown }).choices;
+  return Array.isArray(choices) && choices.length > 0;
 }
 
 async function probeGoogle(

@@ -1530,6 +1530,7 @@ export type {
 export {
   OPENCODE_FREE_DEFAULT_MODEL,
   isHistoricalOpenCodeFreeSeed,
+  isManagedOpenCodeFreeSeed,
   resolveBootstrapConnections,
 } from './bootstrap-connections.js';
 

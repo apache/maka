@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { generateText } from 'ai';
 import type { LlmConnection } from '@maka/core';
-import { getAIModel } from '@maka/runtime';
+import { getAIModel, testConnection } from '@maka/runtime';
 
 describe('opencode-free anonymous runtime', () => {
   test('omits Authorization and posts to zen/v1 with the model id (empty key, no secret)', async () => {
@@ -77,5 +77,41 @@ describe('opencode-free anonymous runtime', () => {
     assert.equal(captured?.url, 'https://opencode.ai/zen/v1/chat/completions');
     assert.equal(captured?.model, 'big-pickle');
     assert.equal(result.text, 'ok');
+  });
+
+  test('rejects a 200 error envelope and probes the next free model', async () => {
+    const requestedModels: string[] = [];
+    const connection: LlmConnection = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
+      defaultModel: 'big-pickle',
+      enabledModelIds: ['big-pickle'],
+      enabled: true,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const fakeFetch: typeof globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      requestedModels.push(body.model);
+      if (body.model === 'big-pickle') {
+        return new Response(JSON.stringify({ error: { type: 'server_error' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+
+    const result = await testConnection(connection, '', undefined, { fetch: fakeFetch });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, 'nemotron-3-ultra-free');
+    assert.deepEqual(requestedModels, ['big-pickle', 'nemotron-3-ultra-free']);
   });
 });
