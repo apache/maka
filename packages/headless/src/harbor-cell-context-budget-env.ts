@@ -850,22 +850,31 @@ function harborCellToolResultArchiveDir(env: RunHarborCellEnv): string | undefin
   );
 }
 
+// Two prefixes, separators, a full SHA-256, and `.json` total at most 153
+// characters, within the runtime ref grammar's 160-character cap.
+const HARBOR_CELL_ARCHIVE_ID_PREFIX_MAX_CHARS = 40;
+
 function harborCellToolResultArchiveArtifactId(input: {
   sessionId: string;
   runtimeEventId: string;
   bodySha256: string;
 }): string {
+  const identityHash = createHash('sha256')
+    .update(JSON.stringify([input.sessionId, input.runtimeEventId, input.bodySha256]))
+    .digest('hex');
   return (
     [
-      safeArtifactIdPart(input.sessionId),
-      safeArtifactIdPart(input.runtimeEventId),
-      safeArtifactIdPart(input.bodySha256.slice(0, 16)),
+      safeArtifactIdPrefix(input.sessionId),
+      safeArtifactIdPrefix(input.runtimeEventId),
+      identityHash,
     ].join('--') + '.json'
   );
 }
 
-function safeArtifactIdPart(value: string): string {
-  const safe = value.replace(/[^A-Za-z0-9_.=-]/g, '_').slice(0, 96);
+function safeArtifactIdPrefix(value: string): string {
+  const safe = value
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .slice(0, HARBOR_CELL_ARCHIVE_ID_PREFIX_MAX_CHARS);
   return safe || 'unknown';
 }
 
