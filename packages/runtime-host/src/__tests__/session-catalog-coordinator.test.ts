@@ -219,16 +219,8 @@ test('creation rejects reserved execution labels before claiming a Session ident
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('configuration update rejects Plan mode before invoking Runtime authority', async () => {
-  let transitionAttempts = 0;
-  const fixture = createFixture({
-    manager: {
-      transitionSessionConfiguration: async () => {
-        transitionAttempts += 1;
-        assert.fail('Plan mode must be rejected before Runtime transition');
-      },
-    },
-  });
+test('configuration update admits Plan mode through Runtime authority', async () => {
+  const fixture = createFixture();
   const input = configurationInput(fixture.sessionId, fixture.revision());
 
   const outcome = await fixture.coordinator.handlers['session.configuration.update'](
@@ -242,14 +234,14 @@ test('configuration update rejects Plan mode before invoking Runtime authority',
     context,
   );
 
-  assert.deepEqual(outcome, {
-    ok: false,
-    error: {
-      code: 'operation_unavailable',
-      message: 'Plan sessions are not yet supported by Runtime Host',
-    },
-  });
-  assert.equal(transitionAttempts, 0);
+  if (!outcome.ok || outcome.result.kind !== 'committed') {
+    assert.fail('Plan mode configuration did not commit');
+  }
+  if ('kind' in outcome.result.session) {
+    assert.fail('Plan mode configuration returned an unsupported Session projection');
+  }
+  assert.equal(outcome.result.session.collaborationMode, 'plan');
+  assert.equal(fixture.header().collaborationMode, 'plan');
   assert.equal(fixture.drainRequests(), 0);
 });
 

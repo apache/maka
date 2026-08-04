@@ -61,11 +61,14 @@ import type {
 } from '@maka/core';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import type {
-  ApprovePlanProposalInput,
-  PlanMutationResult,
-  PlanSessionState,
-  PlanStore,
+import {
+  PLAN_USER_ABANDON_REASON,
+  PLAN_USER_CANCEL_REASON,
+  PlanConflictError,
+  type ApprovePlanProposalInput,
+  type PlanMutationResult,
+  type PlanSessionState,
+  type PlanStore,
 } from '@maka/core/plan';
 import {
   DEFAULT_SESSION_NAME,
@@ -1777,10 +1780,17 @@ export class SessionManager {
     return this.requirePlanStore().readState(sessionId);
   }
 
+  hasPlanAuthority(): boolean {
+    return this.deps.planStore !== undefined;
+  }
+
   async setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const from = previous.collaborationMode ?? 'agent';
     if (from === mode) return headerToSummary(previous);
+    if (mode === 'plan' && previous.subagentParent) {
+      throw new PlanConflictError('Linked child Sessions cannot enter Plan mode');
+    }
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
       throw new Error('当前对话正在运行，等结束后再切换协作模式。');
     }
@@ -1835,94 +1845,121 @@ export class SessionManager {
     return headerToSummary(next);
   }
 
-  async requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanMutationResult> {
-    const result = await this.requirePlanStore().requestRevision({ sessionId, proposalId });
-    const header = await this.deps.store.readHeader(sessionId);
-    if ((header.collaborationMode ?? 'agent') !== 'plan') {
-      const next = await this.deps.store.updateHeader(sessionId, { collaborationMode: 'plan' });
-      this.runtimeKernel.updateCachedHeader(sessionId, next);
-    }
-    await this.runtimeKernel.disposeBackend(sessionId);
+  async requestPlanRevision(
+    sessionId: string,
+    proposalId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult> {
+    const input = {
+      sessionId,
+      proposalId,
+      ...(operationId ? { operationId } : {}),
+    };
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, input);
+    if (!replay) await this.runtimeKernel.disposeBackend(sessionId);
+    const result = await this.requirePlanStore().requestRevision(input);
+    await this.finalizePlanCollaborationMode(sessionId, 'plan');
     return result;
   }
 
-  async abandonPlanProposal(sessionId: string, proposalId: string): Promise<PlanMutationResult> {
-    const header = await this.deps.store.readHeader(sessionId);
-    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前对话仍在运行，无法放弃计划。');
-    }
-    if (header.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，无法放弃计划。');
-    }
-    const result = await this.requirePlanStore().abandonProposal({
+  async abandonPlanProposal(
+    sessionId: string,
+    proposalId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult> {
+    const input = {
       sessionId,
       proposalId,
-      reason: 'User exited Plan Mode before approval.',
-    });
-    const from = header.collaborationMode ?? 'agent';
-    const next = await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' });
-    if (from !== 'agent') {
-      await this.deps.store.appendMessage(sessionId, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'mode_change',
-        data: { dimension: 'collaboration', from, to: 'agent' },
-      } satisfies SystemNoteMessage);
+      reason: PLAN_USER_ABANDON_REASON,
+      ...(operationId ? { operationId } : {}),
+    };
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, input);
+    const header = await this.deps.store.readHeader(sessionId);
+    if (!replay && this.runtimeKernel.hasActiveRuns(sessionId)) {
+      throw new PlanConflictError('Cannot abandon a Plan while the Session is running');
     }
-    this.runtimeKernel.updateCachedHeader(sessionId, next);
-    await this.runtimeKernel.disposeBackend(sessionId);
+    if (!replay && header.status === 'waiting_for_user') {
+      throw new PlanConflictError('Cannot abandon a Plan while an Interaction is pending');
+    }
+    if (!replay) await this.runtimeKernel.disposeBackend(sessionId);
+    const result = await this.requirePlanStore().abandonProposal(input);
+    await this.finalizePlanAbandonment(sessionId, operationId, replay);
     return result;
   }
 
   async approvePlan(input: ApprovePlanProposalInput): Promise<PlanMutationResult> {
+    const replay = await this.isPlanOperationReplay(input.sessionId, input.operationId, input);
     const header = await this.deps.store.readHeader(input.sessionId);
-    if (this.runtimeKernel.hasActiveRuns(input.sessionId)) {
-      throw new Error('当前对话仍在运行，无法批准计划。');
+    if (!replay && this.runtimeKernel.hasActiveRuns(input.sessionId)) {
+      throw new PlanConflictError('Cannot approve a Plan while the Session is running');
     }
-    if (header.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，无法批准计划。');
+    if (!replay && header.status === 'waiting_for_user') {
+      throw new PlanConflictError('Cannot approve a Plan while an Interaction is pending');
     }
+    if (!replay) await this.runtimeKernel.disposeBackend(input.sessionId);
     const result = await this.requirePlanStore().approveProposal(input);
-    const next = await this.deps.store.updateHeader(input.sessionId, {
-      collaborationMode: 'agent',
-    });
-    this.runtimeKernel.updateCachedHeader(input.sessionId, next);
-    await this.runtimeKernel.disposeBackend(input.sessionId);
+    await this.finalizePlanCollaborationMode(input.sessionId, 'agent');
     return result;
   }
 
-  async resumePlanExecution(sessionId: string, executionId: string): Promise<PlanMutationResult> {
-    const result = await this.requirePlanStore().resumeExecution(sessionId, executionId);
-    const next = await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' });
-    this.runtimeKernel.updateCachedHeader(sessionId, next);
-    await this.runtimeKernel.disposeBackend(sessionId);
-    return result;
-  }
-
-  async cancelPlanExecution(sessionId: string, executionId: string): Promise<PlanMutationResult> {
-    const planStore = this.requirePlanStore();
-    const state = await planStore.readState(sessionId);
-    const execution = state.executions.find((item) => item.executionId === executionId);
-    if (execution?.status !== 'interrupted') {
-      throw new Error('只有已中断的计划可以从这里放弃。');
-    }
-    const result = await planStore.cancelExecution({
+  async resumePlanExecution(
+    sessionId: string,
+    executionId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult> {
+    const input = { sessionId, executionId };
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, input);
+    if (!replay) await this.runtimeKernel.disposeBackend(sessionId);
+    const result = await this.requirePlanStore().resumeExecution(
       sessionId,
       executionId,
-      reason: 'User abandoned the interrupted plan.',
-    });
-    await this.runtimeKernel.disposeBackend(sessionId);
+      operationId,
+    );
+    await this.finalizePlanCollaborationMode(sessionId, 'agent');
+    return result;
+  }
+
+  async cancelPlanExecution(
+    sessionId: string,
+    executionId: string,
+    operationId?: string,
+  ): Promise<PlanMutationResult> {
+    const planStore = this.requirePlanStore();
+    const input = {
+      sessionId,
+      executionId,
+      reason: PLAN_USER_CANCEL_REASON,
+      ...(operationId ? { operationId } : {}),
+    };
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, input);
+    if (!replay) {
+      const state = await planStore.readState(sessionId);
+      const execution = state.executions.find((item) => item.executionId === executionId);
+      if (execution?.status !== 'interrupted') {
+        throw new PlanConflictError('Only an interrupted Plan execution can be abandoned');
+      }
+      await this.runtimeKernel.disposeBackend(sessionId);
+    }
+    const result = await planStore.cancelExecution(input);
     return result;
   }
 
   async interruptActivePlanExecution(
     sessionId: string,
     reason: string,
+    operationId?: string,
   ): Promise<PlanMutationResult | null> {
-    const result = await this.requirePlanStore().interruptActiveExecution(sessionId, reason);
-    if (result) await this.runtimeKernel.disposeBackend(sessionId);
-    return result;
+    const planStore = this.requirePlanStore();
+    const replay = await this.isPlanOperationReplay(sessionId, operationId, {
+      sessionId,
+      reason,
+    });
+    if (!replay) {
+      const state = await planStore.readState(sessionId);
+      if (!state.activeExecutionId) return null;
+      await this.runtimeKernel.disposeBackend(sessionId);
+    }
+    return planStore.interruptActiveExecution(sessionId, reason, operationId);
   }
 
   async remove(sessionId: string): Promise<void> {
@@ -5170,6 +5207,70 @@ export class SessionManager {
     return next;
   }
 
+  private async isPlanOperationReplay(
+    sessionId: string,
+    operationId: string | undefined,
+    operationInput: unknown,
+  ): Promise<boolean> {
+    if (!operationId) return false;
+    return (
+      (await this.requirePlanStore().readOperationReceipt(
+        sessionId,
+        operationId,
+        operationInput,
+      )) !== undefined
+    );
+  }
+
+  private async finalizePlanCollaborationMode(
+    sessionId: string,
+    mode: CollaborationMode,
+  ): Promise<void> {
+    const header = await this.deps.store.readHeader(sessionId);
+    const changed = (header.collaborationMode ?? 'agent') !== mode;
+    const next = changed
+      ? await this.deps.store.updateHeader(sessionId, { collaborationMode: mode })
+      : header;
+    this.runtimeKernel.updateCachedHeader(sessionId, next);
+  }
+
+  private async finalizePlanAbandonment(
+    sessionId: string,
+    operationId: string | undefined,
+    replay: boolean,
+  ): Promise<void> {
+    const header = await this.deps.store.readHeader(sessionId);
+    const from = header.collaborationMode ?? 'agent';
+    const changed = from !== 'agent';
+    const next = changed
+      ? await this.deps.store.updateHeader(sessionId, { collaborationMode: 'agent' })
+      : header;
+    this.runtimeKernel.updateCachedHeader(sessionId, next);
+
+    if (!changed && !replay) return;
+    if (!operationId) {
+      await this.deps.store.appendMessage(sessionId, {
+        type: 'system_note',
+        id: this.deps.newId(),
+        ts: this.deps.now(),
+        kind: 'mode_change',
+        data: { dimension: 'collaboration', from, to: 'agent' },
+      } satisfies SystemNoteMessage);
+      return;
+    }
+
+    const noteId = planAbandonmentNoteId(operationId);
+    const messages = await this.deps.store.readMessages(sessionId);
+    if (messages.some((message) => message.id === noteId)) return;
+    await this.deps.store.appendMessage(sessionId, {
+      type: 'system_note',
+      id: noteId,
+      ts: this.deps.now(),
+      kind: 'mode_change',
+      data: { dimension: 'collaboration', from: 'plan', to: 'agent' },
+    } satisfies SystemNoteMessage);
+  }
+
   private requirePlanStore(): PlanStore {
     if (!this.deps.planStore) throw new Error('Plan Mode is unavailable on this surface');
     return this.deps.planStore;
@@ -5192,6 +5293,12 @@ export class SessionManager {
     nextMode: CollaborationMode,
   ): Promise<void> {
     if ((current.collaborationMode ?? 'agent') === nextMode) return;
+    if (nextMode === 'plan' && current.subagentParent) {
+      throw new SessionConfigurationTransitionError(
+        'operation_unavailable',
+        'Linked child Sessions cannot enter Plan mode',
+      );
+    }
     const planStore = this.deps.planStore;
     if (!planStore) {
       throw new SessionConfigurationTransitionError(
@@ -5731,6 +5838,10 @@ export class SessionManager {
     if (latest && isTerminalTurnStatus(latest.status) && latest.status === status) return;
     await this.appendTurnState(sessionId, decision.turnId, status, decision.lineage, options);
   }
+}
+
+function planAbandonmentNoteId(operationId: string): string {
+  return `plan-abandonment-${createHash('sha256').update(operationId).digest('hex')}`;
 }
 
 function resumeFeatureDisabledPlan(): SafeBoundaryContinuationPlan {

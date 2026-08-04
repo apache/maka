@@ -363,7 +363,7 @@ describe('Host Automation coordinator', () => {
           ok: false,
           error: {
             code: 'operation_unavailable',
-            message: 'Plan sessions are not yet supported by Runtime Host.',
+            message: 'Automations cannot execute while the target Session is in Plan mode.',
           },
         });
         assert.deepEqual(await harness.store.read(), {

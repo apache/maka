@@ -81,6 +81,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'oauth.login.cancel',
       'oauth.login.query',
       'oauth.login.start',
+      'plan.control',
+      'plan.query',
       'pricing.mutate',
       'pricing.query',
       'queue.retract',

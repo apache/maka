@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
+import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
 import {
@@ -15,13 +16,16 @@ import {
   buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
   buildPersonalizationPromptFragment,
+  buildCancelPlanTool,
   buildPricingLookup,
   buildProviderOptions,
+  buildSubmitPlanTool,
   buildSessionEnvironmentPromptFragment,
   buildSkillAgentToolFromInventory,
   buildSkillSearchAgentToolFromInventory,
   buildSkillsPromptFragmentFromInventoryWithReport,
   buildTaskLedgerTools,
+  buildUpdatePlanTool,
   buildWorkspaceInstructionsPromptFragment,
   createProviderRequestCaptureRecorder,
   createProxiedFetchTransport,
@@ -30,6 +34,10 @@ import {
   recordToolInvocation,
   resolveProjectGitInfo,
   resolveSelectedModelContextWindow,
+  renderInterruptedPlanContext,
+  renderPlanExecutionPrompt,
+  renderPlanModePrompt,
+  selectCollaborationTools,
   SkillShadowSelectionTracker,
   type BackendFactoryContext,
   type BuildBuiltinToolsOptions,
@@ -106,6 +114,11 @@ export interface HostExecutionModelCompositionInput {
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
+  readonly plan?: {
+    readonly store: PlanStore;
+    readonly state: PlanSessionState;
+    readonly mode: 'agent' | 'plan';
+  };
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -123,21 +136,36 @@ export function createHostExecutionModelComposition(
         input.automationTool,
         input.goalTools,
         input.parentAgentTools,
+        input.plan,
       );
+  const clientCapabilityTools = input.boundTools ? [] : (input.clientCapabilities?.tools ?? []);
+  const candidateTools = [...defaultTools, ...clientCapabilityTools];
+  const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
+  const selectedTools = input.plan
+    ? selectCollaborationTools({
+        mode: input.plan.mode,
+        tools: candidateTools,
+        hasActiveExecution: activeExecution !== undefined,
+      })
+    : candidateTools;
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
-    tools: defaultTools,
+    tools: selectedTools,
     policy: { economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS },
   });
   // A bound tool list is an exact child/local activation ceiling. Dynamic
   // capabilities must be included by the authority that constructs that list,
   // never appended here.
-  const clientCapabilityTools = input.boundTools ? [] : (input.clientCapabilities?.tools ?? []);
-  const tools = [...productSurface.tools, ...clientCapabilityTools];
+  const tools = [...productSurface.tools];
   assertUniqueToolNames(tools);
   const toolAvailability = mergeToolAvailability(
     productSurface.toolAvailability,
-    input.boundTools ? [] : (input.clientCapabilities?.groups ?? []),
+    input.boundTools
+      ? []
+      : filterToolGroups(
+          input.clientCapabilities?.groups ?? [],
+          new Set(tools.map(({ name }) => name)),
+        ),
   );
   const childInstruction = input.childInstruction?.trim();
 
@@ -179,6 +207,7 @@ export function createHostExecutionModelComposition(
         skills.text,
         workspaceInstructions,
         promptState.memory,
+        input.plan?.mode === 'plan' ? renderPlanModePrompt() : undefined,
       ]);
     },
     turnTailPrompt: async (context: HostModelPromptContext) => {
@@ -195,7 +224,13 @@ export function createHostExecutionModelComposition(
           includeArchived: false,
         }),
       );
-      return joinFragments([environment, renderTaskLedgerTail(tasks)]) ?? environment;
+      return (
+        joinFragments([
+          environment,
+          renderTaskLedgerTail(tasks),
+          input.plan ? renderPlanTail(input.plan.state, input.plan.mode) : undefined,
+        ]) ?? environment
+      );
     },
   });
 }
@@ -221,6 +256,7 @@ export interface HostAiSdkBackendInput {
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
   readonly childAgents?: HostChildAgentBackendCapabilities;
+  readonly planStore?: PlanStore;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
@@ -278,7 +314,15 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     ? undefined
     : input.clientCapabilities.snapshotForSession(input.context.sessionId);
   let modelComposition: HostExecutionModelComposition;
+  let planState: PlanSessionState | undefined;
   try {
+    planState =
+      input.planStore && !input.context.tools
+        ? await readDuringBackendCreation(
+            () => input.planStore!.readState(input.context.sessionId),
+            input.context.abortSignal,
+          )
+        : undefined;
     const rootTools =
       input.resolveRootTools && !input.context.tools && !input.context.header.subagentParent
         ? await readDuringBackendCreation(
@@ -300,6 +344,15 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       ...(input.goalTools ? { goalTools: input.goalTools } : {}),
       ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
+      ...(planState && input.planStore
+        ? {
+            plan: {
+              store: input.planStore,
+              state: planState,
+              mode: input.context.header.collaborationMode ?? 'agent',
+            },
+          }
+        : {}),
       skillBudget: {
         contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
       },
@@ -411,7 +464,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     return new HostAiSdkBackend(
       {
         sessionId: input.context.sessionId,
-        header: { ...input.context.header, model: target.model },
+        header: {
+          ...input.context.header,
+          model: target.model,
+          permissionMode:
+            input.context.header.collaborationMode === 'plan'
+              ? 'explore'
+              : input.context.header.permissionMode,
+        },
         appendMessage:
           input.context.appendMessage ??
           ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
@@ -435,6 +495,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         modelFactory,
         tools: [...modelComposition.tools],
         toolAvailability: modelComposition.toolAvailability,
+        ...(planState && !input.context.tools
+          ? {
+              planTraceContext: buildPlanTraceContext(
+                planState,
+                input.context.header.collaborationMode ?? 'agent',
+              ),
+            }
+          : {}),
         ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
         contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
@@ -561,10 +629,25 @@ function buildDefaultHostTools(
   automationTool?: MakaTool,
   goalTools: readonly MakaTool[] = [],
   parentAgentTools: readonly MakaTool[] = [],
+  plan?: HostExecutionModelCompositionInput['plan'],
 ): MakaTool[] {
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
   const taskTools = buildTaskLedgerTools({ store: taskLedger });
+  const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
+  const interruptedExecution = plan
+    ? [...plan.state.executions].reverse().find((execution) => execution.status === 'interrupted')
+    : undefined;
+  const planTools = !plan
+    ? []
+    : plan.mode === 'plan'
+      ? [buildSubmitPlanTool(plan.store, interruptedExecution?.executionId)]
+      : activeExecution
+        ? [
+            buildUpdatePlanTool(plan.store, activeExecution.executionId),
+            buildCancelPlanTool(plan.store, activeExecution.executionId),
+          ]
+        : [];
   const toolNames = [
     ...builtins.map((tool) => tool.name),
     ...hostTools.map((tool) => tool.name),
@@ -575,6 +658,7 @@ function buildDefaultHostTools(
     ...(automationTool ? [automationTool.name] : []),
     ...goalTools.map((tool) => tool.name),
     ...parentAgentTools.map((tool) => tool.name),
+    ...planTools.map((tool) => tool.name),
   ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
@@ -592,7 +676,56 @@ function buildDefaultHostTools(
     ...(automationTool ? [automationTool] : []),
     ...goalTools,
     ...parentAgentTools,
+    ...planTools,
   ];
+}
+
+function renderPlanTail(state: PlanSessionState, mode: 'agent' | 'plan'): string | undefined {
+  const active = activePlanExecution(state);
+  const execution =
+    active ??
+    (mode === 'plan'
+      ? [...state.executions].reverse().find((candidate) => candidate.status === 'interrupted')
+      : undefined);
+  if (!execution) return undefined;
+  const proposal = state.proposals.find(
+    (candidate) => candidate.proposalId === execution.proposalId,
+  );
+  if (!proposal) return undefined;
+  return active
+    ? renderPlanExecutionPrompt({ proposal, execution: active })
+    : renderInterruptedPlanContext({ proposal, execution });
+}
+
+function filterToolGroups(groups: readonly ToolGroup[], names: ReadonlySet<string>): ToolGroup[] {
+  return groups.flatMap((group) => {
+    const toolNames = group.toolNames.filter((name) => names.has(name));
+    return toolNames.length > 0 ? [{ ...group, toolNames }] : [];
+  });
+}
+
+function buildPlanTraceContext(
+  state: PlanSessionState,
+  mode: 'agent' | 'plan',
+): {
+  mode: 'agent' | 'plan';
+  storeVersion: number;
+  planId?: string;
+  proposalId?: string;
+  executionId?: string;
+} {
+  const execution = activePlanExecution(state);
+  return {
+    mode,
+    storeVersion: state.storeVersion,
+    ...(execution
+      ? {
+          planId: execution.planId,
+          proposalId: execution.proposalId,
+          executionId: execution.executionId,
+        }
+      : {}),
+  };
 }
 
 function createTurnSkillInventoryResolver(

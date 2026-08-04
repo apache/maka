@@ -28,6 +28,10 @@ import {
   type OperationInput,
   type OperationKey,
   type OperationOutput,
+  type PlanControlInput,
+  type PlanControlResult,
+  type PlanQueryInput,
+  type PlanQueryResult,
   type ProtocolRange,
   type RequestFrame,
   type ResponseFrame,
@@ -148,6 +152,8 @@ export interface RuntimeHostConnection {
     input: SessionRecapGenerateInput,
     timeoutMs?: number,
   ): Promise<SessionRecapGenerateResult>;
+  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult>;
+  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult>;
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
   startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
@@ -350,6 +356,14 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<SessionRecapGenerateResult> {
     return this.request('session.recap.generate', input, timeoutMs);
+  }
+
+  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult> {
+    return this.request('plan.query', input, timeoutMs);
+  }
+
+  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
+    return this.request('plan.control', input, timeoutMs);
   }
 
   queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {

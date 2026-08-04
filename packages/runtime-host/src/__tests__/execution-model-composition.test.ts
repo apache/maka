@@ -16,6 +16,7 @@ import {
   type RuntimeEvent,
 } from '@maka/core';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
+import type { PlanSessionState, PlanStore } from '@maka/core/plan';
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
 import {
   serializeOAuthSubscriptionTokens,
@@ -1964,6 +1965,102 @@ test('Client Capability tools join the existing load_tools catalog without a par
       description: 'Loaded through the canonical tool connector.',
       toolNames: [capabilityTool.name],
     },
+  );
+});
+
+test('Plan composition admits only planning tools before approval and execution controls after', async () => {
+  const proposal = {
+    planId: 'plan-1',
+    proposalId: 'proposal-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    revision: 1,
+    title: 'Host Plan',
+    steps: [{ id: 'step-1', title: 'Implement', description: 'Implement the approved work' }],
+    status: 'pending_approval' as const,
+    submittedAt: 1,
+  };
+  const pending: PlanSessionState = {
+    schemaVersion: 1,
+    sessionId: 'session-1',
+    storeVersion: 1,
+    proposals: [proposal],
+    executions: [],
+    latestProposalId: proposal.proposalId,
+  };
+  const store = { readState: async () => pending } as unknown as PlanStore;
+  const base = {
+    policy: {
+      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+  };
+  const planning = createHostExecutionModelComposition({
+    ...base,
+    plan: { store, state: pending, mode: 'plan' },
+  });
+  assert.deepEqual(planning.tools.map((tool) => tool.name).sort(), [
+    'AskUserQuestion',
+    'SubmitPlan',
+  ]);
+  assert.match(
+    (await planning.systemPrompt({
+      sessionId: 'session-1',
+      turnId: 'turn-2',
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+    })) ?? '',
+    /Collaboration Mode: Plan/,
+  );
+
+  const execution = {
+    executionId: 'execution-1',
+    planId: proposal.planId,
+    proposalId: proposal.proposalId,
+    sessionId: proposal.sessionId,
+    status: 'active' as const,
+    steps: proposal.steps.map((step) => ({
+      ...step,
+      status: 'pending' as const,
+      updatedAt: 2,
+    })),
+    startedAt: 2,
+    updatedAt: 2,
+  };
+  const active: PlanSessionState = {
+    ...pending,
+    storeVersion: 2,
+    proposals: [{ ...proposal, status: 'approved' }],
+    executions: [execution],
+    activeExecutionId: execution.executionId,
+  };
+  const executing = createHostExecutionModelComposition({
+    ...base,
+    parentAgentTools: buildParentAgentTools(),
+    plan: { store, state: active, mode: 'agent' },
+  });
+  assert.ok(executing.tools.some((tool) => tool.name === 'update_plan'));
+  assert.ok(executing.tools.some((tool) => tool.name === 'cancel_plan'));
+  assert.equal(
+    executing.tools.some((tool) => tool.categoryHint === 'subagent'),
+    false,
+  );
+  assert.match(
+    await executing.turnTailPrompt({
+      sessionId: 'session-1',
+      turnId: 'turn-3',
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+    }),
+    /plan_execution_context/,
   );
 });
 

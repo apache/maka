@@ -26,6 +26,7 @@ import {
   openInteractiveArtifactStoreForWrite,
 } from '@maka/storage/artifact-stores';
 import { openInteractiveAutomationAuthorityForWrite } from '@maka/storage/automation-authority';
+import { openInteractivePlanStoreForWrite } from '@maka/storage/plan-authority';
 import {
   isSessionNotFoundError,
   openInteractiveExecutionStoresForWrite,
@@ -70,6 +71,7 @@ import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import { HostOAuthCoordinator } from './oauth-coordinator.js';
+import { HostPlanCoordinator } from './plan-coordinator.js';
 import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
@@ -105,6 +107,7 @@ export async function createExecutionRuntimeHostComposition(
   let automationStore:
     | Awaited<ReturnType<typeof openInteractiveAutomationAuthorityForWrite>>
     | undefined;
+  let planStore: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>> | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   try {
@@ -116,6 +119,8 @@ export async function createExecutionRuntimeHostComposition(
       context.owner.lease,
     );
     automationStore = openedAutomationStore;
+    const openedPlanStore = await openInteractivePlanStoreForWrite(context.owner.lease);
+    planStore = openedPlanStore;
     const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
     longTermMemoryStore = await openInteractiveLongTermMemoryStoreForWrite(context.owner.lease);
     taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
@@ -329,6 +334,7 @@ export async function createExecutionRuntimeHostComposition(
         usage: openedUsageStores,
         clientCapabilities: requireClientCapabilities(clientCapabilities),
         automationTool: requireAutomationCoordinator(automations).modelTool,
+        planStore: openedPlanStore,
         goalTools: requireGoal(goal).tools,
         builtinTools,
         hostTools,
@@ -357,6 +363,10 @@ export async function createExecutionRuntimeHostComposition(
       try {
         const graphTools =
           await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId);
+        const [header, planState] = await Promise.all([
+          stores.sessionStore.readHeaderSnapshot(sessionId),
+          openedPlanStore.readState(sessionId),
+        ]);
         return createHostExecutionModelComposition({
           policy: runtimePolicyStores.runtimePolicy,
           skills,
@@ -368,6 +378,11 @@ export async function createExecutionRuntimeHostComposition(
           automationTool: requireAutomationCoordinator(automations).modelTool,
           goalTools: requireGoal(goal).tools,
           parentAgentTools: childAgentTools.parentTools,
+          plan: {
+            store: openedPlanStore,
+            state: planState,
+            mode: header.collaborationMode ?? 'agent',
+          },
         }).tools.map((tool) => tool.name);
       } finally {
         capabilitySnapshot?.release();
@@ -448,6 +463,7 @@ export async function createExecutionRuntimeHostComposition(
       interactionAuthority: interactions,
       canonicalPermissionOutcomes,
       shellRuns,
+      planStore: openedPlanStore,
       childTools: childAgentTools.childTools,
       worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>
@@ -662,6 +678,16 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       requestDrain: context.requestDrain,
     });
+    const plans = new HostPlanCoordinator({
+      store: openedPlanStore,
+      sessions: stores.sessionStore,
+      runtime: manager,
+      sessionAdmission,
+      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
+      refreshContinuity: (sessionId, lease) =>
+        continuityCoordinator.refreshCanonical(sessionId, lease),
+      requestDrain: context.requestDrain,
+    });
     const executionInspect = new HostExecutionInspectCoordinator(stores);
     const sessionRevisions = new HostSessionRevisionCoordinator({
       stores,
@@ -691,7 +717,10 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
       taskLedger: taskLedgerStore,
-      purgeOperationalState: (sessionId) => stores.purgeConversationOperationalState(sessionId),
+      purgeOperationalState: async (sessionId) => {
+        await stores.purgeConversationOperationalState(sessionId);
+        await openedPlanStore.purgeSessionState(sessionId);
+      },
       purgeAgentGraphState: async (sessionId) => {
         await openedGraphControlStore.purgeAgentGraphControlState(
           agentGraphIdForRootSession(sessionId),
@@ -723,6 +752,7 @@ export async function createExecutionRuntimeHostComposition(
       ...clientCapabilities.handlers,
       ...runtimeResources.handlers,
       ...automations.handlers,
+      ...plans.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
@@ -902,6 +932,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          openedPlanStore.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -971,6 +1006,11 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       automationStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      planStore?.close();
     } catch (closeError) {
       errors.push(closeError);
     }

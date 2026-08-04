@@ -290,12 +290,6 @@ export class HostSessionCatalogCoordinator {
   async #updateConfiguration(
     input: SessionConfigurationUpdateInput,
   ): Promise<OperationOutcome<'session.configuration.update'>> {
-    if (input.configuration.collaborationMode === 'plan') {
-      return configurationFailure(
-        'operation_unavailable',
-        'Plan sessions are not yet supported by Runtime Host',
-      );
-    }
     return this.#admission.run(input.sessionId, async (lease) => {
       let commitAttempted = false;
       try {
@@ -647,12 +641,6 @@ interface PreparedSessionCreate {
 async function prepareCreate(input: SessionCreateInput): Promise<PreparedSessionCreate> {
   if (!isAbsolute(input.cwd)) {
     throw new SessionOperationFailure('invalid_request', 'Session cwd must be absolute');
-  }
-  if (input.collaborationMode === 'plan') {
-    throw new SessionOperationFailure(
-      'operation_unavailable',
-      'Plan sessions are not yet supported by Runtime Host',
-    );
   }
   if (input.labels?.some(isExecutionSemanticLabel)) {
     throw new SessionOperationFailure(

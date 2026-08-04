@@ -165,22 +165,14 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
         }),
         operationError('invalid_request'),
       );
-      await assert.rejects(
-        desktop.request('session.create', {
-          sessionId: 'unsupported-plan-session',
-          cwd: root,
-          modelTarget: { kind: 'default' },
-          collaborationMode: 'plan',
-        }),
-        operationError('operation_unavailable'),
-      );
-      assert.deepEqual(
-        await desktop.request('session.catalog.query', {
-          kind: 'get',
-          sessionId: 'unsupported-plan-session',
-        }),
-        { kind: 'session', session: null },
-      );
+      const planSession = await desktop.request('session.create', {
+        sessionId: 'plan-session',
+        cwd: root,
+        modelTarget: { kind: 'default' },
+        collaborationMode: 'plan',
+      });
+      if ('kind' in planSession) assert.fail('Plan Session must be wire-representable');
+      assert.equal(planSession.collaborationMode, 'plan');
 
       const policy = await tui.request('runtime.policy.query', {});
       const changedPolicy = await tui.request('runtime.policy.mutate', {
@@ -402,7 +394,7 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       if (continuation.kind !== 'page') {
         assert.fail('Stable Session catalog continuation must return a page');
       }
-      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 5);
+      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 6);
 
       const filteredStart = await desktop.request('session.catalog.query', {
         kind: 'list_start',

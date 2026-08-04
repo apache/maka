@@ -13,6 +13,7 @@ import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
 import { MEMORY_OPERATION_SPECS } from './memory.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
+import { PLAN_OPERATION_SPECS } from './plan.js';
 import {
   composeOperationSpecMaps,
   type HostOperationError,
@@ -112,6 +113,7 @@ export * from './client-capability.js';
 export * from './goal.js';
 export * from './memory.js';
 export * from './oauth.js';
+export * from './plan.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
 export * from './session-catalog.js';
@@ -132,6 +134,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   RUNTIME_POLICY_OPERATION_SPECS,
   RUNTIME_RESOURCE_OPERATION_SPECS,
   AUTOMATION_OPERATION_SPECS,
+  PLAN_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
   TASK_LEDGER_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,
