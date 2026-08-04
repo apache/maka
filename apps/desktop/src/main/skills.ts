@@ -30,6 +30,7 @@ import {
   writeContainedRegularTextFile,
   writeSkillRuntimePreferences,
   type HostCapabilities,
+  type BundledSkillSource,
   type ManagedSkillCategory,
   type ManagedSkillUpdateStatus,
   type RejectedSkillDefinition,
@@ -707,6 +708,13 @@ export type InstallBundledSkillResult =
   | { ok: true; skill: InstalledSkill }
   | { ok: false; reason: 'not_found' | 'already_exists' | 'blocked_path' | 'write_failed' };
 
+export type EnsureBundledSkillInstalledResult =
+  | { ok: true; action: 'installed' | 'updated' | 'already_installed'; skill: InstalledSkill }
+  | {
+      ok: false;
+      reason: 'not_found' | 'blocked_path' | 'write_failed' | 'existing_untrusted';
+    };
+
 function parseBundledSkillCategory(body: string): ManagedSkillCategory {
   if (!body.startsWith('---')) return BUNDLED_CATALOG_CATEGORY_DEFAULT;
   const close = body.indexOf('\n---', 3);
@@ -800,6 +808,139 @@ export async function installBundledSkill(root: string, id: string): Promise<Ins
   } catch (error) {
     if (createdSkillDir) await rm(skillDir, { recursive: true, force: true }).catch(() => {});
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') return { ok: false, reason: 'already_exists' };
+    return { ok: false, reason: 'write_failed' };
+  }
+}
+
+/**
+ * Seed one product-owned bundled Skill without overwriting a workspace file.
+ *
+ * A core capability may need its operating guide before the model can use that
+ * capability correctly. Repeated startup is idempotent, but an existing
+ * untrusted or modified copy is never replaced silently.
+ */
+export async function ensureBundledSkillInstalled(
+  root: string,
+  id: string,
+): Promise<EnsureBundledSkillInstalledResult> {
+  const source = getBundledSkillSource(id);
+  if (!source) return { ok: false, reason: 'not_found' };
+  const existing = (await listInstalledSkills(root)).find((skill) => skill.id === id);
+  if (existing) return reconcileBundledSkill(root, existing, source);
+
+  const installed = await installBundledSkill(root, id);
+  if (installed.ok) return { ok: true, action: 'installed', skill: installed.skill };
+  switch (installed.reason) {
+    case 'not_found':
+    case 'blocked_path':
+    case 'write_failed':
+      return { ok: false, reason: installed.reason };
+    case 'already_exists':
+      break;
+  }
+
+  // Another startup may have won the mkdir race. Re-read the authoritative
+  // installed projection instead of treating EEXIST as either success or loss.
+  const raced = (await listInstalledSkills(root)).find((skill) => skill.id === id);
+  return raced
+    ? reconcileBundledSkill(root, raced, source)
+    : { ok: false, reason: 'write_failed' };
+}
+
+async function reconcileBundledSkill(
+  root: string,
+  skill: InstalledSkill,
+  source: BundledSkillSource,
+): Promise<EnsureBundledSkillInstalledResult> {
+  if (!isTrustedBundledSkill(skill)) return { ok: false, reason: 'existing_untrusted' };
+  if (skill.contentSha256?.toLowerCase() === source.contentSha256.toLowerCase()) {
+    return { ok: true, action: 'already_installed', skill };
+  }
+  if (
+    !skill.contentSha256
+    || !source.legacyContentSha256.some(
+      (hash) => hash.toLowerCase() === skill.contentSha256?.toLowerCase(),
+    )
+  ) {
+    return { ok: false, reason: 'existing_untrusted' };
+  }
+  return updateBundledSkill(root, skill, source);
+}
+
+function isTrustedBundledSkill(skill: InstalledSkill): boolean {
+  return (
+    skill.sourceType === 'bundled'
+    && skill.sourceName === 'maka-bundled'
+    && skill.userModified === false
+    && skill.validationStatus === 'ok'
+  );
+}
+
+async function updateBundledSkill(
+  root: string,
+  skill: InstalledSkill,
+  source: BundledSkillSource,
+): Promise<EnsureBundledSkillInstalledResult> {
+  const target = await resolveSkillFileUpdateTarget(root, skill.id);
+  if (!target.ok) {
+    return {
+      ok: false,
+      reason: target.reason === 'blocked_path' ? 'blocked_path' : 'write_failed',
+    };
+  }
+
+  const skillDir = join(root, 'skills', skill.id);
+  const skillFile = join(skillDir, 'SKILL.md');
+  const lockFile = join(skillDir, 'skill.lock.json');
+  try {
+    const [current, currentLock] = await Promise.all([
+      readContainedRegularTextFile(skillDir, skillFile),
+      readContainedRegularTextFile(skillDir, lockFile),
+    ]);
+    if (!current.ok) {
+      return {
+        ok: false,
+        reason: current.reason === 'blocked_path' ? 'blocked_path' : 'write_failed',
+      };
+    }
+    if (!currentLock.ok) {
+      return {
+        ok: false,
+        reason: currentLock.reason === 'blocked_path' ? 'blocked_path' : 'write_failed',
+      };
+    }
+    if (
+      !skill.contentSha256
+      || current.sha256.toLowerCase() !== skill.contentSha256.toLowerCase()
+    ) {
+      return { ok: false, reason: 'existing_untrusted' };
+    }
+
+    const restorePrevious = async () => {
+      await writeContainedRegularTextFile(skillDir, skillFile, current.content).catch(() => {});
+      await writeContainedRegularTextFile(skillDir, lockFile, currentLock.content).catch(() => {});
+    };
+    if (!await writeContainedRegularTextFile(skillDir, skillFile, source.body)) {
+      return { ok: false, reason: 'write_failed' };
+    }
+    if (!await writeSkillLock(skillDir, createBundledSkillLock(source))) {
+      await restorePrevious();
+      return { ok: false, reason: 'write_failed' };
+    }
+
+    const updated = (await listInstalledSkills(root)).find(
+      (candidate) => candidate.id === skill.id,
+    );
+    if (
+      !updated
+      || !isTrustedBundledSkill(updated)
+      || updated.contentSha256?.toLowerCase() !== source.contentSha256.toLowerCase()
+    ) {
+      await restorePrevious();
+      return { ok: false, reason: 'write_failed' };
+    }
+    return { ok: true, action: 'updated', skill: updated };
+  } catch {
     return { ok: false, reason: 'write_failed' };
   }
 }

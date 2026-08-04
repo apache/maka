@@ -541,6 +541,11 @@ describe('B7 — the tool description states nothing the model cannot act on', (
     assert.doesNotMatch(description, /retained background mutation/i);
     assert.doesNotMatch(description, /DOM\/CDP/i);
     assert.doesNotMatch(description, /uniquely resolved page identity/i);
+    assert.match(
+      description,
+      /shipping maka-cu host keeps compatibility key and coordinate dispatch disabled/i,
+    );
+    assert.doesNotMatch(description, /reach a background window normally/i);
   });
 });
 

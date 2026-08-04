@@ -776,7 +776,11 @@ export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSu
   const rawAction = ownDataProperty(record, 'action');
   const knownAction = typeof rawAction === 'string' && APPROVAL_ACTIONS.has(rawAction);
   const action = knownAction ? rawAction : 'unknown';
-  const includeScreenshot = ownDataProperty(record, 'include_screenshot') !== false;
+  // The tool defaults observe to a text-only Accessibility tree. Permission
+  // classification must follow the action that will execute, not the old
+  // screenshot-by-default contract: an omitted flag is metadata_read, and only
+  // an explicit true requires Screen Recording approval.
+  const includeScreenshot = ownDataProperty(record, 'include_screenshot') === true;
   const approvalClass: ComputerUseApprovalClass =
     action === 'list_apps' || action === 'cursor_position' || action === 'wait'
       ? 'metadata_read'

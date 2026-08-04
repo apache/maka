@@ -29,6 +29,10 @@ const outFile = join(
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 const LEGACY_CONTENT_SHA256_BY_ID = {
+  'computer-use': [
+    'sha256:419088b2f8a0b12061b4811323abc381869ebe8fccbfc8f2bdfc96ff37a1e45b',
+    'sha256:8e4404349be4e5493fcf13981624ed55198c0670a794fbf88e2bad81ddb79f6c',
+  ],
   'drafter-diagram': [
     'sha256:4b93ebada2f061f1dfc3d99a21bc93a9d3d640f326af6230d15813bac6a5efcf',
   ],

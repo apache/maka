@@ -117,7 +117,7 @@ export const computerWireParams = z
     action: z
       .enum(CU_TOOL_ACTION_TYPES as unknown as [string, ...string[]])
       .describe(
-        'Operation to perform. Required fields by action: list_apps takes an optional app to filter by — pass the name you were given ("TextEdit", "文本编辑") and it returns the matching app ids, which is far cheaper than listing everything; without it only apps that currently have a window are listed; launch_app requires app; observe/screenshot require app or window_id, and observe takes an optional menu to open one menu bar menu and an optional query to show only the matching part of a large window; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; scroll_element requires observation_id, element_id, and scroll_direction, with optional scroll_amount; element_sequence requires observation_id and steps, where each step names a control by the label it shows and optionally its role — prefer it whenever several controls must be operated in order, since it costs one call instead of one per control; window_action requires observation_id, element_id and window_action (move, resize or minimize), with position for move and size for resize — element_id is the window itself, which is the first element of the observation, and position is in screen points, the same space the observation reports its window bounds and displays in, so moving a window to the left edge of a screen means that display x with y unchanged; press_key requires observation_id and text, and takes an optional element_id — supply it and the control is focused before the key is posted, omit it and the key lands on whatever the observed window already has focused; coordinate actions require observation_id plus their coordinate fields.',
+        'Operation to perform. Required fields by action: list_apps takes an optional app to filter by — pass the name you were given ("TextEdit", "文本编辑") and it returns the matching app ids, which is far cheaper than listing everything; without it only apps that currently have a window are listed; launch_app requires app; observe/screenshot require app or window_id, and observe takes an optional menu to open one menu bar menu and an optional query to show only the matching part of a large window; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; scroll_element requires observation_id, element_id, and scroll_direction, with optional scroll_amount; element_sequence requires observation_id and steps, where each step names a control by the label it shows and optionally its role — prefer it whenever several controls must be operated in order, since it costs one call instead of one per control; window_action requires observation_id, element_id and window_action (move, resize or minimize), with position for move and size for resize — element_id is the window itself, which is the first element of the observation, and position is in screen points, the same space the observation reports its window bounds and displays in, so moving a window to the left edge of a screen means that display x with y unchanged. Raw key and coordinate actions remain in this provider schema for compatibility, but the shipping maka-cu host refuses them.',
       ),
     // "Exact" was already in this description and was not enough. On a real
     // desktop chain the model asked for "Calculator" and got nothing, because
@@ -147,8 +147,8 @@ export const computerWireParams = z
       .describe(
         'For observe, also capture a picture of the window. Defaults to false: the element ' +
           'list is what element actions need, and capturing the picture is the slow part. ' +
-          'Pass true only when the pixels themselves matter — a coordinate action, or a ' +
-          'control the element list does not describe.',
+          'Pass true only when the pixels need visual interpretation or the element list ' +
+          'does not describe a control. A screenshot does not enable coordinate input.',
       ),
     menu: z
       .string()
@@ -1453,7 +1453,7 @@ export function buildComputerUseTools(deps: {
     activityKind: 'computer',
     description:
       'Maka semantic computer harness. Use action=observe to read the current computer state before acting, then use the same function ' +
-      'for semantic element actions, exact Electron page actions, wait, zoom, or another observation. Every successful mutating action returns a fresh screenshot when available ' +
+      'for semantic element actions, exact Electron page actions, wait, screenshots, or another observation. Every successful mutating action returns a fresh screenshot when available ' +
       'and controlled path/effect/verified evidence; inspect that new state before retrying or continuing. ' +
       // "The retained background mutation paths are native Accessibility element
       // actions and exact Electron page semantic actions" named two host
@@ -1485,8 +1485,7 @@ export function buildComputerUseTools(deps: {
       'An observation carries no picture unless you ask for one with include_screenshot: true. ' +
       'That is not a degraded observation: the element list is the whole window as element actions ' +
       'see it, and it is all click_element, set_value, secondary_action and the rest need. ' +
-      'Ask for the picture when the pixels are the point — a coordinate action, or a control the ' +
-      'element list does not describe. ' +
+      'Ask for the picture when the pixels themselves matter or the element list does not describe a control. ' +
       // Measured, not inferred: `cmd+a` did not land on a background TextEdit even
       // carrying its character, and landed the instant that application was
       // activated. A main-menu key equivalent is dispatched through NSApp's key
@@ -1495,15 +1494,15 @@ export function buildComputerUseTools(deps: {
       // silence, because nothing told them it could not arrive.
       'A menu shortcut — cmd+P, cmd+S, cmd+W, ctrl+F2 and the like — cannot reach an application that is not ' +
       'frontmost, because macOS routes it through the frontmost window and Computer Use never takes the foreground. ' +
-      'It will appear to be sent and nothing will happen. Do not retry it. Keys that do not go through the menu bar ' +
-      '— Tab, Escape, Return, the arrows, and typing — reach a background window normally. When a command exists ' +
-      'only in a menu, say so rather than reaching for its shortcut. ' +
+      'Use the menu observation and click its returned command instead. ' +
       'A "+name,name" suffix lists what that element accepts as a secondary_action, and an element with no suffix ' +
       'offers nothing beyond click_element that this executor knows of; raise is how a window is brought forward. ' +
       '[focused] marks where a key sent without an element_id will land, when the executor reports focus. ' +
-      'Coordinate click, pointer move, scroll and drag aim at a pixel and need the window where it is; the element actions aim at a control and do not, ' +
-      'which is the difference that shows when the window is behind something else. Prefer an element action whenever one exists. ' +
-      'Synthesized input is refused while the user is at the keyboard or the pointer, so a coordinate action can come back user_intervened through no fault of yours. ' +
+      'The shipping maka-cu host keeps compatibility key and coordinate dispatch disabled. press_key, type, key, hold_key, ' +
+      'pointer clicks, drag, coordinate scroll and mouse movement remain in the provider schema for compatibility but fail closed. ' +
+      'cursor_position, hold_key and zoom also have no maka.cu/2 execution path. Use click_element, set_value, select_text, ' +
+      'scroll_element, secondary_action, window_action or element_sequence; if those cannot express the task, report the capability gap. ' +
+      'A screenshot provides visual evidence but does not enable synthetic input. ' +
       'Never guess the current foreground app; list_apps or observe an explicit app/window first. ' +
       'When the user asks for an application to be operated, operate it here. Do not substitute a shell route to the same ' +
       'visible effect — osascript/AppleScript, System Events, `open`, cliclick, screencapture, or a framework called from a ' +

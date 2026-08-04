@@ -52,7 +52,13 @@ describe('Computer Use foundation contract', () => {
         include_screenshot: false,
       }).approvalClass,
     ).toBe('metadata_read');
-    expect(computerUseApprovalSummary({ action: 'observe' }).approvalClass).toBe('screenshot_read');
+    expect(computerUseApprovalSummary({ action: 'observe' }).approvalClass).toBe('metadata_read');
+    expect(
+      computerUseApprovalSummary({
+        action: 'observe',
+        include_screenshot: true,
+      }).approvalClass,
+    ).toBe('screenshot_read');
     expect(computerUseApprovalSummary({ action: 'left_click' }).approvalClass).toBe(
       'pointer_mutation',
     );

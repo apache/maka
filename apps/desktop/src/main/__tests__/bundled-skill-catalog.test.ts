@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -8,9 +8,12 @@ import {
   MANAGED_SKILL_CATEGORIES,
 } from '@maka/runtime';
 import {
+  ensureBundledSkillInstalled,
   installBundledSkill,
   listBundledSkillCatalog,
   listInstalledSkills,
+  loadSkillInstructions,
+  parseSkillFrontMatter,
 } from '../skills.js';
 
 const EXPECTED_COUNT = BUNDLED_SKILL_CATALOG.length;
@@ -40,6 +43,7 @@ describe('bundled skill catalog', () => {
       assert.equal(catalog.length, EXPECTED_COUNT);
 
       const ids = new Set(catalog.map((entry) => entry.id));
+      assert.ok(ids.has('computer-use'));
       assert.ok(ids.has('deep-research'));
       assert.ok(ids.has('frontend-design'));
 
@@ -53,6 +57,91 @@ describe('bundled skill catalog', () => {
         );
         assert.equal(entry.installed, false);
       }
+    });
+  });
+
+  it('ships Computer Use guidance only on a host that binds maka_computer', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const installed = await installBundledSkill(workspaceRoot, 'computer-use');
+      assert.equal(installed.ok, true);
+      if (!installed.ok) return;
+
+      const skillFile = join(workspaceRoot, 'skills', 'computer-use', 'SKILL.md');
+      const body = await readFile(skillFile, 'utf8');
+      const metadata = parseSkillFrontMatter(body);
+      assert.equal(metadata.name, 'Computer Use');
+      assert.match(metadata.description ?? '', /local desktop application UI/);
+      assert.deepEqual(metadata.allowedTools, ['load_tools', 'maka_computer']);
+      assert.deepEqual(metadata.requiredTools, ['maka_computer']);
+      assert.equal(
+        /[\u3400-\u9fff]/u.test(body.replace(/^category:.*$/m, '')),
+        false,
+        'model-facing Computer Use guidance must remain English',
+      );
+
+      const visualHost = {
+        toolNames: new Set(['load_tools', 'maka_computer']),
+      };
+      const loaded = await loadSkillInstructions(workspaceRoot, 'computer-use', visualHost);
+      assert.equal(loaded.ok, true);
+      if (!loaded.ok) return;
+      assert.match(loaded.skill.instructions, /group.*computer_use/);
+      assert.match(loaded.skill.instructions, /outcome_unknown/);
+      assert.match(loaded.skill.instructions, /include_screenshot/);
+      assert.match(loaded.skill.instructions, /element_sequence/);
+      assert.match(loaded.skill.instructions, /standalone step/);
+      assert.match(loaded.skill.instructions, /optional `app` filter/);
+      assert.match(loaded.skill.instructions, /compatibility input dispatch disabled/);
+      assert.match(loaded.skill.instructions, /metadata_read/);
+      assert.doesNotMatch(loaded.skill.instructions, /snapshot_spent|window_gone/);
+
+      const hidden = await loadSkillInstructions(workspaceRoot, 'computer-use', {
+        toolNames: new Set(['load_tools']),
+      });
+      assert.equal(hidden.ok, false);
+      if (hidden.ok) return;
+      assert.equal(hidden.reason, 'host_incompatible');
+    });
+  });
+
+  it('auto-seeds a trusted Computer Use Skill idempotently', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const first = await ensureBundledSkillInstalled(workspaceRoot, 'computer-use');
+      assert.equal(first.ok, true);
+      if (!first.ok) return;
+      assert.equal(first.action, 'installed');
+      assert.equal(first.skill.sourceType, 'bundled');
+      assert.equal(first.skill.validationStatus, 'ok');
+
+      const second = await ensureBundledSkillInstalled(workspaceRoot, 'computer-use');
+      assert.equal(second.ok, true);
+      if (!second.ok) return;
+      assert.equal(second.action, 'already_installed');
+      assert.equal(second.skill.contentSha256, first.skill.contentSha256);
+
+      const installed = await listInstalledSkills(workspaceRoot);
+      assert.deepEqual(installed.map((skill) => skill.id), ['computer-use']);
+    });
+  });
+
+  it('does not overwrite an untrusted workspace copy during automatic seeding', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const skillDir = join(workspaceRoot, 'skills', 'computer-use');
+      await mkdir(skillDir, { recursive: true });
+      const custom = `---
+name: Computer Use
+description: A local override that must not be replaced.
+---
+Do something else.
+`;
+      const skillFile = join(skillDir, 'SKILL.md');
+      await writeFile(skillFile, custom, 'utf8');
+
+      assert.deepEqual(await ensureBundledSkillInstalled(workspaceRoot, 'computer-use'), {
+        ok: false,
+        reason: 'existing_untrusted',
+      });
+      assert.equal(await readFile(skillFile, 'utf8'), custom);
     });
   });
 

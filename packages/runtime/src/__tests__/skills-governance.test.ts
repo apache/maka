@@ -26,8 +26,8 @@ import {
 
 describe('shared bundled skill catalog', () => {
   it('is the complete byte-pinned catalog with bundled provenance and legacy trust', () => {
-    assert.equal(BUNDLED_SKILL_CATALOG.length, 29);
-    assert.equal(new Set(BUNDLED_SKILL_CATALOG.map((skill) => skill.id)).size, 29);
+    assert.equal(BUNDLED_SKILL_CATALOG.length, 30);
+    assert.equal(new Set(BUNDLED_SKILL_CATALOG.map((skill) => skill.id)).size, 30);
     for (const skill of BUNDLED_SKILL_CATALOG) {
       assert.equal(skill.contentSha256, sha256(skill.body));
       assert.ok(skill.body.startsWith('---\n'));

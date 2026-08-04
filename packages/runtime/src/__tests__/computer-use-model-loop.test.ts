@@ -77,14 +77,10 @@ describe('AiSdkBackend Computer Use model loop', () => {
       assert.match(serialized, /Prefer click_element or set_value/);
       assert.match(
         serialized,
-        // Was asserting "disabled by default … fail closed with
-        // unsupported_action", which the desktop host has not done since
-        // cua-driver's compatibility backend went away — it passes
-        // `allowCompatibilityInputDispatch: true`. The test was holding a
-        // sentence that had become false. What is true, and what the model
-        // needs, is which surface to prefer and why.
-        /Coordinate click, pointer move, scroll and drag aim at a pixel.*Prefer an element action/s,
+        /shipping maka-cu host keeps compatibility key and coordinate dispatch disabled/i,
       );
+      assert.match(serialized, /zoom also have no maka\.cu\/2 execution path/i);
+      assert.doesNotMatch(serialized, /wait, zoom, or another observation/i);
     }
   });
 
@@ -188,7 +184,7 @@ describe('AiSdkBackend Computer Use model loop', () => {
     assert.match(JSON.stringify(modelPrompts[3]), /model-written/);
     assert.match(
       JSON.stringify(modelTools[0]),
-      /Coordinate click, pointer move, scroll and drag aim at a pixel.*Prefer an element action/s,
+      /shipping maka-cu host keeps compatibility key and coordinate dispatch disabled/i,
     );
     assert.match(JSON.stringify(modelTools[0]), /Prefer click_element or set_value/);
     assert.equal(

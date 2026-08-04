@@ -126,6 +126,7 @@ import { registerGitIpc } from './git-ipc-main.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
 import { registerOnboardingIpc } from './onboarding-ipc-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
+import { ensureBundledSkillInstalled } from './skills.js';
 import {
   createPermissionOverlayMain,
   registerPermissionOverlayIpc,
@@ -724,6 +725,17 @@ const {
   getWorkspacePrivacyContext,
   resolveDesktopSkillHost,
 });
+if (computerUse.backendId !== 'none') {
+  const seededComputerUseSkill = await startupStep(
+    'Computer Use skill',
+    ensureBundledSkillInstalled(workspaceRoot, 'computer-use'),
+  );
+  if (!seededComputerUseSkill.ok) {
+    console.warn(
+      `[skills] Computer Use is available, but its bundled Skill was not installed: ${seededComputerUseSkill.reason}`,
+    );
+  }
+}
 let agentGraphCoordinator: AgentGraphCoordinator;
 let agentGraphSupervisorWakeCoordinator: AgentGraphSupervisorWakeCoordinator;
 const desktopBackendToolSurfaceDeps = {
