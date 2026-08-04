@@ -156,10 +156,14 @@ export class FilesystemWorkerClient {
     if (!parsedOperation.success) throw clientError('invalid_operation', 'validation', requestId);
 
     const access = operationAccess(parsedOperation.data.kind);
+    // delete/lstat address the directory entry; create-mode (ApplyPatch Add)
+    // must not clobber an existing entry (including a link). replace-mode
+    // follows the canonical target like a plain write, so the client and
+    // worker resolve the same path.
     const entryMode =
       parsedOperation.data.kind === 'delete' ||
       parsedOperation.data.kind === 'lstat' ||
-      (parsedOperation.data.kind === 'write' && parsedOperation.data.mode);
+      (parsedOperation.data.kind === 'write' && parsedOperation.data.mode === 'create');
     const target = await (entryMode
       ? normalizeDirectoryEntryTarget(
           canonicalCwd,
