@@ -424,6 +424,13 @@ export function PlanReminderPanel(props: {
       >
         {planView === 'tasks' ? (
           <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
+            {/* Selecting a row moves no focus — a mouse user did not ask to
+                leave the list — so nothing else would tell a screen reader
+                that a panel just opened beside it. This says so, politely,
+                after whatever the activation itself announced. */}
+            <p className="maka-visually-hidden" role="status" aria-live="polite">
+              {selectedReminder ? copy.page.inspectorOpened(selectedReminder.title) : ''}
+            </p>
             {normalizedListQuery && (
               <div className="maka-plan-search-summary" role="status" aria-live="polite">
                 <span>{copy.page.searchMatches(searchMatchedReminders.length)}</span>
