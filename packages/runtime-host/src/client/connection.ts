@@ -31,6 +31,7 @@ import {
   type HostRegistration,
   type HostStatusResult,
   HOST_OPERATION_SPECS,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   type OperationInput,
   type OperationKey,
   type OperationOutput,
@@ -437,8 +438,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           'Runtime Host returned a duplicate subscription identity',
         );
       }
-      const subscription = new ClientSessionSubscription(result, () =>
-        this.#closeSessionSubscription(result.subscriptionId),
+      const subscription = new ClientSessionSubscription(
+        result,
+        () => this.#closeSessionSubscription(result.subscriptionId),
+        (query) => this.request('session.transcript.query', query, timeoutMs),
       );
       this.#subscriptions.set(result.subscriptionId, subscription);
       return subscription;
@@ -740,12 +743,20 @@ export async function connectResolvedRuntimeHost(
     transport.destroy(handshakeTimeoutError);
   }, handshakeBudget);
   try {
+    const staleCompatibility = registration.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH;
+    const helloProtocol = staleCompatibility
+      ? {
+          min: Math.min(Number.MAX_SAFE_INTEGER, registration.protocolMax + 1),
+          max: Math.min(Number.MAX_SAFE_INTEGER, registration.protocolMax + 1),
+        }
+      : input.protocol;
     await transport.write({
       kind: 'hello',
       clientInstanceId: input.clientInstanceId,
       surface: input.surface,
-      protocolMin: input.protocol.min,
-      protocolMax: input.protocol.max,
+      protocolMin: helloProtocol.min,
+      protocolMax: helloProtocol.max,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
     });
     if (remainingTimeout(handshakeDeadline.at) === undefined) {
       throw handshakeDeadline.exhaustsElection
@@ -768,6 +779,9 @@ export async function connectResolvedRuntimeHost(
       return { kind: 'unavailable', reason: 'epoch_mismatch', registration };
     }
     if (handshake.kind === 'accepted') {
+      if (staleCompatibility || handshake.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+        throw new Error('Runtime Host accepted an incompatible schema epoch');
+      }
       if (
         handshake.selectedProtocol < input.protocol.min ||
         handshake.selectedProtocol > input.protocol.max ||

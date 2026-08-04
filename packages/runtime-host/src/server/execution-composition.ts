@@ -91,6 +91,7 @@ import { HostSessionRetirementCoordinator } from './session-retirement-coordinat
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import { createSessionTranscriptReader } from './session-transcript-reader.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
@@ -280,11 +281,15 @@ export async function createExecutionRuntimeHostComposition(
       readGoal: (sessionId) => requireGoal(goal).readProjection(sessionId),
     });
     canonicalProjection = canonicalProjectionReader;
+    const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
+      store: stores.interactionStore,
+    });
     continuity = new SessionContinuityCoordinator(
       context.hostEpoch,
       (sessionId) => canonicalProjectionReader.read(sessionId),
       sessionAdmission,
       context.requestDrain,
+      createSessionTranscriptReader({ stores, canonicalPermissionOutcomes }),
     );
     const continuityCoordinator = continuity;
     deepResearch = new HostDeepResearchCoordinator({
@@ -355,9 +360,6 @@ export async function createExecutionRuntimeHostComposition(
         notifySandboxBoundaryGraphWake(sessionId, stores.sessionStore, (rootSessionId) =>
           requireGraphSupervisorWake(graphSupervisorWake).notifyPermissionResponse(rootSessionId),
         ),
-    });
-    const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
-      store: stores.interactionStore,
     });
     memory = new HostMemoryCoordinator({
       store: memoryStore,

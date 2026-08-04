@@ -15,6 +15,7 @@ import {
   negotiateProtocol,
   ProtocolFrameDecoder,
   RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
   SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES,
@@ -107,6 +108,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.recap.generate',
       'session.remove',
       'session.revision.create',
+      'session.transcript.query',
       'skill.catalog.mutate',
       'skill.catalog.preview-update',
       'skill.catalog.query',
@@ -618,7 +620,7 @@ describe('Runtime Host bootstrap protocol', () => {
   test('decodes split UTF-8 and multiple newline-delimited frames without an unbounded tail', () => {
     const decoder = new ProtocolFrameDecoder();
     const wire = Buffer.from(
-      `${JSON.stringify({ kind: 'hello', clientInstanceId: '客户端', surface: 'tui', protocolMin: RUNTIME_HOST_PROTOCOL_VERSION, protocolMax: RUNTIME_HOST_PROTOCOL_VERSION })}\n` +
+      `${JSON.stringify({ kind: 'hello', clientInstanceId: '客户端', surface: 'tui', protocolMin: RUNTIME_HOST_PROTOCOL_VERSION, protocolMax: RUNTIME_HOST_PROTOCOL_VERSION, compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH })}\n` +
         `${JSON.stringify({ requestId: 'status-1', operation: 'host.status', input: {} })}\n`,
     );
     const split = wire.indexOf(Buffer.from('端')) + 1;
@@ -631,6 +633,7 @@ describe('Runtime Host bootstrap protocol', () => {
       surface: 'tui',
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
     });
     assert.deepEqual(decodeClientFrame(frames[1]), {
       requestId: 'status-1',
@@ -646,6 +649,7 @@ describe('Runtime Host bootstrap protocol', () => {
       hostEpoch: 'epoch-1',
       connectionId: 'connection-1',
       selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       state: 'ready' as const,
     };
     assert.deepEqual(decodeHostFrame(accepted), accepted);
@@ -658,6 +662,7 @@ describe('Runtime Host bootstrap protocol', () => {
       endpoint: '/tmp/maka-runtime-host.sock',
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       state: 'ready' as const,
       pid: 42,
       createdAt: '2026-07-23T00:00:00.000Z',

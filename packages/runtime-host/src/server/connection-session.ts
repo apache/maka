@@ -144,7 +144,9 @@ export class RuntimeHostConnectionSession {
     try {
       if (this.#closed) return;
       const continuity =
-        frame.operation === 'subscription.open' || frame.operation === 'subscription.close'
+        frame.operation === 'subscription.open' ||
+        frame.operation === 'subscription.close' ||
+        frame.operation === 'session.transcript.query'
           ? this.#ensureContinuity()
           : undefined;
       if (

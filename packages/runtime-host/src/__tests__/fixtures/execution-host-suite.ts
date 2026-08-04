@@ -1097,6 +1097,7 @@ export async function sendStartWithoutReadingResponse(
     surface: 'desktop',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
+    compatibilityEpoch: 1,
   });
   const handshake = decodeHostFrame(await transport.read(2_000));
   assert.ok('kind' in handshake);

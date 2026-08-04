@@ -7,6 +7,7 @@ import type { AgentRunHeader } from '@maka/core';
 import { createInMemoryTaskRunStore, runTaskOnce } from '@maka/headless';
 import type { SessionInspectDocument } from '@maka/runtime';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import { RUNTIME_HOST_COMPATIBILITY_EPOCH } from '@maka/runtime-host/protocol';
 import { createSessionStore } from '@maka/storage';
 import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import {
@@ -279,6 +280,7 @@ describe('inspect CLI storage authority boundary', () => {
             endpoint: '/tmp/runtime-host.sock',
             protocolMin: 0,
             protocolMax: 0,
+            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
             state: 'ready',
             pid: 1,
             createdAt: new Date(0).toISOString(),

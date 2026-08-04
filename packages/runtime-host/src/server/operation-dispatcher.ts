@@ -62,7 +62,7 @@ export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.insp
 export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
 export type SessionContinuityOperationKey = Extract<
   OperationKey,
-  'subscription.open' | 'subscription.close'
+  'subscription.open' | 'subscription.close' | 'session.transcript.query'
 >;
 export type SessionRevisionOperationKey = Extract<
   OperationKey,
@@ -75,7 +75,10 @@ export type SessionRetirementOperationKey = Extract<
 export type SessionEffectOperationKey = Extract<OperationKey, 'session.recap.generate'>;
 export type SessionCatalogOperationKey = Exclude<
   Extract<OperationKey, `session.${string}`>,
-  SessionRevisionOperationKey | SessionRetirementOperationKey | SessionEffectOperationKey
+  | SessionContinuityOperationKey
+  | SessionRevisionOperationKey
+  | SessionRetirementOperationKey
+  | SessionEffectOperationKey
 >;
 export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;

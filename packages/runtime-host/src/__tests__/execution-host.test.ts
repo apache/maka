@@ -20,7 +20,7 @@ import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
-import type { StoredMessage } from '@maka/core/session';
+import { decodeStoredMessageForRead, type StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -487,10 +487,6 @@ test('two Clients share one execution after the starting Client disconnects', as
     const host = await fixture.startHost();
     const first = await connectClient(fixture.root, 'desktop');
     const second = await connectClient(fixture.root, 'tui');
-    const secondSubscription = await second.openSessionSubscription({
-      sessionId: fixture.sessionId,
-    });
-    const secondProbe = new SubscriptionProbe(secondSubscription);
     const turnId = randomUUID();
 
     const started = await first.startTurn(
@@ -502,6 +498,19 @@ test('two Clients share one execution after the starting Client disconnects', as
       PROCESS_TIMEOUT_MS,
     );
     assert.equal(started.turnId, turnId);
+    const secondSubscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+    });
+    const transcript = await secondSubscription.loadTranscript(decodeStoredMessageForRead);
+    assert.ok(
+      transcript.some(
+        (message) =>
+          message.type === 'user' &&
+          message.turnId === turnId &&
+          message.text === FAKE_ASK_USER_QUESTION_PROMPT,
+      ),
+    );
+    const secondProbe = new SubscriptionProbe(secondSubscription);
     await assert.rejects(
       () =>
         second.startTurn(

@@ -280,6 +280,7 @@ async function withProtocolPeer(
       endpoint: endpoint.path,
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: 1,
       state: 'ready',
       pid: process.pid,
       createdAt: new Date().toISOString(),
@@ -316,6 +317,7 @@ async function acceptConnectionAndReadRequest(
     hostEpoch,
     connectionId: 'usage-pricing-correlation',
     selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+    compatibilityEpoch: 1,
     state: 'ready',
   });
   const request = decodeClientFrame(await transport.read(REQUEST_TIMEOUT_MS));

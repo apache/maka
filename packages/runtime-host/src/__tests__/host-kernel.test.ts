@@ -169,6 +169,7 @@ describe('non-serving Runtime Host kernel', () => {
           surface: 'inspect',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
+          compatibilityEpoch: 1,
         });
         const handshake = decodeHostFrame(await transport.read(1_000));
         assert.ok('kind' in handshake && handshake.kind === 'accepted');
@@ -390,6 +391,28 @@ describe('non-serving Runtime Host kernel', () => {
       assert.equal(resident.kind, 'connected');
       if (resident.kind !== 'connected') return;
 
+      const staleWhileResident = new FramedTransport(await openSocket(candidate.host.endpoint));
+      await staleWhileResident.writeEncoded(
+        encodeLegacyProtocolFrame({
+          kind: 'hello',
+          clientInstanceId: 'stale-schema-resident',
+          surface: 'tui',
+          protocolMin: CURRENT_PROTOCOL.min,
+          protocolMax: CURRENT_PROTOCOL.max,
+        }),
+      );
+      assert.deepEqual(decodeHostFrame(await staleWhileResident.read(1_000)), {
+        kind: 'incompatible',
+        hostEpoch: candidate.host.hostEpoch,
+        protocolMin: CURRENT_PROTOCOL.min,
+        protocolMax: CURRENT_PROTOCOL.max,
+        compatibilityEpoch: 1,
+        state: 'ready',
+        replacement: 'blocked_by_residency',
+      });
+      staleWhileResident.destroy();
+      await staleWhileResident.closed;
+
       const blocked = await connectOrSpawnRuntimeHost({
         ...paths,
         rootPath: paths.root,
@@ -401,6 +424,24 @@ describe('non-serving Runtime Host kernel', () => {
       if (blocked.kind === 'incompatible')
         assert.equal(blocked.handshake.replacement, 'blocked_by_residency');
       await resident.connection.close();
+
+      const staleAtIdle = new FramedTransport(await openSocket(candidate.host.endpoint));
+      await staleAtIdle.writeEncoded(
+        encodeLegacyProtocolFrame({
+          kind: 'hello',
+          clientInstanceId: 'stale-schema-idle',
+          surface: 'tui',
+          protocolMin: CURRENT_PROTOCOL.min,
+          protocolMax: CURRENT_PROTOCOL.max,
+        }),
+      );
+      const staleIdleResponse = decodeHostFrame(await staleAtIdle.read(1_000));
+      assert.ok('kind' in staleIdleResponse && staleIdleResponse.kind === 'incompatible');
+      if ('kind' in staleIdleResponse && staleIdleResponse.kind === 'incompatible') {
+        assert.equal(staleIdleResponse.replacement, 'wait_for_idle_exit');
+      }
+      staleAtIdle.destroy();
+      await staleAtIdle.closed;
 
       const replaceable = await Promise.all([
         connectRuntimeHost({
@@ -890,6 +931,7 @@ describe('non-serving Runtime Host kernel', () => {
         surface: 'tui',
         protocolMin: CURRENT_PROTOCOL.min,
         protocolMax: CURRENT_PROTOCOL.max,
+        compatibilityEpoch: 1,
       });
       const response = decodeHostFrame(await transport.read(2_000));
       assert.deepEqual(response, { kind: 'draining', hostEpoch: candidate.host.hostEpoch });
@@ -951,6 +993,7 @@ describe('non-serving Runtime Host kernel', () => {
           surface: 'tui',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
+          compatibilityEpoch: 1,
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake && handshake.kind === 'accepted');
@@ -1002,6 +1045,7 @@ describe('non-serving Runtime Host kernel', () => {
           surface: 'tui',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
+          compatibilityEpoch: 1,
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake);
@@ -1131,6 +1175,7 @@ describe('non-serving Runtime Host kernel', () => {
           surface: 'tui',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
+          compatibilityEpoch: 1,
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake);
@@ -1173,6 +1218,7 @@ describe('non-serving Runtime Host kernel', () => {
             surface: 'inspect',
             protocolMin: CURRENT_PROTOCOL.min,
             protocolMax: CURRENT_PROTOCOL.max,
+            compatibilityEpoch: 1,
           });
           assert.deepEqual(decodeHostFrame(await rejectedHandshakeTransport.read(1_000)), {
             kind: 'draining',
@@ -1966,6 +2012,7 @@ async function openNonReadingStatusSocket(path: string): Promise<Socket> {
         surface: 'tui',
         protocolMin: CURRENT_PROTOCOL.min,
         protocolMax: CURRENT_PROTOCOL.max,
+        compatibilityEpoch: 1,
       })}\n`,
     );
   });
@@ -1981,6 +2028,10 @@ async function sendInvalidBootstrap(path: string, payload: Buffer): Promise<void
   const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
   socket.write(payload);
   await withTimeout(closed, 1_000, 'Runtime Host did not close an invalid bootstrap connection');
+}
+
+function encodeLegacyProtocolFrame(frame: unknown): Buffer {
+  return Buffer.from(`${JSON.stringify(frame)}\n`, 'utf8');
 }
 
 async function removeControlDirectoriesForRootsUnder(base: string): Promise<void> {

@@ -95,6 +95,7 @@ export interface SessionAssistantDelta {
   turnId: string;
   runId: string;
   messageId: string;
+  startOffset: number;
   text: string;
 }
 
@@ -383,6 +384,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
     'turnId',
     'runId',
     'messageId',
+    'startOffset',
     'text',
   ]);
   if (record.kind !== 'text' && record.kind !== 'thinking') {
@@ -393,6 +395,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
     turnId: requireEntityId(record.turnId, 'turnId'),
     runId: requireEntityId(record.runId, 'runId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
+    startOffset: requireCount(record.startOffset, 'Session assistant delta start offset'),
     text: requireUtf8BoundedString(
       record.text,
       'Session assistant delta text',

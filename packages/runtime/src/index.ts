@@ -1273,6 +1273,7 @@ export {
   applyArchivedToolResultReadModelStatuses,
   compareRuntimeReadModelMessages,
   classifyRuntimeEventTerminalFact,
+  isHardRuntimeEventReadModelDiagnostic,
 } from './runtime-event-read-model.js';
 export type {
   ArchivedToolResultReadModelStatus,

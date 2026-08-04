@@ -11,6 +11,7 @@ import {
   decodeClientFrame,
   HOST_OPERATION_SPECS,
   negotiateProtocol,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   type ClientHello,
@@ -310,12 +311,16 @@ export class RuntimeHostKernel {
       { min: hello.protocolMin, max: hello.protocolMax },
       HOST_PROTOCOL,
     );
-    if (selectedProtocol === undefined) {
+    if (
+      selectedProtocol === undefined ||
+      hello.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH
+    ) {
       return {
         kind: 'incompatible',
         hostEpoch: this.hostEpoch,
         protocolMin: HOST_PROTOCOL.min,
         protocolMax: HOST_PROTOCOL.max,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
         state: admittedState,
         replacement: this.#isTrueIdle() ? 'wait_for_idle_exit' : 'blocked_by_residency',
       };
@@ -328,6 +333,7 @@ export class RuntimeHostKernel {
       hostEpoch: this.hostEpoch,
       connectionId: randomUUID(),
       selectedProtocol,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       state: admittedState,
     };
   }
@@ -626,6 +632,7 @@ export class RuntimeHostKernel {
       endpoint: this.endpoint,
       protocolMin: HOST_PROTOCOL.min,
       protocolMax: HOST_PROTOCOL.max,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       state: this.#state,
       pid: process.pid,
       createdAt: this.#createdAt,

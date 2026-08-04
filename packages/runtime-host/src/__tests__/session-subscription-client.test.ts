@@ -9,6 +9,7 @@ import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
 } from '@maka/storage/root-authority';
+import { decodeStoredMessageForRead } from '@maka/core/session';
 import {
   connectRuntimeHost,
   RuntimeHostSubscriptionError,
@@ -203,6 +204,228 @@ test('ends every active subscription with connection_closed on EOF', async () =>
   );
 });
 
+test('loads a canonical transcript while live frames continue on the same connection', async () => {
+  const message = {
+    type: 'assistant' as const,
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'snapshot text',
+    modelId: 'test-model',
+  };
+  await withProtocolPeer(
+    async (transport, hostEpoch) => {
+      const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch);
+      const opened = openResult(hostEpoch, 'subscription-transcript');
+      await transport.write({
+        requestId: openRequest.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      const transcriptRequest = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in transcriptRequest));
+      assert.equal(transcriptRequest.operation, 'session.transcript.query');
+      assert.deepEqual(transcriptRequest.input, {
+        kind: 'start',
+        subscriptionId: opened.subscriptionId,
+      });
+      await transport.writeEncoded(
+        Buffer.concat([
+          encodeProtocolFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
+          encodeProtocolFrame({
+            requestId: transcriptRequest.requestId,
+            operation: 'session.transcript.query',
+            ok: true,
+            result: {
+              kind: 'chunk',
+              snapshotId: 'snapshot-1',
+              sessionId: 'session-1',
+              messageCount: 1,
+              messageIndex: 0,
+              byteOffset: 0,
+              data: Buffer.from(JSON.stringify(message), 'utf8').toString('base64'),
+              next: null,
+            },
+          }),
+        ]),
+      );
+      await answerClose(transport, opened.subscriptionId);
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessageForRead), [message]);
+      assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
+        done: false,
+        value: deltaFrame(connection.hostEpoch, subscription.subscriptionId, 1),
+      });
+      await subscription.close();
+    },
+  );
+});
+
+test('restarts transcript loading after an expired snapshot', async () => {
+  const message = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'hello',
+  };
+  const encoded = Buffer.from(JSON.stringify(message), 'utf8');
+  const splitAt = Math.floor(encoded.byteLength / 2);
+  await withProtocolPeer(
+    async (transport, hostEpoch) => {
+      const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch);
+      const opened = openResult(hostEpoch, 'subscription-retry');
+      await transport.write({
+        requestId: openRequest.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      const startRequest = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in startRequest));
+      assert.deepEqual(startRequest.input, {
+        kind: 'start',
+        subscriptionId: opened.subscriptionId,
+      });
+      await transport.write({
+        requestId: startRequest.requestId,
+        operation: 'session.transcript.query',
+        ok: true,
+        result: {
+          kind: 'chunk',
+          snapshotId: 'expired-snapshot',
+          sessionId: 'session-1',
+          messageCount: 1,
+          messageIndex: 0,
+          byteOffset: 0,
+          data: encoded.subarray(0, splitAt).toString('base64'),
+          next: { messageIndex: 0, byteOffset: splitAt },
+        },
+      });
+      const continuationRequest = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in continuationRequest));
+      assert.deepEqual(continuationRequest.input, {
+        kind: 'continue',
+        subscriptionId: opened.subscriptionId,
+        snapshotId: 'expired-snapshot',
+        messageIndex: 0,
+        byteOffset: splitAt,
+      });
+      await transport.write({
+        requestId: continuationRequest.requestId,
+        operation: 'session.transcript.query',
+        ok: true,
+        result: { kind: 'snapshot_expired', snapshotId: 'expired-snapshot' },
+      });
+      const retryStartRequest = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in retryStartRequest));
+      assert.deepEqual(retryStartRequest.input, {
+        kind: 'start',
+        subscriptionId: opened.subscriptionId,
+      });
+      await transport.write({
+        requestId: retryStartRequest.requestId,
+        operation: 'session.transcript.query',
+        ok: true,
+        result: {
+          kind: 'chunk',
+          snapshotId: 'snapshot-retry',
+          sessionId: 'session-1',
+          messageCount: 1,
+          messageIndex: 0,
+          byteOffset: 0,
+          data: encoded.toString('base64'),
+          next: null,
+        },
+      });
+      await answerClose(transport, opened.subscriptionId);
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
+      await assert.rejects(
+        () => subscription.loadTranscript(decodeStoredMessageForRead),
+        hasSubscriptionReason('transcript_expired'),
+      );
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessageForRead), [message]);
+      await subscription.close();
+    },
+  );
+});
+
+test('forces a same-v0 pre-epoch Host through its incompatible replacement path', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-legacy-epoch-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'root'),
+    kind: 'interactive',
+  });
+  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+  const hostEpoch = randomUUID();
+  const endpoint = await prepareRuntimeHostEndpoint({ rootId: capability.rootId, hostEpoch });
+  const serverTask = deferred<void>();
+  const server = createServer((socket) => {
+    void (async () => {
+      const transport = new FramedTransport(socket);
+      const hello = decodeClientFrame(await transport.read(1_000));
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      if (!('kind' in hello) || hello.kind !== 'hello') return;
+      assert.deepEqual(
+        { min: hello.protocolMin, max: hello.protocolMax },
+        { min: RUNTIME_HOST_PROTOCOL_VERSION + 1, max: RUNTIME_HOST_PROTOCOL_VERSION + 1 },
+      );
+      await transport.writeEncoded(
+        encodeLegacyProtocolFrame({
+          kind: 'incompatible',
+          hostEpoch,
+          protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+          protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+          state: 'ready',
+          replacement: 'wait_for_idle_exit',
+        }),
+      );
+      transport.destroyAfterFlush();
+      await transport.closed;
+    })().then(serverTask.resolve, serverTask.reject);
+  });
+  try {
+    await listen(server, endpoint.path);
+    await endpoint.prepareAfterListen();
+    await writeHostRegistration(controlDirectory, {
+      kind: 'maka-runtime-host',
+      schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+      rootId: capability.rootId,
+      hostEpoch,
+      endpoint: endpoint.path,
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: 0,
+      state: 'ready',
+      pid: process.pid,
+      createdAt: new Date().toISOString(),
+    });
+
+    const result = await connectRuntimeHost({
+      rootPath: join(base, 'root'),
+      surface: 'desktop',
+      protocol: PROTOCOL,
+    });
+    assert.equal(result.kind, 'incompatible');
+    if (result.kind === 'incompatible') {
+      assert.equal(result.registration.compatibilityEpoch, 0);
+      assert.equal(result.handshake.compatibilityEpoch, 0);
+      assert.equal(result.handshake.replacement, 'wait_for_idle_exit');
+    }
+    await serverTask.promise;
+  } finally {
+    await closeServer(server);
+    await removeHostRegistration(controlDirectory, hostEpoch).catch(() => undefined);
+    await endpoint.cleanup().catch(() => undefined);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 async function withProtocolPeer(
   serve: (transport: FramedTransport, hostEpoch: string) => Promise<void>,
   run: (connection: RuntimeHostConnection) => Promise<void>,
@@ -233,6 +456,7 @@ async function withProtocolPeer(
       endpoint: endpoint.path,
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: 1,
       state: 'ready',
       pid: process.pid,
       createdAt: new Date().toISOString(),
@@ -269,6 +493,7 @@ async function acceptConnectionAndReadOpen(
     hostEpoch,
     connectionId: 'connection-1',
     selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+    compatibilityEpoch: 1,
     state: 'ready',
   });
   const request = decodeClientFrame(await transport.read(1_000));
@@ -358,6 +583,7 @@ function deltaFrame(
       turnId: 'turn-1',
       runId: 'run-1',
       messageId: 'message-1',
+      startOffset: 0,
       text: `chunk-${sequence}`,
     },
   };
@@ -366,6 +592,10 @@ function deltaFrame(
 function hasSubscriptionReason(reason: RuntimeHostSubscriptionError['reason']) {
   return (error: unknown) =>
     error instanceof RuntimeHostSubscriptionError && error.reason === reason;
+}
+
+function encodeLegacyProtocolFrame(frame: unknown): Buffer {
+  return Buffer.from(`${JSON.stringify(frame)}\n`, 'utf8');
 }
 
 function listen(server: Server, path: string): Promise<void> {
