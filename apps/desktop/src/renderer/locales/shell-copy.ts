@@ -344,7 +344,7 @@ type ShellCopy = {
     title: string;
     sections: Array<{
       heading: string;
-      rows: Array<{ keys: string[]; description: string }>;
+      rows: Array<{ shortcuts: string[]; description: string }>;
     }>;
   };
   chrome: {
@@ -963,52 +963,52 @@ const SHELL_COPY_BY_LOCALE = {
           heading: '通用',
           rows: [
             {
-              keys: ['⌘', 'K'],
+              shortcuts: ['mod+k'],
               description: '打开命令面板（跳会话 / 设置 / 主题等）',
             },
-            { keys: ['?'], description: '打开 / 关闭此快捷键面板' },
-            { keys: ['⌘', 'N'], description: '新建任务' },
-            { keys: ['⌘', ','], description: '打开设置' },
-            { keys: ['Esc'], description: '关闭当前模态框' },
+            { shortcuts: ['?'], description: '打开 / 关闭此快捷键面板' },
+            { shortcuts: ['mod+n'], description: '新建任务' },
+            { shortcuts: ['mod+,'], description: '打开设置' },
+            { shortcuts: ['escape'], description: '关闭当前模态框' },
           ],
         },
         {
           heading: 'Composer 输入',
           rows: [
-            { keys: ['Enter'], description: '发送消息' },
-            { keys: ['Shift', 'Enter'], description: '插入换行' },
-            { keys: ['Alt', 'Enter'], description: '插入换行（备用）' },
+            { shortcuts: ['enter'], description: '发送消息' },
+            { shortcuts: ['shift+enter'], description: '插入换行' },
+            { shortcuts: ['alt+enter'], description: '插入换行（备用）' },
           ],
         },
         {
           heading: '会话列表',
           rows: [
-            { keys: ['Tab'], description: '在会话与导航之间移动焦点' },
-            { keys: ['↑', '↓'], description: '上下移动聚焦的会话' },
-            { keys: ['Home', 'End'], description: '跳到列表顶部 / 底部' },
+            { shortcuts: ['tab'], description: '在会话与导航之间移动焦点' },
+            { shortcuts: ['up', 'down'], description: '上下移动聚焦的会话' },
+            { shortcuts: ['home', 'end'], description: '跳到列表顶部 / 底部' },
             {
-              keys: ['←', '→'],
+              shortcuts: ['left', 'right'],
               description: '在会话 / 已标记 / 已归档之间循环切换',
             },
-            { keys: ['Enter'], description: '打开聚焦的会话' },
-            { keys: ['Delete'], description: '弹出删除确认（永远不静默删除）' },
-            { keys: ['F'], description: '聚焦会话列表搜索框（按 Esc 清空）' },
+            { shortcuts: ['enter'], description: '打开聚焦的会话' },
+            { shortcuts: ['delete'], description: '弹出删除确认（永远不静默删除）' },
+            { shortcuts: ['f'], description: '聚焦会话列表搜索框（按 Esc 清空）' },
           ],
         },
         {
           heading: '聊天区',
           rows: [
-            { keys: ['Tab'], description: '聚焦工具活动 / 复制按钮' },
-            { keys: ['Space', 'Enter'], description: '展开 / 折叠工具调用' },
+            { shortcuts: ['tab'], description: '聚焦工具活动 / 复制按钮' },
+            { shortcuts: ['space', 'enter'], description: '展开 / 折叠工具调用' },
           ],
         },
         {
           heading: '面板调整',
           rows: [
-            { keys: ['Tab'], description: '聚焦左右分割条' },
-            { keys: ['←', '→'], description: '微调会话列表宽度（±10 px）' },
-            { keys: ['Shift', '←', '→'], description: '快速调整（±50 px）' },
-            { keys: ['Home', 'End'], description: '直接拉到最小 / 最大宽度' },
+            { shortcuts: ['tab'], description: '聚焦左右分割条' },
+            { shortcuts: ['left', 'right'], description: '微调会话列表宽度（±10 px）' },
+            { shortcuts: ['shift+left', 'shift+right'], description: '快速调整（±50 px）' },
+            { shortcuts: ['home', 'end'], description: '直接拉到最小 / 最大宽度' },
           ],
         },
       ],
@@ -1434,22 +1434,22 @@ const SHELL_COPY_BY_LOCALE = {
           heading: 'General',
           rows: [
             {
-              keys: ['⌘', 'K'],
+              shortcuts: ['mod+k'],
               description: 'Open the command palette (conversations, Settings, themes, and more)',
             },
-            { keys: ['?'], description: 'Open or close this shortcuts panel' },
-            { keys: ['⌘', 'N'], description: 'Create a new task' },
-            { keys: ['⌘', ','], description: 'Open Settings' },
-            { keys: ['Esc'], description: 'Close the current dialog' },
+            { shortcuts: ['?'], description: 'Open or close this shortcuts panel' },
+            { shortcuts: ['mod+n'], description: 'Create a new task' },
+            { shortcuts: ['mod+,'], description: 'Open Settings' },
+            { shortcuts: ['escape'], description: 'Close the current dialog' },
           ],
         },
         {
           heading: 'Composer',
           rows: [
-            { keys: ['Enter'], description: 'Send the message' },
-            { keys: ['Shift', 'Enter'], description: 'Insert a line break' },
+            { shortcuts: ['enter'], description: 'Send the message' },
+            { shortcuts: ['shift+enter'], description: 'Insert a line break' },
             {
-              keys: ['Alt', 'Enter'],
+              shortcuts: ['alt+enter'],
               description: 'Insert a line break (alternative)',
             },
           ],
@@ -1458,28 +1458,28 @@ const SHELL_COPY_BY_LOCALE = {
           heading: 'Conversation list',
           rows: [
             {
-              keys: ['Tab'],
+              shortcuts: ['tab'],
               description: 'Move focus between conversations and navigation',
             },
             {
-              keys: ['↑', '↓'],
+              shortcuts: ['up', 'down'],
               description: 'Move through focused conversations',
             },
             {
-              keys: ['Home', 'End'],
+              shortcuts: ['home', 'end'],
               description: 'Jump to the top or bottom of the list',
             },
             {
-              keys: ['←', '→'],
+              shortcuts: ['left', 'right'],
               description: 'Cycle through Conversations, Flagged, and Archived',
             },
-            { keys: ['Enter'], description: 'Open the focused conversation' },
+            { shortcuts: ['enter'], description: 'Open the focused conversation' },
             {
-              keys: ['Delete'],
+              shortcuts: ['delete'],
               description: 'Open the delete confirmation (never delete silently)',
             },
             {
-              keys: ['F'],
+              shortcuts: ['f'],
               description: 'Focus conversation search (press Esc to clear)',
             },
           ],
@@ -1488,11 +1488,11 @@ const SHELL_COPY_BY_LOCALE = {
           heading: 'Chat',
           rows: [
             {
-              keys: ['Tab'],
+              shortcuts: ['tab'],
               description: 'Focus tool activity and Copy buttons',
             },
             {
-              keys: ['Space', 'Enter'],
+              shortcuts: ['space', 'enter'],
               description: 'Expand or collapse a tool call',
             },
           ],
@@ -1500,17 +1500,17 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Panel sizing',
           rows: [
-            { keys: ['Tab'], description: 'Focus the left or right splitter' },
+            { shortcuts: ['tab'], description: 'Focus the left or right splitter' },
             {
-              keys: ['←', '→'],
+              shortcuts: ['left', 'right'],
               description: 'Adjust conversation-list width (±10 px)',
             },
             {
-              keys: ['Shift', '←', '→'],
+              shortcuts: ['shift+left', 'shift+right'],
               description: 'Adjust quickly (±50 px)',
             },
             {
-              keys: ['Home', 'End'],
+              shortcuts: ['home', 'end'],
               description: 'Jump directly to minimum or maximum width',
             },
           ],
