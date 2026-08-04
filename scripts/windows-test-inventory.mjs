@@ -184,6 +184,14 @@ export function renderWindowsTestInventory(entries) {
   return `${lines.join('\n')}\n`;
 }
 
+export function windowsTestInventoriesMatch(current, rendered) {
+  return normalizeLineEndings(current) === normalizeLineEndings(rendered);
+}
+
+function normalizeLineEndings(value) {
+  return value.replaceAll(/\r\n?|\n/gu, '\n');
+}
+
 function classifySkip(path, title, expression) {
   const value = `${path} ${title} ${expression}`.toLowerCase();
   if (
@@ -248,7 +256,7 @@ async function main(args) {
   }
   if (args.includes('--check')) {
     const current = existsSync(OUTPUT_PATH) ? await readFile(OUTPUT_PATH, 'utf8') : '';
-    if (current !== rendered) {
+    if (!windowsTestInventoriesMatch(current, rendered)) {
       throw new Error(
         'Windows test skip inventory is stale; run `npm run windows:inventory:write`',
       );

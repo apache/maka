@@ -7,7 +7,16 @@ import {
   collectWindowsTestSkips,
   findSkipExpressions,
   renderWindowsTestInventory,
+  windowsTestInventoriesMatch,
 } from './windows-test-inventory.mjs';
+
+test('compares generated inventories independently of checkout line endings', () => {
+  const rendered = '# Windows test skip inventory\n\nEntry\n';
+
+  assert.equal(windowsTestInventoriesMatch(rendered.replaceAll('\n', '\r\n'), rendered), true);
+  assert.equal(windowsTestInventoriesMatch(rendered.replaceAll('\n', '\r'), rendered), true);
+  assert.equal(windowsTestInventoriesMatch(`${rendered}Changed\n`, rendered), false);
+});
 
 test('reads multiline skip expressions through their property delimiter', () => {
   const source = `
