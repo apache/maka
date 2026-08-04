@@ -290,6 +290,62 @@ test('pricing root identity failure requests drain while expected failures do no
   });
 });
 
+test('pricing query rejects continue offsets at and past the effective catalog end', async () => {
+  await withUsageAuthority('pricing-offset', async ({ stores }) => {
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+    );
+    const entryCount = builtinPricingEntries().length;
+    assert.ok(entryCount > 0, 'the Runtime must expose at least one built-in price');
+
+    for (const offset of [entryCount, entryCount + 1]) {
+      assert.deepEqual(
+        await coordinator.handlers['pricing.query'](
+          { kind: 'continue', revision: 0, offset },
+          CONNECTION_CONTEXT,
+        ),
+        {
+          ok: false,
+          error: { code: 'invalid_request', message: 'Pricing offset is invalid' },
+        },
+      );
+    }
+  });
+});
+
+test('deleting absent pricing overrides is unchanged and preserves revision', async () => {
+  await withUsageAuthority('pricing-delete-absent', async ({ stores }) => {
+    let invalidations = 0;
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        invalidations += 1;
+      },
+      new RuntimePolicyActivationGate(),
+    );
+    const builtin = BUILTIN_PRICING[0];
+    assert.ok(builtin, 'the Runtime must expose at least one built-in price');
+
+    for (const modelKey of ['provider:missing', builtin.modelKey]) {
+      assert.deepEqual(
+        await coordinator.handlers['pricing.mutate'](
+          {
+            expectedRevision: 0,
+            mutation: { kind: 'delete', modelKey },
+          },
+          CONNECTION_CONTEXT,
+        ),
+        { ok: true, result: { kind: 'unchanged', revision: 0 } },
+      );
+    }
+
+    assert.deepEqual(await stores.pricing.snapshot(), { revision: 0, overrides: [] });
+    assert.equal(invalidations, 0);
+  });
+});
+
 test('pricing query projects built-in and custom authority with reset effects', async () => {
   await withUsageAuthority('effective-pricing', async ({ stores }) => {
     const coordinator = new HostUsagePricingCoordinator(
@@ -618,6 +674,7 @@ describe('production Usage/Pricing UDS', () => {
       ]);
       assert.deepEqual(pricingFromSecondClient, pricingAfterRestart);
       assert.equal(pricingAfterRestart.revision, 129);
+      assert.deepEqual(pricingAfterRestart.entries, fullDesktopPricing.entries);
       assert.equal(pricingAfterRestart.entries.length, builtinPricingEntries().length + 128);
       assert.ok(pricingAfterRestart.pageCount > 1);
       assert.equal(usageAfterRestart.summary.kind, 'summary');

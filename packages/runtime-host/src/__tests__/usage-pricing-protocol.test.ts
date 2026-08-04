@@ -447,6 +447,17 @@ describe('Usage/Pricing protocol', () => {
     );
     assert.throws(
       () =>
+        pricingResponse('pricing.query', {
+          kind: 'page',
+          revision: 0,
+          offset: 0,
+          overrides: [pricing('m')],
+          nextOffset: null,
+        }),
+      invalidFrame,
+    );
+    assert.throws(
+      () =>
         encodePricingQueryResult({
           kind: 'page',
           revision: 0,
