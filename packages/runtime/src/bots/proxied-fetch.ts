@@ -19,6 +19,7 @@ export async function proxiedFetch(url: string, init: ProxiedFetchInit = {}): Pr
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...fetchInit } = init;
   const timeoutEnabled = timeoutMs > 0;
   const controller = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let timedOut = false;
 
   const disposeDispatcher = async (force = false) => {
@@ -39,11 +40,6 @@ export async function proxiedFetch(url: string, init: ProxiedFetchInit = {}): Pr
       await disposable.close.call(dispatcher).catch(() => {});
   };
 
-  if (signal) {
-    if (signal.aborted) controller.abort(signal.reason);
-    else signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
-  }
-
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = timeoutEnabled
     ? new Promise<never>((_resolve, reject) => {
@@ -53,28 +49,32 @@ export async function proxiedFetch(url: string, init: ProxiedFetchInit = {}): Pr
           void disposeDispatcher(true);
           reject(new Error('Fetch timeout'));
         }, timeoutMs);
-        controller.signal.addEventListener(
-          'abort',
-          () => {
-            if (timer) clearTimeout(timer);
-          },
-          { once: true },
-        );
       })
     : undefined;
 
+  const request = fetch(url, { ...fetchInit, dispatcher, signal: requestSignal }).catch((error) => {
+    if (timedOut) return new Promise<never>(() => {});
+    throw error;
+  });
+
+  let response: Response;
   try {
-    const request = fetch(url, { ...fetchInit, dispatcher, signal: controller.signal }).catch(
-      (error) => {
-        if (timedOut) return new Promise<never>(() => {});
-        throw error;
-      },
-    );
-    return timeout
+    response = timeout
       ? ((await Promise.race([request, timeout])) as unknown as Response)
       : ((await request) as unknown as Response);
-  } finally {
+  } catch (error) {
     if (timer) clearTimeout(timer);
     await disposeDispatcher(timedOut);
+    throw error;
   }
+
+  // Headers are in: return the original Fetch Response now. close() is
+  // graceful and stays pending until the active body reaches EOF, errors, or
+  // is cancelled, so it already owns the exact lifecycle this request needs;
+  // awaiting it here was the streaming bug. AbortSignal.any keeps caller
+  // cancellation wired to the original body without adding a listener that
+  // this function must later detach.
+  if (timer) clearTimeout(timer);
+  void disposeDispatcher(false);
+  return response;
 }

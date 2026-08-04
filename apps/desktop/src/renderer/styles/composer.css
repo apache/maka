@@ -21,22 +21,6 @@
   max-width: var(--maka-chat-measure);
 }
 
-/* New-chat project/branch bar — above the composer card, same measure. */
-.maka-composer-workspace-dock {
-  display: flex;
-  width: min(var(--maka-chat-measure), 100%);
-  max-width: var(--maka-chat-measure);
-  margin-inline: auto;
-  padding-inline: var(--space-6);
-  box-sizing: border-box;
-}
-
-.maka-composer-workspace-dock .maka-composer-workspace-row {
-  width: 100%;
-  margin: 0;
-  padding-block: var(--space-1) 0;
-}
-
 .maka-composer-context-drawer {
   display: flex;
   min-width: 0;
@@ -70,8 +54,16 @@
   flex-wrap: wrap;
 }
 
+/* Shrinkable so the `flex-wrap: wrap` above can actually engage. At
+   `flex: 0 0 auto` this box sizes to max-content, which means it never has a
+   width to wrap inside — it just overflows, and the overflow runs under the
+   send button and past the card's right edge. That stayed invisible while the
+   row held four controls; the project and branch pickers add ~224px and a
+   480px window has nowhere to put it. `min-width: 0` because the default
+   `auto` floor would keep the same overflow for a long model name. */
 .maka-composer-left-controls {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .maka-composer-right-controls {
@@ -204,22 +196,6 @@
    background after the transcript viewport has already ended. */
 .mainColumn:not([data-home-surface="true"]) .composer {
   padding-top: 0;
-}
-
-/* Composer send button — flat solid action fill. #546: dropped the gradient
-   + inner sheen + drop shadow (the "machined hardware" look read heavy next
-   to the calm parchment container). Flat --action with darken on hover/press
-   keeps it the clear primary CTA without the weight. */
-.maka-composer-workspace-row {
-  /* PR-PARCHMENT-HOME-2: must share the new composer card measure
-     (620px) so the "选择工作目录 ▾" pill stays aligned with the card
-     left edge above it. */
-  width: min(var(--maka-chat-measure), 100%);
-  display: flex;
-  justify-content: flex-start;
-  gap: var(--space-1);
-  box-sizing: border-box;
-  margin: 0 auto var(--space-2);
 }
 
 .maka-composer-workspace-picker {

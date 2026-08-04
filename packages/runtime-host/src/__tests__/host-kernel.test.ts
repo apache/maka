@@ -28,6 +28,7 @@ import {
   type DetachedCandidateInput,
 } from '../client/launcher.js';
 import { readHostRegistration } from '../control/registration.js';
+import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import {
   decodeHostFrame,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -2041,24 +2042,7 @@ async function removeControlDirectoriesForRootsUnder(base: string): Promise<void
   await Promise.all(
     [...rootIds].map(async (rootId) => {
       await rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true });
-      if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
-      const prefix = `m-${process.getuid()}-${Buffer.from(rootId, 'hex').toString('base64url')}-`;
-      const entries = await readdir('/tmp', { withFileTypes: true });
-      await Promise.all(
-        entries.map(async (entry) => {
-          if (
-            !entry.isDirectory() ||
-            !entry.name.startsWith(prefix) ||
-            entry.name.length !== prefix.length + 6
-          )
-            return;
-          const path = join('/tmp', entry.name);
-          const directoryStat = await lstat(path).catch(() => undefined);
-          if (directoryStat?.isDirectory() && directoryStat.uid === process.getuid?.()) {
-            await rm(path, { recursive: true, force: true });
-          }
-        }),
-      );
+      await removePosixEndpointDirectories(rootId);
     }),
   );
 }

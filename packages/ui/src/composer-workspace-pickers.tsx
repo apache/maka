@@ -1,7 +1,16 @@
 /**
- * Composer workspace row (issue #1044) — the workspace picker + git branch
- * picker rendered above the composer card. Extracted from `composer.tsx`;
- * purely presentational: both pickers are standard compact menu triggers fed
+ * Composer workspace + git branch pickers (issue #1044) — the two controls
+ * that decide where a NEW chat starts. They live in the composer card's
+ * footer control row, beside the model chip, and speak the same quiet chip
+ * dialect as the ＋ menu, the permission shield and the model picker.
+ *
+ * They render as bare siblings rather than inside a wrapper: the control row
+ * owns the gap, so a wrapper would introduce a second spacing authority and
+ * group these two apart from the controls they belong with. They used to sit
+ * in exactly such a wrapper on a lone bar above the card, which is what made
+ * them read as leftovers rather than part of the control surface.
+ *
+ * Purely presentational: both pickers are standard compact menu triggers fed
  * by host-injected props. Shared Button owns their visual and interaction
  * states; local classes only constrain layout and label truncation.
  */
@@ -31,10 +40,10 @@ export interface ComposerWorkspacePicker {
 }
 
 /**
- * Git branch picker for the workspace row, shown to the right of
- * the folder indicator when the workspace is a git repository.
- * Clicking the trigger opens a Menu listing local branches; selecting
- * one fires `onSelect` to switch branches (handled in the shell).
+ * Git branch picker, shown to the right of the folder indicator when the
+ * workspace is a git repository. Clicking the trigger opens a Menu listing
+ * local branches; selecting one fires `onSelect` to switch branches (handled
+ * in the shell).
  */
 export interface ComposerBranchPicker {
   branch: string | null;
@@ -44,7 +53,7 @@ export interface ComposerBranchPicker {
   onSelect(branch: string): void;
 }
 
-export function ComposerWorkspaceRow(props: {
+export function ComposerWorkspacePickers(props: {
   workspacePicker: ComposerWorkspacePicker;
   branchPicker?: ComposerBranchPicker;
 }) {
@@ -54,7 +63,7 @@ export function ComposerWorkspaceRow(props: {
     wp.defaultOpen ?? false,
   );
   return (
-    <div className="maka-composer-workspace-row">
+    <>
       {/* The workspace and branch pickers are standard compact menu
           triggers. Shared Button owns their visual and interaction states;
           local classes only constrain layout and label truncation. */}
@@ -167,6 +176,6 @@ export function ComposerWorkspaceRow(props: {
           </DropdownMenu>
         );
       })()}
-    </div>
+    </>
   );
 }

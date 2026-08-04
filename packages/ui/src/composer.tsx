@@ -47,7 +47,7 @@ import {
   type ChatInputActionOwner,
   type ComposerTextPort,
 } from './chat-input-behavior.js';
-import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
+import { ComposerWorkspacePickers, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-pickers.js';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import {
@@ -1200,12 +1200,6 @@ export const Composer = forwardRef<
           </button>
         </div>
       )}
-      {/* New-chat project/branch bar sits above the card (quiet chrome). */}
-      {!props.activeSession && props.workspacePicker ? (
-        <div className="maka-composer-workspace-dock" hidden={props.hidden}>
-          <ComposerWorkspaceRow workspacePicker={props.workspacePicker} branchPicker={props.branchPicker} />
-        </div>
-      ) : null}
       <form
         ref={formRef}
         className="maka-composer composer"
@@ -1461,6 +1455,20 @@ export const Composer = forwardRef<
                     />
                   )}
                 </div>
+              ) : null}
+              {/* Project and branch decide where a NEW chat starts, which makes
+                  them send context like the model beside them — so they sit in
+                  this row rather than on a bar of their own above the card,
+                  where they read as leftovers rather than controls. Not gated
+                  on `streaming`: `activeSession` already covers it, since
+                  sending the first message creates the session that hides
+                  these. They stay ahead of the mode marks so the modes keep
+                  trailing the send-context group. */}
+              {!props.activeSession && props.workspacePicker ? (
+                <ComposerWorkspacePickers
+                  workspacePicker={props.workspacePicker}
+                  branchPicker={props.branchPicker}
+                />
               ) : null}
               {/* Mode readouts sit after the model pair, so a mode turning on
                   or off never nudges the model and thinking pickers (#1897).

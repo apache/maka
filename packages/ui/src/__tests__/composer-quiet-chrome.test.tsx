@@ -203,12 +203,20 @@ describe('composer quiet chrome', () => {
     assert.doesNotMatch(markup, /maka-composer-realtime-voice-button/);
   });
 
-  it('places the workspace picker above the composer card for new chats', () => {
+  /**
+   * The picker used to sit on a bar of its own above the card, which is what
+   * made it read as a leftover rather than a control: same kind of thing as
+   * the model chip, different address. It now shares the footer row with the
+   * other send-context controls, so the assertion is containment — inside the
+   * left controls, not merely somewhere in the markup.
+   */
+  it('puts the workspace picker in the footer controls beside the model', () => {
     const markup = render(
       <Composer
         onSend={() => true}
         onStop={() => {}}
         modelLabel="demo"
+        modelChoices={[]}
         workspacePicker={{
           projects: [],
           onAdd: () => {},
@@ -218,18 +226,28 @@ describe('composer quiet chrome', () => {
         }}
       />,
     );
-    assert.match(markup, /maka-composer-workspace-dock/);
-    // Workspace row is a sibling above the form, not nested after the card.
-    const dockIdx = markup.indexOf('maka-composer-workspace-dock');
-    const formIdx = markup.indexOf('maka-composer composer');
-    assert.ok(dockIdx >= 0 && formIdx > dockIdx);
+    assert.doesNotMatch(markup, /maka-composer-workspace-dock/, 'the lone bar is gone');
+    const leftControls = markup.match(
+      /maka-composer-left-controls[\s\S]*?maka-composer-right-controls/,
+    )?.[0] ?? '';
+    assert.match(leftControls, /maka-composer-workspace-picker/, 'picker rides the footer row');
+    // Beside the model, and ahead of it is the model's own slot — so the
+    // picker joins the send-context group instead of trailing the modes.
+    const modelIdx = leftControls.indexOf('maka-model-selection-controls');
+    const pickerIdx = leftControls.indexOf('maka-composer-workspace-picker');
+    assert.ok(modelIdx >= 0 && pickerIdx > modelIdx, 'picker follows the model pair');
   });
 
   /**
    * The project and branch decide where a NEW chat starts; once a session
-   * exists they no longer move it. Leaving the row on screen in an open chat
+   * exists they no longer move it. Leaving them on screen in an open chat
    * reads as "you can still change this session's context here", which is
    * false — so the same wired picker must render nothing.
+   *
+   * Asserts on the picker's own class, not on the container it happens to sit
+   * in. The previous version named the dock that used to wrap it, and once
+   * that dock was deleted the assertion would have passed against any markup
+   * at all — including markup that wrongly kept rendering the picker.
    */
   it('drops the workspace picker once a session is active', () => {
     const workspacePicker = {
@@ -261,6 +279,7 @@ describe('composer quiet chrome', () => {
         }}
       />,
     );
-    assert.doesNotMatch(markup, /maka-composer-workspace-dock/);
+    assert.doesNotMatch(markup, /maka-composer-workspace-picker/);
+    assert.doesNotMatch(markup, /maka-composer-branch-picker/);
   });
 });
