@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { type BigIntStats, constants as fsConstants, createReadStream, type Dirent } from 'node:fs';
 import {
   access,
+  copyFile,
   link,
   lstat,
   mkdir,
@@ -9,7 +10,6 @@ import {
   readFile,
   readdir,
   realpath,
-  rename,
   rm,
   stat,
   unlink,
@@ -40,7 +40,6 @@ import {
   isCanonicalArtifactRecoveryTempName,
 } from './artifact-storage-layout.js';
 import {
-  decodeArtifactMetadata,
   isSafeRelativeArtifactPath,
   validateCanonicalArtifactTargetName,
   validateRelativeArtifactPath,
@@ -51,6 +50,11 @@ import {
 } from './artifact-writer-lock.js';
 import type { ArtifactWriterLockAuthority } from './root-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
+import type { ArtifactMetadataRepository } from './artifact-metadata-repository.js';
+import {
+  createSqliteArtifactMetadataRepository,
+  type CreateSqliteArtifactMetadataOptions,
+} from './sqlite-artifact-metadata.js';
 
 export { isSafeRelativeArtifactPath } from './artifact-metadata-codec.js';
 
@@ -69,15 +73,6 @@ interface ArtifactSessionSnapshot {
   readonly revision: ArtifactListRevision;
 }
 
-interface MetadataFileIdentity {
-  readonly dev: bigint;
-  readonly ino: bigint;
-  readonly size: bigint;
-  readonly mtimeNs: bigint;
-  readonly ctimeNs: bigint;
-  readonly birthtimeNs: bigint;
-}
-
 type ArtifactReadFailure = {
   readonly ok: false;
   readonly reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted';
@@ -94,6 +89,8 @@ interface ArtifactRemovalEntry {
   readonly unlinkPath: string;
   readonly comparisonIdentity: string;
 }
+
+type ArtifactRecordDraft = Omit<ArtifactRecord, 'sizeBytes'>;
 
 interface RecoverableOrphan {
   readonly canonicalPath: string;
@@ -130,6 +127,17 @@ export interface ArtifactSessionEntry {
   readonly record: ArtifactRecord | null;
 }
 
+export interface ConversationArtifactCopyInput {
+  readonly sourceSessionId: string;
+  readonly targetSessionId: string;
+  readonly turnIds: readonly string[];
+}
+
+export interface ConversationArtifactCopyResult {
+  readonly artifactIds: ReadonlyMap<string, string>;
+  readonly relativePaths: ReadonlyMap<string, string>;
+}
+
 export interface ArtifactStoreReader {
   list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactRecord[]>;
   get(artifactId: string): Promise<ArtifactRecord | null>;
@@ -156,6 +164,7 @@ export interface ArtifactStore extends ArtifactStoreReader, DurableArtifactAttac
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   delete(artifactId: string): Promise<void>;
   purge(artifactIds: readonly string[]): Promise<void>;
+  close?(): void;
 }
 
 export type ArtifactUserDeleteResult =
@@ -164,6 +173,10 @@ export type ArtifactUserDeleteResult =
   | { readonly kind: 'protected' };
 
 export interface ArtifactAuthorityStore extends ArtifactStore {
+  copyConversationArtifacts(
+    input: ConversationArtifactCopyInput,
+  ): Promise<ConversationArtifactCopyResult>;
+  purgeSessionArtifacts(sessionId: string): Promise<void>;
   deleteUserArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -172,6 +185,7 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     sessionId: string,
     options: { offset: number; limit: number },
   ): Promise<ArtifactListPage>;
+  listTurnArtifacts(sessionId: string, turnId: string): Promise<ArtifactRecord[]>;
   getInSession(sessionId: string, artifactId: string): Promise<ArtifactSessionEntry>;
   readTextInSession(
     sessionId: string,
@@ -188,55 +202,70 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
 export interface ArtifactStoreWriteAuthority {
   readonly store: ArtifactAuthorityStore;
   recover(): Promise<void>;
+  close(): void;
 }
 
-export function createArtifactStore(workspaceRoot: string): ArtifactStore {
-  return new FileArtifactStore(workspaceRoot, 'legacy');
+export function createSqliteArtifactStore(
+  workspaceRoot: string,
+  options: CreateSqliteArtifactMetadataOptions = {},
+): ArtifactStore {
+  return new SqliteArtifactStore(
+    workspaceRoot,
+    'self_managed',
+    createSqliteArtifactMetadataRepository(workspaceRoot, options),
+    undefined,
+    undefined,
+  );
 }
 
-export function createArtifactStoreWriteAuthority(
+export function createSqliteArtifactStoreWriteAuthority(
   workspaceRoot: string,
   options: {
     assertAuthority?: () => Promise<void>;
     leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority;
+    cutover?: CreateSqliteArtifactMetadataOptions;
   } = {},
 ): ArtifactStoreWriteAuthority {
-  const store = new FileArtifactStore(
+  const store = new SqliteArtifactStore(
     workspaceRoot,
     'authority',
+    createSqliteArtifactMetadataRepository(workspaceRoot, options.cutover),
     options.assertAuthority,
     options.leaseBoundWriterLockAuthority,
   );
   return Object.freeze({
     store,
     recover: () => store.recoverForWriteWithAuthority(),
+    close: () => store.close(),
   });
 }
 
-class FileArtifactStore implements ArtifactAuthorityStore {
+class SqliteArtifactStore implements ArtifactAuthorityStore {
   private artifactRoot: string;
-  private metadataPath: string;
   private purgeIntentPath: string;
   private records: ArtifactRecord[] = [];
   private sessionSnapshots = new Map<string, ArtifactSessionSnapshot>();
-  private loaded = false;
+  private metadataReady = false;
   private recoveryRequired: boolean;
-  private legacyRecoveryRequired: boolean;
+  private selfManagedRecoveryRequired: boolean;
   private recoverableOrphans = new Map<string, RecoverableOrphan>();
-  private metadataIdentity: MetadataFileIdentity | null | undefined;
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
     private workspaceRoot: string,
-    private readonly recoveryMode: 'legacy' | 'authority',
+    private readonly recoveryMode: 'self_managed' | 'authority',
+    private readonly metadataRepository: ArtifactMetadataRepository,
     private readonly assertAuthority?: () => Promise<void>,
     private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
   ) {
     this.artifactRoot = join(workspaceRoot, 'artifacts');
-    this.metadataPath = join(this.artifactRoot, 'metadata.jsonl');
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.recoveryRequired = recoveryMode === 'authority';
-    this.legacyRecoveryRequired = recoveryMode === 'legacy';
+    this.selfManagedRecoveryRequired = recoveryMode === 'self_managed';
+  }
+
+  close(): void {
+    this.metadataRepository.close();
   }
 
   async create(input: CreateArtifactInput): Promise<ArtifactRecord> {
@@ -295,22 +324,8 @@ class FileArtifactStore implements ArtifactAuthorityStore {
         id,
         canonicalName: name,
       });
-      const target = join(this.artifactRoot, relativePath);
-      const targetDirectory = dirname(target);
-      const createdDirectory = await mkdir(targetDirectory, { recursive: true });
-      if (createdDirectory !== undefined) {
-        await syncDirectoryChain(targetDirectory, this.workspaceRoot);
-      }
-      await assertArtifactDirectory(this.artifactRoot, targetDirectory);
-      const tempPath = join(targetDirectory, publicationStagingName(basename(target)));
-      let preserveStaging = false;
-      let targetLinked = false;
-      try {
-        await writeFile(tempPath, acceptedInput.content, { flag: 'wx' });
-        await syncFile(tempPath);
-        await syncDirectory(targetDirectory);
-        const size = await stat(tempPath);
-        const record: ArtifactRecord = {
+      return this.publishNewArtifactUnlocked(
+        {
           id,
           sessionId: acceptedInput.sessionId,
           turnId: acceptedInput.turnId,
@@ -318,7 +333,6 @@ class FileArtifactStore implements ArtifactAuthorityStore {
           name,
           kind: acceptedInput.kind,
           relativePath,
-          sizeBytes: size.size,
           ...(acceptedInput.mimeType ? { mimeType: acceptedInput.mimeType } : {}),
           ...(acceptedInput.source ? { source: acceptedInput.source } : {}),
           ...(acceptedInput.summary ? { summary: acceptedInput.summary } : {}),
@@ -326,49 +340,169 @@ class FileArtifactStore implements ArtifactAuthorityStore {
             ? { deepResearchRole: acceptedInput.deepResearchRole }
             : {}),
           status: 'live',
-        };
-        const nextRecords = [...this.records, record];
+        },
+        (tempPath) => writeFile(tempPath, acceptedInput.content, { flag: 'wx' }),
+      );
+    });
+  }
+
+  async copyConversationArtifacts(
+    input: ConversationArtifactCopyInput,
+  ): Promise<ConversationArtifactCopyResult> {
+    assertCanonicalArtifactEntityId(input.sourceSessionId, 'sessionId');
+    assertCanonicalArtifactEntityId(input.targetSessionId, 'sessionId');
+    if (input.sourceSessionId === input.targetSessionId) {
+      throw new Error('Artifact conversation copy requires distinct Sessions');
+    }
+    const turnIds = new Set(input.turnIds);
+    for (const turnId of turnIds) assertArtifactTurnKey(turnId);
+    const records = await this.enqueue(async () => {
+      await this.load();
+      return this.records
+        .filter(
+          (record) => record.sessionId === input.sourceSessionId && turnIds.has(record.turnId),
+        )
+        .map((record) => ({ ...record }));
+    });
+
+    const artifactIds = new Map<string, string>();
+    const relativePaths = new Map<string, string>();
+    for (const record of records) {
+      const targetId = conversationCopyArtifactId(
+        input.sourceSessionId,
+        input.targetSessionId,
+        record.id,
+      );
+      const prepared = await this.enqueue(() =>
+        this.prepareRecordRead(record, record.sizeBytes, true),
+      );
+      if (!prepared.ok) {
+        throw new Error(`Artifact ${record.id} could not be copied: ${prepared.reason}`);
+      }
+      const created = await this.copyConversationArtifact(
+        prepared,
+        input.targetSessionId,
+        targetId,
+      );
+      artifactIds.set(record.id, created.id);
+      relativePaths.set(record.relativePath, created.relativePath);
+    }
+    return { artifactIds, relativePaths };
+  }
+
+  private copyConversationArtifact(
+    prepared: PreparedArtifactRead,
+    targetSessionId: string,
+    targetId: string,
+  ): Promise<ArtifactRecord> {
+    const source = prepared.record;
+    const name = sanitizeArtifactName(source.name);
+    const relativePath = `${targetSessionId}/${targetId}-${name}`;
+    const publicationInput = { sessionId: targetSessionId, name };
+    assertCanonicalArtifactEntityId(targetId, 'id');
+    validateRelativeArtifactPath(relativePath);
+    validateCanonicalArtifactTargetName(basename(relativePath));
+    return this.enqueueMutation(async () => {
+      await this.prepareMutationUnlocked({
+        kind: 'copy',
+        input: publicationInput,
+        identity: { id: targetId, canonicalName: name },
+      });
+      if (this.records.some((record) => record.id === targetId)) {
+        throw new Error(`Artifact target already exists: ${targetId}`);
+      }
+      await this.assertNoCompatiblePublicationStagingUnlocked(publicationInput, {
+        id: targetId,
+        canonicalName: name,
+      });
+      await this.assertNoCompatiblePayloadExistsUnlocked(publicationInput, {
+        id: targetId,
+        canonicalName: name,
+      });
+      return this.publishNewArtifactUnlocked(
+        {
+          ...source,
+          id: targetId,
+          sessionId: targetSessionId,
+          name,
+          relativePath,
+        },
+        (tempPath) => copyFile(prepared.path, tempPath, fsConstants.COPYFILE_EXCL),
+        source.sizeBytes,
+      );
+    });
+  }
+
+  private async publishNewArtifactUnlocked(
+    draft: ArtifactRecordDraft,
+    writeStaging: (tempPath: string) => Promise<void>,
+    expectedSize?: number,
+  ): Promise<ArtifactRecord> {
+    const target = join(this.artifactRoot, draft.relativePath);
+    const targetDirectory = dirname(target);
+    const createdDirectory = await mkdir(targetDirectory, { recursive: true });
+    if (createdDirectory !== undefined) {
+      await syncDirectoryChain(targetDirectory, this.workspaceRoot);
+    }
+    await assertArtifactDirectory(this.artifactRoot, targetDirectory);
+    const tempPath = join(targetDirectory, publicationStagingName(basename(target)));
+    let preserveStaging = false;
+    let targetLinked = false;
+    try {
+      await writeStaging(tempPath);
+      await syncFile(tempPath);
+      await syncDirectory(targetDirectory);
+      const size = await stat(tempPath);
+      if (expectedSize !== undefined && size.size !== expectedSize) {
+        throw new Error(`Artifact source changed while copying: ${draft.id}`);
+      }
+      const record: ArtifactRecord = { ...draft, sizeBytes: size.size };
+      const nextRecords = [...this.records, record];
+      try {
         try {
-          try {
-            await link(tempPath, target);
-            targetLinked = true;
-          } catch (error) {
-            if (isAlreadyExists(error)) throw new Error(`Artifact target already exists: ${id}`);
-            throw error;
-          }
-          await syncDirectory(targetDirectory);
-          await this.writeMetadataUnlocked(nextRecords);
+          await link(tempPath, target);
+          targetLinked = true;
         } catch (error) {
-          if (targetLinked && isPublishedMetadataError(error)) {
-            preserveStaging = true;
-            this.invalidateWriterState();
-          } else if (targetLinked) {
-            try {
-              await removeFileDurably(target, targetDirectory);
-            } catch (cleanupError) {
-              preserveStaging = true;
-              this.invalidateWriterState();
-              throw new AggregateError(
-                [error, cleanupError],
-                `Artifact ${id} metadata publication and payload cleanup both failed`,
-              );
-            }
+          if (isAlreadyExists(error)) {
+            throw new Error(`Artifact target already exists: ${draft.id}`);
           }
           throw error;
         }
-        this.replaceRecords(nextRecords);
-        return { ...record };
-      } finally {
-        if (!preserveStaging) {
+        await syncDirectory(targetDirectory);
+        await this.writeMetadataUnlocked(nextRecords);
+      } catch (error) {
+        if (targetLinked) {
           try {
-            await removeFileDurably(tempPath, targetDirectory);
-          } catch (error) {
+            await removeFileDurably(target, targetDirectory);
+          } catch (cleanupError) {
+            preserveStaging = true;
             this.invalidateWriterState();
-            throw error;
+            throw new AggregateError(
+              [error, cleanupError],
+              `Artifact ${draft.id} metadata publication and payload cleanup both failed`,
+            );
           }
         }
+        throw error;
       }
-    });
+      this.replaceRecords(nextRecords);
+      return { ...record };
+    } finally {
+      if (!preserveStaging) {
+        try {
+          await removeFileDurably(tempPath, targetDirectory);
+        } catch (error) {
+          this.invalidateWriterState();
+          throw error;
+        }
+      }
+    }
+  }
+
+  async purgeSessionArtifacts(sessionId: string): Promise<void> {
+    assertCanonicalArtifactEntityId(sessionId, 'sessionId');
+    const records = await this.list(sessionId, { includeDeleted: true });
+    if (records.length > 0) await this.purge(records.map((record) => record.id));
   }
 
   private async replayExistingArtifactUnlocked(
@@ -475,6 +609,18 @@ class FileArtifactStore implements ArtifactAuthorityStore {
         records: snapshot.records.slice(offset, offset + limit).map((record) => ({ ...record })),
         total: snapshot.records.length,
       };
+    });
+  }
+
+  async listTurnArtifacts(sessionId: string, turnId: string): Promise<ArtifactRecord[]> {
+    assertCanonicalArtifactEntityId(sessionId, 'sessionId');
+    assertArtifactTurnKey(turnId);
+    return this.enqueue(async () => {
+      await this.load();
+      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      return snapshot.records
+        .filter((record) => record.turnId === turnId && record.status !== 'deleted')
+        .map((record) => ({ ...record }));
     });
   }
 
@@ -731,77 +877,15 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async load(): Promise<void> {
-    let handle;
-    try {
-      handle = await open(this.metadataPath, 'r');
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-      if (!this.loaded || this.metadataIdentity !== null) {
-        this.replaceRecords([]);
-        this.metadataIdentity = null;
-        this.loaded = true;
-      }
-      return;
-    }
-    try {
-      const metadataStat = await handle.stat({ bigint: true });
-      if (!metadataStat.isFile()) throw artifactMetadataNotFile();
-      const identity = metadataFileIdentity(metadataStat);
-      if (this.loaded && sameMetadataIdentity(this.metadataIdentity, identity)) return;
-      const text = await handle.readFile({ encoding: 'utf8' });
-      this.replaceRecords(decodeArtifactMetadata(text));
-      this.metadataIdentity = identity;
-      this.loaded = true;
-    } finally {
-      await handle.close();
-    }
+    await this.metadataRepository.ready();
+    this.metadataReady = true;
+    this.replaceRecords(this.metadataRepository.readAll());
   }
 
   private async writeMetadataUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
-    const metadataDirectory = dirname(this.metadataPath);
-    const createdDirectory = await mkdir(metadataDirectory, { recursive: true });
-    if (createdDirectory !== undefined) {
-      await syncDirectoryChain(metadataDirectory, this.workspaceRoot);
-    }
-    const tempPath = `${this.metadataPath}.${process.pid}.${randomUUID()}.tmp`;
-    const payload = records.map((record) => JSON.stringify(record)).join('\n');
-    let published = false;
-    let publishedIdentity: MetadataFileIdentity | undefined;
-    let publicationError: MetadataPublicationError | undefined;
-    try {
-      await writeFile(tempPath, payload ? `${payload}\n` : '', {
-        encoding: 'utf8',
-        flag: 'wx',
-      });
-      await syncFile(tempPath);
-      const tempStat = await stat(tempPath, { bigint: true });
-      publishedIdentity = metadataFileIdentity(tempStat);
-      await rename(tempPath, this.metadataPath);
-      published = true;
-      await syncDirectory(metadataDirectory);
-    } catch (error) {
-      this.invalidateWriterState();
-      publicationError = new MetadataPublicationError(error, published);
-    }
-    if (!published) {
-      try {
-        await removeFileDurably(tempPath, metadataDirectory);
-      } catch (cleanupError) {
-        this.invalidateWriterState();
-        if (publicationError) {
-          throw new AggregateError(
-            [publicationError, cleanupError],
-            'Artifact metadata publication and temp cleanup both failed',
-          );
-        }
-        throw cleanupError;
-      }
-    }
-    if (publicationError) throw publicationError;
-    if (!publishedIdentity)
-      throw new Error('Artifact metadata publication identity is unavailable');
-    this.metadataIdentity = publishedIdentity;
-    this.loaded = true;
+    await this.metadataRepository.ready();
+    this.metadataReady = true;
+    this.metadataRepository.replaceAll(records);
   }
 
   private async prepareMutationUnlocked(
@@ -811,19 +895,26 @@ class FileArtifactStore implements ArtifactAuthorityStore {
           readonly input: CreateArtifactInput;
           readonly identity: { readonly id: string; readonly canonicalName: string };
         }
+      | {
+          readonly kind: 'copy';
+          readonly input: Pick<CreateArtifactInput, 'sessionId' | 'name'>;
+          readonly identity: { readonly id: string; readonly canonicalName: string };
+        }
       | { readonly kind: 'delete' | 'purge' },
   ): Promise<void> {
-    if (this.recoveryMode === 'legacy') {
+    if (this.recoveryMode === 'self_managed') {
       this.recoverableOrphans.clear();
-      if (this.legacyRecoveryRequired) {
+      if (this.selfManagedRecoveryRequired) {
         await this.prepareRecoveryUnlocked();
-        this.legacyRecoveryRequired = false;
+        this.selfManagedRecoveryRequired = false;
       } else {
         await this.reloadForMutationUnlocked();
         await this.recoverPurgeIntentUnlocked();
       }
-      if (purpose.kind === 'create') {
+      if (purpose.kind === 'create' || purpose.kind === 'copy') {
         await this.recoverCompatiblePublicationsUnlocked(purpose.input, purpose.identity);
+      }
+      if (purpose.kind === 'create') {
         this.recoverableOrphans = await this.findCompatibleRecoverableOrphansUnlocked(
           purpose.input,
           purpose.identity,
@@ -839,23 +930,9 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async reloadForMutationUnlocked(): Promise<void> {
-    try {
-      const handle = await open(this.metadataPath, 'r');
-      try {
-        const metadataStat = await handle.stat({ bigint: true });
-        if (!metadataStat.isFile()) throw artifactMetadataNotFile();
-        const text = await handle.readFile({ encoding: 'utf8' });
-        this.replaceRecords(decodeArtifactMetadata(text));
-        this.metadataIdentity = metadataFileIdentity(metadataStat);
-      } finally {
-        await handle.close();
-      }
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-      this.replaceRecords([]);
-      this.metadataIdentity = null;
-    }
-    this.loaded = true;
+    await this.metadataRepository.ready();
+    this.metadataReady = true;
+    this.replaceRecords(this.metadataRepository.readAll());
   }
 
   private async hasCanonicalRecoveryResidueUnlocked(): Promise<boolean> {
@@ -1047,7 +1124,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async recoverCompatiblePublicationsUnlocked(
-    input: CreateArtifactInput,
+    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
     identity: { id: string; canonicalName: string },
   ): Promise<void> {
     const sessionDirectory = join(this.artifactRoot, input.sessionId);
@@ -1076,7 +1153,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async assertNoCompatiblePayloadExistsUnlocked(
-    input: CreateArtifactInput,
+    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
     identity: { id: string; canonicalName: string },
   ): Promise<void> {
     const names = compatibleArtifactNames(input.name, identity.canonicalName);
@@ -1092,7 +1169,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async assertNoCompatiblePublicationStagingUnlocked(
-    input: CreateArtifactInput,
+    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
     identity: { id: string; canonicalName: string },
   ): Promise<void> {
     const targetHashes = new Set(
@@ -1117,20 +1194,17 @@ class FileArtifactStore implements ArtifactAuthorityStore {
 
   private invalidateWriterState(): void {
     if (this.recoveryMode === 'authority') this.recoveryRequired = true;
-    else this.legacyRecoveryRequired = true;
+    else this.selfManagedRecoveryRequired = true;
   }
 
-  private bindLegacyMutationRoot(canonicalRoot: string): void {
-    if (this.recoveryMode !== 'legacy' || this.workspaceRoot === canonicalRoot) return;
+  private bindMutationRoot(canonicalRoot: string): void {
+    if (this.workspaceRoot === canonicalRoot) return;
     this.workspaceRoot = canonicalRoot;
     this.artifactRoot = join(canonicalRoot, 'artifacts');
-    this.metadataPath = join(this.artifactRoot, 'metadata.jsonl');
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.replaceRecords([]);
-    this.loaded = false;
-    this.metadataIdentity = undefined;
     this.recoverableOrphans.clear();
-    this.legacyRecoveryRequired = true;
+    if (this.recoveryMode === 'self_managed') this.selfManagedRecoveryRequired = true;
   }
 
   private replaceRecords(records: ArtifactRecord[]): void {
@@ -1334,58 +1408,42 @@ class FileArtifactStore implements ArtifactAuthorityStore {
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     return this.enqueueSerialized(async () => {
+      if (!this.metadataReady) {
+        return this.runWithWriterLock(async () => {
+          await this.assertAuthority?.();
+          await this.metadataRepository.ready();
+          this.metadataReady = true;
+          return operation();
+        });
+      }
       await this.assertAuthority?.();
       return operation();
     });
   }
 
   private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
-    return this.enqueueSerialized(() => {
-      const leaseBoundWriterLockAuthority = this.leaseBoundWriterLockAuthority;
-      if (leaseBoundWriterLockAuthority) {
-        return withLeaseBoundArtifactWriterLock(leaseBoundWriterLockAuthority, async () => {
-          await this.assertAuthority?.();
-          return operation();
-        });
-      }
-      return withArtifactWriterLock(this.workspaceRoot, async (canonicalRoot) => {
-        this.bindLegacyMutationRoot(canonicalRoot);
+    return this.enqueueSerialized(() =>
+      this.runWithWriterLock(async () => {
         await this.assertAuthority?.();
         return operation();
-      });
+      }),
+    );
+  }
+
+  private runWithWriterLock<T>(operation: () => Promise<T>): Promise<T> {
+    const leaseBoundWriterLockAuthority = this.leaseBoundWriterLockAuthority;
+    if (leaseBoundWriterLockAuthority) {
+      return withLeaseBoundArtifactWriterLock(leaseBoundWriterLockAuthority, operation);
+    }
+    return withArtifactWriterLock(this.workspaceRoot, async (canonicalRoot) => {
+      this.bindMutationRoot(canonicalRoot);
+      return operation();
     });
   }
 }
 
 function publicationStagingName(targetBasename: string): string {
   return `.artifact-publish.${artifactTargetHash(targetBasename)}.${randomUUID()}.tmp`;
-}
-
-function sameMetadataIdentity(
-  left: MetadataFileIdentity | null | undefined,
-  right: MetadataFileIdentity,
-): boolean {
-  return (
-    left !== null &&
-    left !== undefined &&
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs &&
-    left.birthtimeNs === right.birthtimeNs
-  );
-}
-
-function metadataFileIdentity(fileStat: BigIntStats): MetadataFileIdentity {
-  return {
-    dev: fileStat.dev,
-    ino: fileStat.ino,
-    size: fileStat.size,
-    mtimeNs: fileStat.mtimeNs,
-    ctimeNs: fileStat.ctimeNs,
-    birthtimeNs: fileStat.birthtimeNs,
-  };
 }
 
 async function openRealTarget(path: string) {
@@ -1439,14 +1497,18 @@ function artifactReplayConflict(artifactId: string): Error {
   return new Error(`Artifact ${artifactId} already exists with different metadata or content`);
 }
 
-function artifactWriteRecoveryRequired(): Error {
-  return new Error('Artifact write recovery is required before another mutation');
+function conversationCopyArtifactId(
+  sourceSessionId: string,
+  targetSessionId: string,
+  sourceArtifactId: string,
+): string {
+  return `copy_${createHash('sha256')
+    .update(JSON.stringify([sourceSessionId, targetSessionId, sourceArtifactId]))
+    .digest('hex')}`;
 }
 
-function artifactMetadataNotFile(): NodeJS.ErrnoException {
-  const error = new Error('Artifact metadata path is not a regular file') as NodeJS.ErrnoException;
-  error.code = 'EISDIR';
-  return error;
+function artifactWriteRecoveryRequired(): Error {
+  return new Error('Artifact write recovery is required before another mutation');
 }
 
 function optionalCanonicalText(value: string | undefined): string | undefined {
@@ -1550,19 +1612,6 @@ function truncateWithoutSplittingSurrogate(value: string, maxCodeUnits: number):
   const truncated = value.slice(0, maxCodeUnits);
   const last = truncated.charCodeAt(truncated.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? truncated.slice(0, -1) : truncated;
-}
-
-class MetadataPublicationError extends Error {
-  constructor(
-    cause: unknown,
-    readonly published: boolean,
-  ) {
-    super('Artifact metadata publication failed', { cause });
-  }
-}
-
-function isPublishedMetadataError(error: unknown): boolean {
-  return error instanceof MetadataPublicationError && error.published;
 }
 
 async function removeFileDurably(path: string, directory: string): Promise<boolean> {

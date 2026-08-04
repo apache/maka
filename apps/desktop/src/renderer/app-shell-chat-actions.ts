@@ -1,5 +1,6 @@
 import type {
   CollaborationMode,
+  InlineReference,
   OrchestrationMode,
   SandboxBoundaryResponse,
   QuoteRef,
@@ -38,6 +39,11 @@ export type PendingAttachment = {
   size: number;
   source: { type: 'approval'; approvalId: string; name: string } | { type: 'file'; file: File };
 };
+
+export interface WorkspaceFileReferencePosition {
+  value: string;
+  start: number;
+}
 import {
   isNoRealConnectionError,
   noRealConnectionReasonFromError,
@@ -81,9 +87,12 @@ export interface AppShellChatActions {
     text: string,
     pending?: readonly PendingAttachment[],
     options?: {
-      skillIds?: readonly string[];
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
+      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+      displayText?: string;
+      voiceOperationId?: string;
+      onSessionResolved?: (sessionId: string) => void;
     },
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
@@ -124,9 +133,6 @@ export function createAppShellChatActions(deps: {
    *  is why the send path asks it instead of comparing the id itself. */
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   markSessionReadLocally: (sessionId: string, readMessages: readonly StoredMessage[]) => void;
-  /** #646: optimistically flip the session's status to 'running' at send() so the
-   * "正在处理…" gate opens before the runtime's status round-trip lands. */
-  markSessionRunningOptimistic: (sessionId: string) => (() => void) | undefined;
   messageRetryPendingRef: RefBox<Set<string>>;
   refreshSessions: () => Promise<SessionSummary[]>;
   setActiveId: (sessionId: string | undefined) => void;
@@ -144,7 +150,7 @@ export function createAppShellChatActions(deps: {
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
   upsertSessionSummary: (session: SessionSummary) => void;
-  validPendingNewChatModel: PendingNewChatModel;
+  newChatModel: PendingNewChatModel;
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
@@ -159,7 +165,6 @@ export function createAppShellChatActions(deps: {
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
     markSessionReadLocally,
-    markSessionRunningOptimistic,
     messageRetryPendingRef,
     refreshSessions,
     setActiveId,
@@ -174,7 +179,7 @@ export function createAppShellChatActions(deps: {
     showModelSetupToast,
     toastApi,
     upsertSessionSummary,
-    validPendingNewChatModel,
+    newChatModel,
     pendingNewChatThinkingLevel,
     newChatCollaborationMode,
     newChatOrchestrationMode,
@@ -187,6 +192,7 @@ export function createAppShellChatActions(deps: {
     text: string,
     attachments: readonly import('@maka/core').AttachmentRef[] = [],
     quotes: readonly QuoteRef[] = [],
+    inlineReferences: readonly InlineReference[] = [],
   ): StoredMessage {
     return {
       type: 'user',
@@ -196,6 +202,7 @@ export function createAppShellChatActions(deps: {
       text,
       ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
       ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
+      inlineReferences: [...inlineReferences],
     };
   }
 
@@ -207,6 +214,7 @@ export function createAppShellChatActions(deps: {
     options: {
       replaceCurrentMessages?: boolean;
       quotes?: readonly QuoteRef[];
+      inlineReferences?: readonly InlineReference[];
     } = {},
   ): void {
     if (activeIdRef.current !== sessionId) return;
@@ -218,7 +226,13 @@ export function createAppShellChatActions(deps: {
     });
     setMessages((current) => {
       if (current.some((message) => message.type === 'user' && message.turnId === turnId)) return current;
-      const next = optimisticUserMessage(turnId, text, attachments, options.quotes);
+      const next = optimisticUserMessage(
+        turnId,
+        text,
+        attachments,
+        options.quotes,
+        options.inlineReferences,
+      );
       return options.replaceCurrentMessages ? [next] : [...current, next];
     });
   }
@@ -235,6 +249,13 @@ export function createAppShellChatActions(deps: {
   // (re)set to `'waiting'`: a fresh send is a new first-token wait, so it must
   // overwrite any `'streamed'` left by a prior turn whose terminal event was
   // missed — otherwise the new turn's head would never show the indicator.
+  //
+  // The arm carries `unconfirmed` until the authority names this turn back. The
+  // runtime writes `status: 'running'` only at the END of `AgentRun.begin`, so
+  // every session list refreshed in between still reports the pre-send status —
+  // which is the same status a finished turn leaves behind. Without that bit,
+  // the stale value retires the arm the send just created
+  // (settled-session-transients.ts).
   function armTurnActive(sessionId: string, turnId: string): void {
     setLiveTurnBySession((current) => {
       const active = current[sessionId];
@@ -256,19 +277,20 @@ export function createAppShellChatActions(deps: {
     text: string,
     pending?: readonly PendingAttachment[],
     options: {
-      skillIds?: readonly string[];
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
+      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+      displayText?: string;
+      voiceOperationId?: string;
+      onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
-    const skillIds = options.skillIds;
     const quotes = options.quotes;
     const initialSessionId = activeIdRef.current;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
     let optimisticSessionId: string | undefined;
     let optimisticTurnId: string | undefined;
-    let restoreOptimisticStatus: (() => void) | undefined;
     // #1433: the composer creates the session BEFORE it sends, so a first
     // send that never lands has to take the session with it. Set the moment
     // creation succeeds, cleared the moment the send does — while it holds a
@@ -297,10 +319,10 @@ export function createAppShellChatActions(deps: {
           // Omit permissionMode so main.ts's sessions:create resolves the
           // configured chatDefaults.permissionMode as the single authority.
           name: DEFAULT_SESSION_NAME,
-          ...(validPendingNewChatModel
+          ...(newChatModel
             ? {
-                llmConnectionSlug: validPendingNewChatModel.llmConnectionSlug,
-                model: validPendingNewChatModel.model,
+                llmConnectionSlug: newChatModel.llmConnectionSlug,
+                model: newChatModel.model,
               }
             : {}),
           ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
@@ -313,28 +335,30 @@ export function createAppShellChatActions(deps: {
         optimisticSessionId = session.id;
         optimisticTurnId = turnId;
         armTurnActive(session.id, turnId);
-        restoreOptimisticStatus = markSessionRunningOptimistic(session.id);
         const attachmentItems = pending && pending.length > 0 ? toIngestItems(pending) : undefined;
         const sendResult = await window.maka.sessions.send(session.id, {
           type: 'send',
           turnId,
           text,
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-          ...(skillIds && skillIds.length > 0 ? { skillIds: [...skillIds] } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
           ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
+          ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
+            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
+            : {}),
         });
         if (!sendResult.ok) {
           if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
             showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
           }
           disarmTurnActive(session.id, turnId);
-          restoreOptimisticStatus?.();
-          restoreOptimisticStatus = undefined;
           await discardUnsentSession();
           return false;
         }
         unsentSessionId = undefined;
+        options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
         }
@@ -344,11 +368,13 @@ export function createAppShellChatActions(deps: {
           showOptimisticUserMessage(
             session.id,
             turnId,
-            skillInvocationDisplayText(text, sendResult.skillInvocation),
+            options.displayText ??
+              skillInvocationDisplayText(text, sendResult.skillInvocation),
             sendResult.attachments,
             {
               replaceCurrentMessages: true,
               ...(quotes && quotes.length > 0 ? { quotes } : {}),
+              inlineReferences: sendResult.inlineReferences ?? [],
             },
           );
         }
@@ -362,35 +388,41 @@ export function createAppShellChatActions(deps: {
       optimisticSessionId = sessionId;
       optimisticTurnId = turnId;
       armTurnActive(sessionId, turnId);
-      restoreOptimisticStatus = markSessionRunningOptimistic(sessionId);
       const attachmentItems = pending && pending.length > 0 ? toIngestItems(pending) : undefined;
       const sendResult = await window.maka.sessions.send(sessionId, {
         type: 'send',
         turnId,
         text,
+        ...(options.displayText ? { displayText: options.displayText } : {}),
+        ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-        ...(skillIds && skillIds.length > 0 ? { skillIds: [...skillIds] } : {}),
         ...(attachmentItems ? { attachmentItems } : {}),
         ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
+        ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
+          ? { workspaceFileReferences: [...options.workspaceFileReferences] }
+          : {}),
       });
       if (!sendResult.ok) {
         if (activeIdRef.current === sessionId) {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
         }
         disarmTurnActive(sessionId, turnId);
-        restoreOptimisticStatus?.();
-        restoreOptimisticStatus = undefined;
         return false;
       }
+      options.onSessionResolved?.(sessionId);
       if (activeIdRef.current === sessionId) {
         showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
       }
       showOptimisticUserMessage(
         sessionId,
         turnId,
-        skillInvocationDisplayText(text, sendResult.skillInvocation),
+        options.displayText ??
+          skillInvocationDisplayText(text, sendResult.skillInvocation),
         sendResult.attachments,
-        { ...(quotes && quotes.length > 0 ? { quotes } : {}) },
+        {
+          ...(quotes && quotes.length > 0 ? { quotes } : {}),
+          inlineReferences: sendResult.inlineReferences ?? [],
+        },
       );
       await refreshMessagesUntilTurn(sessionId, turnId);
       return true;
@@ -400,12 +432,10 @@ export function createAppShellChatActions(deps: {
         removeOptimisticUserMessage(optimisticSessionId, optimisticTurnId);
       }
       // The turn never reached the runtime — close the model-wait window so the
-      // "正在处理…" indicator doesn't hang after a failed send, and revert the
-      // optimistic running status (no subscribeChanges event will reconcile it
-      // for a send that never started) so the session doesn't keep a phantom
-      // running dot / blocked permission-mode toggle.
+      // "正在处理…" indicator doesn't hang after a failed send. Nothing else has
+      // to be undone: the arm was the only claim the send made, and no
+      // subscribeChanges event would reconcile a turn that never started.
       if (optimisticSessionId && optimisticTurnId) disarmTurnActive(optimisticSessionId, optimisticTurnId);
-      restoreOptimisticStatus?.();
       // Which surface is allowed to hear about this failure. The id alone is
       // not it: `selectNavigation` never clears `activeId` (nav-selection.ts),
       // so a user who left for 扩展 → 技能 mid-flight still "is" session A by

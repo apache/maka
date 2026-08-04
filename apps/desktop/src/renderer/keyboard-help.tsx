@@ -2,14 +2,33 @@
 //
 // Discoverable keyboard cheat sheet. Modal triggered by `?` (when no input is
 // focused) or `⌘/` / `Ctrl+/`. Lists every shortcut the renderer reacts to so
-// users don't need to scrape the README. Routed through Base UI Dialog
-// (DialogRoot + DialogContent) so focus trapping, Esc, and focus restoration
-// are handled by the same shell as SearchModal / Permission (#520 PR7).
+// users don't need to scrape the README. Astryx Dialog owns focus trapping,
+// Esc, and focus restoration.
 
 import { useEffect, useState } from 'react';
 import { Keyboard } from '@maka/ui/icons';
-import { DialogContent, DialogHeader, DialogRoot, Kbd, useUiLocale } from '@maka/ui';
+import { useUiLocale } from '@maka/ui';
+import { Kbd } from '@astryxdesign/core/Kbd';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { getShellCopy } from './locales/shell-copy';
+
+const ASTRYX_KEY_TOKENS: Readonly<Record<string, string>> = {
+  '⌘': 'mod',
+  '↑': 'up',
+  '↓': 'down',
+  '←': 'left',
+  '→': 'right',
+  esc: 'escape',
+};
+
+function toAstryxKeyToken(key: string): string {
+  const normalized = key.toLowerCase();
+  return ASTRYX_KEY_TOKENS[key] ?? ASTRYX_KEY_TOKENS[normalized] ?? normalized;
+}
 
 /**
  * Manages the global key listener that opens and closes the help modal.
@@ -54,24 +73,33 @@ export function useKeyboardHelp(): [boolean, () => void, () => void] {
   return [open, () => setOpen(false), () => setOpen(true)];
 }
 
-export function KeyboardHelpModal(props: { onClose(): void }) {
+export function KeyboardHelpModal(props: {
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
+}) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).keyboardHelp;
+
   return (
-    <DialogRoot
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
+    <Dialog
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
+      className="maka-help-modal"
+      width={560}
+      maxHeight="calc(100dvh - 96px)"
+      purpose="info"
     >
-      <DialogContent className="maka-modal maka-help-modal" aria-labelledby="maka-help-title" showClose={false}>
-        <DialogHeader
-          icon={<Keyboard aria-hidden="true" />}
-          title={copy.title}
-          titleId="maka-help-title"
-          onClose={props.onClose}
-        />
-        <div className="maka-modal-body maka-help-body">
+      <Layout
+        header={
+          <DialogHeader
+            startContent={<Keyboard aria-hidden="true" />}
+            title={copy.title}
+            onOpenChange={props.onOpenChange}
+          />
+        }
+        content={
+          <LayoutContent padding={0}>
+            <div className="maka-help-body">
           {copy.sections.map((section) => (
             <section key={section.heading} className="maka-help-section">
               <h3>{section.heading}</h3>
@@ -87,7 +115,7 @@ export function KeyboardHelpModal(props: { onClose(): void }) {
                               +
                             </span>
                           )}
-                          <Kbd>{key}</Kbd>
+                          <Kbd keys={toAstryxKeyToken(key)} />
                         </span>
                       ))}
                     </dd>
@@ -96,8 +124,10 @@ export function KeyboardHelpModal(props: { onClose(): void }) {
               </dl>
             </section>
           ))}
-        </div>
-      </DialogContent>
-    </DialogRoot>
+            </div>
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }

@@ -24,6 +24,7 @@ import type {
   ShellRunStatus,
   ShellRunTerminalStatus,
 } from './shell-run.js';
+export { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from './shell-run.js';
 import type {
   CacheMissInputSource,
   ContextBudgetDiagnostic,
@@ -79,6 +80,22 @@ export interface QuoteRef {
   sourceTurnId?: string;
 }
 
+/**
+ * Frozen display metadata for one token embedded in a sent message's visible
+ * text. The model-facing authority remains {@link MessageContent.text}; this
+ * record only lets clients replay the token the user actually sent without
+ * consulting a mutable Skill catalog or guessing file-path boundaries.
+ */
+export interface InlineReference {
+  kind: 'skill' | 'workspace_file';
+  /** Exact serialized token value present in `displayText ?? text`. */
+  value: string;
+  /** Display label captured when the message was accepted. */
+  label: string;
+  /** UTF-16 offset of this exact occurrence in `displayText ?? text`. */
+  start: number;
+}
+
 /** Canonical user-authored content shared by storage, runtime, and Host wire. */
 export interface MessageContent {
   /**
@@ -92,17 +109,27 @@ export interface MessageContent {
   attachments?: AttachmentRef[];
   /** Ordered inline excerpts; omit when empty. Provenance remains part of content identity. */
   quotes?: QuoteRef[];
+  /** Sent inline tokens; an empty array marks a current-format plain message. Never model-visible. */
+  inlineReferences?: InlineReference[];
 }
 
 const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
-  ['displayText', 'attachments', 'quotes'],
+  ['displayText', 'attachments', 'quotes', 'inlineReferences'],
 );
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
   [],
 );
 const QUOTE_REF_SHAPE = defineObjectShape<QuoteRef>()(['text'], ['label', 'sourceTurnId']);
+const INLINE_REFERENCE_SHAPE = defineObjectShape<InlineReference>()(
+  ['kind', 'value', 'label', 'start'],
+  [],
+);
+const INLINE_SKILL_REFERENCE_VALUE = /^\/skill:[A-Za-z0-9._-]+$/;
+export const INLINE_REFERENCE_MAX_COUNT = 32;
+const MAX_INLINE_REFERENCE_VALUE_LENGTH = 4_096;
+export const INLINE_REFERENCE_LABEL_MAX_LENGTH = 200;
 const SESSION_FILE_REF_SHAPE = defineObjectShape<Extract<StorageRef, { kind: 'session_file' }>>()(
   ['kind', 'sessionId', 'relativePath'],
   [],
@@ -139,6 +166,11 @@ export function normalizeMessageContent(content: MessageContent): MessageContent
           })),
         }
       : {}),
+    ...(content.inlineReferences !== undefined
+      ? {
+          inlineReferences: content.inlineReferences.map((reference) => ({ ...reference })),
+        }
+      : {}),
   };
 }
 
@@ -155,7 +187,51 @@ export function isMessageContent(value: unknown): value is MessageContent {
     (value.displayText === undefined || typeof value.displayText === 'string') &&
     (value.attachments === undefined ||
       (Array.isArray(value.attachments) && value.attachments.every(isAttachmentRef))) &&
-    (value.quotes === undefined || (Array.isArray(value.quotes) && value.quotes.every(isQuoteRef)))
+    (value.quotes === undefined ||
+      (Array.isArray(value.quotes) && value.quotes.every(isQuoteRef))) &&
+    (value.inlineReferences === undefined ||
+      (Array.isArray(value.inlineReferences) &&
+        value.inlineReferences.length <= INLINE_REFERENCE_MAX_COUNT &&
+        value.inlineReferences.every(isInlineReference) &&
+        inlineReferencesMatchText(value.inlineReferences, value.displayText ?? value.text)))
+  );
+}
+
+function inlineReferencesMatchText(references: readonly InlineReference[], text: string): boolean {
+  let previousEnd = 0;
+  for (const reference of references) {
+    if (
+      reference.start < previousEnd ||
+      text.slice(reference.start, reference.start + reference.value.length) !== reference.value
+    ) {
+      return false;
+    }
+    previousEnd = reference.start + reference.value.length;
+  }
+  return true;
+}
+
+export function isInlineReference(value: unknown): value is InlineReference {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, INLINE_REFERENCE_SHAPE) &&
+    (value.kind === 'skill' || value.kind === 'workspace_file') &&
+    typeof value.value === 'string' &&
+    value.value.length > 0 &&
+    value.value.length <= MAX_INLINE_REFERENCE_VALUE_LENGTH &&
+    typeof value.label === 'string' &&
+    value.label.length > 0 &&
+    value.label.length <= INLINE_REFERENCE_LABEL_MAX_LENGTH &&
+    typeof value.start === 'number' &&
+    Number.isSafeInteger(value.start) &&
+    value.start >= 0 &&
+    (value.kind === 'skill'
+      ? INLINE_SKILL_REFERENCE_VALUE.test(value.value)
+      : value.value.startsWith('@') &&
+        isCanonicalStorageRef({
+          kind: 'workspace_file',
+          relativePath: value.value.slice(1),
+        }))
   );
 }
 
@@ -250,6 +326,8 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
   const rightAttachments = right.attachments?.length ? right.attachments : undefined;
   const leftQuotes = left.quotes?.length ? left.quotes : undefined;
   const rightQuotes = right.quotes?.length ? right.quotes : undefined;
+  const leftInlineReferences = left.inlineReferences;
+  const rightInlineReferences = right.inlineReferences;
   return (
     left.text === right.text &&
     leftDisplayText === rightDisplayText &&
@@ -264,7 +342,23 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
       (leftQuotes !== undefined &&
         rightQuotes !== undefined &&
         leftQuotes.length === rightQuotes.length &&
-        leftQuotes.every((quote, index) => quoteRefsEqual(quote, rightQuotes[index]!))))
+        leftQuotes.every((quote, index) => quoteRefsEqual(quote, rightQuotes[index]!)))) &&
+    ((leftInlineReferences === undefined && rightInlineReferences === undefined) ||
+      (leftInlineReferences !== undefined &&
+        rightInlineReferences !== undefined &&
+        leftInlineReferences.length === rightInlineReferences.length &&
+        leftInlineReferences.every((reference, index) =>
+          inlineReferencesEqual(reference, rightInlineReferences[index]!),
+        )))
+  );
+}
+
+function inlineReferencesEqual(left: InlineReference, right: InlineReference): boolean {
+  return (
+    left.kind === right.kind &&
+    left.value === right.value &&
+    left.label === right.label &&
+    left.start === right.start
   );
 }
 
@@ -461,6 +555,20 @@ export interface SandboxBoundaryFailureSignal {
   requiredExpansion?: SandboxBoundaryExpansion;
 }
 
+export interface ToolUncertainOutcomeSignal {
+  code: 'outcome_unknown';
+  retrySafe: false;
+}
+
+export class ToolOutcomeUnknownError extends Error {
+  readonly code = 'outcome_unknown';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ToolOutcomeUnknownError';
+  }
+}
+
 export type ShellRunCompactResult = ShellRunResultMetadata &
   ({ mode: 'pipes'; output?: never } | { mode: 'pty'; output?: never });
 
@@ -486,6 +594,7 @@ export type ToolResultContent =
       text: string;
       sandboxDenial?: SandboxDenialSignal;
       sandboxFailure?: SandboxBoundaryFailureSignal;
+      uncertainOutcome?: ToolUncertainOutcomeSignal;
     }
   | { kind: 'json'; value: unknown }
   | { kind: 'file_diff'; paths: string[]; diff: string }
@@ -912,6 +1021,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'user_stop'
     | 'error'
     | 'plan_handoff'
+    | 'graph_yield'
     | 'permission_handoff'
     | 'step_limit'
     | 'max_tokens'

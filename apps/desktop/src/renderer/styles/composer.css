@@ -16,14 +16,43 @@
   background: transparent;
 }
 
-.composerActions {
+.maka-composer-astryx {
+  width: min(var(--maka-chat-measure), 100%);
+  max-width: var(--maka-chat-measure);
+}
+
+/* New-chat project/branch bar — above the composer card, same measure. */
+.maka-composer-workspace-dock {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-top: var(--space-1);
-  padding-top: var(--space-0-5);
-  border-top: 0;
+  width: min(var(--maka-chat-measure), 100%);
+  max-width: var(--maka-chat-measure);
+  margin-inline: auto;
+  padding-inline: var(--space-6);
+  box-sizing: border-box;
+}
+
+.maka-composer-workspace-dock .maka-composer-workspace-row {
+  width: 100%;
+  margin: 0;
+  padding-block: var(--space-1) 0;
+}
+
+.maka-composer-context-drawer {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1-5);
+  flex-direction: column;
+  padding: var(--space-1) var(--space-3) var(--space-2);
+}
+
+.maka-composer-input {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  min-width: 0;
 }
 
 .maka-composer-left-controls,
@@ -38,6 +67,7 @@
      individual controls separable while pulling them into one
      coherent toolbar group. */
   gap: var(--space-1-5);
+  flex-wrap: wrap;
 }
 
 .maka-composer-left-controls {
@@ -49,23 +79,54 @@
   justify-content: flex-end;
 }
 
-.maka-composer-status-slot {
-  min-width: 0;
-  flex: 1 1 auto;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  text-align: center;
+/* `background-color`, never the `background` shorthand: these rules sit in the
+   last cascade layer (cascade-layers.css), and the shorthand's implicit
+   `background-image: none` would beat the ghost button's own :hover / :active
+   overlay gradients from `astryx-components`, leaving the control with no
+   pointer feedback at all. */
+.maka-composer-voice-button[data-state="recording"] {
+  color: var(--status-danger, var(--destructive));
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
 
-/* Unified composer picker trigger — permission Select ([data-slot="select-trigger"])
-   + both model pickers (active .maka-model-switcher-trigger, empty-state
-   .maka-composer-model-chip) share ONE quiet-chip geometry so the two
-   controls read identical at rest and on hover. */
-.maka-composer-left-controls [data-slot="select-trigger"],
-.maka-composer-right-controls .maka-model-switcher-trigger,
-.maka-composer-model-chip,
-.maka-composer-mode-indicator {
-  height: 26px;
+.maka-composer-voice-button[data-state="native_ready"] {
+  color: var(--status-running);
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+/* Quiet footer: ＋ and permission are both ghost icon buttons. */
+.maka-composer-left-controls .permissionModeIcon,
+.maka-composer-left-controls .maka-composer-plus-menu {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
+
+/* Astryx sm list density: DropdownMenuItem + Selector options use
+   padding-block: var(--spacing-1) (4px) when size=sm. RadioItem only sizes its
+   radio glyph from menuSize and never applies itemSizeStyles, so it stays on
+   Item balanced (8px) and permission rows look taller than + / model. Quiet
+   menus force the sm block pad so all three composer popouts share one ladder.
+   Use product --space-1 (same 4px step as Astryx --spacing-1). Upstream
+   should wire itemSizeStyles into RadioItem; drop this when it does. */
+.maka-composer-quiet-menu [role="menuitemradio"] {
+  padding-block: var(--space-1);
+}
+
+/* Model chip (static fallback) still owns its own quiet geometry. */
+.maka-composer-model-chip {
+  font: var(--maka-text-label);
+  /* #1879: was a bare 26px. It is NOT an Astryx component — `ModelChipStatic`
+     puts this class only on its inert `<span>` branch; the `onOpenSettings`
+     branch renders a `Button size="sm"` that carries no class at all
+     (chat-model-switcher.tsx). So nothing sizes this box but this rule, and
+     unpinning it measured 22px (the label role's 20px line box plus two
+     hairlines) against the 28px Selector beside it. `--h-control-md` resolves
+     to `--size-element-sm`, which is the token that Selector's own `size="sm"`
+     reads — so the two agree by deriving from one token rather than by two
+     product rules agreeing on a literal. */
+  height: var(--h-control-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -75,55 +136,52 @@
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
+  max-width: min(180px, 28vw);
   transition:
     background-color var(--duration-base) var(--ease-out-strong),
     color var(--duration-base) var(--ease-out-strong);
 }
-.maka-composer-left-controls [data-slot="select-trigger"]:hover,
-.maka-composer-right-controls .maka-model-switcher-trigger:hover:not(:disabled):not([data-disabled]),
-.maka-composer-model-chip:hover,
-.maka-composer-mode-indicator:hover:not(:disabled) {
+.maka-composer-model-chip:hover {
   background: var(--state-hover-bg);
   color: var(--foreground);
   border-color: transparent;
 }
 
-/* #1433: active-mode mark (Plan/Swarm) uses the unified composer-control
-   geometry above. Its stronger text plus the trailing X communicate both
-   “enabled” and the direct click-to-close action without inventing a smaller
-   chip or hover footprint beside the permission picker. */
-.maka-composer-mode-indicator {
-  color: var(--foreground);
-  font-weight: var(--font-weight-semibold);
-}
+/* Mode ON marks sit at the tail of the footer's left controls (#1897) —
+   session state, not context staged for the next send, so they no longer live
+   in the drawer.
 
-.maka-composer-mode-indicator:disabled {
-  cursor: not-allowed;
-  color: var(--muted-foreground);
-}
+   Maka blue is the single product accent (DESIGN.md), and an active mode is
+   exactly what it is for; which mode a mark is comes from its icon, not a hue,
+   so all three share the one accent. The wash derives from currentColor so a
+   disabled mark dims both layers together.
 
-.maka-composer-model-chip {
-  max-width: min(180px, 28vw);
+   `background-color`, never the `background` shorthand — see the voice button
+   above: the shorthand would suppress the ghost button's hover and active
+   overlays and leave the one way out of a mode with no pointer feedback.
+   `flex: 0 0 auto` keeps a long model name from compressing the mark away. */
+.maka-composer-mode-button {
+  flex: 0 0 auto;
+  color: var(--accent);
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
-.maka-composer-right-controls .maka-model-switcher {
+/* Model + thinking pair lives in left-controls (after permission), not send. */
+.maka-composer-left-controls .maka-model-selection-controls {
+  min-width: 0;
+  max-width: min(420px, 52vw);
+}
+.maka-composer-left-controls .maka-model-switcher {
   margin: 0;
-  max-width: min(180px, 28vw);
+  max-width: min(360px, 42vw);
 }
-.maka-composer-right-controls .maka-model-switcher-trigger {
+.maka-composer-left-controls .maka-model-switcher-trigger,
+.maka-composer-left-controls .maka-new-chat-model-selector {
   min-width: 100px;
-  max-width: min(180px, 28vw);
+  max-width: min(220px, 28vw);
 }
-.maka-composer-right-controls .maka-model-switcher-label {
-  display: none;
-}
-.maka-composer-right-controls .maka-model-switcher-value {
-  max-width: 128px;
-  color: inherit;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
+.maka-composer-left-controls .maka-thinking-level-selector {
+  margin: 0;
 }
 
 .maka-composer-model-chip-text {
@@ -131,23 +189,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.maka-composer-provider-mark {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  display: grid;
-  place-items: center;
-  color: inherit;
-}
-
-.maka-composer-provider-mark > svg,
-.maka-composer-provider-mark > img,
-.maka-composer-provider-mark > .providerAssetMask {
-  width: 100%;
-  height: 100%;
-  display: block;
 }
 
 .maka-composer-model-status {
@@ -158,177 +199,11 @@
   flex: 0 0 auto;
 }
 
-
-/* ============================================================================
-   Composer container + input field — single source
-   ----------------------------------------------------------------------------
-   The composer card (`.maka-composer-inner`) + its textarea + placeholder
-   used to be triplicated across maka-tokens.css (@layer components),
-   styles/tool-output.css, and reference-shell.css — three definitions of the
-   same selector fighting by specificity/layer, plus a duplicated textarea
-   font. Consolidated here as one definition per selector (pinned by
-   composer-container-single-source-contract).
-
-   Rest / textarea / placeholder values are the exact computed winners — no
-   visual change for those. One deliberate change: tool-output's
-   `.composer .maka-composer-inner::before { content: none }` shared specificity
-   (0,2,1) with — and was imported after — the streaming top-sweep that used to
-   live in chat-header.css (`.maka-composer-inner[data-streaming="true"]::before`),
-   so it was silently suppressing that deliberate streaming indicator. Removing
-   the reset restores the sweep; the matching `::after` reset had no competing
-   rule and was genuinely dead.
-
-   #546 PR2 relocated that streaming top-sweep here so all `.maka-composer-inner`
-   chrome (rest / focus / streaming state) is in one file; see the
-   `[data-streaming="true"]` block below the card chrome. */
-
-/* The composer card — a calm parchment surface: hairline border + 1px ring
-   at rest, single accent ring on focus. The shared `.agents-parchment-paper-
-   surface` base (reference-shell.css) resets border/bg/box-shadow; this rule
-   re-establishes the composer's own chrome on top of it. */
-.composer .maka-composer-inner {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-  width: min(var(--maka-chat-measure), 100%);
-  max-width: var(--maka-chat-measure);
-  margin: 0 auto;
-  margin-inline: auto;
-  box-sizing: border-box;
-  border: var(--border-width-hairline) solid var(--color-border-tertiary);
-  border-radius: var(--radius-modal);
-  padding: var(--space-2) var(--space-3) var(--space-1-5);
-  background-color: var(--agents-content-area-bg);
-  /* Ring alpha is a token so dark mode can strengthen the edge without a
-     second rest rule (composer-container-single-source-contract). In dark
-     the composer and pane share the same bg, and 3.5% of the near-white
-     foreground vanished — the card lost its outline (designer audit P1-6). */
-  box-shadow: 0 0 0 1px oklch(from var(--foreground) l c h / var(--composer-ring-alpha, 0.035));
-  transition:
-    border-color var(--duration-emphasized) var(--ease-out-strong),
-    box-shadow var(--duration-emphasized) var(--ease-out-strong);
-}
-
-.composer .maka-composer-inner:focus-within {
-  border-color: oklch(from var(--focus-ring) l c h / 0.45);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.30);
-}
-
 /* The active transcript and docked card meet at one boundary. Keeping the
    outer composer's default top padding here exposes an extra strip of panel
    background after the transcript viewport has already ended. */
 .mainColumn:not([data-home-surface="true"]) .composer {
   padding-top: 0;
-}
-
-/* Docked resting card — hairline only, no wash (PR-COMPOSER-BAND-SEAM).
-   The docked composer rides the same pure-white content surface as the
-   transcript above it (`.composer` outer is transparent; the card fill is
-   `--agents-content-area-bg`, identical to the panel). The earlier
-   "docked-over-stream lift" added a two-layer foreground-derived drop
-   (`0 2px 6px` + `0 10px 22px`) UNDER the resting, unfocused card. Because
-   the card is ~measure-wide and nearly fills the dock, that soft grey drop
-   read as a light-grey band with a boundary line beneath the composer —
-   the "色差" the maintainer flagged — and it appeared only while the
-   composer was NOT focused (focus swaps in the accent ring below), which is
-   exactly the reported "sometimes". The band is not a separate layer, so
-   there is nothing to converge structurally: the fix is to drop the wash and
-   keep AT MOST the card's own hairline ring, so the dock converges cleanly
-   onto the white content surface. Dark mode already carries no resting drop
-   (the one-step tone lift below is its only cue). */
-.mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner:not(:focus-within) {
-  box-shadow: 0 0 0 1px oklch(from var(--foreground) l c h / var(--composer-ring-alpha, 0.035));
-}
-
-/* Dark mode: separate the card from the panel by ONE monotonic tone step and
-   nothing else. Any line at the boundary that is brighter than the card fill
-   becomes a local luminance peak, which the eye parses as its own object —
-   that is the "third layer". So the card sits one step lighter than the panel
-   (0.24 → 0.29, matching a mainstream dark composer's fill/canvas ratio) and
-   carries NO resting line: no drop (halo), no ring (double frame), no colored
-   border (peak). The panel↔card profile is a single step. (Light mode carries
-   only the card's hairline ring above; there the white panel already
-   separates by tone.) */
-.dark .mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner {
-  background-color: oklch(from var(--agents-content-area-bg) calc(l + 0.05) c h);
-}
-
-/* Resting state carries no boundary line at all — the tone step is the only
-   cue. border-color is zeroed (the 1px width stays to avoid a focus layout
-   jump) and the ring is dropped. Scoped off :focus-within so the accent border
-   + focus ring still land on focus. */
-.dark .mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner:not(:focus-within) {
-  border-color: transparent;
-  box-shadow: none;
-}
-
-/* D6 spectrum #2 (Command Input processing): while the assistant is
-   streaming, a slow top-edge light sweep on the composer shell keeps
-   "working" visible at the exact place the user's attention returns
-   to. 1px line, foreground-derived, infinite = functional status.
-   Relocated from chat-header.css (#546 PR2) so the card's own rest /
-   focus / streaming states live together. */
-.maka-composer-inner[data-streaming="true"] {
-  position: relative;
-  overflow: hidden;
-}
-
-.maka-composer-inner[data-streaming="true"]::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  border-radius: var(--radius-pill);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    oklch(from var(--status-running) l c h / 0.55) 50%,
-    transparent
-  );
-  background-size: 200% 100%;
-  animation: maka-processing-sweep 2.2s var(--ease-in-out-strong) infinite;
-  pointer-events: none;
-}
-
-@keyframes maka-processing-sweep {
-  0%   { background-position: 180% 0; }
-  100% { background-position: -80% 0; }
-}
-
-/* The textarea owns no chrome (the card does). It auto-resizes from
-   --h-composer-min up to 240px (capped in @maka/ui), then scrolls. Font is
-   set explicitly on the element AND its placeholder so neither relies on the
-   fragile `[font: inherit]` chain from the bare-field reset. */
-.composer .maka-composer-textarea {
-  display: block;
-  width: 100%;
-  appearance: none;
-  border: none;
-  outline: none;
-  resize: none;
-  overflow-y: auto;
-  background: transparent;
-  color: var(--foreground);
-  font-family: var(--font-default);
-  font-size: var(--font-size-base);
-  line-height: var(--leading-normal);
-  min-height: var(--h-composer-min);
-  max-height: 240px;
-}
-
-.composer .maka-composer-textarea::placeholder {
-  color: var(--muted-foreground);
-  font-family: var(--font-default);
-  font-size: var(--font-size-base);
-  line-height: var(--leading-normal);
-  transition: opacity var(--duration-emphasized) var(--ease-out-strong);
-}
-
-.composer .maka-composer-textarea:focus::placeholder {
-  opacity: var(--opacity-disabled);
 }
 
 /* Composer send button — flat solid action fill. #546: dropped the gradient
@@ -344,7 +219,7 @@
   justify-content: flex-start;
   gap: var(--space-1);
   box-sizing: border-box;
-  margin: var(--space-2) auto 0;
+  margin: 0 auto var(--space-2);
 }
 
 .maka-composer-workspace-picker {
@@ -384,9 +259,9 @@
 }
 
 .maka-composer-branch-empty {
+  font: var(--maka-text-supporting);
   padding: var(--space-2) var(--space-2);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
   text-align: center;
 }
 
@@ -399,15 +274,6 @@
 .maka-composer-workspace-menu {
   min-width: 220px;
   max-width: min(320px, calc(100vw - var(--space-6)));
-}
-.maka-composer-workspace-menu [data-slot="menu-item"] svg {
-  flex: 0 0 auto;
-}
-.maka-composer-workspace-menu [data-slot="menu-item"] span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .maka-composer-project-scroll {
@@ -431,9 +297,9 @@
 }
 
 .maka-composer-project-status {
+  font: var(--maka-text-supporting);
   margin-left: auto;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .maka-composer-project-check {
@@ -444,111 +310,11 @@
   color: var(--muted-foreground);
 }
 
-/* Composer streaming hint — replaces the Enter/Shift+Enter help text while
- * Maka is mid-stream. Pulsing dot signals "live", and the Stop button on
- * the right swaps in as the only primary action so Send isn't ambiguous. */
-.maka-composer-streaming-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-}
-
-/* Streaming indicator — 3-dot typing pattern (the center dot is the
-   element itself, the side dots are ::before / ::after). Each dot
-   bounces 4px up on its own offset cycle so the row reads as a
-   talking-back animation rather than a single pulsing blip. */
-.maka-composer-streaming-dot {
-  position: relative;
-  width: 5px;
-  height: 5px;
-  margin-inline: var(--space-2);
-  border-radius: 50%;
-  background: var(--status-running);
-  animation: maka-composer-stream-bounce 1.05s var(--ease-in-out-strong) -0.2s infinite both;
-}
-
-.maka-composer-streaming-dot::before,
-.maka-composer-streaming-dot::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--status-running);
-  animation: maka-composer-stream-bounce 1.05s var(--ease-in-out-strong) infinite both;
-}
-
-.maka-composer-streaming-dot::before {
-  left: -9px;
-  animation-delay: -0.4s;
-}
-
-.maka-composer-streaming-dot::after {
-  left: 9px;
-  animation-delay: 0s;
-}
-
-@keyframes maka-composer-stream-bounce {
-  0%, 60%, 100% {
-    transform: translateY(0);
-    opacity: 0.55;
-  }
-  30% {
-    transform: translateY(-3px);
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .maka-composer-streaming-dot,
-  .maka-composer-streaming-dot::before,
-  .maka-composer-streaming-dot::after {
-    animation: none;
-  }
-}
-
-/* PR-COMPOSER-PERMISSION-PULSE-0 (WAWQAQ msg `ed67a267`, skills
-   round task #116): paired with the 3-dot streaming bounce — when
-   the composer is disabled awaiting human permission decision, the
-   text gets a pulsing accent dot so the user sees "waiting on YOU"
-   instead of plain prose. Uses a slow opacity pulse (different
-   rhythm from streaming's bounce so the two states are not
-   confusable at a glance). Pattern from design-taste-frontend §8.3
-   perpetual micro-interactions. */
-.maka-composer-permission-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-}
-
-.maka-composer-permission-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--status-running);
-  animation: maka-composer-permission-pulse 1.4s var(--ease-in-out-strong) infinite;
-  flex-shrink: 0;
-}
-
-@keyframes maka-composer-permission-pulse {
-  0%, 100% { opacity: 0.35; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .maka-composer-permission-dot {
-    animation: none;
-    opacity: 1;
-  }
-}
-
 /* U3 no-model dead-end hint. Sits ABOVE the composer form (outside its box, so
    it never touches the #740 constant footprint). Edged, not pill; quiet caption
    text + one link-button into Settings · 模型. Theme-aware via tokens. Centered to the chat measure, matching the revision-notice layout. */
 .maka-composer-no-model-hint {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -559,14 +325,12 @@
   border: var(--border-width-hairline) solid var(--warning);
   border-radius: var(--radius-control);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
 }
 
 .maka-composer-no-model-hint-action {
+  font: var(--maka-text-supporting);
   flex-shrink: 0;
   color: var(--link);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
   text-decoration: none;
   border-radius: var(--radius-control);
 }
@@ -583,6 +347,7 @@
 /* Edit-and-resend notice. A single quiet inline pill above the composer form,
    matching the composer toolbar chip family (not a heavy info card). */
 .maka-composer-revision-notice {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
@@ -591,13 +356,15 @@
   margin: 0 auto var(--space-1);
   padding: 0 var(--space-1-5);
   box-sizing: border-box;
-  height: 26px;
+  /* #1879: was `height: 26px`, an off-ruler literal. The floor is arithmetic
+     under `border-box`: a 20px supporting line box plus two hairline borders
+     needs 22px, so `--h-control-sm` (24px) is the smallest tier that holds it
+     without clipping. Loses 2px. */
+  height: var(--h-control-sm);
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--background-elevated);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-none);
 }
 
 .maka-composer-revision-notice > svg {
@@ -621,17 +388,24 @@
   text-overflow: ellipsis;
 }
 
+/* #1879: the one site in this family where the old height was not merely
+   off-ruler but smaller than the line box it renders — measured, an 18px box
+   around a 20px line box, and `display: block` so the text was not centred
+   either. Nothing clipped (the 2px excess is half-leading, and there is no
+   `overflow: hidden` here), but a box shorter than its own line box has no
+   defensible height. `--h-control-xs` (20px) is that line box. Gains 2px. */
 .maka-composer-revision-notice-cancel {
+  font: var(--maka-text-supporting);
   appearance: none;
   flex: 0 0 auto;
-  height: 18px;
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
   padding: 0 var(--space-1-5);
   border: none;
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
   transition: background-color var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong);
 }

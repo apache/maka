@@ -67,7 +67,7 @@ export function buildPromptAbRunManifest(input: PromptAbRunManifestInput): Promp
   return {
     ...promptManifestWithoutFingerprint,
     experimentKind: 'prompt',
-    arms: genericManifest.arms,
+    arms: genericManifest.arms as PromptAbRunManifest['arms'],
     fingerprint: `sha256:${createHash('sha256').update(canonicalJson(promptManifestWithoutFingerprint)).digest('hex')}`,
   };
 }

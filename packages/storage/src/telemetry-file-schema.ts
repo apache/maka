@@ -1,4 +1,8 @@
-import type { LlmCallRecord, ToolInvocationRecord } from '@maka/core/usage-stats/types';
+import {
+  MODEL_CALL_KINDS,
+  type LlmCallRecord,
+  type ToolInvocationRecord,
+} from '@maka/core/usage-stats/types';
 import { isContextBudgetDiagnostic, isPromptSegmentEstimate } from '@maka/core/usage-record-schema';
 
 export type PersistedLlmCallRecord = LlmCallRecord & {
@@ -262,7 +266,7 @@ export function decodePersistedLlmCallRecord(input: unknown): PersistedLlmCallRe
   ) {
     throw invalid('invalid optional LLM string');
   }
-  if (!optionalEnum(input.callKind, new Set(['main', 'semantic_compact', 'history_compact']))) {
+  if (!optionalEnum(input.callKind, new Set(MODEL_CALL_KINDS))) {
     throw invalid('invalid callKind');
   }
   if (!optionalEnum(input.prefixChangeReason, PREFIX_CHANGE_REASONS)) {
@@ -294,7 +298,8 @@ export function decodePersistedLlmCallRecord(input: unknown): PersistedLlmCallRe
   }
   if (
     input.contextBudget !== undefined &&
-    (!isContextBudgetDiagnostic(input.contextBudget) || !hasNoNegativeNumbers(input.contextBudget))
+    (!isContextBudgetDiagnostic(input.contextBudget) ||
+      !contextBudgetCountsAreNonNegative(input.contextBudget))
   ) {
     throw invalid('invalid contextBudget');
   }
@@ -493,6 +498,23 @@ function hasNoNegativeNumbers(value: unknown): boolean {
   if (Array.isArray(value)) return value.every(hasNoNegativeNumbers);
   if (isRecord(value)) return Object.values(value).every(hasNoNegativeNumbers);
   return true;
+}
+
+function contextBudgetCountsAreNonNegative(value: unknown): boolean {
+  if (!isRecord(value)) return hasNoNegativeNumbers(value);
+  return Object.entries(value).every(([key, entry]) =>
+    key === 'compactionDecisions'
+      ? entry === undefined ||
+        (Array.isArray(entry) && entry.every(compactionDecisionCountsAreNonNegative))
+      : hasNoNegativeNumbers(entry),
+  );
+}
+
+function compactionDecisionCountsAreNonNegative(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return Object.entries(value).every(
+    ([key, entry]) => key === 'estimatedTokensSaved' || hasNoNegativeNumbers(entry),
+  );
 }
 
 function cloneAndFreeze<T>(value: T): T {

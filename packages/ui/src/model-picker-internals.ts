@@ -1,72 +1,63 @@
-import { type ModelMenuGroup, modelChoiceValue } from './chat-model-helpers.js';
+import type { SelectorDivider, SelectorOptionData } from '@astryxdesign/core/Selector';
 import type { ProviderType } from '@maka/core';
+import { type ModelMenuGroup, modelChoiceValue } from './chat-model-helpers.js';
 
-export interface ModelPickerOption {
-  /** Encoded `<connectionSlug>:<model>` pair, or a pinned item's raw value. */
+export type ModelPickerOption = SelectorOptionData;
+
+export interface ModelPickerSection {
+  type: 'section';
+  title: string;
+  options: ModelPickerOption[];
+}
+
+export type ModelPickerSelectorOption = ModelPickerOption | SelectorDivider | ModelPickerSection;
+
+export interface ModelPickerLeadingOption {
   value: string;
   label: string;
-  groupHeading?: string;
   providerType?: ProviderType;
-  pinned?: boolean;
 }
 
-export interface ModelPickerOptionGroup {
-  key: string;
-  connectionSlug?: string;
-  providerType?: ProviderType;
-  heading?: string;
-  items: ModelPickerOption[];
-}
-
-export interface ModelPickerPinnedItem {
-  value: string;
-  label: string;
-}
-
-function normalizeSearch(value: string): string {
-  return value.trim().toLocaleLowerCase();
-}
-
-export function buildModelPickerGroups(
+/**
+ * Shapes Maka's provider catalog into Astryx Selector's public option model.
+ * Search, flattening, keyboard navigation, selection, and empty results remain
+ * entirely inside Selector. Provider marks use the separate public-value map
+ * below rather than relying on Selector to preserve product-only fields.
+ */
+export function buildModelPickerOptions(
   groups: readonly ModelMenuGroup[],
-  pinnedItem?: ModelPickerPinnedItem,
-): ModelPickerOptionGroup[] {
-  const pickerGroups: ModelPickerOptionGroup[] = [];
+  leadingOption?: ModelPickerLeadingOption,
+): ModelPickerSelectorOption[] {
+  const sections: ModelPickerSection[] = groups.map((group) => ({
+    type: 'section',
+    title: group.heading,
+    options: group.choices.map((choice) => ({
+      value: modelChoiceValue(choice.connectionSlug, choice.model),
+      label: choice.label,
+    })),
+  }));
 
-  if (pinnedItem) {
-    pickerGroups.push({
-      key: '__pinned',
-      items: [{ ...pinnedItem, pinned: true }],
-    });
-  }
+  if (!leadingOption) return sections;
 
-  for (const group of groups) {
-    pickerGroups.push({
-      key: group.connectionSlug,
-      connectionSlug: group.connectionSlug,
-      providerType: group.providerType,
-      heading: group.heading,
-      items: group.choices.map((choice) => ({
-        value: modelChoiceValue(choice.connectionSlug, choice.model),
-        label: choice.label,
-        groupHeading: group.heading,
-        providerType: group.providerType,
-      })),
-    });
-  }
-
-  return pickerGroups;
+  const option: ModelPickerOption = {
+    value: leadingOption.value,
+    label: leadingOption.label,
+  };
+  return sections.length > 0 ? [option, { type: 'divider' }, ...sections] : [option];
 }
 
-export function filterModelPickerOption(option: ModelPickerOption, query: string): boolean {
-  if (option.pinned) return true;
-
-  const q = normalizeSearch(query);
-  if (!q) return true;
-
-  return normalizeSearch(option.label).includes(q) || normalizeSearch(option.groupHeading ?? '').includes(q);
-}
-
-export function modelPickerHasCatalogMatches(options: readonly ModelPickerOption[]): boolean {
-  return options.some((option) => !option.pinned);
+export function buildModelPickerProviderTypes(
+  groups: readonly ModelMenuGroup[],
+  leadingOption?: ModelPickerLeadingOption,
+): ReadonlyMap<string, ProviderType> {
+  const entries: [string, ProviderType][] = groups.flatMap((group) =>
+    group.choices.map((choice) => [
+      modelChoiceValue(choice.connectionSlug, choice.model),
+      group.providerType,
+    ]),
+  );
+  if (leadingOption?.providerType) {
+    entries.unshift([leadingOption.value, leadingOption.providerType]);
+  }
+  return new Map(entries);
 }

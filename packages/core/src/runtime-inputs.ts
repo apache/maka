@@ -18,6 +18,7 @@ import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
 import type { SessionStartMode } from './explore-agent.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import type { EditingProtocol } from './apply-patch.js';
+import type { EphemeralVoiceAudio } from './voice.js';
 
 export type { TurnOrchestration } from './orchestration.js';
 
@@ -80,6 +81,8 @@ export interface UserMessageInput extends MessageContent {
   /** Caller-generated uuid. Same id used in the UserMessage.turnId and in
    *  every event emitted by this turn. */
   turnId: string;
+  /** Raw audio exists only for the live operation and is never persisted. */
+  voiceAudio?: EphemeralVoiceAudio;
   /** Trusted host-supplied orchestration override for this turn only. */
   turnOrchestration?: TurnOrchestration;
   parentRunId?: string;
@@ -102,6 +105,7 @@ export interface UserMessageInput extends MessageContent {
 /** Non-user trigger source for a turn. */
 export type TurnOrigin =
   | { kind: 'automation'; automationId: string }
+  | { kind: 'goal'; goalId: string }
   | {
       kind: 'agent_graph';
       graphId: string;

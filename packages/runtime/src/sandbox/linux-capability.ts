@@ -19,14 +19,18 @@ export interface DetectLinuxSandboxCapabilityInput {
 
 export const LINUX_BWRAP_REQUIRED_OPTIONS = ['--seccomp'] as const;
 
-export const LINUX_BWRAP_PROBE_ARGS = [
-  '--die-with-parent',
-  '--new-session',
+export const LINUX_BWRAP_REQUIRED_NAMESPACE_ARGS = [
   '--unshare-user',
   '--unshare-pid',
   '--unshare-ipc',
   '--unshare-uts',
   '--unshare-cgroup',
+] as const;
+
+export const LINUX_BWRAP_PROBE_ARGS = [
+  '--die-with-parent',
+  '--new-session',
+  ...LINUX_BWRAP_REQUIRED_NAMESPACE_ARGS,
   '--unshare-net',
   '--ro-bind',
   '/',

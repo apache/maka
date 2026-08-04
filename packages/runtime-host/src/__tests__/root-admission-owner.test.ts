@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
-  createAgentRunStore,
   type RootTurnAdmission,
   type RootTurnAdmissionStore,
   type RootTurnSourceMessage,
 } from '@maka/storage';
+import { createLegacyAgentRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
@@ -379,11 +379,11 @@ function mutableAdmission(): RootTurnAdmission {
 }
 
 async function withStore(
-  run: (store: ReturnType<typeof createAgentRunStore>) => Promise<void>,
+  run: (store: ReturnType<typeof createLegacyAgentRunStoreForTest>) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-root-admission-owner-'));
   try {
-    await run(createAgentRunStore(root));
+    await run(createLegacyAgentRunStoreForTest(root));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

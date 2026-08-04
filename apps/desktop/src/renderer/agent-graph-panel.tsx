@@ -4,6 +4,7 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime';
+import { Button } from '@astryxdesign/core/Button';
 
 type GraphPanelCopy = {
   title: string;
@@ -216,14 +217,13 @@ export function AgentGraphPanel(props: {
           ) : null}
         </div>
         {stopAvailable ? (
-          <button
-            type="button"
-            className="maka-agent-graph-stop"
-            disabled={stopPending}
+          <Button
+            variant="secondary"
+            size="sm"
+            label={stopPending ? copy.stopping : copy.stop}
+            isDisabled={stopPending}
             onClick={() => void stopGraph()}
-          >
-            {stopPending ? copy.stopping : copy.stop}
-          </button>
+          />
         ) : null}
       </header>
       {stopError ? (
@@ -236,13 +236,12 @@ export function AgentGraphPanel(props: {
       {error ? (
         <p className="maka-agent-graph-error" role="alert">
           <span>{copy.loadFailed}</span>{' '}
-          <button
-            type="button"
-            className="maka-agent-graph-retry"
+          <Button
+            variant="secondary"
+            size="sm"
+            label={copy.retry}
             onClick={() => refreshRef.current()}
-          >
-            {copy.retry}
-          </button>
+          />
         </p>
       ) : null}
 
@@ -269,13 +268,12 @@ export function AgentGraphPanel(props: {
                     <span className="maka-agent-graph-operator-status">
                       {copy.operatorStatus(operator.status)}
                     </span>
-                    <button
-                      type="button"
-                      className="maka-agent-graph-open"
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      label={copy.openSession}
                       onClick={() => props.onOpenSession(operator.childSessionId)}
-                    >
-                      {copy.openSession}
-                    </button>
+                    />
                   </li>
                 );
               })}

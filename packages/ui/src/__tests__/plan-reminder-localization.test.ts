@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   duplicatePlanReminderTitle,
   formatReminderCountdown,
-  planReminderFormValidationMessage,
+  planReminderFormValidation,
   planReminderTemplateSeed,
 } from '../plan-reminder-helpers.js';
 import { getPlanReminderCopy } from '../plan-reminder-copy.js';
@@ -23,8 +23,53 @@ describe('plan reminder localization', () => {
       delivery: { channel: 'local' as const },
       now: Date.now(),
     };
-    assert.equal(planReminderFormValidationMessage(input, 'zh'), '填写标题后才能保存提醒。');
-    assert.equal(planReminderFormValidationMessage(input, 'en'), 'Add a title before saving this reminder.');
+    assert.deepEqual(
+      planReminderFormValidation(input, 'zh'),
+      { field: 'title', message: '填写标题后才能保存提醒。' },
+    );
+    assert.deepEqual(
+      planReminderFormValidation(input, 'en'),
+      { field: 'title', message: 'Add a title before saving this reminder.' },
+    );
+    assert.deepEqual(
+      planReminderFormValidation({
+        ...input,
+        title: 'Review',
+        recurrence: 'cron',
+        cronExpression: 'invalid',
+      }, 'en'),
+      {
+        field: 'cron',
+        message: 'Cron expressions need five fields, for example 0 9 * * 1-5.',
+      },
+    );
+    assert.deepEqual(
+      planReminderFormValidation({
+        ...input,
+        title: 'Review',
+        parsedRunAt: Number.NaN,
+      }, 'zh'),
+      { field: 'time', message: '选择有效的提醒时间。' },
+    );
+    assert.deepEqual(
+      planReminderFormValidation({
+        ...input,
+        title: 'Review',
+        parsedRunAt: input.now - 1,
+      }, 'zh'),
+      { field: 'time', message: '提醒时间必须晚于当前时间。' },
+    );
+    assert.deepEqual(
+      planReminderFormValidation({
+        ...input,
+        title: 'Review',
+        delivery: { channel: 'bot', platform: 'telegram', chatId: '' },
+      }, 'en'),
+      {
+        field: 'chatId',
+        message: 'Enter a Chat ID when delivering to a bot chat.',
+      },
+    );
     assert.equal(duplicatePlanReminderTitle('Review', 'en'), 'Review copy');
     assert.equal(formatReminderCountdown(120_000, 'en', 0), 'in 2 minutes');
     assert.equal(formatReminderCountdown(120_000, 'zh', 0), '2 分钟后');
@@ -36,6 +81,11 @@ describe('plan reminder localization', () => {
 
     assert.ok(template);
     const seed = planReminderTemplateSeed(template, now);
+    assert.match(
+      seed.runAtLocal,
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/,
+      'local date-time values use the ISO minute shape',
+    );
     const runAt = new Date(seed.runAtLocal);
 
     assert.equal(seed.editingId, null);

@@ -55,7 +55,11 @@ describe('Plan Reminder scanning hierarchy', () => {
     assert.match(markup, /每周发布风险复盘/);
     assert.match(markup, /重复：每周/);
     assert.match(markup, /下次触发：/);
-    assert.doesNotMatch(markup, /lucide-repeat|lucide-clock/);
+    const schedule = markup.match(
+      /<div class="maka-plan-card-schedule">([\s\S]*?)<\/div>/,
+    )?.[1];
+    assert.ok(schedule);
+    assert.doesNotMatch(schedule, /<svg|lucide-repeat|lucide-clock/);
     assert.doesNotMatch(markup, />待触发</);
     assert.doesNotMatch(markup, /尚未执行/);
   });
@@ -74,6 +78,35 @@ describe('Plan Reminder scanning hierarchy', () => {
 
     assert.doesNotMatch(markup, /保持唤醒已开启/);
     assert.match(markup, /aria-label="定时任务页面设置"/);
+  });
+
+  // The page renders identically whether keep-awake is on or off — that is the
+  // point of the assertion above — so the settings item is the only thing that
+  // carries the state, and it is what a story could never have proven cheaply.
+  it('reflects the persisted keep-awake state on the settings menu item', () => {
+    const checkbox = (markup: string) => {
+      const items = markup.match(/<[^>]*role="menuitemcheckbox"[^>]*>/g) ?? [];
+      assert.equal(items.length, 1, 'expected exactly one page-settings checkbox');
+      return items[0];
+    };
+
+    assert.match(checkbox(render([], true)), /aria-checked="true"/);
+    assert.match(checkbox(render([], false)), /aria-checked="false"/);
+  });
+
+  it('renders list selectors with Astryx-owned visible labels', () => {
+    const markup = render(
+      Array.from({ length: 8 }, (_, index) =>
+        reminder({
+          id: `scheduled-${index}`,
+          title: `定时任务 ${index + 1}`,
+        }),
+      ),
+    );
+
+    assert.match(markup, /<label[^>]*>排序<\/label>/);
+    assert.match(markup, /<label[^>]*>状态<\/label>/);
+    assert.doesNotMatch(markup, /<label class="maka-plan-compact-select/);
   });
 
   it('shows exceptional lifecycle and run states once instead of repeating normal state', () => {

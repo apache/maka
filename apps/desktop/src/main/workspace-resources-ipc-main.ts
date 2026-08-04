@@ -11,7 +11,7 @@ import type {
   InvocableSkillEntry,
   SkillSelectionReport,
 } from '@maka/runtime';
-import { createArtifactStore, resolveArtifactPath } from '@maka/storage';
+import { type ArtifactStore, resolveArtifactPath } from '@maka/storage';
 import type { createMainWindowController } from './main-window.js';
 import {
   createStarterSkill,
@@ -34,7 +34,6 @@ import {
   toManagedSkillSourceEntry,
 } from './managed-skill-sources.js';
 
-type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
 export interface NewSessionSkillContext {

@@ -132,8 +132,8 @@ describe('drag-to-grant permission overlay', () => {
   it('only recognises the two drag-to-grant permissions', () => {
     assert.equal(isDragGrantPermission('accessibility'), true);
     assert.equal(isDragGrantPermission('screen_recording'), true);
-    // Microphone and notifications have real programmatic consent dialogs;
-    // routing them through a drag card would be theatre.
+    // Microphone has a real consent dialog; notifications and Automation
+    // have ordinary System Settings rows. None belongs in a drag card.
     assert.equal(isDragGrantPermission('microphone'), false);
     assert.equal(isDragGrantPermission('notifications'), false);
     assert.equal(isDragGrantPermission('automation'), false);

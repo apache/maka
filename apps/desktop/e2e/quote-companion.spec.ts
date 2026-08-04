@@ -1,10 +1,16 @@
-import { test, expect } from './fixtures';
+import { test, expect, COMPOSER_INPUT } from './fixtures';
 
+/**
+ * Quote companion lifecycle: stage selection → side panel → remove one staged
+ * quote → fork explore session → send → exit cleans up.
+ * Composer chrome only needs token *count* here; full quote text lives in the
+ * panel list (Token labels truncate and must not be the source of truth).
+ */
 test('quote companion removes one staged quote, forks, answers, and cleans up on exit', async ({
   window: page,
 }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
-  const mainComposer = page.locator('.maka-composer-textarea');
+  const mainComposer = page.locator(COMPOSER_INPUT);
   await mainComposer.fill('quote companion source one');
   await mainComposer.press('Enter');
 
@@ -35,12 +41,14 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
 
   const panel = page.locator('.maka-quote-companion');
   await expect(panel).toBeVisible();
-  await expect(panel.locator('.maka-composer .maka-quote-chip')).toHaveCount(2);
-  await panel.getByRole('button', { name: '移除引用' }).first().click();
-  await expect(panel.locator('.maka-composer .maka-quote-chip')).toHaveCount(1);
-  await expect(panel.locator('.maka-composer .maka-quote-chip')).toContainText(
-    'Fake backend received: quote companion source two',
-  );
+
+  // Quiet composer stages quotes as drawer Tokens (Astryx Token + remove).
+  const quoteTokens = panel.locator('.maka-composer-context-drawer .astryx-token');
+  await expect(quoteTokens).toHaveCount(2);
+  await quoteTokens.first().getByRole('button', { name: /^Remove / }).click();
+  await expect(quoteTokens).toHaveCount(1);
+
+  // Full text authority is the companion panel list, not truncated token labels.
   await expect(
     panel.locator('.maka-quote-panel-quote', {
       hasText: 'Fake backend received: quote companion source one',
@@ -52,11 +60,11 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
     }),
   ).toBeVisible();
 
-  const companionComposer = panel.locator('.maka-composer-textarea');
+  const companionComposer = panel.locator(COMPOSER_INPUT);
   await companionComposer.fill('explain this quote');
   await companionComposer.press('Enter');
   await expect(panel.getByText(/Fake backend received: explain this quote/)).toBeVisible();
-  await expect(panel.locator('.maka-composer .maka-quote-chip')).toHaveCount(0);
+  await expect(quoteTokens).toHaveCount(0);
 
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)

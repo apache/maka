@@ -8,10 +8,17 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test, type TestContext } from 'node:test';
-import type { ShellRunRecord, ShellRunStore, ShellRunUpdate, ToolResultContent } from '@maka/core';
-import { createShellRunStore } from '@maka/storage';
+import {
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  type ShellRunRecord,
+  type ShellRunStore,
+  type ShellRunUpdate,
+  type ToolResultContent,
+} from '@maka/core';
+import { createLegacyShellRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
+import { ShellRunPtyControlClosedError } from '../shell-run-contract.js';
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
 import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
 
@@ -25,9 +32,37 @@ after(async () => {
 });
 
 describe('ShellRunProcessManager', () => {
+  test('rejects unprojectable provider tool-call identities before durable admission', async () => {
+    const cwd = await workspace();
+    const store = createLegacyShellRunStoreForTest(cwd);
+    const manager = createManager(store);
+    const completions: boolean[] = [];
+    const maximumMultibyteId = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
+    assert.equal(
+      Buffer.byteLength(maximumMultibyteId, 'utf8'),
+      SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+    );
+
+    await assert.rejects(
+      () =>
+        manager.runBackgroundBash(
+          shellInput({
+            cwd,
+            command: 'printf should-not-run',
+            sourceToolCallId: `${maximumMultibyteId}x`,
+            onCompletion: ({ successful }) => completions.push(successful),
+          }),
+        ),
+      /ShellRun source tool-call ID must be non-empty/,
+    );
+
+    assert.deepEqual(await store.listSessionShellRuns('session-1'), []);
+    assert.deepEqual(completions, [false]);
+  });
+
   test('keeps the default pipe path separated, durable, redacted, and observed', async () => {
     const cwd = await workspace();
-    const store = createShellRunStore(cwd);
+    const store = createLegacyShellRunStoreForTest(cwd);
     const manager = createManager(store);
     const result = await manager.runForegroundBash(
       shellInput({
@@ -98,7 +133,7 @@ describe('ShellRunProcessManager', () => {
 
   test('keeps foreground execution bounded and rejects PTY promotion', async () => {
     const cwd = await workspace();
-    const store = createShellRunStore(await workspace());
+    const store = createLegacyShellRunStoreForTest(await workspace());
     const manager = createManager(store);
     const abort = new AbortController();
     const running = manager.runForegroundBash(
@@ -132,7 +167,7 @@ describe('ShellRunProcessManager', () => {
 
   test('hands off a long pipe command without output and publishes monotonic revisions', async () => {
     const updates: ShellRunUpdate[] = [];
-    const store = createShellRunStore(await workspace());
+    const store = createLegacyShellRunStoreForTest(await workspace());
     const manager = createManager(store, (update) => updates.push(update));
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -175,7 +210,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('notifies resource owners when foreground and background commands reach terminal state', async () => {
-    const store = createShellRunStore(await workspace());
+    const store = createLegacyShellRunStoreForTest(await workspace());
     const manager = createManager(store);
     const completions: boolean[] = [];
     await manager.runForegroundBash(
@@ -253,7 +288,7 @@ describe('ShellRunProcessManager', () => {
   test('commits a durable starting identity before the native pipe process spawns', async () => {
     const cwd = await workspace();
     const marker = join(cwd, 'spawned');
-    const backingStore = createShellRunStore(cwd);
+    const backingStore = createLegacyShellRunStoreForTest(cwd);
     const createCommitted = deferred<void>();
     const releaseCreate = deferred<void>();
     const store: ShellRunStore = {
@@ -306,7 +341,7 @@ describe('ShellRunProcessManager', () => {
     for (const lifecycle of ['session', 'runtime'] as const) {
       const cwd = await workspace();
       const marker = join(cwd, `${lifecycle}-spawned`);
-      const backingStore = createShellRunStore(cwd);
+      const backingStore = createLegacyShellRunStoreForTest(cwd);
       const createCommitted = deferred<void>();
       const releaseCreate = deferred<void>();
       const store: ShellRunStore = {
@@ -367,7 +402,7 @@ describe('ShellRunProcessManager', () => {
 
   test('rechecks the session fence after the durable running commit', async () => {
     const cwd = await workspace();
-    const backingStore = createShellRunStore(cwd);
+    const backingStore = createLegacyShellRunStoreForTest(cwd);
     const runningCommitted = deferred<void>();
     const releaseRunning = deferred<void>();
     const store: ShellRunStore = {
@@ -441,23 +476,41 @@ describe('ShellRunProcessManager', () => {
     );
   });
 
-  test('latches timeout while POSIX process discovery is pending', {
+  test('latches timeout when the root exits during POSIX process discovery', {
     skip: process.platform === 'win32' ? 'POSIX process discovery only' : false,
   }, async (context) => {
     const processDiscovery = delayPosixProcessDiscovery(context);
-
+    const cwd = await workspace();
+    const rootPidPath = join(cwd, 'root.pid');
+    const rootScript = `
+      const { writeFileSync } = require('node:fs');
+      writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid));
+      process.once('SIGUSR1', () => process.exit(0));
+      setInterval(() => {}, 1000);
+    `;
     const manager = await createTestManager();
     try {
       const initial = await manager.runBackgroundBash(
         shellInput({
-          cwd: await workspace(),
-          command: nodeCommand('setTimeout(() => process.exit(0), 80);'),
+          cwd,
+          command: 'exit when the test releases the root process',
+          argv: [process.execPath, '-e', rootScript],
           timeoutMs: 50,
         }),
       );
       assert.equal(initial.kind, 'shell_run');
+      await waitUntil(async () => {
+        try {
+          return Number.isSafeInteger(Number.parseInt(await readFile(rootPidPath, 'utf8'), 10));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw error;
+        }
+      });
       await processDiscovery.started;
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const rootPid = Number.parseInt(await readFile(rootPidPath, 'utf8'), 10);
+      assert.ok(Number.isSafeInteger(rootPid) && rootPid > 0);
+      process.kill(rootPid, 'SIGUSR1');
       processDiscovery.release();
 
       const result = await waitForTerminalShellRun(manager, initial.ref);
@@ -474,27 +527,45 @@ describe('ShellRunProcessManager', () => {
   }, async (context) => {
     const processDiscovery = delayPosixProcessDiscovery(context);
     const abort = new AbortController();
-    const manager = await createTestManager();
+    const backingStore = createLegacyShellRunStoreForTest(await workspace());
+    const runningCommitted = deferred<void>();
+    const releaseRunning = deferred<void>();
+    const store: ShellRunStore = {
+      createShellRun: (...args) => backingStore.createShellRun(...args),
+      async updateShellRun(sessionId, shellRunId, patch) {
+        const updated = await backingStore.updateShellRun(sessionId, shellRunId, patch);
+        if (patch.status === 'running') {
+          runningCommitted.resolve(undefined);
+          await releaseRunning.promise;
+        }
+        return updated;
+      },
+      readShellRun: (...args) => backingStore.readShellRun(...args),
+      listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
+    };
+    const manager = createManager(store);
     const run = manager.runForegroundBash(
       shellInput({
         cwd: await workspace(),
         command: waitForeverCommand('ready'),
         timeoutMs: 50,
         abortSignal: abort.signal,
-        emitOutput: () => abort.abort(),
       }),
     );
 
     try {
+      await runningCommitted.promise;
       await processDiscovery.started;
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      abort.abort();
       processDiscovery.release();
+      releaseRunning.resolve(undefined);
 
       const result = await run;
       assert.equal(result.status, 'cancelled');
       assert.equal(result.exitCode, 130);
     } finally {
       processDiscovery.release();
+      releaseRunning.resolve(undefined);
       await run.catch(() => undefined);
       await manager.terminateAll().catch(() => undefined);
     }
@@ -739,11 +810,42 @@ describe('ShellRunProcessManager', () => {
           input: 'late input',
           abortSignal: NO_ABORT,
         }),
-      /stopping and no longer accepts input/,
+      (error: unknown) =>
+        error instanceof ShellRunPtyControlClosedError &&
+        /stopping and no longer accepts input/.test(error.message),
     );
     const stopped = await stopping;
     assertShellRun(stopped);
     assert.deepEqual(stopped.operation, { kind: 'stop', applied: true });
+  });
+
+  test('closes PTY control at its mutation cut when shutdown starts after admission', async () => {
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: waitForeverCommand('READY\n'),
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+    await waitForPtyText(manager, initial.ref, /READY/);
+
+    const control = manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      input: 'late input',
+      abortSignal: NO_ABORT,
+    });
+    const shutdown = manager.terminateAll();
+    await assert.rejects(
+      control,
+      (error: unknown) => error instanceof ShellRunPtyControlClosedError,
+    );
+    await shutdown;
+    const terminal = await manager.inspectResource('session-1', initial.ref);
+    assert.equal(terminal.status, 'cancelled');
   });
 
   test('reopens PTY control only after every pre-commit Stop has aborted', async () => {
@@ -777,7 +879,9 @@ describe('ShellRunProcessManager', () => {
         input: 'blocked',
         abortSignal: NO_ABORT,
       }),
-      /stopping and no longer accepts input/,
+      (error: unknown) =>
+        error instanceof ShellRunPtyControlClosedError &&
+        /stopping and no longer accepts input/.test(error.message),
     );
     secondAbort.abort();
     await Promise.all([first, blocked, second]);
@@ -905,7 +1009,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('recovers durable starting and running records without live handles as orphaned', async () => {
-    const store = createShellRunStore(await workspace());
+    const store = createLegacyShellRunStoreForTest(await workspace());
     await store.createShellRun(record({ shellRunId: 'orphan-starting', status: 'starting' }));
     await store.createShellRun(record({ shellRunId: 'orphan-running', status: 'running' }));
     await store.createShellRun({
@@ -932,7 +1036,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('concurrent orphan observers converge on the same durable terminal record', async () => {
-    const backingStore = createShellRunStore(await workspace());
+    const backingStore = createLegacyShellRunStoreForTest(await workspace());
     await backingStore.createShellRun(
       record({ shellRunId: 'concurrent-orphan', status: 'running' }),
     );
@@ -972,7 +1076,7 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('keeps unauthorized refs non-disclosing and rejects malformed selectors before storage', async () => {
-    const store = createShellRunStore(await workspace());
+    const store = createLegacyShellRunStoreForTest(await workspace());
     await store.createShellRun({
       ...record({ shellRunId: 'owned-by-another-session', status: 'running' }),
       sessionId: 'session-2',
@@ -1275,7 +1379,7 @@ describe('ShellRunProcessManager', () => {
 
   test('keeps concurrent PTY control and Read persistence in parser-cut order', async () => {
     const updates: ShellRunUpdate[] = [];
-    const store = createShellRunStore(await workspace());
+    const store = createLegacyShellRunStoreForTest(await workspace());
     const manager = createManager(store, (update) => updates.push(update));
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1348,7 +1452,7 @@ describe('ShellRunProcessManager', () => {
     const dsrSeen = join(cwd, 'dsr-seen');
     const exitGate = join(cwd, 'exit-gate');
     const sizeBeforeExit = join(cwd, 'size-before-exit');
-    const store = createShellRunStore(await workspace());
+    const store = createLegacyShellRunStoreForTest(await workspace());
     const manager = createManager(store);
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1495,7 +1599,7 @@ describe('ShellRunProcessManager', () => {
   test('restores the trailing PTY flush after a queued control aborts before commit', async () => {
     const cwd = await workspace();
     const dirtyWritten = join(cwd, 'dirty-written');
-    const store = createShellRunStore(await workspace());
+    const store = createLegacyShellRunStoreForTest(await workspace());
     const manager = createManager(store, undefined, { flushIntervalMs: 1_000 });
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1974,7 +2078,7 @@ describe('ShellRunProcessManager', () => {
         });
         return false;
       } catch (error) {
-        if (/stopping and no longer accepts input/.test(String(error))) return true;
+        if (error instanceof ShellRunPtyControlClosedError) return true;
         throw error;
       }
     });
@@ -1993,7 +2097,7 @@ describe('ShellRunProcessManager', () => {
     const storageRoot = await workspace();
     const sessionsPath = join(storageRoot, 'sessions');
     await writeFile(sessionsPath, 'blocks durable ShellRun creation', 'utf8');
-    const store = createShellRunStore(storageRoot);
+    const store = createLegacyShellRunStoreForTest(storageRoot);
     const manager = createManager(store, undefined, { maxLiveShellRuns: 2, maxLivePtyRuns: 1 });
     try {
       await assert.rejects(() =>
@@ -2141,7 +2245,11 @@ async function createTestManager(
     pipeOutputDrainMs?: number;
   },
 ): Promise<ShellRunProcessManager> {
-  return createManager(createShellRunStore(await workspace()), onShellRunUpdate, options);
+  return createManager(
+    createLegacyShellRunStoreForTest(await workspace()),
+    onShellRunUpdate,
+    options,
+  );
 }
 
 function shellInput(input: {
@@ -2155,13 +2263,14 @@ function shellInput(input: {
   abortSignal?: AbortSignal;
   emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   shell?: ShellPlan;
+  sourceToolCallId?: string;
   onCompletion?: (outcome: { successful: boolean }) => void;
 }) {
   return {
     sessionId: 'session-1',
     sourceRunId: 'run-1',
     sourceTurnId: 'turn-1',
-    sourceToolCallId: 'tool-1',
+    sourceToolCallId: input.sourceToolCallId ?? 'tool-1',
     cwd: input.cwd,
     command: input.command,
     ...(input.argv !== undefined ? { argv: input.argv } : {}),

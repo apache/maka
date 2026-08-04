@@ -2,6 +2,7 @@ import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   RuntimeCommitSink,
   ToolOutcomeCommit,
@@ -258,6 +259,47 @@ describe('ToolRuntime durable boundary', () => {
       harness.events.some((event) => event.type === 'tool_result' && event.isError),
       true,
     );
+  });
+
+  it('commits outcome_unknown as a structured non-retryable tool failure', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const uncertain = tool(() => {
+      throw new ToolOutcomeUnknownError('Provider disconnected after accepting the action');
+    });
+    uncertain.recoveryMode = 'never_auto_retry';
+
+    const result = await harness.execute(uncertain);
+
+    assert.deepEqual(result, {
+      error: 'outcome_unknown: Provider disconnected after accepting the action',
+    });
+    const response = outcomes[0]?.runtimeEvent.content;
+    assert.equal(response?.kind, 'function_response');
+    assert.equal(response?.kind === 'function_response' && response.isError, true);
+    assert.deepEqual(response?.kind === 'function_response' ? response.result : undefined, {
+      kind: 'text',
+      text: 'outcome_unknown: Provider disconnected after accepting the action',
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    });
+    const message = harness.messages.find((candidate) => candidate.type === 'tool_result');
+    assert.deepEqual(message?.type === 'tool_result' ? message.content : undefined, {
+      kind: 'text',
+      text: 'outcome_unknown: Provider disconnected after accepting the action',
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    });
   });
 });
 

@@ -1,0 +1,65 @@
+/* Keep the Astryx Theme wrapper aligned with Maka's product-level font and
+   foreground tokens.
+
+   The root <Theme> renders a display:contents wrapper that establishes
+   Astryx's inheritance baseline: color: var(--color-text-primary) and
+   font-family: var(--font-family-body). It paints nothing itself, but every
+   descendant that inherits text color or font from body would inherit
+   Astryx's values instead — a global repaint smuggled in through
+   inheritance, which the layer order alone cannot stop (the rule targets the
+   wrapper, and nothing else competes on that element).
+
+   color-scheme is left alone: the wrapper's mode comes from the same resolved
+   `.dark` source as the product's, so the values always agree.
+
+   Scoped under the Electron and Storybook renderer roots: Theme also mirrors
+   data-astryx-theme (and data-theme) onto <html>, and a bare
+   [data-astryx-theme] would quietly pin html-level text properties too.
+   Keeping both renderer mounts on the same selector is required for Storybook
+   pixels to remain evidence for the live app.
+
+   No token is re-pinned here, and re-pinning is a last resort: the theme
+   declares its tokens through an `@scope` root, so a name both sides define
+   can be shadowed for a whole subtree in ways layer order alone does not
+   predict — verify any such pin against the live app rather than reasoning
+   about it. --font-size-base used to be pinned back to
+   the product's :root value here to undo the 13px root multiplier; the type
+   scale in astryx-theme/makaTheme.ts now emits the body tier directly, so the two
+   definitions agree and the pin has nothing left to correct. If a future
+   Astryx upgrade reintroduces a conflict, re-derive the set (astryx theme
+   defs ∩ product defs ∩ product var() usage) before pinning anything. */
+:is(#root, #storybook-root) [data-astryx-theme] {
+  font: inherit;
+  color: inherit;
+}
+
+/* Titlebar tooltips only: take the popover out of the hit test.
+
+   Astryx keeps `pointer-events: auto` on the tooltip layer deliberately —
+   `onMouseEnter: cancelHide` there is its WCAG 1.4.13 "hoverable" bridge, so
+   content stays readable while the pointer travels onto it. That is correct
+   everywhere the tooltip flips into empty space.
+
+   The titlebar is the one place it cannot flip into empty space. Anchored to a
+   control on the window's top edge there is no room above, so the layer opens
+   downward onto the SideNav's first row (measured live at 86×28 over it).
+   Clicking 展开侧边栏 leaves the pointer parked on its trigger, and the tooltip
+   that reopens covers 新任务 — and the hover bridge is what makes it LINGER
+   there: a pointer moving toward 新任务 crosses the tooltip, which reads as
+   hover and cancels the hide. The affordance holds the target it is covering.
+
+   So the bridge is dropped exactly where it works against itself, and nowhere
+   else: 33 other tooltip call sites across apps/desktop and packages/ui keep
+   Astryx's behavior intact. This is still a local 1.4.13 concession for four
+   icon-only chrome buttons, taken because the alternative is a button that
+   cannot be clicked; the durable fix is upstream collision handling that keeps
+   a flipped tooltip clear of interactive content.
+
+   Scoped by descendant, which is sound here: `useLayer` renders the popover in
+   place rather than through a portal, so a titlebar trigger's layer really is
+   inside `.maka-window-titlebar`. No `!important` — Astryx's StyleX sheet is
+   wrapped in `@layer astryx-base` and imported into `astryx-components`, which
+   this file's `components` layer already outranks. */
+.maka-window-titlebar [role="tooltip"] {
+  pointer-events: none;
+}

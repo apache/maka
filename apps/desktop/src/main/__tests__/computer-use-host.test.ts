@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 import {
   createComputerUseHost,
   computerUseServiceHealth,
@@ -66,6 +65,47 @@ describe('Computer Use host health', () => {
     assert.equal(computerUseServiceHealth('none', undefined).state, 'not_available');
   });
 
+  it('reads the executor that is selected, not the role pair one of them happens to have', () => {
+    // maka-cu supervises one child (§11) and reports its own shape, so it has
+    // no `action`/`capture` pair to read. This function took only that pair,
+    // while the availability half of the same capability card had already been
+    // widened to "any selected executor" — executed against the built desktop
+    // module with a genuinely ready maka-cu backend, the card read:
+    //
+    //   executorState()      = {"state":"ready","generation":1}
+    //   serviceState (boot)  = undefined
+    //   health               = not_available, reason naming cua-driver
+    //   artifactAvailable    = true
+    //
+    // available, state not_available, and a reason naming an executor that is
+    // not the one running.
+    assert.deepEqual(
+      computerUseServiceHealth('maka-cu', { state: 'ready', generation: 1, restartAttempts: 0 }),
+      { state: 'healthy', reason: 'maka-cu 操作与截图服务已就绪。' },
+    );
+    assert.equal(
+      computerUseServiceHealth('maka-cu', {
+        state: 'backing_off',
+        generation: 1,
+        restartAttempts: 1,
+      }).state,
+      'degraded',
+    );
+    assert.deepEqual(
+      computerUseServiceHealth('maka-cu', {
+        state: 'unavailable',
+        generation: 1,
+        restartAttempts: 3,
+      }),
+      { state: 'not_available', reason: 'maka-cu service 启动失败或已退出。' },
+    );
+    assert.equal(
+      computerUseServiceHealth('maka-cu', { state: 'idle', generation: 0, restartAttempts: 0 })
+        .state,
+      'not_run',
+    );
+  });
+
   it('constructs a backend only when the local artifact matches the manifest hash', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-'));
     try {
@@ -84,6 +124,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(validForDevelopment.selected.backendId, process.platform === 'darwin'
         ? 'cua-driver'
@@ -94,6 +135,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(blockedForDistribution.selected.backendId, 'none');
 
@@ -105,6 +147,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(validForDistribution.selected.backendId, process.platform === 'darwin'
         ? 'cua-driver'
@@ -121,6 +164,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(invalid.selected.backendId, 'none');
 
@@ -131,6 +175,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath: linkedBinaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(linked.selected.backendId, 'none');
     } finally {
@@ -138,19 +183,4 @@ describe('Computer Use host health', () => {
     }
   });
 
-  it('accepts a host-owned physical-input guard', async () => {
-    const source = await readFile(
-      new URL('../../../src/main/computer-use-host.ts', import.meta.url),
-      'utf8',
-    );
-    assert.match(source, /physicalInputRecentlyActive/);
-    assert.match(source, /selectComputerUseBackend/);
-  });
-
-  it('wires a one-second physical-input quiet window', async () => {
-    const source = await import('node:fs/promises').then(({ readFile }) =>
-      readMainProcessCombinedSource());
-    assert.match(source, /physicalInputRecentlyActive/);
-    assert.match(source, /powerMonitor\.getSystemIdleTime\(\) < 1/);
-  });
 });

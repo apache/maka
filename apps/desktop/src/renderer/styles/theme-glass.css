@@ -26,18 +26,6 @@ html[data-os="darwin"],
      reference-atlas `light-glass` / `dark-glass` mode that we documented
      but never wired all the way through. */
 
-/* Maintainer 2026-07-18 (user verdict: the Settings rail color is the
-   correct one): the darwin overrides that forced .appFrame and
-   .maka-shell-2col transparent made the native vibrancy material the
-   rail's effective color (~white over a light desktop) while the
-   Settings page kept its opaque --agents-layout-bg backplate — the two
-   sidebars visibly disagreed. The backplate now paints the shared token
-   on every platform; the BrowserWindow vibrancy stays configured but no
-   longer shows through the shell. */
-html[data-os="darwin"] .maka-shell-2col {
-    background: transparent;
-  }
-
 html[data-os="darwin"] .maka-session-panel {
     /* PR-CHAT-CHROME-FIX-1 (WAWQAQ msg `4a1b8c13`): flat base only —
        no gradient, no 1px border. The 4px gap around the floating
@@ -63,54 +51,19 @@ html[data-os="darwin"] .maka-session-panel {
    the darwin text/label overrides remain in this file.
 ============================================================================= */
 
-/* L7 — group label was 9.5px UPPERCASE + 0.08em tracking on the
-   sidebar, which read as "old Windows admin tool" not "macOS native
-   sidebar". QoderWork uses plain quaternary text at body size. Drop
-   the size / transform / tracking on macOS; the natural color step
-   from --color-text-quaternary is enough hierarchy. */
-html[data-os="darwin"] .maka-list-group-label {
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: var(--tracking-normal);
-  text-transform: none;
-  color: var(--color-text-quaternary);
-}
-
-/* Force opaque-foreground text on every direct sidebar text surface so
-   the glass material doesn't pull legibility down through inheritance
-   (audit finding §6). The wash + 50% base provide enough contrast for
-   foreground @ full alpha; nav rows / list rows / settings button all
-   inherit. */
-html[data-os="darwin"] .maka-session-list,
-  html[data-os="darwin"] .maka-list-row {
-    color: var(--foreground);
-  }
-
-/* Unlayered on purpose: `.maka-nav-row` is a semantic navigation control, so
-   this darwin glass override must outrank the unlayered sidebar default color. */
-html[data-os="darwin"] .maka-nav-row {
+/* Product content inherits one foreground while Astryx owns the navigation
+   item chrome and its state colors. Section title size is pinned in
+   sidebar.css (.maka-session-list .astryx-side-nav-section …). */
+html[data-os="darwin"] .maka-session-list {
   color: var(--foreground);
 }
 
 html[data-os="darwin"] .maka-session-panel-footer {
-    /* PR-FE-BUG-HUNT-8 (kenji aesthetic-audit reminder 9, finding #2):
-       drop the 180deg footer linear-gradient. Even though it was a
-       subtle transparent→30% surface-canvas fade, it's exactly the
-       "上面灰下面白" pattern WAWQAQ called out twice (`1e693dee` /
-       `5d3b10e5`). The 50% glass base on the panel already provides
-       material depth; the footer only needs a hairline border-top
-       to separate it from the scroll area. No gradient. No seam. */
-    border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.05);
-    background: oklch(from var(--surface-canvas) l c h / 0.15);
+    /* Hairline + equal padding live on the sticky shell (sidebar.css).
+       Footer section stays transparent so Settings is the same SideNavItem. */
+    border-top: 0;
+    background: transparent;
   }
-
-  /* (dead rule removed) `html[data-os="darwin"] .maka-panel-detail
-     { background: var(--background) }` never applied — the unlayered
-     `.maka-panel-detail.maka-floating-panel.agents-content-area` rule in
-     reference-shell.css wins on specificity (0,3,0 vs 0,2,1), so the
-     panel has always painted `--agents-content-area-bg`. Its intent
-     (solid white chat) survived only via `.maka-main`, which is exactly
-     what produced the three-color-band bug fixed alongside this. */
 
 /* =============================================================================
      Compact glass details
@@ -124,12 +77,9 @@ html[data-os="darwin"] .maka-session-panel-footer {
 
 .maka-session-panel,
   .maka-session-panel-footer,
-  .maka-nav-row,
-  .maka-list-row,
   .maka-module-main-header,
   .maka-plan-heading,
   .maka-skill-tab,
-  .maka-plan-tab,
   .maka-titlebar-action {
     -webkit-user-select: none;
     user-select: none;

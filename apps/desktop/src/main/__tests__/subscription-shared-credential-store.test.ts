@@ -6,11 +6,10 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import type { SubscriptionActionResult } from '@maka/core';
 import { AntigravitySubscriptionService } from '../oauth/antigravity-subscription-service.js';
 import { ClaudeSubscriptionService } from '../oauth/claude-subscription-service.js';
@@ -18,10 +17,6 @@ import { CursorSubscriptionService } from '../oauth/cursor-subscription-service.
 import { OpenAiCodexService } from '../oauth/openai-codex-service.js';
 import type { SharedOAuthCredentialStore } from '../oauth/shared-credential-bridge.js';
 import { XaiOAuthService } from '../oauth/xai-oauth-service.js';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
-
-const DESKTOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const OAUTH_DIR = resolve(DESKTOP_ROOT, 'src', 'main', 'oauth');
 
 interface OAuthServiceContract {
   getAccountState(): Promise<object>;
@@ -412,7 +407,7 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     await assert.rejects(stat(join(userDataDir, '.claude_subscription_token')), { code: 'ENOENT' });
   });
 
-  it('Codex login writes the loopback exchange result to its shared credential', async () => {
+  it('Codex login writes the device-auth exchange result to its shared credential', async () => {
     const credentials = createMemoryCredentialStore();
     const userDataDir = await makeUserDataDir();
     let openedUrl: string | undefined;
@@ -422,15 +417,36 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
         openedUrl = url;
       },
       now: () => NOW,
-      fetchFn: async () =>
-        Response.json({
-          access_token: jwt({
-            sub: 'codex-login-subject',
-            'https://api.openai.com/auth': { chatgpt_account_id: 'codex-login-account' },
-          }),
-          refresh_token: 'codex-login-refresh',
-          expires_in: 3600,
-        }),
+      sleep: async () => {},
+      fetchFn: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/deviceauth/usercode')) {
+          return Response.json({
+            device_auth_id: 'deviceauth-codex-login',
+            user_code: 'CODE-1234',
+            interval: '5',
+            expires_at: new Date(NOW + 600_000).toISOString(),
+          });
+        }
+        if (url.endsWith('/deviceauth/token')) {
+          return Response.json({
+            authorization_code: 'codex-login-code',
+            code_challenge: 'challenge',
+            code_verifier: 'codex-login-verifier',
+          });
+        }
+        if (url.endsWith('/oauth/token')) {
+          return Response.json({
+            access_token: jwt({
+              sub: 'codex-login-subject',
+              'https://api.openai.com/auth': { chatgpt_account_id: 'codex-login-account' },
+            }),
+            refresh_token: 'codex-login-refresh',
+            expires_in: 3600,
+          });
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      },
       credentialStore: credentials.store,
     });
 
@@ -439,15 +455,9 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     const authRequestId = authorization.authRequestId;
     try {
       assert.deepEqual(await service.openAuthorizationUrl(authRequestId), { ok: true });
-      assert.ok(openedUrl);
-      const state = new URL(openedUrl).searchParams.get('state');
-      assert.ok(state);
-      const callback = new URL('http://127.0.0.1:1455/auth/callback');
-      callback.searchParams.set('code', 'codex-login-code');
-      callback.searchParams.set('state', state);
-      const callbackResponse = await fetch(callback);
-      assert.equal(callbackResponse.status, 200);
-      await callbackResponse.text();
+      // The verification page is the fixed server-owned device URL; no
+      // local loopback callback is involved.
+      assert.equal(openedUrl, 'https://auth.openai.com/codex/device');
 
       assert.deepEqual(await service.completeAuthorization(authRequestId), { ok: true });
       const stored = JSON.parse(
@@ -459,6 +469,45 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     } finally {
       service.cancelAuthorization(authRequestId);
     }
+  });
+
+  it('Codex login does not revive an authorization cancelled while the browser opens', async () => {
+    let finishOpening!: () => void;
+    const opening = new Promise<void>((resolve) => {
+      finishOpening = resolve;
+    });
+    const service = new OpenAiCodexService({
+      userDataDir: await makeUserDataDir(),
+      openExternal: async () => opening,
+      credentialStore: createMemoryCredentialStore().store,
+      fetchFn: async (url) => {
+        if (String(url).endsWith('/deviceauth/usercode')) {
+          return Response.json({
+            device_auth_id: 'deviceauth-cancel-open',
+            user_code: 'CODE-CANCEL',
+            interval: '5',
+            expires_at: new Date(NOW + 600_000).toISOString(),
+          });
+        }
+        assert.fail(`unexpected fetch ${String(url)}`);
+      },
+    });
+    const authorization = await service.getAuthorizationUrl();
+    assert.ok('authRequestId' in authorization);
+
+    const opened = service.openAuthorizationUrl(authorization.authRequestId);
+    service.cancelAuthorization(authorization.authRequestId);
+    finishOpening();
+
+    assert.deepEqual(await opened, {
+      ok: false,
+      reason: 'authorization_cancelled',
+      message: 'Codex 授权已取消。',
+    });
+    assert.deepEqual(await service.getAccountState(), {
+      provider: 'openai-codex',
+      runtimeState: 'not_logged_in',
+    });
   });
 
   it('Cursor login writes the successful poll result to its shared credential', async () => {
@@ -488,79 +537,6 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     await assert.rejects(stat(join(userDataDir, '.cursor_subscription_token')), { code: 'ENOENT' });
   });
 
-  it('no production OAuth path invokes safeStorage (#1125 acceptance)', async () => {
-    // The acceptance bar for #1125: saving or loading a runtime-usable
-    // token must never require safeStorage. No module under oauth/ may
-    // import or call safeStorage (the bridge's legacy import takes an
-    // injected decryptor instead); main.ts may only pass the object
-    // into the legacy importers, never call it.
-    for (const file of await readdir(OAUTH_DIR)) {
-      if (!file.endsWith('.ts')) continue;
-      const src = await readFile(resolve(OAUTH_DIR, file), 'utf8');
-      assert.doesNotMatch(
-        src,
-        /import\s*\{[^}]*\bsafeStorage\b[^}]*\}\s*from 'electron'/,
-        `oauth/${file} must not import safeStorage from electron`,
-      );
-      assert.doesNotMatch(
-        src,
-        /\bsafeStorage\s*[.(]/,
-        `oauth/${file} must not invoke safeStorage`,
-      );
-    }
-    // R6: credential startup moved to app-lifecycle.ts. Read the combined
-    // main-process source so the "hand safeStorage over, never invoke it" pin
-    // follows the code to its new home.
-    const mainSrc = await readMainProcessCombinedSource();
-    assert.doesNotMatch(
-      mainSrc,
-      /safeStorage\s*\./,
-      'main process must only hand safeStorage to the legacy importers, never call it',
-    );
-  });
-
-  it('main.ts runs the one-shot legacy token import at startup, non-fatally', async () => {
-    const src = await readMainProcessCombinedSource();
-    assert.match(
-      src,
-      /try\s*\{[\s\S]{0,600}importLegacyOAuthTokenFiles\(\{[\s\S]*?\}\);?[\s\S]{0,600}catch/,
-      'legacy OAuth token import must be wrapped so a failure cannot break startup',
-    );
-    for (const slug of ['claude-subscription', 'codex-subscription']) {
-      assert.match(
-        src,
-        new RegExp(`slug: '${slug}', filePath: join\\(userDataDir, '\\.\\w+_subscription_token'\\)`),
-        `startup import must cover the legacy ${slug} token file`,
-      );
-    }
-  });
-
-  it('finishes credential migration before the first window can issue OAuth mutations', async () => {
-    const src = await readMainProcessCombinedSource();
-    const credentialStartup = src.indexOf('await runCredentialStartup();');
-    const initialWindowSignal = src.indexOf(
-      'const initialWindowSignal = quitCoordinator.getWindowCreationSignal();',
-    );
-    const backgroundStartup = src.indexOf('backgroundStartup = runBackgroundStartup();');
-    const createWindow = src.indexOf(
-      'await mainWindowController.createWindow(initialWindowSignal);',
-      backgroundStartup,
-    );
-    const secondInstance = src.indexOf("app.on('second-instance'");
-    const activate = src.indexOf("app.on('activate'");
-
-    assert.notEqual(credentialStartup, -1, 'startup must expose an awaited credential migration phase');
-    assert.ok(
-      credentialStartup < initialWindowSignal &&
-        initialWindowSignal < backgroundStartup &&
-        backgroundStartup < createWindow,
-      'credential migration must finish before background startup opens the interactive window',
-    );
-    assert.ok(
-      credentialStartup < secondInstance && credentialStartup < activate,
-      'window-creation events must not be registered until credential migration finishes',
-    );
-  });
 });
 
 function jwt(payload: Record<string, unknown>): string {

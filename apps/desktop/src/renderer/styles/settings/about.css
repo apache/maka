@@ -1,12 +1,7 @@
 /* About and data-portability settings. */
-.settingsAboutPage {
-  display: grid;
-  align-content: start;
-  /* #1363: same explicit column as .settingsStructuredPage (#1362) — stop
-     intrinsic max-content propagation through the implicit `auto` track. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
-}
+/* Astryx convergence: the page container is the kit's SettingsPage now —
+   the About-only `.settingsAboutPage` grid (16px rhythm, breaking the shared
+   32px page rhythm) is retired. */
 
 .settingsAboutHero {
   display: grid;
@@ -39,102 +34,25 @@
 }
 
 .settingsAboutHeading h2 {
+  font: var(--maka-text-heading-2);
   margin: 0;
   color: var(--foreground);
-  font-size: 1.4667em;
-  font-weight: var(--font-weight-bold);
   letter-spacing: var(--tracking-normal);
 }
 
-.settingsAboutVersion {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  color: var(--foreground-secondary);
-  padding: var(--space-0-5) var(--space-2);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.05);
-}
-
-.settingsAboutChannel {
-  font-size: var(--font-size-caption);
-  color: var(--brand-deep);
-  padding: var(--space-0-5) var(--space-2);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--brand-deep) l c h / 0.10);
-  font-weight: var(--font-weight-semibold);
-}
+/* #1879: both hero pills are Astryx `Badge`s, and neither has a product rule
+   left. The version keeps the mono stack — a version string is read digit by
+   digit — but takes it from being a `<code>` inside the badge rather than from
+   a rule here: `:where(code, kbd, samp, pre)` in maka-tokens.css is the one
+   monospace authority in the renderer, and it composes the roles a second time
+   against that family, so nothing else about the badge's type moves. The
+   channel pill was a hand-tinted `--brand-deep` wash; `blue` is the tinted
+   variant that keeps it distinguishable from the neutral version pill. */
 
 .settingsAboutTagline {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
-/* Detail audit / polish wave: the retired `.settingsAboutPrivacy` dialect
-   (uppercase brand-blue h3 + brand-deep tinted card) was a fourth section-
-   header voice used by 关于's privacy card AND 数据's 配置导入导出 header.
-   Both converged onto the sanctioned language — SectionHeader for the
-   heading, Alert variant="passive" for the 关于 callout, plain flow for
-   数据's form — so these blocks are now just neutral gap containers. */
-.settingsPrivacyBlock {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.settingsPrivacyPoints {
-  margin: 0;
-  padding: 0 0 0 var(--space-4);
-  display: grid;
-  gap: var(--space-1-5);
-}
-
-.settingsConfigSection {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.settingsConfigCategoryList {
-  display: grid;
-  gap: var(--space-2);
-  margin-top: var(--space-1);
-}
-
-.settingsConfigCategoryItem {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-}
-
-/* #1363: the label stack is a flex item — without min-width:0 its widest
-   unbreakable run sets the row minimum instead of wrapping. */
-.settingsConfigCategoryItem > span {
-  min-width: 0;
-}
-
-.settingsConfigCategoryItem small {
-  display: block;
-  color: var(--muted-foreground);
-}
-
-.settingsConfigCategoryItem small[data-tone="destructive"] {
-  margin-top: var(--space-1);
-  color: var(--destructive);
-}
-
-.settingsConfigStrategy {
-  display: flex;
-  align-items: center;
-  /* #1363: the nowrap label + select trigger have a one-line minimum wider
-     than the 480px window floor's content column — the select drops to its
-     own line instead of dragging the section into overflow. */
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-2-5);
-}
-
-/* #1363 review: no nowrap on the strategy label — the English copy
-   ("Connections with the same name:") is wider than the 480px floor's
-   content column and dragged the section into clipped overflow. On wide
-   layouts the label fits one line either way. */
 

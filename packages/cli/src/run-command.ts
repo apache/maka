@@ -15,6 +15,11 @@ import {
 import type { ReadySessionTarget } from './connection-target.js';
 import type { EditingProtocol } from '@maka/core/apply-patch';
 import { selectMakaRunSession } from './run-session-selection.js';
+import {
+  invocationHasSandboxBoundaryFailure,
+  invocationRecoveredSandboxBoundaryFailure,
+  sessionEventSandboxBoundaryFailureReason,
+} from './sandbox-boundary-failure.js';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
 
 export interface MakaRunOptions {
@@ -346,15 +351,11 @@ export async function runMakaTextCli(
           decision: 'deny',
         });
       }
-      if (
-        event.type === 'tool_result' &&
-        event.isError &&
-        event.content.kind === 'text' &&
-        event.content.sandboxFailure
-      ) {
+      const sandboxFailureReason = sessionEventSandboxBoundaryFailureReason(event);
+      if (sandboxFailureReason) {
         streamBoundaryFailure = true;
         deps.writeStderr(
-          event.content.sandboxFailure.reason === 'requires_bypass'
+          sandboxFailureReason === 'requires_bypass'
             ? 'maka run: sandbox bypass requires an explicit --yolo\n'
             : 'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
@@ -495,55 +496,4 @@ function withTrailingNewline(text: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function invocationHasSandboxBoundaryFailure(result: InvocationResult): boolean {
-  for (const event of result.events) {
-    if (event.content?.kind !== 'function_response') continue;
-    const failure = isRecord(event.content.result)
-      ? event.content.result.sandboxFailure
-      : undefined;
-    if (
-      isRecord(failure) &&
-      (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass')
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function invocationRecoveredSandboxBoundaryFailure(result: InvocationResult | undefined): boolean {
-  if (!invocationCompletedWithOutput(result)) return false;
-  let unresolvedBoundaryFailure = false;
-  let recoveredBoundaryFailure = false;
-  for (const event of result.events) {
-    if (event.content?.kind !== 'function_response') continue;
-    const failure = isRecord(event.content.result)
-      ? event.content.result.sandboxFailure
-      : undefined;
-    if (
-      event.content.isError &&
-      isRecord(failure) &&
-      (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass')
-    ) {
-      unresolvedBoundaryFailure = true;
-      continue;
-    }
-    if (unresolvedBoundaryFailure && !event.content.isError) {
-      unresolvedBoundaryFailure = false;
-      recoveredBoundaryFailure = true;
-    }
-  }
-  return recoveredBoundaryFailure && !unresolvedBoundaryFailure;
-}
-
-function invocationCompletedWithOutput(
-  result: InvocationResult | undefined,
-): result is InvocationResult & { status: 'completed'; finalOutput: string } {
-  return result?.status === 'completed' && typeof result.finalOutput === 'string';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

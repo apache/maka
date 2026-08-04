@@ -22,7 +22,7 @@ owners:
 - Phase 0 的恢复语义、replay gate 与真实进程 crash harness 已实现；
 - Phase 1 的 safe-boundary continuation 已实现，并由 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 控制 Desktop 中断横幅手动恢复、CLI/TUI `/resume` 与 Desktop 自动启动；continuation lineage 会回溯拼装 user-anchored provider history，普通后续 Turn 也会包含 continuation Run；
 - Phase 2 的 SQLite schema、Tool Journal、T1/T2、operationId、CAS、partial snapshot、带 source marker 的批量 JSONL 导入、显式导出及 CLI/Desktop 单一 canonical writer 接线已实现；
-- `MAKA_RUNTIME_SQLITE_CANONICAL=1` 是 workspace 的迁移触发器而非可随意来回切换的读写开关：workspace 一旦存在 `runtime.sqlite`，后续即使关闭环境变量也继续使用 SQLite canonical，避免 SQLite-only 事件突然不可见；系统不会双写两个 RuntimeEvent 真相源；
+- RuntimeEvent writer 无条件使用 `runtime.sqlite`：首次写入会幂等导入 legacy JSONL 且不改写旧文件；只读检查在数据库尚不存在时仍可读取 legacy JSONL，一旦存在数据库就只读 SQLite；系统不会双写两个 RuntimeEvent 真相源；
 - Phase 2 已实现 write-side durable boundary；崩溃留下的 unmatched function call 会沿用 Phase 0 gate 安全 park，但 journal 的 `indeterminate/reconciled/parked` 状态写入与专用 reconciler 属于 Phase 3；
 - Phase 3 的受控恢复、reconciler 与 recovery verification 尚未实现。
 
@@ -966,7 +966,7 @@ compaction_ref_missing
 
 ### Phase 2：SQLite 与事务化 Tool boundary
 
-当前状态：write-side 已实现。CLI/Desktop 通过 `MAKA_RUNTIME_SQLITE_CANONICAL=1` 触发 workspace 迁移；全新且未迁移的 workspace 默认仍使用 JSONL。启用时按 source marker 批量幂等导入旧 RuntimeEvent JSONL，再将 SQLite 同时作为 `RuntimeEventStore` 与 `RuntimeCommitSink`，正常执行不再写 RuntimeEvent JSONL。迁移后选择 sticky SQLite canonical，关闭 flag 也不会让 SQLite-only 历史消失。Session message JSONL 与 AgentRun operational JSONL 仍是兼容投影/运行记录，不构成第二个 RuntimeEvent source of truth。
+当前状态：write-side 已实现。CLI、Desktop、Headless 的 RuntimeEvent writer 无条件打开 `runtime.sqlite`，按 source marker 批量幂等导入旧 RuntimeEvent JSONL，再将 SQLite 同时作为 `RuntimeEventStore` 与 `RuntimeCommitSink`；正常执行不再写 RuntimeEvent JSONL。只读路径仅在数据库不存在时读取 legacy JSONL，一旦数据库存在就只认 SQLite。Session message JSONL 与 AgentRun operational JSONL 仍是兼容投影/运行记录，不构成第二个 RuntimeEvent source of truth。
 
 交付：
 
@@ -1153,11 +1153,10 @@ UI 至少区分：
 
 ## 二十三、发布、回滚与 feature flags
 
-当前实现层对外提供两个环境变量，默认都关闭：
+RuntimeEvent 迁移不再由环境变量控制；首次写入必然迁移。当前实现层保留一个恢复行为开关，默认关闭：
 
 | 环境变量 | 当前语义 | 为什么默认关闭 |
 | --- | --- | --- |
-| `MAKA_RUNTIME_SQLITE_CANONICAL=1` | 触发当前 workspace 迁移到 SQLite canonical；`runtime.sqlite` 一旦存在便 sticky | 它是不可通过关闭 flag 回退的数据迁移；自动备份和有存量数据的 v2→v4 升级测试尚未补齐 |
 | `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | 开启 Desktop 中断横幅“安全恢复”、CLI/TUI `/resume` 与 Desktop 启动自动续跑 | 会产生用户可见行为，并可能自动调用 provider、消耗 token；后续应拆分手动与自动开关，先灰度手动路径 |
 
 当前 Phase 2 已知限制（不阻断写侧地基评审）：
@@ -1180,7 +1179,7 @@ runtimeFileReconcile
 发布顺序：
 
 1. shadow import/read，对比 SQLite projection 与 JSONL；
-2. 测试环境切 SQLite canonical；
+2. 测试环境验证 SQLite canonical；
 3. 内部 workspace 灰度；
 4. safe-boundary resume；
 5. 文件 reconcile；

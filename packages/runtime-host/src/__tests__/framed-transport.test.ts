@@ -80,6 +80,19 @@ test('fails closed on an oversized unterminated frame over a real socket', async
   });
 });
 
+test('returns a rejected Promise for an oversized outbound frame', async () => {
+  await withSocketPair(async (transport) => {
+    await assert.rejects(
+      transport.write({
+        kind: 'draining',
+        hostEpoch: 'x'.repeat(RUNTIME_HOST_MAX_FRAME_BYTES),
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
+    );
+  });
+});
+
 async function withSocketPair(
   run: (transport: FramedTransport, peer: Socket) => Promise<void>,
 ): Promise<void> {

@@ -1,10 +1,33 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Volume2 } from '@maka/ui/icons';
-import type { VoicePermissionStatus } from '@maka/core';
+import type {
+  AppSettings,
+  LlmConnection,
+  UpdateAppSettingsResult,
+  VoicePermissionStatus,
+} from '@maka/core';
 import { defaultVoiceCaptureCaps, validateVoiceCaptureRequest } from '@maka/core';
-import { Alert, AlertDescription, Badge, Button, PageHeader, formatBytes, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  Button,
+  FormLayout,
+  Selector,
+  TextArea,
+  TextInput,
+  formatBytes,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+  Banner,
+} from '@maka/ui';
 import { getVoiceSettingsCopy, type VoiceSettingsCopy } from '../locales/settings-voice-copy';
+import { SettingRow } from './settings-rows';
+import { SettingsActions, SettingsField, SettingsPage, SettingsSection } from './settings-section';
+import { AddProviderForm } from './provider-add-form';
+import { ProviderConnectionDialog } from './provider-connection-dialog';
+import { providerPanelActionErrorMessage } from './provider-panel-shared';
 import { useActionGuard } from './use-action-guard';
+import { useOptimisticSettingsDraft } from './use-optimistic-settings-draft';
+import { VoiceRecognitionConnectionForm } from './voice-recognition-connection-form';
+import { startVoiceCapture, type ActiveVoiceCapture } from '../voice-audio-capture';
 
 type VoiceSmokeState =
   | { status: 'idle' }
@@ -13,21 +36,228 @@ type VoiceSmokeState =
   | { status: 'ok'; durationMs: number; audioBytes: number }
   | { status: 'error'; reason: 'unsupported_media' | 'unsupported_recorder' | 'denied' | 'failed' | string };
 
-export function VoiceModelsSettingsPage() {
+type RecognitionDialogSession =
+  | { kind: 'create'; phase: 'mounting' | 'open' | 'closing' }
+  | { kind: 'edit'; phase: 'mounting' | 'open' | 'closing'; connection: LlmConnection };
+
+export function VoiceModelsSettingsPage(props: {
+  settings: AppSettings;
+  connections: LlmConnection[];
+  onUpdate(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+  ): Promise<UpdateAppSettingsResult>;
+  onRefreshConnections(): Promise<void>;
+}) {
   const locale = useUiLocale();
   const copy = getVoiceSettingsCopy(locale);
+  const toast = useToast();
   const [permission, setPermission] = useState<VoicePermissionStatus>('unknown');
   const [smoke, setSmoke] = useState<VoiceSmokeState>({ status: 'idle' });
   const [isBusy, setIsBusy] = useState(false);
+  const [recognitionTest, setRecognitionTest] = useState<string>();
+  const [recognitionTesting, setRecognitionTesting] = useState(false);
+  const [recognitionDialog, setRecognitionDialog] = useState<RecognitionDialogSession | null>(null);
+  const {
+    draft: voiceDraft,
+    draftRef: voiceDraftRef,
+    saving,
+    edit: editVoiceDraft,
+    update: updateVoiceDraft,
+  } = useOptimisticSettingsDraft<AppSettings['voice']>(
+    props.settings.voice,
+    async (patch) => {
+      const result = await props.onUpdate({ voice: patch });
+      return result.settings.voice;
+    },
+    {
+      onError: (error) =>
+        toast.error(copy.saveFailed, error instanceof Error ? error.message : copy.failed),
+    },
+  );
+  const recognitionDraft = voiceDraft.recognition;
+  const realtimeDraft = voiceDraft.realtime;
   const captureSmokeGuard = useActionGuard<'smoke'>();
+  const recognitionTestGuard = useActionGuard<'recognition'>();
   const voicePageMountedRef = useMountedRef();
   const activeVoiceCaptureStreamRef = useRef<MediaStream | null>(null);
-  const toast = useToast();
+  const activeRecognitionTestRef = useRef<{
+    operationId: string;
+    capture?: ActiveVoiceCapture;
+  } | undefined>(undefined);
   const caps = defaultVoiceCaptureCaps();
   const smokeStatusId = useId();
+  const enabledConnections = props.connections.filter((connection) => connection.enabled);
+  const selectedRecognitionConnection = enabledConnections.find(
+    (connection) => connection.slug === recognitionDraft.connectionSlug,
+  );
+  const connectionOptions = [
+    { value: '', label: copy.notConfigured },
+    ...enabledConnections.map(
+      (connection) => ({ value: connection.slug, label: connection.name }),
+    ),
+  ];
+
+  useEffect(() => {
+    if (!recognitionDialog || recognitionDialog.phase === 'open') return;
+    const phase = recognitionDialog.phase;
+    const frame = window.requestAnimationFrame(() => {
+      setRecognitionDialog((current) => {
+        if (!current || current.phase !== phase) return current;
+        return phase === 'mounting' ? { ...current, phase: 'open' } : null;
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [recognitionDialog?.phase]);
+
+  function requestRecognitionDialogClose() {
+    setRecognitionDialog((current) => current ? { ...current, phase: 'closing' } : null);
+  }
+
+  async function updateVoice(
+    patch: {
+      recognition?: Partial<AppSettings['voice']['recognition']>;
+      realtime?: Partial<AppSettings['voice']['realtime']>;
+    },
+  ): Promise<boolean> {
+    return updateVoiceDraft({
+      ...(patch.recognition
+        ? { recognition: { ...voiceDraftRef.current.recognition, ...patch.recognition } }
+        : {}),
+      ...(patch.realtime
+        ? { realtime: { ...voiceDraftRef.current.realtime, ...patch.realtime } }
+        : {}),
+    });
+  }
+
+  function editVoice(
+    patch: {
+      recognition?: Partial<AppSettings['voice']['recognition']>;
+      realtime?: Partial<AppSettings['voice']['realtime']>;
+    },
+  ): void {
+    editVoiceDraft({
+      ...(patch.recognition
+        ? { recognition: { ...voiceDraftRef.current.recognition, ...patch.recognition } }
+        : {}),
+      ...(patch.realtime
+        ? { realtime: { ...voiceDraftRef.current.realtime, ...patch.realtime } }
+        : {}),
+    });
+  }
+
+  async function finishCreatingRecognitionConnection(slug: string): Promise<void> {
+    try {
+      const connections = await window.maka.connections.list();
+      const created = connections.find((connection) => connection.slug === slug);
+      if (!created?.defaultModel.trim()) {
+        throw new Error(copy.recognitionConnectionModelMissing);
+      }
+      const saved = await updateVoice({
+        recognition: {
+          connectionSlug: created.slug,
+          model: created.defaultModel,
+        },
+      });
+      if (!saved || !voicePageMountedRef.current) return;
+      await props.onRefreshConnections();
+      if (!voicePageMountedRef.current) return;
+      requestRecognitionDialogClose();
+      toast.success(
+        copy.recognitionConnectionCreated,
+        copy.recognitionConnectionCreatedDetail(created.name, created.defaultModel),
+      );
+    } catch (error) {
+      if (!voicePageMountedRef.current) return;
+      toast.error(
+        copy.recognitionConnectionCreateFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
+    }
+  }
+
+  async function finishEditingRecognitionConnection(
+    connection: LlmConnection,
+    model: string,
+  ): Promise<void> {
+    const saved = await updateVoice({
+      recognition: {
+        connectionSlug: connection.slug,
+        model,
+      },
+    });
+    if (!saved || !voicePageMountedRef.current) {
+      throw new Error(copy.recognitionConnectionUpdateFailed);
+    }
+    await props.onRefreshConnections();
+    if (!voicePageMountedRef.current) return;
+    requestRecognitionDialogClose();
+    toast.success(
+      copy.recognitionConnectionUpdated,
+      copy.recognitionConnectionUpdatedDetail(connection.name, model),
+    );
+  }
+
+  async function runRecognitionTest(): Promise<void> {
+    if (!recognitionTestGuard.begin('recognition')) return;
+    setRecognitionTesting(true);
+    setRecognitionTest(copy.recognitionTesting);
+    let operationId: string | undefined;
+    try {
+      const begin = await window.maka.voice.begin({ intent: 'dictate' });
+      if (!begin.ok) throw new Error(begin.reason);
+      operationId = begin.operationId;
+      activeRecognitionTestRef.current = { operationId };
+      if (!voicePageMountedRef.current) {
+        await window.maka.voice.cancel(operationId).catch(() => {});
+        operationId = undefined;
+        return;
+      }
+      const capture = await startVoiceCapture({ maxDurationMs: 4_000 });
+      if (
+        !voicePageMountedRef.current ||
+        activeRecognitionTestRef.current?.operationId !== operationId
+      ) {
+        capture.cancel();
+        await window.maka.voice.cancel(operationId).catch(() => {});
+        operationId = undefined;
+        return;
+      }
+      activeRecognitionTestRef.current.capture = capture;
+      await waitMs(4_000);
+      const audio = await capture.stop();
+      if (activeRecognitionTestRef.current?.operationId === operationId) {
+        activeRecognitionTestRef.current.capture = undefined;
+      }
+      const result = await window.maka.voice.finishCapture(begin.operationId, audio);
+      if (result.kind !== 'transcript') throw new Error('recognition_test_no_transcript');
+      operationId = undefined;
+      activeRecognitionTestRef.current = undefined;
+      if (!voicePageMountedRef.current) return;
+      setRecognitionTest(result.text);
+      toast.success(copy.recognitionSuccess, result.text);
+    } catch (error) {
+      if (operationId) await window.maka.voice.cancel(operationId).catch(() => {});
+      if (activeRecognitionTestRef.current?.operationId === operationId) {
+        activeRecognitionTestRef.current = undefined;
+      }
+      if (!voicePageMountedRef.current) return;
+      const message = error instanceof Error ? error.message : copy.failed;
+      setRecognitionTest(message);
+      toast.error(copy.recognitionFailed, message);
+    } finally {
+      recognitionTestGuard.finish();
+      if (voicePageMountedRef.current) setRecognitionTesting(false);
+    }
+  }
 
   useEffect(() => {
     return () => {
+      const recognitionTest = activeRecognitionTestRef.current;
+      activeRecognitionTestRef.current = undefined;
+      recognitionTest?.capture?.cancel();
+      if (recognitionTest) {
+        void window.maka.voice.cancel(recognitionTest.operationId).catch(() => {});
+      }
       activeVoiceCaptureStreamRef.current?.getTracks().forEach((track) => track.stop());
       activeVoiceCaptureStreamRef.current = null;
     };
@@ -35,11 +265,23 @@ export function VoiceModelsSettingsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void readBrowserMicrophonePermission().then((next) => {
-      if (!cancelled) setPermission(next);
-    });
+    let permissionReadRevision = 0;
+    const refreshPermission = () => {
+      const revision = ++permissionReadRevision;
+      void readMicrophonePermission().then((next) => {
+        if (!cancelled && revision === permissionReadRevision) setPermission(next);
+      });
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshPermission();
+    };
+    refreshPermission();
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       cancelled = true;
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, []);
 
@@ -61,6 +303,39 @@ export function VoiceModelsSettingsPage() {
     setSmoke({ status: 'checking' });
     let stream: MediaStream | null = null;
     try {
+      const systemSnapshot = await window.maka.permissions.getSnapshot().catch(() => null);
+      const systemMicrophone = systemSnapshot?.permissions.microphone;
+      if (
+        systemSnapshot?.platform === 'darwin'
+        && systemMicrophone
+        && systemMicrophone.status !== 'granted'
+        && systemMicrophone.status !== 'not_determined'
+      ) {
+        const opened = await window.maka.permissions.openSystemSettings('microphone');
+        if (voicePageMountedRef.current) {
+          const denied = systemMicrophone.status === 'denied';
+          setPermission(denied ? 'denied' : 'unknown');
+          setSmoke({ status: 'error', reason: denied ? 'denied' : 'failed' });
+          if (!opened.ok) toast.error(copy.failedTitle, copy.failed);
+        }
+        return;
+      }
+      if (
+        systemSnapshot?.platform === 'darwin'
+        && systemMicrophone?.status === 'not_determined'
+      ) {
+        const requested = await window.maka.permissions.requestAccess('microphone');
+        if (!requested.ok) {
+          if (voicePageMountedRef.current) {
+            const denied = requested.reason === 'denied';
+            setPermission(denied ? 'denied' : 'unknown');
+            setSmoke({ status: 'error', reason: denied ? 'denied' : 'failed' });
+            toast.error(copy.failedTitle, denied ? copy.denied : copy.failed);
+          }
+          return;
+        }
+      }
+      if (!voicePageMountedRef.current) return;
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: caps.maxChannels,
@@ -128,71 +403,225 @@ export function VoiceModelsSettingsPage() {
   }
 
   return (
-    <section className="settingsFeatureStatusPage" aria-label={copy.aria}>
-      {/* Detail sweep: the always-on shipped-feature announcement banner is
-          gone — release notes don't live in settings, and its privacy copy
-          duplicated the privacy tile and boundary section below. (daily-review
-          made the same banner exception-only earlier.) */}
-      <PageHeader
-        as_wrapper="div"
-        className="settingsFeatureStatusHero"
-        as="h3"
-        icon={<Volume2 size={24} />}
-        iconClassName="settingsFeatureStatusIcon"
-        headingRowClassName="settingsFeatureStatusHeroHeading"
-        title={copy.title}
-        badge={<Badge variant="secondary">{copy.badge}</Badge>}
-        subtitle={copy.subtitle}
-      />
-
-      <dl className="settingsBotStatusGrid" aria-label={copy.statusAria}>
-        <div>
-          <dt>{copy.microphone}</dt>
-          <dd>{copy.permissions[permission]}</dd>
-        </div>
-        <div>
-          <dt>{copy.captureLimit}</dt>
-          <dd>{copy.durationSize(Math.round(caps.maxDurationMs / 1000), Math.round(caps.maxAudioBytes / 1024 / 1024))}</dd>
-        </div>
-        <div>
-          <dt>{copy.channels}</dt>
-          <dd>{copy.channelValue(Math.round(caps.maxSampleRate / 1000))}</dd>
-        </div>
-        <div>
-          <dt>{copy.privacy}</dt>
-          <dd>{copy.privacyValue}</dd>
-        </div>
-      </dl>
-
-      <div className="settingsActionRow">
+    /* Detail sweep round 2: the page spoke a private vocabulary — a
+       `PageHeader` hero repeating the surface's own page header (icon,
+       title, badge, subtitle), bare `<h3>`s in `.settingsFeatureStatusHeroHeading`
+       wrappers, loose FormLayouts and action rows on the page background.
+       It is the same labeled-groups page as every other settings page now;
+       the boundary subtitle keeps its copy as the 边界 section description. */
+    <SettingsPage as="section" aria-label={copy.aria}>
+      <SettingsSection title={copy.recognitionTitle}>
+        <SettingsField>
+        <FormLayout direction="horizontal">
+        <Selector
+          value={recognitionDraft.connectionSlug}
+          label={copy.connection}
+          options={connectionOptions}
+          isDisabled={saving}
+          width="100%"
+          onChange={(connectionSlug) =>
+            void updateVoice({ recognition: { connectionSlug } })
+          }
+        />
+        <TextInput
+          value={recognitionDraft.model}
+          onChange={(model) => editVoice({ recognition: { model } })}
+          isDisabled={saving}
+          placeholder="gpt-4o-mini-transcribe"
+          label={copy.model}
+          onBlur={() =>
+            void updateVoice({ recognition: { model: recognitionDraft.model } })
+          }
+        />
+        <TextInput
+          value={recognitionDraft.language}
+          onChange={(language) => editVoice({ recognition: { language } })}
+          isDisabled={saving}
+          placeholder="zh"
+          label={copy.language}
+          onBlur={() =>
+            void updateVoice({ recognition: { language: recognitionDraft.language } })
+          }
+        />
+        </FormLayout>
+        {/* The prompt is a textarea — the fourth equal-width grid column
+            clipped it at the card edge; it gets the full row instead. */}
+        <TextArea
+          value={recognitionDraft.prompt}
+          onChange={(prompt) => editVoice({ recognition: { prompt } })}
+          isDisabled={saving}
+          label={copy.prompt}
+          width="100%"
+          onBlur={() =>
+            void updateVoice({ recognition: { prompt: recognitionDraft.prompt } })
+          }
+        />
+        </SettingsField>
+        <SettingsActions>
         <Button
+          variant="secondary"
           type="button"
-          onClick={() => void runCaptureSmoke()}
-          disabled={isBusy}
-          aria-busy={isBusy}
-          aria-describedby={smokeStatusId}
-          data-pending={isBusy ? 'true' : undefined}
+          isDisabled={saving || isBusy}
+          onClick={() => setRecognitionDialog({ kind: 'create', phase: 'mounting' })}
+          label={copy.createRecognitionConnection}
+        />
+        <Button
+          variant="secondary"
+          type="button"
+          isDisabled={saving || isBusy || !selectedRecognitionConnection}
+          onClick={() => {
+            if (selectedRecognitionConnection) {
+              setRecognitionDialog({
+                kind: 'edit',
+                phase: 'mounting',
+                connection: selectedRecognitionConnection,
+              });
+            }
+          }}
+          label={copy.editRecognitionConnection}
+        />
+        {/* A diagnostic, not the page's committed action — it stays
+            secondary so the page keeps zero standing primaries. */}
+        <Button
+          variant="secondary"
+          type="button"
+          isDisabled={saving || isBusy || recognitionTesting}
+          onClick={() => void runRecognitionTest()}
+          label={copy.testRecognition}
+        />
+        </SettingsActions>
+        {recognitionTest ? (
+          <SettingsField>
+            <Banner status="info" role="status" title={recognitionTest} />
+          </SettingsField>
+        ) : null}
+      </SettingsSection>
+      {recognitionDialog?.kind === 'create' ? (
+        <ProviderConnectionDialog
+          title={copy.createRecognitionConnectionTitle}
+          subtitle={copy.createRecognitionConnectionSubtitle}
+          providerType="openai-compatible"
+          isOpen={recognitionDialog.phase === 'open'}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) requestRecognitionDialogClose();
+          }}
         >
-          {isBusy ? copy.checking : copy.run}
-        </Button>
-      </div>
-
-      <Alert
-        id={smokeStatusId}
-        variant={smoke.status === 'error' ? 'error' : smoke.status === 'ok' ? 'success' : 'passive'}
-        role="status"
-      >
-        <AlertDescription>{voiceSmokeMessage(smoke, copy)}</AlertDescription>
-      </Alert>
-
-      <div className="settingsFeatureStatusHeroHeading">
-        <h3>{copy.boundary}</h3>
-      </div>
-      <ul className="settingsFeatureStatusList" aria-label={copy.boundaryAria}>
-        {copy.boundaries.map((boundary) => <li key={boundary}>{boundary}</li>)}
-      </ul>
-    </section>
+          <AddProviderForm
+            bridge={window.maka.connections}
+            providerType="openai-compatible"
+            existingSlugs={props.connections.map((connection) => connection.slug)}
+            onCancel={requestRecognitionDialogClose}
+            onCreated={async (slug) => {
+              await finishCreatingRecognitionConnection(slug);
+            }}
+          />
+        </ProviderConnectionDialog>
+      ) : null}
+      {recognitionDialog?.kind === 'edit' ? (
+        <ProviderConnectionDialog
+          title={copy.editRecognitionConnectionTitle}
+          subtitle={copy.editRecognitionConnectionSubtitle(recognitionDialog.connection.name)}
+          providerType={recognitionDialog.connection.providerType}
+          isOpen={recognitionDialog.phase === 'open'}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) requestRecognitionDialogClose();
+          }}
+        >
+          <VoiceRecognitionConnectionForm
+            bridge={window.maka.connections}
+            connection={recognitionDialog.connection}
+            model={recognitionDraft.model}
+            onCancel={requestRecognitionDialogClose}
+            onSaved={finishEditingRecognitionConnection}
+          />
+        </ProviderConnectionDialog>
+      ) : null}
+      <SettingsSection title={copy.realtimeTitle}>
+        <SettingsField>
+        <FormLayout direction="horizontal">
+        <Selector
+          value={realtimeDraft.connectionSlug}
+          label={copy.connection}
+          options={connectionOptions}
+          isDisabled={saving}
+          width="100%"
+          onChange={(connectionSlug) =>
+            void updateVoice({ realtime: { connectionSlug } })
+          }
+        />
+        <TextInput
+          value={realtimeDraft.model}
+          onChange={(model) => editVoice({ realtime: { model } })}
+          isDisabled={saving}
+          placeholder="gpt-realtime"
+          label={copy.model}
+          onBlur={() => void updateVoice({ realtime: { model: realtimeDraft.model } })}
+        />
+        <TextInput
+          value={realtimeDraft.voice}
+          onChange={(voice) => editVoice({ realtime: { voice } })}
+          isDisabled={saving}
+          placeholder="marin"
+          label={copy.voice}
+          onBlur={() => void updateVoice({ realtime: { voice: realtimeDraft.voice } })}
+        />
+        </FormLayout>
+        </SettingsField>
+      </SettingsSection>
+      <SettingsSection title={copy.statusAria}>
+        <div role="group" aria-label={copy.statusAria} className="settingsRowsGroup">
+          <SettingRow title={copy.microphone} detail="" value={copy.permissions[permission]} />
+          <SettingRow title={copy.captureLimit} detail="" value={copy.durationSize(Math.round(caps.maxDurationMs / 1000), Math.round(caps.maxAudioBytes / 1024 / 1024))} />
+          <SettingRow title={copy.channels} detail="" value={copy.channelValue(Math.round(caps.maxSampleRate / 1000))} />
+          <SettingRow title={copy.privacy} detail="" value={copy.privacyValue} />
+        </div>
+        <SettingsActions>
+          <Button
+            variant="secondary"
+            onClick={() => void runCaptureSmoke()}
+            isDisabled={isBusy}
+            aria-busy={isBusy}
+            aria-describedby={smokeStatusId}
+            data-pending={isBusy ? 'true' : undefined}
+            label={isBusy ? copy.checking : copy.run}
+          />
+        </SettingsActions>
+        <SettingsField>
+          {/* Blue is a signal, not texture: the idle "waiting for the
+              self-check" state is quiet supporting text; the Banner only
+              appears once the check has an actual outcome. */}
+          {smoke.status === 'ok' || smoke.status === 'error' ? (
+            <Banner
+              status={smoke.status === 'error' ? 'error' : 'success'}
+              id={smokeStatusId}
+              role="status"
+              title={voiceSmokeMessage(smoke, copy)} />
+          ) : (
+            <p className="settingsQuietStatus" id={smokeStatusId} role="status">
+              {voiceSmokeMessage(smoke, copy)}
+            </p>
+          )}
+        </SettingsField>
+      </SettingsSection>
+      <SettingsSection variant="bare" title={copy.boundary} description={copy.subtitle}>
+        <ul className="settingsFeatureStatusList" aria-label={copy.boundaryAria}>
+          {copy.boundaries.map((boundary) => <li key={boundary}>{boundary}</li>)}
+        </ul>
+      </SettingsSection>
+    </SettingsPage>
   );
+}
+
+async function readMicrophonePermission(): Promise<VoicePermissionStatus> {
+  try {
+    const snapshot = await window.maka.permissions.getSnapshot();
+    const status = snapshot.permissions.microphone.status;
+    if (status !== 'unknown' && status !== 'unsupported') return status;
+  } catch {
+    // Fall through to the renderer probe. It is useful on platforms where
+    // Electron cannot expose an OS-level microphone status.
+  }
+  return readBrowserMicrophonePermission();
 }
 
 async function readBrowserMicrophonePermission(): Promise<VoicePermissionStatus> {

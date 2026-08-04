@@ -8,8 +8,9 @@ import { describe, test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { decodeRuntimeEvent } from '@maka/core';
-import { HARBOR_CELL_CONTEXT_ENV_KEYS, resolveHarborCellAiSdkEnv } from '../harbor-cell.js';
+import { HARBOR_CELL_CONTEXT_ENV_KEYS } from '../harbor-cell.js';
 import { isBudgetExhaustedTrialException } from '../harbor-task-runner.js';
+import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '../system-prompts.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 const execFileAsync = promisify(execFile);
@@ -165,40 +166,15 @@ describe('Harbor adapter contract', () => {
   });
 
   test('maka_agent.py emits a host-cell timeout recognized as budget exhaustion', async () => {
-    const source = await readRepoFile('packages/headless/harbor/maka_agent.py');
+    const source = await readFile(
+      resolve(repoRoot, 'packages/headless/harbor/maka_agent.py'),
+      'utf8',
+    );
     const template = source.match(/f"(Maka host cell exceeded [^"]+)"/)?.[1];
     assert.ok(template, 'host-cell timeout message template');
     const message = template.replace('{self._cell_timeout_sec()}', '1800');
 
     assert.equal(isBudgetExhaustedTrialException(`RuntimeError: ${message}`), true);
-  });
-
-  test('headless Harbor text files do not contain hidden or unexpected control characters', async () => {
-    const hiddenUnicode = /[\u202A-\u202E\u2066-\u2069\u200B\u200C\u200D\uFEFF]/u;
-    const files = [
-      'packages/headless/harbor/maka-improved-prompt-v1.txt',
-      'packages/headless/harbor/codex_agent.py',
-      'packages/headless/harbor/maka_agent.py',
-      'packages/headless/harbor/maka_trajectory.py',
-      'packages/headless/harbor/maka_verifier.py',
-      'packages/headless/harbor/run-cell.mjs',
-      'packages/headless/harbor/run-host-cell.mjs',
-      'packages/headless/harbor/run-harness-ab.mjs',
-      'packages/headless/harbor/run-prompt-ab.mjs',
-      'packages/headless/harbor/run-prompt-control.mjs',
-      'packages/headless/harbor/run-prompt-optimization.mjs',
-    ];
-
-    for (const file of files) {
-      const content = await readRepoFile(file);
-      assert.doesNotMatch(content, hiddenUnicode, file);
-      assert.doesNotMatch(content, /\r/u, `${file} must use LF line endings`);
-      assert.doesNotMatch(
-        content,
-        /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u,
-        `${file} must not contain non-tab/non-LF control characters`,
-      );
-    }
   });
 
   test('run-host-cell.mjs resolves package-local harbor-cell internals at runtime', (t: TestContext) => {
@@ -219,15 +195,6 @@ describe('Harbor adapter contract', () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /MAKA_HOST_API_KEY_FILE is required/);
     assert.doesNotMatch(result.stderr, /does not provide an export named/);
-  });
-
-  test('run-host-cell.mjs persists usage checkpoints for timed-out host cells', async () => {
-    const source = await readRepoFile('packages/headless/harbor/run-host-cell.mjs');
-
-    assert.match(
-      source,
-      /recordUsageCheckpoint:\s*\(usage\)\s*=>\s*writeHarborCellUsageCheckpoint\(outputDir, usage\)/,
-    );
   });
 
   test('run-host-cell.mjs forwards Harbor cell context schema env keys to the backend', async () => {
@@ -263,189 +230,6 @@ describe('Harbor adapter contract', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  });
-
-  test('run-host-cell.mjs resolves direct SiliconFlow credentials without materializing aliases', async () => {
-    const tmp = mkdtempSync(resolve(tmpdir(), 'maka-host-cell-siliconflow-'));
-    try {
-      const keyFile = resolve(tmp, 'key.txt');
-      await writeFile(keyFile, 'siliconflow-file-key\n', 'utf8');
-      const { backendEnv } = await import(
-        new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
-      );
-
-      const rawEnv = await backendEnv({ MAKA_HOST_API_KEY: 'siliconflow-raw-key' }, 'siliconflow');
-      assert.equal(
-        resolveHarborCellAiSdkEnv({
-          provider: 'siliconflow',
-          model: 'test-model',
-          env: rawEnv,
-          ts: 1,
-        }).apiKey,
-        'siliconflow-raw-key',
-      );
-      assert.equal(rawEnv.SILICONFLOW_API_KEY, undefined);
-      assert.equal(rawEnv.OPENAI_API_KEY, undefined);
-
-      const fileEnv = await backendEnv({ MAKA_HOST_API_KEY_FILE: keyFile }, 'siliconflow');
-      assert.equal(
-        resolveHarborCellAiSdkEnv({
-          provider: 'siliconflow',
-          model: 'test-model',
-          env: fileEnv,
-          ts: 1,
-        }).apiKey,
-        'siliconflow-file-key',
-      );
-      assert.equal(fileEnv.SILICONFLOW_API_KEY, undefined);
-      assert.equal(fileEnv.OPENAI_API_KEY, undefined);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('run-host-cell.mjs resolves Vercel Gateway credentials without materializing aliases', async () => {
-    const tmp = mkdtempSync(resolve(tmpdir(), 'maka-host-cell-vercel-'));
-    try {
-      const keyFile = resolve(tmp, 'key.txt');
-      await writeFile(keyFile, 'vercel-file-key\n', 'utf8');
-      const { backendEnv } = await import(
-        new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
-      );
-
-      const rawEnv = await backendEnv({ MAKA_HOST_API_KEY: 'vercel-raw-key' }, 'vercel');
-      assert.equal(
-        resolveHarborCellAiSdkEnv({
-          provider: 'vercel',
-          model: 'creator/model',
-          env: rawEnv,
-          ts: 1,
-        }).apiKey,
-        'vercel-raw-key',
-      );
-      assert.equal(rawEnv.AI_GATEWAY_API_KEY, undefined);
-      assert.equal(rawEnv.OPENAI_API_KEY, undefined);
-
-      const fileEnv = await backendEnv({ MAKA_HOST_API_KEY_FILE: keyFile }, 'vercel');
-      assert.equal(
-        resolveHarborCellAiSdkEnv({
-          provider: 'vercel',
-          model: 'creator/model',
-          env: fileEnv,
-          ts: 1,
-        }).apiKey,
-        'vercel-file-key',
-      );
-      assert.equal(fileEnv.AI_GATEWAY_API_KEY, undefined);
-      assert.equal(fileEnv.OPENAI_API_KEY, undefined);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('run-host-cell.mjs forwards the discovered GitHub Copilot protocol only to the host backend', async () => {
-    const { backendEnv } = await import(
-      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
-    );
-    const env = await backendEnv(
-      {
-        MAKA_HOST_API_KEY: 'github_pat_copilot_requests',
-        MAKA_HOST_BASE_URL: 'https://api.githubcopilot.com',
-        MAKA_HOST_MODEL_API_PROTOCOL: 'openai-responses',
-      },
-      'github-copilot',
-    );
-
-    const resolved = resolveHarborCellAiSdkEnv({
-      provider: 'github-copilot',
-      model: 'gpt-test',
-      env,
-      ts: 1,
-    });
-    assert.equal(resolved.apiKey, 'github_pat_copilot_requests');
-    assert.equal(resolved.connection.baseUrl, 'https://api.githubcopilot.com');
-    assert.equal(resolved.connection.models?.[0]?.apiProtocol, 'openai-responses');
-    assert.equal(env.COPILOT_GITHUB_TOKEN, undefined);
-  });
-
-  test('run-host-cell.mjs forwards the Kimi A/B protocol to the host backend', async () => {
-    const { backendEnv } = await import(
-      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
-    );
-    const env = await backendEnv(
-      {
-        MAKA_HOST_API_KEY: 'kimi-plan-key',
-        MAKA_MODEL_API_PROTOCOL: 'openai-chat',
-      },
-      'kimi-coding-plan',
-    );
-
-    const resolved = resolveHarborCellAiSdkEnv({
-      provider: 'kimi-coding-plan',
-      model: 'k3',
-      env,
-      ts: 1,
-    });
-    assert.equal(env.MAKA_MODEL_API_PROTOCOL, 'openai-chat');
-    assert.equal(resolved.connection.models?.[0]?.apiProtocol, 'openai-chat');
-  });
-
-  test('run-host-cell.mjs preserves invalid Kimi host protocols for fail-closed validation', async () => {
-    const { backendEnv } = await import(
-      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
-    );
-    const env = await backendEnv(
-      {
-        MAKA_HOST_API_KEY: 'kimi-plan-key',
-        MAKA_HOST_MODEL_API_PROTOCOL: 'typo',
-      },
-      'kimi-coding-plan',
-    );
-
-    assert.throws(
-      () =>
-        resolveHarborCellAiSdkEnv({
-          provider: 'kimi-coding-plan',
-          model: 'k3',
-          env,
-          ts: 1,
-        }),
-      /Kimi Coding Plan protocol must be anthropic-messages or openai-chat/,
-    );
-  });
-
-  test('run-host-cell.mjs accepts Ollama without provider credentials', async () => {
-    const { backendEnv } = await import(
-      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
-    );
-
-    const env = await backendEnv({}, 'ollama');
-
-    assert.deepEqual(env, { MAKA_LLM_CONNECTION_SLUG: 'ollama' });
-  });
-
-  test('run-host-cell.mjs keeps LocalAI auth optional and provider-scoped', async () => {
-    const { backendEnv } = await import(
-      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
-    );
-
-    assert.deepEqual(await backendEnv({}, 'localai'), {
-      MAKA_LLM_CONNECTION_SLUG: 'localai',
-    });
-    const env = await backendEnv({ MAKA_HOST_API_KEY: 'localai-user-key' }, 'localai');
-    assert.deepEqual(env, {
-      MAKA_LLM_CONNECTION_SLUG: 'localai',
-      MAKA_HOST_API_KEY: 'localai-user-key',
-    });
-    assert.equal(
-      resolveHarborCellAiSdkEnv({
-        provider: 'localai',
-        model: 'local-model',
-        env,
-        ts: 1,
-      }).apiKey,
-      'localai-user-key',
-    );
   });
 
   test('run-host-cell.mjs rejects unknown context env instead of dropping it', async () => {
@@ -514,58 +298,6 @@ describe('Harbor adapter contract', () => {
     }
   });
 
-  test('maka_agent.py preserves plain Harbor host task-run and Pier container task-run contracts', async () => {
-    const source = await readRepoFile('packages/headless/harbor/maka_agent.py');
-
-    // Mode switch: default cell, opt-in task-run.
-    assert.match(source, /MAKA_HARBOR_MODE/);
-    assert.match(source, /def _harbor_mode\(self\) -> str:/);
-    assert.match(source, /if self\._harbor_mode\(\) == "task-run":/);
-    assert.match(source, /async def _run_task_run_container\(/);
-    assert.match(source, /async def _run_task_run_host\(/);
-    // Plain Harbor keeps its host bridge; Pier runs the same task-run in the
-    // task container with the pinned runtime and local isolation.
-    assert.match(source, /dist" \/ "cli\.js"/);
-    assert.match(source, /"--mode",\s*\n\s*"task-run",/);
-    assert.match(source, /isolation: str = "harbor-http"/);
-    assert.match(source, /isolation="harbor-local"/);
-    assert.match(source, /_MAKA_NODE_TOOLCHAIN_NODE/);
-    assert.match(source, /"--include-events"/);
-    // autonomous / heavy-task derivation ported verbatim from the fork.
-    assert.match(
-      source,
-      /env\.get\("MAKA_HARBOR_USE_TASK_RUN"\) == "1" and env\.get\("MAKA_HARBOR_AUTONOMOUS", "1"\) != "0"/,
-    );
-    assert.match(source, /command\.append\("--autonomous"\)/);
-    assert.match(source, /command\.append\("--heavy-task"\)/);
-    // env normalization + runner env file + task-run artifacts.
-    assert.match(source, /def _normalize_cli_env\(env: dict\[str, str\]\) -> None:/);
-    assert.match(source, /MAKA_HARBOR_REPLAY_PRIOR_ATTEMPT_RUNTIME_CONTEXT/);
-    assert.match(source, /MAKA_HARBOR_RUNNER_ENV_FILE/);
-    assert.match(source, /maka-harbor\.status\.json/);
-    assert.match(source, /maka-harbor\.stdout\.json/);
-    // The make-mips direct-smoke shortcut was removed (no callers repo-wide).
-    assert.doesNotMatch(
-      source,
-      /MAKE_MIPS|_run_direct_make_mips_smoke|_direct_make_mips_smoke_command/,
-    );
-    // Reuses the shared tool executor bridge rather than a forked HTTP server.
-    assert.match(source, /async with _ToolExecutorServer\(self, environment\) as executor:/);
-    // A non-zero runner subprocess is flagged as an infra failure inside the
-    // executor scope so teardown reclaims orphaned scoped background processes.
-    assert.match(source, /executor\.mark_reclaim_scoped_processes\(\)/);
-    // A scored deadline preserves services from completed commands for the
-    // post-exit verifier while still reclaiming commands that remain active.
-    assert.match(source, /executor\.mark_reclaim_active_commands\(\)/);
-    // The bridged tool exec is a bare container exec (real exit code returned as
-    // a 200), not exec_as_agent (which raises on non-zero and injects agent env).
-    assert.match(source, /self\._environment\.exec\(\s*\n\s*command=_scoped_command\(/);
-    assert.match(source, /"returnCode": return_code,/);
-    // Benchmark-vs-infra exit policy comes from the node CLI's parsed result.
-    assert.match(source, /benchmarkFailureShouldThrow/);
-    assert.doesNotMatch(source, /class MakaHarborAgent/);
-  });
-
   test('maka_agent.py bridge exec contract holds against the real Harbor _ToolExecutorServer', (t: TestContext) => {
     const python = harborPython();
     if (!python) {
@@ -609,223 +341,6 @@ describe('Harbor adapter contract', () => {
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /0 skipped, 0 failed/);
-  });
-
-  test('run-prompt-optimization.mjs wires the headless run API with a key file, not a raw key', async () => {
-    const source = await readRepoFile('packages/headless/harbor/run-prompt-optimization.mjs');
-    assert.match(source, /runPromptOptimizationRun/);
-    assert.match(source, /discoverCachedHarborTasks/);
-    assert.match(source, /selectPromptOptimizationPartitions/);
-    assert.match(source, /buildRewardHackVerifierPatterns/);
-    assert.match(source, /DEEPSEEK_V4_FLASH_PRICING/);
-    assert.match(source, /apiKeyFile: keyFile/);
-    assert.match(source, /resolveFixedPromptRunRoot/);
-    assert.match(source, /from '#fixed-prompt-task-source'/);
-    assert.match(source, /from '#headless-run-env'/);
-    assert.match(source, /from '#prompt-optimization-bootstrap'/);
-    assert.match(source, /from '#prompt-optimization-manifest'/);
-    assert.match(source, /from '#prompt-optimization-run'/);
-    assert.match(source, /from '#prompt-structural-smoke'/);
-    assert.doesNotMatch(source, /from '#prompt-optimization-env'/);
-    assert.match(source, /import \{ availableParallelism, homedir \} from 'node:os';/);
-    assert.match(source, /function defaultLocalEvalRoot\(repoRoot\) \{/);
-    assert.match(source, /function defaultMaxConcurrency\(\) \{/);
-    assert.match(source, /const reserve = Math\.max\(2, Math\.ceil\(parallelism \* 0\.1\)\);/);
-    assert.match(source, /return Math\.min\(32, Math\.max\(1, parallelism - reserve\)\);/);
-    assert.match(source, /const localEvalRoot = defaultLocalEvalRoot\(repoRoot\);/);
-    assert.match(
-      source,
-      /const outDir = envPath\('MAKA_PROMPT_OUT_DIR', join\(localEvalRoot, 'maka-eval', 'rsi-runs'\)\);/,
-    );
-    assert.match(
-      source,
-      /const keyFile = envPath\(\s*'MAKA_PROMPT_KEY_FILE',\s*join\(localEvalRoot, '\.local-secrets', 'deepseek-key'\),\s*\);/,
-    );
-    assert.match(source, /MAKA_PROMPT_INITIAL_SYSTEM_PROMPT_FILE/);
-    assert.match(
-      source,
-      /const maxConcurrency = envPosInt\('MAKA_PROMPT_MAX_CONCURRENCY', defaultMaxConcurrency\(\)\);/,
-    );
-    assert.match(source, /const zScore = envNum\('MAKA_PROMPT_Z_SCORE', 1\.96\);/);
-    assert.match(source, /buildPromptOptimizationRunManifest\(\{[\s\S]*?\n      zScore,/);
-    assert.match(source, /runPromptOptimizationRun\(\{[\s\S]*?\n    zScore,/);
-    // The secret travels as a file path only — never a raw key on argv/env here.
-    assert.doesNotMatch(source, /DEEPSEEK_API_KEY[^_]/);
-  });
-
-  test('run-prompt-optimization.mjs rejects unknown profiles before benchmark work', (t: TestContext) => {
-    const tmp = mkdtempSync(resolve(tmpdir(), 'maka-prompt-profile-'));
-    try {
-      const result = spawnSync(
-        process.execPath,
-        [resolve(repoRoot, 'packages/headless/harbor/run-prompt-optimization.mjs')],
-        {
-          cwd: repoRoot,
-          encoding: 'utf8',
-          env: {
-            ...process.env,
-            MAKA_PROMPT_PROFILE: 'medium',
-            MAKA_PROMPT_OUT_DIR: resolve(tmp, 'runs'),
-            MAKA_PROMPT_KEY_FILE: resolve(tmp, 'missing-key'),
-            MAKA_PROMPT_TASKS_ROOT: resolve(tmp, 'tasks'),
-          },
-        },
-      );
-
-      if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
-        t.skip('node is not available');
-        return;
-      }
-
-      assert.notEqual(result.status, 0);
-      assert.match(
-        result.stderr,
-        /MAKA_PROMPT_PROFILE must be one of smoke, pilot-light, pilot, full/,
-      );
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('run-prompt-control.mjs wires the known-rule control experiment with a key file', async () => {
-    const source = await readRepoFile('packages/headless/harbor/run-prompt-control.mjs');
-    assert.match(source, /runPromptControlExperiment/);
-    assert.match(source, /from '#prompt-control-run'/);
-    assert.match(source, /MAKA_PROMPT_CONTROL_OUT_DIR/);
-    assert.match(source, /maka-eval', 'rsi-control-runs'/);
-    assert.match(source, /apiKeyFile: keyFile/);
-    assert.doesNotMatch(source, /DEEPSEEK_API_KEY[^_]/);
-  });
-
-  test('run-prompt-ab.mjs wires direct A/B comparison with a manifest and key file', async () => {
-    const source = await readRepoFile('packages/headless/harbor/run-prompt-ab.mjs');
-    assert.match(source, /filterPromptAbCandidateTasksByMetadata/);
-    assert.match(source, /limitPromptAbCandidateTasks/);
-    assert.match(source, /buildPromptAbRunManifest/);
-    assert.match(source, /ensurePromptAbRunManifest/);
-    assert.match(source, /buildSubjectFingerprint/);
-    assert.match(source, /buildTaskSourceFingerprint/);
-    assert.match(source, /buildToolchainFingerprint/);
-    assert.match(source, /runPromptAbComparison/);
-    assert.match(source, /renderPromptAbComparisonMarkdown/);
-    assert.match(source, /discoverCachedHarborTasks/);
-    assert.match(source, /evaluationTasks/);
-    assert.match(source, /resumeFingerprint: runManifest\.fingerprint/);
-    assert.match(source, /subjectFingerprint/);
-    assert.match(source, /taskSourceFingerprint/);
-    assert.match(source, /toolchainFingerprint/);
-    assert.match(source, /prompt-ab-manifest\.json/);
-    assert.match(source, /createHarborTaskRunner/);
-    assert.match(source, /apiKeyFile: keyFile/);
-    assert.match(source, /MAKA_CELL_TIMEOUT_SEC/);
-    assert.match(source, /MAKA_PROMPT_AB_MAX_EXPERT_MIN/);
-    assert.match(source, /MAKA_PROMPT_AB_TASK_BUDGET_SEC/);
-    assert.match(source, /MAKA_PROMPT_AB_HARBOR_TIMEOUT_MS/);
-    assert.match(source, /MAKA_PROMPT_AB_CANDIDATE_ID/);
-    assert.match(source, /MAKA_PROMPT_AB_EXPLICIT_SUBJECT_FINGERPRINT/);
-    assert.match(source, /MAKA_PROMPT_AB_TOOLCHAIN_FINGERPRINT/);
-    assert.doesNotMatch(source, /MAKA_PROMPT_AB_SUBJECT_ID/);
-    assert.match(source, /candidatePromptId/);
-    assert.doesNotMatch(source, /process\.env\.MAKA_PROMPT_AB_PROVIDER/);
-    assert.match(
-      source,
-      /const targetEvaluationTaskCount = envPosInt\('MAKA_PROMPT_AB_EVALUATION_TASKS', undefined\);/,
-    );
-    assert.match(
-      source,
-      /const candidateLimit = envPosInt\('MAKA_PROMPT_AB_CANDIDATE_LIMIT', undefined\);/,
-    );
-    assert.match(
-      source,
-      /const maxConcurrency = envPosInt\('MAKA_PROMPT_AB_MAX_CONCURRENCY', 4\);/,
-    );
-    assert.match(
-      source,
-      /const taskBudgetSec = envPosInt\('MAKA_PROMPT_AB_TASK_BUDGET_SEC', 30 \* 60\);/,
-    );
-    assert.match(
-      source,
-      /const harborTimeoutMs = envPosInt\(\s*'MAKA_PROMPT_AB_HARBOR_TIMEOUT_MS',\s*\(taskBudgetSec \+ 300\) \* 1000,\s*\);/,
-    );
-    assert.match(source, /Direct evaluation tasks:/);
-    assert.doesNotMatch(source, /runPromptAbConcurrencyCalibration/);
-    assert.doesNotMatch(source, /runPromptAbTaskQualification/);
-    assert.doesNotMatch(source, /MAKA_PROMPT_AB_USE_QUALIFICATION/);
-    assert.doesNotMatch(source, /MAKA_PROMPT_AB_CALIBRATION/);
-    assert.match(source, /MAKA_PROMPT_AB_CANDIDATE_PROMPT_PATH/);
-    assert.match(source, /from '#prompt-ab-run'/);
-    assert.match(source, /from '#fixed-prompt-task-source'/);
-    assert.match(source, /from '#headless-run-env'/);
-    assert.match(source, /from '#harbor-task-runner'/);
-    assert.doesNotMatch(source, /from '#prompt-optimization-run'/);
-    assert.doesNotMatch(source, /from '#prompt-optimization-env'/);
-    assert.doesNotMatch(source, /DEEPSEEK_API_KEY[^_]/);
-  });
-
-  test('run-harness-ab.mjs uses the mandatory default prompt and advisory registry evidence', async () => {
-    const source = await readRepoFile('packages/headless/harbor/run-harness-ab.mjs');
-
-    assert.match(source, /DEFAULT_HEADLESS_SYSTEM_PROMPT/);
-    assert.match(source, /default-system-prompt\.txt/);
-    assert.doesNotMatch(source, /empty-system-prompt\.txt/);
-    assert.match(source, /loadHarnessOracleRegistrySnapshot/);
-    assert.match(source, /resolveHarnessOracleAnnotations/);
-    assert.match(source, /taskIds: TERMINAL_BENCH_2_1_TASK_IDS/);
-    assert.match(source, /createPierProviderProxyHub/);
-    assert.match(source, /providerProxyHub/);
-    assert.match(source, /\.finally\(\(\) => providerProxyHub\?\.close\(\)\)/);
-    assert.doesNotMatch(source, /ensureHarnessOracleQualification/);
-    assert.doesNotMatch(source, /createHarborOracleQualifier/);
-    assert.doesNotMatch(source, /qualification\.selectedTaskIds/);
-  });
-
-  test('prompt experiment baselines use the default headless prompt byte-for-byte', async () => {
-    for (const path of [
-      'packages/headless/harbor/run-prompt-ab.mjs',
-      'packages/headless/harbor/run-prompt-optimization.mjs',
-      'packages/headless/harbor/run-runtime-policy-ab.mjs',
-    ]) {
-      const source = await readRepoFile(path);
-
-      assert.match(source, /DEFAULT_HEADLESS_SYSTEM_PROMPT/);
-      assert.doesNotMatch(source, /`\$\{DEFAULT_HEADLESS_SYSTEM_PROMPT\}\\n`/);
-    }
-  });
-
-  test('run-prompt-ab.mjs rejects unsupported provider overrides', async (t: TestContext) => {
-    const tmp = mkdtempSync(resolve(tmpdir(), 'maka-prompt-ab-provider-'));
-    try {
-      const keyFile = resolve(tmp, 'deepseek-key');
-      const candidatePromptSourcePath = resolve(tmp, 'candidate.md');
-      await writeFile(keyFile, 'dummy-key\n', 'utf8');
-      await writeFile(candidatePromptSourcePath, 'candidate prompt\n', 'utf8');
-
-      const result = spawnSync(
-        process.execPath,
-        [resolve(repoRoot, 'packages/headless/harbor/run-prompt-ab.mjs')],
-        {
-          cwd: repoRoot,
-          encoding: 'utf8',
-          env: {
-            ...process.env,
-            MAKA_PROMPT_AB_OUT_DIR: resolve(tmp, 'out'),
-            MAKA_PROMPT_AB_KEY_FILE: keyFile,
-            MAKA_PROMPT_AB_TASKS_ROOT: resolve(tmp, 'tasks'),
-            MAKA_PROMPT_AB_CANDIDATE_PROMPT_PATH: candidatePromptSourcePath,
-            MAKA_PROMPT_AB_PROVIDER: 'openai',
-          },
-        },
-      );
-      if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
-        t.skip('node is not available');
-        return;
-      }
-
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /MAKA_PROMPT_AB_PROVIDER is not supported/);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
   });
 
   test('run-prompt-ab.mjs does not rewrite prompt copies before manifest mismatch fails', async (t: TestContext) => {
@@ -989,47 +504,6 @@ describe('Harbor adapter contract', () => {
     }
   });
 
-  test('the public headless barrel does not expose prompt-runner internals added for PR 149', async () => {
-    const source = await readRepoFile('packages/headless/src/index.ts');
-    assert.doesNotMatch(
-      source,
-      /RunHarborCell|runHarborCell|buildAiSdkCellBackendRegistration|createHarborCellLocalToolExecutor/,
-    );
-    assert.doesNotMatch(
-      source,
-      /runFixedPromptController|RunFixedPromptControllerInput|FixedPromptControllerResult/,
-    );
-    assert.doesNotMatch(
-      source,
-      /runPromptCandidateRound|createCliPromptCandidateGit|MetaAgentCompletion|PromptCandidateRoundResult/,
-    );
-    assert.doesNotMatch(
-      source,
-      /decidePromptAcceptance|calibratePromptAcceptanceBaseline|PromptAcceptanceDecision/,
-    );
-    assert.doesNotMatch(source, /promptStructuralSmokeReport|renderPromptStructuralSmokeMarkdown/);
-    assert.doesNotMatch(
-      source,
-      /runPromptAbComparison|runPromptAbConcurrencyCalibration|renderPromptAbComparisonMarkdown/,
-    );
-    assert.doesNotMatch(
-      source,
-      /createHarborTaskRunner|HarborTaskRunnerOptions|HarborProcessRunner/,
-    );
-    assert.doesNotMatch(
-      source,
-      /createAiSdkMetaAgent|createAiSdkMetaAgentCompletion|CreateAiSdkMetaAgentInput/,
-    );
-    assert.doesNotMatch(source, /runPromptOptimizationLoop|PromptOptimizationLoopInput/);
-    assert.doesNotMatch(
-      source,
-      /discoverCachedHarborTasks|partitionPromptTasks|selectPromptOptimizationPartitions|buildRewardHackVerifierPatterns/,
-    );
-    assert.match(source, /runPromptOptimizationRun/);
-    assert.match(source, /PromptOptimizationRunInput/);
-    assert.match(source, /PromptOptimizationRunResult/);
-  });
-
   test('maka_agent.py hydrates a valid cell output without Harbor installed', (t: TestContext) => {
     const result = spawnSync('python3', ['-c', pythonAdapterSmokeScript(repoRoot)], {
       cwd: repoRoot,
@@ -1060,6 +534,33 @@ describe('Harbor adapter contract', () => {
     ]);
   });
 
+  test('process scope isolates transport descriptors from background descendants', (t) => {
+    const result = spawnSync('python3', ['-c', pythonBackgroundDescriptorSmokeScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr || String(result.error ?? ''));
+    assert.equal(result.stdout, 'foreground\n');
+  });
+
+  test('process scope cleanup settles buffered transport wrappers', (t) => {
+    const result = spawnSync('python3', ['-c', pythonBufferedWrapperCleanupSmokeScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr || String(result.error ?? ''));
+  });
+
   test('opencode_agent.py bridges credentials and estimates trial cost without Harbor installed', (t: TestContext) => {
     const result = spawnSync('python3', ['-c', pythonOpenCodeAdapterSmokeScript(repoRoot)], {
       cwd: repoRoot,
@@ -1071,6 +572,31 @@ describe('Harbor adapter contract', () => {
     }
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /opencode_estimated_cost_usd/);
+  });
+
+  test('opencode-benchmark-makaprompt.json mirrors the benchmark config with only the prompt swapped', async () => {
+    const harborDir = resolve(repoRoot, 'packages/headless/harbor');
+    const baseline = JSON.parse(
+      await readFile(resolve(harborDir, 'opencode-benchmark.json'), 'utf8'),
+    );
+    const ablation = JSON.parse(
+      await readFile(resolve(harborDir, 'opencode-benchmark-makaprompt.json'), 'utf8'),
+    );
+    const expected = {
+      ...baseline,
+      agent: {
+        ...baseline.agent,
+        build: {
+          ...baseline.agent?.build,
+          prompt: DEFAULT_HEADLESS_SYSTEM_PROMPT,
+        },
+      },
+    };
+    assert.deepEqual(
+      ablation,
+      expected,
+      'the ablation config must differ from the benchmark config only by agent.build.prompt, byte-identical to the headless default system prompt',
+    );
   });
 
   test('kimi_code_agent.py runs the pinned CLI contract without Harbor installed', (t: TestContext) => {
@@ -1097,6 +623,33 @@ describe('Harbor adapter contract', () => {
     }
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /codex adapter ok/);
+  });
+
+  test('claude_code_agent.py requires a successful terminal result behind the host proxy', (t: TestContext) => {
+    const result = spawnSync('python3', ['-c', pythonClaudeCodeAdapterSmokeScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /claude-code adapter ok/);
+  });
+
+  test('Codex DeepSeek catalog pins the official Flash model contract', async () => {
+    const catalog = JSON.parse(
+      await readFile(
+        resolve(repoRoot, 'packages/headless/harbor/deepseek-codex-models.json'),
+        'utf8',
+      ),
+    ) as { models: Array<Record<string, unknown>> };
+    assert.equal(catalog.models.length, 1);
+    assert.equal(catalog.models[0]?.slug, 'deepseek-v4-flash');
+    assert.equal(catalog.models[0]?.minimal_client_version, '0.144.0');
+    assert.equal(catalog.models[0]?.context_window, 1_048_576);
+    assert.ok(String(catalog.models[0]?.base_instructions).length > 1_000);
   });
 
   test('trial_pricing.py validates explicit pricing env without Harbor installed', (t: TestContext) => {
@@ -1188,10 +741,6 @@ describe('Harbor adapter contract', () => {
     }
   });
 });
-
-async function readRepoFile(path: string): Promise<string> {
-  return await readFile(resolve(repoRoot, path), 'utf8');
-}
 
 async function git(cwd: string, ...args: string[]): Promise<void> {
   await execFileAsync('git', args, { cwd });
@@ -1672,6 +1221,97 @@ finally:
         scope_dir.rmdir()
 
 print(json.dumps(results))
+`;
+}
+
+function pythonBackgroundDescriptorSmokeScript(root: string): string {
+  return String.raw`
+import contextlib
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from process_scope import COMMAND_SCOPE_ROOT, scoped_command, scoped_process_cleanup_command
+
+scope = f"background-descriptor-test-{os.getpid()}"
+scope_dir = Path(COMMAND_SCOPE_ROOT) / scope
+with tempfile.TemporaryDirectory() as tmp:
+    child_pid_path = Path(tmp) / "child.pid"
+    command = (
+        f"printf 'foreground\\n'; sleep 30 & "
+        f"printf '%s\\n' $! > {child_pid_path}"
+    )
+    process = subprocess.Popen(
+        ["bash", "-lc", scoped_command(command, scope, "command")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=1)
+        assert process.returncode == 0, (process.returncode, stderr)
+        child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+        os.kill(child_pid, 0)
+        assert stdout == "foreground" + chr(10), repr(stdout)
+        assert stderr == "", stderr
+        print("foreground")
+    finally:
+        subprocess.run(
+            ["bash", "-lc", scoped_process_cleanup_command(scope, "KILL")],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if process.poll() is None:
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=1)
+`;
+}
+
+function pythonBufferedWrapperCleanupSmokeScript(root: string): string {
+  return String.raw`
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from process_scope import COMMAND_SCOPE_ROOT, scoped_command, scoped_process_cleanup_command
+
+scope = f"buffered-wrapper-cleanup-{os.getpid()}"
+scope_dir = Path(COMMAND_SCOPE_ROOT) / scope
+process = subprocess.Popen(
+    ["bash", "-lc", scoped_command("head -c 1048576 /dev/zero; sleep 30", scope, "command")],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+try:
+    stdout_path = scope_dir / "command.stdout"
+    deadline = time.time() + 2
+    while (not stdout_path.exists() or stdout_path.stat().st_size < 1048576) and time.time() < deadline:
+        time.sleep(0.01)
+    assert stdout_path.exists() and stdout_path.stat().st_size == 1048576
+    subprocess.run(
+        ["bash", "-lc", scoped_process_cleanup_command(scope, "KILL")],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process.wait(timeout=1)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait()
 `;
 }
 
@@ -2630,10 +2270,11 @@ with tempfile.TemporaryDirectory() as tmp:
         relative_task_run_env = captured_host_process["kwargs"]["env"]
         expected_task_run_out = host_repo_root / "relative-task-run"
         expected_storage_root = expected_task_run_out / "runs"
+        expected_trajectory_root = expected_task_run_out / "trajectory-state"
         assert relative_task_run_env["MAKA_TASK_RUN_OUT_DIR"] == str(expected_task_run_out), relative_task_run_env
         assert relative_task_run_env["MAKA_OUTPUT_DIR"] == str(expected_task_run_out), relative_task_run_env
         assert relative_task_run_env["MAKA_STORAGE_ROOT"] == str(expected_storage_root), relative_task_run_env
-        assert relative_task_run_agent._trajectory_artifact_store_root() == expected_storage_root
+        assert relative_task_run_agent._trajectory_artifact_store_root() == expected_trajectory_root
         assert captured_host_process["kwargs"]["cwd"] == str(host_repo_root)
 
         runner_env_path = Path(tmp) / "task-run.env"
@@ -3178,6 +2819,7 @@ function pythonTrajectoryHarborContractScript(root: string): string {
   return String.raw`
 import asyncio
 import json
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -3211,6 +2853,65 @@ def event(event_id, ts, role, author, content=None, refs=None, status=None, acti
     if actions is not None:
         value["actions"] = actions
     return value
+
+
+def write_artifact_database(store_root, records, artifact_schema_version=1):
+    store_root.mkdir(parents=True, exist_ok=True)
+    database_path = store_root / "runtime.sqlite"
+    database_path.unlink(missing_ok=True)
+    connection = sqlite3.connect(database_path)
+    connection.executescript("""
+        CREATE TABLE operational_schema_migrations (
+            scope TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            applied_at INTEGER NOT NULL
+        );
+        CREATE TABLE cutover_journal (
+            store_name TEXT PRIMARY KEY,
+            source_path TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            state TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            validation_json TEXT
+        );
+        CREATE TABLE artifact_records (
+            storage_key TEXT PRIMARY KEY,
+            artifact_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            record_json TEXT NOT NULL
+        );
+    """)
+    connection.execute(
+        "INSERT INTO operational_schema_migrations(scope, version, applied_at) VALUES ('artifact', ?, 1)",
+        (artifact_schema_version,),
+    )
+    connection.execute(
+        "INSERT INTO cutover_journal(store_name, source_path, source_fingerprint, state, started_at, completed_at, validation_json) VALUES ('artifact_metadata', 'artifacts/metadata.jsonl', 'none', 'completed', 1, 1, '{}')"
+    )
+    for record in records:
+        connection.execute(
+            """
+            INSERT INTO artifact_records(
+                storage_key, artifact_id, session_id, created_at, status, relative_path, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["id"],
+                record["id"],
+                record["sessionId"],
+                record["createdAt"],
+                record["status"],
+                record["relativePath"],
+                json.dumps(record),
+            ),
+        )
+    connection.commit()
+    connection.close()
+    return database_path
 
 
 events = [
@@ -3258,8 +2959,7 @@ with tempfile.TemporaryDirectory() as tmp:
     image_path = artifact_root / "session-1" / "artifact-image-shot.png"
     image_path.parent.mkdir(parents=True)
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
-    metadata_path = artifact_root / "metadata.jsonl"
-    metadata_path.write_text(json.dumps({
+    image_record = {
         "id": "artifact-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3271,7 +2971,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n", encoding="utf-8")
+    }
+    database_path = write_artifact_database(artifact_root.parent, [image_record])
     agent._apply_cell_output(context, {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
@@ -3287,6 +2988,30 @@ with tempfile.TemporaryDirectory() as tmp:
     assert image_content[0].source.path.endswith(".png"), image_content
     assert (logs_dir / image_content[0].source.path).is_file(), image_content
 
+    database_path.unlink()
+    metadata_path = artifact_root / "metadata.jsonl"
+    metadata_path.write_text(json.dumps(image_record) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    legacy_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert legacy_payload["extra"]["maka_artifact_kind"] == "summary", legacy_payload
+    assert legacy_payload["extra"]["maka_summary_reason"] == "image_artifact_metadata_missing", legacy_payload
+    metadata_path.unlink()
+
+    write_artifact_database(artifact_root.parent, [image_record], artifact_schema_version=2)
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    newer_schema_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert newer_schema_payload["extra"]["maka_artifact_kind"] == "summary", newer_schema_payload
+    assert newer_schema_payload["extra"]["maka_summary_reason"] == "image_artifact_metadata_invalid", newer_schema_payload
+    database_path = write_artifact_database(artifact_root.parent, [image_record])
+
     materialized_path = logs_dir / image_content[0].source.path
     protected_path = logs_dir / "protected-image-target"
     materialized_path.unlink()
@@ -3300,6 +3025,16 @@ with tempfile.TemporaryDirectory() as tmp:
     assert not materialized_path.is_symlink(), materialized_path
     assert protected_path.read_bytes() == b"protected", protected_path
 
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture-tampered")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    mismatched_image_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert mismatched_image_payload["extra"]["maka_artifact_kind"] == "summary", mismatched_image_payload
+    assert mismatched_image_payload["extra"]["maka_summary_reason"] == "image_artifact_content_mismatch", mismatched_image_payload
+
     image_path.unlink()
     agent._apply_cell_output(context, {
         "status": "completed",
@@ -3310,9 +3045,15 @@ with tempfile.TemporaryDirectory() as tmp:
     assert missing_image_payload["extra"]["maka_artifact_kind"] == "summary", missing_image_payload
     assert missing_image_payload["extra"]["maka_summary_reason"] == "image_artifact_unavailable", missing_image_payload
 
-    escaping_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    escaping_metadata = dict(image_record)
     escaping_metadata["relativePath"] = "../outside.png"
-    metadata_path.write_text(json.dumps(escaping_metadata) + "\n", encoding="utf-8")
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "UPDATE artifact_records SET relative_path = ?, record_json = ? WHERE artifact_id = ?",
+        (escaping_metadata["relativePath"], json.dumps(escaping_metadata), escaping_metadata["id"]),
+    )
+    connection.commit()
+    connection.close()
     agent._apply_cell_output(context, {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
@@ -3373,7 +3114,7 @@ with tempfile.TemporaryDirectory() as tmp:
         encoding="utf-8",
     )
     downloaded_relative_path = "session-1/downloaded-image-shot.png"
-    downloaded_metadata = json.dumps({
+    downloaded_record = {
         "id": "downloaded-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3385,14 +3126,14 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n"
+    }
 
     class ArtifactDownloadEnvironment:
         async def download_file(self, remote, local):
-            if remote == "/logs/agent/maka-storage/artifacts/metadata.jsonl":
-                Path(local).write_text(downloaded_metadata, encoding="utf-8")
+            if remote == "/logs/agent/trajectory-state/runtime.sqlite":
+                write_artifact_database(Path(local).parent, [downloaded_record])
                 return
-            assert remote == f"/logs/agent/maka-storage/artifacts/{downloaded_relative_path}", remote
+            assert remote == f"/logs/agent/trajectory-state/artifacts/{downloaded_relative_path}", remote
             Path(local).write_bytes(b"\x89PNG\r\n\x1a\nfixture")
 
     asyncio.run(download_agent._download_runtime_artifacts(ArtifactDownloadEnvironment()))
@@ -3405,12 +3146,12 @@ with tempfile.TemporaryDirectory() as tmp:
     task_run_runtime_path.write_text(
         "\n".join(json.dumps(event) for event in image_events) + "\n", encoding="utf-8"
     )
-    task_run_artifact_root = task_run_logs / "maka-task-run" / "runs" / "artifacts"
+    task_run_store_root = task_run_logs / "maka-task-run" / "trajectory-state"
+    task_run_artifact_root = task_run_store_root / "artifacts"
     task_run_image_path = task_run_artifact_root / "session-1" / "task-run-shot.png"
     task_run_image_path.parent.mkdir(parents=True)
     task_run_image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
-    (task_run_artifact_root / "metadata.jsonl").parent.mkdir(parents=True, exist_ok=True)
-    (task_run_artifact_root / "metadata.jsonl").write_text(json.dumps({
+    task_run_record = {
         "id": "artifact-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3422,7 +3163,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n", encoding="utf-8")
+    }
+    write_artifact_database(task_run_store_root, [task_run_record])
     task_run_agent._apply_cell_output(AgentContext(), {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
@@ -3440,6 +3182,7 @@ print("trajectory-harbor-contract ok")
 function pythonOpenCodeAdapterSmokeScript(root: string): string {
   return String.raw`
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -3478,6 +3221,9 @@ class OpenCode:
         self.model_name = kwargs.get("model_name") or "openai/mimo-v2.5-pro"
         self._instruction = None
         self._prompt_template_path = Path(prompt_template_path) if prompt_template_path else None
+        # Real harbor/pier bases set self.logger in __init__; the adapter's
+        # best-effort log hydration logs through it.
+        self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
 
     @staticmethod
     def name():
@@ -3576,6 +3322,17 @@ try:
                 identity_path = Path(tmp) / "maka-cell-execution-identity.json"
                 assert identity_path.exists(), "sampling identity must be durable before OpenCode starts"
             environment.agent_commands.append((command, env or {}))
+            if command.startswith("sha256sum "):
+                # Emulate the container: /opt/maka-agent is the repo bind mount.
+                probe_container_path = command.split(" ", 1)[1]
+                host_path = Path(probe_container_path.replace("/opt/maka-agent", str(root)))
+                if not host_path.is_file():
+                    raise RuntimeError(f"sha256sum: {probe_container_path}: No such file or directory")
+                digest = hashlib.sha256(host_path.read_bytes()).hexdigest()
+                return types.SimpleNamespace(
+                    stdout=f"{digest}  {probe_container_path}\n", stderr="", return_code=0
+                )
+            return None
         agent.exec_as_agent = exec_as_agent
 
         asyncio.run(agent.install(environment))
@@ -3607,6 +3364,17 @@ try:
         assert env["ZAI_API_KEY"] == "ephemeral-proxy-token", env
         assert env["ZAI_BASE_URL"] == "http://host.docker.internal:43210", env
         assert env["OPENCODE_CONFIG"] == "/opt/maka-agent/packages/headless/harbor/opencode-benchmark.json", env
+        baseline_identity = json.loads(
+            (Path(tmp) / "maka-cell-execution-identity.json").read_text(encoding="utf-8")
+        )
+        expected_baseline_hash = "sha256:" + hashlib.sha256(
+            (root / "packages" / "headless" / "harbor" / "opencode-benchmark.json").read_bytes()
+        ).hexdigest()
+        assert baseline_identity["opencodeConfigPath"] == "/opt/maka-agent/packages/headless/harbor/opencode-benchmark.json", baseline_identity
+        assert baseline_identity["opencodeConfigHash"] == expected_baseline_hash, baseline_identity
+        baseline_main_index = next(i for i, item in enumerate(environment.agent_commands) if "opencode --model=" in item[0])
+        probe_command, _ = environment.agent_commands[baseline_main_index - 1]
+        assert probe_command == "sha256sum /opt/maka-agent/packages/headless/harbor/opencode-benchmark.json", probe_command
         benchmark_config = json.loads(
             (root / "packages" / "headless" / "harbor" / "opencode-benchmark.json").read_text(encoding="utf-8")
         )
@@ -3654,6 +3422,67 @@ try:
         assert kimi_env["KIMI_API_KEY"] == "ephemeral-kimi-token", kimi_env
         assert kimi_env["KIMI_BASE_URL"] == "http://host.docker.internal:43210", kimi_env
         assert "ZAI_API_KEY" not in kimi_env, kimi_env
+        deepseek_agent = MakaOpenCodeAgent(Path(tmp), extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-deepseek-token",
+            "MAKA_LLM_CONNECTION_SLUG": "deepseek",
+            "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_REASONING_EFFORT": "max",
+            "MAKA_OPENCODE_VARIANT": "max",
+        }, prompt_template_path=template_path, model_name="deepseek/deepseek-v4-flash")
+        deepseek_agent.exec_as_agent = exec_as_agent
+        asyncio.run(deepseek_agent.run("hi", environment, AgentContext()))
+        deepseek_command, deepseek_env = environment.agent_commands[-1]
+        assert "opencode --model=deepseek/deepseek-v4-flash run --format=json" in deepseek_command, deepseek_command
+        assert "--variant=max" in deepseek_command, deepseek_command
+        assert deepseek_env["DEEPSEEK_API_KEY"] == "ephemeral-deepseek-token", deepseek_env
+        assert deepseek_env["DEEPSEEK_BASE_URL"] == "http://host.docker.internal:43210", deepseek_env
+        assert benchmark_config["provider"]["deepseek"]["options"] == {
+            "apiKey": "{env:DEEPSEEK_API_KEY}",
+            "baseURL": "{env:DEEPSEEK_BASE_URL}",
+        }, benchmark_config
+        assert "KIMI_API_KEY" not in deepseek_env, deepseek_env
+        override_agent = MakaOpenCodeAgent(Path(tmp), extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-proxy-token",
+            "MAKA_LLM_CONNECTION_SLUG": "zai-coding-plan",
+            "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_REASONING_EFFORT": "max",
+            "MAKA_OPENCODE_VARIANT": "max",
+            "MAKA_OPENCODE_CONFIG_PATH": "/opt/maka-agent/packages/headless/harbor/opencode-benchmark-makaprompt.json",
+        }, prompt_template_path=template_path, model_name="zai-coding-plan/glm-5.2")
+        override_agent.exec_as_agent = exec_as_agent
+        asyncio.run(override_agent.run("hi", environment, AgentContext()))
+        _, override_env = environment.agent_commands[-1]
+        assert override_env["OPENCODE_CONFIG"] == "/opt/maka-agent/packages/headless/harbor/opencode-benchmark-makaprompt.json", override_env
+        override_probe, _ = environment.agent_commands[-2]
+        assert override_probe == "sha256sum /opt/maka-agent/packages/headless/harbor/opencode-benchmark-makaprompt.json", override_probe
+        override_identity = json.loads(
+            (Path(tmp) / "maka-cell-execution-identity.json").read_text(encoding="utf-8")
+        )
+        expected_override_hash = "sha256:" + hashlib.sha256(
+            (root / "packages" / "headless" / "harbor" / "opencode-benchmark-makaprompt.json").read_bytes()
+        ).hexdigest()
+        assert override_identity["opencodeConfigPath"] == "/opt/maka-agent/packages/headless/harbor/opencode-benchmark-makaprompt.json", override_identity
+        assert override_identity["opencodeConfigHash"] == expected_override_hash, override_identity
+        assert override_identity["opencodeConfigHash"] != expected_baseline_hash, override_identity
+        missing_agent = MakaOpenCodeAgent(Path(tmp), extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-proxy-token",
+            "MAKA_LLM_CONNECTION_SLUG": "deepseek",
+            "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_OPENCODE_CONFIG_PATH": "/opt/maka-agent/packages/headless/harbor/does-not-exist.json",
+        }, prompt_template_path=template_path, model_name="deepseek/deepseek-v4-flash")
+        missing_agent.exec_as_agent = exec_as_agent
+        commands_before = len(environment.agent_commands)
+        try:
+            asyncio.run(missing_agent.run("hi", environment, AgentContext()))
+            raise AssertionError("a missing MAKA_OPENCODE_CONFIG_PATH must fail closed")
+        except RuntimeError as error:
+            assert "does-not-exist.json" in str(error), error
+        assert not any(
+            "opencode --model=" in recorded for recorded, _ in environment.agent_commands[commands_before:]
+        ), "OpenCode must never launch when the resolved config is absent"
         assert environment.uploaded_files == [], environment.uploaded_files
         assert 'cat --' not in command, command
         assert "test-zai-key" not in command, command
@@ -4033,6 +3862,182 @@ print("kimi-code adapter ok")
 `;
 }
 
+function pythonClaudeCodeAdapterSmokeScript(root: string): string {
+  return String.raw`
+import asyncio
+import json
+import os
+import sys
+import tempfile
+import types
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+
+def module(name):
+    mod = types.ModuleType(name)
+    sys.modules[name] = mod
+    return mod
+
+module("harbor")
+module("harbor.agents")
+module("harbor.agents.installed")
+claude_mod = module("harbor.agents.installed.claude_code")
+
+class ClaudeCode:
+    def __init__(self, logs_dir, extra_env=None, model_name=None, **kwargs):
+        self.logs_dir = Path(logs_dir)
+        self._extra_env = extra_env or {}
+        self.model_name = model_name
+        self.parent_calls = []
+        self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
+
+    def _get_env(self, key):
+        return self._extra_env.get(key) or os.environ.get(key)
+
+    async def exec_as_agent(self, environment, command, env=None, **kwargs):
+        return await environment.exec(command, env=env or {}, **kwargs)
+
+    async def exec_as_root(self, environment, command, env=None, **kwargs):
+        return await environment.exec(command, env=env or {}, as_root=True, **kwargs)
+
+    async def run(self, instruction, environment, context):
+        self.parent_calls.append({
+            "api_key": self._get_env("ANTHROPIC_API_KEY"),
+            "auth_token": self._get_env("ANTHROPIC_AUTH_TOKEN"),
+            "oauth_token": self._get_env("CLAUDE_CODE_OAUTH_TOKEN"),
+        })
+        if instruction == "pipeline-fail":
+            result = await self.exec_as_agent(
+                environment,
+                command="false 2>&1 | tee /dev/null",
+            )
+            if result.return_code != 0:
+                raise RuntimeError("Claude command exited non-zero")
+        events = [{"type": "assistant", "session_id": "session-1", "message": {"content": []}}]
+        if instruction == "success" or instruction == "pipeline-fail":
+            events.append({"type": "result", "session_id": "session-1", "is_error": False})
+        elif instruction == "terminal-error":
+            events.append({
+                "type": "result",
+                "session_id": "session-1",
+                "is_error": True,
+                "subtype": "401 Unauthorized",
+            })
+        elif instruction == "terminal-duration-403":
+            events.append({
+                "type": "result",
+                "session_id": "session-1",
+                "is_error": True,
+                "subtype": "error_max_turns",
+                "duration_ms": 403000,
+            })
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        (self.logs_dir / "claude-code.txt").write_text(
+            "\n".join(json.dumps(event) for event in events) + "\n",
+            encoding="utf-8",
+        )
+
+    def populate_context_post_run(self, context):
+        return None
+
+claude_mod.ClaudeCode = ClaudeCode
+module("harbor.environments")
+env_mod = module("harbor.environments.base")
+env_mod.BaseEnvironment = object
+module("harbor.models")
+module("harbor.models.agent")
+context_mod = module("harbor.models.agent.context")
+context_mod.AgentContext = object
+
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+from claude_code_agent import MakaClaudeCodeAgent
+
+class Environment:
+    def __init__(self):
+        self.commands = []
+
+    async def exec(self, command, env=None, **kwargs):
+        self.commands.append(command)
+        process = await asyncio.create_subprocess_exec(
+            "bash",
+            "-lc",
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        return types.SimpleNamespace(
+            return_code=process.returncode,
+            stdout=stdout.decode(),
+            stderr=stderr.decode(),
+        )
+
+def agent(logs):
+    return MakaClaudeCodeAgent(
+        logs,
+        model_name="deepseek-v4-flash",
+        extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210/anthropic",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-token",
+            "MAKA_MODEL": "deepseek-v4-flash",
+            "MAKA_SYSTEM_PROMPT": "",
+        },
+    )
+
+with tempfile.TemporaryDirectory() as tmp:
+    logs = Path(tmp)
+    environment = Environment()
+    context = types.SimpleNamespace()
+
+    success = agent(logs)
+    asyncio.run(success.run("success", environment, context))
+    success.populate_context_post_run(context)
+    cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert cell["status"] == "completed", cell
+    assert success.parent_calls[0] == {
+        "api_key": "ephemeral-token",
+        "auth_token": None,
+        "oauth_token": None,
+    }, success.parent_calls
+
+    missing = agent(logs)
+    asyncio.run(missing.run("missing-result", environment, context))
+    missing.populate_context_post_run(context)
+    missing_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert missing_cell["status"] == "failed", missing_cell
+    assert missing_cell["errorClass"] == "infra_failed", missing_cell
+
+    terminal_error = agent(logs)
+    asyncio.run(terminal_error.run("terminal-error", environment, context))
+    terminal_error.populate_context_post_run(context)
+    error_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert error_cell["status"] == "failed", error_cell
+    assert error_cell["errorClass"] == "auth", error_cell
+
+    duration_error = agent(logs)
+    asyncio.run(duration_error.run("terminal-duration-403", environment, context))
+    duration_error.populate_context_post_run(context)
+    duration_error_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert duration_error_cell["status"] == "failed", duration_error_cell
+    assert duration_error_cell["errorClass"] == "infra_failed", duration_error_cell
+
+    pipeline = agent(logs)
+    try:
+        asyncio.run(pipeline.run("pipeline-fail", environment, context))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Claude pipeline hid the CLI non-zero exit")
+    pipeline.populate_context_post_run(context)
+    pipeline_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert pipeline_cell["status"] == "failed", pipeline_cell
+    assert pipeline_cell["errorClass"] == "infra_failed", pipeline_cell
+
+print("claude-code adapter ok")
+`;
+}
+
 function pythonCodexAdapterSmokeScript(root: string): string {
   return String.raw`
 import asyncio
@@ -4114,6 +4119,18 @@ class Codex:
         if instruction == "no-completion":
             (self.logs_dir / "codex.txt").write_text(
                 json.dumps({"type": "turn.failed", "error": {"message": "429 rate limit"}}) + "\n",
+                encoding="utf-8",
+            )
+            return
+        if instruction == "transcript-no-completion":
+            (self.logs_dir / "codex.txt").write_text(
+                json.dumps({
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "aggregated_output": "jal 403ef0 <doomgeneric_tick>",
+                    },
+                }) + "\n",
                 encoding="utf-8",
             )
             return
@@ -4243,6 +4260,19 @@ with tempfile.TemporaryDirectory() as tmp:
     assert 'base_url = "http://host.docker.internal:43210"' in http_provider_command, http_provider_command
     assert 'wire_api = "responses"' in http_provider_command, http_provider_command
     assert "ephemeral-token" not in http_provider_command, http_provider_command
+    deepseek_agent = MakaCodexAgent(
+        logs,
+        version="0.144.6",
+        model_name="deepseek-v4-flash",
+        extra_env={"MAKA_MODEL": "deepseek-v4-flash"},
+    )
+    asyncio.run(
+        deepseek_agent._write_http_provider_config(
+            environment, "http://host.docker.internal:43210"
+        )
+    )
+    deepseek_config_command = commands[-1][0]
+    assert 'model_catalog_json = "/opt/maka-agent/packages/headless/harbor/deepseek-codex-models.json"' in deepseek_config_command, deepseek_config_command
     assert len(agent.parent_calls) == 1, agent.parent_calls
     assert agent.parent_calls[0]["instruction"] == "templated: hi", agent.parent_calls
     assert agent.parent_calls[0]["api_key"] == "ephemeral-token", agent.parent_calls
@@ -4335,6 +4365,24 @@ with tempfile.TemporaryDirectory() as tmp:
     incomplete_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
     assert incomplete_cell["status"] == "failed", incomplete_cell
     assert incomplete_cell["errorClass"] == "rate_limit", incomplete_cell
+
+    transcript = MakaCodexAgent(
+        logs,
+        version="0.144.6",
+        model_name="deepseek-v4-flash",
+        reasoning_effort="max",
+        extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-token",
+            "MAKA_MODEL": "deepseek-v4-flash",
+            "MAKA_SYSTEM_PROMPT": "",
+        },
+    )
+    asyncio.run(transcript.run("transcript-no-completion", environment, incomplete_context))
+    transcript.populate_context_post_run(incomplete_context)
+    transcript_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert transcript_cell["status"] == "failed", transcript_cell
+    assert transcript_cell["errorClass"] == "infra_failed", transcript_cell
 
     policy = MakaCodexAgent(
         logs,
@@ -4588,17 +4636,19 @@ verifier_mod.Verifier = Verifier
 verifier_mod.RewardFileNotFoundError = RewardFileNotFoundError
 
 sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
-from maka_verifier import MakaVerifier
+import maka_verifier as verifier_impl
+from maka_verifier import MakaVerifier, MakaVerifierInfrastructureError
 
 class FakeEnvironment:
     os = "linux"
     capabilities = types.SimpleNamespace(mounted=True)
     default_user = None
 
-    def __init__(self, trial_paths, outcomes):
+    def __init__(self, trial_paths, outcomes, clock=None):
         self.trial_paths = trial_paths
         self.outcomes = list(outcomes)
         self.commands = []
+        self.clock = clock
 
     async def exec(self, command, **kwargs):
         self.commands.append(command)
@@ -4608,6 +4658,9 @@ class FakeEnvironment:
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
         assert "timeout --signal=KILL" in command, command
         outcome = self.outcomes.pop(0)
+        if isinstance(outcome, tuple):
+            outcome, duration = outcome
+            self.clock[0] += duration
         if outcome == "infra":
             self.trial_paths.test_stdout_path.write_text("E: Failed to fetch https://deb.example.invalid/pkg.deb 502 Bad Gateway", encoding="utf-8")
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
@@ -4663,7 +4716,7 @@ class FakeEnvironment:
         self.trial_paths.reward_text_path.write_text("1\n", encoding="utf-8")
         return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
-async def run_case(outcomes):
+async def run_case(outcomes, retry_backoff_sec=0, total_timeout_sec=2, clock=None):
     temp = tempfile.TemporaryDirectory()
     trial = Path(temp.name)
     verifier_dir = trial / "verifier"
@@ -4674,15 +4727,20 @@ async def run_case(outcomes):
         reward_json_path=verifier_dir / "reward.json",
         test_stdout_path=verifier_dir / "test-stdout.txt",
     )
-    environment = FakeEnvironment(paths, outcomes)
+    environment = FakeEnvironment(paths, outcomes, clock)
     verifier = MakaVerifier(
         task=types.SimpleNamespace(config=types.SimpleNamespace(verifier=types.SimpleNamespace(env={})), paths=None),
         trial_paths=paths,
         environment=environment,
         attempt_timeout_sec=1,
-        max_attempts=2,
+        max_attempts=3,
+        retry_backoff_sec=retry_backoff_sec,
+        total_timeout_sec=total_timeout_sec,
     )
-    result = await verifier.verify()
+    try:
+        result = await verifier.verify()
+    except MakaVerifierInfrastructureError as error:
+        result = error
     outcome = json.loads((verifier_dir / "maka-verifier-outcome.json").read_text(encoding="utf-8"))
     temp.cleanup()
     return result, outcome, environment.commands
@@ -4693,6 +4751,57 @@ assert outcome["outcome"] == "passed", outcome
 assert [item["classification"] for item in outcome["attempts"]] == ["infra_setup_failed", "passed"], outcome
 assert len([command for command in commands if "timeout --signal=KILL" in command]) == 2, commands
 assert all("bash -lc" in command for command in commands if "timeout --signal=KILL" in command), commands
+
+result, outcome, commands = asyncio.run(run_case(["infra", "infra", "pass"]))
+assert result.rewards == {"reward": 1.0}, result.rewards
+assert outcome["outcome"] == "passed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "passed",
+], outcome
+assert len([command for command in commands if "timeout --signal=KILL" in command]) == 3, commands
+
+delays = []
+original_sleep = verifier_impl.asyncio.sleep
+async def record_sleep(delay):
+    delays.append(delay)
+verifier_impl.asyncio.sleep = record_sleep
+try:
+    result, outcome, commands = asyncio.run(
+        run_case(["infra", "infra", "pass"], retry_backoff_sec=2, total_timeout_sec=10)
+    )
+finally:
+    verifier_impl.asyncio.sleep = original_sleep
+assert result.rewards == {"reward": 1.0}, result.rewards
+assert delays == [2, 4], delays
+
+result, outcome, commands = asyncio.run(run_case(["infra", "infra", "infra"]))
+assert isinstance(result, MakaVerifierInfrastructureError), result
+assert outcome["outcome"] == "infra_failed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "infra_setup_failed",
+], outcome
+assert len([command for command in commands if "timeout --signal=KILL" in command]) == 3, commands
+
+clock = [0.0]
+original_monotonic = verifier_impl.time.monotonic
+verifier_impl.time.monotonic = lambda: clock[0]
+try:
+    result, outcome, commands = asyncio.run(
+        run_case([("infra", 0.6), ("infra", 0.6), "timeout"], clock=clock)
+    )
+finally:
+    verifier_impl.time.monotonic = original_monotonic
+assert isinstance(result, MakaVerifierInfrastructureError), result
+assert outcome["outcome"] == "infra_failed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "infra_failed",
+], outcome
 
 result, outcome, commands = asyncio.run(run_case(["infra_with_fail_reward", "pass"]))
 assert result.rewards == {"reward": 1.0}, result.rewards

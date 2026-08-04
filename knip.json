@@ -13,8 +13,11 @@
         "src/main/**/*.test.ts",
         "e2e/**/*.spec.ts",
         ".storybook/preview.@(ts|tsx)",
+        ".storybook/node-crypto-boundary.ts",
         "stories/**/*.@(ts|tsx)",
-        "scripts/browser-observe-act-smoke.mjs"
+        "scripts/browser-observe-act-smoke.mjs",
+        "src/renderer/astryx-theme/maka.d.ts",
+        "src/renderer/astryx-theme/makaTheme.ts"
       ],
       "project": ["src/**/*.{ts,tsx}", "e2e/**/*.ts", "stories/**/*.{ts,tsx}", "scripts/**/*.mjs"],
       "ignoreDependencies": [

@@ -6,7 +6,12 @@
  * an in-memory backoff instead of immediately spending another turn.
  */
 
-import { evaluateGoal, type GoalEvaluation, type GoalEvaluatorDeps } from './goal-evaluator.js';
+import {
+  evaluateGoal,
+  type GoalEvaluation,
+  type GoalEvaluatorDeps,
+  type GoalEvaluatorResource,
+} from './goal-evaluator.js';
 import {
   goalCheckpoint,
   type GoalControlLease,
@@ -40,8 +45,8 @@ export type GoalTurnAdmission =
   | { kind: 'busy'; whenIdle: Promise<void> }
   | { kind: 'unavailable'; reason: string };
 
-/** Exactly-once settlement capability captured when an external Agent turn starts. */
-export type GoalExternalTurnSettler = (outcome: GoalTurnOutcome) => Promise<void>;
+/** Exactly-once settlement capability captured when a non-Goal Agent turn starts. */
+export type GoalObservedTurnSettler = (outcome: GoalTurnOutcome) => Promise<void>;
 
 export interface GoalContinuationScheduler {
   setTimeout: (callback: () => void, delayMs: number) => unknown;
@@ -50,13 +55,18 @@ export interface GoalContinuationScheduler {
 
 export interface GoalContinuationDeps {
   goalManager: GoalManager;
-  evaluator: GoalEvaluatorDeps;
+  evaluator: GoalEvaluatorDeps & Partial<Pick<GoalEvaluatorResource, 'close'>>;
   /** Summarized recent conversation (last ~5 messages) for the evaluator. */
   getRecentContext: (sessionId: string) => Promise<string>;
   /** Current cumulative token count for the session (for budget tracking). */
   getTokenCount?: (sessionId: string) => number;
   /** Synchronously prepare, defer, or reject a Goal-owned turn. */
-  admitTurn: (sessionId: string, text: string) => GoalTurnAdmission;
+  admitTurn: (
+    sessionId: string,
+    text: string,
+    checkpoint: GoalCheckpoint,
+    controlLease: GoalControlLease,
+  ) => GoalTurnAdmission;
   taskGate?: GoalTaskGateDeps;
   scheduler?: GoalContinuationScheduler;
 }
@@ -79,7 +89,7 @@ interface QueuedTurn {
 interface ContinuationIntent {
   checkpoint: GoalCheckpoint;
   controlLease: GoalControlLease;
-  triggeringTurnId: string;
+  triggeringTurnId?: string;
   evaluation: GoalEvaluation;
 }
 
@@ -104,19 +114,22 @@ interface SessionLane {
   intent?: ContinuationIntent;
   busyWake?: Promise<void>;
   waitingTimer?: WaitingTimer;
+  evaluationAbort?: AbortController;
   consecutiveWaits: number;
 }
 
-export type GoalExternalTurnStart =
-  | { kind: 'registered'; settle: GoalExternalTurnSettler }
+export type GoalObservedTurnStart =
+  | { kind: 'registered'; settle: GoalObservedTurnSettler }
   | { kind: 'unavailable'; reason: string };
 
 export class GoalContinuationCoordinator {
   private readonly lanes = new Map<string, SessionLane>();
+  private readonly activeDrains = new Set<Promise<void>>();
   private readonly sessionCloseFence: GoalSessionCloseFence;
   private readonly taskGatePolicy: GoalTaskGatePolicy;
   private readonly scheduler: GoalContinuationScheduler;
   private disposed = false;
+  private closeTask?: Promise<void>;
 
   constructor(private readonly deps: GoalContinuationDeps) {
     this.scheduler = deps.scheduler ?? defaultScheduler;
@@ -135,11 +148,11 @@ export class GoalContinuationCoordinator {
   }
 
   /**
-   * Register an external Agent turn before its iterator starts. The returned
+   * Register a non-Goal Agent turn before its iterator starts. The returned
    * closure is the only legal settlement path, so terminal handling never has
    * to rediscover Goal ownership from mutable current state.
    */
-  beginExternalTurn(sessionId: string, turnId: string): GoalExternalTurnStart {
+  beginObservedTurn(sessionId: string, turnId: string): GoalObservedTurnStart {
     if (this.disposed) {
       return { kind: 'unavailable', reason: 'Goal continuation is disposed.' };
     }
@@ -207,6 +220,7 @@ export class GoalContinuationCoordinator {
     }
 
     const goal = mutate();
+    this.abortEvaluation(lane, 'Goal lifecycle changed during evaluation');
     this.discardIntentOwnedBy(lane, controlLease);
     registration.observedControlLease = this.deps.goalManager.getControlLease(sessionId);
     registration.controlLease = undefined;
@@ -269,12 +283,48 @@ export class GoalContinuationCoordinator {
     this.sessionCloseFence.unarchive(sessionId);
   }
 
+  /** Resume an exact paused Goal generation from Host control without a model-owned Turn. */
+  resumeFromControl(sessionId: string, checkpoint: GoalCheckpoint): GoalState | undefined {
+    if (this.disposed || this.sessionCloseFence.isClosed(sessionId)) return undefined;
+    const resumed = this.deps.goalManager.resume(sessionId, checkpoint);
+    if (!resumed) return undefined;
+    const controlLease = this.deps.goalManager.getControlLease(sessionId);
+    if (!controlLease) return undefined;
+    const lane = this.laneFor(sessionId);
+    lane.intent = {
+      checkpoint: goalCheckpoint(resumed),
+      controlLease,
+      evaluation: {
+        met: false,
+        impossible: false,
+        progress: false,
+        waiting: false,
+        evaluatorFailed: false,
+        reason: 'Goal resumed by a connected client.',
+      },
+    };
+    lane.busyWake = undefined;
+    this.clearWaitingTimer(lane);
+    this.resetWaitingBackoff(lane);
+    this.scheduleDrain(lane);
+    return resumed;
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     for (const lane of this.lanes.values()) this.invalidateLane(lane);
     this.lanes.clear();
     this.sessionCloseFence.dispose();
+  }
+
+  close(): Promise<void> {
+    this.dispose();
+    this.closeTask ??= Promise.all([
+      ...this.activeDrains,
+      Promise.resolve().then(() => this.deps.evaluator.close?.()),
+    ]).then(() => undefined);
+    return this.closeTask;
   }
 
   private enqueueTurn(
@@ -354,10 +404,12 @@ export class GoalContinuationCoordinator {
 
   private scheduleDrain(lane: SessionLane): void {
     if (!this.isCurrent(lane) || lane.draining) return;
-    void this.drainLane(lane).catch((error) => {
+    const task = this.drainLane(lane).catch((error) => {
       if (!this.isCurrent(lane)) return;
       this.pauseCurrentGoal(lane, `Goal continuation coordinator failed: ${errorMessage(error)}`);
     });
+    this.activeDrains.add(task);
+    void task.finally(() => this.activeDrains.delete(task));
   }
 
   private async drainLane(lane: SessionLane): Promise<void> {
@@ -453,12 +505,20 @@ export class GoalContinuationCoordinator {
       return;
     }
 
-    const evaluation = await evaluateGoal(
-      this.deps.evaluator,
-      goal.condition,
-      context,
-      lane.sessionId,
-    );
+    const evaluationAbort = new AbortController();
+    lane.evaluationAbort = evaluationAbort;
+    let evaluation: GoalEvaluation;
+    try {
+      evaluation = await evaluateGoal(
+        this.deps.evaluator,
+        goal.condition,
+        context,
+        lane.sessionId,
+        evaluationAbort.signal,
+      );
+    } finally {
+      if (lane.evaluationAbort === evaluationAbort) lane.evaluationAbort = undefined;
+    }
     if (!this.isCurrent(lane) || !this.deps.goalManager.matchesActive(lane.sessionId, checkpoint)) {
       return;
     }
@@ -553,7 +613,12 @@ export class GoalContinuationCoordinator {
     }
 
     const prompt = buildContinuationPrompt(goal, intent.evaluation, taskPlan.reminder);
-    const admission = this.deps.admitTurn(lane.sessionId, prompt);
+    const admission = this.deps.admitTurn(
+      lane.sessionId,
+      prompt,
+      intent.checkpoint,
+      intent.controlLease,
+    );
 
     if (admission.kind === 'busy') {
       this.watchBusyLane(lane, admission.whenIdle);
@@ -599,13 +664,15 @@ export class GoalContinuationCoordinator {
 
     lane.intent = undefined;
     this.taskGatePolicy.markStarted(intent.checkpoint.goalId, taskPlan);
-    this.taskGatePolicy.record({
-      sessionId: lane.sessionId,
-      turnId: intent.triggeringTurnId,
-      goalId: intent.checkpoint.goalId,
-      decision: taskPlan.decision,
-      taskKeys: taskPlan.taskKeys,
-    });
+    if (intent.triggeringTurnId) {
+      this.taskGatePolicy.record({
+        sessionId: lane.sessionId,
+        turnId: intent.triggeringTurnId,
+        goalId: intent.checkpoint.goalId,
+        decision: taskPlan.decision,
+        taskKeys: taskPlan.taskKeys,
+      });
+    }
   }
 
   private watchBusyLane(lane: SessionLane, whenIdle: Promise<void>): void {
@@ -682,6 +749,7 @@ export class GoalContinuationCoordinator {
   }
 
   private invalidateLane(lane: SessionLane): void {
+    this.abortEvaluation(lane, 'Goal continuation lane was invalidated');
     lane.intent = undefined;
     lane.busyWake = undefined;
     this.clearWaitingTimer(lane);
@@ -692,6 +760,11 @@ export class GoalContinuationCoordinator {
     for (const item of lane.queue.splice(0)) {
       item.resolve();
     }
+  }
+
+  private abortEvaluation(lane: SessionLane, reason: string): void {
+    lane.evaluationAbort?.abort(new Error(reason));
+    lane.evaluationAbort = undefined;
   }
 }
 

@@ -3,18 +3,20 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core';
-import { build, type Plugin } from 'esbuild';
+import type { TurnViewModel } from '@maka/ui';
+import { build } from 'esbuild';
 import { act, createElement, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 const LUCIDE_REACT_PACKAGE = ['lucide', 'react'].join('-');
 
-type SessionHistoryModule = {
+type UiRenderModule = {
   LocaleProvider(props: { locale: 'zh'; children: ReactElement }): ReactElement;
   SessionHistoryList(props: {
     sessions: SessionSummary[];
     activeId?: string;
+    groups?: ReadonlyArray<{ id: string; label: string; sessions: SessionSummary[] }>;
     streamingSessionIds?: Set<string>;
     staleSessionIds?: Set<string>;
     onSelectSession(sessionId: string): void;
@@ -26,97 +28,137 @@ type SessionHistoryModule = {
       onDelete(sessionId: string): void | Promise<void>;
     };
   }): ReactElement | null;
+  TurnView(props: {
+    turn: TurnViewModel;
+    liveStreaming?: {
+      onStreamingSettled?(messageId?: string): void;
+    };
+  }): ReactElement;
 };
 type RendererWindow = Window & typeof globalThis;
 type MemoTestGlobal = typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
 };
-type ResettableTimestamp = number & { reset(): void };
+type CountedTimestamp = number & { readCount(): number };
 
 const cleanupTasks: Array<() => void> = [];
 
 afterEach(() => {
-  while (cleanupTasks.length > 0) {
-    cleanupTasks.pop()?.();
-  }
+  while (cleanupTasks.length > 0) cleanupTasks.pop()?.();
 });
 
 describe('UI render memo boundary contract', () => {
-  it('keeps sidebar session rows from rendering on unrelated parent updates with row actions present', async () => {
-    const { LocaleProvider, SessionHistoryList } = await importSessionHistoryList();
-    const root = installReactRenderer();
-    let rowRenderCount = 0;
+  it('memoized session metadata ignores parent updates and follows only the target streaming flag', async () => {
+    const { LocaleProvider, SessionHistoryList } = await importUiRenderModule();
+    const { root } = installReactRenderer();
     const sessions = [
-      createSession('session-a', 'Alpha', () => {
-        rowRenderCount += 1;
-      }),
-      createSession('session-b', 'Beta', () => {
-        rowRenderCount += 1;
-      }),
+      createSession('session-a', 'Alpha'),
+      createSession('session-b', 'Beta'),
     ];
-    const streamingSessionIds = new Set<string>();
-    const staleSessionIds = new Set<string>();
-    const rowActions = createRowActions();
-    const onSelectSession = () => {};
-
-    resetTimestampCounters(sessions);
-    await render(root, createElement(RenderHost, {
+    const groups = [{ id: 'all', label: '', sessions }];
+    // Omit rowActions: permanent MoreMenu mounts Astryx DropdownMenu, which
+    // needs a full focusable DOM (hasAttribute). This contract only measures
+    // SessionNavRow identity for formatSessionMeta under stable props.
+    const stableProps = {
       SessionHistoryList,
       LocaleProvider,
+      activeId: 'session-a',
+      groups,
+      onSelectSession: () => {},
+      sessions,
+      staleSessionIds: new Set<string>(),
+    };
+
+    await render(root, createElement(RenderHost, {
+      ...stableProps,
       label: 'first parent render',
-      onSelectSession,
-      rowActions,
-      sessions,
-      staleSessionIds,
-      streamingSessionIds,
+      streamingSessionIds: new Set<string>(),
     }));
-    assert.equal(rowRenderCount, 2);
+    const initialReads = timestampReads(sessions);
+    assert.ok(initialReads.every((count) => count > 0));
 
-    resetTimestampCounters(sessions);
+    const stableStreamingIds = new Set<string>();
     await render(root, createElement(RenderHost, {
-      SessionHistoryList,
-      LocaleProvider,
+      ...stableProps,
+      label: 'stable parent render',
+      streamingSessionIds: stableStreamingIds,
+    }));
+    const stableBaseline = timestampReads(sessions);
+
+    await render(root, createElement(RenderHost, {
+      ...stableProps,
       label: 'unrelated parent render',
-      onSelectSession,
-      rowActions,
-      sessions,
-      staleSessionIds,
-      streamingSessionIds,
+      streamingSessionIds: stableStreamingIds,
     }));
+    assert.deepEqual(timestampReads(sessions), stableBaseline);
 
-    assert.equal(
-      rowRenderCount,
-      2,
-      'stable session rows should not recompute row meta when only sibling parent content changes',
-    );
-
-    const nextStreamingSessionIds = new Set<string>(['session-a']);
-    resetTimestampCounters(sessions);
     await render(root, createElement(RenderHost, {
-      SessionHistoryList,
-      LocaleProvider,
+      ...stableProps,
       label: 'streaming session update',
-      onSelectSession,
-      rowActions,
-      sessions,
-      staleSessionIds,
-      streamingSessionIds: nextStreamingSessionIds,
+      streamingSessionIds: new Set<string>(['session-a']),
     }));
+    const streamingReads = timestampReads(sessions);
+    assert.ok(streamingReads[0] > stableBaseline[0]);
+    assert.equal(streamingReads[1], stableBaseline[1]);
+  });
 
-    assert.equal(
-      rowRenderCount,
-      3,
-      'streaming updates should only recompute the row whose streaming flag changed',
-    );
+  it('commits the complete streamed answer before signaling handoff once', async () => {
+    const { LocaleProvider, TurnView } = await importUiRenderModule();
+    const { root, container } = installReactRenderer();
+    const settled: Array<{ messageId?: string; text: string }> = [];
+    const finalText = 'final answer including the last tail';
+    const renderTurn = (text: string, complete: boolean) => createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(TurnView, {
+        turn: streamingTurn(text, complete),
+        liveStreaming: {
+          onStreamingSettled(messageId?: string) {
+            settled.push({ messageId, text: container.textContent });
+          },
+        },
+      }),
+    });
+
+    await render(root, renderTurn('partial answer', false));
+    assert.doesNotMatch(container.textContent, new RegExp(finalText));
+
+    await render(root, renderTurn(finalText, true));
+    assert.equal(container.textContent.split(finalText).length - 1, 1);
+    assert.deepEqual(settled, [{
+      messageId: 'stream-answer-1',
+      text: container.textContent,
+    }]);
+
+    await render(root, renderTurn(finalText, true));
+    assert.equal(settled.length, 1);
   });
 });
 
+function streamingTurn(text: string, complete: boolean): TurnViewModel {
+  return {
+    turnId: 'stream-turn-1',
+    status: 'running',
+    partialOutputRetained: false,
+    tools: [],
+    notes: [],
+    timeline: [{
+      kind: 'text',
+      text,
+      messageId: 'stream-answer-1',
+      live: true,
+      complete,
+    }],
+    startedAt: 1,
+  };
+}
+
 function RenderHost(props: {
-  LocaleProvider: SessionHistoryModule['LocaleProvider'];
-  SessionHistoryList: SessionHistoryModule['SessionHistoryList'];
+  LocaleProvider: UiRenderModule['LocaleProvider'];
+  SessionHistoryList: UiRenderModule['SessionHistoryList'];
+  activeId: string;
+  groups: ReadonlyArray<{ id: string; label: string; sessions: SessionSummary[] }>;
   label: string;
   onSelectSession(sessionId: string): void;
-  rowActions: NonNullable<Parameters<SessionHistoryModule['SessionHistoryList']>[0]['rowActions']>;
   sessions: SessionSummary[];
   staleSessionIds: Set<string>;
   streamingSessionIds: Set<string>;
@@ -129,17 +171,17 @@ function RenderHost(props: {
       createElement('p', null, props.label),
       createElement(props.SessionHistoryList, {
         sessions: props.sessions,
-        activeId: 'session-a',
+        groups: props.groups,
+        activeId: props.activeId,
         streamingSessionIds: props.streamingSessionIds,
         staleSessionIds: props.staleSessionIds,
         onSelectSession: props.onSelectSession,
-        rowActions: props.rowActions,
       }),
     ),
   });
 }
 
-function createSession(id: string, name: string, onRender: () => void): SessionSummary {
+function createSession(id: string, name: string): SessionSummary {
   return {
     id,
     name,
@@ -147,7 +189,7 @@ function createSession(id: string, name: string, onRender: () => void): SessionS
     isArchived: false,
     labels: [],
     hasUnread: false,
-    lastMessageAt: createCountedTimestamp(1_700_000_000_000, onRender) as unknown as number,
+    lastMessageAt: createCountedTimestamp(1_700_000_000_000),
     status: 'active',
     backend: 'fake',
     llmConnectionSlug: 'fake',
@@ -157,92 +199,67 @@ function createSession(id: string, name: string, onRender: () => void): SessionS
   };
 }
 
-function createCountedTimestamp(value: number, onRender: () => void): ResettableTimestamp {
-  let counted = false;
+function createCountedTimestamp(value: number): CountedTimestamp {
+  let reads = 0;
   return {
-    reset() {
-      counted = false;
-    },
+    readCount: () => reads,
     valueOf() {
-      // The parent also reads lastMessageAt for bucketing; only row rendering
-      // calls the compact timestamp formatter.
-      if (!counted && new Error().stack?.includes('formatCompactTimestamp')) {
-        counted = true;
-        onRender();
-      }
+      reads += 1;
       return value;
     },
     [Symbol.toPrimitive]() {
       return this.valueOf();
     },
-  } as unknown as ResettableTimestamp;
+  } as unknown as CountedTimestamp;
 }
 
-function resetTimestampCounters(sessions: SessionSummary[]): void {
-  for (const session of sessions) {
-    (session.lastMessageAt as ResettableTimestamp).reset();
-  }
+function timestampReads(sessions: SessionSummary[]): number[] {
+  return sessions.map((session) =>
+    (session.lastMessageAt as CountedTimestamp).readCount()
+  );
 }
 
-function createRowActions(): NonNullable<Parameters<SessionHistoryModule['SessionHistoryList']>[0]['rowActions']> {
-  return {
-    onToggleFlag() {},
-    onArchive() {},
-    onUnarchive() {},
-    onRename() {},
-    onDelete() {},
-  };
-}
-
-async function importSessionHistoryList(): Promise<SessionHistoryModule> {
-  const outfile = resolve(REPO_ROOT, 'apps/desktop/dist/main/__tests__/session-history-list.memo-bundle.mjs');
+async function importUiRenderModule(): Promise<UiRenderModule> {
+  const outfile = resolve(
+    REPO_ROOT,
+    'apps/desktop/dist/main/__tests__/ui-render-contract.bundle.mjs',
+  );
   await build({
     stdin: {
       contents: [
         "export { SessionHistoryList } from './packages/ui/dist/session-history-list.js';",
         "export { LocaleProvider } from './packages/ui/dist/locale-context.js';",
+        "export { TurnView } from './packages/ui/dist/chat-turn.js';",
       ].join('\n'),
       resolveDir: REPO_ROOT,
-      sourcefile: 'session-history-list.memo-entry.mjs',
+      sourcefile: 'ui-render-contract.entry.mjs',
     },
     outfile,
     bundle: true,
-    external: ['@base-ui/react', '@maka/core', LUCIDE_REACT_PACKAGE, 'react', 'react-dom', 'react-dom/*', 'react/jsx-runtime'],
+    external: [
+      '@maka/core',
+      LUCIDE_REACT_PACKAGE,
+      'react',
+      'react-dom',
+      'react-dom/*',
+      'react/jsx-runtime',
+    ],
     platform: 'node',
     format: 'esm',
     target: 'node20',
     logLevel: 'silent',
-    plugins: [mockOverlayScrollbars()],
   });
-  return await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`) as SessionHistoryModule;
+  return await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`) as UiRenderModule;
 }
 
-function mockOverlayScrollbars(): Plugin {
-  return {
-    name: 'mock-overlayscrollbars',
-    setup(buildApi) {
-      buildApi.onResolve({ filter: /^overlayscrollbars$/ }, () => ({
-        path: 'overlayscrollbars-mock',
-        namespace: 'memo-test',
-      }));
-      buildApi.onLoad({ filter: /^overlayscrollbars-mock$/, namespace: 'memo-test' }, () => ({
-        loader: 'js',
-        contents: 'export function OverlayScrollbars() { return { destroy() {}, options() {} }; }',
-      }));
-    },
-  };
-}
-
-function installReactRenderer(): Root {
+function installReactRenderer(): { root: Root; container: FakeElement } {
   installFakeDom();
   const container = new FakeElement('div', document);
   const root = createRoot(container as unknown as Element);
   cleanupTasks.push(() => {
-    act(() => {
-      root.unmount();
-    });
+    act(() => root.unmount());
   });
-  return root;
+  return { root, container };
 }
 
 async function render(root: Root, element: ReactElement): Promise<void> {
@@ -255,6 +272,7 @@ function installFakeDom(): void {
   const previousDocument = globalThis.document;
   const previousWindow = globalThis.window;
   const previousRequestAnimationFrame = globalThis.requestAnimationFrame;
+  const previousCancelAnimationFrame = globalThis.cancelAnimationFrame;
   const previousHTMLElement = globalThis.HTMLElement;
   const previousHTMLIFrameElement = globalThis.HTMLIFrameElement;
   const previousActEnvironment = (globalThis as MemoTestGlobal).IS_REACT_ACT_ENVIRONMENT;
@@ -263,6 +281,16 @@ function installFakeDom(): void {
     document: fakeDocument,
     addEventListener: () => {},
     removeEventListener: () => {},
+    matchMedia: (media: string) => ({
+      matches: false,
+      media,
+      onchange: null,
+      addListener() {},
+      removeListener() {},
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent: () => false,
+    }),
     HTMLElement: FakeElement,
     HTMLIFrameElement: class HTMLIFrameElement {},
   } as unknown as RendererWindow;
@@ -271,15 +299,14 @@ function installFakeDom(): void {
   globalThis.window = fakeWindow;
   globalThis.HTMLElement = FakeElement as unknown as typeof HTMLElement;
   globalThis.HTMLIFrameElement = fakeWindow.HTMLIFrameElement;
-  globalThis.requestAnimationFrame = (callback) => {
-    callback(0);
-    return 0;
-  };
+  globalThis.requestAnimationFrame = () => 0;
+  globalThis.cancelAnimationFrame = () => {};
   (globalThis as MemoTestGlobal).IS_REACT_ACT_ENVIRONMENT = true;
   cleanupTasks.push(() => {
     globalThis.document = previousDocument;
     globalThis.window = previousWindow;
     globalThis.requestAnimationFrame = previousRequestAnimationFrame;
+    globalThis.cancelAnimationFrame = previousCancelAnimationFrame;
     globalThis.HTMLElement = previousHTMLElement;
     globalThis.HTMLIFrameElement = previousHTMLIFrameElement;
     (globalThis as MemoTestGlobal).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
@@ -310,16 +337,29 @@ function createFakeDocument(): Document {
 class FakeElement {
   readonly attributes = new Map<string, string>();
   readonly childNodes: Array<FakeElement | FakeText> = [];
+  readonly dataset: Record<string, string> = {};
   readonly namespaceURI = 'http://www.w3.org/1999/xhtml';
   readonly nodeName: string;
   readonly nodeType = 1;
+  readonly style = {
+    setProperty() {},
+    removeProperty() {},
+  } as unknown as CSSStyleDeclaration;
   readonly tagName: string;
   parentNode: FakeElement | null = null;
-  textContent = '';
 
   constructor(tagName: string, readonly ownerDocument: Document) {
     this.tagName = tagName.toUpperCase();
     this.nodeName = this.tagName;
+  }
+
+  get textContent(): string {
+    return this.childNodes.map((node) => node.textContent).join('');
+  }
+
+  set textContent(value: string) {
+    this.childNodes.splice(0);
+    if (value !== '') this.appendChild(new FakeText(value, this.ownerDocument));
   }
 
   addEventListener(): void {}
@@ -348,9 +388,7 @@ class FakeElement {
 
   removeChild<T extends FakeElement | FakeText>(node: T): T {
     const index = this.childNodes.indexOf(node);
-    if (index >= 0) {
-      this.childNodes.splice(index, 1);
-    }
+    if (index >= 0) this.childNodes.splice(index, 1);
     node.parentNode = null;
     return node;
   }
@@ -367,5 +405,13 @@ class FakeText {
   readonly nodeType = 3;
   parentNode: FakeElement | null = null;
 
-  constructor(readonly nodeValue: string, readonly ownerDocument: Document) {}
+  constructor(public nodeValue: string, readonly ownerDocument: Document) {}
+
+  get textContent(): string {
+    return this.nodeValue;
+  }
+
+  set textContent(value: string) {
+    this.nodeValue = value;
+  }
 }

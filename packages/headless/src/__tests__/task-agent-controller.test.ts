@@ -21,7 +21,11 @@ import {
 } from '@maka/core';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { createSessionStore } from '@maka/storage';
+import {
+  createSessionStore,
+  createSqliteAgentRunStore,
+  openRuntimeEventReadPersistence,
+} from '@maka/storage';
 import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import type { Config, Task } from '../contracts.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
@@ -640,15 +644,17 @@ class ProgressToolBackend implements AgentBackend {
     assert.ok(todoUpdate);
     assert.ok(selfCheckPlanSubmit);
     assert.ok(selfCheckSubmit);
+    const bashToolCallId = `bash-tool-call-${input.turnId}`;
+    const progressToolCallId = `progress-tool-call-${input.turnId}`;
     const toolCtx = {
       sessionId: this.sessionId,
       turnId: input.turnId,
       cwd: this.ctx.header.cwd,
-      toolCallId: 'progress-tool-call',
+      toolCallId: progressToolCallId,
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
     };
-    await bash.impl({ command: 'npm test' }, { ...toolCtx, toolCallId: 'bash-tool-call' });
+    await bash.impl({ command: 'npm test' }, { ...toolCtx, toolCallId: bashToolCallId });
     await inventorySubmit.impl(
       {
         summary: 'Inspected public files.',
@@ -715,43 +721,43 @@ class ProgressToolBackend implements AgentBackend {
     const ts = Date.now();
     yield {
       type: 'tool_start',
-      id: 'progress-bash-start',
+      id: `progress-bash-start-${input.turnId}`,
       turnId: input.turnId,
       ts,
-      toolUseId: 'bash-tool-call',
+      toolUseId: bashToolCallId,
       toolName: 'Bash',
       args: { command: 'npm test' },
     };
     yield {
       type: 'tool_result',
-      id: 'progress-bash-result',
+      id: `progress-bash-result-${input.turnId}`,
       turnId: input.turnId,
       ts,
-      toolUseId: 'bash-tool-call',
+      toolUseId: bashToolCallId,
       isError: false,
       content: { kind: 'text', text: 'tests passed' },
     };
     yield {
       type: 'tool_start',
-      id: 'progress-self-check-start',
+      id: `progress-self-check-start-${input.turnId}`,
       turnId: input.turnId,
       ts,
-      toolUseId: 'progress-tool-call',
+      toolUseId: progressToolCallId,
       toolName: 'self_check_submit',
       args: { status: 'pass' },
     };
     yield {
       type: 'tool_result',
-      id: 'progress-self-check-result',
+      id: `progress-self-check-result-${input.turnId}`,
       turnId: input.turnId,
       ts,
-      toolUseId: 'progress-tool-call',
+      toolUseId: progressToolCallId,
       isError: false,
       content: { kind: 'text', text: 'self-check accepted' },
     };
     yield {
       type: 'complete',
-      id: 'progress-complete',
+      id: `progress-complete-${input.turnId}`,
       turnId: input.turnId,
       ts,
       stopReason: 'end_turn',
@@ -1142,20 +1148,15 @@ async function readRuntimeEventLedger(
   sessionId: string,
   runId: string,
 ): Promise<RuntimeEvent[]> {
-  const runtimeEventsPath = join(
-    storageRoot,
-    'sessions',
-    sessionId,
-    'runs',
-    runId,
-    'runtime-events.jsonl',
-  );
-  const content = await readFile(runtimeEventsPath, 'utf8');
-  return content
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as RuntimeEvent);
+  const runtimePersistence = await openRuntimeEventReadPersistence({
+    workspaceRoot: storageRoot,
+  });
+  try {
+    assert.equal(runtimePersistence.kind, 'sqlite');
+    return await runtimePersistence.runtimeEventStore.readRuntimeEvents(sessionId, runId);
+  } finally {
+    runtimePersistence.close();
+  }
 }
 
 async function readAgentRunHeader(
@@ -1163,8 +1164,13 @@ async function readAgentRunHeader(
   sessionId: string,
   runId: string,
 ): Promise<AgentRunHeader> {
-  const runPath = join(storageRoot, 'sessions', sessionId, 'runs', runId, 'run.json');
-  return JSON.parse(await readFile(runPath, 'utf8')) as AgentRunHeader;
+  const store = createSqliteAgentRunStore(storageRoot);
+  try {
+    await store.ready?.();
+    return await store.readRun(sessionId, runId);
+  } finally {
+    store.close?.();
+  }
 }
 
 describe('runTaskOnce', () => {
@@ -2738,17 +2744,13 @@ describe('runTaskOnce', () => {
         feedback.details.artifactRefs,
       );
 
-      const runtimeEventsPath = join(
+      const runtimeEvents = await readRuntimeEventLedger(
         storageRoot,
-        'sessions',
         latestInvocation(result).sessionId,
-        'runs',
         latestInvocation(result).runId,
-        'runtime-events.jsonl',
       );
-      const runtimeEvents = await readFile(runtimeEventsPath, 'utf8');
-      assert.match(runtimeEvents, /report-usage/);
-      assert.match(runtimeEvents, /report-artifact/);
+      assert.ok(runtimeEvents.some((event) => event.id === 'report-usage'));
+      assert.ok(runtimeEvents.some((event) => event.id === 'report-artifact'));
     });
   });
 

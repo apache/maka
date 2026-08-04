@@ -30,6 +30,7 @@ export function longTranscriptSession(now: number): SessionHeader {
     name: '超长会话滚动几何',
     connection: 'zai-live',
     model: 'glm-5.1',
+    orchestrationMode: 'graph',
     now,
     lastMessageAt: now - 5 * 60_000,
   });

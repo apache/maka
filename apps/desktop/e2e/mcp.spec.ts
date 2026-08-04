@@ -6,22 +6,37 @@ const fixtureServer = path.resolve(
   '../../packages/mcp/dist/__fixtures__/stdio-server.js',
 );
 
-test('MCP module completes stdio add, discovery, disable, JSON import, and delete', async ({ window: page }) => {
-  const screenshotPath = process.env.MAKA_MCP_E2E_SCREENSHOT;
+test('module navigation removes the hidden chat surface from layout and hit testing', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  await page.getByRole('navigation', { name: '对话列表' }).getByRole('button', { name: '扩展', exact: true }).click();
+  await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
+
+  const hiddenChat = page.locator('.maka-chat-layout[hidden]');
+  await expect(hiddenChat).toHaveCount(1);
+  await expect(hiddenChat).toHaveCSS('display', 'none');
+  expect(await hiddenChat.boundingBox()).toBeNull();
+  expect(
+    await page.evaluate(() => {
+      const target = document.elementFromPoint(window.innerWidth * 0.75, window.innerHeight - 100);
+      return Boolean(target?.closest('.maka-chat-layout'));
+    }),
+  ).toBe(false);
+});
+
+test('MCP module completes stdio add, discovery, disable, JSON import, and delete', async ({ window: page }) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   const extensions = sidebar.getByRole('button', { name: '扩展', exact: true });
   await expect(sidebar.getByRole('button', { name: '技能', exact: true })).toHaveCount(0);
   await expect(sidebar.getByRole('button', { name: 'MCP', exact: true })).toHaveCount(0);
   await extensions.click();
   await expect(extensions).toHaveAttribute('aria-current', 'page');
-  await expect(sidebar.getByRole('button', { name: '会话分组方式' })).toBeVisible();
+  await expect(sidebar.getByRole('radiogroup', { name: '会话分组方式' })).toBeVisible();
   await expect(sidebar.locator('.maka-session-list')).toBeVisible();
 
-  const extensionSelector = page.locator('.maka-module-hub-selector-trigger');
+  const extensionSelector = page.locator('.maka-module-hub-selector');
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：技能');
-  await extensionSelector.click();
-  await page.getByRole('menuitemradio', { name: 'MCP' }).click();
+  await extensionSelector.getByRole('button', { name: 'MCP' }).click();
   const mcp = page.getByRole('main', { name: '扩展' });
   await expect(mcp.getByRole('heading', { name: '扩展' })).toBeVisible();
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：MCP');
@@ -32,23 +47,6 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await extensions.click();
   await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：MCP');
-  if (screenshotPath) {
-    await page.screenshot({ path: variantPath(screenshotPath, 'market') });
-    await page.getByRole('button', { name: '设置', exact: true }).click();
-    const settings = page.getByRole('main', { name: '设置内容' });
-    await settings.getByRole('button', { name: '外观', exact: true }).click();
-    await settings.getByRole('radio', { name: '深色 始终使用深色界面。' }).click();
-    await settings.getByRole('button', { name: '返回应用' }).click();
-    await page.screenshot({ path: variantPath(screenshotPath, 'dark-market') });
-    await page.getByRole('button', { name: '设置', exact: true }).click();
-    await settings.getByRole('button', { name: '外观', exact: true }).click();
-    await settings.getByRole('radio', { name: '浅色 始终使用浅色界面。' }).click();
-    await settings.getByRole('button', { name: '返回应用' }).click();
-    const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
-    await page.setViewportSize({ width: 760, height: 700 });
-    await page.screenshot({ path: variantPath(screenshotPath, 'narrow-market') });
-    await page.setViewportSize(viewport);
-  }
 
   const dingtalkCard = mcp.getByRole('article').filter({ hasText: '钉钉' });
   const installDingtalk = dingtalkCard.getByRole('button', { name: '安装 钉钉' });
@@ -57,10 +55,8 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await expect(cancelDingtalk).toBeVisible();
   await page.mouse.move(0, 0);
   await expect(cancelDingtalk.locator('.maka-mcp-install-spinner')).toHaveCSS('opacity', '1');
-  if (screenshotPath) await page.screenshot({ path: variantPath(screenshotPath, 'installing') });
   await cancelDingtalk.hover();
   await expect(cancelDingtalk.locator('.maka-mcp-install-cancel')).toHaveCSS('opacity', '1');
-  if (screenshotPath) await page.screenshot({ path: variantPath(screenshotPath, 'install-cancel-hover') });
   await cancelDingtalk.click();
   await expect(dingtalkCard.getByRole('button', { name: '安装 钉钉' })).toBeVisible();
   await expect.poll(async () => {
@@ -70,13 +66,25 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
 
   await mcp.getByRole('button', { name: '添加 MCP' }).click();
   const editor = page.getByRole('dialog', { name: '添加 MCP' });
-  if (screenshotPath) await page.screenshot({ path: variantPath(screenshotPath, 'manual') });
-  await editor.getByLabel('Server ID').fill('e2e-fixture');
-  await editor.getByLabel('Command').fill(process.execPath);
-  await editor.getByLabel('Arguments').fill(fixtureServer);
+  await expect(editor.getByLabel('服务器 ID')).toBeFocused();
+  await expect(editor.locator('label').filter({ hasText: '服务器 ID' })).toBeVisible();
+  await expect(editor.locator('label').filter({ hasText: '命令' })).toBeVisible();
+  await expect(editor.locator('label').filter({ hasText: '参数' })).toBeVisible();
+  await editor.getByRole('button', { name: '保存并连接' }).click();
+  await expect(editor.getByLabel('服务器 ID')).toHaveAttribute('aria-invalid', 'true');
+  await expect(editor.getByLabel('命令')).toHaveAttribute('aria-invalid', 'true');
+  await editor.getByLabel('服务器 ID').fill('e2e-fixture');
+  await expect(editor.getByLabel('命令')).toHaveAttribute('aria-invalid', 'true');
+  await editor.getByRole('radio', { name: '远程 URL' }).click();
+  await editor.getByText('高级设置', { exact: true }).click();
+  await expect(editor.locator('label').filter({ hasText: '传输协议' })).toBeVisible();
+  await editor.getByRole('radio', { name: '本地 stdio' }).click();
+  await editor.getByLabel('命令').fill(process.execPath);
+  await editor.getByLabel('参数').fill(fixtureServer);
   await editor.getByRole('button', { name: '保存并连接' }).click();
 
   await expect(mcp.getByText('e2e-fixture', { exact: true })).toBeVisible();
+  await expect(mcp.getByText(/^本地 stdio ·/)).toBeVisible();
   await expect(mcp.getByText('4 个工具', { exact: true }).first()).toBeVisible();
   await mcp.getByText('4 个工具', { exact: true }).last().click();
   await expect(mcp.getByText('echo', { exact: true })).toBeVisible();
@@ -89,10 +97,17 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
     args: [fixtureServer],
   });
 
-  if (screenshotPath) await page.screenshot({ path: screenshotPath });
+  const edit = mcp.getByRole('button', { name: '编辑 e2e-fixture' });
+  await edit.click();
+  const editDialog = page.getByRole('dialog', { name: '编辑 e2e-fixture' });
+  await expect(editDialog.getByLabel('服务器 ID')).toBeDisabled();
+  await expect(editDialog.getByLabel('命令')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(editDialog).toBeHidden();
+  await expect(edit).toBeFocused();
 
   await mcp.getByLabel('e2e-fixture 启用状态').click();
-  await expect(mcp.getByText('已停用', { exact: true })).toBeVisible();
+  await expect(mcp.getByText(/已停用 · 本地 stdio/)).toBeVisible();
   await expect.poll(async () => {
     const next = await page.evaluate(() => window.maka.mcp.getConfig());
     return next.mcpServers['e2e-fixture']?.enabled;
@@ -108,7 +123,6 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
 
   await mcp.getByRole('button', { name: 'JSON 导入' }).click();
   const jsonEditor = page.getByRole('dialog', { name: '通过 JSON 导入' });
-  if (screenshotPath) await page.screenshot({ path: variantPath(screenshotPath, 'json') });
   await jsonEditor.getByLabel('JSON 配置').fill(JSON.stringify({
     mcpServers: {
       'remote-disabled': { url: 'https://example.com/mcp', enabled: false },
@@ -121,8 +135,3 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
     return next.mcpServers['remote-disabled'];
   }).toMatchObject({ url: 'https://example.com/mcp', enabled: false });
 });
-
-function variantPath(source: string, name: string): string {
-  const parsed = path.parse(source);
-  return path.join(parsed.dir, `${parsed.name}-${name}${parsed.ext || '.png'}`);
-}

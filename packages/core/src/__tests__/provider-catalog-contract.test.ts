@@ -17,7 +17,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { validateConnectionBaseUrl } from '../llm-connections.js';
+import {
+  deriveConnectionSlug,
+  validateConnectionBaseUrl,
+  validateSlug,
+} from '../llm-connections.js';
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
@@ -39,6 +43,42 @@ const CATALOG_TAB_GROUPS: ReadonlySet<ProviderCatalogGroup> = new Set([
   'aggregators',
   'local',
 ]);
+
+describe('provider connection slug derivation contract', () => {
+  it('derives a valid canonical slug for every catalog provider', () => {
+    for (const type of CATALOG_PROVIDER_TYPES) {
+      const slug = deriveConnectionSlug(type);
+      assert.equal(
+        validateSlug(slug),
+        null,
+        `deriveConnectionSlug('${type}') derived invalid slug '${slug}'`,
+      );
+    }
+  });
+
+  it('keeps collision-suffixed slugs valid', () => {
+    for (const type of CATALOG_PROVIDER_TYPES) {
+      const first = deriveConnectionSlug(type);
+      const second = deriveConnectionSlug(type, [first]);
+      assert.equal(second, `${first}-2`);
+      assert.equal(
+        validateSlug(second),
+        null,
+        `deriveConnectionSlug('${type}', ['${first}']) derived invalid slug '${second}'`,
+      );
+    }
+  });
+
+  it('continues through dense collisions until it finds an unused slug', () => {
+    const base = deriveConnectionSlug('openai');
+    const existing = [base, ...Array.from({ length: 98 }, (_, index) => `${base}-${index + 2}`)];
+    const derived = deriveConnectionSlug('openai', existing);
+
+    assert.equal(derived, 'openai-100');
+    assert.ok(!existing.includes(derived));
+    assert.equal(validateSlug(derived), null);
+  });
+});
 
 describe('provider OAuth wiring contract', () => {
   it('derives runnable account providers from the registry adapter boundary', () => {

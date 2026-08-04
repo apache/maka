@@ -439,6 +439,83 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('refreshes only the matching OAuth credential generation without invalidating verification', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('oauth-refresh', 'github-copilot', 'OAuth refresh'),
+      );
+      const locator = connectionCredential(connection, 'oauth_token');
+      const originalSecret = JSON.stringify({
+        access_token: 'github-access-v1',
+        refresh_token: 'github-refresh-v1',
+        expires_at: 1,
+      });
+      const configured = await stores.credentialVault.set({
+        locator,
+        expected: null,
+        secret: originalSecret,
+      });
+      assert.equal(configured.kind, 'committed');
+      if (configured.kind !== 'committed') return;
+      await verifyConnection(stores, connection.connectionId, '2026-08-01T00:00:00.000Z');
+      const status = await getCredentialStatus(stores.credentialVault, locator);
+      const initialRevision = credentialBasis(status).revision;
+      const replacementSecret = JSON.stringify({
+        access_token: 'github-access-v2',
+        refresh_token: 'github-refresh-v2',
+        expires_at: Number.MAX_SAFE_INTEGER,
+      });
+
+      const refreshed = await stores.operations.compareAndSetOAuthCredential({
+        locator: { ...locator, kind: 'oauth_token' },
+        expected: credentialExpectation(status),
+        secret: replacementSecret,
+      });
+
+      assert.equal(refreshed.kind, 'committed');
+      if (refreshed.kind !== 'committed') return;
+      assert.equal(refreshed.credentialId, credentialBasis(status).credentialId);
+      assert.equal(refreshed.revision, initialRevision + 1);
+      const refreshedStatus = await getCredentialStatus(stores.credentialVault, locator);
+      assert.equal(credentialBasis(refreshedStatus).revision, initialRevision + 1);
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+      const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind === 'ready') {
+        assert.equal(resolved.secretMaterial.connection?.secret, replacementSecret);
+      }
+
+      const stale = await stores.operations.compareAndSetOAuthCredential({
+        locator: { ...locator, kind: 'oauth_token' },
+        expected: credentialExpectation(status),
+        secret: 'stale-refresh-must-not-commit',
+      });
+      assert.equal(stale.kind, 'superseded');
+      const stillResolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      assert.equal(stillResolved.kind, 'ready');
+      if (stillResolved.kind === 'ready') {
+        assert.equal(stillResolved.secretMaterial.connection?.secret, replacementSecret);
+      }
+
+      const deleted = await stores.credentialVault.delete({
+        expected: credentialBasis(refreshedStatus),
+      });
+      assert.equal(deleted.kind, 'committed');
+      const resurrection = await stores.operations.compareAndSetOAuthCredential({
+        locator: { ...locator, kind: 'oauth_token' },
+        expected: credentialExpectation(refreshedStatus),
+        secret: 'refresh-must-not-recreate-a-deleted-credential',
+      });
+      assert.equal(resurrection.kind, 'superseded');
+      assert.equal((await getCredentialStatus(stores.credentialVault, locator)).configured, false);
+    });
+  });
+
   test('conditionally commits discovery and test facts from the latest admitted state with one-shot tickets', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
@@ -558,6 +635,54 @@ describe('runtime policy stores', () => {
       const expected = { connectionId: connection.connectionId, modelId: 'llama3.3' };
       assert.deepEqual(completed.snapshot.defaultTarget, expected);
       assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, expected);
+    });
+  });
+
+  test('keeps an emptied model selection across the next canonical discovery', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-empty-selection', 'ollama', 'Empty selection'),
+      );
+
+      const first = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(first.kind, 'ready');
+      if (first.kind !== 'ready') return;
+      const seeded = await stores.operations.completeModelFetch(first.ticket, {
+        models: [{ id: 'llama3.3' }, { id: 'qwen3' }],
+        source: 'fetched',
+        fetchedAt: 1,
+      });
+      assert.equal(seeded.kind, 'committed');
+
+      const current = (await stores.connectionCatalog.getSnapshot()).connections[0]!;
+      const emptied = await stores.connectionCatalog.update({
+        expected: connectionBasis(current),
+        changes: {
+          name: current.name,
+          baseUrl: current.baseUrl,
+          enabled: true,
+          enabledModelIds: [],
+        },
+      });
+      assert.equal(emptied.kind, 'committed');
+
+      // Every catalog entry carries a `models` array from birth, so reading
+      // "has an inventory" as "the field exists" made this connection look like
+      // it had never fetched — and each refresh re-seeded `liveIds[0]` over the
+      // selection the user had just emptied.
+      const second = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(second.kind, 'ready');
+      if (second.kind !== 'ready') return;
+      const refetched = await stores.operations.completeModelFetch(second.ticket, {
+        models: [{ id: 'llama3.3' }, { id: 'gemma3' }],
+        source: 'fetched',
+        fetchedAt: 2,
+      });
+      assert.equal(refetched.kind, 'committed');
+      if (refetched.kind !== 'committed') return;
+      assert.deepEqual(refetched.snapshot.connections[0]?.enabledModelIds, []);
     });
   });
 
@@ -1626,6 +1751,95 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('resolves one atomic WebSearch policy, credential, and proxy execution snapshot', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      assert.deepEqual(await stores.operations.resolveWebSearchExecution(), {
+        kind: 'disabled',
+        provider: 'tavily',
+      });
+
+      const enabled = await stores.runtimePolicy.mutate({
+        expectedRevision: 0,
+        operation: {
+          kind: 'set_web_search',
+          value: { enabled: true, defaultProvider: 'tavily' },
+        },
+      });
+      assert.equal(enabled.kind, 'committed');
+      const missingSearchCredential = await stores.operations.resolveWebSearchExecution();
+      assert.equal(missingSearchCredential.kind, 'credential_not_configured');
+      if (missingSearchCredential.kind !== 'credential_not_configured') return;
+      assert.deepEqual(missingSearchCredential.status.locator, {
+        scope: 'web_search',
+        provider: 'tavily',
+        kind: 'api_key',
+      });
+
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: missingSearchCredential.status.locator,
+            expected: null,
+            secret: 'tavily-execution-secret',
+          })
+        ).kind,
+        'committed',
+      );
+      const direct = await stores.operations.resolveWebSearchExecution();
+      assert.equal(direct.kind, 'ready');
+      if (direct.kind !== 'ready') return;
+      assert.equal(direct.secretMaterial.webSearch?.secret, 'tavily-execution-secret');
+      assert.equal(direct.secretMaterial.networkProxy, undefined);
+      assert.equal(direct.networkProxy.enabled, false);
+
+      const proxied = await stores.runtimePolicy.mutate({
+        expectedRevision: 1,
+        operation: {
+          kind: 'set_network_proxy',
+          value: {
+            ...direct.networkProxy,
+            enabled: true,
+            host: 'proxy.example',
+            port: 8443,
+            authEnabled: true,
+            username: 'proxy-user',
+          },
+        },
+      });
+      assert.equal(proxied.kind, 'committed');
+      const missingProxyCredential = await stores.operations.resolveWebSearchExecution();
+      assert.equal(missingProxyCredential.kind, 'credential_not_configured');
+      if (missingProxyCredential.kind !== 'credential_not_configured') return;
+      assert.deepEqual(missingProxyCredential.status.locator, proxyCredential());
+
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: proxyCredential(),
+            expected: null,
+            secret: 'proxy-execution-secret',
+          })
+        ).kind,
+        'committed',
+      );
+      const ready = await stores.operations.resolveWebSearchExecution();
+      assert.equal(ready.kind, 'ready');
+      if (ready.kind !== 'ready') return;
+      assert.equal(ready.secretMaterial.webSearch?.secret, 'tavily-execution-secret');
+      assert.equal(ready.secretMaterial.networkProxy?.secret, 'proxy-execution-secret');
+      assert.equal(ready.networkProxy.host, 'proxy.example');
+
+      const privatePolicy = await stores.runtimePolicy.mutate({
+        expectedRevision: 2,
+        operation: { kind: 'set_privacy', value: { incognitoActive: true } },
+      });
+      assert.equal(privatePolicy.kind, 'committed');
+      assert.deepEqual(await stores.operations.resolveWebSearchExecution(), {
+        kind: 'privacy_mode',
+      });
+    });
+  });
+
   test('removes credentials only for a matching connection revision and converges on partial retries', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const original = await createConnection(
@@ -1978,6 +2192,74 @@ describe('runtime policy stores', () => {
       } finally {
         await readerHandle.close();
       }
+    });
+  });
+
+  test('interactive OAuth login commits only against its frozen connection and credential basis', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const claude = await createConnection(
+        stores,
+        0,
+        connectionDraft('claude-login', 'claude-subscription', 'Claude login'),
+      );
+      const first = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
+      const second = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
+      assert.equal(first.kind, 'ready');
+      assert.equal(second.kind, 'ready');
+      if (first.kind !== 'ready' || second.kind !== 'ready') return;
+      assert.equal(first.secretMaterial.networkProxy, undefined);
+      const committed = await stores.operations.completeInteractiveOAuthLogin(
+        second.ticket,
+        'oauth-secret-v1',
+      );
+      assert.equal(committed.kind, 'committed');
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(first.ticket, 'stale-secret'),
+        { kind: 'superseded', changed: ['credential'] },
+      );
+      const status = await getCredentialStatus(
+        stores.credentialVault,
+        connectionCredential(claude, 'oauth_token'),
+      );
+      assert.equal(status.configured, true);
+      await assert.rejects(
+        () => stores.operations.completeInteractiveOAuthLogin(second.ticket, 'ticket-replay'),
+        isStoreError('invalid_credential_input'),
+      );
+
+      const beforeUpdate = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
+      assert.equal(beforeUpdate.kind, 'ready');
+      if (beforeUpdate.kind !== 'ready') return;
+      const current = (await stores.connectionCatalog.getSnapshot()).connections.find(
+        (connection) => connection.connectionId === claude.connectionId,
+      );
+      assert.ok(current);
+      const updated = await stores.connectionCatalog.update({
+        expected: connectionBasis(current),
+        changes: {
+          name: 'Claude renamed',
+          enabled: current.enabled,
+          enabledModelIds: current.enabledModelIds,
+        },
+      });
+      assert.equal(updated.kind, 'committed');
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(
+          beforeUpdate.ticket,
+          'connection-stale-secret',
+        ),
+        { kind: 'superseded', changed: ['connection'] },
+      );
+
+      const copilot = await createConnection(
+        stores,
+        2,
+        connectionDraft('copilot-import', 'github-copilot', 'Copilot import'),
+      );
+      assert.deepEqual(await stores.operations.beginInteractiveOAuthLogin(copilot.connectionId), {
+        kind: 'provider_action_unavailable',
+        availability: 'hidden',
+      });
     });
   });
 

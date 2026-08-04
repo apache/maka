@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
 import type {
   ConnectionEvent,
   PlanReminder,
+  SessionChangedEvent,
   SessionEvent,
   SessionEventStreamSnapshot,
   SessionSummary,
@@ -10,7 +11,12 @@ import type {
   ThemePreference,
   UiLocale,
 } from '@maka/core';
-import { ShellRunUpdateBuffer, generalizedErrorMessageChinese, type ShellRunUpdate } from '@maka/core';
+import {
+  ShellRunUpdateBuffer,
+  generalizedErrorMessageChinese,
+  sessionExpectsEventStream,
+  type ShellRunUpdate,
+} from '@maka/core';
 import type { LiveTurnProjection, NavSelection } from '@maka/ui';
 import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -177,6 +183,8 @@ export function useAppShellBootstrapSubscriptions(options: {
   applyE2eFixture: () => Promise<void>;
   bootstrapSessions: () => Promise<void>;
   clearPendingTurnActionsForSession: (sessionId: string) => void;
+  /** Releases a send's pending claim once the authority names that turn. */
+  confirmLiveTurn: (sessionId: string, turnId: string) => void;
   clearSessionRendererState: (sessionId: string) => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
@@ -218,7 +226,13 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.handleConnectionEvent(event);
   });
   const handleSessionChange = useEffectEvent(
-    (event: { reason: string; sessionId?: string; ts: number; modelId?: string }) => {
+    (event: SessionChangedEvent) => {
+      // The authority has spoken about a specific turn — whether it started,
+      // failed to start, or ended. That confirms the send's arm, and the
+      // session's status becomes readable as an answer about it again.
+      if (event.sessionId && event.turnId) {
+        options.confirmLiveTurn(event.sessionId, event.turnId);
+      }
       void options.refreshSessions();
       if (event.reason === 'created' || event.reason === 'migrated') {
         void options.refreshProjects();
@@ -556,6 +570,13 @@ export function useSessionEventHealthPolling(options: {
         void refreshMessages(activeId);
       }
     };
+    // #1979: a stream nobody expects has nothing to observe — `evaluate` can only
+    // derive `closed` and can never ask for a refresh, and no one renders either
+    // field. So an idle session gets no probe at all, not merely a cheaper one.
+    // Both inputs to `expected` are deps of this effect, so a session that starts
+    // running re-arms on its own; `markSessionEventStreamClosed` still records the
+    // closed stream when the subscription itself goes away.
+    if (!sessionExpectsEventStream(activeSession?.status, hasLiveActivity)) return;
     evaluate();
     const interval = window.setInterval(evaluate, 5_000);
     const onVisibilityChange = () => {
@@ -581,9 +602,15 @@ export function useSessionEventHealthPolling(options: {
 // waiting_for_user. Because it keys off the status landing in `sessions`, it closes
 // the hole regardless of which path or timing delivers that status.
 //
+// Except while a send is still awaiting its answer: an arm carries `unconfirmed`
+// until a `sessions:changed` names its turn back, and the pre-send status is
+// indistinguishable from the post-turn one. Reading a list refreshed in that
+// window as a settle would drop the arm the send just created
+// (settled-session-transients.ts).
+//
 // An active terminal projection is left to its text handoff callback, so this
 // reconcile cannot cut in front of the committed message landing. Background
-// terminal projections have no mounted smoother and are safe to clear.
+// terminal projections have no mounted streaming renderer and are safe to clear.
 // It drops ONLY the turn transient (`clearTurnTransientState`), never the
 // independently-scoped message-load-error / retry / pending-toggle / permission /
 // health state — those survive a mere settle. The clear is idempotent (referentially

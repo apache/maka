@@ -73,6 +73,11 @@ describe('interactive artifact store authority', () => {
         reason: 'not_found',
       });
       await assert.rejects(() => stat(join(root, ARTIFACT_WRITER_LOCK_FILE)), { code: 'ENOENT' });
+
+      first.close();
+      const reopened = await openInteractiveArtifactStoreForWrite(owner.lease);
+      assert.notStrictEqual(reopened, first);
+      assert.equal((await reopened.getInSession('session-1', 'deleted')).record?.status, 'deleted');
     });
   });
 

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import {
+  AgentGraphClientTerminalCursorError,
   canReadPath,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
@@ -17,12 +18,15 @@ import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-
 import {
   createSqliteSessionMetadataStore,
   SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
   type SqliteSessionMetadataStoreFailpoint,
 } from '../sqlite-session-metadata-store.js';
 import {
   createSqliteRuntimeStore,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from '../sqlite-runtime-store.js';
+import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
   test('round-trips every SessionHeader field and reopens the same schema', async () => {
@@ -31,7 +35,7 @@ describe('SqliteSessionMetadataStore', () => {
     try {
       const store = createSqliteSessionMetadataStore(path, { now: () => 100 });
       const header = fullHeader();
-      assert.equal(store.schemaVersion(), 14);
+      assert.equal(store.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.equal(store.journalMode(), 'wal');
       assert.deepEqual(await store.create(header), {
         header,
@@ -42,7 +46,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const reopened = createSqliteSessionMetadataStore(path, { now: () => 200 });
       try {
-        assert.equal(reopened.schemaVersion(), 14);
+        assert.equal(reopened.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.deepEqual(await reopened.read(header.id), {
           header,
           metadataVersion: 1,
@@ -53,6 +57,18 @@ describe('SqliteSessionMetadataStore', () => {
       }
       const schema = new DatabaseSync(path);
       try {
+        const graphTables = schema
+          .prepare(`
+            SELECT name
+            FROM sqlite_schema
+            WHERE type = 'table' AND name GLOB 'agent_graph_*'
+            ORDER BY name
+          `)
+          .all() as unknown as Array<{ readonly name: string }>;
+        assert.deepEqual(
+          graphTables.map(({ name }) => name),
+          [...SQLITE_AGENT_GRAPH_CONTROL_TABLES].sort(),
+        );
         assert.deepEqual(
           schema.prepare('PRAGMA foreign_key_list(agent_graph_client_operator_projections)').all(),
           [],
@@ -69,6 +85,110 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('atomically retires a revision family with CAS and tombstone retries', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: () => 100 });
+    const root = fullHeader({
+      id: 'family-root',
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: undefined,
+      revisionParentSessionId: undefined,
+      revisionOfTurnId: undefined,
+      revisionIndex: undefined,
+      revisionState: undefined,
+      isArchived: false,
+      archivedAt: undefined,
+      status: 'active',
+      blockedReason: undefined,
+    });
+    const revision = fullHeader({
+      id: 'family-revision',
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: root.id,
+      revisionParentSessionId: root.id,
+      revisionOfTurnId: 'turn-1',
+      revisionIndex: 2,
+      revisionState: 'committed',
+      isArchived: false,
+      archivedAt: undefined,
+      status: 'active',
+      blockedReason: undefined,
+    });
+    try {
+      await store.create(root);
+      await store.create(revision);
+
+      await assert.rejects(
+        store.setLifecycleVersioned(
+          [
+            { sessionId: root.id, expectedVersion: 1 },
+            { sessionId: revision.id, expectedVersion: 2 },
+          ],
+          'archived',
+        ),
+        SessionMetadataVersionConflictError,
+      );
+      for (const sessionId of [root.id, revision.id]) {
+        const current = await store.read(sessionId);
+        assert.equal(current.metadataVersion, 1);
+        assert.equal(current.header.isArchived, false);
+      }
+
+      const archived = await store.setLifecycleVersioned(
+        [
+          { sessionId: root.id, expectedVersion: 1 },
+          { sessionId: revision.id, expectedVersion: 1 },
+        ],
+        'archived',
+      );
+      assert.deepEqual(
+        archived.map((record) => ({
+          id: record.header.id,
+          revision: record.metadataVersion,
+          status: record.header.status,
+        })),
+        [
+          { id: revision.id, revision: 2, status: 'archived' },
+          { id: root.id, revision: 2, status: 'archived' },
+        ],
+      );
+
+      await assert.rejects(
+        store.removeVersioned([
+          { sessionId: root.id, expectedVersion: 2 },
+          { sessionId: revision.id, expectedVersion: 3 },
+        ]),
+        SessionMetadataVersionConflictError,
+      );
+      assert.equal((await store.probeRemoval(root.id)).kind, 'present');
+      assert.equal((await store.probeRemoval(revision.id)).kind, 'present');
+
+      const identities = [
+        { sessionId: root.id, expectedVersion: 2 },
+        { sessionId: revision.id, expectedVersion: 2 },
+      ];
+      assert.deepEqual(await store.removeVersioned(identities), [revision.id, root.id]);
+      assert.deepEqual(await store.probeRemoval(root.id), { kind: 'removed' });
+      assert.deepEqual(await store.probeRemoval(revision.id), { kind: 'removed' });
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(root.id), [
+        revision.id,
+        root.id,
+      ]);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(revision.id), [
+        revision.id,
+        root.id,
+      ]);
+      await store.completeSessionRetirementCleanup(revision.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(root.id), [root.id]);
+      await store.completeSessionRetirementCleanup(root.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(), []);
+      assert.deepEqual(await store.removeVersioned(identities), [revision.id, root.id]);
+    } finally {
+      store.close();
+    }
+  });
+
   test('coexists with the RuntimeEvent schema in one workspace database', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-runtime-database-'));
     const path = join(root, 'runtime.sqlite');
@@ -76,7 +196,7 @@ describe('SqliteSessionMetadataStore', () => {
     const metadata = createSqliteSessionMetadataStore(path);
     try {
       assert.equal(runtime.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
-      assert.equal(metadata.schemaVersion(), 14);
+      assert.equal(metadata.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       await metadata.create(fullHeader());
       await runtime.appendRuntimeEvent('session-1', 'run-1', {
         id: 'event-1',
@@ -111,6 +231,10 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v12 = new DatabaseSync(path);
       v12.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
+        DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
         UPDATE session_metadata_schema
         SET version = 12
@@ -883,6 +1007,10 @@ describe('SqliteSessionMetadataStore', () => {
       // Rewind to the pre-provenance shape a shipped database would have.
       const v13 = new DatabaseSync(path);
       v13.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
+        DROP TABLE session_create_claims;
         ALTER TABLE sandbox_boundary_log DROP COLUMN turn_id;
         ALTER TABLE sandbox_boundary_log DROP COLUMN run_id;
         DROP INDEX sandbox_boundary_log_settled_closures;
@@ -1007,6 +1135,19 @@ describe('SqliteSessionMetadataStore', () => {
         metadata_version INTEGER NOT NULL,
         committed_at INTEGER NOT NULL
       );
+      CREATE TABLE session_metadata_labels (
+        session_id TEXT NOT NULL,
+        label_index INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        PRIMARY KEY(session_id, label_index),
+        FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+      );
+      CREATE INDEX session_metadata_labels_by_label
+        ON session_metadata_labels(label, session_id);
+      CREATE TABLE session_metadata_tombstones (
+        session_id TEXT PRIMARY KEY,
+        deleted_at INTEGER NOT NULL
+      );
     `);
     db.prepare(`
       INSERT INTO session_metadata(
@@ -1040,7 +1181,7 @@ describe('SqliteSessionMetadataStore', () => {
 
     const store = createSqliteSessionMetadataStore(path);
     try {
-      assert.equal(store.schemaVersion(), 14);
+      assert.equal(store.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.deepEqual(
         (
           await store.list({
@@ -1373,6 +1514,10 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v4 = new DatabaseSync(path);
       v4.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
+        DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
         DROP TABLE agent_graph_supervisor_wake_attempts;
         DROP TABLE agent_graph_supervisor_wakes;
@@ -1403,7 +1548,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const migrated = createSqliteSessionMetadataStore(path);
       try {
-        assert.equal(migrated.schemaVersion(), 14);
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.equal(await migrated.remove(child.id), true);
         await assert.rejects(
           () => migrated.createSubagent({ ...child, id: 'retry-after-migration' }),
@@ -1446,6 +1591,207 @@ describe('SqliteSessionMetadataStore', () => {
         SessionMetadataConflictError,
       );
       assert.equal((await store.read('session-1')).header.name, 'Renamed');
+    } finally {
+      store.close();
+    }
+  });
+
+  test('keeps stable create claims across exact retries, removal, and reopen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-stable-session-create-'));
+    const path = join(root, 'sessions.sqlite');
+    const requestFingerprint = `sha256:${'a'.repeat(64)}`;
+    try {
+      const store = createSqliteSessionMetadataStore(path, { now: nextNow(10) });
+      const header = fullHeader({ id: 'stable-session' });
+      try {
+        const created = await store.createStableSession(header, requestFingerprint);
+        assert.equal(created.kind, 'created');
+        assert.equal(created.record.metadataVersion, 1);
+
+        const retry = await store.createStableSession(
+          fullHeader({ id: 'stable-session', name: 'Changed default' }),
+          requestFingerprint,
+        );
+        assert.equal(retry.kind, 'existing');
+        assert.equal(retry.record.header.name, 'Session');
+        assert.deepEqual(
+          await store.probeStableSessionCreate('stable-session', `sha256:${'b'.repeat(64)}`),
+          { kind: 'conflict', reason: 'identity_mismatch' },
+        );
+        assert.equal(await store.remove('stable-session'), true);
+      } finally {
+        store.close();
+      }
+
+      const reopened = createSqliteSessionMetadataStore(path);
+      try {
+        assert.deepEqual(
+          await reopened.probeStableSessionCreate('stable-session', requestFingerprint),
+          { kind: 'conflict', reason: 'removed' },
+        );
+        assert.deepEqual(
+          await reopened.createStableSession(
+            fullHeader({ id: 'stable-session' }),
+            requestFingerprint,
+          ),
+          { kind: 'conflict', reason: 'removed' },
+        );
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reserves stable create identity before metadata commit and across reopen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-stable-session-create-claim-'));
+    const path = join(root, 'sessions.sqlite');
+    const requestFingerprint = `sha256:${'c'.repeat(64)}`;
+    try {
+      const store = createSqliteSessionMetadataStore(path, { now: () => 10 });
+      try {
+        assert.deepEqual(
+          await store.claimStableSessionCreate('stable-session', requestFingerprint),
+          { kind: 'absent' },
+        );
+      } finally {
+        store.close();
+      }
+
+      const reopened = createSqliteSessionMetadataStore(path, { now: () => 20 });
+      try {
+        assert.deepEqual(
+          await reopened.probeStableSessionCreate('stable-session', requestFingerprint),
+          { kind: 'absent' },
+        );
+        assert.deepEqual(
+          await reopened.probeStableSessionCreate('stable-session', `sha256:${'d'.repeat(64)}`),
+          { kind: 'conflict', reason: 'identity_mismatch' },
+        );
+        const created = await reopened.createStableSession(
+          fullHeader({ id: 'stable-session' }),
+          requestFingerprint,
+        );
+        assert.equal(created.kind, 'created');
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('commits configuration and sandbox boundary as one compare-and-set transaction', async () => {
+    let armed = false;
+    const store = createSqliteSessionMetadataStore(':memory:', {
+      now: nextNow(20),
+      failpoint: (point) => {
+        if (armed && point === 'after_sandbox_boundary_write') {
+          throw new Error('boundary failpoint');
+        }
+      },
+    });
+    const configuration = {
+      expectedVersion: 1,
+      configuration: {
+        backend: 'ai-sdk' as const,
+        llmConnectionSlug: 'openrouter',
+        connectionLocked: true,
+        model: 'openrouter/free',
+        thinkingLevel: undefined,
+        permissionMode: 'bypass' as const,
+        collaborationMode: 'plan' as const,
+        orchestrationMode: 'graph' as const,
+        labels: ['configured'],
+      },
+      lifecycle: { kind: 'preserve' as const },
+    };
+    try {
+      await store.create(
+        fullHeader({
+          id: 'configured-session',
+          status: 'active',
+          blockedReason: undefined,
+          parentSessionId: undefined,
+          permissionMode: 'ask',
+        }),
+      );
+
+      armed = true;
+      await assert.rejects(
+        store.updateSessionConfiguration('configured-session', configuration),
+        /boundary failpoint/,
+      );
+      armed = false;
+      assert.equal((await store.read('configured-session')).header.permissionMode, 'ask');
+      assert.deepEqual(await store.readExecutionBoundary('configured-session'), {
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      });
+
+      const updated = await store.updateSessionConfiguration('configured-session', configuration);
+      assert.equal(updated.metadataVersion, 2);
+      assert.equal(updated.header.model, 'openrouter/free');
+      assert.equal(updated.header.collaborationMode, 'plan');
+      assert.equal(updated.header.orchestrationMode, 'graph');
+      assert.deepEqual(updated.header.labels, ['configured']);
+      assert.deepEqual(await store.readExecutionBoundary('configured-session'), {
+        kind: 'bypass',
+        revision: 1,
+      });
+      await assert.rejects(
+        store.updateSessionConfiguration('configured-session', configuration),
+        (error: unknown) => {
+          assert.ok(error instanceof SessionMetadataVersionConflictError);
+          assert.equal(error.expectedVersion, 1);
+          assert.equal(error.actualVersion, 2);
+          return true;
+        },
+      );
+      await assert.rejects(
+        store.updateSessionConfiguration('configured-session', {
+          ...configuration,
+          expectedVersion: 2,
+          lifecycle: { kind: 'clear_connection_block', statusUpdatedAt: 30 },
+        }),
+        /no longer has a connection block/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('clears only the explicit connection-block lifecycle transition', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: () => 40 });
+    try {
+      await store.create(
+        fullHeader({
+          id: 'connection-blocked-session',
+          status: 'blocked',
+          blockedReason: 'NO_REAL_CONNECTION',
+          statusUpdatedAt: 10,
+        }),
+      );
+      const updated = await store.updateSessionConfiguration('connection-blocked-session', {
+        expectedVersion: 1,
+        configuration: {
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'openrouter',
+          connectionLocked: true,
+          model: 'openrouter/free',
+          thinkingLevel: undefined,
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          labels: [],
+        },
+        lifecycle: { kind: 'clear_connection_block', statusUpdatedAt: 30 },
+      });
+      assert.equal(updated.header.status, 'active');
+      assert.equal(updated.header.blockedReason, undefined);
+      assert.equal(updated.header.statusUpdatedAt, 30);
     } finally {
       store.close();
     }
@@ -1733,6 +2079,231 @@ describe('SQLite agent graph operator provisions', () => {
     }
   });
 
+  test('retires a graph root with its operator and purges only that graph control state', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(800) });
+    try {
+      const root = await store.create(
+        fullHeader({
+          id: 'supervisor-session',
+          parentSessionId: undefined,
+          branchOfTurnId: undefined,
+          revisionRootSessionId: undefined,
+          revisionParentSessionId: undefined,
+          revisionOfTurnId: undefined,
+          revisionIndex: undefined,
+          revisionState: undefined,
+          status: 'active',
+          blockedReason: undefined,
+        }),
+      );
+      await store.commitAgentGraphScheduleUpdate({
+        schemaVersion: 1,
+        updateId: `graph_update_${'1'.repeat(32)}`,
+        updateFingerprint: `sha256:${'2'.repeat(64)}`,
+        graphId: 'graph-1',
+        source: {
+          sessionId: root.header.id,
+          runId: 'supervisor-run',
+          turnId: 'supervisor-turn',
+          toolCallId: 'schedule-tool',
+        },
+        addWork: [
+          {
+            workId: `graph_work_${'3'.repeat(32)}`,
+            target: { kind: 'agent', agentId: 'local-read' },
+            instruction: 'Inspect the input.',
+            inputIds: [],
+          },
+        ],
+        stop: [],
+      });
+      const child = await store.createAgentGraphOperator(
+        graphChildHeader(),
+        graphProvisionRequest(),
+        1,
+      );
+      await store.claimAgentGraphIntent({
+        schemaVersion: 1,
+        claimId: `graph_claim_${'a'.repeat(32)}`,
+        graphId: 'graph-1',
+        intentId: `graph_intent_${'b'.repeat(32)}`,
+        intentFingerprint: `sha256:${'c'.repeat(64)}`,
+        readinessContextFingerprint: `sha256:${'d'.repeat(64)}`,
+        targetOperatorId: graphProvisionRequest().operatorId,
+        targetSessionId: child.record.header.id,
+        targetTurnId: 'graph-turn',
+        targetRunId: 'graph-run',
+      });
+      await store.claimAgentGraphSupervisorWake({
+        schemaVersion: 1,
+        graphId: 'graph-1',
+        wakeId: 'graph-wake',
+        snapshotVersion: 'snapshot-1',
+        rootSessionId: root.header.id,
+      });
+      await store.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'graph-wake',
+        attemptId: 'graph-attempt',
+        turnId: 'supervisor-wake-turn',
+      });
+      await store.commitAgentGraphClientProjection({
+        schemaVersion: 1,
+        graphId: 'graph-1',
+        rootSessionId: root.header.id,
+        expectedSnapshotVersion: null,
+        snapshotVersion: 'snapshot-1',
+        snapshot: { status: 'running' },
+        replaceOperators: true,
+        operators: [{ operatorId: graphProvisionRequest().operatorId, payload: {} }],
+        terminalActivities: [
+          { recordId: 'terminal-record', eventTime: 1, payload: { status: 'completed' } },
+        ],
+        activityRecords: [{ recordId: 'terminal-record', eventTime: 1 }],
+      });
+      await store.commitAgentGraphScheduleUpdate({
+        schemaVersion: 1,
+        updateId: `graph_update_${'7'.repeat(32)}`,
+        updateFingerprint: `sha256:${'8'.repeat(64)}`,
+        graphId: 'graph-2',
+        source: {
+          sessionId: 'other-supervisor',
+          runId: 'other-run',
+          turnId: 'other-turn',
+          toolCallId: 'other-tool',
+        },
+        addWork: [],
+        stop: [{ targetId: 'other-target', reason: 'done' }],
+      });
+
+      await assert.rejects(
+        store.removeVersioned([
+          { sessionId: child.record.header.id, expectedVersion: child.record.metadataVersion },
+        ]),
+        /Cannot remove graph operator Session graph-child/,
+      );
+      await assert.rejects(
+        store.removeVersioned([
+          { sessionId: root.header.id, expectedVersion: root.metadataVersion },
+        ]),
+        /graph operator graph-child is outside the retirement unit/,
+      );
+      assert.deepEqual(
+        await store.removeVersioned([
+          { sessionId: root.header.id, expectedVersion: root.metadataVersion },
+          { sessionId: child.record.header.id, expectedVersion: child.record.metadataVersion },
+        ]),
+        ['graph-child', 'supervisor-session'],
+      );
+      assert.equal(await store.has(root.header.id), false);
+      assert.equal(await store.has(child.record.header.id), false);
+      assert.equal((await store.listAgentGraphOperatorProvisions('graph-1')).length, 1);
+
+      assert.equal(await store.purgeAgentGraphControlState('graph-1'), 9);
+      assert.deepEqual(await store.listAgentGraphOperatorProvisions('graph-1'), []);
+      assert.deepEqual(await store.listAgentGraphScheduleUpdates('graph-1'), []);
+      assert.deepEqual(await store.listAgentGraphIntentClaims('graph-1'), []);
+      assert.equal(await store.readAgentGraphSupervisorWake('graph-1', 'graph-wake'), undefined);
+      assert.equal(await store.readAgentGraphClientProjection('graph-1'), undefined);
+      assert.deepEqual(
+        await store.listAgentGraphClientTerminalActivities('graph-1', { limit: 1 }),
+        { records: [], hasMore: false },
+      );
+      assert.equal(await store.purgeAgentGraphControlState('graph-1'), 0);
+      assert.equal((await store.listAgentGraphScheduleUpdates('graph-2')).length, 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('reconciles graph operators orphaned by legacy root-only retirement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-agent-graph-orphan-'));
+    const path = join(root, 'runtime.sqlite');
+    try {
+      const store = createSqliteSessionMetadataStore(path, { now: () => 900 });
+      const supervisor = await store.create(
+        fullHeader({
+          id: 'supervisor-session',
+          parentSessionId: undefined,
+          branchOfTurnId: undefined,
+          revisionRootSessionId: undefined,
+          revisionParentSessionId: undefined,
+          revisionOfTurnId: undefined,
+          revisionIndex: undefined,
+          revisionState: undefined,
+          status: 'active',
+          blockedReason: undefined,
+        }),
+      );
+      await store.commitAgentGraphScheduleUpdate({
+        schemaVersion: 1,
+        updateId: `graph_update_${'1'.repeat(32)}`,
+        updateFingerprint: `sha256:${'2'.repeat(64)}`,
+        graphId: 'graph-1',
+        source: {
+          sessionId: supervisor.header.id,
+          runId: 'supervisor-run',
+          turnId: 'supervisor-turn',
+          toolCallId: 'schedule-tool',
+        },
+        addWork: [
+          {
+            workId: graphProvisionRequest().workId,
+            target: { kind: 'agent', agentId: graphProvisionRequest().agentId },
+            instruction: 'Inspect the input.',
+            inputIds: [],
+          },
+        ],
+        stop: [],
+      });
+      await store.createAgentGraphOperator(graphChildHeader(), graphProvisionRequest(), 1);
+      store.close();
+
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec('BEGIN IMMEDIATE');
+        legacy
+          .prepare('DELETE FROM session_metadata WHERE session_id = ?')
+          .run(supervisor.header.id);
+        legacy
+          .prepare(`
+            INSERT INTO session_metadata_tombstones(
+              session_id,
+              deleted_at,
+              retirement_unit_id,
+              cleanup_pending
+            )
+            VALUES (?, ?, ?, 0)
+          `)
+          .run(supervisor.header.id, 901, supervisor.header.id);
+        legacy.exec('COMMIT');
+      } catch (error) {
+        legacy.exec('ROLLBACK');
+        throw error;
+      } finally {
+        legacy.close();
+      }
+
+      const reopened = createSqliteSessionMetadataStore(path, { now: () => 902 });
+      try {
+        assert.equal(await reopened.has('graph-child'), true);
+        assert.deepEqual(await reopened.listPendingSessionRetirementCleanupIds(), []);
+        assert.deepEqual(await reopened.reconcileOrphanedAgentGraphRetirements(), ['graph-child']);
+        assert.deepEqual(await reopened.probeRemoval('graph-child'), { kind: 'removed' });
+        assert.deepEqual(
+          await reopened.listPendingSessionRetirementCleanupIds(supervisor.header.id),
+          ['graph-child', supervisor.header.id],
+        );
+        assert.equal((await reopened.listAgentGraphOperatorProvisions('graph-1')).length, 1);
+        assert.deepEqual(await reopened.reconcileOrphanedAgentGraphRetirements(), []);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rolls back child and topology together on a provision failure', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', {
       failpoint(point) {
@@ -1779,6 +2350,7 @@ describe('SQLite agent graph client projections', () => {
       now: nextNow(400),
     });
     try {
+      await store.create(graphRootHeader('root-session'));
       await store.commitAgentGraphClientProjection({
         schemaVersion: 1,
         graphId: 'graph-atomic-read',
@@ -1834,6 +2406,7 @@ describe('SQLite agent graph client projections', () => {
       now: nextNow(500),
     });
     try {
+      await store.create(graphRootHeader('root-session'));
       await store.commitAgentGraphClientProjection({
         schemaVersion: 1,
         graphId: 'graph-cas',
@@ -1935,6 +2508,7 @@ describe('SQLite agent graph client projections', () => {
       now: nextNow(1_000),
     });
     try {
+      await store.create(graphRootHeader('root-session'));
       const first = await store.commitAgentGraphClientProjection({
         schemaVersion: 1,
         graphId: 'graph-1',
@@ -1986,7 +2560,7 @@ describe('SQLite agent graph client projections', () => {
           limit: 2,
           before: { eventTime: 99, recordId: 'record-2' },
         }),
-        /stale or invalid/,
+        (error: unknown) => error instanceof AgentGraphClientTerminalCursorError,
       );
 
       await store.commitAgentGraphClientProjection({
@@ -2033,6 +2607,37 @@ describe('SQLite agent graph client projections', () => {
       store.close();
     }
   });
+
+  test('rejects a projection commit after its root retirement cleanup completes', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      const root = await store.create(graphRootHeader('root-session'));
+      const request = {
+        schemaVersion: 1 as const,
+        graphId: 'graph-retired-root',
+        rootSessionId: root.header.id,
+        expectedSnapshotVersion: null,
+        snapshotVersion: 'snapshot-1',
+        snapshot: { status: 'idle' },
+        replaceOperators: true,
+        operators: [],
+        terminalActivities: [],
+        activityRecords: [],
+      };
+
+      await store.removeVersioned([
+        { sessionId: root.header.id, expectedVersion: root.metadataVersion },
+      ]);
+      await store.purgeAgentGraphControlState(request.graphId);
+      await store.completeSessionRetirementCleanup(root.header.id);
+
+      await assert.rejects(store.commitAgentGraphClientProjection(request), /not found/);
+      assert.equal(await store.readAgentGraphClientProjection(request.graphId), undefined);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(), []);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
@@ -2072,6 +2677,21 @@ function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
     schemaVersion: 1,
     ...overrides,
   };
+}
+
+function graphRootHeader(id: string): SessionHeader {
+  return fullHeader({
+    id,
+    parentSessionId: undefined,
+    branchOfTurnId: undefined,
+    revisionRootSessionId: undefined,
+    revisionParentSessionId: undefined,
+    revisionOfTurnId: undefined,
+    revisionIndex: undefined,
+    revisionState: undefined,
+    status: 'active',
+    blockedReason: undefined,
+  });
 }
 
 function graphProvisionRequest(): AgentGraphOperatorProvisionRequest {

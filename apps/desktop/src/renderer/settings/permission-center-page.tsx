@@ -17,10 +17,22 @@ import type {
   UiLocale,
 } from '@maka/core';
 import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core';
-import { Button, Badge, Chip, EmptyState, RelativeTime, SectionHeader, StatTile, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  Banner,
+  Button,
+  HStack,
+  List,
+  ListItem,
+  MetadataList,
+  MetadataListItem,
+  Text,
+  VStack,
+} from '@astryxdesign/core';
+import { RelativeTime, StatusDot, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { SettingsPage, SettingsSection } from './settings-section';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { statusBadgeVariant } from './settings-status-badge';
+import { statusDotVariant } from './settings-status-badge';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
 
@@ -89,6 +101,20 @@ export function PermissionCenterPage() {
     };
   }, [locale, refreshTick]);
 
+  useEffect(() => {
+    const refreshAfterSystemSettings = () => {
+      if (document.visibilityState === 'visible') {
+        setRefreshTick((tick) => tick + 1);
+      }
+    };
+    window.addEventListener('focus', refreshAfterSystemSettings);
+    document.addEventListener('visibilitychange', refreshAfterSystemSettings);
+    return () => {
+      window.removeEventListener('focus', refreshAfterSystemSettings);
+      document.removeEventListener('visibilitychange', refreshAfterSystemSettings);
+    };
+  }, []);
+
   async function runPermissionAction(
     permId: OsPermissionId,
     kind: 'request' | 'openSettings' | 'dragGrant',
@@ -104,9 +130,12 @@ export function PermissionCenterPage() {
             ? await window.maka.permissions.startDragOnboarding(permId)
             : await window.maka.permissions.openSystemSettings(permId);
       if (result.ok) {
-        // Refresh snapshot so the user sees the new state when they
-        // return from System Settings.
-        if (mountedRef.current) setRefreshTick((tick) => tick + 1);
+        // A direct request resolves after the user has answered, so refresh
+        // now. Deep links and the drag guide resolve as soon as System
+        // Settings opens; those refresh when Maka regains focus instead.
+        if (kind === 'request' && mountedRef.current) {
+          setRefreshTick((tick) => tick + 1);
+        }
       } else if (mountedRef.current) {
         toast.error(copy.actionFailed, permissionActionFailureCopy(result.reason, result.message, copy));
       }
@@ -128,15 +157,15 @@ export function PermissionCenterPage() {
 
   if (error || !permissions || !capabilities) {
     return (
-      <div className="settingsPermissionPage">
-        <div className="settingsPermissionError" role="alert">
-          <strong>{copy.readFailed}</strong>
-          <small>{error ?? copy.noData}</small>
-          <Button type="button" onClick={() => setRefreshTick((tick) => tick + 1)}>
-            {copy.readAgain}
-          </Button>
-        </div>
-      </div>
+      <Banner
+        status="error"
+        role="alert"
+        title={copy.readFailed}
+        description={error ?? copy.noData}
+        endContent={(
+          <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
+        )}
+      />
     );
   }
 
@@ -144,107 +173,93 @@ export function PermissionCenterPage() {
   const counts = summarizePermissionStatuses(permissions);
 
   return (
-    <div className="settingsPermissionPage">
-      {/* Polish wave Item 5: the intro was a second gray PageHeader banner
-          restating the page title. Converged onto SectionHeader — the unique
-          "open Privacy & Security directly" explainer stays as the subtitle;
-          the last-read timestamp + re-detect button move into the action slot. */}
-      <SectionHeader
-        as="h3"
-        title={copy.title}
-        subtitle={copy.subtitle}
-        action={
-          <>
-            <small className="whitespace-nowrap text-[length:var(--font-size-caption)] text-foreground-secondary">
-              {copy.lastRead}<RelativeTime ts={checkedAtMs} className="settingsHelpInlineTime" />
-            </small>
+    <SettingsPage>
+      {/* The page opened with a SectionHeader whose title was the page title
+          VERBATIM (权限与能力 twice, ~40px apart) and whose subtitle restated
+          the 系统权限 section's own help line below it. Worse, the refresh
+          cluster sat in that header's action slot, so the subtitle wrapped
+          around it and the paragraph collided with the button.
+
+          Both lines were duplicates, so what is left is the freshness readout
+          and its action. */}
+      <SettingsSection
+        variant="bare"
+        title={copy.osSection}
+        description={copy.osSectionHelp}
+        action={(
+          <div className="settingsFormRowControlCluster">
+            <Text type="supporting" size="sm" color="secondary">
+              {copy.lastRead}<RelativeTime ts={checkedAtMs} />
+            </Text>
             <Button
-              type="button"
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
-            >
-              {copy.detectAgain}
-            </Button>
-          </>
-        }
-      />
-
-      <section className="settingsPermissionSummary" aria-label={copy.summaryAria}>
-        <PermissionSummaryTile label={copy.granted} value={counts.granted} tone="neutral" />
-        <PermissionSummaryTile label={copy.pending} value={counts.pending} tone="warning" />
-        <PermissionSummaryTile label={copy.denied} value={counts.denied} tone="destructive" />
-        <PermissionSummaryTile label={copy.other} value={counts.other} tone="neutral" />
-      </section>
-
-      <section aria-label={copy.osSection} className="settingsPermissionSection">
-        <header>
-          <h4>{copy.osSection}</h4>
-          <small>{copy.osSectionHelp}</small>
-        </header>
-        <ul className="settingsOsPermissionList" aria-label={copy.osListAria}>
-          {OS_PERMISSION_IDS.map((id) => (
-            <OsPermissionRow
-              key={id}
-              snapshot={permissions.permissions[id]}
-              copy={copy}
-              locale={locale}
-              busy={pendingPermAction !== null}
-              pendingKey={pendingPermAction === `${id}:request` ? 'request' : pendingPermAction === `${id}:openSettings` ? 'openSettings' : null}
-              onRequest={() => void runPermissionAction(id, 'request')}
-              onOpenSettings={() => void runPermissionAction(id, 'openSettings')}
-              onDragGrant={() => void runPermissionAction(id, 'dragGrant')}
+              label={copy.detectAgain}
             />
-          ))}
-        </ul>
-      </section>
+          </div>
+        )}
+      >
+        <p className="settingsHealthSummaryLine" aria-label={copy.summaryAria}>
+          <span data-tone="neutral">{copy.granted} {counts.granted}</span>
+          <span data-tone={counts.pending > 0 ? 'warning' : 'neutral'}>{copy.pending} {counts.pending}</span>
+          <span data-tone={counts.denied > 0 ? 'destructive' : 'neutral'}>{copy.denied} {counts.denied}</span>
+          <span data-tone="neutral">{copy.other} {counts.other}</span>
+        </p>
+        <List hasDividers aria-label={copy.osListAria}>
+            {OS_PERMISSION_IDS.map((id) => (
+              <OsPermissionRow
+                key={id}
+                snapshot={permissions.permissions[id]}
+                copy={copy}
+                locale={locale}
+                busy={pendingPermAction !== null}
+                pendingKey={
+                  pendingPermAction === `${id}:request`
+                    ? 'request'
+                    : pendingPermAction === `${id}:openSettings`
+                      ? 'openSettings'
+                      : pendingPermAction === `${id}:dragGrant`
+                        ? 'dragGrant'
+                        : null
+                }
+                onRequest={() => void runPermissionAction(id, 'request')}
+                onOpenSettings={() => void runPermissionAction(id, 'openSettings')}
+                onDragGrant={() => void runPermissionAction(id, 'dragGrant')}
+              />
+            ))}
+          </List>
+      </SettingsSection>
 
-      <section aria-label={copy.capabilitiesSection} className="settingsPermissionSection">
-        <SectionHeader
-          className="settingsPermissionSectionHeader"
-          as="h4"
-          title={copy.capabilitiesSection}
-          subtitle={copy.capabilitiesHelp}
-          action={
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => setDiagnosticsOpen((open) => !open)}
-              aria-expanded={diagnosticsOpen}
-            >
-              {diagnosticsOpen ? copy.collapseDetails : copy.expandDetails}
-            </Button>
-          }
-        />
-        <ul className="settingsCapabilityList" aria-label={copy.capabilityListAria} data-diagnostics-open={diagnosticsOpen ? 'true' : undefined}>
-          {capabilities.capabilities.map((capability) => (
-            <CapabilityRow key={capability.id} capability={capability} copy={copy} locale={locale} />
-          ))}
-        </ul>
-      </section>
+      <SettingsSection
+        variant="bare"
+        title={copy.capabilitiesSection}
+        description={copy.capabilitiesHelp}
+        action={(
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setDiagnosticsOpen((open) => !open)}
+            aria-expanded={diagnosticsOpen}
+            label={diagnosticsOpen ? copy.collapseDetails : copy.expandDetails}
+          />
+        )}
+      >
+        <List hasDividers aria-label={copy.capabilityListAria}>
+            {capabilities.capabilities.map((capability) => (
+              <CapabilityRow
+                key={capability.id}
+                capability={capability}
+                copy={copy}
+                locale={locale}
+                diagnosticsOpen={diagnosticsOpen}
+              />
+            ))}
+        </List>
+      </SettingsSection>
 
-      <p className="settingsPermissionFootnote">
-        {copy.footnote}
-      </p>
-    </div>
-  );
-}
-
-function PermissionSummaryTile(props: {
-  label: string;
-  value: number;
-  tone: 'success' | 'warning' | 'destructive' | 'neutral';
-}) {
-  // Convergence R4: StatTile owns the recipe (incl. the zero-is-not-an-
-  // exception tone gate this tile pioneered).
-  return (
-    <StatTile
-      className="settingsPermissionSummaryTile"
-      label={props.label}
-      value={props.value}
-      tone={props.tone}
-    />
+      <Text type="supporting" size="sm" color="secondary">{copy.footnote}</Text>
+    </SettingsPage>
   );
 }
 
@@ -285,6 +300,12 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
       return copy.actionFailures.unsupported_platform;
     case 'unsupported_permission':
       return copy.actionFailures.unsupported_permission;
+    case 'denied':
+      return copy.actionFailures.denied;
+    case 'already_open':
+      return copy.actionFailures.already_open;
+    case 'open_settings_failed':
+      return copy.actionFailures.open_settings_failed;
     case 'failed':
       return message ?? copy.actionFailures.failed;
     default:
@@ -292,7 +313,22 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
   }
 }
 
-function CapabilityRow(props: { capability: CapabilitySnapshot; copy: PermissionCenterCopy; locale: UiLocale }) {
+/**
+ * One capability row.
+ *
+ * The four-layer breakdown, the required-permission list and the guidance list
+ * used to be a `<dl>` and two `<ul>`s with ~180 lines of CSS giving them label
+ * columns, tone colors and spacing. They are all "label → value" readouts, so
+ * they are Astryx `MetadataList` now, and the diagnostics toggle simply chooses
+ * whether to render them rather than driving a `data-diagnostics-open`
+ * attribute that CSS then translated into a collapse.
+ */
+function CapabilityRow(props: {
+  capability: CapabilitySnapshot;
+  copy: PermissionCenterCopy;
+  locale: UiLocale;
+  diagnosticsOpen: boolean;
+}) {
   const { capability } = props;
   const { copy, locale } = props;
   const readinessCopy = copy.readiness[capability.readiness];
@@ -302,95 +338,131 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
   const runtimeReason = localizedSnapshotText(capability.runtimeProbe.reason, locale);
   const guidance = localizedCapabilityGuidance(capability, locale, copy);
 
+  const layers: Array<{ label: string; value: string; reason?: string }> = [
+    {
+      label: copy.layers.feature,
+      value: copy.layers.featureStates[capability.feature.state],
+      ...(featureReason ? { reason: featureReason } : {}),
+    },
+    {
+      label: copy.layers.configuration,
+      value: copy.layers.configurationStates[capability.configuration.state],
+      ...(configurationReason ? { reason: configurationReason } : {}),
+    },
+    { label: copy.layers.approval, value: copy.layers.approvalStates[capability.actionApproval.state] },
+    { label: copy.layers.memory, value: copy.layers.memoryStates[capability.memoryAcceptance.state] },
+    {
+      label: copy.layers.runtime,
+      value: copy.layers.runtimeStates[capability.runtimeProbe.state],
+      ...(runtimeReason ? { reason: runtimeReason } : {}),
+    },
+  ];
+
   return (
-    <li className="settingsCapabilityRow" data-readiness={capability.readiness}>
-      <div className="settingsCapabilityHeader">
-        <div className="settingsCapabilityHeading">
-          <strong>{capabilityLabel}</strong>
-          <small className="settingsCapabilityId">{prettyCapabilityId(capability.id)}</small>
-        </div>
-        <Chip variant={readinessCopy.tone}>{readinessCopy.label}</Chip>
-      </div>
-      <p className="settingsCapabilityDetail">{readinessCopy.detail}</p>
-      <dl className="settingsCapabilityLayers" aria-label={copy.layers.aria(capabilityLabel)}>
-        <div>
-          <dt>{copy.layers.feature}</dt>
-          <dd data-tone={featureTone(capability.feature.state)}>
-            {copy.layers.featureStates[capability.feature.state]}
-            {featureReason && <small>{featureReason}</small>}
-          </dd>
-        </div>
-        <div>
-          <dt>{copy.layers.configuration}</dt>
-          <dd data-tone={configurationTone(capability.configuration.state)}>
-            {copy.layers.configurationStates[capability.configuration.state]}
-            {configurationReason && <small>{configurationReason}</small>}
-          </dd>
-        </div>
-        <div>
-          <dt>{copy.layers.approval}</dt>
-          <dd data-tone={actionApprovalTone(capability.actionApproval.state)}>
-            {copy.layers.approvalStates[capability.actionApproval.state]}
-          </dd>
-        </div>
-        <div>
-          <dt>{copy.layers.memory}</dt>
-          <dd data-tone={memoryAcceptanceTone(capability.memoryAcceptance.state)}>
-            {copy.layers.memoryStates[capability.memoryAcceptance.state]}
-          </dd>
-        </div>
-        <div>
-          <dt>{copy.layers.runtime}</dt>
-          <dd data-tone={runtimeProbeTone(capability.runtimeProbe.state)}>
-            {copy.layers.runtimeStates[capability.runtimeProbe.state]}
-            {runtimeReason && <small>{runtimeReason}</small>}
-          </dd>
-        </div>
-      </dl>
-      {capability.osPermissions.length > 0 && (
-        <div className="settingsCapabilityOsPermissions">
-          <span>{copy.requiredPermissions}</span>
-          <ul aria-label={copy.requiredPermissionsAria(capabilityLabel)}>
-            {capability.osPermissions.map((req) => (
-              <li key={req.id}>
-                <span>{copy.osPermissions[req.id]?.label ?? req.id}</span>
-                <em data-tone={copy.osStates[req.status].tone}>
-                  {copy.osStates[req.status].label}
-                </em>
-              </li>
-            ))}
-          </ul>
-        </div>
+    <ListItem
+      data-readiness={capability.readiness}
+      /* Contract hook for the DiagnosticsExpanded story. It used to assert on
+         `.settingsCapabilityList[data-diagnostics-open]`, but the list is an
+         Astryx `List` now and Astryx does not forward arbitrary data-* to it;
+         ListItem does, and the row is where the disclosure actually lands. */
+      data-diagnostics={props.diagnosticsOpen ? 'open' : 'closed'}
+      /* The readiness Badge rides the LABEL row, not endContent. ListItem
+         centers endContent against the whole row, so with diagnostics expanded
+         the badge floated hundreds of pixels below the title it describes. */
+      label={(
+        <HStack gap={2} align="center">
+          <Text type="label" size="sm">{capabilityLabel}</Text>
+          <span className="settingsStatus">
+            <StatusDot variant={statusDotVariant(readinessCopy.tone)} label={readinessCopy.label} />
+            <span>{readinessCopy.label}</span>
+          </span>
+        </HStack>
       )}
-      {guidance.length > 0 && (
-        <div className="settingsCapabilityGuidance">
-          <span>{copy.guidance}</span>
-          <ul aria-label={copy.guidanceAria(capabilityLabel)}>
-            {guidance.map((item, index) => (
-              <li key={`${capability.id}-guidance-${index}`}>{item}</li>
-            ))}
-          </ul>
-        </div>
+      description={(
+        <VStack gap={2}>
+          <VStack gap={0.5}>
+            <Text type="code" size="xsm" color="secondary">{prettyCapabilityId(capability.id)}</Text>
+            <Text type="supporting" size="sm" color="secondary">{readinessCopy.detail}</Text>
+          </VStack>
+          {props.diagnosticsOpen ? (
+            <VStack gap={3}>
+              {/* Explicit 2 columns: `columns="multi"` laid every item out
+                  full width, so the five layers became five tall rows and the
+                  row grew ~5x. `label position: start` keeps each readout on
+                  one line (label left, value right) like the <dl> it replaced. */}
+              <MetadataList
+                columns={2}
+                label={{ position: 'start', width: 92 }}
+                aria-label={copy.layers.aria(capabilityLabel)}
+              >
+                {layers.map((layer) => (
+                  <MetadataListItem key={layer.label} label={layer.label}>
+                    {/* Stacked: MetadataListItem flows its children inline, so
+                        an unwrapped reason ran straight into the state value
+                        ("探测降级cua-driver 未响应握手…"). */}
+                    <VStack gap={0.5}>
+                      <Text type="body" size="sm">{layer.value}</Text>
+                      {layer.reason ? (
+                        <Text type="supporting" size="xsm" color="secondary">{layer.reason}</Text>
+                      ) : null}
+                    </VStack>
+                  </MetadataListItem>
+                ))}
+              </MetadataList>
+              {capability.osPermissions.length > 0 && (
+                <MetadataList
+                  columns={2}
+                  label={{ position: 'start', width: 92 }}
+                  aria-label={copy.requiredPermissionsAria(capabilityLabel)}
+                  title={copy.requiredPermissions}
+                >
+                  {capability.osPermissions.map((req) => (
+                    <MetadataListItem key={req.id} label={copy.osPermissions[req.id]?.label ?? req.id}>
+                      <span className="settingsStatus">
+                        <StatusDot variant={statusDotVariant(copy.osStates[req.status].tone)} label={copy.osStates[req.status].label} />
+                        <span>{copy.osStates[req.status].label}</span>
+                      </span>
+                    </MetadataListItem>
+                  ))}
+                </MetadataList>
+              )}
+              {guidance.length > 0 && (
+                <VStack gap={1}>
+                  <Text type="label" size="sm">{copy.guidance}</Text>
+                  <List aria-label={copy.guidanceAria(capabilityLabel)} density="compact">
+                    {guidance.map((item, index) => (
+                      <ListItem
+                        key={`${capability.id}-guidance-${index}`}
+                        label={<Text type="supporting" size="sm" color="secondary">{item}</Text>}
+                      />
+                    ))}
+                  </List>
+                </VStack>
+              )}
+              {/*
+                PR-UX-POLISH-1 commit 2 (yuejing UX audit + xuan
+                ROADMAP-SURFACE-0 + kenji boundary 1): unavailable pause/revoke
+                chips looked like disabled toggles, which violates the
+                capability presentation contract. Keep them hidden until there
+                are real actions.
+              */}
+              {capability.auditEvents.length === 0 ? (
+                <Text type="supporting" size="xsm" color="secondary">{copy.noAudit}</Text>
+              ) : (
+                <List aria-label={copy.auditAria(capabilityLabel)} density="compact">
+                  {capability.auditEvents.slice(-3).map((event, index) => (
+                    <ListItem
+                      key={`${capability.id}-audit-${index}`}
+                      label={<Text type="supporting" size="xsm" color="secondary">{event}</Text>}
+                    />
+                  ))}
+                </List>
+              )}
+            </VStack>
+          ) : null}
+        </VStack>
       )}
-      {/*
-        PR-UX-POLISH-1 commit 2 (yuejing UX audit + xuan ROADMAP-SURFACE-0 +
-        kenji boundary 1): unavailable pause/revoke chips looked like
-        disabled toggles, which violates the capability presentation
-        contract. Keep them hidden until there are real actions with
-        `data-state="available"`.
-      */}
-      <div className="settingsCapabilityAuditSlot" aria-hidden={capability.auditEvents.length === 0}>
-        {capability.auditEvents.length === 0 ? (
-          <EmptyState variant="inline" title={copy.noAudit} body="" />
-        ) : (
-          <ul aria-label={copy.auditAria(capabilityLabel)}>
-            {capability.auditEvents.slice(-3).map((event, index) => (
-              <li key={`${capability.id}-audit-${index}`}>{event}</li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </li>
+    />
   );
 }
 
@@ -424,79 +496,96 @@ function OsPermissionRow(props: {
     && snapshot.canOpenSettings
     && snapshot.status !== 'granted';
 
+  const actionCount = Number(showOpenSettings) + Number(showDragGrant) + Number(showRequest);
+  const actionCluster = actionCount > 0 && (
+    /* PR-PERMISSIONS-UNIFIED-CARD-0 (WAWQAQ msg `d3ea9a33` 2026-06-26):
+       the action buttons used to stack vertically with two competing
+       button styles. Order so the recommended action anchors the right
+       edge, with the manual route as a quieter neighbour.
+
+       Placement depends on how many there are: a single action rides the
+       row's end slot as before, but the multi-button grant cluster (Screen
+       Recording: 前往系统设置 + 引导授权 + 请求授权, ~420px in English)
+       crushed the label column into a one-word-per-line sliver. Three
+       buttons are a flow, not a row control — they move under the
+       description and keep the full card width. */
+    <HStack gap={2} align="center" wrap="wrap">
+      {showOpenSettings && (
+            <Button
+              variant={showRequest || showDragGrant ? 'secondary' : 'primary'}
+              size="sm"
+              onClick={props.onOpenSettings}
+              isDisabled={busy}
+              aria-busy={pendingKey === 'openSettings' ? 'true' : undefined}
+              label={pendingKey === 'openSettings' ? props.copy.opening : props.copy.openSettings}
+            />
+          )}
+          {/* The guided flow is the primary action where it exists: it does
+              what 前往系统设置 does and then stays to help. The plain link
+              keeps its place beside it so the manual route is never removed. */}
+          {showDragGrant && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={props.onDragGrant}
+              isDisabled={busy}
+              aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
+              label={pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
+            />
+          )}
+          {showRequest && (
+            <Button
+              /* One primary per row. When the guided flow is present it owns
+                 the primary slot (see above), so 请求授权 steps down to
+                 secondary — otherwise the row shipped two filled accent
+                 buttons side by side and named no recommended path. */
+              variant={showDragGrant ? 'secondary' : 'primary'}
+              size="sm"
+              onClick={props.onRequest}
+              isDisabled={busy}
+              aria-busy={pendingKey === 'request' ? 'true' : undefined}
+              label={pendingKey === 'request' ? props.copy.requesting : props.copy.request}
+            />
+          )}
+    </HStack>
+  );
+
   return (
-    <li className="settingsOsPermissionRow" data-state={snapshot.status}>
-      <div className="settingsOsPermissionIcon" aria-hidden="true">
-        {Icon ? <Icon size={18} /> : null}
-      </div>
-      <div className="settingsOsPermissionBody">
-        <div className="settingsOsPermissionHeading">
-          <strong>{label}</strong>
-          <Badge variant={statusBadgeVariant(stateCopy.tone)}>{stateCopy.label}</Badge>
-        </div>
-        <small className="settingsOsPermissionPurpose">{purpose}</small>
-        {impact ? (
-          <small className="settingsOsPermissionImpact">
-            <span className="settingsOsPermissionImpactLabel">{props.copy.impact}</span>
-            <span>{impact}</span>
-          </small>
-        ) : null}
-        {reason ? (
-          <small className="settingsOsPermissionReason">{reason}</small>
-        ) : null}
-      </div>
-      {/* PR-PERMISSIONS-UNIFIED-CARD-0 (WAWQAQ msg `d3ea9a33`
-          2026-06-26): the action buttons used to stack vertically with
-          two competing button styles (primary + secondary). Order so
-          the primary "请求授权" anchors the right edge, with the
-          system-settings link as a quieter ghost variant on the left.
-          When only one button is shown (e.g. the OS doesn't expose a
-          request flow for the permission), it still falls under the
-          primary slot — no awkward "lonely secondary" state. */}
-      <div className="settingsOsPermissionActions">
-        {/* Affordance honesty (round 8): ghost next to the primary read as a
-            plain text label — a clickable action sitting beside a real button
-            needs its own visible edge. Secondary keeps it quieter than
-            请求授权 without hiding that it's a button. */}
-        {showOpenSettings && (
-          <Button
-            type="button"
-            variant={showRequest || showDragGrant ? 'secondary' : 'default'}
-            size="sm"
-            onClick={props.onOpenSettings}
-            disabled={busy}
-            aria-busy={pendingKey === 'openSettings' ? 'true' : undefined}
-          >
-            {pendingKey === 'openSettings' ? props.copy.opening : props.copy.openSettings}
-          </Button>
-        )}
-        {/* The guided flow is the primary action where it exists: it does
-            what 前往系统设置 does and then stays to help. The plain link
-            keeps its place beside it so the manual route is never removed. */}
-        {showDragGrant && (
-          <Button
-            type="button"
-            size="sm"
-            onClick={props.onDragGrant}
-            disabled={busy}
-            aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
-          >
-            {pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
-          </Button>
-        )}
-        {showRequest && (
-          <Button
-            type="button"
-            size="sm"
-            onClick={props.onRequest}
-            disabled={busy}
-            aria-busy={pendingKey === 'request' ? 'true' : undefined}
-          >
-            {pendingKey === 'request' ? props.copy.requesting : props.copy.request}
-          </Button>
-        )}
-      </div>
-    </li>
+    <ListItem
+      data-state={snapshot.status}
+      /* The plate keeps its class: a status-tinted rounded icon well is
+         product artwork (it turns red when a permission is denied), not
+         layout, and Astryx's startContent slot has no equivalent. */
+      startContent={Icon ? (
+        <span className="settingsOsPermissionIcon" aria-hidden="true">
+          <Icon size={18} />
+        </span>
+      ) : undefined}
+      label={(
+        <HStack gap={2} align="center">
+          <Text type="label" size="sm">{label}</Text>
+          <span className="settingsStatus">
+            <StatusDot variant={statusDotVariant(stateCopy.tone)} label={stateCopy.label} />
+            <span>{stateCopy.label}</span>
+          </span>
+        </HStack>
+      )}
+      description={(
+        <VStack gap={0.5}>
+          <Text type="supporting" size="sm" color="secondary">{purpose}</Text>
+          {impact ? (
+            <Text type="supporting" size="xsm" color="secondary">
+              {props.copy.impact} {impact}
+            </Text>
+          ) : null}
+          {reason ? (
+            <Text type="supporting" size="xsm" color="secondary">{reason}</Text>
+          ) : null}
+          {actionCount > 1 ? <div className="settingsRowActionsUnder">{actionCluster}</div> : null}
+        </VStack>
+      )}
+      endContent={actionCount === 1 ? actionCluster : undefined}
+    />
   );
 }
 

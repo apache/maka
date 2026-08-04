@@ -23,15 +23,15 @@ import {
 import {
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
   type CreateArtifactInput,
-  createArtifactStore,
-  createArtifactStoreWriteAuthority,
+  createSqliteArtifactStore as createArtifactStore,
+  createSqliteArtifactStoreWriteAuthority as createArtifactStoreWriteAuthority,
   isSafeRelativeArtifactPath,
   resolveArtifactPath,
   sanitizeArtifactName,
 } from '../artifact-store.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 
-describe('FileArtifactStore', () => {
+describe('SQLite Artifact store', () => {
   test('creates a missing workspace root before acquiring the writer lock', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'maka-artifact-missing-root-'));
     const root = join(parent, 'nested', 'workspace');
@@ -77,6 +77,35 @@ describe('FileArtifactStore', () => {
         /Artifact artifact-1 already exists/,
       );
       assert.deepEqual(await reopened.readText('artifact-1'), { ok: true, text: '# Notes' });
+    });
+  });
+
+  test('lists only live Artifacts committed by one exact Turn', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create({ ...artifactInput('turn-a-new', 'new', 30), turnId: 'turn-a' });
+      await store.create({ ...artifactInput('turn-b', 'other turn', 20), turnId: 'turn-b' });
+      await store.create({
+        ...artifactInput('turn-a-old', 'old', 10),
+        turnId: 'turn-a',
+      });
+      await store.create({
+        ...artifactInput('other-session', 'other session', 40),
+        sessionId: 'session-2',
+        turnId: 'turn-a',
+      });
+
+      assert.deepEqual(
+        (await store.listTurnArtifacts('session-1', 'turn-a')).map((record) => record.id),
+        ['turn-a-new', 'turn-a-old'],
+      );
+      await store.deleteUserArtifactInSession('session-1', 'turn-a-new');
+      assert.deepEqual(
+        (await store.listTurnArtifacts('session-1', 'turn-a')).map((record) => record.id),
+        ['turn-a-old'],
+      );
     });
   });
 
@@ -182,6 +211,64 @@ describe('FileArtifactStore', () => {
       const purged = await store.listPage('session-1', { offset: 0, limit: 2 });
       assert.equal(purged.revision, empty.revision);
       assert.equal(purged.total, 0);
+    });
+  });
+
+  test('copies an exact turn-scoped Artifact snapshot and purges only the target Session', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      const retained = await store.create({
+        ...artifactInput('retained-artifact', 'retained', 10),
+        turnId: 'turn-retained',
+        mimeType: 'text/plain',
+      });
+      const deleted = await store.create({
+        ...artifactInput('deleted-artifact', 'deleted', 11),
+        turnId: 'turn-retained',
+      });
+      await store.delete(deleted.id);
+      await store.create({
+        ...artifactInput('later-artifact', 'later', 20),
+        turnId: 'turn-later',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-retained'],
+      });
+      const copiedId = copied.artifactIds.get(retained.id);
+      const copiedDeletedId = copied.artifactIds.get(deleted.id);
+      assert.ok(copiedId);
+      assert.ok(copiedDeletedId);
+      assert.notEqual(copiedId, retained.id);
+      const target = await store.list('session-copy');
+      assert.equal(target.length, 1);
+      assert.equal(target[0]?.id, copiedId);
+      assert.equal(target[0]?.turnId, retained.turnId);
+      assert.equal(copied.relativePaths.get(retained.relativePath), target[0]?.relativePath);
+      assert.deepEqual(await store.readText(copiedId!), {
+        ok: true,
+        text: 'retained',
+      });
+      const targetWithTombstones = await store.list('session-copy', { includeDeleted: true });
+      assert.equal(targetWithTombstones.find((record) => record.id === copiedId)?.status, 'live');
+      const copiedDeleted = targetWithTombstones.find((record) => record.id === copiedDeletedId);
+      assert.equal(copiedDeleted?.status, 'deleted');
+      assert.equal(copied.relativePaths.get(deleted.relativePath), copiedDeleted?.relativePath);
+      assert.deepEqual(await store.readText(copiedDeletedId!, { includeDeleted: true }), {
+        ok: true,
+        text: 'deleted',
+      });
+
+      await store.purgeSessionArtifacts('session-copy');
+      assert.deepEqual(await store.list('session-copy'), []);
+      assert.deepEqual((await store.list('session-1')).map((record) => record.id).sort(), [
+        'later-artifact',
+        'retained-artifact',
+      ]);
     });
   });
 
@@ -394,11 +481,11 @@ describe('FileArtifactStore', () => {
       const input = deepResearchArtifactInput('stable-replay', '# Durable result');
       const first = await createArtifactStore(root).create(input);
       const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      const metadataBefore = await readFile(metadataPath, 'utf8');
+      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
 
       const replayed = await createArtifactStore(root).create(input);
       assert.deepEqual(replayed, first);
-      assert.equal(await readFile(metadataPath, 'utf8'), metadataBefore);
+      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
       assert.deepEqual(await createArtifactStore(root).readText(first.id), {
         ok: true,
         text: '# Durable result',
@@ -421,7 +508,7 @@ describe('FileArtifactStore', () => {
           }),
         /already exists with different metadata or content/,
       );
-      assert.equal(await readFile(metadataPath, 'utf8'), metadataBefore);
+      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
     });
   });
 
@@ -453,30 +540,6 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('failed tombstone revival leaves the durable tombstone recoverable', async () => {
-    await withWorkspace(async (root) => {
-      const input = deepResearchArtifactInput('stable-revive-retry', '# Revivable');
-      const store = createArtifactStore(root);
-      const first = await store.create(input);
-      await store.delete(first.id);
-      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      const deletedMetadata = await readFile(metadataPath, 'utf8');
-      await rm(metadataPath);
-      await mkdir(metadataPath);
-
-      await assert.rejects(() => store.create(input));
-      await assert.rejects(() => store.get(first.id), { code: 'EISDIR' });
-
-      await rm(metadataPath, { recursive: true });
-      await writeFile(metadataPath, deletedMetadata, 'utf8');
-      const reopened = createArtifactStore(root);
-      assert.equal((await reopened.get(first.id))?.status, 'deleted');
-      const revived = await reopened.create(input);
-      assert.equal(revived.status, 'live');
-      assert.equal(revived.createdAt, first.createdAt);
-    });
-  });
-
   test('serializes concurrent creates without dropping metadata', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
@@ -486,12 +549,13 @@ describe('FileArtifactStore', () => {
       const reopened = createArtifactStore(root);
       const rows = await reopened.list('session-1', { includeDeleted: true });
       assert.deepEqual(rows.map((record) => record.id).sort(), ids.sort());
-      const metadata = await readFile(join(root, 'artifacts', 'metadata.jsonl'), 'utf8');
-      assert.equal(metadata.trim().split('\n').length, ids.length);
+      await assert.rejects(() => stat(join(root, 'artifacts', 'metadata.jsonl')), {
+        code: 'ENOENT',
+      });
     });
   });
 
-  test('serializes independent legacy stores without dropping metadata', async () => {
+  test('serializes independent SQLite stores without dropping metadata', async () => {
     await withWorkspace(async (root) => {
       const first = createArtifactStore(root);
       const second = createArtifactStore(root);
@@ -579,7 +643,7 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('refreshes a loaded legacy store after another instance commits metadata', async () => {
+  test('refreshes a loaded SQLite store after another instance commits metadata', async () => {
     await withWorkspace(async (root) => {
       const stale = createArtifactStore(root);
       const writer = createArtifactStore(root);
@@ -597,26 +661,6 @@ describe('FileArtifactStore', () => {
       );
       assert.equal((await stale.get('second'))?.id, 'second');
       assert.deepEqual(await stale.readText('second'), { ok: true, text: 'second' });
-    });
-  });
-
-  test('refreshes metadata changed in place without an inode or size change', async () => {
-    await withWorkspace(async (root) => {
-      const store = createArtifactStore(root);
-      await store.create(artifactInput('stable-inode', 'payload', 1));
-      assert.equal((await store.get('stable-inode'))?.turnId, 'turn-1');
-
-      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      const before = await stat(metadataPath);
-      const original = await readFile(metadataPath, 'utf8');
-      const changed = original.replace('"turnId":"turn-1"', '"turnId":"turn-2"');
-      assert.equal(Buffer.byteLength(changed), Buffer.byteLength(original));
-      await writeFile(metadataPath, changed, { flag: 'r+' });
-      const after = await stat(metadataPath);
-      assert.equal(after.ino, before.ino);
-      assert.equal(after.size, before.size);
-
-      assert.equal((await store.get('stable-inode'))?.turnId, 'turn-2');
     });
   });
 
@@ -640,24 +684,22 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('does not publish a payload when metadata publication fails', async () => {
+  test('does not publish a payload after the SQLite metadata repository closes', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       await store.create(artifactInput('published', 'kept', 1));
-      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      const metadata = await readFile(metadataPath, 'utf8');
-      await rm(metadataPath);
-      await mkdir(metadataPath);
+      store.close?.();
 
-      await assert.rejects(() => store.create(artifactInput('rejected', 'not durable', 2)));
+      await assert.rejects(
+        () => store.create(artifactInput('rejected', 'not durable', 2)),
+        /Artifact metadata repository is closed/,
+      );
       await assert.rejects(
         () => readFile(join(root, 'artifacts', 'session-1', 'rejected-rejected.txt')),
         { code: 'ENOENT' },
       );
-      await assert.rejects(() => store.get('rejected'), { code: 'EISDIR' });
-
-      await rm(metadataPath, { recursive: true });
-      await writeFile(metadataPath, metadata, 'utf8');
+      const reopened = createArtifactStore(root);
+      assert.equal(await reopened.get('rejected'), null);
     });
   });
 
@@ -712,7 +754,7 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('legacy mutation adopts an exact stable-id target-only orphan', async () => {
+  test('self-managed SQLite mutation adopts an exact stable-id target-only orphan', async () => {
     await withWorkspace(async (root) => {
       const input = {
         ...artifactInput('legacy-orphan', 'orphan bytes', 1),
@@ -733,7 +775,7 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('legacy mutations recover target-local publications without rescanning unrelated sessions', async () => {
+  test('self-managed SQLite mutations recover target-local publications without rescanning unrelated sessions', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       await store.create(artifactInput('delete-me', 'delete', 1));
@@ -1188,7 +1230,7 @@ describe('FileArtifactStore', () => {
       await authority.recover();
 
       assert.equal(await store.get(record.id), null);
-      assert.equal(await readFile(metadataPath, 'utf8'), '');
+      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
       await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
       await store.purge([record.id]);
 
@@ -1198,12 +1240,12 @@ describe('FileArtifactStore', () => {
         'utf8',
       );
       await createArtifactStoreWriteAuthority(root).recover();
-      assert.equal(await readFile(metadataPath, 'utf8'), '');
+      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
       await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
     });
   });
 
-  test('legacy production stores recover their own interrupted purge before the next write', async () => {
+  test('self-managed SQLite stores recover an interrupted purge before the next write', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const record = await store.create(artifactInput('legacy-purge', 'remove me', 1));

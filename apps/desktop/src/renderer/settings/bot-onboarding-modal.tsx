@@ -4,15 +4,17 @@ import type {
   BotOnboardingProvider,
   BotOnboardingSnapshot,
 } from '@maka/core';
+import { Spinner } from '@astryxdesign/core';
 import {
   Button,
-  DialogContent,
-  DialogHeader,
-  DialogRoot,
-  Spinner,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { AlertCircle, Check } from '@maka/ui/icons';
 import { BotBrandLogo } from './bot-chat-shared';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -21,7 +23,8 @@ import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bo
 export function BotOnboardingModal(props: {
   provider: BotOnboardingProvider;
   brand?: BotOnboardingBrand;
-  onClose(): void;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
   onConnected(snapshot: BotOnboardingSnapshot): void | Promise<void>;
 }) {
   const mountedRef = useMountedRef();
@@ -125,9 +128,13 @@ export function BotOnboardingModal(props: {
     }
   }
 
-  function close() {
+  function requestClose() {
     cancelCurrent();
-    props.onClose();
+    props.onOpenChange(false);
+  }
+
+  function handleOpenChange(isOpen: boolean) {
+    if (!isOpen) requestClose();
   }
 
   const status = statusCopy(snapshot, starting, error, copy, locale);
@@ -138,22 +145,31 @@ export function BotOnboardingModal(props: {
     && snapshot?.state !== 'error';
 
   return (
-    <DialogRoot open onOpenChange={(open) => { if (!open) close(); }}>
-      <DialogContent
-        className="settingsBotOnboardingModal"
-        aria-label={copy.ariaLabel}
-        showClose={false}
-      >
-        <div className="settingsBotOnboardingBrand" aria-hidden="true">
-          <BotBrandLogo provider={props.provider} size="large" />
-        </div>
-        <DialogHeader title={copy.title} subtitle={copy.subtitle} closeLabel={onboardingCopy.close(copy.title)} onClose={close} />
+    <Dialog
+      isOpen={props.isOpen}
+      onOpenChange={handleOpenChange}
+      className="settingsBotOnboardingModal"
+      width={520}
+      aria-label={copy.ariaLabel}
+      purpose="form"
+    >
+      <Layout
+        header={
+          <DialogHeader
+            startContent={<BotBrandLogo provider={props.provider} size="large" />}
+            title={copy.title}
+            subtitle={copy.subtitle}
+            onOpenChange={handleOpenChange}
+          />
+        }
+        content={
+          <LayoutContent padding={0}>
         <div className="settingsBotOnboardingBody" aria-live="polite">
           <div className="settingsBotOnboardingQrFrame" data-state={snapshot?.state ?? (starting ? 'starting' : 'error')}>
             {showQr ? (
               <img src={qrDataUrl ?? undefined} alt={copy.qrAlt} />
             ) : starting || snapshot?.state === 'connecting' ? (
-              <Spinner size={28} aria-label={onboardingCopy.generatingAria} />
+              <Spinner size="xl" aria-label={onboardingCopy.generatingAria} />
             ) : snapshot?.state === 'connected' ? (
               snapshot.warning ? (
                 <span className="settingsBotOnboardingEmpty" aria-hidden="true">
@@ -176,31 +192,29 @@ export function BotOnboardingModal(props: {
           <p className="settingsBotOnboardingPrivacy">{onboardingCopy.privacy}</p>
           {snapshot?.canOpenInBrowser && ['waiting', 'scanned'].includes(snapshot.state) && (
             <Button
-              type="button"
-              variant="quiet"
+              variant="ghost"
               size="sm"
               onClick={() => void openInBrowser()}
-            >
-              {onboardingCopy.openBrowser}
-            </Button>
+              label={onboardingCopy.openBrowser}
+            />
           )}
         </div>
         <div className="settingsBotOnboardingActions">
           {snapshot?.state === 'connected' ? (
-            <Button type="button" onClick={close}>{onboardingCopy.done}</Button>
+            <Button variant="primary" onClick={requestClose} label={onboardingCopy.done} />
           ) : snapshot?.state === 'expired' || snapshot?.state === 'denied' || error ? (
-            <Button type="button" onClick={() => void start()}>{onboardingCopy.regenerate}</Button>
+            <Button variant="primary" onClick={() => void start()} label={onboardingCopy.regenerate} />
           ) : (
             <>
-              <Button type="button" variant="secondary" disabled={starting} onClick={() => void start()}>
-                {onboardingCopy.refreshQr}
-              </Button>
-              <Button type="button" variant="quiet" onClick={close}>{onboardingCopy.cancel}</Button>
+              <Button variant="secondary" isDisabled={starting} onClick={() => void start()} label={onboardingCopy.refreshQr} />
+              <Button variant="ghost" onClick={requestClose} label={onboardingCopy.cancel} />
             </>
           )}
         </div>
-      </DialogContent>
-    </DialogRoot>
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }
 

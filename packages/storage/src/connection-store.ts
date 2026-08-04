@@ -4,6 +4,7 @@ import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
   migrateConnectionV1ToV2,
+  reconcileConnectionAfterEnabledModelsChange,
   persistedBaseUrl,
   reconcileConnectionAfterModelFetch,
   validateSlug,
@@ -80,7 +81,7 @@ class FileConnectionStore implements ConnectionStore {
         updatedAt: now,
       };
       file.connections.push(next);
-      if (!file.defaultSlug) file.defaultSlug = next.slug;
+      claimVacantWorkspaceDefault(file, next);
       created = next;
       await this.write(file);
     });
@@ -110,11 +111,27 @@ class FileConnectionStore implements ConnectionStore {
           patch.defaultModel !== undefined ||
           patch.models !== undefined);
       const models = updatesModelCache ? patch.models : current.models;
+      // A patch carrying `enabledModelIds` is the user stating a selection, so
+      // it is written as stated — including empty. Anything else re-asserts a
+      // choice they just withdrew. `reconcileConnectionAfterEnabledModelsChange`
+      // owns the one rule that follows from it: a default outside the new set
+      // is no longer the default.
+      const statesEnabledModels = Object.prototype.hasOwnProperty.call(patch, 'enabledModelIds');
       let defaultModel = patch.defaultModel ?? current.defaultModel;
-      let enabledModelIds = connectionEnabledModelIds({
-        defaultModel,
-        enabledModelIds: patch.enabledModelIds ?? current.enabledModelIds,
-      });
+      let enabledModelIds: string[];
+      if (statesEnabledModels) {
+        const selection = reconcileConnectionAfterEnabledModelsChange(
+          { defaultModel },
+          patch.enabledModelIds ?? [],
+        );
+        defaultModel = selection.defaultModel;
+        enabledModelIds = selection.enabledModelIds;
+      } else {
+        enabledModelIds = connectionEnabledModelIds({
+          defaultModel,
+          enabledModelIds: current.enabledModelIds,
+        });
+      }
       // Authoritative live inventory wins: a retired default (common after
       // Moonshot renamed moonshot-v1-* → kimi-k2.*) must not strand the
       // connection as model_not_enabled once models are fetched. Fallback
@@ -123,7 +140,11 @@ class FileConnectionStore implements ConnectionStore {
         Object.prototype.hasOwnProperty.call(patch, 'models') && patch.modelSource === 'fetched';
       if (writesFetchedModels && models && models.length > 0) {
         const reconciled = reconcileConnectionAfterModelFetch(
-          { defaultModel, enabledModelIds },
+          {
+            defaultModel,
+            enabledModelIds,
+            hasModelInventory: (current.models?.length ?? 0) > 0,
+          },
           models,
         );
         defaultModel = reconciled.defaultModel;
@@ -160,9 +181,18 @@ class FileConnectionStore implements ConnectionStore {
         updatedAt: Date.now(),
       };
       file.connections[index] = next;
-      if (file.defaultSlug === slug && next.enabled === false) {
+      // The workspace default is the pair {connection, model}. A connection
+      // that is disabled, or that no longer has a default model, cannot supply
+      // half of it — leaving the slug behind showed a "默认" badge next to a
+      // picker that read 未设置.
+      if (file.defaultSlug === slug && (next.enabled === false || !next.defaultModel)) {
         file.defaultSlug = null;
       }
+      // The other direction: a provider with no `fallbackModels` is created
+      // with no model at all, so its first discovery is where it becomes able
+      // to hold the default. Without this the user finished setting up their
+      // only connection and onboarding still had nothing to point at.
+      claimVacantWorkspaceDefault(file, next);
       updated = next;
       await this.write(file);
     });
@@ -176,8 +206,16 @@ class FileConnectionStore implements ConnectionStore {
 
   async save(connection: LlmConnection): Promise<LlmConnection> {
     // save() is a full-snapshot boundary, so callers providing authoritative
-    // fetched models must already reconcile defaultModel/enabledModelIds.
-    // update() performs that reconciliation for partial fetched-model patches.
+    // fetched models must already reconcile defaultModel/enabledModelIds
+    // through `reconcileConnectionAfterModelFetch` — which is what the OAuth
+    // account syncs now do. update() performs that reconciliation itself for
+    // partial fetched-model patches.
+    //
+    // The selection rule deliberately does NOT live here. This boundary sees
+    // only a snapshot, so it cannot tell a selection the user just stated from
+    // one a sync echoed back unchanged; enforcing "written as stated" on it
+    // threw away the repaired default a sync had just computed for a model the
+    // provider had retired, leaving the connection pointing at nothing.
     let saved: LlmConnection | null = null;
     await this.withQueue(async () => {
       const file = await this.readUnlocked();
@@ -198,10 +236,15 @@ class FileConnectionStore implements ConnectionStore {
       };
       if (index >= 0) file.connections[index] = next;
       else file.connections.push(next);
-      if (file.defaultSlug === connection.slug && next.enabled === false) {
+      // Same {connection, model} pair as in update(): a connection with no
+      // default model supplies only half of it, so it cannot keep the slug.
+      // Without this an OAuth resync re-pointed the workspace default at a
+      // connection whose model list the user had just emptied, and the list
+      // showed a 默认 badge over 未设置.
+      if (file.defaultSlug === connection.slug && (next.enabled === false || !next.defaultModel)) {
         file.defaultSlug = null;
       }
-      if (!file.defaultSlug && next.enabled !== false) file.defaultSlug = connection.slug;
+      if (index < 0) claimVacantWorkspaceDefault(file, next);
       await this.write(file);
       saved = next;
     });
@@ -229,6 +272,10 @@ class FileConnectionStore implements ConnectionStore {
         const connection = file.connections.find((item) => item.slug === slug);
         if (!connection) throw new Error(`No such connection: ${slug}`);
         if (!connection.enabled) throw new Error(`Connection is disabled: ${slug}`);
+        // Half of the {connection, model} pair is not a default. Symmetric with
+        // the disabled check: a connection that cannot supply a model to start
+        // a chat on cannot be the one a chat starts on.
+        if (!connection.defaultModel) throw new Error(`Connection has no default model: ${slug}`);
       }
       file.defaultSlug = slug;
       await this.write(file);
@@ -291,11 +338,35 @@ function normalizeConnectionsFile(value: unknown): ConnectionsFile {
   };
 }
 
+/**
+ * A workspace with no default takes one from the connection the user is
+ * working on, so a fresh install is usable as soon as its first connection is
+ * — including the four providers that ship no `fallbackModels`, which only
+ * become able to hold it at their first discovery rather than at create.
+ *
+ * Only from the connection the user is working on. `save()` is the snapshot
+ * boundary the OAuth sync writes on, and `connections:list` runs that sync
+ * before every read, so letting it claim any vacant slug meant that clearing
+ * your own default handed the workspace to whichever account happened to sync
+ * first — your next chat went to a different provider, without you touching
+ * anything. A sync that is bringing a brand-new connection into existence is
+ * the one exception: that is the same event as create().
+ */
+function claimVacantWorkspaceDefault(file: ConnectionsFile, connection: LlmConnection): void {
+  if (file.defaultSlug) return;
+  if (connection.enabled === false || !connection.defaultModel) return;
+  file.defaultSlug = connection.slug;
+}
+
 function normalizeDefaultSlug(
   defaultSlug: string | null | undefined,
   connections: LlmConnection[],
 ): string | null {
   if (!defaultSlug) return null;
   const connection = connections.find((item) => item.slug === defaultSlug);
-  return connection && connection.enabled !== false ? connection.slug : null;
+  // Same pair rule as the write paths, applied to whatever is already on disk:
+  // a file written before they enforced it can still point at a connection with
+  // no default model, and that reads back as a 默认 badge over 未设置.
+  if (!connection || connection.enabled === false || !connection.defaultModel) return null;
+  return connection.slug;
 }

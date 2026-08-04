@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  sanitizeCuDirectReport,
-  sanitizeCuModelPlans,
-  sanitizeCuReport,
-} from './cu-report-sanitize.mjs';
+import { sanitizeCuDirectReport, sanitizeCuReport } from './cu-report-sanitize.mjs';
 
 test('CU reports keep metrics while dropping typed text, coordinates, URL secrets, and trace payloads', () => {
   const secret = 'secret-canary';
@@ -57,73 +53,7 @@ test('CU reports keep metrics while dropping typed text, coordinates, URL secret
   assert.doesNotMatch(serialized, /"x":12|"y":34/);
 });
 
-test('model plans expose only turn and action types', () => {
-  const plans = sanitizeCuModelPlans([
-    {
-      turn: 1,
-      responseId: 'private-response',
-      actions: [
-        { type: 'click', x: 20, y: 40 },
-        { type: 'type', text: 'private' },
-      ],
-    },
-  ]);
-  assert.deepEqual(plans, [
-    {
-      turn: 1,
-      actionTypes: ['click', 'type'],
-    },
-  ]);
-});
-
-test('report sanitizer preserves validated attribution and drops arbitrary fields', () => {
-  const report = sanitizeCuReport({
-    schemaVersion: 1,
-    evidenceClass: 'real-runtime',
-    scenarioId: 'l0-observe-only',
-    producer: 'cu-real-model-launcher',
-    transportClass: 'live-network',
-    policyMode: 'bypassed',
-    qualificationEligible: true,
-    provider: 'openai',
-    model: 'gpt-5.4',
-    status: 'inconclusive',
-    run: { status: 'waiting_for_user' },
-    failure: 'private provider body',
-    loopStatus: { private: true },
-    turns: [{ text: 'private' }],
-    state: { private: true },
-    display: { private: true },
-    traces: [
-      {
-        type: 'dispatch',
-        actionType: 'click_element',
-        path: 'private-path',
-        effect: 'private-effect',
-        address: 'ax',
-        tool: 'click',
-      },
-    ],
-  });
-  assert.equal(report.producer, 'cu-real-model-launcher');
-  assert.equal(report.provider, 'openai');
-  assert.equal(report.model, 'gpt-5.4');
-  assert.equal(report.qualificationEligible, true);
-  assert.equal(report.run.status, 'waiting_for_user');
-  assert.deepEqual(report.traces, [
-    {
-      type: 'dispatch',
-      actionType: 'click_element',
-      address: 'ax',
-      tool: 'click',
-    },
-  ]);
-  const serialized = JSON.stringify(report);
-  assert.doesNotMatch(serialized, /private/);
-  assert.doesNotMatch(serialized, /loopStatus|turns|display/);
-});
-
-test('canonical evidence keeps privacy-safe ownership and observation lineage', () => {
+test('canonical evidence keeps attribution and lineage without private fields', () => {
   const generatedAt = '2026-07-12T00:00:00.000Z';
   const gitRevision = '0123456789abcdef0123456789abcdef01234567';
   const report = sanitizeCuReport({
@@ -136,19 +66,17 @@ test('canonical evidence keeps privacy-safe ownership and observation lineage', 
       gitRevision,
       generatedAt,
     },
-    evidenceClass: 'fault-injection',
-    scenarioId: 'appkit-ax-intervention-recovery',
-    producer: 'cu-real-ax-model-e2e',
-    transportClass: 'live-network',
-    policyMode: 'enforced',
-    qualificationEligible: false,
+    failure: 'private provider body',
+    loopStatus: { private: true },
+    turns: [{ text: 'private' }],
+    state: { private: true },
+    display: { private: true },
     fixtureIdentity: {
       instances: [
         { pid: 42, windowIds: [7, 7, -1] },
         { pid: 84, windowIds: [9] },
       ],
     },
-    faultInjection: { layer: 'runtime', kind: 'user_intervened' },
     actions: [
       {
         action: { type: 'set_value', value: 'private' },
@@ -161,7 +89,6 @@ test('canonical evidence keeps privacy-safe ownership and observation lineage', 
         success: true,
       },
     ],
-    actionAttempts: 1,
     traces: [
       {
         type: 'dispatch',
@@ -171,6 +98,8 @@ test('canonical evidence keeps privacy-safe ownership and observation lineage', 
         windowId: 7,
         address: 'ax',
         tool: 'set_value',
+        path: 'private-path',
+        effect: 'private-effect',
       },
     ],
   });
@@ -182,17 +111,10 @@ test('canonical evidence keeps privacy-safe ownership and observation lineage', 
     ],
   });
   assert.equal(report.runId, 'run-1');
-  assert.equal(report.gitRevision, gitRevision);
-  assert.equal(report.generatedAt, generatedAt);
   assert.deepEqual(report.contentLineage, {
     generator: 'scripts/cu-real-ax-model-e2e.mjs',
     gitRevision,
     generatedAt,
-  });
-  assert.equal(report.actionAttempts, 1);
-  assert.deepEqual(report.faultInjection, {
-    layer: 'runtime',
-    kind: 'user_intervened',
   });
   assert.deepEqual(report.actions[0], {
     type: 'set_value',
@@ -213,4 +135,7 @@ test('canonical evidence keeps privacy-safe ownership and observation lineage', 
     address: 'ax',
     tool: 'set_value',
   });
+  const serialized = JSON.stringify(report);
+  assert.doesNotMatch(serialized, /private/);
+  assert.doesNotMatch(serialized, /loopStatus|turns|display/);
 });

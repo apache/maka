@@ -1,16 +1,28 @@
 export type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'destructive';
-export function statusBadgeVariant(tone: StatusTone): 'success' | 'warning' | 'destructive' | 'info' | 'secondary' {
+export function statusBadgeVariant(tone: StatusTone): 'success' | 'warning' | 'error' | 'info' | 'neutral' {
   switch (tone) {
     case 'success': return 'success';
     case 'warning': return 'warning';
-    case 'destructive': return 'destructive';
+    // Astryx Badge names the destructive status 'error' and the plain pill
+    // 'neutral'.
+    case 'destructive': return 'error';
     case 'info': return 'info';
-    case 'neutral': return 'secondary';
+    case 'neutral': return 'neutral';
   }
 }
 
-// `Switch` adapter (15+ settings toggle callsites use `ariaLabel /
-// onChange`) was moved to `packages/ui/src/primitives/settings-switch.tsx`
-// as `SettingsSwitch`. Imported above as `Switch` so the call sites
-// don't need touching. PR yuejing/switch-primitive-and-css-cleanup
-// (WAWQAQ msg `f1461d30`).
+/**
+ * StatusDot variant for a tone. The settings surface's status language is a
+ * dot + plain text ("no decorative Badge" — astryx docs principles); Astryx's
+ * StatusDot has no `info` rung, so informational states ride the accent dot.
+ */
+export function statusDotVariant(tone: StatusTone): 'success' | 'warning' | 'error' | 'accent' | 'neutral' {
+  switch (tone) {
+    case 'success': return 'success';
+    case 'warning': return 'warning';
+    case 'destructive': return 'error';
+    case 'info': return 'accent';
+    case 'neutral': return 'neutral';
+  }
+}
+

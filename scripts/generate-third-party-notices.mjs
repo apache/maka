@@ -42,9 +42,18 @@ const LICENSE_SELECTIONS = new Map([
   ['(AFL-2.1 OR BSD-3-Clause)', 'BSD-3-Clause'],
   ['(MPL-2.0 OR Apache-2.0)', 'Apache-2.0'],
 ]);
-const LICENSE_METADATA_OVERRIDES = new Map([['khroma@2.1.0', 'MIT']]);
+const LICENSE_METADATA_OVERRIDES = new Map([
+  ['khroma@2.1.0', 'MIT'],
+  // Declares the ambiguous legacy "BSD"; the shipped LICENSE is BSD-3-Clause.
+  ['css-mediaquery@0.1.2', 'BSD-3-Clause'],
+]);
 const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.11']);
 const MIT_COPYRIGHT_OVERRIDES = new Map([
+  // The published tarball omits the repository LICENSE; sibling @astryxdesign
+  // packages ship it verbatim with this notice.
+  ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.2.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@stylexjs/stylex@0.19.0', 'Copyright (c) Meta Platforms, Inc. and affiliates.'],
   ['@wecom/aibot-node-sdk@1.0.7', 'Copyright (c) WeComTeam contributors'],
   [
     '@xterm/headless@6.0.0',
@@ -57,7 +66,6 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['lazy-val@1.0.5', 'Copyright (c) Vladimir Krivosheev'],
-  ['overlayscrollbars@2.16.0', 'Copyright (c) 2022 Rene Haas'],
 ]);
 
 const MIT_TEXT = (copyrightNotice) => `MIT License
@@ -87,7 +95,12 @@ function readJson(path) {
 }
 
 function normalizeText(text) {
-  return text.replace(/\r\n?/g, '\n').trim();
+  return text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim();
 }
 
 function collectDesktopClosure() {
@@ -191,10 +204,12 @@ function renderNotice() {
     if (!candidates?.length) throw new Error(`${packageKey}: missing from package-lock.json`);
     const directory = packageDirectory(packageKey, candidates);
     const manifest = readJson(join(directory, 'package.json'));
+    // Overrides go first: they also correct a PRESENT-but-wrong declaration
+    // (css-mediaquery ships the ambiguous legacy "BSD"), not only a missing one.
     const declaredLicense =
+      LICENSE_METADATA_OVERRIDES.get(packageKey) ??
       manifest.license ??
-      candidates.find((candidate) => candidate.metadata.license)?.metadata.license ??
-      LICENSE_METADATA_OVERRIDES.get(packageKey);
+      candidates.find((candidate) => candidate.metadata.license)?.metadata.license;
     if (typeof declaredLicense !== 'string' || declaredLicense.trim().length === 0) {
       throw new Error(`${packageKey}: missing SPDX license metadata`);
     }

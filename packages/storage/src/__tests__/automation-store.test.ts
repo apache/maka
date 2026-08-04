@@ -125,6 +125,13 @@ describe('AutomationStore', () => {
     ]);
 
     const result = await store.loadAll();
-    assert.equal(result.length, 3);
+    assert.deepEqual(
+      [...result].sort((left, right) => left.id.localeCompare(right.id)),
+      [
+        { id: 'a', name: 'alpha' },
+        { id: 'b', name: 'beta' },
+        { id: 'c', name: 'gamma' },
+      ],
+    );
   });
 });

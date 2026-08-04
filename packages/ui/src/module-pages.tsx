@@ -2,7 +2,7 @@ import { lazy, Suspense } from 'react';
 import type { PlanReminder } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
 import { CalendarDays } from './icons.js';
-import { EmptyState } from './empty-state.js';
+import { EmptyState } from '@astryxdesign/core';
 import { PageHeader } from './primitives/page-header.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -45,7 +45,6 @@ export function SkillsPage(props: {
   hubHeader?: ModuleHubHeader;
   planReminders?: PlanReminder[];
   onRefreshSkills?(): void | Promise<void>;
-  onCreateSkillTemplate?(): void | Promise<void>;
   onOpenSkill?(skillId: string): void | Promise<void>;
   onUseSkill?(skillId: string, skillName: string): void;
   onOpenSkillsFolder?(): void | Promise<void>;
@@ -128,7 +127,7 @@ export function DailyReviewPage(props: {
             badge={props.hubHeader?.badge}
             headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
           />
-          <EmptyState Icon={CalendarDays} title={copy.dailyReviewDisconnectedTitle} body={copy.dailyReviewDisconnectedBody} />
+          <EmptyState icon={<CalendarDays />} title={copy.dailyReviewDisconnectedTitle} description={copy.dailyReviewDisconnectedBody} />
         </>
       )}
     </main>

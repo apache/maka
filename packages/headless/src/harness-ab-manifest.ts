@@ -3,11 +3,11 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { buildAbRunManifest, buildRunManifestFingerprint } from './ab-manifest.js';
 import type { AbRunManifest } from './ab-types.js';
 import type { HarnessOracleAnnotation } from './harness-oracle-registry.js';
+import type { HarnessAgentId } from './harness-agent-registry.js';
 
-export type HarnessAbArmId = 'maka' | 'opencode' | 'kimi-code' | 'codex';
+export type HarnessAbArmId = HarnessAgentId;
 
 export const HARNESS_AB_PAIR_CONCURRENCY = 2;
-export const HARNESS_AB_MAX_CONCURRENT_ATTEMPTS = HARNESS_AB_PAIR_CONCURRENCY * 2;
 export const HARNESS_MAKA_CONTEXT_BUDGET = {
   activeToolResultPrune: {
     enabled: true,
@@ -121,7 +121,9 @@ export const TERMINAL_BENCH_2_1_TASK_IDS = [
 ] as const;
 
 // Authoritative snapshot: https://github.com/datacurve-ai/deep-swe (113 scored
-// leaderboard tasks; the repo tree at this commit carries 117 task dirs).
+// leaderboard tasks; the repo tree at this commit carries exactly those 113
+// task dirs plus 4 metadata entries: README.md, dataset.toml, manifest.json,
+// manifest.schema.json).
 export const DEEP_SWE_REVISION = '6db64a40f3318d8659238ff34a8cc4b491c49205';
 
 /** 30-task discriminative subset for DeepSWE harness A/Bs (issue #1343).
@@ -175,6 +177,157 @@ export function assertDeepSweSubset30TaskTreeFingerprint(actual: string): void {
   if (actual !== DEEP_SWE_SUBSET_30_TASK_TREE_FINGERPRINT) {
     throw new Error(
       `DeepSWE subset-30 task tree fingerprint mismatch; expected ${DEEP_SWE_SUBSET_30_TASK_TREE_FINGERPRINT}, found ${actual}`,
+    );
+  }
+}
+
+/** Full 113-task DeepSWE v1.1 leaderboard set (the `tasks` rows of
+ * https://deepswe.datacurve.ai/artifacts/v1.1/tasks.json), equal to every task
+ * dir in the pinned repo tree at DEEP_SWE_REVISION. This is the leaderboard-
+ * comparable suite; deep-swe-1.1 remains the 30-task discriminative subset. */
+export const DEEP_SWE_FULL_TASK_IDS = [
+  'abs-module-cache-flags',
+  'abs-stepped-slices',
+  'actionlint-action-pinning-lint',
+  'adaptix-name-mapping-aliases',
+  'aiomonitor-task-snapshots-diff',
+  'anko-default-function-arguments',
+  'anko-typed-variable-bindings',
+  'arcane-drift-detection-baselines',
+  'arktype-json-schema-refs-dependencies',
+  'awilix-async-container-initialization',
+  'bandit-incremental-cache-control',
+  'bandit-interprocedural-taint-checks',
+  'bandit-structured-nosec-directives',
+  'boa-hierarchical-evaluation-cancellation',
+  'cattrs-partial-structuring-recovery',
+  'clack-async-autocomplete-options',
+  'claude-code-by-agents-recursive-delegation',
+  'cliffy-config-file-parsing',
+  'csstree-shorthand-expansion-compression',
+  'dasel-html-document-format',
+  'dateutil-rfc5545-timezone-interop',
+  'drizzle-orm-window-function-builders',
+  'dynamodb-toolbox-conditional-attribute-requirements',
+  'dynamodb-toolbox-lazy-recursive-schemas',
+  'effect-sse-httpapi-streaming',
+  'eicrud-keyset-pagination-cursor',
+  'etree-xml-diff-patch',
+  'expr-try-catch-errors',
+  'fastapi-deprecation-response-headers',
+  'fastapi-implicit-head-options',
+  'fd-deterministic-multi-key-sorting',
+  'geo-shapeindex-serialization',
+  'go-critic-doc-link-checker',
+  'go-genai-streamed-function-args',
+  'go-git-worktree-merge-conflicts',
+  'goreleaser-retry-publish-auditing',
+  'gql-incremental-graphql-delivery',
+  'happy-dom-abort-pending-body-reads',
+  'happy-dom-deterministic-intersectionobserver',
+  'helm-array-merge-strategies',
+  'helm-unified-manifest-stream',
+  'httpx-deterministic-cookie-store',
+  'httpx-multipart-response-parsing',
+  'httpx-streaming-json-iteration',
+  'igel-persist-feature-schema',
+  'ink-grid-box-layout',
+  'ipython-session-bundle-replay',
+  'katex-multicolumn-array-spans',
+  'kcp-go-multiplexed-kcp-streams',
+  'kea-atomic-signal-selectors',
+  'kgateway-consistent-hash-policy',
+  'kombu-single-active-consumer-priority',
+  'kombu-virtual-queue-dead-lettering',
+  'koota-composite-trait-aspects',
+  'koota-deferred-mutation-buffer',
+  'koota-entity-snapshot-rollback',
+  'koota-pair-relation-tracking',
+  'koota-query-predicates',
+  'kysely-window-grouping-helpers',
+  'langchain-request-coalescing',
+  'mashumaro-flattened-dataclass-fields',
+  'meriyah-explicit-resource-declarations',
+  'mnamer-daemon-watch-lifecycle',
+  'mobly-grouped-test-barriers',
+  'narwhals-rolling-window-suite',
+  'numba-stencil-boundary-modes',
+  'obsidian-linter-auto-table-of-contents',
+  'obsidian-linter-link-format-conversion',
+  'obsidian-linter-scoped-ignore-markers',
+  'ofetch-per-origin-circuit-breaker',
+  'onedump-dump-encryption-pipeline',
+  'opa-rego-rule-profiling',
+  'opa-template-string-reconstruction',
+  'optique-conditional-option-dependencies',
+  'oxvg-structural-selector-preservation',
+  'participle-grammar-conflict-analysis',
+  'pebble-durability-wait-apis',
+  'pest-character-class-coalescing',
+  'prometheus-transactional-reload-status',
+  'prometheus-typed-label-sorting',
+  'psd-tools-blend-range-api',
+  'pwntools-tube-multiplexing',
+  'python-statemachine-state-data-scoping',
+  'query-persist-restored-query-state',
+  'quill-shared-toolbar-focus',
+  'returns-validated-error-accumulation',
+  'scc-bounded-memory-spilling',
+  'scriggo-method-declarations',
+  'skrub-duration-encoding',
+  'sql-formatter-bigquery-pipe-formatting',
+  'sqlfmt-create-table-ddl-formatting',
+  'sqlite-utils-safe-import-checkpoints',
+  'superjson-error-stack-serialization',
+  'task-task-graph-export',
+  'tengo-callable-instance-isolation',
+  'tengo-destructuring-bindings',
+  'termenv-preserve-ansi-resets',
+  'testem-bail-on-test-failure',
+  'testem-per-launcher-reports',
+  'textual-kitty-key-phases',
+  'textual-richlog-follow-state',
+  'tomlkit-toml-table-converters',
+  'true-myth-iterable-collection-combinators',
+  'ts-pattern-match-each',
+  'updo-policy-alerting',
+  'valibot-recursive-schema-composition',
+  'vitest-duration-sharding',
+  'vulture-persistent-analysis-cache',
+  'wasmi-trap-coredumps',
+  'wazero-multi-module-snapshots',
+  'yaegi-go-embed-directives',
+  'yjs-map-conflict-detection',
+  'ytt-jsonpath-query-api',
+] as const;
+
+/** fingerprintFixedPromptTaskTree over all 113 task dirs at DEEP_SWE_REVISION
+ * — freezes the exact task bytes under comparison. */
+export const DEEP_SWE_FULL_TASK_TREE_FINGERPRINT =
+  'sha256:973091a18c2045494bab4c4d5732170ebeb222227a16516cfdf08fda56b1fd82';
+
+export function assertDeepSweFullTaskSet(taskIds: readonly string[]): void {
+  const actual = new Set(taskIds);
+  const expected = new Set<string>(DEEP_SWE_FULL_TASK_IDS);
+  const missing = DEEP_SWE_FULL_TASK_IDS.filter((taskId) => !actual.has(taskId));
+  const unexpected = [...actual].filter((taskId) => !expected.has(taskId)).sort();
+  if (
+    taskIds.length === DEEP_SWE_FULL_TASK_IDS.length &&
+    actual.size === expected.size &&
+    missing.length === 0 &&
+    unexpected.length === 0
+  ) {
+    return;
+  }
+  throw new Error(
+    `DeepSWE full-113 task set mismatch; missing: ${missing.join(', ') || 'none'}; unexpected: ${unexpected.join(', ') || 'none'}`,
+  );
+}
+
+export function assertDeepSweFullTaskTreeFingerprint(actual: string): void {
+  if (actual !== DEEP_SWE_FULL_TASK_TREE_FINGERPRINT) {
+    throw new Error(
+      `DeepSWE full-113 task tree fingerprint mismatch; expected ${DEEP_SWE_FULL_TASK_TREE_FINGERPRINT}, found ${actual}`,
     );
   }
 }
@@ -243,10 +396,11 @@ export interface HarnessAbRunManifestInput {
     unit: 'per_1m_tokens';
     input: number;
     cachedInput: number;
+    cacheWrite?: number;
     output: number;
     source: string;
   };
-  arms: readonly [HarnessAbArmInput, HarnessAbArmInput];
+  arms: readonly HarnessAbArmInput[];
   taskBudgetSec: null;
   harborTimeoutMs: null;
   subjectFingerprint: string;
@@ -303,6 +457,7 @@ export function deterministicHarnessTaskOrder(taskIds: readonly string[], seed: 
 }
 
 export function buildHarnessAbRunManifest(input: HarnessAbRunManifestInput): HarnessAbRunManifest {
+  if (input.arms.length < 2) throw new Error('harness manifest requires at least two arms');
   const evaluationTaskIds = deterministicHarnessTaskOrder(input.taskIds, input.orderSeed);
   const pairConcurrency = input.pairConcurrency ?? HARNESS_AB_PAIR_CONCURRENCY;
   const armExecution = input.armExecution ?? 'parallel';
@@ -344,7 +499,7 @@ export function buildHarnessAbRunManifest(input: HarnessAbRunManifestInput): Har
       kind: 'harness' as const,
       fingerprint: buildRunManifestFingerprint({ version: arm.version, config: arm.config }),
       metadata: { version: arm.version, config: arm.config },
-    })) as unknown as [HarnessAbRunManifest['arms'][number], HarnessAbRunManifest['arms'][number]],
+    })),
     metadata,
     taskBudgetSec: input.taskBudgetSec,
     harborTimeoutMs: input.harborTimeoutMs,
@@ -356,7 +511,7 @@ export function buildHarnessAbRunManifest(input: HarnessAbRunManifestInput): Har
     reps: 1,
     candidateLimit: null,
     maxConcurrency: pairConcurrency,
-    maxConcurrentAttempts: pairConcurrency * (armExecution === 'parallel' ? 2 : 1),
+    maxConcurrentAttempts: pairConcurrency * (armExecution === 'parallel' ? input.arms.length : 1),
     selectionMode: 'explicit',
   });
   return manifest as HarnessAbRunManifest;

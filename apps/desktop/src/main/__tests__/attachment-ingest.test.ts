@@ -3,14 +3,14 @@ import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { createArtifactStore } from '@maka/storage';
+import { createSqliteArtifactStore } from '@maka/storage';
 import { ingestAttachments } from '../attachment-ingest.js';
 
 describe('ingestAttachments', () => {
   test('image: resizes, snapshots to ArtifactStore, returns session_file ref', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'att-img-'));
     try {
-      const store = createArtifactStore(dir);
+      const store = createSqliteArtifactStore(dir);
       const imagePath = join(dir, 'screen.png');
       const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
       await writeFile(imagePath, imageBytes);
@@ -38,7 +38,7 @@ describe('ingestAttachments', () => {
   test('pasted image blob without a file path snapshots from provided bytes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'att-clip-'));
     try {
-      const store = createArtifactStore(dir);
+      const store = createSqliteArtifactStore(dir);
       const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
       let resizeCalls = 0;
       const refs = await ingestAttachments({
@@ -71,7 +71,7 @@ describe('ingestAttachments', () => {
   test('workspace non-image: returns workspace_file ref without copying or resizing', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'att-ws-'));
     try {
-      const store = createArtifactStore(dir);
+      const store = createSqliteArtifactStore(dir);
       const codePath = join(dir, 'main.ts');
       const codeBytes = Buffer.from('const x = 1;');
       await writeFile(codePath, codeBytes);
@@ -106,7 +106,7 @@ describe('ingestAttachments', () => {
   test('external non-image: snapshots to ArtifactStore without resizing', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'att-ext-'));
     try {
-      const store = createArtifactStore(dir);
+      const store = createSqliteArtifactStore(dir);
       const externalPath = join(tmpdir(), `external-${Date.now()}.pdf`);
       const pdfBytes = Buffer.from('%PDF-1.4 fake');
       await writeFile(externalPath, pdfBytes);
@@ -134,7 +134,7 @@ describe('ingestAttachments', () => {
     const dir = await mkdtemp(join(tmpdir(), 'att-sym-'));
     const outsideDir = await mkdtemp(join(tmpdir(), 'att-sym-out-'));
     try {
-      const store = createArtifactStore(dir);
+      const store = createSqliteArtifactStore(dir);
       const outsideFile = join(outsideDir, 'secret.md');
       await writeFile(outsideFile, 'secret');
       // symlink inside the workspace that resolves to a file outside it
@@ -162,7 +162,7 @@ describe('ingestAttachments', () => {
     const dir = await mkdtemp(join(tmpdir(), 'att-cap-'));
     const externalPath = join(tmpdir(), `grew-${Date.now()}.bin`);
     try {
-      const store = createArtifactStore(dir);
+      const store = createSqliteArtifactStore(dir);
       // real file is 11 bytes; files[].size lies small (TOCTOU: stat said 5)
       await writeFile(externalPath, Buffer.alloc(11));
       let storeCreates = 0;

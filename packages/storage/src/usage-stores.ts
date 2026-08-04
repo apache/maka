@@ -6,9 +6,18 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { throwDeduplicatedFailures } from './failure-utils.js';
 import {
-  createPricingStore,
+  createSqliteModelCallLedger,
+  ModelCallLedgerClosedError,
+  ModelCallLedgerPublicationError,
+  type ModelCallLedger,
+  type ModelCallLedgerPage,
+  type ModelCallLedgerReader,
+  type PendingReprojection,
+} from './model-call-ledger.js';
+import {
   PricingCommitUnknownError,
   PricingRevisionConflictError,
   PricingStoreClosedError,
@@ -26,7 +35,6 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 import {
-  createTelemetryRepo,
   TelemetryQueryValidationError,
   TelemetryRepoClosedError,
   TelemetryRepoNotLoadedError,
@@ -36,6 +44,7 @@ import {
   type TelemetryRepo,
   type ToolUsageQuery,
 } from './telemetry-repo.js';
+import { createSqlitePricingStore, createSqliteTelemetryRepo } from './sqlite-usage-store.js';
 
 const readerBrand: unique symbol = Symbol('InteractiveUsageStoresReader');
 const writerBrand: unique symbol = Symbol('InteractiveUsageStoresWriter');
@@ -65,6 +74,25 @@ export interface TelemetryIndexWriter extends TelemetryIndexReader {
   recordToolInvocation(record: PersistedToolInvocationRecord): Promise<void>;
 }
 
+/**
+ * Read side of the canonical model-call ledger (#1679). Async here — unlike the
+ * synchronous store beneath it — because every authority read goes through the
+ * storage-root lease.
+ */
+export interface ModelCallIndexReader {
+  modelCallAttempts(range: {
+    readonly from: number;
+    readonly to: number;
+  }): Promise<ModelCallLedgerPage>;
+}
+
+export interface ModelCallIndexWriter extends ModelCallIndexReader {
+  recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void>;
+  markRunPendingReprojection(sessionId: string, runId: string): Promise<void>;
+  pendingReprojections(): Promise<PendingReprojection[]>;
+  clearPendingReprojection(sessionId: string, runId: string): Promise<void>;
+}
+
 export interface PricingAuthorityReader {
   snapshot(): Promise<PricingSnapshot>;
 }
@@ -79,6 +107,7 @@ export interface InteractiveUsageStoresReader {
   readonly access: 'read';
   readonly [readerBrand]: true;
   readonly telemetry: Readonly<TelemetryIndexReader>;
+  readonly modelCalls: Readonly<ModelCallIndexReader>;
   readonly pricing: Readonly<PricingAuthorityReader>;
   close(): Promise<void>;
 }
@@ -88,6 +117,7 @@ export interface InteractiveUsageStoresWriter {
   readonly access: 'write';
   readonly [writerBrand]: true;
   readonly telemetry: Readonly<TelemetryIndexWriter>;
+  readonly modelCalls: Readonly<ModelCallIndexWriter>;
   readonly pricing: Readonly<PricingAuthorityWriter>;
   beginDrain(): Promise<void>;
   flush(): Promise<void>;
@@ -130,6 +160,7 @@ export function classifyInteractiveUsageStoresFailure(
     error instanceof InteractiveUsageStoresClosedError ||
     error instanceof PricingStoreClosedError ||
     error instanceof TelemetryRepoClosedError ||
+    error instanceof ModelCallLedgerClosedError ||
     (error instanceof StorageRootAuthorityError &&
       (error.code === 'invalid_lease' || error.code === 'invalid_owner'))
   ) {
@@ -137,13 +168,15 @@ export function classifyInteractiveUsageStoresFailure(
   }
   if (
     error instanceof PricingCommitUnknownError ||
-    (error instanceof TelemetryRepoPublicationError && error.commitUnknown)
+    (error instanceof TelemetryRepoPublicationError && error.commitUnknown) ||
+    (error instanceof ModelCallLedgerPublicationError && error.commitUnknown)
   ) {
     return { kind: 'commit_outcome_unknown', needsDrain: true };
   }
   if (
     error instanceof PricingStorePublicationError ||
-    error instanceof TelemetryRepoPublicationError
+    error instanceof TelemetryRepoPublicationError ||
+    error instanceof ModelCallLedgerPublicationError
   ) {
     return { kind: 'persistence_failed', needsDrain: true };
   }
@@ -213,10 +246,11 @@ export async function openInteractiveUsageStoresForRead(
     access: 'read',
     [readerBrand]: true,
     telemetry: telemetryReader(repos.telemetry, run),
+    modelCalls: modelCallReader(repos.modelCalls, run),
     pricing: pricingReader(repos.pricing, run),
     close: async () => {
       if (closed) return;
-      await run(() => closeRepos(repos.telemetry, repos.pricing));
+      await run(() => closeRepos(repos.telemetry, repos.modelCalls, repos.pricing));
       closed = true;
     },
   };
@@ -234,7 +268,7 @@ export async function openInteractiveUsageStoresForWrite(
   if (opening) return opening;
   const pending = runWithStorageRootLease(lease, 'interactive', 'write', async (root) => {
     const repos = await openRepos(root, true);
-    const stores = createWriterFacade(lease, repos.telemetry, repos.pricing);
+    const stores = createWriterFacade(lease, repos.telemetry, repos.modelCalls, repos.pricing);
     writers.add(stores);
     writerByLease.set(lease, stores);
     return stores;
@@ -250,19 +284,23 @@ export async function openInteractiveUsageStoresForWrite(
 async function openRepos(
   root: string,
   createIfMissing: boolean,
-): Promise<{ telemetry: TelemetryRepo; pricing: PricingStore }> {
-  const telemetry = createTelemetryRepo(root, { createIfMissing, managePricing: false });
+): Promise<{ telemetry: TelemetryRepo; modelCalls: ModelCallLedger; pricing: PricingStore }> {
+  const telemetry = createSqliteTelemetryRepo(root, { createIfMissing, managePricing: false });
   await telemetry.load();
-  const pricing = createPricingStore(root, {
+  const modelCalls = createSqliteModelCallLedger(root);
+  const pricing = createSqlitePricingStore(root, {
     createIfMissing,
     initialOverrides: telemetry.legacyPricingOverrides(),
   });
   try {
     await pricing.load();
-    if (createIfMissing) await telemetry.publishCanonical();
-    return { telemetry, pricing };
+    return { telemetry, modelCalls, pricing };
   } catch (error) {
-    const closed = await Promise.allSettled([telemetry.close(), pricing.close()]);
+    const closed = await Promise.allSettled([
+      telemetry.close(),
+      modelCalls.close(),
+      pricing.close(),
+    ]);
     const failures = [error, ...rejectedReasons(closed)];
     throwDeduplicatedFailures('Unable to open interactive usage stores', failures);
     throw error;
@@ -272,6 +310,7 @@ async function openRepos(
 function createWriterFacade(
   lease: StorageRootLease<'interactive', 'write'>,
   telemetry: TelemetryRepo,
+  modelCalls: ModelCallLedger,
   pricing: PricingStore,
 ): InteractiveUsageStoresWriter {
   const run = <T>(operation: () => T | Promise<T>): Promise<T> =>
@@ -320,6 +359,7 @@ function createWriterFacade(
     await accepted;
     const flushed = await Promise.allSettled([
       run(() => telemetry.flush()),
+      run(() => modelCalls.flush()),
       run(() => pricing.flush()),
     ]);
     throwDeduplicatedFailures('Interactive usage store flush failed', [
@@ -336,6 +376,7 @@ function createWriterFacade(
       .then(async () => {
         const closed = await Promise.allSettled([
           run(() => telemetry.close()),
+          run(() => modelCalls.close()),
           run(() => pricing.close()),
         ]);
         throwDeduplicatedFailures('Interactive usage stores close failed', [
@@ -363,6 +404,15 @@ function createWriterFacade(
       recordLlmCall: (record) => admit(() => run(() => telemetry.insertLlmCall(record))),
       recordToolInvocation: (record) =>
         admit(() => run(() => telemetry.insertToolInvocation(record))),
+    },
+    modelCalls: {
+      modelCallAttempts: (range) => read(() => modelCalls.read(range)),
+      recordModelCallAttempt: (attempt) => admit(() => run(() => modelCalls.record(attempt))),
+      markRunPendingReprojection: (sessionId, runId) =>
+        admit(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
+      pendingReprojections: () => read(() => modelCalls.pendingReprojections()),
+      clearPendingReprojection: (sessionId, runId) =>
+        admit(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),
@@ -398,6 +448,16 @@ function telemetryReader(
   });
 }
 
+function modelCallReader(
+  ledger: ModelCallLedgerReader,
+  run: <T>(operation: () => T | Promise<T>) => Promise<T>,
+): Readonly<ModelCallIndexReader> {
+  return Object.freeze({
+    modelCallAttempts: (range: { readonly from: number; readonly to: number }) =>
+      run(() => ledger.read(range)),
+  });
+}
+
 function pricingReader(
   store: PricingStore,
   run: <T>(operation: () => T | Promise<T>) => Promise<T>,
@@ -409,8 +469,12 @@ function isExpectedPricingFailure(error: unknown): boolean {
   return error instanceof PricingRevisionConflictError || error instanceof PricingValidationError;
 }
 
-async function closeRepos(telemetry: TelemetryRepo, pricing: PricingStore): Promise<void> {
-  const closed = await Promise.allSettled([telemetry.close(), pricing.close()]);
+async function closeRepos(
+  telemetry: TelemetryRepo,
+  modelCalls: ModelCallLedger,
+  pricing: PricingStore,
+): Promise<void> {
+  const closed = await Promise.allSettled([telemetry.close(), modelCalls.close(), pricing.close()]);
   throwDeduplicatedFailures('Unable to close interactive usage stores', rejectedReasons(closed));
 }
 
@@ -420,6 +484,7 @@ function rejectedReasons(results: readonly PromiseSettledResult<unknown>[]): unk
 
 function freezeFacade(stores: InteractiveUsageStoresReader | InteractiveUsageStoresWriter): void {
   Object.freeze(stores.telemetry);
+  Object.freeze(stores.modelCalls);
   Object.freeze(stores.pricing);
   Object.freeze(stores);
 }

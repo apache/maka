@@ -75,7 +75,8 @@ The spine references existing authorities instead of copying their facts.
 | Authority | Identity today | Owns | Does not own |
 | --- | --- | --- | --- |
 | `RuntimeEvent` | `sessionId`, `invocationId`, `runId`, `turnId`, `id` | Canonical model, tool, runtime-content, and terminal interaction facts | Task scheduling or task-level decisions |
-| `AgentRunHeader` and `AgentRunEvent` | `sessionId`, optional legacy-compatible `invocationId`, `runId`, `turnId`, event `id` | Operational run lifecycle, status, model resolution, permission, usage, and run-local checkpoints | A second copy of raw Runtime interaction history |
+| `AgentRunHeader` and `AgentRunEvent` | `sessionId`, optional legacy-compatible `invocationId`, `runId`, `turnId`, event `id` | Operational run lifecycle, status, model resolution, permission, and run-local checkpoints | A second copy of raw Runtime interaction history |
+| `ModelCallAttempt` | `sessionId`, `runId`, `turnId`, `logicalCallId`, `attemptId` | **Metering source of truth.** One record per physical provider request, carrying the tokens, the cost, and the `usageBasis`/`costBasis` that qualify both | Whether the set of records is complete — nothing records an expected dispatch count, so no consumer may read a set of attempts as proof of coverage |
 | `SessionEvent` and stored messages | Session and turn-oriented identifiers | Compatibility and UI/session read models | Canonical Runtime history |
 | `TaskEvent` | `taskRunId`, optional event-specific `attemptId`, event `id` | Task lifecycle, attempts, policy decisions, evidence envelopes, permissions, and recovery-visible task state | Raw model messages, Tool Calls, or Tool Results already owned by Runtime Events |
 | `TaskRunProjection` | Fold of one `taskRunId` event stream | Current task read model derived from Task Events | Independent facts outside its source Task Events |
@@ -93,6 +94,8 @@ session / invocation / AgentRun / turn     TaskRun / attempt
                               |
                    workspace + target snapshot
 ```
+
+Model spend has exactly one authority: a `ModelCallAttempt` is committed to the AgentRun stream, and everything the Usage surface reads is a projection of that stream, never a parallel write. The projection may fall behind — a failed upsert, a crash between the two — and that is recoverable, because re-deriving a run from the stream and upserting on `attemptId` is idempotent. Recovery is driven by a pending marker written before the projection is attempted, so it survives a crash rather than depending on an error handler running; the residual gap is the window between committing to the authority and writing that marker, which only a full sweep of the stream would close. A read model that cannot be rebuilt from the authority is a second source of truth wearing a different name. Per-turn token aggregates on `RuntimeEvent` and the `token_usage` `SessionEvent` remain projections for replay and recovery; they are not accounting, and accounting is not derived from them. The pre-cutover `LlmCallRecord` table is frozen: it is never migrated into the canonical ledger, because its schema cannot express `usageBasis` or `costBasis` and a migration would have to record unpriced spend as a zero cost. All-time answers therefore sum both sources and report how much came from each, until the old table ages out of the queried range.
 
 Task Events may reference a Runtime trajectory. They must not reproduce it. Projections may summarize either ledger, but their trust comes from source coverage that can be checked against the owning ledger.
 

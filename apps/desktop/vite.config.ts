@@ -2,7 +2,6 @@ import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
 
 /**
  * PR-ICONS-FULL-REPLACE-0 (WAWQAQ msg `60064e2d` 2026-06-24): point the
@@ -19,7 +18,7 @@ const UI_SRC = resolve(REPO_ROOT, 'packages/ui/src');
 export default defineConfig({
   root: 'src/renderer',
   base: './',
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [
@@ -27,7 +26,6 @@ export default defineConfig({
       { find: '@maka/ui/artifact-preview-registry', replacement: resolve(UI_SRC, 'artifact-preview-registry.ts') },
       { find: '@maka/ui/assistant-stream', replacement: resolve(UI_SRC, 'assistant-stream.ts') },
       { find: '@maka/ui/maka-uri', replacement: resolve(UI_SRC, 'maka-uri.ts') },
-      { find: '@maka/ui/smooth-stream', replacement: resolve(UI_SRC, 'smooth-stream.ts') },
       { find: /^@maka\/ui$/, replacement: resolve(UI_SRC, 'index.ts') },
     ],
   },
@@ -38,5 +36,9 @@ export default defineConfig({
     // dist-renderer, leaving those side-files intact. See check-stale-dist.mjs.
     outDir: '../../dist-renderer',
     emptyOutDir: true,
+    // Electron 43 embeds Chromium 150. Preserve native light-dark() so Astryx
+    // tokens resolve against the nearest Theme color-scheme; downleveling the
+    // function computes both branches at :root before that scope is known.
+    cssTarget: 'chrome150',
   },
 });

@@ -9,72 +9,75 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Search,
-  SquarePen,
 } from '@maka/ui/icons';
 import {
-  Button as UiButton,
-  Menu,
-  MenuItem,
-  MenuPopup,
-  MenuTrigger,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
+  IconButton,
   useUiLocale,
 } from '@maka/ui';
+import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
+import { Icon } from '@astryxdesign/core/Icon';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
+import {
+  SideNavCollapseButton,
+  type SideNavImperativeCollapseHandle,
+} from '@astryxdesign/core/SideNav';
+import { useRef, useState, type RefObject } from 'react';
 import { getShellCopy } from './locales/shell-copy';
+
+/**
+ * Match SideNavItem collapsed/expanded icon slot: Astryx `renderIconSlot`
+ * uses size `sm` (1rem) + color `secondary`. Titlebar follows that recipe
+ * — not raw Lucide size props — so chrome and sidebar share one glyph look.
+ */
+function ChromeIcon(props: { icon: typeof Search }) {
+  return <Icon icon={props.icon} size="sm" color="secondary" />;
+}
 
 export function AppShellTopbarActions(props: {
   sidebarCollapsed: boolean;
+  sidebarHandleRef: RefObject<SideNavImperativeCollapseHandle | null>;
+  /* Settings has its own navigation column; the session-sidebar toggle is
+     meaningless there. */
+  sidebarToggleHidden?: boolean;
   onOpenSearchModal(): void;
-  onCollapseSidebar(): void;
-  onExpandSidebar(): void;
-  onCreateSession(): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   return (
-    <div className="maka-shell-topbar-rail" aria-label={copy.windowActions}>
-      <Tooltip>
-        <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
-          type="button"
+    <div className="maka-shell-topbar-rail" data-maka-contract="shell-topbar-rail" aria-label={copy.windowActions}>
+      <Tooltip content={copy.searchConversations}>
+        <IconButton
+          label={copy.searchConversations}
+          icon={<ChromeIcon icon={Search} />}
+          variant="ghost"
+          size="md"
           className="maka-titlebar-action"
           data-maka-search-trigger="true"
           onClick={props.onOpenSearchModal}
-          aria-label={copy.searchConversations}
-        >
-          <Search aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipContent>{copy.searchConversations}</TooltipContent>
+        />
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
-          type="button"
+      {!props.sidebarToggleHidden && (
+      <Tooltip content={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}>
+        <SideNavCollapseButton
+          handleRef={props.sidebarHandleRef}
+          label={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}
           className="maka-titlebar-action"
-          onClick={props.sidebarCollapsed ? props.onExpandSidebar : props.onCollapseSidebar}
-          aria-label={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}
           aria-expanded={!props.sidebarCollapsed}
         >
-          {props.sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
-        </TooltipTrigger>
-        <TooltipContent>{props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}</TooltipContent>
+          {props.sidebarCollapsed ? (
+            <ChromeIcon icon={PanelLeftOpen} />
+          ) : (
+            <ChromeIcon icon={PanelLeftClose} />
+          )}
+        </SideNavCollapseButton>
       </Tooltip>
-      {props.sidebarCollapsed && (
-        <Tooltip>
-          <TooltipTrigger
-            render={<UiButton variant="quiet" size="icon-sm" />}
-            type="button"
-            className="maka-titlebar-action"
-            onClick={props.onCreateSession}
-            aria-label={copy.newTask}
-          >
-            <SquarePen aria-hidden="true" />
-          </TooltipTrigger>
-          <TooltipContent>{copy.newTask}</TooltipContent>
-        </Tooltip>
       )}
+      {/* Collapsed "new task" lives on the SideNav rail (SessionSidebarNav),
+          not here — a third titlebar button duplicated the rail icon and made
+          left-cluster width state-dependent for drag-region math. */}
     </div>
   );
 }
@@ -91,50 +94,55 @@ export function AppShellWorkspaceTopActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   const workbarLabel = props.workbarCollapsed ? copy.expandWorkbar : copy.collapseWorkbar;
+  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const scheduleAfterMenuClose = (intent: () => void) => {
+    pendingMenuIntentRef.current = intent;
+  };
 
   return (
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <Menu>
-        <MenuTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
-          type="button"
-          className="maka-titlebar-action"
-          aria-label={copy.moreActions}
-        >
-          <MoreHorizontal aria-hidden="true" />
-        </MenuTrigger>
-        <MenuPopup align="end" sideOffset={4}>
-          <MenuItem onClick={props.onOpenFeedback}>
-            <MessageCircleQuestion aria-hidden="true" />
-            <span>{copy.feedback}</span>
-          </MenuItem>
-          <MenuItem onClick={props.onOpenPalette}>
-            <Grid3X3 aria-hidden="true" />
-            <span>{copy.openCommandPalette}</span>
-          </MenuItem>
-          <MenuItem onClick={props.onOpenHelp}>
-            <HelpCircle aria-hidden="true" />
-            <span>{copy.openHelp}</span>
-          </MenuItem>
-          <MenuItem onClick={props.onOpenHealth}>
-            <CircleGauge aria-hidden="true" />
-            <span>{copy.openHealth}</span>
-          </MenuItem>
-        </MenuPopup>
-      </Menu>
+      <DropdownMenu
+        isMenuOpen={menuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (open) return;
+          const intent = pendingMenuIntentRef.current;
+          pendingMenuIntentRef.current = null;
+          if (intent) window.requestAnimationFrame(intent);
+        }}
+        button={{
+          label: copy.moreActions,
+          icon: <ChromeIcon icon={MoreHorizontal} />,
+          isIconOnly: true,
+          variant: 'ghost',
+          size: 'md',
+          className: 'maka-titlebar-action',
+        }}
+      >
+          <DropdownMenuItem icon={<ChromeIcon icon={MessageCircleQuestion} />} label={copy.feedback} onClick={() => scheduleAfterMenuClose(props.onOpenFeedback)} />
+          <DropdownMenuItem icon={<ChromeIcon icon={Grid3X3} />} label={copy.openCommandPalette} onClick={() => scheduleAfterMenuClose(props.onOpenPalette)} />
+          <DropdownMenuItem icon={<ChromeIcon icon={HelpCircle} />} label={copy.openHelp} onClick={() => scheduleAfterMenuClose(props.onOpenHelp)} />
+          <DropdownMenuItem icon={<ChromeIcon icon={CircleGauge} />} label={copy.openHealth} onClick={() => scheduleAfterMenuClose(props.onOpenHealth)} />
+      </DropdownMenu>
       {props.workbarAvailable && (
-        <Tooltip>
-          <TooltipTrigger
-            render={<UiButton variant="quiet" size="icon-sm" />}
-            type="button"
+        <Tooltip content={workbarLabel}>
+          <IconButton
+            label={workbarLabel}
+            icon={
+              props.workbarCollapsed ? (
+                <ChromeIcon icon={PanelRightOpen} />
+              ) : (
+                <ChromeIcon icon={PanelRightClose} />
+              )
+            }
+            variant="ghost"
+            size="md"
             className="maka-titlebar-action"
             onClick={props.onToggleWorkbar}
-            aria-label={workbarLabel}
             aria-expanded={!props.workbarCollapsed}
-          >
-            {props.workbarCollapsed ? <PanelRightOpen aria-hidden="true" /> : <PanelRightClose aria-hidden="true" />}
-          </TooltipTrigger>
-          <TooltipContent>{workbarLabel}</TooltipContent>
+          />
         </Tooltip>
       )}
     </div>

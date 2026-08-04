@@ -1,6 +1,15 @@
-import { useEffect, useRef, useState, type Ref } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
-import { Button, Input, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  IconButton,
+  InputGroup,
+  InputGroupText,
+  type InputGroupProps,
+  TextInput,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { useActionGuard } from './use-action-guard';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
@@ -9,8 +18,8 @@ import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy
  * PR-SETTINGS-PASSWORD-INPUT-REACH-0 (WAWQAQ msg `51c7b4ff` screenshots):
  * masked text input with a trailing Eye / EyeOff toggle and an
  * optional Copy button. Shared across Settings credential surfaces
- * (bot tokens / app secrets, provider API keys, Open Gateway token,
- * network proxy password, web search API key) so the visibility +
+ * (bot tokens / app secrets, provider API keys, network proxy password,
+ * web search API key) so the visibility +
  * clipboard affordance is consistent.
  *
  * Initial state is masked. Toggle and copy are both real focusable
@@ -23,11 +32,14 @@ export function PasswordInput(props: {
   value: string;
   onChange(next: string): void;
   placeholder?: string;
-  ariaLabel?: string;
-  ariaDescribedBy?: string;
-  disabled?: boolean;
-  inputRef?: Ref<HTMLInputElement>;
+  label: string;
+  isLabelHidden?: boolean;
+  description?: string;
+  status?: InputGroupProps['status'];
+  isRequired?: boolean;
+  isDisabled?: boolean;
   onBlur?(): void;
+  hasAutoFocus?: boolean;
 }) {
   const copy = getSettingsPreferencesCopy(useUiLocale()).password;
   const toast = useToast();
@@ -73,47 +85,52 @@ export function PasswordInput(props: {
     }
   }
   return (
-    <div className="settingsPasswordField">
-      <Input
-        ref={props.inputRef}
+    // No isRequired on the group label: Astryx hardcodes an English "· Required"
+    // and our labels already carry 「（必填）」; the semantic lives on the inner input.
+    <InputGroup
+      label={props.label}
+      description={props.description}
+      isLabelHidden={props.isLabelHidden}
+      isDisabled={props.isDisabled}
+      status={props.status}
+    >
+      <TextInput
         type={visible ? 'text' : 'password'}
         value={props.value}
-        onChange={(event) => props.onChange(event.currentTarget.value)}
+        onChange={(value) => props.onChange(value)}
         onBlur={props.onBlur}
         placeholder={props.placeholder}
-        aria-label={props.ariaLabel}
-        aria-describedby={props.ariaDescribedBy}
-        autoComplete="off"
-        spellCheck={false}
-        disabled={props.disabled}
+        label={copy.value}
+        isLabelHidden
+        isRequired={props.isRequired}
+        isDisabled={props.isDisabled}
+        status={props.status ? { type: props.status.type } : undefined}
+        hasAutoFocus={props.hasAutoFocus}
       />
-      <div className="settingsPasswordActions">
-        {props.value && !props.disabled && (
-          <Button
-            type="button"
-            variant="quiet"
-            size="icon-sm"
-            disabled={copying}
+      {/* InputGroupText: the sanctioned addon segment — bare IconButtons break the group's caps. */}
+      <InputGroupText>
+        {props.value && !props.isDisabled && (
+          <IconButton
+            variant="ghost"
+            size="sm"
+            isDisabled={copying}
             onClick={() => void copyValue()}
-            aria-label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
-          >
-            {justCopied
+            label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
+            icon={justCopied
               ? <Check size={16} aria-hidden="true" />
               : <Copy size={16} aria-hidden="true" />}
-          </Button>
+          />
         )}
-        <Button
-          type="button"
-          variant="quiet"
-          size="icon-sm"
+        <IconButton
+          variant="ghost"
+          size="sm"
           onClick={() => setVisible((current) => !current)}
-          disabled={props.disabled}
-          aria-label={visible ? copy.hide : copy.show}
+          isDisabled={props.isDisabled}
+          label={visible ? copy.hide : copy.show}
           aria-pressed={visible}
-        >
-          {visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
-        </Button>
-      </div>
-    </div>
+          icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+        />
+      </InputGroupText>
+    </InputGroup>
   );
 }

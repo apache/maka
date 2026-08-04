@@ -9,13 +9,8 @@
 //   - The look-and-feel never matches the rest of the app.
 //   - macOS IME and accessibility behavior with native prompts is uneven.
 //
-// PR6 (#520): toast surface migrated to Base UI Toast (Provider + manager +
-// Viewport/Root/Title/Description/Action/Close). The confirm dialog + its
-// queue stay hand-written (Base UI Toast has no confirm concept). The
-// `useToast()` / `toast.confirm()` API is unchanged so callers don't move.
-// `render` props keep the existing <ol>/<li role="alert">/<strong>/<small>/
-// <Button> DOM shape so .maka-toast CSS and the toast-position-fixed +
-// toast-confirm-keyboard contracts keep holding.
+// Astryx owns the layer viewport, toast lifecycle/visuals, and alert-dialog
+// semantics. Maka keeps only the product API and the confirmation queue.
 
 import {
   createContext,
@@ -27,9 +22,16 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Toast as BaseToast } from '@base-ui/react/toast';
-import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from './icons.js';
-import { AlertDialogContent, AlertDialogRoot, Button } from './ui.js';
+import { AlertDialog as AstryxAlertDialog } from '@astryxdesign/core/AlertDialog';
+import { Button as AstryxButton } from '@astryxdesign/core/Button';
+import { LayerProvider } from '@astryxdesign/core/Layer';
+import { HStack, VStack } from '@astryxdesign/core/Stack';
+import { Text } from '@astryxdesign/core/Text';
+import {
+  useToast as useAstryxToast,
+  type ToastDismissFn,
+} from '@astryxdesign/core/Toast';
+import { AlertCircle, AlertTriangle, CheckCircle2, Info } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
@@ -68,55 +70,70 @@ export interface ToastApi {
 }
 
 interface PendingConfirm extends ConfirmInput {
-  // Stable id so <ConfirmDialog key={request.id}> remounts on queue advance —
-  // AlertDialog `defaultOpen` + `initialFocus` only fire on mount, so without
-  // a key the second confirm inherits the first's focus (stuck on the
-  // confirm button → Enter mis-confirms a dangerous op).
   id: string;
   resolve(result: boolean): void;
 }
 
+interface ActiveConfirm {
+  request: PendingConfirm;
+  phase: 'mounting' | 'open' | 'closing';
+  result?: boolean;
+}
+
 const DEFAULT_DURATION = 4000;
-const TOAST_POSITION = 'bottom-right';
 const ToastContext = createContext<ToastApi | null>(null);
 
 export function ToastProvider(props: { children: ReactNode }) {
-  const toastManager = useMemo(() => BaseToast.createToastManager(), []);
-  const [confirmState, setConfirmState] = useState<PendingConfirm | null>(null);
+  return (
+    <LayerProvider toast={{ position: 'bottomEnd' }}>
+      <ToastController>{props.children}</ToastController>
+    </LayerProvider>
+  );
+}
+
+function ToastController(props: { children: ReactNode }) {
+  const showToast = useAstryxToast();
+  const [confirmState, setConfirmState] = useState<ActiveConfirm | null>(null);
   const activeConfirmRef = useRef<PendingConfirm | null>(null);
   const confirmQueueRef = useRef<PendingConfirm[]>([]);
+  const dismissByIdRef = useRef(new Map<string, ToastDismissFn>());
   const idSeed = useRef(0);
 
   const push = useCallback(
     (input: ToastInput): string => {
       const id = `t${++idSeed.current}`;
-      toastManager.add({
-        id,
-        title: input.title,
-        description: input.description,
-        type: input.variant ?? 'info',
-        timeout: input.duration ?? DEFAULT_DURATION,
-        actionProps: input.action
-          ? {
-              onClick: () => {
-                input.action!.onClick();
-                toastManager.close(id);
-              },
-              children: input.action.label,
-            }
-          : undefined,
+      let dismissCurrent: ToastDismissFn | undefined;
+      const duration = input.duration ?? DEFAULT_DURATION;
+      dismissCurrent = showToast({
+        uniqueID: id,
+        body: <ToastBody input={input} />,
+        type: input.variant === 'error' ? 'error' : 'info',
+        isAutoHide: duration > 0,
+        autoHideDuration: duration > 0 ? duration : DEFAULT_DURATION,
+        endContent: input.action ? (
+          <AstryxButton
+            variant="ghost"
+            size="sm"
+            label={input.action.label}
+            onClick={() => {
+              input.action?.onClick();
+              dismissCurrent?.();
+            }}
+          />
+        ) : undefined,
+        onHide: () => {
+          dismissByIdRef.current.delete(id);
+        },
       });
+      dismissByIdRef.current.set(id, dismissCurrent);
       return id;
     },
-    [toastManager],
+    [showToast],
   );
 
-  const dismiss = useCallback(
-    (id: string) => {
-      toastManager.close(id);
-    },
-    [toastManager],
-  );
+  const dismiss = useCallback((id: string) => {
+    dismissByIdRef.current.get(id)?.();
+  }, []);
 
   const confirm = useCallback((input: ConfirmInput): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -126,22 +143,55 @@ export function ToastProvider(props: { children: ReactNode }) {
         return;
       }
       activeConfirmRef.current = request;
-      setConfirmState(request);
+      setConfirmState({ request, phase: 'mounting' });
     });
   }, []);
 
-  const resolveConfirm = useCallback(
+  const requestConfirmResult = useCallback(
     (result: boolean) => {
       const current = activeConfirmRef.current;
       if (!current) return;
-      activeConfirmRef.current = null;
-      current.resolve(result);
-      const next = confirmQueueRef.current.shift() ?? null;
-      activeConfirmRef.current = next;
-      setConfirmState(next);
+      setConfirmState((state) => {
+        if (
+          !state ||
+          state.request !== current ||
+          state.phase !== 'open'
+        ) {
+          return state;
+        }
+        return { ...state, phase: 'closing', result };
+      });
     },
     [],
   );
+
+  useEffect(() => {
+    if (!confirmState) return;
+    if (confirmState.phase === 'mounting') {
+      const frame = window.requestAnimationFrame(() => {
+        setConfirmState((state) =>
+          state?.request === confirmState.request &&
+          state.phase === 'mounting'
+            ? { ...state, phase: 'open' }
+            : state,
+        );
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (confirmState.phase !== 'closing') return;
+    const frame = window.requestAnimationFrame(() => {
+      const current = activeConfirmRef.current;
+      if (!current || current !== confirmState.request) return;
+      activeConfirmRef.current = null;
+      current.resolve(confirmState.result ?? false);
+      const next = confirmQueueRef.current.shift() ?? null;
+      activeConfirmRef.current = next;
+      setConfirmState(
+        next ? { request: next, phase: 'mounting' } : null,
+      );
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [confirmState]);
 
   useEffect(() => {
     return () => {
@@ -151,6 +201,7 @@ export function ToastProvider(props: { children: ReactNode }) {
         pending.resolve(false);
       }
       confirmQueueRef.current = [];
+      dismissByIdRef.current.clear();
     };
   }, []);
 
@@ -169,12 +220,14 @@ export function ToastProvider(props: { children: ReactNode }) {
 
   return (
     <ToastContext.Provider value={api}>
-      <BaseToast.Provider toastManager={toastManager} timeout={DEFAULT_DURATION} limit={Number.POSITIVE_INFINITY}>
-        {props.children}
-        <ToastViewport />
-      </BaseToast.Provider>
+      {props.children}
       {confirmState && (
-        <ConfirmDialog key={confirmState.id} request={confirmState} onResolve={resolveConfirm} />
+        <ConfirmDialog
+          key={confirmState.request.id}
+          request={confirmState.request}
+          isOpen={confirmState.phase === 'open'}
+          onResolve={requestConfirmResult}
+        />
       )}
     </ToastContext.Provider>
   );
@@ -197,69 +250,26 @@ const VARIANT_ICON: Record<ToastVariant, ReactNode> = {
   error: <AlertCircle size={16} aria-hidden="true" />,
 };
 
-function ToastViewport() {
-  const copy = getSharedUiCopy(useUiLocale()).toast;
-  const { toasts } = BaseToast.useToastManager();
-  if (toasts.length === 0) return null;
+function ToastBody({ input }: { input: ToastInput }) {
+  const variant = input.variant ?? 'info';
   return (
-    <BaseToast.Viewport
-      render={
-        <ol
-          className="maka-toast-viewport"
-          data-position={TOAST_POSITION}
-          role="region"
-          aria-live="polite"
-          aria-label={copy.notifications}
-        />
-      }
-    >
-      {toasts.map((entry) => {
-        const variant = (entry.type as ToastVariant) ?? 'info';
-        return (
-          // role="alert" lets screen readers announce each toast even
-          // though the parent <ol> already has aria-live="polite" —
-          // browsers / AT pairings handle the live region announce
-          // better when the live items themselves carry an alert
-          // role rather than relying on the region inheritance.
-          <BaseToast.Root
-            key={entry.id}
-            toast={entry}
-            render={
-              <li
-                className="maka-toast"
-                data-variant={variant}
-                role="alert"
-              />
-            }
-          >
-            <span className="maka-toast-icon" aria-hidden="true">{VARIANT_ICON[variant]}</span>
-            <div className="maka-toast-copy">
-              <BaseToast.Title render={<strong />}>{entry.title}</BaseToast.Title>
-              {entry.description && (
-                <BaseToast.Description render={<small />}>{entry.description}</BaseToast.Description>
-              )}
-            </div>
-            {entry.actionProps && (
-              <BaseToast.Action
-                {...entry.actionProps}
-                render={<Button type="button" variant="secondary" size="sm" />}
-              />
-            )}
-            <BaseToast.Close
-              aria-label={copy.closeNotification}
-              render={<Button type="button" variant="quiet" size="icon-sm" />}
-            >
-              <X size={14} aria-hidden="true" />
-            </BaseToast.Close>
-          </BaseToast.Root>
-        );
-      })}
-    </BaseToast.Viewport>
+    <HStack gap={2} vAlign="start">
+      <span aria-hidden="true">{VARIANT_ICON[variant]}</span>
+      <VStack gap={0.5}>
+        <Text type="label" weight="semibold" display="block">{input.title}</Text>
+        {input.description && (
+          <Text type="supporting" display="block">{input.description}</Text>
+        )}
+      </VStack>
+    </HStack>
   );
 }
 
-function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boolean): void }) {
-  const cancelRef = useRef<HTMLButtonElement>(null);
+function ConfirmDialog(props: {
+  request: PendingConfirm;
+  isOpen: boolean;
+  onResolve(result: boolean): void;
+}) {
   const copy = getSharedUiCopy(useUiLocale()).toast;
   const {
     title,
@@ -269,44 +279,19 @@ function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boole
     destructive = false,
   } = props.request;
 
-  // Escape / backdrop close = cancel (onResolve(false)). Base UI AlertDialog
-  // disables pointer dismissal; Escape triggers onOpenChange(false).
   return (
-    <AlertDialogRoot defaultOpen onOpenChange={(open) => { if (!open) props.onResolve(false); }}>
-      <AlertDialogContent
-        className="maka-modal maka-confirm-modal"
-        aria-labelledby="maka-confirm-title"
-        aria-describedby={description ? 'maka-confirm-description' : undefined}
-        initialFocus={cancelRef}
-        showClose={false}
-      >
-        <div className="maka-modal-header">
-          <h2 className="maka-modal-title" id="maka-confirm-title">
-            {destructive ? <AlertTriangle size={18} aria-hidden="true" /> : null}
-            {title}
-          </h2>
-          {description && (
-            <p className="maka-modal-subtitle" id="maka-confirm-description">{description}</p>
-          )}
-        </div>
-        <div className="maka-modal-footer">
-          <Button
-            ref={cancelRef}
-            type="button"
-            variant="ghost"
-            onClick={() => props.onResolve(false)}
-          >
-            {cancelLabel}
-          </Button>
-          <Button
-            type="button"
-            variant={destructive ? 'destructive' : 'default'}
-            onClick={() => props.onResolve(true)}
-          >
-            {confirmLabel}
-          </Button>
-        </div>
-      </AlertDialogContent>
-    </AlertDialogRoot>
+    <AstryxAlertDialog
+      className="maka-confirm-modal"
+      isOpen={props.isOpen}
+      onOpenChange={(isOpen) => {
+        if (!isOpen) props.onResolve(false);
+      }}
+      title={title}
+      description={description ?? ''}
+      cancelLabel={cancelLabel}
+      actionLabel={confirmLabel}
+      actionVariant={destructive ? 'destructive' : 'primary'}
+      onAction={() => props.onResolve(true)}
+    />
   );
 }

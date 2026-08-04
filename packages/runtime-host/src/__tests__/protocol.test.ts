@@ -45,8 +45,15 @@ describe('Runtime Host bootstrap protocol', () => {
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
+      'agent.graph.operator.query',
+      'agent.graph.query',
+      'agent.graph.stop',
       'artifact.delete',
       'artifact.query',
+      'automation.mutate',
+      'automation.query',
+      'client.capability.replace',
+      'client.capability.unregister',
       'connection.catalog.create',
       'connection.catalog.query',
       'connection.catalog.remove',
@@ -57,16 +64,37 @@ describe('Runtime Host bootstrap protocol', () => {
       'credential.vault.delete',
       'credential.vault.query',
       'credential.vault.set',
+      'execution.inspect.query',
+      'execution.inspect.resolve',
+      'goal.control',
+      'goal.query',
       'host.status',
       'interaction.answer',
       'interaction.query',
       'memory.mutate',
       'memory.query',
+      'oauth.login.cancel',
+      'oauth.login.query',
+      'oauth.login.start',
       'pricing.mutate',
       'pricing.query',
       'queue.retract',
       'runtime.policy.mutate',
       'runtime.policy.query',
+      'runtime.resource.controller.acquire',
+      'runtime.resource.controller.control',
+      'runtime.resource.controller.release',
+      'runtime.resource.query',
+      'runtime.resource.stop',
+      'session.branch.create',
+      'session.catalog.query',
+      'session.configuration.update',
+      'session.create',
+      'session.lifecycle.set',
+      'session.metadata.update',
+      'session.read_marker.set',
+      'session.remove',
+      'session.revision.create',
       'skill.catalog.mutate',
       'skill.catalog.preview-update',
       'skill.catalog.query',
@@ -111,7 +139,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('keeps subscription operations closed, ready-only, and queue Epoch correlated', () => {
-    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 1);
+    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 3);
     assert.deepEqual(
       Object.fromEntries(
         (['subscription.open', 'subscription.close'] as const).map((operation) => [
@@ -486,6 +514,50 @@ describe('Runtime Host bootstrap protocol', () => {
     }
   });
 
+  test('encodes a legal large sandbox boundary Interaction without disconnecting the client', () => {
+    const identity = 'i'.repeat(128);
+    const frame = {
+      requestId: 'q'.repeat(128),
+      operation: 'interaction.query' as const,
+      ok: true as const,
+      result: {
+        schemaVersion: 1 as const,
+        interactionId: identity,
+        sessionId: identity,
+        turnId: identity,
+        runId: identity,
+        revision: 2 as const,
+        request: {
+          kind: 'sandbox_boundary' as const,
+          expansion: {
+            filesystem: {
+              entries: Array.from({ length: 32 }, (_, index) => ({
+                path: `/opt/service-${index}/${'x'.repeat(1_980)}`,
+                access: 'read' as const,
+                scope: 'exact' as const,
+              })),
+            },
+          },
+          justification: '\u0001'.repeat(2_000),
+        },
+        status: 'answered' as const,
+        outcome: {
+          kind: 'sandbox_boundary_decision' as const,
+          decision: 'allow' as const,
+          status: 'approved' as const,
+          committedAt: Number.MAX_SAFE_INTEGER,
+        },
+      },
+    };
+
+    const canonical = decodeHostFrame(frame);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(canonical)}\n`, 'utf8') > 64 * 1024);
+    const encoded = encodeProtocolFrame(canonical);
+    assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES);
+    const [decoded] = new ProtocolFrameDecoder().push(encoded);
+    assert.deepEqual(decodeHostFrame(decoded), canonical);
+  });
+
   test('decodes split UTF-8 and multiple newline-delimited frames without an unbounded tail', () => {
     const decoder = new ProtocolFrameDecoder();
     const wire = Buffer.from(
@@ -675,6 +747,7 @@ describe('Runtime Host bootstrap protocol', () => {
           attachments: [attachment],
           quotes,
         },
+        turnOrchestration: { mode: 'swarm', source: 'host_api' } as const,
       },
     };
     const start = decodeClientFrame(JSON.parse(encodeProtocolFrame(startWire).toString('utf8')));
@@ -685,6 +758,7 @@ describe('Runtime Host bootstrap protocol', () => {
         sessionId: 'session-1',
         turnId: 'turn-1',
         content: { text: 'model text', attachments: [attachment], quotes },
+        turnOrchestration: { mode: 'swarm', source: 'host_api' },
       },
     });
     assert.notEqual(start.input.content.quotes, quotes);
@@ -710,6 +784,32 @@ describe('Runtime Host bootstrap protocol', () => {
           requestId: 'legacy-start',
           operation: 'turn.start',
           input: { sessionId: 'session-1', turnId: 'turn-1', text: 'legacy' },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...startWire,
+          input: {
+            ...startWire.input,
+            turnOrchestration: { mode: 'parallel', source: 'host_api' },
+          },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...startWire,
+          input: {
+            ...startWire.input,
+            turnOrchestration: {
+              mode: 'swarm',
+              source: 'host_api',
+              inherited: true,
+            },
+          },
         }),
       isInvalidFrame,
     );
@@ -1040,9 +1140,10 @@ function attachmentRef(
 
 function continuitySnapshot(hostEpoch: string) {
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
       sessionId: 'session-1',
+      metadataRevision: 1,
       status: 'running' as const,
       createdAt: 1,
       lastUsedAt: 2,
@@ -1055,6 +1156,7 @@ function continuitySnapshot(hostEpoch: string) {
       runId: 'run-1',
       status: 'running' as const,
     },
+    goal: null,
     queue: {
       hostEpoch,
       queueRevision: 1,

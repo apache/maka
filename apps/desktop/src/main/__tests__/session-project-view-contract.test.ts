@@ -1,6 +1,4 @@
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { filterLinkedSessionTree, projectLinkedSessionTree } from '@maka/core';
 import { sessionMatchesNavSelection } from '../../renderer/session-nav-filter.js';
@@ -9,12 +7,6 @@ import {
   deriveWorktreeSessionIds,
 } from '../../renderer/session-project-grouping.js';
 import { makeSessionSummary, renderSessionListPanel } from './session-list-render-helpers.js';
-
-const REPO_ROOT = resolve(process.cwd(), '..', '..');
-
-async function readRepo(path: string): Promise<string> {
-  return readFile(join(REPO_ROOT, path), 'utf8');
-}
 
 describe('sidebar project view mode', () => {
   it('groups by stable project identity, retains empty projects, and marks only worktree sessions', () => {
@@ -83,7 +75,7 @@ describe('sidebar project view mode', () => {
     assert.deepEqual([...deriveWorktreeSessionIds([session], [surviving])], ['late-session']);
   });
 
-  it('renders compact project rows, lifecycle menus, archived disclosure, and one worktree icon', async () => {
+  it('renders compact project rows, lifecycle menus, archived disclosure, and one worktree icon', () => {
     const active = project('project-active', 'Active project', [
       { path: '/work/active', isWorktree: false },
     ]);
@@ -131,59 +123,24 @@ describe('sidebar project view mode', () => {
     });
 
     assert.match(markup, />Active project</);
-    assert.match(markup, /maka-list-project-count[^>]*>1</);
+    assert.match(markup, /astryx-badge[^>]*>1</);
     assert.match(markup, />Missing project</);
     assert.match(markup, /aria-label="Active project 项目操作"/);
     assert.match(markup, /aria-label="Missing project 项目操作"/);
+    // Empty projects are leaves (no fabricated collapsible chrome).
+    const missingChunk = markup.slice(
+      markup.indexOf('data-project-id="project:project-missing"'),
+      markup.indexOf('data-project-id="project:project-missing"') + 1200,
+    );
+    assert.doesNotMatch(missingChunk, /aria-expanded=/);
+    // Active project with sessions is a real disclosure.
+    assert.match(markup, /aria-expanded="true"/);
+    // Archived disclosure stays collapsible: children always mount so Astryx
+    // can keep the chevron; default collapsed hides them with inert/aria-hidden.
     assert.match(markup, />已归档项目</);
-    assert.doesNotMatch(markup, />Archived project</);
+    assert.match(markup, /inert[\s\S]*Archived project|aria-hidden="true"[\s\S]*Archived project/);
+    assert.match(markup, />Archived project</);
     assert.equal((markup.match(/lucide-folder-git-2/g) ?? []).length, 1);
-
-    const list = await readRepo('packages/ui/src/session-history-list.tsx');
-    assert.match(list, /project\.available \?[\s\S]*copy\.projectNewTask[\s\S]*copy\.projectRelink/);
-    assert.match(list, /copy\.projectRename/);
-    assert.match(list, /copy\.projectArchive/);
-    assert.match(list, /copy\.projectRestore/);
-  });
-
-  it('keeps collapsed project rows on the same vertical rhythm as conversation rows', async () => {
-    const projects = [
-      project('project-a', 'Project A', [{ path: '/work/a', isWorktree: false }]),
-      project('project-b', 'Project B', [{ path: '/work/b', isWorktree: false }]),
-    ];
-    const markup = renderSessionListPanel({
-      sessions: [],
-      groups: deriveProjectGroups([], projects, 'zh'),
-      viewMode: 'project',
-    });
-    const css = await readRepo('apps/desktop/src/renderer/styles/sidebar.css');
-
-    assert.equal(
-      (markup.match(/data-variant="project" data-expanded="false"/g) ?? []).length,
-      2,
-      'empty project groups should expose their collapsed state to the layout',
-    );
-    assert.match(
-      ruleBody(
-        css,
-        '.maka-list-group[data-variant="project"] + .maka-list-group[data-variant="project"]',
-      ),
-      /margin-top:\s*0/,
-      'adjacent collapsed projects should not add spacing beyond the list stack gap',
-    );
-    assert.match(
-      ruleBody(
-        css,
-        '.maka-list-group[data-variant="project"][data-expanded="true"] + .maka-list-group[data-variant="project"]',
-      ),
-      /margin-top:\s*var\(--space-3\)/,
-      'an expanded project may keep a group break before the next project',
-    );
-    assert.match(
-      ruleBody(css, '.maka-list-project-heading'),
-      /min-height:\s*var\(--h-control-lg\)/,
-    );
-    assert.match(ruleBody(css, '.maka-list-row'), /min-height:\s*var\(--h-control-lg\)/);
   });
 
   it('renders project groups, the unassigned bucket, and keeps the conversation fallback path', () => {
@@ -224,16 +181,19 @@ describe('sidebar project view mode', () => {
     assert.doesNotMatch(fallbackMarkup, /maka-list-group-label/);
   });
 
-  it('moves the conversation/project controls into the session-list heading menu', async () => {
+  it('puts the conversation/project switch inline in the session-list heading', () => {
     const markup = renderSessionListPanel({ viewMode: 'conversation' });
-    const panel = await readRepo('packages/ui/src/session-list-panel.tsx');
 
-    assert.match(markup, /class="maka-session-list-heading"[^>]*>会话/);
+    assert.match(markup, /maka-session-heading-section/);
     assert.match(markup, /aria-label="会话分组方式"/);
-    assert.doesNotMatch(markup, />按状态|>按项目/);
-    assert.match(panel, /<MenuRadioGroup value=\{viewMode\}/);
-    assert.match(panel, /<MenuRadioItem value="conversation">\{copy\.groupByTime\}/);
-    assert.match(panel, /<MenuRadioItem value="project">\{copy\.groupByProject\}/);
+    // Icon-only segments: the label names each one for assistive tech, and must
+    // not also render as visible text beside the icon in a 260px rail.
+    const segments = markup.match(/<button(?=[^>]*role="radio")[\s\S]*?<\/button>/g) ?? [];
+    assert.equal(segments.length, 2, 'both grouping axes must render as segments');
+    for (const segment of segments) {
+      assert.doesNotMatch(segment, />按时间<|>按项目</);
+    }
+    assert.match(markup, /aria-checked="true"[^>]*aria-label="按时间"/);
   });
 
   it('renders lifecycle state only on non-active conversation rows', () => {
@@ -260,80 +220,14 @@ describe('sidebar project view mode', () => {
     });
 
     assert.equal((markup.match(/>会话</g) ?? []).length, 1);
-    assert.equal((markup.match(/maka-list-group-label/g) ?? []).length, 0);
-    assert.equal((markup.match(/maka-list-row-status-icon/g) ?? []).length, 2);
-    assert.match(markup, /data-status="running"/);
-    assert.match(markup, /data-status="blocked"/);
-    assert.doesNotMatch(markup, /data-status="active"/);
-    assert.doesNotMatch(markup, />进行中|>需要处理|>可继续|>已完成/);
-  });
-
-  it('uses the sidebar UI type tier for the session-list heading', async () => {
-    const css = await readRepo('apps/desktop/src/renderer/styles/sidebar.css');
-
-    assert.match(
-      css,
-      /\.maka-session-list-heading\s*\{[^}]*font-size:\s*var\(--font-size-ui\)/s,
-    );
-  });
-
-  it('keeps module-selected conversation controls out of the flexible list track', async () => {
-    const css = await readRepo('apps/desktop/src/renderer/styles/sidebar.css');
-
-    assert.doesNotMatch(
-      css,
-      /\.maka-session-panel\[data-content="module"\]\s*\{[^}]*grid-template-rows:/s,
-      'module selection must not replace the shared five-row sidebar grid',
-    );
-  });
-
-  it('renders project groups as folder headers with an initial four-session preview', () => {
-    const sessions = Array.from({ length: 5 }, (_, index) => makeSessionSummary({
-      id: `project-session-${index + 1}`,
-      name: `Project chat ${index + 1}`,
-      projectId: 'project-testzcode',
-      cwd: 'D:\\work\\testzcode',
-      lastMessageAt: 10 - index,
-    }));
-
-    const markup = renderSessionListPanel({
-      sessions,
-      groups: deriveProjectGroups(sessions, [
-        project('project-testzcode', 'testzcode', [
-          { path: 'D:\\work\\testzcode', isWorktree: false },
-        ]),
-      ]),
-      viewMode: 'project',
-    });
-
-    // The heading is a UiButton (Base UI <button>); BaseButton reorders props
-    // so class is not guaranteed to precede aria-*. Assert the disclosure
-    // contract on the matched opening tag without assuming attribute order.
-    const headingTag = markup.match(/<button[^>]*maka-list-project-heading[^>]*>/)?.[0];
-    assert.ok(headingTag, 'project heading button must render');
-    assert.match(headingTag, /aria-expanded="true"/);
-    assert.match(headingTag, /aria-controls="maka-list-group-body-project:[^"]+"/);
-    assert.match(markup, /lucide-folder-open/);
-    assert.match(markup, />testzcode</);
-    assert.match(markup, /Project chat 1/);
-    assert.match(markup, /Project chat 4/);
-    assert.doesNotMatch(markup, /Project chat 5/);
-    assert.match(markup, /显示更多/);
-  });
-
-  it('does not reopen a manually collapsed project when only session data refreshes', async () => {
-    const list = await readRepo('packages/ui/src/session-history-list.tsx');
-    const projectGroup =
-      list.match(
-        /function ProjectSessionGroup\([\s\S]*?\nfunction SessionTreeRow/,
-      )?.[0] ?? '';
-
-    assert.doesNotMatch(
-      projectGroup,
-      /useEffect\(\(\) => \{[\s\S]*setExpanded\(true\)[\s\S]*props\.sessions/,
-    );
-    assert.match(projectGroup, /observedActiveSessionId/);
-    assert.match(projectGroup, /activeSessionId !== disclosure\.observedActiveSessionId/);
+    assert.equal((markup.match(/data-session-status="running"/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-session-status="blocked"/g) ?? []).length, 1);
+    assert.doesNotMatch(markup, /data-session-status="active"/);
+    // Active rows keep an empty end slot; only non-active statuses mount a StatusDot.
+    const activeChunk =
+      markup.match(/data-session-id="active-session"[\s\S]*?(?=data-session-id="|$)/)?.[0] ?? '';
+    assert.ok(activeChunk.includes('Active session'));
+    assert.doesNotMatch(activeChunk, /data-session-status=/);
   });
 
   it('renders linked child sessions directly beneath their parent as normal selectable rows', () => {
@@ -347,7 +241,14 @@ describe('sidebar project view mode', () => {
     assert.ok(markup.indexOf('Parent task') < markup.indexOf('Child agent'));
     assert.match(markup, /data-subagent="true"/);
     assert.match(markup, /data-session-id="child"/);
-    assert.match(markup, /lucide-bot/);
+    assert.match(markup, /data-maka-contract="session-row"/);
+    // Nested subagent rows use native SideNavItem Bot icon (lucide-bot).
+    const childChunk =
+      markup.match(/data-session-id="child"[\s\S]*?(?=data-session-id="|$)/)?.[0] ?? '';
+    assert.match(childChunk, /lucide-bot/);
+    const parentChunk =
+      markup.match(/data-session-id="parent"[\s\S]*?(?=data-session-id="child"|$)/)?.[0] ?? '';
+    assert.doesNotMatch(parentChunk, /lucide-bot/);
   });
 
   it('applies Chats, Flagged, and Archived filters independently to parents and children', () => {
@@ -417,30 +318,34 @@ describe('sidebar project view mode', () => {
     );
   });
 
-  it('AppShell derives only project groups and lets conversation mode use the flat list', async () => {
-    const appShell = await readRepo('apps/desktop/src/renderer/app-shell.tsx');
-    const panel = await readRepo('packages/ui/src/session-list-panel.tsx');
+  it('keeps a running parent visible when preview metadata is temporarily unavailable', () => {
+    const parent = makeSessionSummary({
+      id: 'running-parent',
+      name: 'Running parent',
+      status: 'running',
+      lastMessageAt: undefined,
+    });
+    const child = makeSessionSummary({
+      id: 'completed-child',
+      name: 'Completed child',
+      status: 'active',
+      lastMessageAt: 50,
+      subagentParent: childRelation(parent.id),
+    });
+    const tree = filterLinkedSessionTree(
+      projectLinkedSessionTree([parent, child]),
+      (session) =>
+        sessionMatchesNavSelection(session, { section: 'sessions', filter: 'chats' }),
+    );
 
-    assert.match(
-      appShell,
-      /const sidebarSessionTree = useMemo\([\s\S]*projectRevisionLinkedSessionTree\(sessions, activeId\)[\s\S]*\[sessions, activeId\]/,
+    assert.deepEqual(
+      tree.roots.map((session) => session.id),
+      [parent.id],
     );
-    assert.match(
-      appShell,
-      /const visibleSessionTree = useMemo\([\s\S]*filterLinkedSessionTree\(sidebarSessionTree,[\s\S]*sessionMatchesNavSelection\(session, navSelection\)[\s\S]*\[sidebarSessionTree, navSelection[^\]]*\]/,
+    assert.deepEqual(
+      tree.childrenByParentId.get(parent.id)?.map((session) => session.id),
+      [child.id],
     );
-    assert.doesNotMatch(appShell, /deriveSessionStatusGroups|sessionStatusGroups/);
-    assert.match(appShell, /deriveProjectGroups\(visibleSessions, projects, uiLocale\)/);
-    assert.match(appShell, /deriveWorktreeSessionIds\(visibleSessions, projects\)/);
-    assert.match(appShell, /groups=\{viewMode === 'project' \? sessionProjectGroups : undefined\}/);
-    assert.match(
-      appShell,
-      /childSessionsByParentId=\{visibleSessionTree\.childrenByParentId\}/,
-    );
-    assert.doesNotMatch(appShell, /projectGroups=\{/);
-
-    assert.doesNotMatch(panel, /projectGroups\?:/);
-    assert.doesNotMatch(panel, /id: 'all'/);
   });
 
   it('project group ids stay DOM-safe and distinct when the cwd has spaces or shared basenames', () => {
@@ -484,21 +389,22 @@ describe('sidebar project view mode', () => {
     assert.ok(groups.some((g) => g.label === 'repo-a'), 'expected a repo-a label');
     assert.ok(groups.some((g) => g.label === 'x'), 'expected an x label');
 
-    // Rendered markup: group body ids and aria-controls stay whitespace-free and pair up.
+    // Project SideNav rows carry the session ids under each project; group
+    // identity is the stable project:* id from deriveProjectGroups.
     const markup = renderSessionListPanel({
       sessions,
       groups,
       viewMode: 'project',
     });
-    const bodyIds = [...markup.matchAll(/id="maka-list-group-body-([^"]*)"/g)].map((m) => m[1]);
-    const controls = [...markup.matchAll(/aria-controls="maka-list-group-body-([^"]*)"/g)].map((m) => m[1]);
-    assert.ok(bodyIds.length >= 3, `expected at least 3 group body ids, got ${bodyIds.length}`);
-    for (const id of [...bodyIds, ...controls]) {
-      assert.match(id, /^[A-Za-z0-9:_-]+$/, `rendered group id must be DOM-safe, got: ${id}`);
+    for (const id of ids) {
+      assert.match(
+        markup,
+        new RegExp(`data-project-id="${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`),
+      );
     }
-    for (const control of controls) {
-      assert.ok(bodyIds.includes(control), `aria-controls references a missing body id: ${control}`);
-    }
+    assert.match(markup, /data-session-id="a"/);
+    assert.match(markup, /data-session-id="b"/);
+    assert.match(markup, /data-session-id="c"/);
   });
 });
 
@@ -514,13 +420,6 @@ function project(
     available: true,
     preferredPath: locations[0]?.path,
   };
-}
-
-function ruleBody(css: string, selector: string): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const body = new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`).exec(css)?.[1];
-  assert.ok(body, `${selector} rule must exist`);
-  return body;
 }
 
 function childRelation(parentSessionId: string) {

@@ -13,7 +13,7 @@
  *
  * Locked scope (PR-RENDER-3a review gate, @kenji msg 2aa3cfc3):
  *
- *   - Pure mapping. Input is a narrow `ArtifactPreviewInput`, never
+ *   - Pure mapping. TextInput is a narrow `ArtifactPreviewInput`, never
  *     the full `ArtifactRecord` (so the registry can't see
  *     `relativePath` or anything path-like — registry decisions
  *     can't accidentally leak filesystem state).

@@ -37,24 +37,6 @@ export async function writeSettings(
     settings.usage.range = 'all';
     settings.usage.showDetails = true;
   }
-  // Settings → 联网搜索: a configured Tavily key so the live-query controls
-  // are enabled. The query itself is answered by the typed fixture in
-  // `main/web-search-e2e-fixture.ts` — no network round-trip in e2e.
-  if (scenario === 'settings-search') {
-    settings.webSearch = {
-      ...settings.webSearch,
-      enabled: true,
-      providers: {
-        ...settings.webSearch.providers,
-        tavily: {
-          ...settings.webSearch.providers.tavily,
-          apiKey: 'e2e-tavily-fixture-key',
-          credentialSource: 'saved',
-          credentialStatus: 'valid',
-        },
-      },
-    };
-  }
   await writeJson(join(workspaceRoot, 'settings.json'), settings);
 }
 
@@ -293,9 +275,9 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
   const dayFromMs = Date.UTC(2026, 4, 21, 0, 0, 0);
   const dayToMs = Date.UTC(2026, 4, 22, 0, 0, 0);
   const daily: DailyReviewArchive = {
-    id: '2026-05-21-daily',
+    id: '2026-05-21-1d',
     day: { fromMs: dayFromMs, toMs: dayToMs },
-    mode: 'daily',
+    range: 1,
     status: 'ok',
     generatedAt: now - 10 * 60_000,
     trigger: 'manual',
@@ -316,8 +298,9 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
   };
   const deep: DailyReviewArchive = {
     ...daily,
-    id: '2026-05-21-deep',
-    mode: 'deep',
+    id: '2026-05-15-7d',
+    day: { fromMs: Date.UTC(2026, 4, 15, 0, 0, 0), toMs: dayToMs },
+    range: 7,
     generatedAt: now - 5 * 60_000,
     trigger: 'cron',
     totals: {

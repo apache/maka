@@ -1,5 +1,9 @@
 import { describe, test } from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentRunHeader, RuntimeEvent, StoredMessage } from '@maka/core';
+import { createSqliteRuntimeStore } from '@maka/storage';
 import { expect } from '../test-helpers.js';
 import {
   RUNTIME_EVENT_BACKFILL_STATE_KEY,
@@ -36,6 +40,73 @@ function recoveryMarker(event: RuntimeEvent): Record<string, unknown> | undefine
 }
 
 describe('runtime event backfill', () => {
+  test('persists legacy tool history through the canonical generic RuntimeEvent writer', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-runtime-backfill-sqlite-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      const result = backfillRuntimeEventsFromStoredMessages({
+        run,
+        messages: [
+          {
+            type: 'tool_call',
+            id: 'legacy-tool-call',
+            turnId: 'turn-1',
+            ts: 120,
+            toolName: 'Read',
+            activityKind: 'read',
+            displayName: 'Read file',
+            intent: 'inspect',
+            args: { path: 'README.md' },
+          },
+          {
+            type: 'tool_result',
+            id: 'legacy-tool-result',
+            turnId: 'turn-1',
+            ts: 130,
+            toolUseId: 'legacy-tool-call',
+            isError: false,
+            content: { kind: 'text', text: 'file body' },
+            durationMs: 42,
+          },
+          {
+            type: 'turn_state',
+            id: 'legacy-state',
+            turnId: 'turn-1',
+            ts: 180,
+            status: 'completed',
+            partialOutputRetained: true,
+          },
+        ],
+        newId: nextIds(),
+        now: () => 999,
+      });
+
+      for (const event of result.events) {
+        await store.appendRuntimeEvent(event.sessionId, event.runId, event);
+      }
+
+      const persisted = await store.readImmutableRuntimeEvents(run.sessionId, run.runId);
+      expect(persisted.map((event) => event.content?.kind ?? event.status)).toEqual([
+        'function_call',
+        'function_response',
+        'completed',
+      ]);
+      expect(persisted[0]?.refs).toEqual({
+        storedMessageId: 'legacy-tool-call',
+        toolCallId: 'legacy-tool-call',
+      });
+      expect(persisted[1]?.refs).toEqual({
+        storedMessageId: 'legacy-tool-result',
+        toolCallId: 'legacy-tool-call',
+      });
+      expect(persisted.some((event) => event.actions?.toolDispatch !== undefined)).toBe(false);
+      expect(persisted.some((event) => event.refs?.operationId !== undefined)).toBe(false);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('prefers the persisted Run invocation identity over a caller fallback', () => {
     const result = backfillRuntimeEventsFromStoredMessages({
       run: { ...run, invocationId: 'persisted-invocation' },
@@ -252,8 +323,10 @@ describe('runtime event backfill', () => {
     expect(result.events[7]?.actions?.endInvocation).toBe(true);
     expect(result.events[7]?.refs).toEqual({ storedMessageId: 'legacy-state' });
 
-    for (const event of result.events) {
-      expect(recoveryMarker(event)).toMatchObject({
+    expect(recoveryMarker(result.events[3]!)).toBe(undefined);
+    expect(recoveryMarker(result.events[4]!)).toBe(undefined);
+    for (const index of [0, 1, 2, 5, 6, 7]) {
+      expect(recoveryMarker(result.events[index]!)).toMatchObject({
         kind: 'runtime_event_backfill',
         source: 'legacy_stored_message',
         reason: 'missing_runtime_event_ledger',

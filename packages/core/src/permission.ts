@@ -39,6 +39,7 @@ export type ToolCategory =
   | 'privileged' //        sudo, chmod, chown, kill, systemctl
   | 'browser' //           embedded-browser observe→act on the user's logged-in sessions
   | 'computer_use' //      host-level observation and input on the user's real applications
+  | 'client_capability' // client-provided open-world capability with untrusted metadata
   | 'custom_tool' //       our own session-scoped tools without a stricter category hint
   | 'subagent'; //         read-only delegated exploration tools
 
@@ -54,6 +55,7 @@ export const TOOL_CATEGORIES: readonly ToolCategory[] = [
   'privileged',
   'browser',
   'computer_use',
+  'client_capability',
   'custom_tool',
   'subagent',
 ];
@@ -377,6 +379,8 @@ export function permissionReasonForCategory(c: ToolCategory): PermissionRequest[
       return 'browser';
     case 'computer_use':
       return 'computer_use';
+    case 'client_capability':
+      return 'custom';
     default:
       return 'custom';
   }

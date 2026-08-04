@@ -57,7 +57,6 @@ function makeOptions(partial: Partial<AppShellCommandListOptions> = {}): AppShel
       sessionId: activeId,
       navSection: 'sessions',
     }),
-    closePalette: () => undefined,
     composerRef: { current: null },
     createSession: () => undefined,
     startModeSession: async () => false,
@@ -109,6 +108,23 @@ describe('app-shell command freeze + live session rows (#1045)', () => {
       commands.some((command) => command.id.startsWith('perm:set-')),
       false,
     );
+  });
+
+  test('module commands leave palette dismissal to the selecting control', () => {
+    const selections: unknown[] = [];
+    const commands = buildAppShellCommandList({
+      current: makeOptions({
+        setNavSelection: (selection) => {
+          selections.push(selection);
+        },
+      }),
+    });
+
+    commands.find((command) => command.id === 'nav:daily-review')?.run();
+
+    assert.deepEqual(selections, [
+      { section: 'automations', module: 'daily-review' },
+    ]);
   });
 
   test('base command identity stays stable across message churn; export run uses latest messages', async () => {

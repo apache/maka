@@ -8,6 +8,8 @@
 export {
   SessionManager,
   BackendRegistry,
+  SessionConfigurationRevisionConflictError,
+  SessionConfigurationTransitionError,
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
@@ -17,6 +19,9 @@ export type {
   PlanSafeBoundaryContinuationInput,
   SessionManagerDeps,
   RuntimeContinuationLifecycleEvent,
+  SessionConfigurationStoreUpdate,
+  SessionConfigurationTransitionRequest,
+  SessionConfigurationTransitionErrorCode,
   SessionStore,
   StrictRecoveryAgentRunStore,
   StrictRecoverySessionStore,
@@ -40,6 +45,19 @@ export type {
   AgentOutputResult,
   StopSessionInput,
 } from './session-manager.js';
+export {
+  archivedToolResultContainsConversationOwnedReferences,
+  cloneConversationRuntimeLedger,
+  createConversationCopySlice,
+  prepareConversationRuntimeLedgerCopy,
+} from './conversation-copy.js';
+export type {
+  CloneConversationRuntimeLedgerInput,
+  CloneConversationRuntimeLedgerResult,
+  ConversationCopyArtifactReferenceMap,
+  ConversationCopySlice,
+  ConversationRuntimeLedgerCopyPlan,
+} from './conversation-copy.js';
 export type { SubagentExecutionRef } from './subagent-execution.js';
 export {
   AGENT_GRAPH_RECORD_FACETS,
@@ -133,12 +151,26 @@ export type {
   RenderAgentGraphScheduledWorkPromptInput,
 } from './stream-graph-schedule-reconcile.js';
 export {
+  AGENT_GRAPH_HANDOFF_SCHEMA_VERSION,
+  DEFAULT_AGENT_GRAPH_HANDOFF_MAX_CONCLUSION_BYTES,
+  DEFAULT_AGENT_GRAPH_HANDOFF_MAX_TOTAL_CONCLUSION_BYTES,
+  hydrateAgentGraphInputHandoffs,
+  renderAgentGraphScheduledWorkPrompt,
+} from './stream-graph-handoff.js';
+export type {
+  AgentGraphHandoffRecordReference,
+  AgentGraphInputHandoff,
+  HydrateAgentGraphInputHandoffsInput,
+} from './stream-graph-handoff.js';
+export {
   AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,
+  recoverAgentGraphSupervisorContextOverflow,
 } from './agent-graph-supervisor-wake.js';
 export type {
   AgentGraphSupervisorContextRecoveryDiagnostic,
   AgentGraphSupervisorPartialResult,
+  AgentGraphSupervisorTurnOutcome,
   AgentGraphSupervisorWakeDiagnostic,
   AgentGraphSupervisorWakeInput,
 } from './agent-graph-supervisor-wake.js';
@@ -146,6 +178,7 @@ export {
   AGENT_GRAPH_SUPERVISOR_TOOL_NAMES,
   UPDATE_AGENT_GRAPH_TOOL_NAME,
   VIEW_AGENT_GRAPH_TOOL_NAME,
+  YIELD_AGENT_GRAPH_TOOL_NAME,
   buildAgentGraphSupervisorTools,
   compileAgentGraphScheduleUpdate,
   projectAgentGraphSchedule,
@@ -163,6 +196,8 @@ export type {
   BuildAgentGraphSupervisorToolsInput,
   UpdateAgentGraphToolInput,
   UpdateAgentGraphToolResult,
+  YieldAgentGraphToolInput,
+  YieldAgentGraphToolResult,
   ViewAgentGraphToolInput,
   ViewAgentGraphToolResult,
 } from './stream-graph-supervisor-tools.js';
@@ -201,11 +236,13 @@ export type {
   BuildAgentGraphClientReadModelInput,
 } from './stream-graph-read-model.js';
 export {
+  AgentGraphClientOperationError,
   AgentGraphCoordinator,
   agentGraphIdForRootSession,
   topologyFromProvisions,
 } from './stream-graph-coordinator.js';
 export type {
+  AgentGraphClientOperationErrorCode,
   AgentGraphClientChangedEvent,
   AgentGraphClientChangedListener,
   AgentGraphClientChangedReason,
@@ -231,6 +268,7 @@ export { renderSwarmModePrompt } from './swarm-mode.js';
 export { renderGraphModePrompt } from './graph-mode.js';
 export {
   RuntimeHostedRootConflictError,
+  RuntimeHostedRootUnavailableError,
   RuntimeMessageAuthorityInvariantError,
 } from './message-authority.js';
 export type {
@@ -242,6 +280,7 @@ export type {
 } from './message-authority.js';
 export { isRuntimeHostedRootAuthority } from './message-authority.js';
 export {
+  bindRuntimeInteractionRun,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
   RuntimeInteractionFailStopError,
@@ -260,6 +299,8 @@ export type {
   RuntimeInteractionRunFacet,
   RuntimeInteractionRunIdentity,
   RuntimeInteractionRunOwner,
+  RuntimeSandboxBoundaryContinuation,
+  RuntimeSandboxBoundaryOutcome,
   RuntimeUserQuestionAnswer,
   RuntimeUserQuestionClosureReason,
   RuntimeUserQuestionContinuation,
@@ -308,7 +349,11 @@ export type {
 } from './provider-request-telemetry.js';
 export type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export { buildMcpTools, mcpProxyToolName } from './mcp-tools.js';
-export type { McpToolProvider, BuildMcpToolsOptions } from './mcp-tools.js';
+export type {
+  McpToolProvider,
+  McpToolInvocationContext,
+  BuildMcpToolsOptions,
+} from './mcp-tools.js';
 export { buildAskUserQuestionTool } from './ask-user-question-tool.js';
 export { buildRequestSandboxBoundaryTool } from './sandbox-boundary-tool.js';
 export { buildSubmitPlanTool, buildUpdatePlanTool, buildCancelPlanTool } from './plan-tools.js';
@@ -362,6 +407,8 @@ export type {
 } from './pi-agent-backend.js';
 
 export { buildBuiltinTools } from './builtin-tools.js';
+export { queryTavily } from './tavily-search.js';
+export { buildWebSearchTool } from './web-search-tool.js';
 export type {
   BuildBuiltinToolsOptions,
   EditingProtocol,
@@ -515,6 +562,7 @@ export {
   MIN_PTY_ROWS,
   SHELL_RUN_CONTEXT_SUMMARY_LIMIT,
   SHELL_RUN_RESOURCE_PREFIX,
+  ShellRunPtyControlClosedError,
   isWellFormedTerminalInput,
   isShellRunResourceRef,
   shellRunResourceRef,
@@ -679,6 +727,7 @@ export {
   getBuiltinAgentDefinition,
   getBuiltinAgentDefinitionByProfile,
   listBuiltinAgentDefinitions,
+  listRunnableBuiltinAgentDefinitions,
   requireBuiltinAgentDefinition,
   requireBuiltinAgentDefinitionByProfile,
 } from './agent-catalog.js';
@@ -692,9 +741,13 @@ export type {
   AgentInvocationMode,
   AgentProfile,
   AgentProfileContract,
+  SubagentPresetAvailability,
+  SubagentPresetListItem,
   AgentWorkspaceMode,
   AgentWriteBackMode,
 } from './agent-catalog.js';
+export { createConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
+export type { ConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
 export {
   AGENT_SWARM_DEFAULT_CONCURRENCY,
   AGENT_SWARM_MAX_CONCURRENCY,
@@ -725,42 +778,6 @@ export {
   buildSubagentProjectionTools,
   buildSubagentSpawnTool,
 } from './subagent-tools.js';
-export {
-  BUILTIN_EXPERT_TEAMS,
-  EXPERT_AGENT_ID_PREFIX,
-  buildExpertAgentId,
-  buildExpertTeamLeadSystemPromptFragment,
-  buildExpertTeamMemberRoster,
-  getExpertAgentDefinition,
-  getExpertTeam,
-  isExpertAgentId,
-  listExpertTeams,
-  materializeExpertAgentDefinition,
-  parseExpertAgentId,
-  requireResolvedAgentDefinition,
-  resolveAgentDefinition,
-} from './expert-catalog.js';
-export type { ExpertDefinition, ExpertTeamDefinition, ExpertTeamLead } from './expert-catalog.js';
-export {
-  EXPERT_DISPATCH_TOOL_NAME,
-  buildExpertDispatchTool,
-  buildExpertDispatchToolForTeamId,
-} from './expert-tools.js';
-export type { ExpertDispatchToolDeps } from './expert-tools.js';
-export {
-  AGENT_TEAM_CHILD_TOOL_NAMES,
-  AGENT_TEAM_LEAD_TOOL_NAMES,
-  TEAM_INBOX_TOOL_NAME,
-  TEAM_MESSAGE_TOOL_NAME,
-  TEAM_TASK_CLAIM_TOOL_NAME,
-  TEAM_TASK_LIST_TOOL_NAME,
-} from './agent-team-tool-names.js';
-export {
-  buildAgentTeamChildTools,
-  buildAgentTeamLeadTools,
-  buildAgentTeamTools,
-} from './agent-team-tools.js';
-export type { AgentTeamToolDeps } from './agent-team-tools.js';
 export {
   LEGACY_TASK_CREATE_TOOL_NAME,
   LEGACY_TASK_UPDATE_TOOL_NAME,
@@ -843,9 +860,62 @@ export type {
   ResolveAndPersistOAuthSubscriptionTokensInput,
   ResolveOAuthSubscriptionAccessTokenInput,
 } from './subscription-credentials.js';
+export {
+  OAUTH_LOGIN_PROVIDER_CONFIG,
+  OAuthTokenEndpointError,
+  buildOAuthLoginAuthorization,
+  exchangeOAuthAuthorizationCode,
+  isDeterministicOAuthCredentialRejection,
+  pkceChallengeFromVerifier,
+  readBoundedOAuthJson,
+  requestOAuthEndpointJson,
+  requestOAuthTokenEndpointJson,
+} from './oauth-login.js';
+export {
+  isOAuthEnrollmentProviderEnabled,
+  OAuthDeviceAuthorizationExpiredError,
+} from './oauth-provider-contracts.js';
+export type { OAuthEnrollmentProvider } from './oauth-provider-contracts.js';
+export {
+  pollXaiDeviceAuthorization,
+  startXaiDeviceAuthorization,
+} from './xai-oauth-enrollment.js';
+export type {
+  PollXaiDeviceAuthorizationInput,
+  StartXaiDeviceAuthorizationInput,
+  XaiDeviceAuthorization,
+} from './xai-oauth-enrollment.js';
+export {
+  exchangeCodexDeviceAuthorizationCode,
+  pollCodexDeviceAuthorization,
+  startCodexDeviceAuthorization,
+} from './codex-oauth-enrollment.js';
+export type {
+  CodexDeviceAuthorization,
+  CodexDeviceAuthorizationGrant,
+  ExchangeCodexDeviceAuthorizationCodeInput,
+  PollCodexDeviceAuthorizationInput,
+  StartCodexDeviceAuthorizationInput,
+} from './codex-oauth-enrollment.js';
+export type {
+  ExchangeOAuthAuthorizationCodeInput,
+  OAuthLoginAuthorization,
+  OAuthLoginAuthorizationInput,
+  OAuthLoginPresentationKind,
+  OAuthLoginProvider,
+  OAuthTokenEndpointErrorCategory,
+  OAuthEndpointJsonResponse,
+  OAuthTokenEndpointJsonRequestInput,
+  OAuthTokenEndpointJsonResponse,
+} from './oauth-login.js';
 export { buildSubscriptionModelFetch } from './subscription-model-fetch.js';
 export type { SubscriptionModelFetchInput } from './subscription-model-fetch.js';
-export { extractCodexAccountId, openAiCodexHeaders } from './subscription-auth.js';
+export {
+  extractCodexAccountClaims,
+  extractCodexAccountId,
+  openAiCodexHeaders,
+} from './subscription-auth.js';
+export type { CodexAccountClaims } from './subscription-auth.js';
 export {
   compactionDecisionDiagnosticPatch,
   compactionDecisionToDiagnostic,
@@ -1087,13 +1157,21 @@ export { materializeSession, applyAppendedMessage, setToolStatus } from './mater
 export type { ToolActivityItem, ChatItem, SessionViewModel } from './materializer.js';
 
 export { AsyncEventQueue } from './async-queue.js';
-export { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from './fake-backend.js';
+export {
+  FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_MERMAID_HOSTILE_PROMPT,
+  FAKE_MERMAID_PROMPT,
+  FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
+  FAKE_WAIT_FOR_STEERING_PROMPT,
+  FakeBackend,
+} from './fake-backend.js';
 
 export {
   BUILTIN_PRICING,
   buildPricingLookup,
   computeCost,
   getBuiltinPricing,
+  llmCallUsageFields,
   recordLlmCall,
   recordToolInvocation,
 } from './telemetry/index.js';
@@ -1134,10 +1212,11 @@ export type {
 // ───────────────────────────────────────────────────────────────────────────
 // Runtime event and recovery public seam.
 //
-// Subpath imports (e.g. `@maka/runtime/runtime-runner`) remain canonical;
-// the barrel re-exports below are for convenience. `InvocationContext` is the
-// canonical runner/flow spine exported from `./invocation-context.js` and used
-// by the formal `AgentFlow` seam.
+// `InvocationContext` is the canonical runner/flow spine exported from
+// `./invocation-context.js` and used by the formal `AgentFlow` seam.
+// RuntimeRunner's normal-invocation API remains public through this barrel;
+// its admitted-continuation capability is package-internal and intentionally
+// has no package subpath or barrel export.
 // ───────────────────────────────────────────────────────────────────────────
 
 // invocation-context.ts — runner spine types + providers.
@@ -1177,6 +1256,10 @@ export type {
   StoredMessageEventContext,
   RuntimeEventToDraftOptions,
 } from './runtime-event-adapters.js';
+
+// session-trace-projection.ts — per-session causal trace for the Inspector (#1625).
+export { projectSessionTrace, attributeTurnFailure } from './session-trace-projection.js';
+export type { SessionTraceInput } from './session-trace-projection.js';
 
 // runtime-event-read-model.ts — side-by-side RuntimeEvent read projection.
 export {
@@ -1234,13 +1317,17 @@ export type {
 
 // execution-inspect.ts — payload-safe, versioned CLI inspection documents.
 export {
-  AGENT_RUN_INSPECT_DOCUMENT_VERSION,
-  SESSION_INSPECT_DOCUMENT_VERSION,
   inspectAgentRunDocument,
   inspectSessionDocument,
   renderAgentRunInspectTree,
   renderSessionInspectTree,
 } from './execution-inspect.js';
+export {
+  AGENT_RUN_INSPECT_DOCUMENT_VERSION,
+  SESSION_INSPECT_DOCUMENT_VERSION,
+  isAgentRunInspectDocument,
+  isSessionInspectDocument,
+} from '@maka/core/execution-inspect';
 export type {
   AgentRunInspectCompactionCheckpoint,
   AgentRunInspectDocument,
@@ -1249,10 +1336,12 @@ export type {
   AgentRunInspectToolSummary,
   ExecutionInspectDiagnostic,
   ExecutionInspectSeverity,
-  InspectSessionDocumentOptions,
-  SessionHeaderReader,
   SessionInspectDocument,
   SessionInspectSummary,
+} from '@maka/core/execution-inspect';
+export type {
+  InspectSessionDocumentOptions,
+  SessionHeaderReader,
 } from './execution-inspect.js';
 
 // model-history.ts — policy-driven model-history projection.
@@ -1300,6 +1389,13 @@ export type {
   ToolOperation,
   ToolOperationStatus,
 } from './runtime-resume.js';
+export { buildContinuationReplaySegment } from './continuation-replay.js';
+export type {
+  ContinuationReplayBlockReason,
+  ContinuationReplaySegmentPlanV1,
+  ContinuationReplaySegmentResult,
+  ContinuationReplaySegmentV1,
+} from './continuation-replay.js';
 
 export { resolveRuntimeRecovery } from './recovery-resolver.js';
 export type {
@@ -1405,9 +1501,12 @@ export {
   computeNextCronFire,
   computeJitter,
   matchesCronField,
+  settleAutomationAttempt,
 } from './automation-state.js';
 export type {
+  AutomationAttemptOutcome,
   AutomationDefinition,
+  AutomationExecutionTemplate,
   AutomationKind,
   AutomationSchedule,
   AutomationStatus,
@@ -1419,8 +1518,17 @@ export {
   DEFER_WINDOW_MS,
 } from './automation-scheduler.js';
 export type { AutomationSchedulerDeps, AutomationFireResult } from './automation-scheduler.js';
-export { buildAutomationTool, AUTOMATION_TOOL_NAME } from './automation-tools.js';
-export type { AutomationToolDeps } from './automation-tools.js';
+export {
+  buildAutomationAuthorityTool,
+  buildAutomationTool,
+  AUTOMATION_TOOL_NAME,
+  AUTOMATION_MODEL_LIST_MAX_ITEMS,
+} from './automation-tools.js';
+export type {
+  AutomationAuthorityToolDeps,
+  AutomationToolAuthority,
+  AutomationToolDeps,
+} from './automation-tools.js';
 export { evaluateAutomationCanFire, HEARTBEAT_IDLE_STATUSES } from './automation-can-fire.js';
 export type { CanFireSessionHeader, EvaluateAutomationCanFireDeps } from './automation-can-fire.js';
 
@@ -1432,21 +1540,35 @@ export {
   TERMINAL_GOAL_STATUSES,
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_BLOCK_CAP,
+  GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_REASON_TEXT_LIMIT,
+  goalCheckpoint,
+  isGoalTextWithinLimit,
+  truncateGoalText,
 } from './goal-state.js';
 export type {
   GoalCheckpoint,
+  GoalControlLease,
   GoalManagerDeps,
   GoalPauseOptions,
   GoalState,
   GoalStatus,
+  GoalTextLimit,
 } from './goal-state.js';
 export {
   evaluateGoal,
   buildGoalEvaluationPrompt,
   parseGoalEvaluation,
+  generateGoalEvaluationModelCall,
   DEFAULT_EVALUATOR_TIMEOUT_MS,
 } from './goal-evaluator.js';
-export type { GoalEvaluation, GoalEvaluatorDeps } from './goal-evaluator.js';
+export type {
+  GoalEvaluation,
+  GoalEvaluationModelInput,
+  GoalEvaluationModelResult,
+  GoalEvaluatorDeps,
+  GoalEvaluatorResource,
+} from './goal-evaluator.js';
 export {
   buildGoalTools,
   GOAL_SET_TOOL_NAME,
@@ -1464,8 +1586,8 @@ export {
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
-  GoalExternalTurnStart,
-  GoalExternalTurnSettler,
+  GoalObservedTurnStart,
+  GoalObservedTurnSettler,
   GoalSessionCloseOperation,
   GoalTaskGateDecision,
   GoalTaskGateDeps,
@@ -1571,6 +1693,7 @@ export type {
   SkillInvocationMode,
   SkillInvocationReceipt,
 } from './skill-invocation-receipt.js';
+export { skillInvocationInlineReferences } from './skill-invocation-receipt.js';
 export { isPathInside, isSafeSkillId, toRelative } from './path-containment.js';
 export type { PathInsideApi } from './path-containment.js';
 export type {

@@ -28,8 +28,8 @@ export { CREDENTIAL_SCHEMA_VERSION, createFileCredentialStore } from '@maka/stor
  * then reads.
  *
  * Scope — this migrates EVERY secret in `credentials.json`, not just API keys:
- * bot tokens, bot app secrets, the proxy password, the gateway token, and the
- * Tavily key all decrypt to plaintext too. That is required, not incidental —
+ * bot tokens, bot app secrets, the proxy password, and the Tavily key all
+ * decrypt to plaintext too. That is required, not incidental —
  * the desktop abandons `safeStorage` entirely (the live store is now the
  * pure-Node `FileCredentialStore`), so any value left encrypted would become
  * permanently unreadable. The accepted at-rest posture for all of them is

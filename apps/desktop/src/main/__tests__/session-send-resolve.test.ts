@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { createArtifactStore } from '@maka/storage';
+import { createSqliteArtifactStore } from '@maka/storage';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import { resolveSessionSend } from '../session-send-resolve.js';
 import type { SessionHeader } from '@maka/core';
@@ -69,7 +69,7 @@ describe('resolveSessionSend', () => {
   test('readiness ok with items resolves and ingests attachments, consuming the token', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'send-ok-'));
     try {
-      const store = createArtifactStore(dir);
+      const store = createSqliteArtifactStore(dir);
       const approvals = createAttachmentApprovalRegistry();
       const file = join(dir, 'note.txt');
       await writeFile(file, 'hello');

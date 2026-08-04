@@ -212,8 +212,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
 
     const result = await executor.globFiles({ cwd, pattern: 'src/*.*', limit: 2 });
 
-    expect(result.files).toHaveLength(2);
-    expect(result.files.every((file) => file.startsWith('src/'))).toBe(true);
+    expect(result.files).toEqual(['src/a.ts', 'src/b.ts']);
   });
 
   test('greps file contents with rg-compatible no-match behavior', async () => {
@@ -239,7 +238,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
       timeoutMs: 5_000,
     });
 
-    expect(hit.matches.some((match) => match.includes('main.ts'))).toBe(true);
+    expect(hit.matches).toEqual([`${join(cwd, 'src', 'main.ts')}:1:export const token = 1;`]);
     expect(miss).toMatchObject({ matches: [] });
   });
 });

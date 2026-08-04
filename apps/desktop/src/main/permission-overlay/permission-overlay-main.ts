@@ -68,8 +68,9 @@ export function createPermissionOverlayMain(
   deps: PermissionOverlayMainDeps,
 ): PermissionOverlayController {
   let locale: UiLocale = 'en';
+  let iconDataUrl: string | null = null;
   const electron = requireElectron('electron') as Electron;
-  const { BrowserWindow, app, nativeImage, screen, systemPreferences } = electron;
+  const { BrowserWindow, app, screen, systemPreferences } = electron;
 
   function isGranted(id: DragGrantPermissionId): boolean {
     if (process.platform !== 'darwin') return false;
@@ -79,16 +80,18 @@ export function createPermissionOverlayMain(
     return systemPreferences.getMediaAccessStatus('screen') === 'granted';
   }
 
-  function appIconDataUrl(bundlePath: string | null): string | null {
+  async function resolveAppIconDataUrl(bundlePath: string | null): Promise<string | null> {
     if (!bundlePath) return null;
-    for (const name of ['icon.icns', 'electron.icns']) {
-      const candidate = join(bundlePath, 'Contents', 'Resources', name);
-      if (!existsSync(candidate)) continue;
-      const image = nativeImage.createFromPath(candidate);
-      if (image.isEmpty()) continue;
-      return image.resize({ width: 64, height: 64 }).toDataURL();
+    try {
+      // nativeImage.createFromPath does not decode .icns reliably. Asking
+      // macOS for the bundle icon returns the same image Finder and the TCC
+      // list display, and works for both Maka.app and Electron.app in dev.
+      const icon = await app.getFileIcon(bundlePath, { size: 'large' });
+      if (icon.isEmpty()) return null;
+      return icon.resize({ width: 64, height: 64 }).toDataURL();
+    } catch {
+      return null;
     }
-    return null;
   }
 
   const controller = createPermissionOverlayController({
@@ -101,7 +104,7 @@ export function createPermissionOverlayMain(
     },
     openSystemSettings: async (id) => {
       const result = await openSystemPermissionPane(id);
-      return result.ok ? { ok: true } : { ok: false, message: result.message ?? result.reason };
+      return result.ok ? { ok: true } : { ok: false, message: result.message };
     },
     isGranted,
     setInterval: (fn, ms) => setInterval(fn, ms),
@@ -118,7 +121,7 @@ export function createPermissionOverlayMain(
       return {
         permission: id,
         appName: app.getName(),
-        iconDataUrl: appIconDataUrl(bundlePath),
+        iconDataUrl,
         draggable: bundlePath !== null,
         copy: serializeCopy(locale, id, app.getName()),
       };
@@ -192,6 +195,12 @@ export function createPermissionOverlayMain(
       } catch (error) {
         console.warn('[permission-overlay] locale lookup failed, keeping', locale, error);
       }
+      const bundle = resolveAppBundle({
+        executablePath: app.getPath('exe'),
+        platform: process.platform,
+        exists: existsSync,
+      });
+      iconDataUrl = await resolveAppIconDataUrl(bundle.ok ? bundle.bundlePath : null);
       return controller.start(id);
     },
   };
@@ -231,7 +240,7 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
       exists: existsSync,
     });
 
-  win.webContents.on('ipc-message', (_event, channel, payload: unknown) => {
+  win.webContents.on('ipc-message', async (_event, channel, payload: unknown) => {
     if (channel === 'permission-overlay:dismiss') {
       if (!win.isDestroyed()) win.close();
       return;
@@ -272,10 +281,12 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
       if (!fromRenderer.isEmpty()) icon = fromRenderer;
     }
     if (icon.isEmpty()) {
-      const fallback = nativeImage.createFromPath(
-        join(resolved.bundlePath, 'Contents', 'Resources', 'icon.icns'),
-      );
-      if (!fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
+      try {
+        const fallback = await app.getFileIcon(resolved.bundlePath, { size: 'large' });
+        if (!fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
+      } catch {
+        // The file drag still works without a decorative drag image.
+      }
     }
 
     if (!win.isDestroyed()) win.webContents.startDrag({ file: resolved.bundlePath, icon });

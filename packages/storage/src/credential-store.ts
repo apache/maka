@@ -30,7 +30,6 @@ type StoredCredentialKind =
   | 'botToken'
   | 'botAppSecret'
   | 'proxyPassword'
-  | 'gatewayToken'
   | 'tavilyApiKey';
 export type CredentialKind =
   | 'api_key'
@@ -38,7 +37,6 @@ export type CredentialKind =
   | 'bot_token'
   | 'app_secret'
   | 'proxy_password'
-  | 'gateway_token'
   | 'tavily_api_key';
 
 /** Current on-disk schema version. Unknown versions fail closed on read. */
@@ -456,7 +454,6 @@ const STORED_CREDENTIAL_KINDS = [
   'botToken',
   'botAppSecret',
   'proxyPassword',
-  'gatewayToken',
   'tavilyApiKey',
 ] as const satisfies readonly StoredCredentialKind[];
 
@@ -472,8 +469,6 @@ function toStoredKind(kind: CredentialKind): StoredCredentialKind {
       return 'botAppSecret';
     case 'proxy_password':
       return 'proxyPassword';
-    case 'gateway_token':
-      return 'gatewayToken';
     case 'tavily_api_key':
       return 'tavilyApiKey';
   }

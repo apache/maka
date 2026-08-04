@@ -118,104 +118,50 @@ describe('prompt structural smoke report', () => {
     assert.deepEqual(report.failures, ['cost_ceiling_exceeded']);
   });
 
-  test('fails when decision rounds have no task evidence', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      events.push(
-        decisionEvent(`round-${index}`, 'discard', 'held_in_within_noise', 'run-1', {
-          decision: 'clean',
-        }),
-      );
+  test('requires task evidence from the same run and prompt after commit but before decision', () => {
+    const cleanDecision = (runId = 'run-1') =>
+      decisionEvent('round-1', 'discard', 'held_in_within_noise', runId, {
+        decision: 'clean',
+      });
+    const cases: Array<[string, FixedPromptWalEvent[]]> = [
+      ['missing task evidence', [committedEvent('round-1'), cleanDecision()]],
+      [
+        'infra-only evidence',
+        [committedEvent('round-1'), cleanDecision(), infraFailedEvent('round-1', 'task-1')],
+      ],
+      [
+        'evidence from another run',
+        [
+          committedEvent('round-1', 'run-current'),
+          completedEvent('round-1', 'task-1', 0.1, 'run-old'),
+          cleanDecision('run-current'),
+        ],
+      ],
+      [
+        'evidence after decision',
+        [committedEvent('round-1'), cleanDecision(), completedEvent('round-1', 'task-1', 0.1)],
+      ],
+      [
+        'evidence for another prompt',
+        [
+          committedEvent('round-1'),
+          completedEvent('round-1', 'task-1', 0.1, 'run-1', 'sha256:stale'),
+          cleanDecision(),
+        ],
+      ],
+      ['missing candidate commit', [completedEvent('round-1', 'task-1', 0.1), cleanDecision()]],
+      [
+        'evidence before candidate commit',
+        [completedEvent('round-1', 'task-1', 0.1), committedEvent('round-1'), cleanDecision()],
+      ],
+    ];
+
+    for (const [label, events] of cases) {
+      const report = promptStructuralSmokeReport({ events, minimumRounds: 1, costCeilingUsd: 30 });
+      assert.equal(report.status, 'fail', label);
+      assert.deepEqual(report.roundsWithoutTaskEvidence, ['round-1'], label);
+      assert.deepEqual(report.failures, ['task_evidence_missing'], label);
     }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.deepEqual(report.roundsWithoutTaskEvidence, [
-      'round-1',
-      'round-2',
-      'round-3',
-      'round-4',
-      'round-5',
-      'round-6',
-      'round-7',
-      'round-8',
-      'round-9',
-      'round-10',
-    ]);
-    assert.deepEqual(report.failures, ['task_evidence_missing']);
-  });
-
-  test('fails when decision rounds have only infra failures', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(committedEvent(roundId));
-      events.push(
-        decisionEvent(roundId, 'discard', 'coverage_regressed', 'run-1', { decision: 'clean' }),
-      );
-      events.push(infraFailedEvent(roundId, `task-${index}`));
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.deepEqual(report.roundsWithoutTaskEvidence, [
-      'round-1',
-      'round-2',
-      'round-3',
-      'round-4',
-      'round-5',
-      'round-6',
-      'round-7',
-      'round-8',
-      'round-9',
-      'round-10',
-    ]);
-    assert.deepEqual(report.failures, ['task_evidence_missing']);
-  });
-
-  test('fails when task evidence belongs to a different run', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(committedEvent(roundId, 'run-current'));
-      events.push(completedEvent(roundId, `task-${index}`, 0.1, 'run-old'));
-      events.push(
-        decisionEvent(roundId, 'discard', 'held_in_within_noise', 'run-current', {
-          decision: 'clean',
-        }),
-      );
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.deepEqual(report.roundsWithoutTaskEvidence, [
-      'round-1',
-      'round-2',
-      'round-3',
-      'round-4',
-      'round-5',
-      'round-6',
-      'round-7',
-      'round-8',
-      'round-9',
-      'round-10',
-    ]);
-    assert.deepEqual(report.failures, ['task_evidence_missing']);
   });
 
   test('fails when decision rounds span multiple runs', () => {
@@ -247,232 +193,39 @@ describe('prompt structural smoke report', () => {
     assert.deepEqual(report.failures, ['multiple_runs_present']);
   });
 
-  test('passes when decision rounds have no reward-hack scan evidence', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(committedEvent(roundId));
-      events.push(completedEvent(roundId, `task-${index}`, 0.1));
-      events.push(decisionEvent(roundId, 'discard', 'held_in_within_noise'));
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
+  test('accepts an absent reward-hack scan and fails closed on unsafe scan evidence', () => {
+    const absent = decisionEvent('round-1', 'discard', 'held_in_within_noise');
+    const quarantined = decisionEvent('round-1', 'discard', 'held_in_within_noise', 'run-1', {
+      decision: 'quarantine',
+      reason: 'verifier_pattern',
     });
-
-    assert.equal(report.status, 'pass');
-    assert.deepEqual(report.failures, []);
-  });
-
-  test('fails when reward-hack scan quarantine is present', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(committedEvent(roundId));
-      events.push(completedEvent(roundId, `task-${index}`, 0.1));
-      events.push(
-        decisionEvent(roundId, 'discard', 'held_in_within_noise', 'run-1', {
-          decision: 'quarantine',
-          reason: 'verifier_pattern',
-        }),
-      );
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
+    const unknown = decisionEvent('round-1', 'discard', 'held_in_within_noise', 'run-1', {
+      decision: 'skipped',
+    } as unknown as PromptCandidateRewardHackScan);
+    const nullScan = decisionEvent('round-1', 'discard', 'held_in_within_noise', 'run-1', {
+      decision: 'clean',
     });
+    (nullScan as { rewardHackScan: unknown }).rewardHackScan = null;
 
-    assert.equal(report.status, 'fail');
-    assert.equal(report.quarantineCount, 10);
-    assert.deepEqual(report.failures, ['reward_hack_quarantine_present']);
-  });
-
-  test('fails closed on unknown reward-hack scan decisions', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(committedEvent(roundId));
-      events.push(completedEvent(roundId, `task-${index}`, 0.1));
-      events.push(
-        decisionEvent(roundId, 'discard', 'held_in_within_noise', 'run-1', {
-          decision: 'skipped',
-        } as unknown as PromptCandidateRewardHackScan),
-      );
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.equal(report.quarantineCount, 10);
-    assert.deepEqual(report.failures, ['reward_hack_quarantine_present']);
-  });
-
-  test('fails closed on null reward-hack scan evidence', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(committedEvent(roundId));
-      events.push(completedEvent(roundId, `task-${index}`, 0.1));
-      const event = decisionEvent(roundId, 'discard', 'held_in_within_noise', 'run-1', {
-        decision: 'clean',
+    for (const [label, decision, status, quarantineCount] of [
+      ['absent', absent, 'pass', 0],
+      ['quarantined', quarantined, 'fail', 1],
+      ['unknown', unknown, 'fail', 1],
+      ['null', nullScan, 'fail', 1],
+    ] as const) {
+      const report = promptStructuralSmokeReport({
+        events: [committedEvent('round-1'), completedEvent('round-1', 'task-1', 0.1), decision],
+        minimumRounds: 1,
+        costCeilingUsd: 30,
       });
-      (event as { rewardHackScan: unknown }).rewardHackScan = null;
-      events.push(event);
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.equal(report.quarantineCount, 10);
-    assert.deepEqual(report.failures, ['reward_hack_quarantine_present']);
-  });
-
-  test('fails when task evidence is appended after decision rounds', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(committedEvent(roundId));
-      events.push(
-        decisionEvent(roundId, 'discard', 'held_in_within_noise', 'run-1', { decision: 'clean' }),
+      assert.equal(report.status, status, label);
+      assert.equal(report.quarantineCount, quarantineCount, label);
+      assert.deepEqual(
+        report.failures,
+        status === 'pass' ? [] : ['reward_hack_quarantine_present'],
+        label,
       );
     }
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(completedEvent(roundId, `task-${index}`, 0.1));
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.deepEqual(report.roundsWithoutTaskEvidence, [
-      'round-1',
-      'round-2',
-      'round-3',
-      'round-4',
-      'round-5',
-      'round-6',
-      'round-7',
-      'round-8',
-      'round-9',
-      'round-10',
-    ]);
-    assert.deepEqual(report.failures, ['task_evidence_missing']);
-  });
-
-  test('fails when task evidence uses a different prompt hash from the committed candidate', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(committedEvent(roundId));
-      events.push(
-        completedEvent(roundId, `task-${index}`, 0.1, 'run-1', `sha256:stale-${roundId}`),
-      );
-      events.push(
-        decisionEvent(roundId, 'discard', 'held_in_within_noise', 'run-1', { decision: 'clean' }),
-      );
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.deepEqual(report.roundsWithoutTaskEvidence, [
-      'round-1',
-      'round-2',
-      'round-3',
-      'round-4',
-      'round-5',
-      'round-6',
-      'round-7',
-      'round-8',
-      'round-9',
-      'round-10',
-    ]);
-    assert.deepEqual(report.failures, ['task_evidence_missing']);
-  });
-
-  test('fails when matching task evidence has no prior candidate commit', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(completedEvent(roundId, `task-${index}`, 0.1));
-      events.push(
-        decisionEvent(roundId, 'discard', 'held_in_within_noise', 'run-1', { decision: 'clean' }),
-      );
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.deepEqual(report.roundsWithoutTaskEvidence, [
-      'round-1',
-      'round-2',
-      'round-3',
-      'round-4',
-      'round-5',
-      'round-6',
-      'round-7',
-      'round-8',
-      'round-9',
-      'round-10',
-    ]);
-    assert.deepEqual(report.failures, ['task_evidence_missing']);
-  });
-
-  test('fails when matching task evidence predates the candidate commit', () => {
-    const events: FixedPromptWalEvent[] = [];
-    for (let index = 1; index <= 10; index += 1) {
-      const roundId = `round-${index}`;
-      events.push(completedEvent(roundId, `task-${index}`, 0.1));
-      events.push(committedEvent(roundId));
-      events.push(
-        decisionEvent(roundId, 'discard', 'held_in_within_noise', 'run-1', { decision: 'clean' }),
-      );
-    }
-
-    const report = promptStructuralSmokeReport({
-      events,
-      minimumRounds: 10,
-      costCeilingUsd: 30,
-    });
-
-    assert.equal(report.status, 'fail');
-    assert.deepEqual(report.roundsWithoutTaskEvidence, [
-      'round-1',
-      'round-2',
-      'round-3',
-      'round-4',
-      'round-5',
-      'round-6',
-      'round-7',
-      'round-8',
-      'round-9',
-      'round-10',
-    ]);
-    assert.deepEqual(report.failures, ['task_evidence_missing']);
   });
 
   test('fails R2 smoke when controller attribution is missing or appended before decision', () => {

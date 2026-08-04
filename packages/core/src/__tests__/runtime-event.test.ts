@@ -152,7 +152,188 @@ describe('RuntimeEvent role / author / status enums', () => {
   });
 });
 
+describe('continuation-start protocol', () => {
+  test('accepts only the replay projection version defined by v2', () => {
+    const continuationStart = {
+      protocol: 'continuation_start_v2',
+      provenance: 'runtime_admission',
+      claimId: 'claim-1',
+      boundaryDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      immediateSource: {
+        sessionId: 'sess-1',
+        invocationId: 'inv-source',
+        runId: 'run-source',
+        turnId: 'turn-source',
+        highWater: 1,
+        prefixDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      },
+      replayManifestDigest:
+        'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      providerProjectionVersion: 1,
+      providerReplayDigest:
+        'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    } as const;
+
+    assert.deepEqual(
+      decodeRuntimeEvent(
+        baseEvent({
+          role: 'system',
+          author: 'system',
+          content: undefined,
+          actions: { continuationStart },
+        }),
+      ).actions?.continuationStart,
+      continuationStart,
+    );
+    assert.throws(
+      () =>
+        decodeRuntimeEvent({
+          ...baseEvent({ role: 'system', author: 'system', content: undefined }),
+          actions: {
+            continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+          },
+        }),
+      /RuntimeEvent schema/,
+    );
+  });
+});
+
 describe('RuntimeEvent content variants', () => {
+  test('preserves sent inline references as message identity', () => {
+    const inlineReferences = [
+      { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 8 },
+      {
+        kind: 'workspace_file',
+        value: '@packages/ui/src/chat turn.tsx',
+        label: 'chat turn.tsx',
+        start: 22,
+      },
+    ] as const;
+    const decoded = decodeMessageContent({
+      text: 'Inspect /skill:writer @packages/ui/src/chat turn.tsx',
+      inlineReferences: [...inlineReferences],
+    });
+
+    assert.deepEqual(decoded.inlineReferences, inlineReferences);
+    assert.notEqual(decoded.inlineReferences, inlineReferences);
+    assert.notEqual(decoded.inlineReferences?.[0], inlineReferences[0]);
+    assert.equal(
+      messageContentsEqual(decoded, {
+        text: 'Inspect /skill:writer @packages/ui/src/chat turn.tsx',
+        inlineReferences: [...inlineReferences],
+      }),
+      true,
+    );
+    assert.equal(
+      messageContentsEqual(decoded, {
+        text: 'Inspect /skill:writer @packages/ui/src/chat turn.tsx',
+        inlineReferences: [
+          { ...inlineReferences[0]!, label: 'Renamed Writer' },
+          inlineReferences[1]!,
+        ],
+      }),
+      false,
+    );
+  });
+
+  test('rejects an empty sent inline-reference value before UI projection', () => {
+    assert.throws(
+      () =>
+        decodeMessageContent({
+          text: 'hello',
+          inlineReferences: [{ kind: 'skill', value: '', label: 'Writer', start: 0 }],
+        }),
+      /Invalid MessageContent/,
+    );
+  });
+
+  test('rejects sent inline references outside their bounded kind grammar', () => {
+    const invalidReferences = [
+      { kind: 'skill', value: 'writer', label: 'Writer' },
+      { kind: 'skill', value: `/skill:${'a'.repeat(4_090)}`, label: 'Writer' },
+      { kind: 'workspace_file', value: '@../secret', label: 'secret' },
+      { kind: 'workspace_file', value: '@src/a.ts', label: '' },
+      { kind: 'workspace_file', value: '@src/a.ts', label: 'a'.repeat(201) },
+    ];
+    for (const reference of invalidReferences) {
+      assert.throws(
+        () =>
+          decodeMessageContent({
+            text: reference.value,
+            inlineReferences: [{ ...reference, start: 0 }],
+          }),
+        /Invalid MessageContent/,
+      );
+    }
+    assert.throws(
+      () =>
+        decodeMessageContent({
+          text: 'hello',
+          inlineReferences: Array.from({ length: 33 }, () => ({
+            kind: 'skill',
+            value: '/skill:writer',
+            label: 'Writer',
+            start: 0,
+          })),
+        }),
+      /Invalid MessageContent/,
+    );
+  });
+
+  test('preserves the exact occurrence selected as an inline reference', () => {
+    const text = 'literal @docs/a.ts then selected @docs/a.ts';
+    const selectedStart = text.lastIndexOf('@docs/a.ts');
+    assert.deepEqual(
+      decodeMessageContent({
+        text,
+        inlineReferences: [
+          {
+            kind: 'workspace_file',
+            value: '@docs/a.ts',
+            label: 'a.ts',
+            start: selectedStart,
+          },
+        ],
+      }).inlineReferences,
+      [
+        {
+          kind: 'workspace_file',
+          value: '@docs/a.ts',
+          label: 'a.ts',
+          start: selectedStart,
+        },
+      ],
+    );
+  });
+
+  test('rejects missing, mismatched, or overlapping reference occurrences', () => {
+    const invalid = [
+      [{ kind: 'skill', value: '/skill:writer', label: 'Writer' }],
+      [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 1 }],
+      [
+        { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 },
+        { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 },
+      ],
+    ];
+    for (const inlineReferences of invalid) {
+      assert.throws(
+        () => decodeMessageContent({ text: '/skill:writer', inlineReferences }),
+        /Invalid MessageContent/,
+      );
+    }
+  });
+
+  test('preserves an explicit empty reference projection as message identity', () => {
+    assert.deepEqual(normalizeMessageContent({ text: 'plain', inlineReferences: [] }), {
+      text: 'plain',
+      inlineReferences: [],
+    });
+    assert.equal(
+      messageContentsEqual({ text: 'plain', inlineReferences: [] }, { text: 'plain' }),
+      false,
+    );
+  });
+
   test('owns canonical MessageContent decoding, copying, and equality', () => {
     const attachments = [
       {
@@ -360,16 +541,6 @@ describe('RuntimeEvent content variants', () => {
     expect(decodeRuntimeEvent(baseEvent({ content: call })).content).toEqual(call);
     expect(response.isError).toBe(false);
   });
-
-  test('error content keeps the existing ErrorEvent shape', () => {
-    const content: RuntimeEventContent = {
-      kind: 'error',
-      reason: 'provider_5xx',
-      message: 'upstream failed',
-    };
-    if (content.kind !== 'error') throw new Error('unreachable');
-    expect(content.message).toBe('upstream failed');
-  });
 });
 
 describe('RuntimeEvent actions', () => {
@@ -569,28 +740,18 @@ describe('RuntimeEvent actions', () => {
 });
 
 describe('isTerminalRuntimeEvent', () => {
-  test('a content event with no status is not terminal', () => {
-    expect(isTerminalRuntimeEvent(baseEvent({ content: { kind: 'text', text: 'hi' } }))).toBe(
-      false,
-    );
-  });
-
-  test('a terminal status makes the event terminal', () => {
+  test('classifies terminal status and explicit invocation completion', () => {
     for (const status of TERMINAL_RUNTIME_EVENT_STATUSES) {
       expect(isTerminalRuntimeEvent(baseEvent({ status }))).toBe(true);
     }
-  });
-
-  test('streaming status is NOT terminal', () => {
-    expect(isTerminalRuntimeEvent(baseEvent({ status: 'streaming' }))).toBe(false);
-  });
-
-  test('actions.endInvocation === true is terminal even without status', () => {
+    for (const event of [
+      baseEvent({ content: { kind: 'text', text: 'hi' } }),
+      baseEvent({ status: 'streaming' }),
+      baseEvent({ actions: { endInvocation: false } }),
+    ]) {
+      expect(isTerminalRuntimeEvent(event)).toBe(false);
+    }
     expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } }))).toBe(true);
-  });
-
-  test('actions.endInvocation === false is NOT terminal', () => {
-    expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: false } }))).toBe(false);
   });
 });
 
@@ -602,71 +763,30 @@ describe('isPartialRuntimeEvent', () => {
 });
 
 describe('runtimeEventHasModelVisibleContent', () => {
-  test('text content is model-visible when non-empty', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({ role: 'user', content: { kind: 'text', text: 'hi' } }),
-      ),
-    ).toBe(true);
-  });
+  test('classifies model-visible content by semantic kind', () => {
+    const visible = [
+      baseEvent({ role: 'user', content: { kind: 'text', text: 'hi' } }),
+      baseEvent({ content: { kind: 'thinking', text: 'r' } }),
+      baseEvent({ content: { kind: 'function_call', id: '1', name: 'Read', args: {} } }),
+      baseEvent({
+        content: {
+          kind: 'function_response',
+          id: '1',
+          name: 'Bash',
+          result: 'boom',
+          isError: true,
+        },
+      }),
+    ];
+    for (const event of visible) expect(runtimeEventHasModelVisibleContent(event)).toBe(true);
 
-  test('empty text content is NOT model-visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(baseEvent({ content: { kind: 'text', text: '' } })),
-    ).toBe(false);
-  });
-
-  test('thinking, function_call, and function_response are model-visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(baseEvent({ content: { kind: 'thinking', text: 'r' } })),
-    ).toBe(true);
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({ content: { kind: 'function_call', id: '1', name: 'Read', args: {} } }),
-      ),
-    ).toBe(true);
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({
-          content: { kind: 'function_response', id: '1', name: 'Read', result: 'ok' },
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  test('a tool error returned to the model (function_response isError) is still visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({
-          content: {
-            kind: 'function_response',
-            id: '1',
-            name: 'Bash',
-            result: 'boom',
-            isError: true,
-          },
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  test('error-only content is NOT model-visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({ content: { kind: 'error', message: 'upstream failed' } }),
-      ),
-    ).toBe(false);
-  });
-
-  test('pure action / refs events are NOT model-visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({ actions: { tokenUsage: { input: 1, output: 1 } } }),
-      ),
-    ).toBe(false);
-    expect(runtimeEventHasModelVisibleContent(baseEvent({ refs: { toolCallId: 'tc-1' } }))).toBe(
-      false,
-    );
+    const hidden = [
+      baseEvent({ content: { kind: 'text', text: '' } }),
+      baseEvent({ content: { kind: 'error', message: 'upstream failed' } }),
+      baseEvent({ actions: { tokenUsage: { input: 1, output: 1 } } }),
+      baseEvent({ refs: { toolCallId: 'tc-1' } }),
+    ];
+    for (const event of hidden) expect(runtimeEventHasModelVisibleContent(event)).toBe(false);
   });
 });
 

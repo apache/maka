@@ -1,7 +1,9 @@
 import type { Decorator, Preview } from '@storybook/react-vite';
 import '../src/renderer/styles.css';
+import { Theme } from '@astryxdesign/core/theme';
 import { THEME_PALETTES } from '../../../packages/core/src/settings.js';
-import { LocaleProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
+import { makaTheme } from '../src/renderer/astryx-theme/maka';
 
 const PALETTE_LABELS: Record<string, string> = {
   default: 'Default',
@@ -13,6 +15,11 @@ const withMakaRoot: Decorator = (Story, context) => {
   const root = document.documentElement;
   const colorScheme = context.globals.colorScheme === 'dark' ? 'dark' : 'light';
   const palette = typeof context.globals.palette === 'string' ? context.globals.palette : 'default';
+  // English is where settings layouts break first — its labels and helper
+  // lines are ~1.8× the width of the Chinese copy, so a row that fits in zh
+  // overflows, truncates, or clips in en. Stories were locked to `zh`, which
+  // is exactly why those breakages only ever showed up in the shipped app.
+  const locale = context.globals.locale === 'en' ? 'en' : 'zh';
 
   root.classList.toggle('dark', colorScheme === 'dark');
   root.style.colorScheme = colorScheme;
@@ -23,16 +30,32 @@ const withMakaRoot: Decorator = (Story, context) => {
     root.setAttribute('data-maka-theme', palette);
   }
 
+  // Mirror app.tsx / app-shell.tsx: <Theme> owns the Astryx context at the
+  // root (mode follows the same resolved colorScheme as `.dark`), and
+  // AstryxLocaleProvider sits INSIDE LocaleProvider because its message
+  // catalog reads our locale context.
   if (context.title.startsWith('Product/')) {
-    return <LocaleProvider locale="zh"><Story /></LocaleProvider>;
+    return (
+      <Theme theme={makaTheme} mode={colorScheme}>
+        <LocaleProvider locale={locale}>
+          <AstryxLocaleProvider>
+            <Story />
+          </AstryxLocaleProvider>
+        </LocaleProvider>
+      </Theme>
+    );
   }
 
   return (
-    <LocaleProvider locale="zh">
-      <div className="h-screen w-screen overflow-y-auto bg-background p-6 text-foreground antialiased">
-        <Story />
-      </div>
-    </LocaleProvider>
+    <Theme theme={makaTheme} mode={colorScheme}>
+      <LocaleProvider locale={locale}>
+        <AstryxLocaleProvider>
+          <div className="h-screen w-screen overflow-y-auto bg-background p-6 text-foreground antialiased">
+            <Story />
+          </div>
+        </AstryxLocaleProvider>
+      </LocaleProvider>
+    </Theme>
   );
 };
 
@@ -49,6 +72,16 @@ const preview: Preview = {
         ],
       },
     },
+    locale: {
+      description: 'Renderer UI locale',
+      toolbar: {
+        icon: 'globe',
+        items: [
+          { title: '中文', value: 'zh' },
+          { title: 'English', value: 'en' },
+        ],
+      },
+    },
     palette: {
       description: 'Maka palette token set',
       toolbar: {
@@ -62,6 +95,7 @@ const preview: Preview = {
   },
   initialGlobals: {
     colorScheme: 'light',
+    locale: 'zh',
     palette: 'default',
   },
   parameters: {

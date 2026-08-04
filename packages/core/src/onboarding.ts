@@ -1,9 +1,10 @@
 /**
  * Onboarding state machine (PR110a).
  *
- * Derives the first-run readiness state of a workspace
- * from connections + defaultSlug + sessions + per-connection secret
- * availability. Pure & sync — never reads credential store, fs, or
+ * Derives the first-run readiness state of a workspace from connections,
+ * sessions, and per-connection secret availability. A legacy defaultSlug may
+ * order valid candidates, but it is never an activation requirement. Pure &
+ * sync — never reads credential store, fs, or
  * IPC. Caller is responsible for resolving async inputs (per-slug
  * `hasSecret` lookup) before calling.
  *
@@ -12,23 +13,24 @@
  *  1. Reuse send-path readiness criteria via
  *     `isConnectionReady()` — do not reimplement.
  *  2. `OnboardingState` is the **derived projection** of
- *     `(connections, defaultSlug, sessions, secrets)`. It is NOT
+ *     `(connections, sessions, secrets)`. It is NOT
  *     persisted; the renderer recomputes it on every change.
  *  3. `OnboardingMilestone` is the **persisted** companion (in
  *     settings.json). Its validator rejects extra fields, non-finite
  *     timestamps, negative timestamps, and entries with BOTH
  *     `completedAt` and `skippedAt`.
  *
- * Mapping (`ChatConfigurationReason` → `OnboardingState.kind`) is
- * encoded directly in `deriveOnboardingState()` rather than a table,
- * because some reasons are conditional on the rest of the connection
- * list (e.g. `connection_disabled` on the default slug becomes
- * `needs_default_connection` if there's a ready alternative, but
- * `blocked: all_connections_unhealthy` otherwise).
+ * Mapping (`ChatConfigurationReason` → `OnboardingState.kind`) is encoded
+ * directly in `deriveOnboardingState()` because activation considers every
+ * enabled model on every real connection before choosing a repair path.
  */
 
-import { isConnectionReady, isRealConnection } from './connection-readiness.js';
-import type { LlmConnection } from './llm-connections.js';
+import {
+  isConnectionReady,
+  isRealConnection,
+  normalizeOpenAiCodexConnection,
+} from './connection-readiness.js';
+import { connectionEnabledModelIds, type LlmConnection } from './llm-connections.js';
 import type { SessionSummary } from './session.js';
 
 // ============================================================================
@@ -44,27 +46,23 @@ import type { SessionSummary } from './session.js';
  *
  *  - `needs_connection` — no real connections exist at all. Fix:
  *    walk the user through the add-provider flow.
- *  - `needs_default_connection` — at least one ready real connection
- *    exists, but the persisted `defaultSlug` does not point to it
- *    (unset, missing, points to a fake/disabled connection). Fix:
- *    show the connection list and let the user pick one.
- *  - `needs_connection_credentials` — the default connection exists
- *    but is missing a usable secret (API key / OAuth credential).
+ *  - `needs_connection_credentials` — a connection is missing a usable
+ *    secret (API key / OAuth credential).
  *    Fix: open the credential-entry flow for the named slug.
- *  - `needs_default_model` — the default connection has a usable
- *    secret but no valid model (no defaultModel, empty model list,
- *    persisted defaultModel is no longer enabled, or the model is not
- *    chat-capable). Fix:
- *    open the model picker for the named slug.
+ *  - `needs_model` — a credential-ready connection has no enabled,
+ *    chat-capable model. Fix: open model management for the named slug.
  *  - `ready_empty` — fully configured, no sessions yet. #1433: this is
  *    no longer an onboarding surface — the ordinary empty chat state
- *    with its Composer takes over, and the hero renders nothing.
+ *    with its Composer takes over, and the hero renders nothing. Its
+ *    connection/model pair is the readiness-checked first-task candidate;
+ *    the configured connection default leads when it remains usable.
  *  - `ready_with_history` — fully configured, ≥1 session in the
  *    workspace (including archived / aborted — they are still user
- *    history and onboarding must not regress to blank slate).
+ *    history and onboarding must not regress to blank slate). It retains the
+ *    same readiness evidence, but does not activate first-task selection.
  *  - `blocked: all_connections_unhealthy` — real connections exist
- *    but NONE can be made ready by a per-connection fix (all
- *    disabled, all missing keys with no defaultSlug to focus, etc.).
+ *    but NONE can be made ready by a per-connection fix (for example, all
+ *    disabled or runtime-unwired).
  *    Fix: show a "fix your connections" hint pointing at Settings.
  *
  * Note: `blocked.reason` carries only `all_connections_unhealthy` in
@@ -76,17 +74,16 @@ import type { SessionSummary } from './session.js';
  */
 export type OnboardingState =
   | { kind: 'needs_connection' }
-  | { kind: 'needs_default_connection' }
   | { kind: 'needs_connection_credentials'; connectionSlug: string }
-  | { kind: 'needs_default_model'; connectionSlug: string }
-  | { kind: 'ready_empty'; defaultConnectionSlug: string; defaultModel: string }
-  | { kind: 'ready_with_history'; defaultConnectionSlug: string; defaultModel: string }
+  | { kind: 'needs_model'; connectionSlug: string }
+  | { kind: 'ready_empty'; connectionSlug: string; model: string }
+  | { kind: 'ready_with_history'; connectionSlug: string; model: string }
   | { kind: 'blocked'; reason: 'all_connections_unhealthy' };
 
 export interface DeriveOnboardingStateInput {
   /** All persisted LlmConnection rows the workspace knows about. */
   connections: ReadonlyArray<LlmConnection>;
-  /** The slug the user has chosen as default, if any. */
+  /** Legacy preference used only to order otherwise-valid candidates. */
   defaultSlug?: string | null;
   /**
    * All sessions known to storage. `ready_with_history` counts ANY
@@ -107,81 +104,72 @@ export interface DeriveOnboardingStateInput {
  * Derive the current `OnboardingState` from inputs. Pure function —
  * same input always produces the same output.
  *
- * Derivation order (matches PR110a test matrix #1-#15):
+ * Derivation order:
  *  1. No real connections at all → `needs_connection`.
- *  2. Default slug points to a ready real connection → `ready_empty`
- *     / `ready_with_history`.
- *  3. At least one real connection is ready but it's not the default
- *     → `needs_default_connection` (user picks from the list).
- *  4. Default slug is set and points to a real connection that's not
- *     ready: classify by reason → `needs_connection_credentials` /
- *     `needs_default_model` / fall through.
- *  5. Default slug is unset or points to a missing/fake connection
- *     → `needs_default_connection`.
- *  6. Fall-through: real connections exist but none can be made
+ *  2. Walk every enabled model through the shared send-readiness authority;
+ *     the first valid pair → `ready_empty` / `ready_with_history`.
+ *  3. Classify the first actionable connection as
+ *     `needs_connection_credentials` or `needs_model`.
+ *  4. Fall-through: real connections exist but none can be made
  *     ready by a per-connection fix → `blocked: all_connections_unhealthy`.
  */
 export function deriveOnboardingState(input: DeriveOnboardingStateInput): OnboardingState {
-  const realConns = input.connections.filter((conn) => isRealConnection(conn));
+  const realConns = input.connections
+    .filter((connection) => isRealConnection(connection))
+    .map(normalizeOpenAiCodexConnection);
   if (realConns.length === 0) return { kind: 'needs_connection' };
 
-  const slugToConnection = new Map(realConns.map((conn) => [conn.slug, conn]));
-  const defaultConn = input.defaultSlug ? slugToConnection.get(input.defaultSlug) : undefined;
-
-  const readyDefault = defaultConn
-    ? isConnectionReady({
-        connection: defaultConn,
-        hasSecret: input.secrets[defaultConn.slug] === true,
-      })
+  // A persisted workspace default is only a compatibility preference now, not
+  // an activation gate. Every enabled model is validated by the same readiness
+  // authority used by sessions:create; the returned pair lets the Composer use
+  // that verdict without reimplementing credential readiness in the renderer.
+  const preferred = input.defaultSlug
+    ? realConns.find((connection) => connection.slug === input.defaultSlug)
     : undefined;
-
-  if (readyDefault?.ready === true && defaultConn) {
-    return hasHistory(input.sessions)
-      ? {
-          kind: 'ready_with_history',
-          defaultConnectionSlug: defaultConn.slug,
-          defaultModel: readyDefault.model,
-        }
-      : {
-          kind: 'ready_empty',
-          defaultConnectionSlug: defaultConn.slug,
-          defaultModel: readyDefault.model,
-        };
+  const candidates = preferred
+    ? [preferred, ...realConns.filter((connection) => connection.slug !== preferred.slug)]
+    : realConns;
+  for (const connection of candidates) {
+    for (const model of connectionEnabledModelIds(connection)) {
+      const verdict = isConnectionReady({
+        connection,
+        hasSecret: input.secrets[connection.slug] === true,
+        requestedModel: model,
+      });
+      if (verdict.ready) {
+        return hasHistory(input.sessions)
+          ? { kind: 'ready_with_history', connectionSlug: connection.slug, model: verdict.model }
+          : { kind: 'ready_empty', connectionSlug: connection.slug, model: verdict.model };
+      }
+    }
   }
 
-  // Default is not ready. Is there another real connection that IS
-  // ready? If so, the user just needs to switch the default.
-  const anyRealReady = realConns.some(
-    (conn) =>
-      isConnectionReady({ connection: conn, hasSecret: input.secrets[conn.slug] === true }).ready,
-  );
-  if (anyRealReady) return { kind: 'needs_default_connection' };
-
-  // No real connection is ready. Classify by the default's failure
-  // reason, when there IS a default real connection. The reason
-  // drives which targeted fix UI to show.
-  if (defaultConn && readyDefault && readyDefault.ready === false) {
-    switch (readyDefault.reason) {
+  // No candidate can start a session. Route to the first connection with an
+  // actionable repair, using the connection store's stable persisted order.
+  for (const connection of candidates) {
+    const requestedModel = connectionEnabledModelIds(connection)[0];
+    const verdict = isConnectionReady({
+      connection,
+      hasSecret: input.secrets[connection.slug] === true,
+      ...(requestedModel ? { requestedModel } : {}),
+    });
+    if (verdict.ready) continue;
+    switch (verdict.reason) {
       case 'missing_api_key':
-        return { kind: 'needs_connection_credentials', connectionSlug: defaultConn.slug };
+        return { kind: 'needs_connection_credentials', connectionSlug: connection.slug };
       case 'missing_model':
       case 'empty_model_list':
       case 'model_not_enabled':
       case 'model_not_chat_capable':
-        return { kind: 'needs_default_model', connectionSlug: defaultConn.slug };
+        return { kind: 'needs_model', connectionSlug: connection.slug };
       case 'connection_disabled':
       case 'fake_backend':
       case 'connection_missing':
       case 'missing_default_connection':
       case 'oauth_subscription_not_wired':
-        // No actionable per-connection fix path; fall through.
         break;
     }
   }
-
-  // Default slug is unset, OR it points to a non-real / missing
-  // connection. The user must pick a default first.
-  if (!defaultConn) return { kind: 'needs_default_connection' };
 
   // Real connections exist but none can be made ready by a
   // per-connection fix.

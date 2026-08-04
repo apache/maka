@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core';
-import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
+import {
+  createSqliteSessionMetadataStore,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
+} from '../sqlite-session-metadata-store.js';
 
 describe('SQLite Agent Graph supervisor wakes', () => {
   test('tracks retry attempts separately and marks delivery only after completion', async () => {
@@ -146,6 +149,58 @@ describe('SQLite Agent Graph supervisor wakes', () => {
     }
   });
 
+  test('terminally supersedes only non-delivered wakes for retired Sessions', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      for (const wakeId of ['wake-pending', 'wake-running', 'wake-delivered']) {
+        await store.claimAgentGraphSupervisorWake({
+          schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+          graphId: 'graph-1',
+          wakeId,
+          snapshotVersion: wakeId,
+          rootSessionId: 'session-1',
+        });
+      }
+      for (const wakeId of ['wake-running', 'wake-delivered']) {
+        await store.beginAgentGraphSupervisorWakeAttempt({
+          graphId: 'graph-1',
+          wakeId,
+          attemptId: `${wakeId}-attempt`,
+          turnId: `${wakeId}-turn`,
+        });
+      }
+      await store.completeAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-delivered',
+        attemptId: 'wake-delivered-attempt',
+        status: 'delivered',
+      });
+
+      assert.equal(
+        await store.supersedeAgentGraphSupervisorWakes({
+          rootSessionIds: ['session-1'],
+          reason: 'session_retired',
+        }),
+        2,
+      );
+      assert.equal(
+        (await store.readAgentGraphSupervisorWake('graph-1', 'wake-pending'))?.status,
+        'superseded',
+      );
+      assert.equal(
+        (await store.listAgentGraphSupervisorWakeAttempts('graph-1', 'wake-running'))[0]?.status,
+        'superseded',
+      );
+      assert.equal(
+        (await store.readAgentGraphSupervisorWake('graph-1', 'wake-delivered'))?.status,
+        'delivered',
+      );
+      assert.deepEqual(await store.listRetryableAgentGraphSupervisorWakes(), []);
+    } finally {
+      store.close();
+    }
+  });
+
   test('migrates version 11 wake attempts without losing correlation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-supervisor-wake-v11-'));
     const path = join(root, 'sessions.sqlite');
@@ -167,14 +222,20 @@ describe('SQLite Agent Graph supervisor wakes', () => {
       initial.close();
 
       const v11 = new DatabaseSync(path);
-      v11.exec('DROP TABLE sandbox_boundary_log');
+      v11.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
+        DROP TABLE session_create_claims;
+        DROP TABLE sandbox_boundary_log;
+      `);
       v11
         .prepare(`UPDATE session_metadata_schema SET version = 11 WHERE scope = 'session_metadata'`)
         .run();
       v11.close();
 
       const migrated = createSqliteSessionMetadataStore(path);
-      assert.equal(migrated.schemaVersion(), 14);
+      assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.equal(
         (await migrated.readAgentGraphSupervisorWake('graph-1', 'wake-1'))?.status,
         'running',

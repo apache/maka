@@ -10,6 +10,7 @@ import {
   type SandboxBoundarySettlement,
   type SettleSandboxBoundaryRequest,
 } from '@maka/core';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
@@ -20,11 +21,13 @@ import type {
   ToolResultContent,
   ToolResultEvent,
   ToolStartEvent,
+  ToolUncertainOutcomeSignal,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 import type {
   HostedInteractionBridge,
+  HostedSandboxBoundarySettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
@@ -151,8 +154,6 @@ export interface MakaToolContext {
     message: string,
     data?: Record<string, unknown>,
   ) => void;
-  /** Trusted expert-team identity supplied by RuntimeKernel/backend wiring. */
-  agentTeam?: AgentTeamExecutionContext;
   spawnChildAgent?: (input: {
     spec: AgentSpec;
     prompt: string;
@@ -167,6 +168,7 @@ export interface MakaToolContext {
   }) => Promise<unknown>;
   spawnChildSession?: (input: {
     agentProfile: AgentProfile;
+    subagentId?: string;
     prompt: string;
     /** Optional swarm identity, scoped to the owning tool call. */
     swarm?: {
@@ -235,14 +237,6 @@ export interface MakaToolContext {
   ) => Promise<SandboxBoundarySettlement>;
 }
 
-export interface AgentTeamExecutionContext {
-  role: 'lead' | 'member';
-  teamId: string;
-  agentId: string;
-  /** Lead AgentRun that owns this team execution. Required for members. */
-  parentRunId?: string;
-}
-
 export type AppendMessageFn = (m: ToolCallMessage | ToolResultMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 
@@ -261,7 +255,7 @@ export interface ToolGating {
 
 export const TOOL_ERROR_RESULT_MAX_CHARS = 4000;
 export const MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN = 5;
-export const MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN = 5;
+export const MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN = 32;
 export const DEFAULT_PERMISSION_TIMEOUT_MS = 300_000;
 
 /**
@@ -277,6 +271,8 @@ export const LOOP_GATE_IDENTICAL_THRESHOLD = 3;
 
 const SUBAGENT_TOOL_LIMIT_MESSAGE =
   '只读探索并发过多：同一轮最多 5 个子代理。请等待已有探索完成后再继续。';
+const CLIENT_CAPABILITY_BOUNDARY_MESSAGE =
+  'Client Capability tools require the Bypass execution boundary because their client-side effects cannot be sandboxed by the Host. Switch this Session to Bypass and retry.';
 
 function composeChildAbortSignal(
   invocationSignal: AbortSignal,
@@ -304,7 +300,6 @@ export interface ToolRuntimeInput {
   getPermissionPauseTarget: () => { pause(): void; resume(): void } | null;
   getCurrentInvocationId?: () => string | undefined;
   getCurrentRunId?: () => string | undefined;
-  agentTeam?: AgentTeamExecutionContext;
   materializeDefaultToolResultOutput?: (options: {
     toolCallId: string;
     output: unknown;
@@ -328,6 +323,7 @@ export interface ToolRuntimeInput {
     parentTurnId: string;
     toolCallId: string;
     agentProfile: AgentProfile;
+    subagentId?: string;
     prompt: string;
     swarm?: {
       swarmId: string;
@@ -418,13 +414,14 @@ class RuntimeCommitBoundaryError extends Error {
 export class ToolRuntime {
   private readonly sandboxBoundaryRequests = new TurnScopedAwaitRegistry<
     SandboxBoundarySettlement,
-    { toolUseId: string; creation: Promise<SandboxBoundaryRequest> }
+    { toolUseId: string; creation?: Promise<SandboxBoundaryRequest>; hosted: boolean }
   >();
   private readonly userQuestions = new TurnScopedAwaitRegistry<
     UserQuestionResponse,
     { toolUseId: string; questions: UserQuestion[]; hosted: boolean }
   >();
   private readonly hostedInteractions = new Map<string, HostedInteractionBridge>();
+  private readonly deferredSandboxBoundaryTurnClosures = new Set<string>();
   private readonly deferredQuestionTurnClosures = new Set<string>();
   private activeSubagentToolCount = 0;
   private childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
@@ -476,15 +473,17 @@ export class ToolRuntime {
 
   async endTurn(turnId: string, reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
     const boundaryRequests = this.sandboxBoundaryRequests.entries(turnId);
+    const hasHostedBoundaryPending = boundaryRequests.some(([, request]) => request.hosted);
     const boundarySettlementErrors: unknown[] = [];
-    if (boundaryRequests.length > 0) {
+    const embeddedBoundaryRequests = boundaryRequests.filter(([, request]) => !request.hosted);
+    if (embeddedBoundaryRequests.length > 0) {
       if (!this.input.settleSandboxBoundaryRequest) {
         boundarySettlementErrors.push(
           new Error('Sandbox boundary settlement is unavailable on this surface'),
         );
       } else {
         const results = await Promise.allSettled(
-          boundaryRequests.map(async ([requestId, metadata]) => {
+          embeddedBoundaryRequests.map(async ([requestId, metadata]) => {
             try {
               await metadata.creation;
             } catch {
@@ -507,11 +506,17 @@ export class ToolRuntime {
       .entries(turnId)
       .some(([, question]) => question.hosted);
     this.hostedInteractions.delete(turnId);
-    this.sandboxBoundaryRequests.endTurn(
-      turnId,
-      (requestId) =>
-        new Error(`Turn ${turnId} ${reason} before sandbox boundary ${requestId} was settled`),
-    );
+    if (hasHostedBoundaryPending) {
+      this.deferredSandboxBoundaryTurnClosures.add(turnId);
+      this.finishDeferredSandboxBoundaryTurnClosure(turnId);
+    } else {
+      this.sandboxBoundaryRequests.endTurn(
+        turnId,
+        (requestId) =>
+          new Error(`Turn ${turnId} ${reason} before sandbox boundary ${requestId} was settled`),
+      );
+      this.deferredSandboxBoundaryTurnClosures.delete(turnId);
+    }
     if (hasHostedPending) {
       this.deferredQuestionTurnClosures.add(turnId);
       this.finishDeferredQuestionTurnClosure(turnId);
@@ -564,6 +569,11 @@ export class ToolRuntime {
       .entries(turnId)
       .find(([requestId]) => requestId === response.requestId);
     if (!pending) return false;
+    if (pending[1].hosted) {
+      throw new RuntimeInteractionInvariantError(
+        `Hosted sandbox boundary ${response.requestId} must settle through its captured continuation`,
+      );
+    }
     if (!this.input.settleSandboxBoundaryRequest) {
       throw new Error('Sandbox boundary settlement is unavailable on this surface');
     }
@@ -714,12 +724,14 @@ export class ToolRuntime {
     queue: DurableSessionEventSink,
     sandboxDenial?: SandboxDenialSignal,
     sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
+    uncertainOutcome?: ToolUncertainOutcomeSignal,
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
       text: formatSyntheticToolErrorText(text),
       ...(sandboxDenial ? { sandboxDenial } : {}),
       ...(sandboxFailure ? { sandboxFailure } : {}),
+      ...(uncertainOutcome ? { uncertainOutcome } : {}),
     };
     const durableAttempt = this.durableToolAttempts.get(durableAttemptKey(turnId, toolUseId));
     const durableOutcome = await durableAttempt?.commitOutcome(content, true);
@@ -793,8 +805,13 @@ export class ToolRuntime {
         new Error('Durable tool execution requires a run id'),
       );
     }
+    // Exclusive-step rejection is preflight: it must remain on the generic
+    // call/response lane instead of claiming the T1 dispatch protocol. If the
+    // call carried an operationId here, AgentRun would (correctly) skip its
+    // generic projection assuming commitToolPrepared already persisted it;
+    // the synthetic response would then become an orphan.
     const operationId =
-      this.input.runtimeCommitSink && invocationId
+      this.input.runtimeCommitSink && invocationId && !admissionFailure
         ? buildToolOperationId({ invocationId, providerToolCallId: toolUseId })
         : undefined;
     const startEv: ToolStartEvent = {
@@ -960,6 +977,39 @@ export class ToolRuntime {
     }
 
     this.assertCapturedRunOwner(tool.name, runId);
+    let clientCapabilityBoundary: ExecutionBoundary | undefined;
+    if (tool.categoryHint === 'client_capability') {
+      try {
+        clientCapabilityBoundary = await this.readExecutionBoundary();
+      } catch (error) {
+        const reason = formatSyntheticToolErrorText(error);
+        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
+        trace?.emit('tool', 'tool_failed', 'Client Capability boundary read failed', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'error',
+          errorClass: 'ExecutionBoundaryUnavailable',
+        });
+        this.recordLoopGateOutcome(callSignature, true);
+        return this.errorReturn(reason);
+      }
+      if (clientCapabilityBoundary.kind !== 'bypass') {
+        await this.writeSyntheticToolResult(
+          toolUseId,
+          turnId,
+          CLIENT_CAPABILITY_BOUNDARY_MESSAGE,
+          queue,
+        );
+        trace?.emit('tool', 'tool_failed', 'Client Capability blocked by execution boundary', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'error',
+          errorClass: 'ClientCapabilityBoundary',
+        });
+        this.recordLoopGateOutcome(callSignature, true);
+        return this.errorReturn(CLIENT_CAPABILITY_BOUNDARY_MESSAGE);
+      }
+    }
 
     const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
@@ -1019,7 +1069,7 @@ export class ToolRuntime {
       pauseTarget?.pause();
       try {
         const runId = this.input.getCurrentRunId?.();
-        const executionBoundary = await this.readExecutionBoundary();
+        const executionBoundary = clientCapabilityBoundary ?? (await this.readExecutionBoundary());
         const result = await tool.impl(structuredClone(executionArgs) as never, {
           sessionId: this.input.sessionId,
           turnId,
@@ -1050,7 +1100,6 @@ export class ToolRuntime {
                   }),
               }
             : {}),
-          ...(this.input.agentTeam ? { agentTeam: this.input.agentTeam } : {}),
           ...(this.input.listChildAgents ? { listChildAgents: this.input.listChildAgents } : {}),
           ...(this.input.readChildAgentOutput
             ? { readChildAgentOutput: this.input.readChildAgentOutput }
@@ -1184,6 +1233,8 @@ export class ToolRuntime {
       if (isInteractionControlError(err)) throw err;
       output.flush();
       const sandboxError = serializeSandboxError(err);
+      const uncertainOutcome = uncertainOutcomeSignalFromError(err);
+      const errorClass = uncertainOutcome ? 'OutcomeUnknown' : classifyError(err);
       const terminalFailure = coerceTerminalFailure(
         tool,
         this.input.header.cwd,
@@ -1242,7 +1293,7 @@ export class ToolRuntime {
           modelId: this.input.modelId,
           durationMs,
           status: 'error',
-          errorClass: classifyError(err),
+          errorClass,
           argsSummary:
             tool.categoryHint === 'computer_use'
               ? summarizePersistedArgs(persistedArgs)
@@ -1257,15 +1308,17 @@ export class ToolRuntime {
           toolName: tool.name,
           durationMs,
           status: 'error',
-          errorClass: classifyError(err),
+          errorClass,
           ...(sandboxError ? { sandbox: sandboxError } : {}),
         });
         return this.errorReturn(terminalFailure.message);
       }
       const msg =
         tool.categoryHint === 'computer_use'
-          ? `Computer Use failed: ${classifyError(err)}`
-          : formatSyntheticToolErrorText(err);
+          ? `Computer Use failed: ${errorClass}`
+          : uncertainOutcome
+            ? `outcome_unknown: ${formatSyntheticToolErrorText(err)}`
+            : formatSyntheticToolErrorText(err);
       await this.writeSyntheticToolResult(
         toolUseId,
         turnId,
@@ -1273,6 +1326,7 @@ export class ToolRuntime {
         queue,
         sandboxDenialSignalFromError(err),
         sandboxBoundaryFailureSignal(sandboxError),
+        uncertainOutcome,
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -1283,7 +1337,7 @@ export class ToolRuntime {
         modelId: this.input.modelId,
         durationMs: Math.max(0, this.input.now() - startedAt),
         status: 'error',
-        errorClass: classifyError(err),
+        errorClass,
         argsSummary:
           tool.categoryHint === 'computer_use'
             ? summarizePersistedArgs(persistedArgs)
@@ -1297,7 +1351,7 @@ export class ToolRuntime {
         toolName: tool.name,
         durationMs: Math.max(0, this.input.now() - startedAt),
         status: 'error',
-        errorClass: classifyError(err),
+        errorClass,
         ...(sandboxError ? { sandbox: sandboxError } : {}),
       });
       return sandboxError ? { error: msg, sandbox: sandboxError } : this.errorReturn(msg);
@@ -1651,6 +1705,7 @@ export class ToolRuntime {
                     parentTurnId: input.turnId,
                     toolCallId: input.toolUseId,
                     agentProfile: spawnInput.agentProfile,
+                    ...(spawnInput.subagentId ? { subagentId: spawnInput.subagentId } : {}),
                     prompt: spawnInput.prompt,
                     ...(spawnInput.swarm ? { swarm: spawnInput.swarm } : {}),
                     abortSignal,
@@ -1791,42 +1846,19 @@ export class ToolRuntime {
     justification: string,
     queue: DurableSessionEventSink,
   ): Promise<SandboxBoundarySettlement> {
-    if (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest) {
+    const hostedRun = this.interactionRun(turnId);
+    if (
+      !hostedRun &&
+      (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest)
+    ) {
       throw new Error('Sandbox boundary expansion is unavailable on this surface');
     }
     const normalized = await normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd);
-    if (typeof justification !== 'string' || justification.trim().length === 0) {
+    const normalizedJustification = justification.trim();
+    if (typeof justification !== 'string' || normalizedJustification.length === 0) {
       throw new Error('Sandbox boundary justification must not be empty');
     }
     const requestId = this.input.newId();
-    // Provenance travels with the row, not with the RuntimeEvent published
-    // below: the event append is fail-open, so a crash between the two would
-    // otherwise leave the request unattributable to the work it blocked.
-    const runId = this.input.getCurrentRunId?.();
-    const creation = this.input.createSandboxBoundaryRequest({
-      sessionId: this.input.sessionId,
-      requestId,
-      turnId,
-      ...(runId ? { runId } : {}),
-      expansion: normalized,
-      justification,
-    });
-    const parked = this.sandboxBoundaryRequests.park(turnId, requestId, {
-      toolUseId,
-      creation,
-    });
-    void parked.catch(() => undefined);
-    let request: SandboxBoundaryRequest;
-    try {
-      request = await creation;
-    } catch (error) {
-      this.sandboxBoundaryRequests.reject(
-        turnId,
-        requestId,
-        error instanceof Error ? error : new Error(String(error)),
-      );
-      throw error;
-    }
     const requestEvent: SandboxBoundaryRequestEvent = {
       type: 'sandbox_boundary_request',
       id: this.input.newId(),
@@ -1834,9 +1866,68 @@ export class ToolRuntime {
       ts: this.input.now(),
       requestId,
       toolUseId,
-      justification: request.justification,
-      expansion: request.expansion,
+      justification: normalizedJustification,
+      expansion: normalized,
     };
+    let creation: Promise<SandboxBoundaryRequest> | undefined;
+    if (!hostedRun) {
+      // Embedded execution publishes the canonical row directly. Hosted
+      // execution delegates both preflight and publication to the Host so a
+      // rejected admission cannot leave an ownerless pending row behind.
+      const runId = this.input.getCurrentRunId?.();
+      creation = this.input.createSandboxBoundaryRequest!({
+        sessionId: this.input.sessionId,
+        requestId,
+        turnId,
+        ...(runId ? { runId } : {}),
+        expansion: normalized,
+        justification: normalizedJustification,
+      });
+    }
+    const parked = this.sandboxBoundaryRequests.park(turnId, requestId, {
+      toolUseId,
+      ...(creation ? { creation } : {}),
+      hosted: hostedRun !== undefined,
+    });
+    void parked.catch(() => undefined);
+    if (creation) {
+      try {
+        await creation;
+      } catch (error) {
+        this.sandboxBoundaryRequests.reject(
+          turnId,
+          requestId,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        throw error;
+      }
+    }
+    if (hostedRun) {
+      const settlement = this.createSandboxBoundarySettlement(turnId, requestId);
+      try {
+        await hostedRun.admitSandboxBoundaryRequest({
+          request: requestEvent,
+          settlement,
+        });
+      } catch (error) {
+        this.sandboxBoundaryRequests.reject(
+          turnId,
+          requestId,
+          error instanceof Error
+            ? error
+            : new RuntimeInteractionFailStopError(
+                `Could not confirm admission for sandbox boundary ${requestId}`,
+                error,
+              ),
+        );
+        this.finishDeferredSandboxBoundaryTurnClosure(turnId);
+        await parked.catch(() => undefined);
+        throw interactionAuthorityError(
+          `Could not confirm admission for sandbox boundary ${requestId}`,
+          error,
+        );
+      }
+    }
     queue.push(requestEvent);
     const settlement = await parked;
     const decisionAck: SandboxBoundaryDecisionAckEvent = {
@@ -1855,7 +1946,8 @@ export class ToolRuntime {
           : settlement.request.status,
       revision: settlement.boundary.revision,
     };
-    queue.push(decisionAck);
+    if (hostedRun) await this.publishHostedSettlementAck(queue, decisionAck);
+    else queue.push(decisionAck);
     return settlement;
   }
 
@@ -1892,6 +1984,61 @@ export class ToolRuntime {
           `Hosted question ${requestId} escaped exact Run closure`,
         ),
     );
+  }
+
+  private finishDeferredSandboxBoundaryTurnClosure(turnId: string): void {
+    if (
+      !this.deferredSandboxBoundaryTurnClosures.has(turnId) ||
+      this.sandboxBoundaryRequests.pendingCount(turnId) !== 0
+    ) {
+      return;
+    }
+    this.deferredSandboxBoundaryTurnClosures.delete(turnId);
+    this.sandboxBoundaryRequests.endTurn(
+      turnId,
+      (requestId) =>
+        new RuntimeInteractionInvariantError(
+          `Hosted sandbox boundary ${requestId} escaped exact Run closure`,
+        ),
+    );
+  }
+
+  private createSandboxBoundarySettlement(
+    turnId: string,
+    requestId: string,
+  ): HostedSandboxBoundarySettlement {
+    return Object.freeze({
+      applyDecision: async (settlement: SandboxBoundarySettlement): Promise<void> => {
+        if (
+          settlement.request.sessionId !== this.input.sessionId ||
+          settlement.request.requestId !== requestId
+        ) {
+          throw new RuntimeInteractionInvariantError(
+            `Sandbox boundary settlement ${requestId} changed identity`,
+          );
+        }
+        if (this.sandboxBoundaryRequests.resolve(turnId, requestId, settlement) === null) {
+          throw new RuntimeInteractionInvariantError(
+            `Sandbox boundary settlement did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+        this.finishDeferredSandboxBoundaryTurnClosure(turnId);
+      },
+      applyClosure: async (reason: RuntimeUserQuestionClosureReason): Promise<void> => {
+        if (
+          this.sandboxBoundaryRequests.reject(
+            turnId,
+            requestId,
+            new RuntimeInteractionClosedError(requestId, reason),
+          ) === null
+        ) {
+          throw new RuntimeInteractionInvariantError(
+            `Sandbox boundary closure did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+        this.finishDeferredSandboxBoundaryTurnClosure(turnId);
+      },
+    });
   }
 
   private createUserQuestionSettlement(
@@ -2052,6 +2199,14 @@ function sandboxBoundaryFailureSignal(
     ...(metadata.requiredExpansion
       ? { requiredExpansion: metadata.requiredExpansion as SandboxBoundaryExpansion }
       : {}),
+  };
+}
+
+function uncertainOutcomeSignalFromError(error: unknown): ToolUncertainOutcomeSignal | undefined {
+  if (!(error instanceof ToolOutcomeUnknownError)) return undefined;
+  return {
+    code: 'outcome_unknown',
+    retrySafe: false,
   };
 }
 
@@ -2293,10 +2448,19 @@ function providerToolErrorMessage(output: unknown): string | undefined {
 }
 
 function summarizeArgs(toolName: string, args: unknown): string {
-  const projected = projectToolActivityArgs(toolName, args);
+  const projected =
+    toolName === 'WebSearch'
+      ? projectWebSearchTelemetryArgs(args)
+      : projectToolActivityArgs(toolName, args);
   const raw = typeof projected === 'string' ? projected : JSON.stringify(projected ?? null);
   const text = toolName === 'WriteStdin' ? raw : redactSecrets(raw);
   return text.length <= 512 ? text : `${text.slice(0, 511)}…`;
+}
+
+function projectWebSearchTelemetryArgs(args: unknown): Record<string, number> {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return {};
+  const limit = (args as { limit?: unknown }).limit;
+  return typeof limit === 'number' && Number.isFinite(limit) ? { limit } : {};
 }
 
 function summarizePersistedArgs(args: unknown): string {

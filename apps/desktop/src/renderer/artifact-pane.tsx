@@ -26,7 +26,6 @@
  * Layout: fills the Files tab and reports its authoritative filtered count.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import {
   AlertTriangle,
   FileCode,
@@ -43,28 +42,16 @@ import {
 import type { ArtifactKind, ArtifactRecord, UiLocale } from '@maka/core';
 import { formatRelativeTimestamp, generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core';
 import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
   Badge,
+  Banner,
   Button,
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-  Toolbar,
-  ToolbarGroup,
-  ToolbarSeparator,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
   formatBytes,
   useMountedRef,
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import { EmptyState as AstryxEmptyState, Toolbar as AstryxToolbar } from '@astryxdesign/core';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { ArtifactPreview } from './artifact-preview';
 import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
@@ -80,6 +67,10 @@ export function ArtifactPane(props: {
   const toast = useToast();
   const locale = useUiLocale();
   const copy = getArtifactCopy(locale);
+  const previewEmptyStateCopy = {
+    title: copy.pane.empty,
+    description: copy.pane.emptyHint,
+  };
   const [records, setRecords] = useState<ArtifactRecord[]>([]);
   const [recordsSessionId, setRecordsSessionId] = useState<string | undefined>(undefined);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -317,7 +308,7 @@ export function ArtifactPane(props: {
     // Defer to the next frame so the Esc handler doesn't unfocus + refocus
     // in the same tick.
     requestAnimationFrame(() => {
-      const composer = document.querySelector<HTMLTextAreaElement>('.maka-composer textarea, [data-composer-textarea]');
+      const composer = document.querySelector<HTMLElement>('.maka-composer [contenteditable="true"]');
       composer?.focus();
     });
   }
@@ -364,25 +355,25 @@ export function ArtifactPane(props: {
   return (
     <div className="maka-artifact-pane" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}>
       {activeListError && (
-            <Alert variant="error" className="maka-artifact-list-error">
-              <AlertTriangle size={14} aria-hidden="true" />
-              <AlertTitle>{copy.pane.listLoadFailed}</AlertTitle>
-              <AlertDescription>{activeListError}</AlertDescription>
-              <AlertAction>
+            <Banner
+              status="error"
+              className="maka-artifact-list-error"
+              icon={<AlertTriangle size={14} aria-hidden="true" />}
+              title={copy.pane.listLoadFailed}
+              description={activeListError}
+              endContent={(
                 <Button
                   variant="secondary"
                   size="sm"
-                  type="button"
                   onClick={() => void retryArtifactListRefresh()}
-                  disabled={pendingArtifactListRetry}
+                  isDisabled={pendingArtifactListRetry}
                   aria-busy={pendingArtifactListRetry ? 'true' : undefined}
                   data-pending={pendingArtifactListRetry ? 'true' : undefined}
-                >
-                  <RefreshCcw size={13} aria-hidden="true" />
-                  <span>{pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}</span>
-                </Button>
-              </AlertAction>
-            </Alert>
+                  icon={<RefreshCcw size={13} aria-hidden="true" />}
+                  label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
+                />
+              )}
+            />
           )}
           <ul
             ref={listRef}
@@ -395,9 +386,9 @@ export function ArtifactPane(props: {
           >
             {activeRecords.map((record) => (
               <li key={record.id} className="maka-artifact-list-item">
-                <BaseButton
+                <Button
                   id={`maka-artifact-row-${record.id}`}
-                  type="button"
+                  variant="ghost"
                   className="maka-artifact-row"
                   role="option"
                   aria-selected={record.id === selectedId}
@@ -409,23 +400,24 @@ export function ArtifactPane(props: {
                   data-selected={record.id === selectedId ? 'true' : 'false'}
                   data-deleted={record.status === 'deleted' ? 'true' : 'false'}
                   onClick={() => setSelectedId(record.id)}
-                >
-                  <span className="maka-artifact-row-icon" aria-hidden="true">
-                    <KindIcon kind={record.kind} />
-                  </span>
-                  <span className="maka-artifact-row-name">{record.name}</span>
-                  <span className="maka-artifact-row-meta">
-                    <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
-                <span className="maka-artifact-row-time">
-                  {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
-                </span>
-                  </span>
-                  {record.status === 'deleted' && (
-                <Badge variant="destructive" className="maka-artifact-row-badge">
-                  {copy.pane.deletedBadge}
-                </Badge>
+                  label={record.name}
+                  icon={(
+                    <span className="maka-artifact-row-icon" aria-hidden="true">
+                      <KindIcon kind={record.kind} />
+                    </span>
                   )}
-                </BaseButton>
+                  endContent={(
+                    <span className="maka-artifact-row-meta">
+                      <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
+                      <span className="maka-artifact-row-time">
+                        {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
+                      </span>
+                      {record.status === 'deleted' && (
+                        <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
+                      )}
+                    </span>
+                  )}
+                />
               </li>
             ))}
           </ul>
@@ -451,95 +443,83 @@ export function ArtifactPane(props: {
                 onShowInFolder={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
               />
             ) : (
-              <Empty className="maka-artifact-preview-empty py-10 md:py-12 gap-4">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <FileText aria-hidden="true" />
-                  </EmptyMedia>
-                  <EmptyTitle>{activeRecords.length > 0 ? copy.pane.notSelected : copy.pane.empty}</EmptyTitle>
-              <EmptyDescription>
-                {activeRecords.length > 0 ? copy.pane.selectHint : copy.pane.emptyHint}
-              </EmptyDescription>
-                </EmptyHeader>
-              </Empty>
+              <AstryxEmptyState
+                className="maka-artifact-preview-empty"
+                isCompact
+                icon={<FileText aria-hidden="true" />}
+                {...(activeRecords.length > 0
+                  ? {title: copy.pane.notSelected, description: copy.pane.selectHint}
+                  : previewEmptyStateCopy)}
+              />
             )}
           </div>
           {selected && (
-            <Toolbar className="maka-artifact-toolbar" aria-label={copy.pane.actionsAria}>
-              <ToolbarGroup className="maka-artifact-toolbar-group">
+            <AstryxToolbar
+              className="maka-artifact-toolbar"
+              label={copy.pane.actionsAria}
+              size="sm"
+              gap={1}
+              startContent={<div className="maka-artifact-toolbar-group">
                 <Button
-                  type="button"
                   variant="secondary"
                   size="sm"
                   onClick={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
-                  disabled={artifactActionBusy}
+                  isDisabled={artifactActionBusy}
                   data-pending={pendingArtifactAction === `${selected.id}:open` ? 'true' : undefined}
                   aria-busy={pendingArtifactAction === `${selected.id}:open` ? 'true' : undefined}
-                >
-                  <FolderOpen size={14} aria-hidden="true" />
-                  <span>{pendingArtifactAction === `${selected.id}:open` ? copy.pane.opening : copy.pane.openInFinder}</span>
-                </Button>
+                  icon={<FolderOpen size={14} aria-hidden="true" />}
+                  label={pendingArtifactAction === `${selected.id}:open` ? copy.pane.opening : copy.pane.openInFinder}
+                />
                 <Button
-                  type="button"
                   variant="secondary"
                   size="sm"
                   onClick={() => void runArtifactAction(`${selected.id}:save`, () => saveAs(selected.id))}
-                  disabled={artifactActionBusy}
+                  isDisabled={artifactActionBusy}
                   data-pending={pendingArtifactAction === `${selected.id}:save` ? 'true' : undefined}
                   aria-busy={pendingArtifactAction === `${selected.id}:save` ? 'true' : undefined}
-                >
-                  <Save size={14} aria-hidden="true" />
-                  <span>{pendingArtifactAction === `${selected.id}:save` ? copy.pane.saving : copy.pane.saveAs}</span>
-                </Button>
+                  icon={<Save size={14} aria-hidden="true" />}
+                  label={pendingArtifactAction === `${selected.id}:save` ? copy.pane.saving : copy.pane.saveAs}
+                />
                 {isTextKind(selected.kind) && (
                   <Button
-                    type="button"
                     variant="secondary"
                     size="sm"
                     onClick={() => void runArtifactAction(`${selected.id}:copy`, () => copyText(selected.id))}
-                    disabled={artifactActionBusy}
+                    isDisabled={artifactActionBusy}
                     data-pending={pendingArtifactAction === `${selected.id}:copy` ? 'true' : undefined}
                     aria-busy={pendingArtifactAction === `${selected.id}:copy` ? 'true' : undefined}
-                  >
-                    <Copy size={14} aria-hidden="true" />
-                    <span>{pendingArtifactAction === `${selected.id}:copy` ? copy.pane.copying : copy.pane.copy}</span>
-                  </Button>
+                    icon={<Copy size={14} aria-hidden="true" />}
+                    label={pendingArtifactAction === `${selected.id}:copy` ? copy.pane.copying : copy.pane.copy}
+                  />
                 )}
-              </ToolbarGroup>
-              <ToolbarSeparator className="maka-artifact-toolbar-separator" orientation="vertical" />
-              <ToolbarGroup className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={<Button type="button" variant="destructive" size="icon-sm" />}
+              </div>}
+              endContent={<div className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
+                <Tooltip
+                  content={
+                    selected.source === 'tool_result_archive'
+                      ? copy.pane.runtimeArchiveReadOnly
+                      : pendingArtifactAction === `${selected.id}:delete`
+                        ? copy.pane.deleting
+                        : copy.pane.delete
+                  }
+                >
+                  <Button
+                    label={pendingArtifactAction === `${selected.id}:delete` ? copy.pane.deleting : copy.pane.delete}
+                    icon={<Trash2 size={14} aria-hidden="true" />}
+                    isIconOnly
+                    variant="destructive"
+                    size="sm"
                     onClick={() => void runArtifactAction(`${selected.id}:delete`, () => deleteArtifact(selected.id))}
-                    disabled={
+                    isDisabled={
                       artifactActionBusy || selected.source === 'deep_research' ||
                       selected.source === 'tool_result_archive'
                     }
                     data-pending={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
                     aria-busy={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
-                  >
-                    <Trash2 size={14} aria-hidden="true" />
-                    {/* Icon-only at rest: the visible label wrapped the toolbar
-                        onto a second line at 1280 pane width, stranding 删除
-                        alone bottom-right. The label span stays for screen
-                        readers (visually hidden); the Tooltip mirrors it for
-                        mouse hover, replacing the native hover tooltip this
-                        button lost in the tooltip migration. */}
-                <span className="maka-artifact-toolbar-destructive-label">
-                  {pendingArtifactAction === `${selected.id}:delete` ? copy.pane.deleting : copy.pane.delete}
-                </span>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {selected.source === 'tool_result_archive'
-                      ? copy.pane.runtimeArchiveReadOnly
-                      : pendingArtifactAction === `${selected.id}:delete`
-                        ? copy.pane.deleting
-                        : copy.pane.delete}
-                  </TooltipContent>
+                  />
                 </Tooltip>
-              </ToolbarGroup>
-            </Toolbar>
+              </div>}
+            />
           )}
     </div>
   );

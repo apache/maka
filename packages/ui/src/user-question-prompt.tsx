@@ -1,9 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { UserQuestionRequestEvent, UserQuestionResponse } from '@maka/core';
-import { ChoiceCard, ChoiceCardGroup } from './primitives/choice-card.js';
-import { Input } from './primitives/input.js';
-import { Pencil } from './icons.js';
-import { Button } from './ui.js';
+import { Button, RadioList, RadioListItem, TextInput } from '@astryxdesign/core';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
@@ -27,7 +24,6 @@ export function UserQuestionPrompt(props: {
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const activeRequestIdRef = useRef(props.request.requestId);
-  const firstOptionRef = useRef<HTMLButtonElement>(null);
   const mountedRef = useMountedRef();
 
   useEffect(() => {
@@ -38,15 +34,10 @@ export function UserQuestionPrompt(props: {
     setResponsePending(false);
   }, [props.request.requestId, props.request.questions]);
 
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => firstOptionRef.current?.focus());
-    return () => window.cancelAnimationFrame(frame);
-  }, [questionIndex, props.request.requestId, props.request.questions]);
-
   const question = props.request.questions[questionIndex];
   if (!question) return null;
   const draft = drafts[questionIndex] ?? null;
-  const selectedValue = draft?.kind === 'option' ? `option:${draft.optionIndex}` : '';
+  const selectedValue = draft?.kind === 'option' ? `option:${draft.optionIndex}` : draft?.kind === 'other' ? 'other' : '';
   const interactionDisabled = Boolean(props.stopPending) || responsePending;
   const canContinue = canLeaveQuestion(draft) && !interactionDisabled;
   const isLast = questionIndex === props.request.questions.length - 1;
@@ -56,6 +47,10 @@ export function UserQuestionPrompt(props: {
   }
 
   function select(value: string) {
+    if (value === 'other') {
+      updateDraft({ kind: 'other', value: draft?.kind === 'other' ? draft.value : '' });
+      return;
+    }
     const optionIndex = Number(value.slice('option:'.length));
     updateDraft({ kind: 'option', optionIndex });
   }
@@ -90,73 +85,63 @@ export function UserQuestionPrompt(props: {
         </header>
 
         <div className="maka-question-options">
-          <ChoiceCardGroup
-            aria-label={question.question}
-            className="maka-question-choice-group"
+          <RadioList
+            label={question.question}
+            isLabelHidden
             value={selectedValue}
-            onValueChange={select}
+            isDisabled={interactionDisabled}
+            onChange={select}
           >
             {question.options.map((option, optionIndex) => (
-              <ChoiceCard
-                ref={optionIndex === 0 ? firstOptionRef : undefined}
-                className="maka-question-option"
+              <RadioListItem
                 value={`option:${optionIndex}`}
                 key={`${optionIndex}:${option.label}`}
-                disabled={interactionDisabled}
-              >
-                <span className="maka-question-radio" aria-hidden="true" />
-                <span className="maka-question-option-copy">
-                  <strong>{option.label}</strong>
-                  {option.description && <small>{option.description}</small>}
-                </span>
-              </ChoiceCard>
+                label={option.label}
+                description={option.description}
+              />
             ))}
-          </ChoiceCardGroup>
-          <label
-            className="maka-question-other-field"
-            data-selected={draft?.kind === 'other' ? '' : undefined}
-          >
-            <Pencil className="maka-question-other-icon" aria-hidden="true" />
-            <Input
-              unstyled
-              aria-label={copy.otherAriaLabel}
-              className="maka-question-other-input"
-              placeholder={copy.otherPlaceholder}
-              value={draft?.kind === 'other' ? draft.value : ''}
-              disabled={interactionDisabled}
-              onChange={(event) => updateDraft({ kind: 'other', value: event.currentTarget.value })}
+            <RadioListItem
+              value="other"
+              label={copy.other}
+              description={copy.otherDescription}
             />
-          </label>
+          </RadioList>
+          {draft?.kind === 'other' ? (
+            <div className="maka-question-other-answer">
+              <TextInput
+                label={copy.otherAriaLabel}
+                isLabelHidden
+                placeholder={copy.otherPlaceholder}
+                value={draft.value}
+                isDisabled={interactionDisabled}
+                onChange={(value) => updateDraft({ kind: 'other', value })}
+                width="100%"
+                hasAutoFocus
+              />
+            </div>
+          ) : null}
         </div>
 
         <footer className="maka-interaction-actions maka-question-actions">
           <Button
-            type="button"
             variant="ghost"
-            size="md"
-            disabled={props.stopPending}
+            isDisabled={props.stopPending}
             onClick={() => void props.onStop()}
-          >
-            {props.stopPending ? copy.stopping : copy.stop}
-          </Button>
+            label={props.stopPending ? copy.stopping : copy.stop}
+          />
           <Button
-            type="button"
             variant="ghost"
-            size="md"
-            disabled={questionIndex === 0 || interactionDisabled}
+            isDisabled={questionIndex === 0 || interactionDisabled}
             onClick={() => setQuestionIndex((current) => current - 1)}
-          >
-            {copy.previous}
-          </Button>
+            label={copy.previous}
+          />
           <Button
-            type="button"
-            variant="default"
-            size="md"
-            disabled={!canContinue}
-            onClick={() => isLast ? void submit() : setQuestionIndex((current) => current + 1)}
-          >
-            {responsePending ? copy.submitting : isLast ? copy.submit : copy.next}
-          </Button>
+            variant="primary"
+            className="maka-question-submit"
+            isDisabled={!canContinue}
+            onClick={() => (isLast ? void submit() : setQuestionIndex((current) => current + 1))}
+            label={responsePending ? copy.submitting : isLast ? copy.submit : copy.next}
+          />
         </footer>
       </div>
     </section>

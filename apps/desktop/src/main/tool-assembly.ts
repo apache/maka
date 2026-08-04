@@ -1,7 +1,5 @@
 import { app, nativeImage, powerMonitor } from 'electron';
 import {
-  buildAgentTeamChildTools,
-  buildAgentTeamLeadTools,
   buildAskUserQuestionTool,
   buildRequestSandboxBoundaryTool,
   buildChildAgentTools,
@@ -17,14 +15,19 @@ import {
   ShellRunProcessManager,
 } from '@maka/runtime';
 import type { HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
+import type { AppSettings, UpdateAppSettingsInput } from '@maka/core';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
-import { createAgentMailboxStore, createSettingsStore } from '@maka/storage';
+import { createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildWebSearchAgentTool } from './web-search/agent-tool.js';
+import { buildAgentSettingsTools } from './agent-settings-tools.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
 import { buildExploreAgentTool } from './explore-agent-tool.js';
 import { buildBrowserTools } from './browser/browser-tools.js';
-import { createComputerUseHost } from './computer-use-host.js';
+import {
+  createComputerUseHost,
+  createDesktopPhysicalInputGuard,
+} from './computer-use-host.js';
 import { createCursorOverlayController } from './computer-use/cursor-overlay-window.js';
 import {
   applyComputerUseRealModelPolicy,
@@ -44,7 +47,6 @@ import { buildDesktopBuiltinTools } from './desktop-builtin-tools.js';
 type TaskLedgerWiring = ReturnType<typeof createMainTaskLedgerWiring>;
 type AutomationWiring = ReturnType<typeof createMainAutomationWiring>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
-type AgentMailboxStore = ReturnType<typeof createAgentMailboxStore>;
 type SettingsStore = ReturnType<typeof createSettingsStore>;
 
 export interface DesktopToolAssemblyDeps {
@@ -56,8 +58,8 @@ export interface DesktopToolAssemblyDeps {
   taskLedgerWiring: TaskLedgerWiring;
   automationWiring: AutomationWiring;
   goalWiring: GoalWiring;
-  agentMailboxStore: AgentMailboxStore;
   settingsStore: SettingsStore;
+  updateAgentSettings: (patch: UpdateAppSettingsInput) => Promise<AppSettings>;
   shellRuns: ShellRunProcessManager;
   snapshotReadImage: ToolArtifactPersistence['snapshotReadImage'];
   readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
@@ -84,8 +86,8 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     taskLedgerWiring,
     automationWiring,
     goalWiring,
-    agentMailboxStore,
     settingsStore,
+    updateAgentSettings,
     shellRuns,
     snapshotReadImage,
     readArchivedToolResultResource,
@@ -146,7 +148,9 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
         return { base64, mimeType: 'image/png' };
       }
     },
-    physicalInputRecentlyActive: () => powerMonitor.getSystemIdleTime() < 1,
+    physicalInputRecentlyActive: createDesktopPhysicalInputGuard(
+      () => powerMonitor.getSystemIdleTime(),
+    ),
     ...(isComputerUseRealModelE2e
       ? {
           onTrace: (event) => {
@@ -175,14 +179,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   const agentTools: MakaTool[] = buildParentAgentTools({
     taskLedger: taskLedgerStore,
   });
-  const agentTeamLeadTools = buildAgentTeamLeadTools({
-    mailbox: agentMailboxStore,
-    taskLedger: taskLedgerStore,
-  });
-  const agentTeamChildTools = buildAgentTeamChildTools({
-    mailbox: agentMailboxStore,
-    taskLedger: taskLedgerStore,
-  });
   const deferredTools: MakaTool[] = [
     ...riveTools,
     ...browserTools,
@@ -192,6 +188,10 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   const webSearchTool = buildWebSearchAgentTool({
     settingsStore,
     getPrivacyContext: getWorkspacePrivacyContext,
+  });
+  const agentSettingsTools = buildAgentSettingsTools({
+    settingsStore,
+    updateSettings: updateAgentSettings,
   });
   // Assemble product tools first, then derive skill host + deferred groups from
   // the shared catalog ∩ this binding (#1099 S2). Skill listing uses the same host.
@@ -222,6 +222,9 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     // permission engine routes it through the `web_read` policy which
     // prompts the user in explore / ask modes.
     webSearchTool,
+    // Safe self-configuration surface: read a redacted projection and update
+    // only an explicit non-secret allowlist after an in-app confirmation.
+    ...agentSettingsTools,
     // Session task ledger: model manages a flat task list; the current list is
     // re-injected each turn tail. Pure local state, so no permission gate.
     ...taskLedgerWiring.tools,
@@ -276,7 +279,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       } : {}),
     }),
     webSearchTool,
-    ...agentTeamChildTools,
   ]);
 
   return {
@@ -285,7 +287,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     computerUse,
     computerUseOverlay,
     computerUseTools,
-    agentTeamLeadTools,
     desktopProductToolSurface,
     // Keep the protocol union bound at process scope. The backend projector
     // selects exactly one surface from each persisted session header.

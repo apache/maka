@@ -3,10 +3,14 @@ import type { BackendKind, SessionEvent, SessionHeader, StoredMessage } from '@m
 import type {
   AgentBackend,
   BackendSendInput,
+  HostedSandboxBoundarySettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type {
+  SandboxBoundaryResponse,
+  SandboxBoundarySettlement,
+} from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   RuntimeInteractionInvariantError,
@@ -16,6 +20,10 @@ import type { SessionStore } from './session-manager.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
+export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
+export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
+export const FAKE_MERMAID_PROMPT = '__e2e_mermaid__';
+export const FAKE_MERMAID_HOSTILE_PROMPT = '__e2e_mermaid_hostile__';
 
 type PendingQuestion = {
   turnId: string;
@@ -24,11 +32,19 @@ type PendingQuestion = {
   resolve(response: UserQuestionResponse | null): void;
 };
 
+type PendingSandboxBoundary = {
+  turnId: string;
+  requestId: string;
+  hosted: boolean;
+  resolve(settlement: SandboxBoundarySettlement | null): void;
+};
+
 export class FakeBackend implements AgentBackend {
   readonly kind: BackendKind = 'fake';
   readonly sessionId: string;
   private stopped = false;
   private pendingQuestion: PendingQuestion | undefined;
+  private pendingSandboxBoundary: PendingSandboxBoundary | undefined;
 
   constructor(
     private readonly ctx: {
@@ -47,11 +63,59 @@ export class FakeBackend implements AgentBackend {
       yield* this.sendQuestionScenario(input);
       return;
     }
+    if (input.text === FAKE_ASK_SANDBOX_BOUNDARY_PROMPT) {
+      yield* this.sendSandboxBoundaryScenario(input);
+      return;
+    }
     const turnId = input.turnId;
     const messageId = randomUUID();
     const attNames = (input.attachments ?? []).map((a) => a.name);
     const attLine = attNames.length > 0 ? `\nAttachments received: ${attNames.join(', ')}` : '';
-    let text = `Fake backend received: ${input.text}${attLine}\n\nThis proves the session stream, JSONL storage, and renderer loop are connected.`;
+    let text =
+      input.text === FAKE_MERMAID_PROMPT
+        ? [
+            'Fake backend Mermaid fixture:',
+            '',
+            '```mermaid',
+            'flowchart TB',
+            'subgraph Input["1. Input layer"]',
+            '  A[User prompt] --> B{Fence settled?}',
+            '  B -->|No| C[Keep source visible]',
+            '  B -->|Yes| D[Sanitize Markdown]',
+            'end',
+            'subgraph Render["2. Render layer"]',
+            '  D --> E[Lazy-load Mermaid]',
+            '  E --> F[Render strict SVG]',
+            '  F --> G{Valid diagram?}',
+            '  G -->|No| H[Show source fallback]',
+            'end',
+            'subgraph Inspect["3. Inspect layer"]',
+            '  G -->|Yes| I[Fit to viewport]',
+            '  I --> J{User action}',
+            '  J -->|Zoom| K[Scale around pointer]',
+            '  J -->|Pan| L[Move canvas]',
+            '  J -->|Expand| M[Open fullscreen]',
+            '  K --> N[Inspect details]',
+            '  L --> N',
+            '  M --> N',
+            'end',
+            'C --> O[Continue streaming]',
+            'H --> O',
+            'N --> P[Resume task]',
+            '```',
+          ].join('\n')
+        : input.text === FAKE_MERMAID_HOSTILE_PROMPT
+          ? [
+              'Fake backend hostile Mermaid fixture:',
+              '',
+              '```mermaid',
+              '%%{init: {"securityLevel":"loose","flowchart":{"htmlLabels":true}}}%%',
+              'flowchart LR',
+              '  A["<img src=x onerror=alert(1)>"] --> B[Safe output]',
+              '  click A "javascript:alert(1)"',
+              '```',
+            ].join('\n')
+          : `Fake backend received: ${input.text}${attLine}\n\nThis proves the session stream, JSONL storage, and renderer loop are connected.`;
     // Every delta must concatenate to text_complete; `.` would silently drop
     // line terminators and make structured Markdown reflow only at completion.
     const chunks = text.match(/[\s\S]{1,9}/g) ?? [text];
@@ -97,6 +161,18 @@ export class FakeBackend implements AgentBackend {
     };
 
     try {
+      if (input.text === FAKE_WAIT_FOR_STEERING_PROMPT) {
+        let pending = drainSteering();
+        while (pending.length === 0 && !this.stopped) {
+          await sleep(5);
+          pending = drainSteering();
+        }
+        for (const { leaseId, event } of pending) {
+          yield event;
+          settleOutstanding(leaseId);
+        }
+      }
+
       for (const chunk of chunks) {
         if (this.stopped) {
           yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
@@ -109,7 +185,7 @@ export class FakeBackend implements AgentBackend {
           };
           return;
         }
-        await sleep(45);
+        if (input.text !== FAKE_WAIT_FOR_STEERING_PROMPT) await sleep(45);
         for (const { leaseId, event } of drainSteering()) {
           yield event;
           settleOutstanding(leaseId);
@@ -167,6 +243,10 @@ export class FakeBackend implements AgentBackend {
     if (this.pendingQuestion && !this.pendingQuestion.hosted) {
       this.pendingQuestion.resolve(null);
       this.pendingQuestion = undefined;
+    }
+    if (this.pendingSandboxBoundary && !this.pendingSandboxBoundary.hosted) {
+      this.pendingSandboxBoundary.resolve(null);
+      this.pendingSandboxBoundary = undefined;
     }
   }
 
@@ -338,6 +418,154 @@ export class FakeBackend implements AgentBackend {
     yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
   }
 
+  private async *sendSandboxBoundaryScenario(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    await sleep(100);
+    const turnId = input.turnId;
+    if (this.stopped) {
+      yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+      yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'user_stop' };
+      return;
+    }
+    if (!input.hostedInteraction) {
+      throw new RuntimeInteractionInvariantError(
+        'Fake sandbox boundary scenario requires hosted Interaction authority',
+      );
+    }
+
+    const toolUseId = randomUUID();
+    const requestId = randomUUID();
+    const stepId = randomUUID();
+    const expansion = { network: { enabled: true as const } };
+    const justification = 'Connect to the deterministic fake test endpoint.';
+    const appendMessage =
+      this.ctx.appendMessage ??
+      ((message: StoredMessage) => this.ctx.store.appendMessage(this.sessionId, message));
+    const startedAt = Date.now();
+    await appendMessage({
+      type: 'tool_call',
+      id: toolUseId,
+      turnId,
+      stepId,
+      ts: startedAt,
+      toolName: 'RequestSandboxBoundary',
+      args: { expansion, justification },
+    });
+    yield {
+      type: 'tool_start',
+      id: randomUUID(),
+      turnId,
+      stepId,
+      ts: startedAt,
+      toolUseId,
+      toolName: 'RequestSandboxBoundary',
+      args: { expansion, justification },
+    };
+
+    let resolveSettlement!: (settlement: SandboxBoundarySettlement | null) => void;
+    const settlementPromise = new Promise<SandboxBoundarySettlement | null>((resolve) => {
+      resolveSettlement = resolve;
+    });
+    this.pendingSandboxBoundary = {
+      turnId,
+      requestId,
+      hosted: true,
+      resolve: resolveSettlement,
+    };
+    const request = {
+      type: 'sandbox_boundary_request',
+      id: randomUUID(),
+      turnId,
+      ts: Date.now(),
+      requestId,
+      toolUseId,
+      expansion,
+      justification,
+    } satisfies Extract<SessionEvent, { type: 'sandbox_boundary_request' }>;
+    try {
+      await input.hostedInteraction.admitSandboxBoundaryRequest({
+        request,
+        settlement: this.createSandboxBoundarySettlement(turnId, requestId),
+      });
+    } catch (error) {
+      this.takePendingSandboxBoundary(turnId, requestId).resolve(null);
+      throw error;
+    }
+    yield request;
+
+    const settlement = await settlementPromise;
+    if (this.pendingSandboxBoundary?.requestId === requestId) {
+      this.pendingSandboxBoundary = undefined;
+    }
+    if (!settlement || this.stopped) {
+      yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+      yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'user_stop' };
+      return;
+    }
+
+    if (settlement.request.status === 'pending') {
+      throw new RuntimeInteractionInvariantError(
+        `Fake sandbox boundary settlement ${requestId} is still pending`,
+      );
+    }
+    const decision = settlement.request.status === 'denied' ? 'deny' : 'allow';
+    yield {
+      type: 'sandbox_boundary_decision_ack',
+      id: randomUUID(),
+      turnId,
+      ts: Date.now(),
+      requestId,
+      toolUseId,
+      decision,
+      status: settlement.request.status,
+      revision: settlement.boundary.revision,
+    };
+    const resultContent = {
+      kind: 'json' as const,
+      value: { decision, status: settlement.request.status },
+    };
+    const resultTs = Date.now();
+    await appendMessage({
+      type: 'tool_result',
+      id: randomUUID(),
+      turnId,
+      ts: resultTs,
+      toolUseId,
+      isError: decision === 'deny',
+      content: resultContent,
+    });
+    yield {
+      type: 'tool_result',
+      id: randomUUID(),
+      turnId,
+      ts: resultTs,
+      toolUseId,
+      isError: decision === 'deny',
+      content: resultContent,
+    };
+
+    const messageId = randomUUID();
+    const text = `Fake sandbox boundary decision: ${decision}`;
+    yield {
+      type: 'text_delta',
+      id: randomUUID(),
+      turnId,
+      ts: Date.now(),
+      messageId,
+      text,
+    };
+    const completedAt = Date.now();
+    await appendMessage({
+      type: 'assistant',
+      id: messageId,
+      turnId,
+      ts: completedAt,
+      text,
+      modelId: this.ctx.header.model,
+    });
+    yield { type: 'text_complete', id: randomUUID(), turnId, ts: completedAt, messageId, text };
+    yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
+  }
+
   private createQuestionSettlement(
     turnId: string,
     requestId: string,
@@ -357,6 +585,28 @@ export class FakeBackend implements AgentBackend {
     });
   }
 
+  private createSandboxBoundarySettlement(
+    turnId: string,
+    requestId: string,
+  ): HostedSandboxBoundarySettlement {
+    return Object.freeze({
+      applyDecision: async (settlement: SandboxBoundarySettlement): Promise<void> => {
+        if (
+          settlement.request.sessionId !== this.sessionId ||
+          settlement.request.requestId !== requestId
+        ) {
+          throw new RuntimeInteractionInvariantError(
+            `Fake sandbox boundary settlement ${requestId} changed identity`,
+          );
+        }
+        this.takePendingSandboxBoundary(turnId, requestId).resolve(settlement);
+      },
+      applyClosure: async (_reason: RuntimeUserQuestionClosureReason): Promise<void> => {
+        this.takePendingSandboxBoundary(turnId, requestId).resolve(null);
+      },
+    });
+  }
+
   private takePendingQuestion(turnId: string, requestId: string): PendingQuestion {
     const pending = this.pendingQuestion;
     if (!pending || pending.turnId !== turnId || pending.requestId !== requestId) {
@@ -365,6 +615,17 @@ export class FakeBackend implements AgentBackend {
       );
     }
     this.pendingQuestion = undefined;
+    return pending;
+  }
+
+  private takePendingSandboxBoundary(turnId: string, requestId: string): PendingSandboxBoundary {
+    const pending = this.pendingSandboxBoundary;
+    if (!pending || pending.turnId !== turnId || pending.requestId !== requestId) {
+      throw new RuntimeInteractionInvariantError(
+        `Fake sandbox boundary settlement did not exact-take ${requestId} from turn ${turnId}`,
+      );
+    }
+    this.pendingSandboxBoundary = undefined;
     return pending;
   }
 

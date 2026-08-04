@@ -3,10 +3,36 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { ShellRunPatch, ShellRunRecord } from '@maka/core';
+import {
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  type ShellRunPatch,
+  type ShellRunRecord,
+} from '@maka/core';
 import { createShellRunStore } from '../shell-run-store.js';
 
 describe('ShellRunStore', () => {
+  it('enforces the canonical provider tool-call identity bound on create', async () => {
+    await withStore(async (store) => {
+      const maximum = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
+      assert.equal(Buffer.byteLength(maximum, 'utf8'), SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES);
+      const created = await store.createShellRun(
+        record({ shellRunId: 'shell-max-id', sourceToolCallId: maximum }),
+      );
+      assert.equal(created.sourceToolCallId, maximum);
+
+      await assert.rejects(
+        () =>
+          store.createShellRun(
+            record({
+              shellRunId: 'shell-oversized-id',
+              sourceToolCallId: `${maximum}x`,
+            }),
+          ),
+        /Invalid ShellRun record for shell-oversized-id: malformed fields/,
+      );
+    });
+  });
+
   it('creates, updates, reads, and lists ShellRuns under a session', async () => {
     await withStore(async (store, root) => {
       await store.createShellRun(record({ shellRunId: 'shell-2', startedAt: 2, updatedAt: 2 }));
@@ -448,13 +474,14 @@ function record(input: {
   updatedAt?: number;
   completedAt?: number;
   exitCode?: number;
+  sourceToolCallId?: string;
 }): ShellRunRecord {
   return {
     shellRunId: input.shellRunId,
     sessionId: input.sessionId ?? 'session-1',
     sourceRunId: 'run-1',
     sourceTurnId: 'turn-1',
-    sourceToolCallId: 'tool-1',
+    sourceToolCallId: input.sourceToolCallId ?? 'tool-1',
     cwd: '/workspace',
     command: input.command ?? 'printf "ok"',
     status: input.status ?? 'running',

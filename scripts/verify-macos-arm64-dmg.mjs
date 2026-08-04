@@ -202,7 +202,7 @@ async function stopChild(child) {
   }
 }
 
-export function isPackagedRendererUsable(rendererState) {
+function isPackagedRendererUsable(rendererState) {
   return (
     rendererState?.readyState === 'complete' &&
     rendererState.hasBridge === true &&
@@ -220,20 +220,16 @@ export async function smokePackagedFilesystemWorker(
   const workspace = await realpath(workingDirectory);
   const target = join(workspace, 'filesystem-worker-smoke.txt');
   const content = 'maka-filesystem-worker-ok';
-  const operationPermission = {
-    fileSystem: {
+  const operationBoundary = {
+    filesystem: {
       entries: [{ path: target, access: 'write', scope: 'exact' }],
     },
   };
-  const permissionsHash = `sha256:${createHash('sha256')
-    .update(JSON.stringify(operationPermission))
-    .digest('hex')}`;
   const request = {
-    version: 2,
+    version: 4,
     requestId: 'release-filesystem-worker-smoke',
     operation: { kind: 'write', cwd: workspace, path: target, content },
-    operationPermission,
-    permissionsHash,
+    operationBoundary,
     expectedTarget: {
       enforcementPath: target,
       access: 'write',
@@ -376,6 +372,11 @@ export async function verifyPackagedMacApp(
   await forbidPath(join(resources, 'licenses', 'officecli'));
   await forbidPath(join(resources, 'bin', 'cua-driver'));
   await forbidPath(join(resources, 'tools', 'cua-driver'));
+  // maka-cu is built from source locally and is not signed, so it may not be in
+  // a packaged build at all — an ad-hoc helper fails notarization for the whole
+  // app, and `distributionReady` is false for exactly this reason.
+  await forbidPath(join(resources, 'bin', 'maka-cu'));
+  await forbidPath(join(resources, 'tools', 'maka-cu'));
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable');

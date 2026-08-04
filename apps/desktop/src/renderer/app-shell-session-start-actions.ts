@@ -1,5 +1,4 @@
 import type { SessionStartMode, UiLocale } from '@maka/core';
-import { saveGlobalInputHistoryEntry } from '@maka/ui';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
@@ -35,8 +34,6 @@ export interface AppShellSessionStartActions {
    * text exists, such as the command palette's Deep Research.
    */
   startModeSession(mode: SessionStartMode): Promise<boolean>;
-  /** Start a new expert-team session (from the composer "+" menu). */
-  handleExpertTeamStart(teamId: string, prompt?: string): Promise<boolean>;
 }
 
 export function createAppShellSessionStartActions(deps: {
@@ -147,67 +144,5 @@ export function createAppShellSessionStartActions(deps: {
     }
   }
 
-  async function handleExpertTeamStart(teamId: string, prompt?: string): Promise<boolean> {
-    if (sessionStartPendingRef.current) return false;
-    const owner = captureComposerImportOwner();
-    sessionStartPendingRef.current = true;
-    try {
-      const result = await window.maka.expertTeam.start({
-        teamId,
-        prompt: prompt ?? '',
-        ...(newChatProjectId !== undefined ? { projectId: newChatProjectId } : {}),
-      });
-      if (result.ok) {
-        if (prompt && prompt.trim()) saveGlobalInputHistoryEntry(prompt);
-        if (isShellSurfaceOwnerActive(owner)) {
-          openSessionInChat(result.sessionId);
-        }
-        await refreshSessions();
-        if (activeIdRef.current === result.sessionId) {
-          composerRef.current?.focus();
-        }
-        void window.maka.onboarding.setMilestone('initial_onboarding', 'completed').catch(() => {});
-        return true;
-      } else if (result.reason === 'setup_required') {
-        // Same reasoning as startModeSession's readiness branch above, gate
-        // included: the hero cannot answer for a user who already has
-        // sessions, and the toast navigates. This channel reports no
-        // sub-reason, so the toast falls back to its generic copy.
-        refreshOnboarding();
-        if (isShellSurfaceOwnerActive(owner)) {
-          showModelSetupToast(noRealConnectionSetupDescription(undefined, uiLocale));
-        }
-        return false;
-      } else if (result.reason === 'workspace_unavailable') {
-        if (isShellSurfaceOwnerActive(owner)) {
-          showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
-        }
-        return false;
-      } else {
-        await refreshSessions();
-        if (isShellSurfaceOwnerActive(owner)) {
-          const description =
-            result.reason === 'unknown_team'
-              ? copy.expertTeamNotFound
-              : uiLocale === 'zh'
-                ? result.message
-                : copy.expertTeamFailedFallback;
-          toastApi.error(copy.expertTeamFailedTitle, description);
-        }
-        return false;
-      }
-    } catch (error) {
-      if (isShellSurfaceOwnerActive(owner)) {
-        toastApi.error(
-          copy.expertTeamFailedTitle,
-          localizedShellErrorMessage(error, copy.expertTeamFailedFallback, uiLocale),
-        );
-      }
-      return false;
-    } finally {
-      sessionStartPendingRef.current = false;
-    }
-  }
-
-  return { startModeSession, handleExpertTeamStart };
+  return { startModeSession };
 }

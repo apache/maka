@@ -35,6 +35,7 @@ import {
 import {
   createAttachmentByteReader,
   createReadImageSnapshotter,
+  exportSessionBundleState,
   persistProviderRequestCaptureArtifact,
 } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -127,6 +128,7 @@ export const HARBOR_CELL_RUNTIME_EVENTS_FILENAME = 'runtime-events.jsonl';
 export const HARBOR_CELL_TRACE_EVENTS_FILENAME = 'trace-events.jsonl';
 export const HARBOR_CELL_EXECUTION_IDENTITY_FILENAME = 'maka-cell-execution-identity.json';
 export const HARBOR_CELL_USAGE_CHECKPOINT_FILENAME = 'maka-cell-usage-checkpoint.json';
+export const HARBOR_CELL_TRAJECTORY_STATE_DIRECTORY = 'trajectory-state';
 
 export interface RunHarborCellInput {
   config: Config;
@@ -189,6 +191,7 @@ export interface RunHarborCellResult {
 export interface WriteHarborCellArtifactsInput {
   invocation: InvocationResult;
   outputDir: string;
+  storageRoot?: string;
   promptHash?: string;
   executionIdentity?: HarborCellExecutionIdentity;
   deadlineSettlement?: HarborCellDeadlineSettlement;
@@ -538,6 +541,7 @@ export async function runHarborCellWithStorage(
   const artifacts = await writeHarborCellArtifacts({
     invocation: combinedInvocation,
     outputDir: input.outputDir,
+    storageRoot: input.storageRoot,
     executionIdentity,
     ...(settledByDeadline
       ? {
@@ -577,6 +581,18 @@ export async function writeHarborCellArtifacts(
   input: WriteHarborCellArtifactsInput,
 ): Promise<WriteHarborCellArtifactsResult> {
   await mkdir(input.outputDir, { recursive: true });
+  if (input.storageRoot) {
+    await exportHarborCellTrajectoryState({
+      invocation: input.invocation,
+      outputDir: input.outputDir,
+      storageRoot: input.storageRoot,
+    }).catch(async () => {
+      await rm(join(input.outputDir, HARBOR_CELL_TRAJECTORY_STATE_DIRECTORY), {
+        recursive: true,
+        force: true,
+      });
+    });
+  }
   const runtimeEventsPath = join(input.outputDir, HARBOR_CELL_RUNTIME_EVENTS_FILENAME);
   const outputPath = join(input.outputDir, HARBOR_CELL_OUTPUT_FILENAME);
   await writeHarborCellArtifact(runtimeEventsPath, runtimeEventsJsonl(input.invocation));
@@ -602,6 +618,41 @@ export async function writeHarborCellArtifacts(
       : rawOutput;
   await writeHarborCellArtifact(outputPath, `${JSON.stringify(output, null, 2)}\n`);
   return { output, outputPath, runtimeEventsPath };
+}
+
+export async function exportHarborCellTrajectoryState(input: {
+  invocation: InvocationResult;
+  outputDir: string;
+  storageRoot: string;
+}): Promise<string | undefined> {
+  const destinationRoot = join(input.outputDir, HARBOR_CELL_TRAJECTORY_STATE_DIRECTORY);
+  await rm(destinationRoot, { recursive: true, force: true });
+  if (!hasSessionImageArtifactReference(input.invocation.events)) return undefined;
+  await exportSessionBundleState({
+    stateRoot: input.storageRoot,
+    configRoot: input.storageRoot,
+    destinationRoot,
+    sessionId: input.invocation.sessionId,
+    allowShared: true,
+  });
+  return destinationRoot;
+}
+
+function hasSessionImageArtifactReference(events: readonly RuntimeEvent[]): boolean {
+  return events.some((event) => {
+    if (event.content?.kind !== 'function_response') return false;
+    const result = event.content.result;
+    if (typeof result !== 'object' || result === null || Array.isArray(result)) return false;
+    const record = result as Record<string, unknown>;
+    const ref = record.ref;
+    return (
+      record.kind === 'image' &&
+      typeof ref === 'object' &&
+      ref !== null &&
+      !Array.isArray(ref) &&
+      (ref as Record<string, unknown>).kind === 'session_file'
+    );
+  });
 }
 
 async function readHarborCellUsageCheckpoint(
@@ -1147,6 +1198,11 @@ export function buildAiSdkCellBackendRegistration(input: {
         newId: input.newId,
         now: input.now,
         recordRunTrace: ctx.recordRunTrace,
+        // The canonical metering sink (#1679); the controller has always
+        // exposed it, this composition just never passed it through.
+        ...(ctx.recordModelCallAttempt
+          ? { recordModelCallAttempt: ctx.recordModelCallAttempt }
+          : {}),
         ...(ctx.recordProviderRequestCapture
           ? {
               recordProviderRequestCapture: createProviderRequestCaptureRecorder({

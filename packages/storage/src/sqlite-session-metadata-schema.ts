@@ -1,6 +1,18 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 14;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 19;
+
+export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
+  'agent_graph_intent_claims',
+  'agent_graph_schedule_updates',
+  'agent_graph_operator_provisions',
+  'agent_graph_client_projections',
+  'agent_graph_client_operator_projections',
+  'agent_graph_client_terminal_activity',
+  'agent_graph_client_applied_records',
+  'agent_graph_supervisor_wakes',
+  'agent_graph_supervisor_wake_attempts',
+] as const;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -464,6 +476,312 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     CREATE INDEX sandbox_boundary_log_settled_closures
       ON sandbox_boundary_log(session_id, outcome_reason, created_at, entry_id)
       WHERE outcome_reason IS NOT NULL;
+  `,
+  ],
+  [
+    15,
+    `
+    CREATE TABLE session_create_claims (
+      session_id TEXT PRIMARY KEY,
+      request_fingerprint TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL CHECK (claimed_at >= 0)
+    );
+  `,
+  ],
+  [
+    16,
+    `
+    CREATE TABLE IF NOT EXISTS session_catalog_state (
+      scope TEXT PRIMARY KEY CHECK (scope = 'catalog'),
+      epoch TEXT NOT NULL CHECK (length(epoch) = 32),
+      generation INTEGER NOT NULL CHECK (generation >= 0),
+      pending_writes INTEGER NOT NULL CHECK (pending_writes >= 0)
+    );
+
+    INSERT OR IGNORE INTO session_catalog_state(scope, epoch, generation, pending_writes)
+    SELECT
+      'catalog',
+      lower(hex(randomblob(16))),
+      0,
+      CASE WHEN EXISTS (SELECT 1 FROM session_metadata) THEN 1 ELSE 0 END;
+
+    CREATE TABLE IF NOT EXISTS session_catalog_projection (
+      session_id TEXT PRIMARY KEY,
+      activity_at INTEGER NOT NULL CHECK (activity_at >= 0),
+      last_message_at INTEGER,
+      last_message_preview TEXT
+        CHECK (last_message_preview IS NULL OR length(last_message_preview) <= 96),
+      is_archived INTEGER NOT NULL CHECK (is_archived IN (0, 1)),
+      is_flagged INTEGER NOT NULL CHECK (is_flagged IN (0, 1)),
+      subagent_parent_session_id TEXT,
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    INSERT OR IGNORE INTO session_catalog_projection(
+      session_id,
+      activity_at,
+      last_message_at,
+      last_message_preview,
+      is_archived,
+      is_flagged,
+      subagent_parent_session_id
+    )
+    SELECT
+      session_id,
+      COALESCE(last_message_at, last_used_at, created_at),
+      last_message_at,
+      NULL,
+      is_archived,
+      is_flagged,
+      subagent_parent_session_id
+    FROM session_metadata;
+
+    CREATE INDEX IF NOT EXISTS session_catalog_by_activity
+      ON session_catalog_projection(activity_at DESC, session_id ASC);
+
+    CREATE INDEX IF NOT EXISTS session_catalog_by_archived_activity
+      ON session_catalog_projection(is_archived, activity_at DESC, session_id ASC);
+
+    CREATE INDEX IF NOT EXISTS session_catalog_by_flagged_activity
+      ON session_catalog_projection(is_flagged, activity_at DESC, session_id ASC);
+
+    CREATE INDEX IF NOT EXISTS session_catalog_by_archived_flagged_activity
+      ON session_catalog_projection(
+        is_archived,
+        is_flagged,
+        activity_at DESC,
+        session_id ASC
+      );
+
+    CREATE INDEX IF NOT EXISTS session_catalog_by_subagent_activity
+      ON session_catalog_projection(
+        subagent_parent_session_id,
+        activity_at DESC,
+        session_id ASC
+      );
+
+    CREATE TABLE IF NOT EXISTS session_catalog_label_projection (
+      session_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      activity_at INTEGER NOT NULL CHECK (activity_at >= 0),
+      PRIMARY KEY(session_id, label),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    INSERT OR IGNORE INTO session_catalog_label_projection(session_id, label, activity_at)
+    SELECT labels.session_id, labels.label, projection.activity_at
+    FROM session_metadata_labels labels
+    JOIN session_catalog_projection projection
+      ON projection.session_id = labels.session_id;
+
+    CREATE INDEX IF NOT EXISTS session_catalog_labels_by_label_activity
+      ON session_catalog_label_projection(label, activity_at DESC, session_id ASC);
+
+    CREATE TRIGGER IF NOT EXISTS session_catalog_after_insert
+    AFTER INSERT ON session_metadata
+    BEGIN
+      INSERT INTO session_catalog_projection(
+        session_id,
+        activity_at,
+        last_message_at,
+        last_message_preview,
+        is_archived,
+        is_flagged,
+        subagent_parent_session_id
+      ) VALUES (
+        NEW.session_id,
+        COALESCE(NEW.last_message_at, NEW.last_used_at, NEW.created_at),
+        NEW.last_message_at,
+        NULL,
+        NEW.is_archived,
+        NEW.is_flagged,
+        NEW.subagent_parent_session_id
+      );
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS session_catalog_after_update
+    AFTER UPDATE ON session_metadata
+    BEGIN
+      UPDATE session_catalog_projection
+      SET
+        activity_at = COALESCE(NEW.last_message_at, NEW.last_used_at, NEW.created_at),
+        last_message_at = NEW.last_message_at,
+        is_archived = NEW.is_archived,
+        is_flagged = NEW.is_flagged,
+        subagent_parent_session_id = NEW.subagent_parent_session_id
+      WHERE session_id = NEW.session_id;
+
+      UPDATE session_catalog_label_projection
+      SET activity_at = COALESCE(NEW.last_message_at, NEW.last_used_at, NEW.created_at)
+      WHERE session_id = NEW.session_id;
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS session_catalog_after_delete
+    AFTER DELETE ON session_metadata
+    BEGIN
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS session_catalog_label_after_insert
+    AFTER INSERT ON session_metadata_labels
+    BEGIN
+      INSERT OR IGNORE INTO session_catalog_label_projection(session_id, label, activity_at)
+      SELECT NEW.session_id, NEW.label, projection.activity_at
+      FROM session_catalog_projection projection
+      WHERE projection.session_id = NEW.session_id;
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS session_catalog_label_after_delete
+    AFTER DELETE ON session_metadata_labels
+    BEGIN
+      DELETE FROM session_catalog_label_projection
+      WHERE
+        session_id = OLD.session_id
+        AND label = OLD.label
+        AND NOT EXISTS (
+          SELECT 1
+          FROM session_metadata_labels labels
+          WHERE labels.session_id = OLD.session_id
+            AND labels.label = OLD.label
+        );
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+  `,
+  ],
+  [
+    17,
+    `
+    DROP TRIGGER IF EXISTS session_catalog_label_after_insert;
+    DROP TRIGGER IF EXISTS session_catalog_label_after_delete;
+
+    CREATE TRIGGER session_catalog_label_after_insert
+    AFTER INSERT ON session_metadata_labels
+    BEGIN
+      INSERT OR IGNORE INTO session_catalog_label_projection(session_id, label, activity_at)
+      SELECT NEW.session_id, NEW.label, projection.activity_at
+      FROM session_catalog_projection projection
+      WHERE projection.session_id = NEW.session_id;
+    END;
+
+    CREATE TRIGGER session_catalog_label_after_delete
+    AFTER DELETE ON session_metadata_labels
+    BEGIN
+      DELETE FROM session_catalog_label_projection
+      WHERE
+        session_id = OLD.session_id
+        AND label = OLD.label
+        AND NOT EXISTS (
+          SELECT 1
+          FROM session_metadata_labels labels
+          WHERE labels.session_id = OLD.session_id
+            AND labels.label = OLD.label
+        );
+    END;
+  `,
+  ],
+  [
+    18,
+    `
+    ALTER TABLE session_metadata_tombstones ADD COLUMN retirement_unit_id TEXT;
+    ALTER TABLE session_metadata_tombstones
+      ADD COLUMN cleanup_pending INTEGER NOT NULL DEFAULT 0
+      CHECK (cleanup_pending IN (0, 1));
+
+    UPDATE session_metadata_tombstones
+    SET retirement_unit_id = session_id, cleanup_pending = 1;
+
+    CREATE INDEX session_metadata_tombstones_by_retirement_unit
+      ON session_metadata_tombstones(retirement_unit_id, cleanup_pending, session_id);
+  `,
+  ],
+  [
+    19,
+    `
+    DROP INDEX agent_graph_supervisor_wakes_by_status;
+
+    CREATE TABLE agent_graph_supervisor_wakes_v19 (
+      graph_id TEXT NOT NULL,
+      wake_id TEXT NOT NULL,
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      snapshot_version TEXT NOT NULL,
+      root_session_id TEXT NOT NULL,
+      status TEXT NOT NULL
+        CHECK (
+          status IN (
+            'pending',
+            'running',
+            'waiting_permission',
+            'delivered',
+            'superseded',
+            'retryable_failed'
+          )
+        ),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      current_attempt_id TEXT,
+      current_turn_id TEXT,
+      failure_reason TEXT,
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+      PRIMARY KEY(graph_id, wake_id)
+    );
+
+    CREATE TABLE agent_graph_supervisor_wake_attempts_v19 (
+      graph_id TEXT NOT NULL,
+      wake_id TEXT NOT NULL,
+      attempt_id TEXT NOT NULL UNIQUE,
+      turn_id TEXT NOT NULL,
+      status TEXT NOT NULL
+        CHECK (
+          status IN (
+            'running',
+            'waiting_permission',
+            'delivered',
+            'superseded',
+            'retryable_failed'
+          )
+        ),
+      failure_reason TEXT,
+      started_at INTEGER NOT NULL CHECK (started_at >= 0),
+      completed_at INTEGER,
+      PRIMARY KEY(graph_id, wake_id, attempt_id),
+      FOREIGN KEY(graph_id, wake_id)
+        REFERENCES agent_graph_supervisor_wakes_v19(graph_id, wake_id)
+        ON DELETE CASCADE
+    );
+
+    INSERT INTO agent_graph_supervisor_wakes_v19
+    SELECT * FROM agent_graph_supervisor_wakes;
+
+    INSERT INTO agent_graph_supervisor_wake_attempts_v19
+    SELECT * FROM agent_graph_supervisor_wake_attempts;
+
+    DROP TABLE agent_graph_supervisor_wake_attempts;
+    DROP TABLE agent_graph_supervisor_wakes;
+
+    ALTER TABLE agent_graph_supervisor_wakes_v19
+      RENAME TO agent_graph_supervisor_wakes;
+    ALTER TABLE agent_graph_supervisor_wake_attempts_v19
+      RENAME TO agent_graph_supervisor_wake_attempts;
+
+    CREATE INDEX agent_graph_supervisor_wakes_by_status
+      ON agent_graph_supervisor_wakes(status, updated_at, graph_id, wake_id);
   `,
   ],
 ]);

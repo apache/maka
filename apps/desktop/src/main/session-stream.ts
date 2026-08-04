@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { SessionChangedReason, SessionEvent } from '@maka/core';
-import type { LlmCallRecord, ToolInvocationRecord } from '@maka/core/usage-stats/types';
+import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import {
   AiSdkBackend,
   buildDefaultContextBudgetPolicy,
@@ -11,7 +11,6 @@ import {
   loadHistoryCompactBlocksFromArtifacts,
   loadSynthesisCacheBlocksFromArtifacts,
   persistSynthesisCacheBlocksToArtifacts,
-  recordLlmCall,
   recordToolInvocation,
   renderPlanExecutionPrompt,
   renderInterruptedPlanContext,
@@ -30,12 +29,13 @@ import type {
   ToolResultArchiveRecorderInput,
   buildPricingLookup,
 } from '@maka/runtime';
+import type { createSqliteModelCallLedger } from '@maka/storage';
 import {
-  createArtifactStore,
+  type ArtifactStore,
   createAttachmentByteReader,
-  createTelemetryRepo,
   openRuntimeEventPersistence,
   persistProviderRequestCaptureArtifact,
+  type TelemetryRepo,
 } from '@maka/storage';
 import { WEB_SEARCH_TOOL_NAME } from './web-search/agent-tool.js';
 import { errorCode, errorMessage, errorReason } from './chat-readiness.js';
@@ -44,7 +44,6 @@ import type { ToolArtifactPersistence } from './tool-artifact-persistence.js';
 import type { createMainGoalWiring } from './goal-wiring.js';
 import type { createSubscriptionModelFetch } from './subscription-model-fetch.js';
 import type { createSystemPromptMainService } from './system-prompt-main.js';
-import type { OpenGatewayService } from './open-gateway.js';
 import { startDesktopSessionTurn, type SessionGoalBoundary } from './session-turn-stream.js';
 import {
   resolveDesktopBackendToolSurface,
@@ -55,8 +54,7 @@ type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type SystemPromptMainService = ReturnType<typeof createSystemPromptMainService>;
 type SubscriptionModelFetchBuilder = ReturnType<typeof createSubscriptionModelFetch>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
-type ArtifactStore = ReturnType<typeof createArtifactStore>;
-type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
+type ModelCallLedger = ReturnType<typeof createSqliteModelCallLedger>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
 type RuntimeCommitStore = Awaited<ReturnType<typeof openRuntimeEventPersistence>>['runtimeCommitStore'];
 const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;
@@ -65,6 +63,7 @@ export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   buildSubscriptionModelFetch: SubscriptionModelFetchBuilder;
   systemPromptService: SystemPromptMainService;
   telemetryRepo: TelemetryRepo;
+  modelCallLedger: ModelCallLedger;
   ensureUsageReady: () => Promise<void>;
   artifactStore: ArtifactStore;
   desktopSessionSkillHosts: Map<string, HostCapabilities>;
@@ -74,7 +73,6 @@ export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   readArchivedToolResult: ToolArtifactPersistence['readArchivedToolResult'];
   runtimeCommitStore: RuntimeCommitStore;
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
-  openGateway: OpenGatewayService;
   emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
   getRuntime: () => SessionManager;
   getLookupPricing: () => PricingLookup;
@@ -86,14 +84,15 @@ export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
  * seams that resolve AFTER the registration point are injected as accessors:
  * `getRuntime` (the SessionManager is constructed after registration) and
  * `getLookupPricing` (a mutable pricing lookup reassigned by usage IPC + startup;
- * read live per `recordLlmCall`, snapshotted once for the `lookupPricing` field —
- * matching the original module-`let` closure semantics exactly).
+ * snapshotted once for the `lookupPricing` field — matching the original
+ * module-`let` closure semantics exactly).
  */
 export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): BackendFactory {
   const {
     buildSubscriptionModelFetch,
     systemPromptService,
     telemetryRepo,
+    modelCallLedger,
     ensureUsageReady,
     artifactStore,
     desktopSessionSkillHosts,
@@ -103,7 +102,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
     readArchivedToolResult,
     runtimeCommitStore,
     safeSendToRenderer,
-    openGateway,
     emitSessionsChanged,
     getRuntime,
     getLookupPricing,
@@ -121,7 +119,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       planState,
       activeExecution,
       interruptedExecution,
-      agentTeam,
       selectedTools,
       toolAvailability: backendToolAvailability,
       skillHost: backendSkillHost,
@@ -138,6 +135,24 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       mode: effectivePermissionMode,
       cwd: ctx.header.cwd,
     });
+    // Hoisted out of the backend input so the shape stays readable; the
+    // auxiliary summarizer no longer needs any of it (#1679).
+    const providerRequestCapture = ctx.recordProviderRequestCapture
+      ? createProviderRequestCaptureRecorder({
+          persistArtifact: async (capture) => {
+            const artifact = await persistProviderRequestCaptureArtifact(artifactStore, {
+              sessionId: ctx.sessionId,
+              turnId: capture.turnId,
+              captureId: capture.captureId,
+              step: capture.step,
+              serializedRequest: capture.serializedRequest,
+              now: Date.now(),
+            });
+            return { artifactId: artifact.id };
+          },
+          recordLedger: ctx.recordProviderRequestCapture,
+        })
+      : undefined;
 
     return new AiSdkBackend({
       sessionId: ctx.sessionId,
@@ -165,7 +180,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
             }
           : {}),
       },
-      agentTeam,
       toolAvailability: backendToolAvailability,
       ...(admitsAgentChildren
         ? {
@@ -174,7 +188,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'created',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -186,6 +199,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
                   toolCallId: input.toolCallId,
                 },
                 agentProfile: input.agentProfile,
+                ...(input.subagentId ? { subagentId: input.subagentId } : {}),
                 prompt: input.prompt,
                 ...(input.swarm ? { swarm: input.swarm } : {}),
                 abortSignal: input.abortSignal,
@@ -199,7 +213,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'continued',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -214,7 +227,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'continued',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -287,7 +299,24 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       },
       shellRunContextSummary: ctx.shellRunContextSummary,
       lookupPricing: getLookupPricing(),
-      recordLlmCall: (event: LlmCallRecord) => recordLlmCall({ repo: telemetryRepo, lookupPricing: getLookupPricing() }, event),
+      // One canonical record, one commit point (#1679): the AgentRun stream is
+      // the only durable authority, and the ledger is a projection written only
+      // after the authority holds the record. A failed projection marks the run
+      // so the Usage read path re-derives it from the stream. Settlement runs
+      // after the provider call completed and billed, so neither step may fail
+      // the turn — the seam swallows what is thrown here.
+      recordModelCallAttempt: async (attempt) => {
+        await ctx.recordModelCallAttempt?.(attempt);
+        // Marked before the projection, so a crash between the two still
+        // leaves a run the repair path can find.
+        await modelCallLedger
+          .markRunPendingReprojection(attempt.sessionId, attempt.runId)
+          .catch(() => undefined);
+        await modelCallLedger.record(attempt);
+        await modelCallLedger
+          .clearPendingReprojection(attempt.sessionId, attempt.runId)
+          .catch(() => undefined);
+      },
       recordToolInvocation: (event: ToolInvocationRecord) =>
         recordToolInvocation(
           { repo: telemetryRepo },
@@ -328,22 +357,9 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
         },
       }),
       recordRunTrace: ctx.recordRunTrace,
-      ...(ctx.recordProviderRequestCapture
+      ...(providerRequestCapture
         ? {
-            recordProviderRequestCapture: createProviderRequestCaptureRecorder({
-              persistArtifact: async (capture) => {
-                const artifact = await persistProviderRequestCaptureArtifact(artifactStore, {
-                  sessionId: ctx.sessionId,
-                  turnId: capture.turnId,
-                  captureId: capture.captureId,
-                  step: capture.step,
-                  serializedRequest: capture.serializedRequest,
-                  now: Date.now(),
-                });
-                return { artifactId: artifact.id };
-              },
-              recordLedger: ctx.recordProviderRequestCapture,
-            }),
+            recordProviderRequestCapture: providerRequestCapture,
             recordProviderRequestAttempt: ctx.recordProviderRequestAttempt,
           }
         : {}),
@@ -367,8 +383,8 @@ interface LinkedChildReady {
 }
 
 /**
- * Bridge linked-child events onto the child Session's normal Desktop and Open
- * Gateway channels while the parent tool call remains the stream consumer.
+ * Bridge linked-child events onto the child Session's normal Desktop channel
+ * while the parent tool call remains the stream consumer.
  * Direct user follow-ups already use createSessionStreamer; this closes the
  * nested spawn/resume/retry observation gap without inventing a subagent-only
  * event protocol.
@@ -378,7 +394,6 @@ export function createLinkedChildEventProjection<
 >(input: {
   lifecycle: 'created' | 'continued';
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
-  openGateway: Pick<OpenGatewayService, 'publishSessionEvent'>;
   emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
   onReady?: (ready: Ready) => void | Promise<void>;
   onEvent?: (event: SessionEvent) => void;
@@ -403,7 +418,6 @@ export function createLinkedChildEventProjection<
     onEvent(event) {
       if (childSessionId) {
         input.safeSendToRenderer(`sessions:event:${childSessionId}`, event);
-        input.openGateway.publishSessionEvent(childSessionId, event);
         if (!messageAppendBroadcasted) {
           input.emitSessionsChanged('message-appended', childSessionId);
           messageAppendBroadcasted = true;
@@ -443,11 +457,14 @@ export type StreamEvents = (
 export interface SessionStreamerDeps {
   sessionActivities: SessionActivityRegistry;
   goalWiring: GoalWiring;
-  openGateway: OpenGatewayService;
   computerUseOverlay: AssembledTools['computerUseOverlay'];
   computerUseTools: AssembledTools['computerUseTools'];
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
-  emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
+  emitSessionsChanged: (
+    reason: SessionChangedReason,
+    sessionId?: string,
+    extra?: { turnId?: string },
+  ) => void;
   interruptActivePlanExecution?: (sessionId: string, reason: string) => Promise<unknown>;
 }
 
@@ -473,7 +490,6 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
   const {
     sessionActivities,
     goalWiring,
-    openGateway,
     computerUseOverlay,
     computerUseTools,
     safeSendToRenderer,
@@ -495,20 +511,19 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
       goalBoundary: options.goalBoundary,
       activities: sessionActivities,
       ...(options.activity ? { activity: options.activity } : {}),
-      beginExternalTurn: (externalSessionId, externalTurnId) =>
-        goalWiring.coordinator.beginExternalTurn(externalSessionId, externalTurnId),
+      beginObservedTurn: (externalSessionId, externalTurnId) =>
+        goalWiring.coordinator.beginObservedTurn(externalSessionId, externalTurnId),
       onEvent: (event) => {
         if (!userAppendBroadcasted) {
-          emitSessionsChanged('message-appended', sessionId);
+          emitSessionsChanged('message-appended', sessionId, { turnId });
           userAppendBroadcasted = true;
         }
         safeSendToRenderer(`sessions:event:${sessionId}`, event);
-        openGateway.publishSessionEvent(sessionId, event);
         if (isStatusChangingSessionEvent(event)) {
-          emitSessionsChanged('status-change', sessionId);
+          emitSessionsChanged('status-change', sessionId, { turnId });
         }
         if (isTurnStatusChangingSessionEvent(event)) {
-          emitSessionsChanged('turn-status-change', sessionId);
+          emitSessionsChanged('turn-status-change', sessionId, { turnId });
           computerUseOverlay.clearForSession(sessionId);
           computerUseTools.clearSession(sessionId);
         }
@@ -526,14 +541,13 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
           message: errorMessage(error),
         } satisfies SessionEvent;
         safeSendToRenderer(`sessions:event:${sessionId}`, event);
-        openGateway.publishSessionEvent(sessionId, event);
-        emitSessionsChanged('status-change', sessionId);
-        emitSessionsChanged('turn-status-change', sessionId);
+        emitSessionsChanged('status-change', sessionId, { turnId });
+        emitSessionsChanged('turn-status-change', sessionId, { turnId });
         computerUseOverlay.clearForSession(sessionId);
         computerUseTools.clearSession(sessionId);
       },
       onDrained: async (outcome) => {
-        emitSessionsChanged('message-appended', sessionId);
+        emitSessionsChanged('message-appended', sessionId, { turnId });
         if (
           interruptActivePlanExecution &&
           (outcome.kind === 'aborted' || outcome.kind === 'errored')
@@ -545,6 +559,14 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
         }
       },
     });
+    // Thrown SYNCHRONOUSLY, and that is load-bearing. A refused turn never runs
+    // `onEvent` / `onStreamError` / `onDrained`, so no change ever names it —
+    // and a client's arm stays unconfirmed until its turn is named, holding Stop
+    // and the composer lock. Throwing synchronously is what carries the failure
+    // out through the `void streamEvents(...)` call in the send handler: it
+    // rejects that handler's promise instead of resolving `{ ok: true }`, so the
+    // client disarms in its own catch. Made async, this line would be swallowed
+    // by the `void` and latch the UI until restart.
     if (started.kind === 'unavailable') throw new Error(started.reason);
     return started.completion.then((outcome) => {
       const failureReason = outcome.kind === 'errored' || outcome.kind === 'suspended'

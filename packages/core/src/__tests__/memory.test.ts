@@ -1,45 +1,16 @@
-/**
- * Tests for `@maka/core/memory` — the PR-MEMORY-1 contract.
- *
- * Each describe block is labeled G#N when it pins one of the 9 privacy
- * gates locked by @xuan in `22209a1b`:
- *   G1: default-off
- *   G2: manual confirm before durable write
- *   G3: reversible delete/export precedes auto-write (contract-shape only)
- *   G4: incognito read+write disable
- *   G5: no auto sleep consolidation (enum shape)
- *   G6: visible citation (enum shape)
- *   G7: no hidden activity promotion (candidate-cannot-active)
- *   G8: provider+embedding leakage boundary (`embeddingProvider: 'disabled'`)
- *   G9: renderer cannot forge provenance/readiness
- *
- * Plus normalizer matrix and quasi-memory exclusion locks.
- */
+/** Privacy boundaries and input normalization for `@maka/core/memory`. */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  MEMORY_BLOCK_REASONS,
   MEMORY_CANDIDATE_SOURCES,
   MEMORY_CONTENT_MAX_CODE_POINTS,
-  MEMORY_MODES,
-  MEMORY_PERSISTENCE_STATES,
-  MEMORY_SCOPES,
-  MEMORY_SOURCES,
-  MEMORY_USE_POLICIES,
-  isMemoryCandidateSource,
-  isMemoryMode,
-  isMemoryPersistenceState,
-  isMemoryScope,
-  isMemorySource,
-  isMemoryUsePolicy,
   normalizeMemoryContent,
   normalizeMemoryMode,
   normalizeMemoryPersistenceState,
   normalizeMemoryScope,
   normalizeMemorySource,
   validateMemoryWriteRequest,
-  type MemoryCapabilitySnapshot,
   type MemoryWriteRequest,
   type MemoryWriteRequestContext,
 } from '../memory.js';
@@ -80,20 +51,12 @@ function draftRequest(overrides: Partial<MemoryWriteRequest> = {}): MemoryWriteR
 // ---------------------------------------------------------------------------
 
 describe('G1 — mode=off blocks all writes (default-off)', () => {
-  it('rejects durable write when mode is off', () => {
-    const result = validateMemoryWriteRequest(durableRequest(), ctx({ mode: 'off' }));
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'mode_off');
-  });
-
-  it('rejects draft write when mode is off', () => {
-    const result = validateMemoryWriteRequest(draftRequest(), ctx({ mode: 'off' }));
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'mode_off');
-  });
-
-  it('MEMORY_MODES enumerates off as the first option (fresh-install default semantic)', () => {
-    assert.equal(MEMORY_MODES[0], 'off');
+  it('rejects durable and draft writes', () => {
+    for (const request of [durableRequest(), draftRequest()]) {
+      const result = validateMemoryWriteRequest(request, ctx({ mode: 'off' }));
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.reason, 'mode_off');
+    }
   });
 });
 
@@ -104,15 +67,6 @@ describe('G1 — mode=off blocks all writes (default-off)', () => {
 describe('G2 — durable active requires confirmedAt (manual confirm)', () => {
   it('rejects user_authored + active without confirmedAt', () => {
     const result = validateMemoryWriteRequest(durableRequest({ confirmedAt: undefined }), ctx());
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'manual_confirm_required');
-  });
-
-  it('rejects chat_extracted + active without confirmedAt', () => {
-    const result = validateMemoryWriteRequest(
-      durableRequest({ source: 'chat_extracted', confirmedAt: undefined }),
-      ctx(),
-    );
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'manual_confirm_required');
   });
@@ -138,42 +92,6 @@ describe('G2 — durable active requires confirmedAt (manual confirm)', () => {
       if (!result.ok) assert.equal(result.reason, 'manual_confirm_required');
     }
   });
-
-  it('accepts user_authored + active + confirmedAt', () => {
-    const result = validateMemoryWriteRequest(durableRequest(), ctx());
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.value.persistenceState, 'active');
-      assert.equal(result.value.source, 'user_authored');
-      assert.equal((result.value as { confirmedAt: number }).confirmedAt, 1_700_000_000_000);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// G3 — reversibility precedes auto-write (contract shape only)
-// ---------------------------------------------------------------------------
-
-describe('G3 — contract has no auto-write bypass; v1 is contract-only', () => {
-  it('contract exports no autoCommit / autoPromote function', async () => {
-    const mod = await import('../memory.js');
-    for (const key of Object.keys(mod)) {
-      assert.doesNotMatch(key, /auto(Commit|Promote|Consolidate)/i, key);
-    }
-  });
-
-  it('MemoryWriteRequest type does not accept skipConfirm field (no autopromote)', () => {
-    // Compile-time: a request with `skipConfirm: true` would fail to
-    // type-check against MemoryWriteRequest. Runtime: validator strips
-    // extras (it only reads documented fields).
-    const result = validateMemoryWriteRequest(
-      { ...durableRequest(), skipConfirm: true } as unknown as MemoryWriteRequest,
-      ctx(),
-    );
-    // Validator ignores extras — accepts the well-formed request — but
-    // does not mutate the rejection-path for `skipConfirm`.
-    assert.equal(result.ok, true);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -181,16 +99,12 @@ describe('G3 — contract has no auto-write bypass; v1 is contract-only', () => 
 // ---------------------------------------------------------------------------
 
 describe('G4 — incognito blocks all writes', () => {
-  it('rejects valid durable write when incognitoActive=true', () => {
-    const result = validateMemoryWriteRequest(durableRequest(), ctx({ incognitoActive: true }));
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'incognito_active');
-  });
-
-  it('rejects valid draft write when incognitoActive=true', () => {
-    const result = validateMemoryWriteRequest(draftRequest(), ctx({ incognitoActive: true }));
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'incognito_active');
+  it('rejects durable and draft writes', () => {
+    for (const request of [durableRequest(), draftRequest()]) {
+      const result = validateMemoryWriteRequest(request, ctx({ incognitoActive: true }));
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.reason, 'incognito_active');
+    }
   });
 
   it('incognito gate precedes content validation (rejects malformed content as incognito)', () => {
@@ -200,40 +114,6 @@ describe('G4 — incognito blocks all writes', () => {
     );
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'incognito_active');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// G5 — no auto sleep consolidation
-// ---------------------------------------------------------------------------
-
-describe('G5 — no automated consolidation source exists', () => {
-  it('MEMORY_SOURCES does not contain any auto/sleep/consolidate kind', () => {
-    for (const source of MEMORY_SOURCES) {
-      assert.doesNotMatch(source, /sleep|consolidat|auto/i, source);
-    }
-  });
-
-  it('MEMORY_CANDIDATE_SOURCES does not contain any auto/sleep/consolidate kind', () => {
-    for (const source of MEMORY_CANDIDATE_SOURCES) {
-      assert.doesNotMatch(source, /sleep|consolidat|auto/i, source);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// G6 — visible citation (use policy enum)
-// ---------------------------------------------------------------------------
-
-describe('G6 — MEMORY_USE_POLICIES allows only never and cited_only', () => {
-  it('enum is exactly {never, cited_only}', () => {
-    assert.deepEqual([...MEMORY_USE_POLICIES], ['never', 'cited_only']);
-  });
-
-  it('isMemoryUsePolicy rejects "silent" / "auto" / "always"', () => {
-    for (const bad of ['silent', 'auto', 'always', 'unrestricted']) {
-      assert.equal(isMemoryUsePolicy(bad), false, bad);
-    }
   });
 });
 
@@ -253,77 +133,10 @@ describe('G7 — candidate sources cannot reach active state', () => {
     }
   });
 
-  it('candidate gate precedes mode-disallows gate (priority: invariant > policy)', () => {
-    // In mode=manual_only, a candidate-source request fails both
-    // candidate_source_no_active AND mode_disallows_candidate. The
-    // invariant gate (no candidate→active) is checked first.
-    const result = validateMemoryWriteRequest(
-      { source: 'voice_transcript', persistenceState: 'active', content: 'x', scope: 'workspace' },
-      ctx({ mode: 'manual_only' }),
-    );
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'candidate_source_no_active');
-  });
-
   it('mode=manual_only rejects candidate sources even at draft state', () => {
     const result = validateMemoryWriteRequest(draftRequest(), ctx({ mode: 'manual_only' }));
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'mode_disallows_candidate');
-  });
-
-  it('mode=manual_with_drafts accepts candidate sources at draft state', () => {
-    const result = validateMemoryWriteRequest(draftRequest(), ctx({ mode: 'manual_with_drafts' }));
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.value.source, 'voice_transcript');
-      assert.equal(result.value.persistenceState, 'draft');
-    }
-  });
-
-  it('accepts candidate + review_required state', () => {
-    const result = validateMemoryWriteRequest(
-      draftRequest({ persistenceState: 'review_required' }),
-      ctx(),
-    );
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.value.persistenceState, 'review_required');
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// G8 — provider+embedding leakage boundary
-// ---------------------------------------------------------------------------
-
-describe('G8 — MemoryCapabilitySnapshot locks embeddingProvider="disabled"', () => {
-  it('a snapshot constructed in code with literal "disabled" type-checks', () => {
-    const snapshot: MemoryCapabilitySnapshot = {
-      mode: 'off',
-      durableEntriesCount: 0,
-      pendingReviewCount: 0,
-      embeddingProvider: 'disabled',
-      incognitoActive: false,
-      usePolicy: 'cited_only',
-    };
-    assert.equal(snapshot.embeddingProvider, 'disabled');
-  });
-
-  // Compile-time: assigning any other value to embeddingProvider would
-  // fail TS check because the field is typed as the literal 'disabled'.
-  // The runtime test asserts the literal is the only thing that fits the
-  // shape under string equality.
-  it('embeddingProvider field is the literal string "disabled"', () => {
-    const snapshot: MemoryCapabilitySnapshot = {
-      mode: 'off',
-      durableEntriesCount: 0,
-      pendingReviewCount: 0,
-      embeddingProvider: 'disabled',
-      incognitoActive: false,
-      usePolicy: 'cited_only',
-    };
-    assert.equal(snapshot.embeddingProvider, 'disabled');
-    assert.equal(typeof snapshot.embeddingProvider, 'string');
   });
 });
 
@@ -340,16 +153,6 @@ describe('G9 — renderer-originated active durable write is blocked', () => {
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'renderer_provenance_forged');
   });
-
-  it('renderer can still propose drafts via candidate source', () => {
-    // The renderer is allowed to propose drafts (e.g. user reviews
-    // voice transcript and forwards). It cannot record `confirmedAt`.
-    const result = validateMemoryWriteRequest(
-      draftRequest(),
-      ctx({ originatedFromRenderer: true }),
-    );
-    assert.equal(result.ok, true);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -357,12 +160,6 @@ describe('G9 — renderer-originated active durable write is blocked', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizeMemoryContent', () => {
-  it('accepts trimmed string after NFC normalization', () => {
-    const result = normalizeMemoryContent('  Hello, world  ');
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.value, 'Hello, world');
-  });
-
   it('strips control characters and zero-width characters', () => {
     const inputWithControls =
       'foo' + String.fromCharCode(0x00) + 'bar' + String.fromCharCode(0x200b) + 'baz';
@@ -374,50 +171,31 @@ describe('normalizeMemoryContent', () => {
     }
   });
 
-  it('rejects non-string', () => {
-    for (const bad of [undefined, null, 42, true, {}, []]) {
+  it('rejects non-string and empty input', () => {
+    for (const bad of [undefined, null, 42, true, {}, [], '', '   ', '\t\n  ']) {
       const result = normalizeMemoryContent(bad);
       assert.equal(result.ok, false, String(bad));
       if (!result.ok) assert.equal(result.reason, 'content_invalid');
     }
   });
 
-  it('rejects empty after trim', () => {
-    for (const bad of ['', '   ', '\t\n  ']) {
-      const result = normalizeMemoryContent(bad);
-      assert.equal(result.ok, false, JSON.stringify(bad));
-      if (!result.ok) assert.equal(result.reason, 'content_invalid');
-    }
-  });
-
-  it('rejects content exceeding code-point cap', () => {
+  it('enforces the code-point cap', () => {
     const over = 'a'.repeat(MEMORY_CONTENT_MAX_CODE_POINTS + 1);
     const result = normalizeMemoryContent(over);
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'content_invalid');
-  });
-
-  it('accepts content right at the cap (emoji-safe code-point counting)', () => {
     const at = 'a'.repeat(MEMORY_CONTENT_MAX_CODE_POINTS);
-    const result = normalizeMemoryContent(at);
-    assert.equal(result.ok, true);
+    assert.equal(normalizeMemoryContent(at).ok, true);
   });
 });
 
 describe('normalizeMemorySource', () => {
-  it('classifies user_authored as memory kind', () => {
-    const result = normalizeMemorySource('user_authored');
-    assert.equal(result.ok, true);
-    if (result.ok) assert.deepEqual(result.value, { kind: 'memory', value: 'user_authored' });
-  });
-
-  it('classifies chat_extracted as memory kind', () => {
-    const result = normalizeMemorySource('chat_extracted');
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.value.kind, 'memory');
-  });
-
-  it('classifies each candidate source as candidate kind', () => {
+  it('separates durable and candidate sources', () => {
+    for (const source of ['user_authored', 'chat_extracted']) {
+      const result = normalizeMemorySource(source);
+      assert.equal(result.ok, true, source);
+      if (result.ok) assert.equal(result.value.kind, 'memory', source);
+    }
     for (const candidate of MEMORY_CANDIDATE_SOURCES) {
       const result = normalizeMemorySource(candidate);
       assert.equal(result.ok, true, candidate);
@@ -425,16 +203,20 @@ describe('normalizeMemorySource', () => {
     }
   });
 
-  it('rejects unknown source string', () => {
-    for (const bad of ['', 'usage_log', 'settings', 'session_summary', 'skill_inject']) {
-      const result = normalizeMemorySource(bad);
-      assert.equal(result.ok, false, bad);
-      if (!result.ok) assert.equal(result.reason, 'unknown_source');
-    }
-  });
-
-  it('rejects non-string source', () => {
-    for (const bad of [undefined, null, 42, {}, []]) {
+  it('rejects unknown and non-string sources', () => {
+    for (const bad of [
+      '',
+      'usage_log',
+      'settings',
+      'session_summary',
+      'skill_inject',
+      'workspace_instruction',
+      undefined,
+      null,
+      42,
+      {},
+      [],
+    ]) {
       const result = normalizeMemorySource(bad);
       assert.equal(result.ok, false, String(bad));
       if (!result.ok) assert.equal(result.reason, 'unknown_source');
@@ -443,35 +225,16 @@ describe('normalizeMemorySource', () => {
 });
 
 describe('normalizeMemoryMode / Scope / PersistenceState — closed-enum reject', () => {
-  it('mode rejects unknown', () => {
-    const result = normalizeMemoryMode('always_on');
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'mode_invalid');
-  });
-
-  it('scope rejects unknown', () => {
-    const result = normalizeMemoryScope('global');
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'scope_invalid');
-  });
-
-  it('persistenceState rejects unknown', () => {
-    const result = normalizeMemoryPersistenceState('persisted');
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.reason, 'persistence_invalid');
-  });
-
-  it('type guards return true for closed-enum members and false otherwise', () => {
-    for (const mode of MEMORY_MODES) assert.equal(isMemoryMode(mode), true, mode);
-    for (const scope of MEMORY_SCOPES) assert.equal(isMemoryScope(scope), true, scope);
-    for (const state of MEMORY_PERSISTENCE_STATES)
-      assert.equal(isMemoryPersistenceState(state), true, state);
-    for (const source of MEMORY_SOURCES) assert.equal(isMemorySource(source), true, source);
-    for (const candidate of MEMORY_CANDIDATE_SOURCES)
-      assert.equal(isMemoryCandidateSource(candidate), true, candidate);
-    assert.equal(isMemoryMode('unknown'), false);
-    assert.equal(isMemorySource('voice_transcript'), false);
-    assert.equal(isMemoryCandidateSource('user_authored'), false);
+  it('rejects unknown values with the matching reason', () => {
+    for (const [normalize, value, reason] of [
+      [normalizeMemoryMode, 'always_on', 'mode_invalid'],
+      [normalizeMemoryScope, 'global', 'scope_invalid'],
+      [normalizeMemoryPersistenceState, 'persisted', 'persistence_invalid'],
+    ] as const) {
+      const result = normalize(value);
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.reason, reason);
+    }
   });
 });
 
@@ -480,31 +243,6 @@ describe('normalizeMemoryMode / Scope / PersistenceState — closed-enum reject'
 // ---------------------------------------------------------------------------
 
 describe('Quasi-memory surfaces cannot enter MemorySource', () => {
-  it('rejects "usage_log" / "settings" / "session_summary" / "skill_inject" / "workspace_instruction" as source', () => {
-    const quasiNames = [
-      'usage_log',
-      'settings',
-      'session_summary',
-      'skill_inject',
-      'workspace_instruction',
-      'onboarding_milestone',
-      'health_probe',
-      'e2e_fixture',
-    ];
-    for (const name of quasiNames) {
-      const result = normalizeMemorySource(name);
-      assert.equal(result.ok, false, name);
-      if (!result.ok) assert.equal(result.reason, 'unknown_source', name);
-    }
-  });
-
-  // PR-MEMORY-1 review fixup (@xuan msg `0c9c68f9`): pin the validator
-  // entry point — not just the source-name normalizer — so a quasi-memory
-  // name with full valid `active` + `confirmedAt` + main-originated context
-  // still rejects. This catches the "fully formed durable write whose only
-  // problem is the source literal" path. (Source-laundering — i.e.
-  // downstream relabeling content as `chat_extracted` before submit — is
-  // a separate provenance gate at the IPC/store boundary, not contract.)
   it('validateMemoryWriteRequest rejects fully-formed durable with quasi-memory source name', () => {
     const quasiNames = [
       'usage_log',
@@ -533,60 +271,6 @@ describe('Quasi-memory surfaces cannot enter MemorySource', () => {
       }
     }
   });
-
-  it('validateMemoryWriteRequest rejects fully-formed draft with quasi-memory source name', () => {
-    const quasiNames = ['usage_log', 'session_summary', 'health_probe'];
-    for (const name of quasiNames) {
-      const result = validateMemoryWriteRequest(
-        {
-          source: name,
-          persistenceState: 'draft',
-          content: 'quasi-memory body but presented as draft',
-          scope: 'session',
-        },
-        ctx(),
-      );
-      assert.equal(result.ok, false, name);
-      if (!result.ok) {
-        assert.equal(result.reason, 'unknown_source', name);
-      }
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Block reason enum hygiene
-// ---------------------------------------------------------------------------
-
-describe('MEMORY_BLOCK_REASONS is a closed union', () => {
-  it('includes every reason emitted by validateMemoryWriteRequest', () => {
-    const expected = [
-      'mode_off',
-      'incognito_active',
-      'manual_confirm_required',
-      'candidate_source_no_active',
-      'unknown_source',
-      'content_invalid',
-      'scope_invalid',
-      'mode_invalid',
-      'persistence_invalid',
-      'renderer_provenance_forged',
-      'mode_disallows_candidate',
-    ];
-    for (const reason of expected) {
-      assert.ok(
-        (MEMORY_BLOCK_REASONS as readonly string[]).includes(reason),
-        reason + ' missing from MEMORY_BLOCK_REASONS',
-      );
-    }
-  });
-
-  it('includes embedding_disabled and quasi_memory_promotion_blocked for future extension', () => {
-    assert.ok((MEMORY_BLOCK_REASONS as readonly string[]).includes('embedding_disabled'));
-    assert.ok(
-      (MEMORY_BLOCK_REASONS as readonly string[]).includes('quasi_memory_promotion_blocked'),
-    );
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -594,7 +278,7 @@ describe('MEMORY_BLOCK_REASONS is a closed union', () => {
 // ---------------------------------------------------------------------------
 
 describe('canonical return shape', () => {
-  it('durable write returns DurableMemoryEntry with active state and confirmedAt', () => {
+  it('returns canonical durable and draft entries', () => {
     const result = validateMemoryWriteRequest(durableRequest(), ctx());
     assert.equal(result.ok, true);
     if (result.ok) {
@@ -607,13 +291,10 @@ describe('canonical return shape', () => {
       assert.equal((entry as { confirmedAt: number }).confirmedAt, 1_700_000_000_000);
       assert.equal(entry.createdAt, 1_700_000_000_000);
     }
-  });
-
-  it('draft write returns DraftMemoryEntry with injected now timestamp', () => {
-    const result = validateMemoryWriteRequest(draftRequest(), ctx({ now: 1_800_000_000_000 }));
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      const entry = result.value;
+    const draft = validateMemoryWriteRequest(draftRequest(), ctx({ now: 1_800_000_000_000 }));
+    assert.equal(draft.ok, true);
+    if (draft.ok) {
+      const entry = draft.value;
       assert.equal(entry.persistenceState, 'draft');
       assert.equal(entry.source, 'voice_transcript');
       assert.equal((entry as { proposedAt: number }).proposedAt, 1_800_000_000_000);

@@ -32,11 +32,17 @@ export {
 } from './runtime-policy/errors.js';
 export type {
   BeginConnectionTestResult,
+  BeginInteractiveOAuthLoginResult,
   BeginModelFetchResult,
+  CompareAndSetOAuthCredentialInput,
+  CompareAndSetOAuthCredentialResult,
   ConnectionEffectChangedDomain,
   ConnectionEffectCompletionResult,
   ConnectionEffectPreparationFailure,
   ConnectionTestTicket,
+  InteractiveOAuthLoginCompletionResult,
+  InteractiveOAuthLoginProvider,
+  InteractiveOAuthLoginTicket,
   CredentialStatusQueryResult,
   ModelFetchTicket,
   ProviderAuthKind,
@@ -44,6 +50,7 @@ export type {
   RuntimePolicyOperationCoordinator,
   RuntimePolicyOperationSecretMaterial,
   ResolveExecutionConnectionResult,
+  ResolveWebSearchExecutionResult,
   UnavailableProviderActionAvailability,
 } from './runtime-policy/operations.js';
 
@@ -196,6 +203,12 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
     operations: {
       resolveExecutionConnection: (connectionSlug) =>
         coordinator.resolveExecutionConnection(connectionSlug),
+      resolveWebSearchExecution: () => coordinator.resolveWebSearchExecution(),
+      compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
+      beginInteractiveOAuthLogin: (connectionId) =>
+        coordinator.beginInteractiveOAuthLogin(connectionId),
+      completeInteractiveOAuthLogin: (ticket, secret) =>
+        coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),
       completeModelFetch: (ticket, result) => coordinator.completeModelFetch(ticket, result),
       beginConnectionTest: (connectionId, modelId) =>

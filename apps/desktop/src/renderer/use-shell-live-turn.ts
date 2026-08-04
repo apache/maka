@@ -3,7 +3,7 @@ import type { SessionSummary, ShellRunUpdate } from '@maka/core';
 import type { LiveTurnProjection, ToolActivityItem } from '@maka/ui';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state';
 import { hasInFlightToolActivity } from './session-event-health';
-import { MODEL_CONTINUING_DELAY_MS, MODEL_PROCESSING_DELAY_MS, deriveModelWait, type ModelWaitKind } from './model-wait-state';
+import { MODEL_CONTINUING_DELAY_MS, MODEL_PROCESSING_DELAY_MS, deriveModelWait, deriveTurnActive, type ModelWaitKind } from './model-wait-state';
 import { useDelayedFlag } from './use-delayed-flag';
 
 /**
@@ -20,10 +20,11 @@ import { useDelayedFlag } from './use-delayed-flag';
  */
 export function useShellLiveTurn(options: {
   activeId: string | undefined;
+  /** Carries `runningTurnIds` — the authority on turns this renderer did not send. */
+  activeSession: SessionSummary | undefined;
   activeLiveTurn: LiveTurnProjection | undefined;
   liveTurnBySession: Record<string, LiveTurnProjection>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
-  activeSession: SessionSummary | undefined;
 }): {
   activeShellRunUpdates: ShellRunUpdate[];
   activeStreaming: string;
@@ -34,12 +35,11 @@ export function useShellLiveTurn(options: {
   streamingSessionIds: Set<string>;
   liveTools: ToolActivityItem[];
   hasInFlightLiveTools: boolean;
-  turnInFlight: boolean;
-  sessionAwaitingModel: boolean;
+  turnActive: boolean;
   showProcessingIndicator: boolean;
   showContinuingIndicator: boolean;
 } {
-  const { activeId, activeLiveTurn, liveTurnBySession, shellRunUpdatesBySession, activeSession } = options;
+  const { activeId, activeSession, activeLiveTurn, liveTurnBySession, shellRunUpdatesBySession } = options;
   const activeShellRunUpdates = useMemo(
     () => activeId ? Object.values(shellRunUpdatesBySession[activeId] ?? {}) : [],
     [activeId, shellRunUpdatesBySession],
@@ -63,29 +63,35 @@ export function useShellLiveTurn(options: {
   const liveTools = useMemo(() => activeLiveTurn?.steps.flatMap((step) => step.tools) ?? [], [activeLiveTurn]);
   const hasInFlightLiveTools = useMemo(() => hasInFlightToolActivity(liveTools), [liveTools]);
 
-  // #646: the two turn-wait cues. `turnPhase` (armed at send, no lag; promoted to
-  // 'streamed' on the first content event) separates the connect-to-first-token
-  // wait from the later step-to-step lulls; the `status === 'running'` gate
-  // self-heals a backgrounded session whose terminal event was missed while
-  // inactive (its arm can't clear without the event). The rising-edge delays
-  // (useDelayedFlag) suppress a flash on fast turns / quick step hops.
+  // #646: the turn's phase drives both the Stop affordance and the two wait
+  // cues. `turnPhase` is armed at send with no lag and promoted to 'streamed'
+  // on the first content event, which is what separates the
+  // connect-to-first-token wait from the later step-to-step lulls; the
+  // rising-edge delays (useDelayedFlag) suppress a flash on fast turns.
+  //
+  // Stop / composer lock: see `deriveTurnActive` for why its two witnesses are
+  // ORed and never ANDed. Retiring a stale arm is `settledSessionTransientIds`'
+  // job, which covers backgrounded sessions too.
   const activeTurnPhase = activeLiveTurn?.terminal ? undefined : activeLiveTurn?.phase;
-  const turnInFlight = activeTurnPhase !== undefined;
+  const turnActive = deriveTurnActive({
+    turnPhase: activeTurnPhase,
+    armedTurnId: activeLiveTurn?.turnId,
+    runningTurnIds: activeSession?.runningTurnIds,
+  });
   const modelWaitKind: ModelWaitKind = deriveModelWait({
     turnPhase: activeTurnPhase,
     streamingText: activeStreaming,
     thinkingText: activeThinking,
     hasInFlightTools: hasInFlightLiveTools,
   });
-  const sessionAwaitingModel = activeSession?.status === 'running';
   // The prominent "正在处理…" first-token indicator (turn head only).
   const showProcessingIndicator = useDelayedFlag(
-    sessionAwaitingModel && modelWaitKind === 'processing',
+    modelWaitKind === 'processing',
     MODEL_PROCESSING_DELAY_MS,
   );
   // The calm "继续中…" hint for a mid-turn step-to-step lull (after content).
   const showContinuingIndicator = useDelayedFlag(
-    sessionAwaitingModel && modelWaitKind === 'continuing',
+    modelWaitKind === 'continuing',
     MODEL_CONTINUING_DELAY_MS,
   );
 
@@ -99,8 +105,7 @@ export function useShellLiveTurn(options: {
     streamingSessionIds,
     liveTools,
     hasInFlightLiveTools,
-    turnInFlight,
-    sessionAwaitingModel,
+    turnActive,
     showProcessingIndicator,
     showContinuingIndicator,
   };

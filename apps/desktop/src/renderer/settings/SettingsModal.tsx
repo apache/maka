@@ -71,7 +71,7 @@ export function SettingsModal(props: {
   // calls the current closure rather than a stale one.
   useEffect(() => {
     function onKey(event: globalThis.KeyboardEvent) {
-      if (event.key === 'Escape') props.onClose();
+      if (event.key === 'Escape' && !event.defaultPrevented) props.onClose();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

@@ -26,7 +26,7 @@ import { test, expect } from './fixtures';
 async function probeNoticeAlignment(page: import('@playwright/test').Page) {
   return await page.evaluate(() => {
     const notice = document.querySelector<HTMLElement>('.maka-session-health-notice');
-    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-inner');
+    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-astryx');
     if (!notice || !composer) {
       throw new Error('Expected both the health notice and the composer card to be mounted');
     }
@@ -56,5 +56,8 @@ test('locked stale sessions show the health notice even with a ready default', a
   // Click-through lands in Settings · 模型.
   await page.getByRole('button', { name: '去模型' }).click();
   await expect(page.getByLabel('设置内容')).toBeVisible();
-  await expect(page.getByPlaceholder('搜索服务商')).toBeVisible();
+  // The connection list itself, not just the settings shell: `add-connection`
+  // is the list level's own affordance, so it can only be visible once the
+  // panel has loaded and settled on that route.
+  await expect(page.locator('[data-maka-contract="add-connection"]')).toBeVisible();
 });

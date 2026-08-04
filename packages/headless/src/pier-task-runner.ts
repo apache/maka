@@ -21,9 +21,6 @@ import {
   mergeAgentEnv,
   modelIdForProvider,
   providerProxyApiProtocol,
-  providerProxyAuthMode,
-  providerProxyUpstreamBaseUrl,
-  providerProxyUsageProtocol,
   providerRequiresSecret,
   providerTelemetryArtifactRefs,
   providerTokenSummary,
@@ -32,8 +29,18 @@ import {
   readTrialException,
   resolveNativeTrialTimeoutMs,
   withProviderTelemetryArtifact,
+  incompleteTerminalProviderRequest,
+  modelForOpenCode,
   type HarborTaskPricing,
 } from './harbor-task-runner.js';
+import {
+  harnessAgentImportPath,
+  providerProxyClientAuthMode,
+  providerProxyUpstreamAuthMode,
+  providerProxyUpstreamBaseUrl,
+  providerProxyUsageProtocol,
+  type HarnessAgentId,
+} from './harness-agent-registry.js';
 import { lenientPositiveIntEnv } from './headless-run-env.js';
 import {
   CODEX_TOOLCHAIN_CONTAINER_PATH,
@@ -44,6 +51,11 @@ import {
   KIMI_CODE_TOOLCHAIN_CONTAINER_PATH,
   KIMI_CODE_TOOLCHAIN_FINGERPRINT,
 } from './kimi-code-toolchain.js';
+import {
+  OPENCODE_TOOLCHAIN_CONTAINER_PATH,
+  OPENCODE_TOOLCHAIN_FINGERPRINT,
+  OPENCODE_TOOLCHAIN_SPEC,
+} from './opencode-toolchain.js';
 import {
   MAKA_NODE_TOOLCHAIN_CONTAINER_PATH,
   MAKA_NODE_TOOLCHAIN_FINGERPRINT,
@@ -135,6 +147,8 @@ export interface PierTaskRunnerOptions {
   kimiCodeToolchainPath?: string;
   /** Prepared Codex toolchain bind-mounted read-only into task containers. */
   codexToolchainPath?: string;
+  /** Prepared OpenCode toolchain bind-mounted read-only into task containers. */
+  opencodeToolchainPath?: string;
   /** Competitor CLI version, forwarded as the adapter's `version` kwarg. The
    * Codex arm requires it to match the pinned toolchain spec so the fixed
    * build under test is exactly the one fingerprinted into the manifest. */
@@ -235,7 +249,7 @@ export interface PierRunResult {
 
 export type PierProcessRunner = (request: PierRunRequest) => Promise<PierRunResult>;
 
-export type PierAgent = 'maka' | 'kimi-code' | 'codex';
+export type PierAgent = Exclude<HarnessAgentId, 'claude-code'>;
 
 interface PierProviderRuntime {
   /** Proxy-minted secret env delivered via `--env-file` (kept off argv). */
@@ -251,6 +265,14 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
   if (options.agent === 'codex' && options.agentVersion !== CODEX_TOOLCHAIN_SPEC.codex.version) {
     throw new Error(
       `Codex adapter version must match toolchain version ${CODEX_TOOLCHAIN_SPEC.codex.version}`,
+    );
+  }
+  if (
+    options.agent === 'opencode' &&
+    options.agentVersion !== OPENCODE_TOOLCHAIN_SPEC.opencode.version
+  ) {
+    throw new Error(
+      `OpenCode adapter version must match toolchain version ${OPENCODE_TOOLCHAIN_SPEC.opencode.version}`,
     );
   }
   const runPier = options.runPier ?? defaultPierProcessRunner;
@@ -343,10 +365,13 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
           if (usesEnvFile) await writeEnvFile(envFilePath, envFileEntries);
           const args = buildPierRunArgs({
             agent,
-            // Provider-local bare id (same normalization contract as the Harbor
-            // runner): the adapter's model_name takes precedence over MAKA_MODEL, so
-            // a provider-prefixed `-m` would leak the prefixed id into the cell.
-            model: modelIdForProvider(options.model, options.provider ?? 'deepseek'),
+            // Provider-local bare id for the Maka/Kimi/Codex arms (same
+            // normalization contract as the Harbor runner); OpenCode instead
+            // requires the provider/model form its adapter splits on.
+            model:
+              agent === 'opencode'
+                ? modelForOpenCode(options.model, options.provider ?? 'deepseek')
+                : modelIdForProvider(options.model, options.provider ?? 'deepseek'),
             taskPath: input.task.path,
             jobsDir,
             jobName,
@@ -373,7 +398,14 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
                       : {}),
                   },
                 }
-              : {}),
+              : agent === 'opencode'
+                ? {
+                    // OpenCode pins its CLI build the same way so trial
+                    // provenance records the fingerprinted version instead of
+                    // 'unknown'; its reasoning variant rides --ae instead.
+                    agentKwargs: { version: options.agentVersion! },
+                  }
+                : {}),
           });
           return await runPier({
             pierBin,
@@ -513,6 +545,27 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
           tail(result.stderr || result.stdout),
         );
       }
+      // Same terminal-stream contract as the Harbor runner: a non-completing
+      // last provider request is infra, never a graded model failure.
+      const terminalProviderRequest = incompleteTerminalProviderRequest(
+        providerTelemetry,
+        completeTimedOutTrial,
+      );
+      if (terminalProviderRequest) {
+        throw new PierInfraError(
+          `terminal provider request did not complete for task ${input.task.id}`,
+          [
+            `outcome=${terminalProviderRequest.outcome}`,
+            terminalProviderRequest.status !== undefined
+              ? `status=${terminalProviderRequest.status}`
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join(', '),
+          'infra_failed',
+          { providerTelemetryPath },
+        );
+      }
 
       const reward = await readPierReward(trialDir, input.task.id, trialException);
       const rawCell = await readCellOutput(
@@ -584,12 +637,7 @@ export interface BuildPierRunArgsInput {
 
 /** Assemble the `pier run` argv. Exported for deterministic unit tests. */
 export function buildPierRunArgs(input: BuildPierRunArgsInput): string[] {
-  const importPath =
-    input.agent === 'kimi-code'
-      ? 'kimi_code_agent:MakaKimiCodeAgent'
-      : input.agent === 'codex'
-        ? 'codex_agent:MakaCodexAgent'
-        : 'maka_agent:MakaAgent';
+  const importPath = harnessAgentImportPath(input.agent);
   const args = [
     'run',
     '--agent-import-path',
@@ -670,6 +718,17 @@ function buildPierMounts(
       read_only: true,
     });
   }
+  if (agent === 'opencode') {
+    if (!options.opencodeToolchainPath) {
+      throw new Error('opencodeToolchainPath is required for the OpenCode adapter');
+    }
+    mounts.push({
+      type: 'bind',
+      source: options.opencodeToolchainPath,
+      target: OPENCODE_TOOLCHAIN_CONTAINER_PATH,
+      read_only: true,
+    });
+  }
   return mounts;
 }
 
@@ -706,6 +765,10 @@ function buildPierAgentEnv(
   }
   if (agent === 'codex') {
     env.MAKA_CODEX_TOOLCHAIN_FINGERPRINT = CODEX_TOOLCHAIN_FINGERPRINT;
+  }
+  if (agent === 'opencode') {
+    env.MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT = OPENCODE_TOOLCHAIN_FINGERPRINT;
+    if (options.reasoningEffort) env.MAKA_OPENCODE_VARIANT = options.reasoningEffort;
   }
   if (options.pricing) {
     env.MAKA_TRIAL_INPUT_USD_PER_1M = String(options.pricing.inputUsdPer1M);
@@ -816,7 +879,8 @@ async function pierProviderRuntime(
     ...(options.resolveProviderCredential
       ? { resolveUpstreamCredential: options.resolveProviderCredential }
       : { apiKeyFile: options.apiKeyFile! }),
-    authMode: agent === 'kimi-code' ? 'bearer' : providerProxyAuthMode(provider, apiProtocol),
+    clientAuthMode: providerProxyClientAuthMode(agent, provider, apiProtocol),
+    upstreamAuthMode: providerProxyUpstreamAuthMode(agent, provider, apiProtocol),
     usageProtocol: providerProxyUsageProtocol(agent, provider, apiProtocol),
   };
   const proxy =
@@ -843,7 +907,10 @@ async function pierProviderRuntime(
               MAKA_HOST_BASE_URL: proxy.baseUrl,
               MAKA_HOST_API_KEY: proxy.token,
             }
-        : { MAKA_PROVIDER_PROXY_URL: proxy.baseUrl, MAKA_PROVIDER_PROXY_TOKEN: proxy.token },
+        : {
+            MAKA_PROVIDER_PROXY_URL: proxy.baseUrl,
+            MAKA_PROVIDER_PROXY_TOKEN: proxy.token,
+          },
     agentEnv: {},
     usage: proxy.usage,
     telemetry: proxy.telemetry,

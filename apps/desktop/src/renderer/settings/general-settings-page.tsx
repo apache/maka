@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { PersonalizationSettingsPage } from './appearance-settings-page';
+import { SettingsActions, SettingsField, SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import type {
   AppSettings,
   ChatDefaultPermissionMode,
@@ -9,27 +10,28 @@ import type {
 } from '@maka/core';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import {
-  Alert,
-  AlertDescription,
   Button,
-  Input,
-  NumberField,
-  NumberFieldInput,
+  FormLayout,
+  TextInput,
+  NumberInput,
   ModelPicker,
   PermissionModeSelect,
-  SettingsSelect,
-  SettingsSwitch as Switch,
+  Selector,
+  Switch,
   modelChoiceValue,
   modelMenuGroups,
   parseModelChoiceValue,
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
-import { ProviderLogo } from './ProvidersPanel';
+import { ProviderBrandMark } from './provider-brand-marks';
+import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
+import { WorkspaceInstructionsSection } from './memory-settings-sections';
+import { useWorkspaceInstructionsController } from './use-workspace-instructions-controller';
 import { buildCatalogChatModelChoices } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
-import { SettingsRows } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard, useKeyedActionGuard } from './use-action-guard';
 import { useOptimisticSettingsDraft } from './use-optimistic-settings-draft';
@@ -41,49 +43,54 @@ export function GeneralSettingsPage(props: {
   connections: readonly LlmConnection[];
   defaultSlug: string | null;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
+  onReloadSettings(): Promise<void>;
   onRefreshConnections(): Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
+  const sections = getSettingsPreferencesCopy(locale).sections;
+  const memoryCopy = getMemorySettingsCopy(locale);
   const toast = useToast();
+  const workspaceInstructions = useWorkspaceInstructionsController({
+    onUpdate: props.onUpdate,
+    onReloadSettings: props.onReloadSettings,
+  });
   return (
-    <div className="settingsStructuredPage">
+    <SettingsPage>
       {/* Designer audit P2-13: identity fields (显示名称/界面语言/语气偏好)
           moved here from the 外观 page — they configure who you are to the
           app, not how the app looks. The component keeps its save flow. */}
       <PersonalizationSettingsPage settings={props.settings} onUpdate={props.onUpdate} />
-      <SettingsRows>
-        <div className="settingsFormRow">
-          <div>
-            <strong>{copy.incognito}</strong>
-            <small>{copy.incognitoHelp}</small>
-          </div>
-          <Switch
-            ariaLabel={copy.enableIncognito}
-            checked={props.settings.privacy.incognitoActive}
+      <SettingsSection title={sections.privacy} description={sections.privacyHelp}>
+        <SettingsRow
+          label={copy.incognito}
+          description={copy.incognitoHelp}
+          end={<Switch
+            label={copy.enableIncognito}
+            isLabelHidden
+            value={props.settings.privacy.incognitoActive}
             onChange={(incognitoActive) => {
               props.onUpdate({ privacy: { incognitoActive } }).catch((error: unknown) => {
                 toast.error(copy.incognitoFailed, settingsActionErrorMessage(error, locale));
               });
             }}
-          />
-        </div>
-        <div className="settingsFormRow">
-          <div>
-            <strong>{copy.notifications}</strong>
-            <small>{copy.notificationsHelp}</small>
-          </div>
-          <Switch
-            ariaLabel={copy.notifications}
-            checked={props.settings.notifications.runComplete}
+          />}
+        />
+        <SettingsRow
+          label={copy.notifications}
+          description={copy.notificationsHelp}
+          end={<Switch
+            label={copy.notifications}
+            isLabelHidden
+            value={props.settings.notifications.runComplete}
             onChange={(runComplete) => {
               props.onUpdate({ notifications: { runComplete } }).catch((error: unknown) => {
                 toast.error(copy.notificationsFailed, settingsActionErrorMessage(error, locale));
               });
             }}
-          />
-        </div>
-      </SettingsRows>
+          />}
+        />
+      </SettingsSection>
       <GeneralDefaultsCard
         connections={props.connections}
         defaultSlug={props.defaultSlug}
@@ -91,10 +98,33 @@ export function GeneralSettingsPage(props: {
         permissionMode={props.settings.chatDefaults.permissionMode}
         onUpdate={props.onUpdate}
       />
-      <SettingsRows>
+      <SettingsSection
+        title={memoryCopy.text.instructions}
+        description={memoryCopy.text.instructionsHelp}
+      >
+        <SettingsRow
+          label={memoryCopy.text.enableInstructions}
+          end={<Switch
+            label={memoryCopy.text.enableInstructions}
+            isLabelHidden
+            value={props.settings.workspaceInstructions.enabled}
+            isDisabled={workspaceInstructions.busy}
+            onChange={(enabled) => void workspaceInstructions.setEnabled(enabled)}
+          />}
+        />
+        <WorkspaceInstructionsSection
+          copy={memoryCopy}
+          state={workspaceInstructions.state}
+          disabled={workspaceInstructions.busy}
+          isActionPending={workspaceInstructions.isActionPending}
+          onOpen={workspaceInstructions.openFile}
+          onCreate={workspaceInstructions.createFile}
+        />
+      </SettingsSection>
+      <SettingsSection title={sections.network} description={sections.networkHelp}>
         <NetworkProxySection settings={props.settings} onUpdate={props.onUpdate} />
-      </SettingsRows>
-    </div>
+      </SettingsSection>
+    </SettingsPage>
   );
 }
 
@@ -104,7 +134,7 @@ export function GeneralSettingsPage(props: {
  * (启动 / 新对话模式 / 默认模型) that read like settings but had no
  * configurable backing — the static text was the entire UI. Drop the
  * two without backing storage; replace the third with a real
- * `<SettingsSelect>` that lets the user pick the default LLM model
+ * Astryx `<Selector>` that lets the user pick the default LLM model
  * inline. The selection is grouped by connection, but the persisted
  * default is the pair `{ slug, model }` via `connections.setDefaultModel`.
  *
@@ -113,9 +143,9 @@ export function GeneralSettingsPage(props: {
  * a second picker right below 默认模型, backed by
  * `settings.chatDefaults.permissionMode` (persisted via the generic
  * `settings.update` patch, unlike the model picker's dedicated
- * `connections.setDefaultModel` IPC). Renders the shared
- * `PermissionModeSelect` (Base UI Select) so labels, hints, and markup
- * can't drift from the composer picker.
+ * `connections.setDefaultModel` IPC). Renders the shared Astryx-backed
+ * `PermissionModeSelect` so labels, hints, and markup can't drift from the
+ * composer picker.
  */
 function GeneralDefaultsCard(props: {
   connections: readonly LlmConnection[];
@@ -126,6 +156,7 @@ function GeneralDefaultsCard(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
+  const sections = getSettingsPreferencesCopy(locale).sections;
   const boundaryCopy = getShellCopy(locale).sessionSettingsActions;
   const toast = useToast();
   const mountedRef = useMountedRef();
@@ -142,11 +173,6 @@ function GeneralDefaultsCard(props: {
     const value = modelChoiceValue(connection.slug, connection.defaultModel);
     return modelChoices.some((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === value) ? value : '';
   }, [modelChoices, props.connections, props.defaultSlug]);
-  const selectedLabel = useMemo(() => {
-    if (!selectedValue) return copy.notSet;
-    return modelChoices.find((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === selectedValue)?.label ?? copy.notSet;
-  }, [copy.notSet, modelChoices, selectedValue]);
-
   async function persistDefault(nextValue: string) {
     const releaseSave = persistGuard.begin('default-model');
     if (!releaseSave) return;
@@ -212,52 +238,40 @@ function GeneralDefaultsCard(props: {
   }
 
   return (
-    <SettingsRows>
-      <div className="settingsRow" data-control-width="select">
-        <div>
-          <strong>{copy.defaultModel}</strong>
-          <small>{copy.defaultModelHelp}</small>
-        </div>
-        {/* Shared searchable picker with the composer's model switcher
-            (ModelPicker in @maka/ui) so the grouped list, provider marks,
-            and search behavior can't drift between the two surfaces. */}
-        <ModelPicker
-          groups={modelGroups}
-          value={selectedValue}
-          pinnedItem={{ value: '', label: copy.notSet }}
-          renderProviderMark={(type) => <ProviderLogo type={type} compact />}
-          ariaLabel={copy.defaultModel}
-          disabled={saving}
-          triggerClassName="settingsSelectTrigger max-w-[320px] w-full"
-          onValueChange={(value) => {
-            void persistDefault(value);
-          }}
-        >
-          <span className="settingsSelectMenuOption">{selectedLabel}</span>
-        </ModelPicker>
-      </div>
-      <div className="settingsRow" data-control-width="select">
-        <div>
-          <strong>{copy.defaultPermission}</strong>
-          {/* Fixed description of the SETTING (not the selected option's own
-              hint — the shared popup already shows every option's hint). */}
-          <small>{copy.defaultPermissionHelp}</small>
-        </div>
-        {/* Shared Base UI Select picker with the composer (PermissionModeSelect)
-            — same component, so option markup can't drift between the two
-            surfaces. Every option shows its label + hint before picking. */}
-        <PermissionModeSelect
-          activeMode={props.permissionMode}
-          onSelect={(mode) => {
-            void persistPermissionMode(mode);
-          }}
-          align="end"
-          disabled={savingPermissionMode}
-          ariaLabel={copy.defaultPermission}
-          className="settingsSelectTrigger max-w-[320px] w-full justify-between"
-        />
-      </div>
-    </SettingsRows>
+    <SettingsSection title={sections.chatDefaults} description={sections.chatDefaultsHelp}>
+      <SettingsRow
+        label={copy.defaultModel}
+        description={copy.defaultModelHelp}
+        end={(
+          <ModelPicker
+            groups={modelGroups}
+            value={selectedValue}
+            leadingOption={{ value: '', label: copy.notSet }}
+            renderProviderMark={(type) => <ProviderBrandMark type={type} />}
+            ariaLabel={copy.defaultModel}
+            disabled={saving}
+            loading={saving}
+            triggerClassName="settingsModelPickerTrigger"
+            onValueChange={persistDefault}
+          />
+        )}
+      />
+      <SettingsRow
+        label={copy.defaultPermission}
+        description={copy.defaultPermissionHelp}
+        end={(
+          <PermissionModeSelect
+            activeMode={props.permissionMode}
+            onSelect={(mode) => {
+              void persistPermissionMode(mode);
+            }}
+            align="end"
+            disabled={savingPermissionMode}
+            ariaLabel={copy.defaultPermission}
+          />
+        )}
+      />
+    </SettingsSection>
   );
 }
 
@@ -311,97 +325,96 @@ function NetworkProxySection(props: {
 
   return (
     <>
-      <div className="settingsFormRow">
-        <div>
-          <strong>{copy.proxy}</strong>
-          <small>{copy.proxyHelp}</small>
-        </div>
-        <Switch
-          ariaLabel={copy.enableProxy}
-          checked={proxyDraft.enabled}
+      <SettingsRow
+        label={copy.proxy}
+        description={copy.proxyHelp}
+        end={<Switch
+          label={copy.enableProxy}
+          isLabelHidden
+          value={proxyDraft.enabled}
           onChange={(enabled) => void updateProxy({ enabled })}
-        />
-      </div>
-
+        />}
+      />
       {proxyDraft.enabled && (
         <>
-          <div className="settingsFormGrid settingsFormGridProxy">
-            <label>
-              <span>{copy.proxyProtocol}</span>
-              <SettingsSelect
-                value={proxyDraft.protocol}
-                ariaLabel={copy.proxyProtocol}
-                options={[
-                  ['http', 'HTTP/HTTPS'],
-                  ['https', 'HTTPS'],
-                  ['socks5', 'SOCKS5'],
-                ] satisfies Array<readonly [NetworkProxySettings['protocol'], string]>}
-                onChange={(protocol) => void updateProxy({ protocol })}
-              />
-            </label>
-            <label>
-              <span>{copy.serverAddress}</span>
-              <Input value={proxyDraft.host} onChange={(event) => void updateProxy({ host: event.currentTarget.value })} placeholder="127.0.0.1" aria-label={copy.proxyServerAddress} />
-            </label>
-            <label>
-              <span>{copy.port}</span>
-              <NumberField value={proxyDraft.port || null} format={{ useGrouping: false }} onValueChange={(v) => void updateProxy({ port: v ?? 0 })}>
-                <NumberFieldInput placeholder="7890" aria-label={copy.proxyPort} />
-              </NumberField>
-            </label>
-          </div>
-
-          <div className="settingsFormRow">
-            <div>
-              <strong>{copy.proxyAuth}</strong>
-              <small>{copy.proxyAuthHelp}</small>
-            </div>
-            <Switch
-              ariaLabel={copy.enableProxyAuth}
-              checked={proxyDraft.authEnabled}
-              onChange={(authEnabled) => void updateProxy({ authEnabled })}
+          <SettingsField>
+            <FormLayout direction="horizontal">
+            <Selector
+              value={proxyDraft.protocol}
+              label={copy.proxyProtocol}
+              options={[
+                { value: 'http', label: 'HTTP/HTTPS' },
+                { value: 'https', label: 'HTTPS' },
+                { value: 'socks5', label: 'SOCKS5' },
+              ]}
+              width="100%"
+              onChange={(protocol) => void updateProxy({ protocol: protocol as NetworkProxySettings['protocol'] })}
             />
-          </div>
+            <TextInput
+              value={proxyDraft.host}
+              onChange={(value) => void updateProxy({ host: value })}
+              placeholder="127.0.0.1"
+              label={copy.serverAddress}
+            />
+            <NumberInput label={copy.port} value={proxyDraft.port || null} isIntegerOnly onChange={(value) => void updateProxy({ port: value ?? 0 })} placeholder="7890" />
+            </FormLayout>
+          </SettingsField>
+
+          <SettingsRow
+            label={copy.proxyAuth}
+            description={copy.proxyAuthHelp}
+            end={<Switch
+              label={copy.enableProxyAuth}
+              isLabelHidden
+              value={proxyDraft.authEnabled}
+              onChange={(authEnabled) => void updateProxy({ authEnabled })}
+            />}
+          />
 
           {proxyDraft.authEnabled && (
-            <div className="settingsFormGrid">
-              <label>
-                <span>{copy.username}</span>
-                <Input value={proxyDraft.username} onChange={(event) => void updateProxy({ username: event.currentTarget.value })} aria-label={copy.proxyUsername} />
-              </label>
-              <label>
-                <span>{copy.password}</span>
-                <PasswordInput value={proxyDraft.password} onChange={(next) => void updateProxy({ password: next })} ariaLabel={copy.proxyPassword} />
-              </label>
-            </div>
+            <SettingsField>
+              <FormLayout direction="horizontal">
+              <TextInput
+                value={proxyDraft.username}
+                onChange={(value) => void updateProxy({ username: value })}
+                label={copy.username}
+              />
+              <PasswordInput
+                value={proxyDraft.password}
+                onChange={(next) => void updateProxy({ password: next })}
+                label={copy.password}
+              />
+              </FormLayout>
+            </SettingsField>
           )}
 
-          <label className="settingsField">
-            <span>{copy.bypassList}</span>
-            <Input
+          <SettingsField>
+            <TextInput
               value={proxyDraft.bypassList.join(', ')}
-              onChange={(event) => void updateProxy({ bypassList: csvList(event.currentTarget.value) })}
+              onChange={(value) => void updateProxy({ bypassList: csvList(value) })}
               placeholder="metaso.cn, baidu.com"
-              aria-label={copy.bypassList}
+              label={copy.bypassList}
+              description={copy.bypassHelp}
+              width="100%"
             />
-            <small>{copy.bypassHelp}</small>
-          </label>
+          </SettingsField>
 
-          <Alert variant="info">
-            <AlertDescription>{copy.autoBypass(proxyDraft.autoBypassDomains.length)}</AlertDescription>
-          </Alert>
+          <SettingsField>
+            <Banner
+              status="info"
+              title={copy.autoBypass(proxyDraft.autoBypassDomains.length)} />
+          </SettingsField>
 
-          <div className="settingsActionRow">
+          <SettingsActions>
             <Button
-              type="button"
-              disabled={testing}
+              variant="primary"
+              isDisabled={testing}
               aria-busy={testing}
               data-pending={testing ? 'true' : undefined}
               onClick={() => void testProxy()}
-            >
-              {testing ? copy.testing : copy.testCurrent}
-            </Button>
-          </div>
+              label={testing ? copy.testing : copy.testCurrent}
+            />
+          </SettingsActions>
         </>
       )}
     </>

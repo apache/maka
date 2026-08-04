@@ -843,7 +843,6 @@ function transcriptToolStatus(status: ToolActivityItem['status']): MakaPiToolEnt
     case 'interrupted':
       return 'error';
     case 'pending':
-    case 'waiting_permission':
     case 'running':
       return 'running';
   }

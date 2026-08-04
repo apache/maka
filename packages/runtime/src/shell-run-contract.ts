@@ -32,6 +32,13 @@ const SHELL_RUN_RESOURCE_PATH_PATTERN = /^\/background-tasks\/([^/]+)$/;
 
 type ShellRunToolResult = Extract<ToolResultContent, { kind: 'shell_run' }>;
 
+export class ShellRunPtyControlClosedError extends Error {
+  constructor() {
+    super('This PTY is stopping and no longer accepts input; use Read to observe its final state');
+    this.name = 'ShellRunPtyControlClosedError';
+  }
+}
+
 export interface ShellRunProcessManagerInput {
   store: ShellRunStore;
   newId: () => string;

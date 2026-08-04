@@ -7,7 +7,12 @@ import type {
   ToolBoundaryProtocol,
 } from '@maka/core';
 import { DurableStoreWriteError, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
+import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
+import {
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
 import type {
   SessionBlockedReason,
   SessionHeader,
@@ -25,7 +30,7 @@ import {
 import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
-import type { SessionStore, StopSessionInput } from './session-manager.js';
+import type { StopSessionInput } from './session-manager.js';
 import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
@@ -49,6 +54,10 @@ import { AiSdkFlow } from './ai-sdk-flow.js';
 import type { InvocationContext } from './invocation-context.js';
 import { buildInitialUserRuntimeEvent } from './runtime-runner.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
+import {
+  createRuntimeContinuationStartAdmissionProof,
+  type RuntimeContinuationStartAdmissionProof,
+} from './runtime-continuation-admission.js';
 import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureLedgerRecord,
@@ -108,7 +117,7 @@ export interface AgentRunInput {
   runId?: string;
   userMessageId?: string;
   durability?: AgentRunDurability;
-  store: SessionStore;
+  store: AgentRunSessionStore;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
   repairRunRuntimeLedger?: (sessionId: string, runId: string) => Promise<boolean>;
@@ -116,6 +125,10 @@ export interface AgentRunInput {
   now: () => number;
   workspaceIdentity?: string;
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
+  /** Exact target header already committed inside the durable continuation claim. */
+  claimedRunHeader?: AgentRunHeader;
+  /** Commits the claimed continuation provider-call T1 after Run creation. */
+  commitContinuationStart?: (startedAt: number) => Promise<{ startEventId: string; created: true }>;
   hooks: AgentRunHooks;
   recordSessionMessages?: boolean;
   invocationId?: string;
@@ -125,11 +138,29 @@ export interface AgentRunInput {
   toolBoundaryProtocol?: ToolBoundaryProtocol;
 }
 
+export interface AgentRunSessionStore {
+  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
+  readMessages(sessionId: string): Promise<StoredMessage[]>;
+}
+
 export type RuntimeContinuationFailpoint =
+  | 'after_continuation_claim_committed'
   | 'after_run_created'
   | 'after_continuation_start_committed'
   | 'after_terminal_event_committed'
   | 'after_terminal_header_committed';
+
+export class ContinuationStartCommitError extends Error {
+  readonly name = 'ContinuationStartCommitError';
+
+  constructor(readonly storeCause: unknown) {
+    super(
+      `Continuation start was not durably committed: ${
+        storeCause instanceof Error ? storeCause.message : String(storeCause)
+      }`,
+    );
+  }
+}
 
 export interface AgentRunBeginResult {
   backend: AgentBackend;
@@ -146,6 +177,7 @@ export interface AgentRunOperationBeginResult {
 export interface AgentRunContinuationBeginResult {
   backend: AgentBackend;
   startedAt: number;
+  continuationStartAdmission: RuntimeContinuationStartAdmissionProof;
 }
 
 export class AgentRun {
@@ -304,6 +336,40 @@ export class AgentRun {
     });
   }
 
+  /**
+   * Canonical accounting record for one physical provider request (#1679).
+   *
+   * Durable, unlike the diagnostic attempt append above: this is the metering
+   * source of truth, and a record lost to a crashed flush is spend nothing else
+   * can reconstruct.
+   *
+   * It reports the failure as `trace_write_failed` and then rejects, so the
+   * caller can tell whether the authority actually holds the record — the Usage
+   * read model must not be written for a call the authority never committed.
+   * Rejecting here is safe: settlement runs inside the model stream's `pull`
+   * handler, and the seam swallows this so a billed, completed response is
+   * never failed by its own bookkeeping.
+   */
+  recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void> {
+    if (!this.input.runStore) return Promise.resolve();
+    return this.enqueueRequiredRunStoreWrite('append model call attempt', async () => {
+      await this.input.runStore?.appendEvent(
+        this.sessionId,
+        this.runId,
+        {
+          type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+          id: attempt.attemptId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: attempt.turnId,
+          ts: attempt.completedAt,
+          data: { ...attempt },
+        },
+        { durable: true },
+      );
+    });
+  }
+
   recordActiveFullCompactBlock(block: ActiveFullCompactBlock): void {
     if (!this.input.runStore || !this.runStoreAvailable) return;
     this.enqueueRunStore('append active full compact block', async () => {
@@ -404,10 +470,14 @@ export class AgentRun {
         turnId: this.turnId,
         orchestration: this.effectiveOrchestration,
         text: this.input.userInput.text,
+        ...(this.input.userInput.voiceAudio ? { voiceAudio: this.input.userInput.voiceAudio } : {}),
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
           : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
+        ...(this.input.userInput.inlineReferences
+          ? { inlineReferences: this.input.userInput.inlineReferences }
+          : {}),
         context: begin.backendInput.context,
         ...(begin.backendInput.runtimeContext
           ? { runtimeContext: begin.backendInput.runtimeContext }
@@ -516,6 +586,9 @@ export class AgentRun {
           ? { attachments: this.input.userInput.attachments }
           : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
+        ...(this.input.userInput.inlineReferences
+          ? { inlineReferences: this.input.userInput.inlineReferences }
+          : {}),
         ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
       };
       await this.input.store.appendMessage(this.sessionId, userMsg);
@@ -608,6 +681,16 @@ export class AgentRun {
     await this.input.continuationFailpoint?.('after_run_created');
     const startedAt = this.input.now();
     this.lastTs = startedAt;
+    if (!this.input.commitContinuationStart) {
+      throw new Error('Runtime continuation requires a durable continuation-start authority');
+    }
+    let committedStart: { startEventId: string; created: true };
+    try {
+      committedStart = await this.input.commitContinuationStart(startedAt);
+    } catch (error) {
+      throw new ContinuationStartCommitError(error);
+    }
+    await this.input.continuationFailpoint?.('after_continuation_start_committed');
     if (this.recordsSessionMessages()) {
       await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
         ts: startedAt,
@@ -622,7 +705,24 @@ export class AgentRun {
     await this.markRunStarted(startedAt);
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
 
-    return { backend: this.active.backend, startedAt };
+    return {
+      backend: this.active.backend,
+      startedAt,
+      continuationStartAdmission: createRuntimeContinuationStartAdmissionProof({
+        startEventId: committedStart.startEventId,
+        claimId: continuation.claimId ?? '',
+        boundaryDigest: continuation.boundary?.manifestDigest ?? 'sha256:',
+        providerProjectionVersion: continuation.providerProjectionVersion ?? 1,
+        providerReplayDigest: continuation.providerReplayDigest ?? 'sha256:',
+        ...(this.toolBoundaryProtocol ? { toolBoundaryProtocol: this.toolBoundaryProtocol } : {}),
+        target: {
+          sessionId: continuation.sessionId,
+          invocationId: continuation.invocationId,
+          runId: continuation.runId,
+          turnId: continuation.turnId,
+        },
+      }),
+    };
   }
 
   private buildInitialRuntimeEvent(id: string, ts: number): RuntimeEvent {
@@ -642,6 +742,9 @@ export class AgentRun {
         ? { attachments: this.input.userInput.attachments }
         : {}),
       ...(this.input.userInput.quotes !== undefined ? { quotes: this.input.userInput.quotes } : {}),
+      ...(this.input.userInput.inlineReferences !== undefined
+        ? { inlineReferences: this.input.userInput.inlineReferences }
+        : {}),
       ...(this.toolBoundaryProtocol ? { toolBoundaryProtocol: this.toolBoundaryProtocol } : {}),
     });
   }
@@ -922,8 +1025,11 @@ export class AgentRun {
       if (continuation) throw new Error('Runtime continuation requires a durable run store');
       return;
     }
-    const createdAt = this.input.now();
-    const header: AgentRunHeader = {
+    const createdAt =
+      continuation && this.input.claimedRunHeader
+        ? this.input.claimedRunHeader.createdAt
+        : this.input.now();
+    const computedHeader: AgentRunHeader = {
       runId: this.runId,
       invocationId: this.invocationId,
       sessionId: this.sessionId,
@@ -944,18 +1050,34 @@ export class AgentRun {
       ...this.lineage,
       ...(continuation
         ? {
-            continuationSource: {
-              sourceInvocationId: continuation.sourceInvocationId,
-              sourceRunId: continuation.sourceRunId,
-              sourceTurnId: continuation.sourceTurnId,
-              sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
-            },
+            continuationSource:
+              continuation.claimId && continuation.boundary
+                ? {
+                    protocol: 'continuation_source_v2' as const,
+                    claimId: continuation.claimId,
+                    boundaryDigest: continuation.boundary.manifestDigest,
+                    sourceInvocationId: continuation.sourceInvocationId,
+                    sourceRunId: continuation.sourceRunId,
+                    sourceTurnId: continuation.sourceTurnId,
+                    sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+                    sourcePrefixDigest: continuation.boundary.segments.at(-1)!.prefixDigest,
+                    replayManifestDigest: continuation.boundary.manifestDigest,
+                  }
+                : {
+                    sourceInvocationId: continuation.sourceInvocationId,
+                    sourceRunId: continuation.sourceRunId,
+                    sourceTurnId: continuation.sourceTurnId,
+                    sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+                  },
           }
         : {}),
       ...(this.input.userInput.agentId ? { agentId: this.input.userInput.agentId } : {}),
       ...(this.input.userInput.agentName ? { agentName: this.input.userInput.agentName } : {}),
       ...(this.input.userInput.origin?.kind === 'automation'
         ? { automationId: this.input.userInput.origin.automationId }
+        : {}),
+      ...(this.input.userInput.origin?.kind === 'goal'
+        ? { goalId: this.input.userInput.origin.goalId }
         : {}),
       ...(this.input.userInput.origin?.kind === 'agent_graph'
         ? {
@@ -964,6 +1086,15 @@ export class AgentRun {
           }
         : {}),
     };
+    const header =
+      continuation && this.input.claimedRunHeader ? this.input.claimedRunHeader : computedHeader;
+    if (
+      continuation &&
+      this.input.claimedRunHeader &&
+      !isDeepStrictEqual(this.input.claimedRunHeader, computedHeader)
+    ) {
+      throw new Error('Claimed continuation target Run header no longer matches execution');
+    }
     try {
       const durable = this.requiresDurablePersistence();
       await this.input.runStore.createRun(header, { durable });
@@ -1100,7 +1231,9 @@ export class AgentRun {
           { durable: true },
         );
       });
-      this.enqueueRunStore('append run status audit', appendAudit);
+      // The audit remains best-effort, but its physical write belongs to this
+      // required transition and must settle before the resume acknowledgement.
+      await this.enqueueRunStore('append run status audit', appendAudit);
     } else {
       this.enqueueRunStore('record run status', async () => {
         await runStore.updateRun(this.sessionId, this.runId, { status, updatedAt: ts });

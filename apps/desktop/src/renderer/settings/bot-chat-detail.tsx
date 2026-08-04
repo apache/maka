@@ -10,22 +10,20 @@ import {
 } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import { MAX_ALLOWED_USER_IDS, parseAllowedUserIdsFromText } from '@maka/core/settings';
+import { Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, StatusDot, Text, VStack } from '@astryxdesign/core';
 import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
   BOT_BRAND,
   Button,
-  Chip,
-  Input,
+  FormLayout,
+  TextInput,
   RelativeTime,
-  Segmented,
-  SettingsSelect,
-  SettingsSwitch as Switch,
-  Textarea,
+  Selector,
+  Switch,
+  TextArea,
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { BotWeChatFields, WechatQrLoginModal } from './bot-wechat-login';
@@ -39,10 +37,14 @@ import {
   type BotPendingActionName,
 } from './bot-chat-shared';
 import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
+import { SettingsPage, SettingsSection } from './settings-section';
+import { statusDotVariant } from './settings-status-badge';
 
 function canEnableBotChannel(readiness: BotReadinessState): boolean {
   return readiness === 'credentials_valid' || readiness === 'operational' || readiness === 'degraded';
 }
+
+type BotDialogPhase = 'closed' | 'mounting' | 'open' | 'closing';
 
 function supportsQuickOnboarding(provider: BotProvider): provider is BotOnboardingProvider {
   return (BOT_ONBOARDING_PROVIDERS as readonly string[]).includes(provider);
@@ -79,8 +81,10 @@ export function BotChatChannelDetail(props: {
   onRefreshStatuses(): Promise<boolean>;
 }) {
   const { provider, channel, status } = props;
-  const [scanLoginOpen, setScanLoginOpen] = useState(Boolean(props.autoOpenScanLogin));
-  const [wechatQrOpen, setWechatQrOpen] = useState(false);
+  const [scanLoginPhase, setScanLoginPhase] = useState<BotDialogPhase>(
+    props.autoOpenScanLogin ? 'mounting' : 'closed',
+  );
+  const [wechatQrPhase, setWechatQrPhase] = useState<BotDialogPhase>('closed');
   const [setupMode, setSetupMode] = useState<'quick' | 'manual'>('quick');
   const [feishuBrand, setFeishuBrand] = useState<BotOnboardingBrand>(
     channel.domain === 'larksuite.com' ? 'lark' : 'feishu',
@@ -98,6 +102,28 @@ export function BotChatChannelDetail(props: {
   const readinessCopy = botReadinessCopyForSupport(support, readiness, locale);
   const quickOnboarding = supportsQuickOnboarding(provider);
   const qrOnlyOnboarding = provider === 'wechat';
+
+  useEffect(() => {
+    if (scanLoginPhase === 'mounting') {
+      const frame = window.requestAnimationFrame(() => setScanLoginPhase('open'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (scanLoginPhase === 'closing') {
+      const frame = window.requestAnimationFrame(() => setScanLoginPhase('closed'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [scanLoginPhase]);
+
+  useEffect(() => {
+    if (wechatQrPhase === 'mounting') {
+      const frame = window.requestAnimationFrame(() => setWechatQrPhase('open'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (wechatQrPhase === 'closing') {
+      const frame = window.requestAnimationFrame(() => setWechatQrPhase('closed'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [wechatQrPhase]);
   // PR1197 review (P1-8): the scan-login action row belongs to quick mode only.
   // WeChat has no manual mode, so it always uses the scan affordance. In manual
   // mode the runtime providers (e.g. DingTalk) must fall through to the shared
@@ -135,26 +161,32 @@ export function BotChatChannelDetail(props: {
     }
   }, [provider, channel.domain]);
 
+  // Deep-review fix: the old wrapper pair (.settingsRemoteAccessDetail had no
+  // CSS rule at all; .settingsBotDetail set `gap` on a display:block section,
+  // which discards it) left this page with zero inter-section rhythm. The kit
+  // page container owns the rhythm now, same as the overview next door.
   return (
-    <div className="settingsRemoteAccessDetail">
+    <SettingsPage>
       <Button
-        type="button"
-        variant="quiet"
+        variant="ghost"
         className="settingsRemoteAccessBack"
         aria-label={detailCopy.back}
-        disabled={props.actionBusy}
+        isDisabled={props.actionBusy}
         onClick={props.onBack}
-      >
-        <ArrowLeft size={16} aria-hidden="true" />
-        {detailCopy.back}
-      </Button>
-      <section className="settingsBotDetail">
-        <header className="settingsBotDetailHeader" data-support={support}>
+        icon={<ArrowLeft size={16} aria-hidden="true" />}
+        label={detailCopy.back}
+      />
+      <header className="settingsBotDetailHeader" data-support={support}>
           <BotBrandLogo provider={provider} size="large" />
           <div className="settingsBotDetailHeaderBody">
             <h3>
               {providerPresentation.label}
-              <Chip dot size="sm" variant={readinessCopy.tone}>{readinessCopy.label}</Chip>
+              {/* Astryx convergence: readiness reads as the shared StatusDot +
+                  text idiom — "no decorative Badge" (astryx docs principles). */}
+              <span className="settingsStatus">
+                <StatusDot variant={statusDotVariant(readinessCopy.tone)} label={readinessCopy.label} />
+                <span>{readinessCopy.label}</span>
+              </span>
             </h3>
             <p>{providerPresentation.help}</p>
             {enableSwitchHint && (
@@ -166,11 +198,13 @@ export function BotChatChannelDetail(props: {
           {/* Keep the detail introduction first for heading navigation, while
               placing the switch before the first focusable documentation link. */}
           <Switch
-            ariaLabel={detailCopy.enableAria(providerPresentation.label)}
-            ariaDescribedBy={enableSwitchHint ? enableSwitchHintId : undefined}
-            checked={channel.enabled}
+            className="settingsBotDetailSwitch"
+            label={detailCopy.enableAria(providerPresentation.label)}
+            isLabelHidden
+            disabledMessage={enableSwitchHint}
+            value={channel.enabled}
             onChange={(enabled) => props.onUpdateChannel({ enabled })}
-            disabled={enableSwitchDisabled || props.actionBusy}
+            isDisabled={enableSwitchDisabled || props.actionBusy}
           />
           {BOT_BRAND[provider].configDocUrl && (
             <a
@@ -185,128 +219,132 @@ export function BotChatChannelDetail(props: {
           )}
         </header>
 
-        <section className="settingsBotRuntime" aria-labelledby="settings-bot-runtime-heading">
-          <div className="settingsBotRuntimeHeader">
-            <div>
-              <h4 id="settings-bot-runtime-heading">{viewState.liveOperational ? detailCopy.listening : readinessCopy.label}</h4>
-              <p>{viewState.liveOperational ? detailCopy.healthy : readinessCopy.detail}</p>
-            </div>
+        {/* Astryx convergence: the runtime block was a full-width tinted card
+            used as page structure (the named cards-in-page anti-pattern). It
+            is an open kit section now — header + anchor divider + rows. */}
+        <SettingsSection
+          variant="bare"
+          titleId="settings-bot-runtime-heading"
+          title={viewState.liveOperational ? detailCopy.listening : readinessCopy.label}
+          description={viewState.liveOperational ? detailCopy.healthy : readinessCopy.detail}
+          action={(
             <div className="settingsBotActionStack" role="group" aria-label={detailCopy.actionsAria(providerPresentation.label)}>
               {inQuickOnboarding ? (
                 <>
-                  <Button type="button" disabled={props.actionBusy} onClick={() => setScanLoginOpen(true)}>
-                    {provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect}
-                  </Button>
+                  <Button variant="primary" isDisabled={props.actionBusy} onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect} />
                   {provider === 'wechat' && (channel.token || status?.identity) && (
-                    <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onDisconnectSession()}>
-                      {props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat}
-                    </Button>
+                    <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onDisconnectSession()} label={props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat} />
                   )}
                   {provider === 'wechat' && (
-                    <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => setWechatQrOpen(true)}>
-                      {detailCopy.bridgeQr}
-                    </Button>
+                    <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => setWechatQrPhase('mounting')} label={detailCopy.bridgeQr} />
                   )}
-                  <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onTest()}>
-                    {props.pendingAction === 'test' ? detailCopy.testing : detailCopy.test}
-                  </Button>
+                  <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : detailCopy.test} />
                 </>
               ) : support === 'runtime' && !status?.running ? (
-                <Button type="button" disabled={props.actionBusy} onClick={() => void props.onTestAndConnect()}>
-                  {props.pendingAction === 'connect' ? detailCopy.connecting : detailCopy.testAndConnect}
-                </Button>
+                <Button variant="primary" isDisabled={props.actionBusy} onClick={() => void props.onTestAndConnect()} label={props.pendingAction === 'connect' ? detailCopy.connecting : detailCopy.testAndConnect} />
               ) : (
-                <Button type="button" variant="secondary" disabled={props.actionBusy || support === 'planned'} onClick={() => void props.onTest()}>
-                  {props.pendingAction === 'test' ? detailCopy.testing : support === 'runtime' ? detailCopy.test : detailCopy.testAndConnect}
-                </Button>
+                <Button variant="secondary" isDisabled={props.actionBusy || support === 'planned'} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : support === 'runtime' ? detailCopy.test : detailCopy.testAndConnect} />
               )}
               {support === 'runtime' && (status?.running || props.restarting) && provider !== 'wechat' && (
-                <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onRestart()}>
-                  {props.restarting ? detailCopy.restarting : detailCopy.restart}
-                </Button>
+                <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onRestart()} label={props.restarting ? detailCopy.restarting : detailCopy.restart} />
               )}
             </div>
+          )}
+        >
+          {/* Astryx convergence: the hand-rolled <dl> grid (4→2→1 columns via
+              two media queries) is MetadataList, whose multi-column layout
+              handles the collapse itself. */}
+          {/* Deep-review fix: MetadataList destructures a closed prop list and
+              silently drops aria-label — the group name rides a real wrapper. */}
+          <div role="group" aria-label={detailCopy.runtimeAria(providerPresentation.label)}>
+          <MetadataList columns="multi">
+            <MetadataListItem label={detailCopy.identity}>{status?.identity?.username ?? status?.identity?.displayName ?? detailCopy.unknownIdentity}</MetadataListItem>
+            <MetadataListItem label={detailCopy.connectionType}>{botConnectionLabel(status?.connection ?? 'none', locale)}</MetadataListItem>
+            <MetadataListItem label={detailCopy.lastEvent}>{status?.lastEventAt ? <RelativeTime ts={status.lastEventAt} /> : detailCopy.noneYet}</MetadataListItem>
+            <MetadataListItem label={detailCopy.lastTest}>{channel.lastTestAt ? <RelativeTime ts={channel.lastTestAt} /> : detailCopy.neverTested}</MetadataListItem>
+          </MetadataList>
           </div>
-
-          <dl className="settingsBotStatusGrid" aria-label={detailCopy.runtimeAria(providerPresentation.label)}>
-            <div><dt>{detailCopy.identity}</dt><dd>{status?.identity?.username ?? status?.identity?.displayName ?? detailCopy.unknownIdentity}</dd></div>
-            <div><dt>{detailCopy.connectionType}</dt><dd>{botConnectionLabel(status?.connection ?? 'none', locale)}</dd></div>
-            <div><dt>{detailCopy.lastEvent}</dt><dd>{status?.lastEventAt ? <RelativeTime ts={status.lastEventAt} className="settingsBotMetaTime" /> : detailCopy.noneYet}</dd></div>
-            <div><dt>{detailCopy.lastTest}</dt><dd>{channel.lastTestAt ? <RelativeTime ts={channel.lastTestAt} className="settingsBotMetaTime" /> : detailCopy.neverTested}</dd></div>
-          </dl>
-        </section>
+        </SettingsSection>
 
         {props.statusLoadError && (
-          <Alert variant="error">
-            <AlertTitle>{detailCopy.statusRefreshFailed}</AlertTitle>
-            <AlertDescription>{props.statusLoadError}</AlertDescription>
-          </Alert>
+          <Banner
+            status="error"
+            title={detailCopy.statusRefreshFailed}
+            description={props.statusLoadError} />
         )}
         {status?.reason && channel.enabled && !viewState.liveOperational && (
-          <Alert variant="warning">
-            <AlertTitle>{botStatusDetail(status, locale)}</AlertTitle>
-            <AlertDescription>{readinessCopy.detail}</AlertDescription>
-          </Alert>
+          <Banner
+            status="warning"
+            title={botStatusDetail(status, locale)}
+            description={readinessCopy.detail} />
         )}
         {viewState.currentError && support !== 'planned' && (
-          <Alert variant="error">
-            <AlertTitle>{detailCopy.latestFailure}</AlertTitle>
-            <AlertDescription>{locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}</AlertDescription>
-          </Alert>
+          <Banner
+            status="error"
+            title={detailCopy.latestFailure}
+            description={(
+              <span className="settingsBotBannerDescription">
+                {locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}
+              </span>
+            )} />
         )}
 
-        <div className="settingsBotConfigurationHeader">
-          <h4>{quickOnboarding && !qrOnlyOnboarding ? detailCopy.setupMethod : detailCopy.connectionSettings}</h4>
-          <span>{quickOnboarding ? detailCopy.localCredentials : detailCopy.autosave}</span>
-        </div>
-
+        {/* Astryx convergence: the bespoke configuration header dialect
+            becomes a kit section wrapping the mode toggle, quick-setup
+            callout, and credential form. */}
+        <SettingsSection
+          variant="bare"
+          title={quickOnboarding && !qrOnlyOnboarding ? detailCopy.setupMethod : detailCopy.connectionSettings}
+          description={quickOnboarding ? detailCopy.localCredentials : detailCopy.autosave}
+        >
         {quickOnboarding && !qrOnlyOnboarding && (
-          <Segmented<'quick' | 'manual'>
+          <SegmentedControl
             className="settingsBotSetupModes"
             value={setupMode}
-            ariaLabel={detailCopy.setupAria(providerPresentation.label)}
-            options={[
-              ['quick', detailCopy.quickRecommended],
-              ['manual', detailCopy.manual],
-            ]}
-            onChange={setSetupMode}
-          />
+            label={detailCopy.setupAria(providerPresentation.label)}
+            onChange={(value) => setSetupMode(value as 'quick' | 'manual')}
+          >
+            <SegmentedControlItem value="quick" label={detailCopy.quickRecommended} />
+            <SegmentedControlItem value="manual" label={detailCopy.manual} />
+          </SegmentedControl>
         )}
 
         {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
-          <section className="settingsBotQuickSetup" aria-label={detailCopy.quickAria(providerPresentation.label)}>
-            <div>
-              <strong>
-                {provider === 'wecom'
-                  ? detailCopy.quickWecomTitle
-                  : provider === 'qq'
-                    ? detailCopy.quickQqTitle
-                    : detailCopy.quickTitle}
-              </strong>
-              <p>
-                {provider === 'wecom'
-                  ? detailCopy.quickWecomDetail
-                  : provider === 'qq'
-                    ? detailCopy.quickQqDetail
-                    : detailCopy.quickDetail}
-              </p>
-            </div>
-            {provider === 'feishu' ? (
-              <Segmented<BotOnboardingBrand>
-                className="settingsBotBrandChoice"
-                value={feishuBrand}
-                ariaLabel={detailCopy.feishuRegionAria}
-                options={[
-                  ['feishu', detailCopy.feishu],
-                  ['lark', 'Lark'],
-                ]}
-                onChange={setFeishuBrand}
-              />
-            ) : null}
-            <Button type="button" onClick={() => setScanLoginOpen(true)}>
-              {provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)}
-            </Button>
-          </section>
+          /* Astryx convergence: the hand-tinted quick-setup plate is an
+             Astryx Card — a genuine callout, the one legitimate Card use
+             inside a settings page. */
+          <Card padding={4} role="region" aria-label={detailCopy.quickAria(providerPresentation.label)}>
+            <VStack gap={2} align="start">
+              <VStack gap={0.5}>
+                <Text weight="semibold">
+                  {provider === 'wecom'
+                    ? detailCopy.quickWecomTitle
+                    : provider === 'qq'
+                      ? detailCopy.quickQqTitle
+                      : detailCopy.quickTitle}
+                </Text>
+                <Text type="supporting" color="secondary">
+                  {provider === 'wecom'
+                    ? detailCopy.quickWecomDetail
+                    : provider === 'qq'
+                      ? detailCopy.quickQqDetail
+                      : detailCopy.quickDetail}
+                </Text>
+              </VStack>
+              {provider === 'feishu' ? (
+                <SegmentedControl
+                  className="settingsBotBrandChoice"
+                  value={feishuBrand}
+                  label={detailCopy.feishuRegionAria}
+                  onChange={(value) => setFeishuBrand(value as BotOnboardingBrand)}
+                >
+                  <SegmentedControlItem value="feishu" label={detailCopy.feishu} />
+                  <SegmentedControlItem value="lark" label="Lark" />
+                </SegmentedControl>
+              ) : null}
+              <Button variant="primary" onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)} />
+            </VStack>
+          </Card>
         )}
 
         {/* PR-BOT-WECHAT-SCAN-LOGIN-0 (WAWQAQ msg `2fa6ada6` screenshots):
@@ -334,19 +372,19 @@ export function BotChatChannelDetail(props: {
         )}
 
         {support === 'planned' && (
-          <Alert variant="passive">
-            <AlertDescription>{detailCopy.planned}</AlertDescription>
-          </Alert>
+          <Banner status="info" title={detailCopy.planned} />
         )}
+        </SettingsSection>
 
         {/* WeChat keeps scan login as a first-class action, separate from
             connection testing, because QR generation and listener readiness
             are different states. */}
-        {scanLoginOpen && (
+        {scanLoginPhase !== 'closed' && (
           <BotOnboardingModal
             provider={provider as BotOnboardingProvider}
             brand={provider === 'feishu' ? feishuBrand : undefined}
-            onClose={() => setScanLoginOpen(false)}
+            isOpen={scanLoginPhase === 'open'}
+            onOpenChange={(isOpen) => setScanLoginPhase(isOpen ? 'open' : 'closing')}
             onConnected={async (snapshot) => {
               await props.onReload();
               if (!botDetailMountedRef.current) return;
@@ -369,14 +407,14 @@ export function BotChatChannelDetail(props: {
             }}
           />
         )}
-        {wechatQrOpen && (
+        {wechatQrPhase !== 'closed' && (
           <WechatQrLoginModal
-            onClose={() => setWechatQrOpen(false)}
+            isOpen={wechatQrPhase === 'open'}
+            onOpenChange={(isOpen) => setWechatQrPhase(isOpen ? 'open' : 'closing')}
             onRefreshStatuses={props.onRefreshStatuses}
           />
         )}
-      </section>
-    </div>
+    </SettingsPage>
   );
 }
 
@@ -391,15 +429,14 @@ type BotCredentialField =
   | {
       kind: 'text' | 'password';
       key: 'token' | 'proxyUrl' | 'appId' | 'appSecret';
-      label: ReactNode;
+      label: string;
+      description?: string;
       placeholder: string;
-      ariaLabel: string;
     }
   | {
       kind: 'select';
       key: 'domain';
-      label: ReactNode;
-      ariaLabel: string;
+      label: string;
       defaultValue: string;
       options: ReadonlyArray<readonly [string, string]>;
     }
@@ -409,26 +446,25 @@ type BotCredentialField =
 function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<BotProvider, ReadonlyArray<BotCredentialField>>> {
   return {
   telegram: [
-    { kind: 'password', key: 'token', label: 'Bot Token', placeholder: '123456:ABC-DEF...', ariaLabel: 'Telegram Bot Token' },
+    { kind: 'password', key: 'token', label: 'Telegram Bot Token', placeholder: '123456:ABC-DEF...' },
     { kind: 'notice', text: copy.telegramOfficialFlow },
     {
       kind: 'text',
       key: 'proxyUrl',
-      label: <>{copy.proxy} <em className="settingsFieldHint">{copy.chinaRequired}</em></>,
+      label: copy.telegramProxyAria,
+      description: copy.chinaRequired,
       placeholder: 'http://127.0.0.1:7890',
-      ariaLabel: copy.telegramProxyAria,
     },
     { kind: 'allowed-user-ids' },
     { kind: 'notice', text: copy.telegramNotice },
   ],
   feishu: [
-    { kind: 'text', key: 'appId', label: 'App ID', placeholder: 'cli_xxxx', ariaLabel: copy.feishuCredentialId },
-    { kind: 'password', key: 'appSecret', label: 'App Secret', placeholder: 'xxxx', ariaLabel: copy.feishuSecret },
+    { kind: 'text', key: 'appId', label: copy.feishuCredentialId, placeholder: 'cli_xxxx' },
+    { kind: 'password', key: 'appSecret', label: copy.feishuSecret, placeholder: 'xxxx' },
     {
       kind: 'select',
       key: 'domain',
-      label: copy.domain,
-      ariaLabel: copy.feishuDomain,
+      label: copy.feishuDomain,
       defaultValue: 'feishu.cn',
       options: [
         ['feishu.cn', copy.feishuOption],
@@ -437,31 +473,31 @@ function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<Bo
     },
   ],
   discord: [
-    { kind: 'password', key: 'token', label: 'Bot Token', placeholder: 'MTAx...', ariaLabel: 'Discord Bot Token' },
+    { kind: 'password', key: 'token', label: 'Discord Bot Token', placeholder: 'MTAx...' },
     {
       kind: 'text',
       key: 'proxyUrl',
-      label: <>{copy.proxy} <em className="settingsFieldHint">{copy.authOnly}</em></>,
+      label: copy.discordProxyAria,
+      description: copy.authOnly,
       placeholder: 'http://127.0.0.1:7890',
-      ariaLabel: copy.discordProxyAria,
     },
     { kind: 'notice', text: copy.discordNotice },
   ],
   dingtalk: [
-    { kind: 'text', key: 'appId', label: 'Client ID (AppKey)', placeholder: 'dingxxxxxxxx', ariaLabel: copy.dingtalkId },
-    { kind: 'password', key: 'appSecret', label: 'Client Secret (AppSecret)', placeholder: 'xxxx', ariaLabel: copy.dingtalkSecret },
+    { kind: 'text', key: 'appId', label: copy.dingtalkId, placeholder: 'dingxxxxxxxx' },
+    { kind: 'password', key: 'appSecret', label: copy.dingtalkSecret, placeholder: 'xxxx' },
   ],
   wecom: [
-    { kind: 'text', key: 'appId', label: 'Bot ID', placeholder: copy.wecomBotPlaceholder, ariaLabel: copy.wecomBotAria },
-    { kind: 'password', key: 'appSecret', label: 'Secret', placeholder: copy.wecomSecretPlaceholder, ariaLabel: copy.wecomSecretAria },
+    { kind: 'text', key: 'appId', label: copy.wecomBotAria, placeholder: copy.wecomBotPlaceholder },
+    { kind: 'password', key: 'appSecret', label: copy.wecomSecretAria, placeholder: copy.wecomSecretPlaceholder },
   ],
   qq: [
-    { kind: 'text', key: 'appId', label: 'AppID', placeholder: '102xxxxxx', ariaLabel: copy.qqId },
-    { kind: 'password', key: 'appSecret', label: 'AppSecret', placeholder: 'xxxx', ariaLabel: 'QQ AppSecret' },
+    { kind: 'text', key: 'appId', label: copy.qqId, placeholder: '102xxxxxx' },
+    { kind: 'password', key: 'appSecret', label: 'QQ AppSecret', placeholder: 'xxxx' },
   ],
   slack: [
-    { kind: 'password', key: 'token', label: 'Bot Token', placeholder: 'xoxb-…', ariaLabel: 'Slack Bot Token' },
-    { kind: 'password', key: 'appSecret', label: 'App-Level Token', placeholder: 'xapp-…', ariaLabel: 'Slack App-Level Token' },
+    { kind: 'password', key: 'token', label: 'Slack Bot Token', placeholder: 'xoxb-…' },
+    { kind: 'password', key: 'appSecret', label: 'Slack App-Level Token', placeholder: 'xapp-…' },
   ],
   };
 }
@@ -475,44 +511,41 @@ function BotCredentialFields(props: {
   const fields = botCredentialFields(copy)[props.provider];
   if (!fields) return null;
   return (
-    <>
+    <FormLayout>
       {fields.map((field, index) => {
         switch (field.kind) {
           case 'text':
             return (
-              <label key={field.key} className="settingsField">
-                <span>{field.label}</span>
-                <Input
-                  value={props.channel[field.key] ?? ''}
-                  onChange={(event) => props.onUpdateChannel({ [field.key]: event.currentTarget.value })}
-                  placeholder={field.placeholder}
-                  aria-label={field.ariaLabel}
-                />
-              </label>
+              <TextInput
+                key={field.key}
+                value={props.channel[field.key] ?? ''}
+                onChange={(value) => props.onUpdateChannel({ [field.key]: value })}
+                placeholder={field.placeholder}
+                label={field.label}
+                description={field.description}
+              />
             );
           case 'password':
             return (
-              <label key={field.key} className="settingsField">
-                <span>{field.label}</span>
-                <PasswordInput
-                  value={props.channel[field.key] ?? ''}
-                  onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
-                  placeholder={field.placeholder}
-                  ariaLabel={field.ariaLabel}
-                />
-              </label>
+              <PasswordInput
+                key={field.key}
+                value={props.channel[field.key] ?? ''}
+                onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
+                placeholder={field.placeholder}
+                label={field.label}
+                description={field.description}
+              />
             );
           case 'select':
             return (
-              <label key={field.key} className="settingsField">
-                <span>{field.label}</span>
-                <SettingsSelect
-                  value={props.channel[field.key] ?? field.defaultValue}
-                  ariaLabel={field.ariaLabel}
-                  options={field.options}
-                  onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
-                />
-              </label>
+              <Selector
+                key={field.key}
+                value={props.channel[field.key] ?? field.defaultValue}
+                label={field.label}
+                options={field.options.map(([value, label]) => ({ value, label }))}
+                width="100%"
+                onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
+              />
             );
           case 'allowed-user-ids':
             return (
@@ -523,14 +556,10 @@ function BotCredentialFields(props: {
               />
             );
           case 'notice':
-            return (
-              <Alert key={`notice-${index}`} variant="info">
-                <AlertDescription>{field.text}</AlertDescription>
-              </Alert>
-            );
+            return <Banner status="info" key={`notice-${index}`} title={field.text} />;
         }
       })}
-    </>
+    </FormLayout>
   );
 }
 
@@ -586,30 +615,22 @@ function BotAllowedUserIdsField(props: {
       (next ?? []).every((id, idx) => id === persisted[idx]);
     if (!same) props.onChange(next);
   };
+  const warning = invalidEntries.length > 0
+    ? `${copy.invalidUsers(invalidEntries.slice(0, 3).join(locale === 'zh' ? '、' : ', '))}${invalidEntries.length > 3 ? copy.moreInvalid(invalidEntries.length) : ''}`
+    : undefined;
 
   return (
-    <label className="settingsField">
-      <span>{copy.allowedUsersLabel(parsed.length, MAX_ALLOWED_USER_IDS)}</span>
-      <Textarea
-        value={buffer}
-        onChange={(event) => setBuffer(event.currentTarget.value)}
-        onBlur={commit}
-        rows={3}
-        spellCheck={false}
-        placeholder={copy.allowedUsersPlaceholder}
-        aria-label={copy.allowedUsersAria}
-      />
-      <small>
-        {copy.allowedUsersHelp}
-        {atCap && <strong>{copy.limitReached}</strong>}
-        {invalidEntries.length > 0 && (
-          <span className="settingsFieldWarning" data-tone="warning">
-            {copy.invalidUsers(invalidEntries.slice(0, 3).join(locale === 'zh' ? '、' : ', '))}
-            {invalidEntries.length > 3 && copy.moreInvalid(invalidEntries.length)}
-          </span>
-        )}
-      </small>
-    </label>
+    <TextArea
+      value={buffer}
+      onChange={(value) => setBuffer(value)}
+      onBlur={commit}
+      rows={3}
+      hasSpellCheck={false}
+      placeholder={copy.allowedUsersPlaceholder}
+      label={copy.allowedUsersLabel(parsed.length, MAX_ALLOWED_USER_IDS)}
+      description={`${copy.allowedUsersHelp}${atCap ? ` ${copy.limitReached}` : ''}`}
+      status={warning ? { type: 'warning', message: warning } : undefined}
+    />
   );
 }
 

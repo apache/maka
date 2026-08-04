@@ -48,7 +48,6 @@ import type {
   ReviseBeforeTurnInput,
   TurnRecord,
   PermissionSnapshot,
-  OpenGatewayRuntimeStatus,
   LocalMemoryState,
   AuthorizationUrlPayload,
   SubscriptionAccountState,
@@ -58,9 +57,16 @@ import type {
   PlanReminderDeliveryTarget,
   PlanReminderRecurrence,
   DailyReviewArchive,
+  QueueEnqueueOutcome,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceCoordinatorToolCall,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
   WebSearchProvider,
   WebSearchResponse,
@@ -106,25 +112,6 @@ import type {
   OnboardingState,
 } from '@maka/core';
 
-export interface ExpertTeamMemberSummary {
-  id: string;
-  name: string;
-  description: string;
-  whenToUse?: string;
-}
-export interface ExpertTeamSummary {
-  id: string;
-  name: string;
-  description: string;
-  members: ExpertTeamMemberSummary[];
-}
-export type ExpertTeamStartResult =
-  | { ok: true; sessionId: string }
-  | { ok: false; reason: 'unknown_team'; teamId: string }
-  | { ok: false; reason: 'setup_required'; state: OnboardingState }
-  | { ok: false; reason: 'workspace_unavailable' }
-  | { ok: false; reason: 'send_failed'; message: string };
-
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
@@ -166,7 +153,13 @@ export type PermissionActionResult =
   | { ok: true }
   | {
       ok: false;
-      reason: 'invalid_id' | 'unsupported_platform' | 'unsupported_permission' | 'failed';
+      reason:
+        | 'invalid_id'
+        | 'unsupported_platform'
+        | 'unsupported_permission'
+        | 'open_settings_failed'
+        | 'denied'
+        | 'failed';
       message?: string;
     };
 
@@ -246,16 +239,22 @@ export interface MakaBridge {
             type: 'send';
             turnId: string;
             text: string;
+            displayText?: string;
+            voiceOperationId?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: import('@maka/core').QuoteRef[];
+            workspaceFileReferences?: Array<
+              Pick<import('@maka/core').InlineReference, 'value' | 'start'>
+            >;
           },
     ): Promise<
       | {
           ok: true;
           turnId: string;
           attachments: import('@maka/core').AttachmentRef[];
+          inlineReferences: import('@maka/core').InlineReference[];
           skillInvocation: import('@maka/runtime').SkillInvocationResult;
         }
       | {
@@ -265,6 +264,7 @@ export interface MakaBridge {
         }
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
+    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
     listActiveSandboxBoundaryRequests(
@@ -388,6 +388,17 @@ export interface MakaBridge {
       };
     };
   };
+  voice: {
+    begin(input: VoiceBeginRequest): Promise<VoiceBeginResult>;
+    finishCapture(
+      operationId: string,
+      audio: VoiceCapturedAudio,
+    ): Promise<VoiceFinishCaptureResult>;
+    cancel(operationId: string): Promise<void>;
+    createRealtimeSession(offerSdp: string): Promise<VoiceRealtimeClientSession>;
+    closeRealtimeSession(sessionId: string): Promise<void>;
+    validateCoordinatorToolCall(input: unknown): Promise<VoiceCoordinatorToolCall>;
+  };
   notifications: {
     /** Fire-and-forget: report that an agent turn reached a terminal
      * state. `title` is the session name, `body` the start of the
@@ -407,10 +418,6 @@ export interface MakaBridge {
       status: 'completed' | 'skipped',
     ): Promise<OnboardingSnapshot>;
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot>;
-  };
-  expertTeam: {
-    list(): Promise<{ teams: ExpertTeamSummary[] }>;
-    start(input: { teamId: string; prompt?: string; projectId?: string | null }): Promise<ExpertTeamStartResult>;
   };
   permissions: {
     getSnapshot(): Promise<PermissionSnapshot>;
@@ -471,10 +478,6 @@ export interface MakaBridge {
       | SearchResult[]
       | { ok: false; reason: SearchErrorReason; message: string }
     >;
-  };
-  gateway: {
-    status(): Promise<OpenGatewayRuntimeStatus>;
-    subscribeStatusChanges(handler: (status: OpenGatewayRuntimeStatus) => void): () => void;
   };
   claudeSubscription: {
     isExperimentalEnabled(): Promise<boolean>;
@@ -619,7 +622,7 @@ export interface MakaBridge {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>>;
     getConfig?(): Promise<DailyReviewConfig>;
     setConfig?(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig>;
-    runOnce?(input: { mode: DailyReviewMode; day?: number; modelKey?: string }): Promise<{ archiveId: string }>;
+    runOnce?(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }>;
     list?(): Promise<DailyReviewArchiveSummary[]>;
     get?(archiveId: string): Promise<DailyReviewArchive | null>;
     delete?(archiveId: string): Promise<void>;

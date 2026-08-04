@@ -143,9 +143,25 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       ref: refField,
     })
     .strict();
-  const strictReadParameters = z
-    .union([fileReadParameters, runtimeResourceReadParameters])
-    .describe('Read a file with path, or a whole runtime resource with ref; provide exactly one');
+  // Some providers serialize unused optional fields as empty strings, so a
+  // model may send `ref: ""` on an ordinary file read. A blank ref means "no
+  // ref provided": drop the key before the strict union judges it, keeping the
+  // canonical input a pure file-or-ref union — `{path, ref: ""}` reads the
+  // file, while a lone `{ref: ""}` fails validation (no readable target).
+  const dropEmptyRef = (value: unknown): unknown => {
+    if (typeof value !== 'object' || value === null || !('ref' in value)) return value;
+    const ref = (value as { ref?: unknown }).ref;
+    if (typeof ref !== 'string' || ref.trim() !== '') return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).filter(([key]) => key !== 'ref'),
+    );
+  };
+  const strictReadParameters = z.preprocess(
+    dropEmptyRef,
+    z
+      .union([fileReadParameters, runtimeResourceReadParameters])
+      .describe('Read a file with path, or a whole runtime resource with ref; provide exactly one'),
+  );
   // Provider-facing schema: a single top-level object with every field optional.
   // Anthropic rejects a tool definition whose input schema carries a top-level
   // `anyOf`, so the file-vs-ref exclusivity is stated in the field descriptions
@@ -162,7 +178,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       limit: limitField,
       ref: refField
         .describe(
-          'A runtime resource ref returned by another tool. Provide ref on its own, without path/offset/limit.',
+          'A runtime resource ref returned by another tool. Provide ref on its own, without path/offset/limit; omit it (or leave it empty) when reading a file.',
         )
         .optional(),
     })
@@ -305,8 +321,17 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     {
       name: 'Write',
       activityKind: 'edit',
-      description: 'Write content to a file (creates or overwrites). Subject to permission policy.',
-      parameters: z.object({ path: z.string(), content: z.string() }),
+      description:
+        'Write content to a file using a path relative to the session cwd. ' +
+        'Absolute paths and parent traversal are rejected. Subject to permission policy.',
+      parameters: z.object({
+        path: z
+          .string()
+          .describe(
+            'Path relative to the session cwd. Absolute paths and parent traversal are rejected.',
+          ),
+        content: z.string(),
+      }),
       executionFacts,
       impl: async ({ path, content }, ctx) => {
         const { cwd } = ctx;
@@ -532,8 +557,17 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       description:
         'Find files matching a glob pattern (case-insensitive, capped at 200, sorted by walk order).',
       parameters: z.object({
-        pattern: z.string(),
-        cwd: z.string().optional(),
+        pattern: z
+          .string()
+          .describe(
+            'Relative glob pattern without an absolute path or "..", for example "**/*.txt".',
+          ),
+        cwd: z
+          .string()
+          .optional()
+          .describe(
+            'Optional search directory inside the session cwd. Absolute or relative directory paths are accepted.',
+          ),
       }),
       executionFacts,
       impl: async ({ pattern, cwd: relCwd }, ctx) => {

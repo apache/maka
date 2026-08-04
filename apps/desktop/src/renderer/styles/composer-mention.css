@@ -1,50 +1,33 @@
-/* Composer mention popup — the @ file / skill overlay rendered by
-   ComposerMentionPopup (@maka/ui). The popover surface (rounded-md bg-popover
-   shadow-maka-panel z-overlay) is set via Tailwind utilities on the element;
-   this file owns layout + row chrome only.
+/* Composer mention rows — the two-line content Composer renders inside the
+   Astryx trigger menu for `@` files and `/` Skills.
 
-   The popup is an ABSOLUTE overlay anchored to `.maka-composer-inner` (which is
-   already position:relative at rest), bottom-anchored so it floats above the
-   textarea and never grows the composer box (composer-constant-footprint-
-   contract). No `.maka-composer-inner` rest rule is added here — the
-   composer-container-single-source contract keeps that selector's single
-   definition in composer.css. */
-.maka-composer-mention-popup {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + var(--space-2));
-  width: min(360px, 100%);
-  max-height: 280px;
-  overflow-y: auto;
-  padding: var(--space-1);
-}
+   Placement, row padding and the highlighted state all belong to
+   `useTriggerMenu`; this file styles what our `renderItem` puts inside a row,
+   plus the one surface dimension upstream leaves open. */
 
-.maka-composer-mention-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: var(--space-0-5);
-}
+/* `useTriggerMenu` gives the menu a 180px floor and no ceiling, so it sizes to
+   its widest row — and our rows carry a second line (a Skill's description, a
+   file's full path) that never wraps. A long one therefore stretches the
+   popover past the composer it is anchored to, with nothing to stop it at the
+   window edge.
 
-.maka-composer-mention-option {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1-5) var(--space-2);
-  border-radius: var(--radius-control);
-  color: var(--foreground);
-  /* No cursor:pointer — native macOS reserves the hand for links; menu-like
-     rows keep the default arrow (native-cursor-convention contract). */
-  transition: background var(--duration-base) var(--ease-out-strong);
-}
+   Cap it here rather than upstream: the row content is ours, and its two lines
+   already carry `overflow: hidden` + `text-overflow: ellipsis` waiting for a
+   constraint to act on. 420px matches the model switcher above it — the other
+   composer-anchored control that had to choose a width — so the two floats
+   over this footer agree.
 
-.maka-composer-mention-option[data-active="true"] {
-  background: var(--muted);
+   Deliberately unscoped. `.astryx-trigger-menu` is the component's stable
+   theming hook (`themeProps`), not an internal class, and every trigger menu
+   in the app is this one: the composer's `@` and `/` are its only mounts, and
+   a future one would want the same ceiling for the same reason. */
+.astryx-trigger-menu {
+  max-width: min(420px, calc(100vw - var(--space-6)));
 }
 
 .maka-composer-mention-icon {
   flex: 0 0 auto;
+  margin-inline-end: var(--space-2);
   color: var(--muted-foreground);
 }
 
@@ -56,8 +39,8 @@
 }
 
 .maka-composer-mention-name {
+  font: var(--maka-text-body);
   min-width: 0;
-  font-size: var(--font-size-ui);
   color: var(--foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -65,8 +48,8 @@
 }
 
 .maka-composer-mention-secondary {
+  font: var(--maka-text-supporting);
   min-width: 0;
-  font-size: var(--font-size-caption);
   color: var(--muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -75,33 +58,4 @@
 
 .maka-composer-mention-secondary:empty {
   display: none;
-}
-
-.maka-composer-mention-status {
-  padding: var(--space-2) var(--space-2);
-  font-size: var(--font-size-caption);
-  color: var(--muted-foreground);
-  text-align: center;
-}
-
-.maka-composer-skill-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-  margin: 0;
-  padding: var(--space-2) var(--space-3) 0;
-  list-style: none;
-}
-
-.maka-composer-skill-chip {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  gap: var(--space-1);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--state-selected-bg);
-  padding-left: var(--space-2-5);
-  color: var(--foreground);
-  font-size: var(--font-size-caption);
 }

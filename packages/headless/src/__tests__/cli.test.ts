@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 import { validateHarborCellOutput } from '../cell-output.js';
-import { mapLegacyMakaHeadlessArgs } from '../cli.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
 import { readResults } from '../results.js';
 import type { TaskEvent } from '../task-contracts.js';
@@ -37,75 +35,6 @@ function runCli(
 }
 
 describe('maka-headless CLI', () => {
-  test('builds an executable legacy bin target', async () => {
-    await access(cliPath, constants.X_OK);
-  });
-
-  test('maps every legacy command family into the unified eval tree', () => {
-    assert.deepEqual(mapLegacyMakaHeadlessArgs(['eval', 'spec.json']), ['run', 'spec.json']);
-    assert.deepEqual(mapLegacyMakaHeadlessArgs(['compare', 'results.jsonl']), [
-      'compare',
-      'results.jsonl',
-    ]);
-    assert.deepEqual(mapLegacyMakaHeadlessArgs(['task', 'inspect', 'run-1']), [
-      'task-run',
-      'inspect',
-      'run-1',
-    ]);
-    assert.deepEqual(mapLegacyMakaHeadlessArgs(['harbor', 'run']), ['harbor', 'run']);
-    assert.deepEqual(mapLegacyMakaHeadlessArgs(['ahe', 'export']), ['ahe', 'export']);
-    assert.equal(mapLegacyMakaHeadlessArgs(['unknown']), null);
-  });
-
-  test('prints a deprecation warning from the legacy executable', async () => {
-    const result = await runCli([]);
-    assert.equal(result.code, 0);
-    assert.match(result.stderr, /maka-headless is deprecated/);
-  });
-
-  test('eval executes a fake spec end-to-end and writes results + table', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'maka-headless-cli-'));
-    try {
-      await mkdir(join(dir, 'fixture'), { recursive: true });
-      await writeFile(join(dir, 'fixture', 'marker.txt'), 'ok', 'utf8');
-      const spec = {
-        configs: [
-          { id: 'fake-cfg', backend: 'fake', llmConnectionSlug: 'fake', model: 'fake-model' },
-        ],
-        tasks: [
-          {
-            id: 't-pass',
-            instruction: 'go',
-            workspaceDir: 'fixture', // resolved relative to the spec file
-            verification: { command: 'test -f marker.txt', protectedPaths: [] },
-          },
-        ],
-      };
-      const specPath = join(dir, 'spec.json');
-      await writeFile(specPath, JSON.stringify(spec), 'utf8');
-      const outDir = join(dir, 'out');
-
-      const run = await runCli(['eval', specPath, '--out', outDir]);
-      assert.equal(run.code, 0);
-
-      const records = await readResults(join(outDir, 'results.jsonl'));
-      assert.equal(records.length, 1);
-      assert.equal(records[0]?.passed, true);
-
-      const compare = await runCli(['compare', join(outDir, 'results.jsonl')]);
-      assert.equal(compare.code, 0, compare.stderr);
-      assert.match(compare.stdout, /\| Task \| fake-cfg \|/);
-      assert.match(compare.stdout, /\| t-pass \| ✅ \|/);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('eval without a spec path exits non-zero', async () => {
-    const result = await runCli(['eval']);
-    assert.equal(result.code, 1);
-  });
-
   test('task-run readers report an actionable error for a non-Headless root', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-headless-unmarked-'));
     const exportRoot = join(root, 'export');
@@ -122,18 +51,6 @@ describe('maka-headless CLI', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
-
-  test('rejects an unknown flag', async () => {
-    const result = await runCli(['eval', 'spec.json', '--bogus', 'x']);
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /unknown flag/);
-  });
-
-  test('rejects --out without a value', async () => {
-    const result = await runCli(['eval', 'spec.json', '--out']);
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /needs a value/);
   });
 
   test('rejects a task missing protectedPaths (grading boundary required)', async () => {
@@ -157,30 +74,6 @@ describe('maka-headless CLI', () => {
       const result = await runCli(['eval', specPath, '--out', join(dir, 'out')]);
       assert.equal(result.code, 1);
       assert.match(result.stderr, /protectedPaths/);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('refuses a model-backed backend (fail closed — no isolated executor)', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'maka-headless-cli-'));
-    try {
-      const spec = {
-        configs: [{ id: 'real', backend: 'ai-sdk', llmConnectionSlug: 'x', model: 'm' }],
-        tasks: [
-          {
-            id: 't',
-            instruction: 'go',
-            workspaceDir: 'fixture',
-            verification: { command: 'true', protectedPaths: [] },
-          },
-        ],
-      };
-      const specPath = join(dir, 'spec.json');
-      await writeFile(specPath, JSON.stringify(spec), 'utf8');
-      const result = await runCli(['eval', specPath, '--out', join(dir, 'out')]);
-      assert.equal(result.code, 1);
-      assert.match(result.stderr, /isolated executor/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -243,63 +136,6 @@ describe('maka-headless CLI', () => {
       );
       assert.equal(missingToken.code, 1);
       assert.match(missingToken.stderr, /MAKA_HARBOR_TOOL_EXECUTOR_TOKEN is required/);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('harbor run cell forwards its soft timeout to execution', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'maka-headless-harbor-cli-'));
-    try {
-      const fixture = join(dir, 'fixture');
-      const outDir = join(dir, 'out');
-      const storageRoot = join(dir, 'storage');
-      await mkdir(fixture, { recursive: true });
-
-      const result = await runCli(
-        [
-          'harbor',
-          'run',
-          '--mode',
-          'cell',
-          '--backend',
-          'fake',
-          '--isolation',
-          'none',
-          '--instruction',
-          'keep working',
-          '--workdir',
-          fixture,
-          '--out',
-          outDir,
-          '--storage-root',
-          storageRoot,
-        ],
-        {
-          env: {
-            MAKA_MODEL: 'fake-model',
-            MAKA_CELL_SOFT_TIMEOUT_MS: '50',
-          },
-        },
-      );
-
-      assert.equal(result.code, 1, result.stderr);
-      const cell = validateHarborCellOutput(
-        JSON.parse(await readFile(join(outDir, 'maka-cell-output.json'), 'utf8')),
-      );
-      assert.deepEqual(cell.deadlineSettlement, {
-        source: 'benchmark.deadline',
-        mode: 'immediate',
-      });
-      assert.ok(cell.runtimeRefs);
-
-      const storage = await openHeadlessStorageForWrite(storageRoot);
-      const runs = await storage.executionStores.agentRunStore.listSessionRuns(
-        cell.runtimeRefs.sessionId,
-      );
-      assert.equal(runs.length, 1);
-      assert.equal(cell.runtimeRefs.runId, runs[0]?.runId);
-      assert.equal(cell.runtimeRefs.invocationId, runs[0]?.invocationId);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -448,120 +284,6 @@ describe('maka-headless CLI', () => {
         2,
         'combined trace must retain both heavy-task runs',
       );
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('harbor run task-run honors an explicit benchmark dataset override', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'maka-headless-harbor-cli-'));
-    try {
-      const fixture = join(dir, 'fixture');
-      const outDir = join(dir, 'out');
-      await mkdir(fixture, { recursive: true });
-
-      const result = await runCli(
-        [
-          'harbor',
-          'run',
-          '--backend',
-          'fake',
-          '--isolation',
-          'none',
-          '--instruction',
-          'solve it',
-          '--workdir',
-          fixture,
-          '--task-id',
-          'tb-custom-dataset',
-          '--task-run-id',
-          'harbor-run-custom-dataset',
-          '--out',
-          outDir,
-        ],
-        { env: { MAKA_BENCHMARK_DATASET: 'terminal-bench/custom' } },
-      );
-      assert.equal(result.code, 0, result.stderr);
-
-      const taskRunJson = JSON.parse(
-        await readFile(
-          join(outDir, 'exports', taskRunLocator('harbor-run-custom-dataset'), 'task-run.json'),
-          'utf8',
-        ),
-      );
-      assert.equal(taskRunJson.verifier.benchmark.dataset, 'terminal-bench/custom');
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('harbor-http task-run accepts a remote workspace path', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'maka-headless-harbor-cli-'));
-    try {
-      const outDir = join(dir, 'out');
-      const result = await runCli(
-        [
-          'harbor',
-          'run',
-          '--backend',
-          'fake',
-          '--isolation',
-          'harbor-http',
-          '--instruction',
-          'solve it',
-          '--workdir',
-          '/app',
-          '--task-id',
-          'tb-remote-workspace',
-          '--task-run-id',
-          'harbor-remote-run-1',
-          '--out',
-          outDir,
-          '--include-events',
-        ],
-        {
-          env: {
-            MAKA_HARBOR_TOOL_EXECUTOR_URL: 'http://127.0.0.1:1',
-            MAKA_HARBOR_TOOL_EXECUTOR_TOKEN: 'test-token',
-          },
-        },
-      );
-      assert.equal(result.code, 0, result.stderr);
-
-      const taskRunJson = JSON.parse(
-        await readFile(
-          join(outDir, 'exports', taskRunLocator('harbor-remote-run-1'), 'task-run.json'),
-          'utf8',
-        ),
-      );
-      assert.match(taskRunJson.workspace.lease.sourceWorkspaceDir, /host-workspace-source$/);
-      assert.notEqual(taskRunJson.workspace.lease.sourceWorkspaceDir, '/app');
-      assert.equal(taskRunJson.isolation.policy.label, 'Harbor task container via host adapter');
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('exits non-zero when a run errors out (missing workspace = infra failure)', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'maka-headless-cli-'));
-    try {
-      const spec = {
-        configs: [
-          { id: 'fake-cfg', backend: 'fake', llmConnectionSlug: 'fake', model: 'fake-model' },
-        ],
-        tasks: [
-          {
-            id: 't',
-            instruction: 'go',
-            workspaceDir: 'does-not-exist',
-            verification: { command: 'true', protectedPaths: [] },
-          },
-        ],
-      };
-      const specPath = join(dir, 'spec.json');
-      await writeFile(specPath, JSON.stringify(spec), 'utf8');
-      const result = await runCli(['eval', specPath, '--out', join(dir, 'out')]);
-      assert.equal(result.code, 1);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -9,23 +9,34 @@
  *     Settings → Privacy & Security at the right pane. On non-macOS
  *     platforms the request resolves with a structured "unsupported"
  *     failure so the renderer can hide the button.
- *   - `requestPermissionAccess(id)` — when the OS exposes a programmatic
- *     consent dialog (microphone, notifications) we ask directly;
- *     otherwise we fall back to the same deep-link path so the user is
- *     still moved one step closer to granting.
+ *   - `requestPermissionAccess(id)` — when the OS exposes a real,
+ *     result-bearing consent dialog (microphone) we ask directly;
+ *     otherwise we deep-link to System Settings. Merely showing a
+ *     notification is not treated as proof that notifications are allowed.
  *
- * No state is persisted here — the renderer refreshes the snapshot
- * after either action, so the new status comes back through the
- * existing read path.
+ * No state is persisted here. The renderer refreshes after a direct
+ * request resolves, and again when the app regains focus after a
+ * System Settings deep link.
  */
 
-import { Notification, shell, systemPreferences } from 'electron';
+import { shell, systemPreferences } from 'electron';
 import type { OsPermissionId } from '@maka/core';
 import { OS_PERMISSION_IDS } from '@maka/core';
+import { planPermissionRequest } from './os-permission-policy.js';
 
 export type PermissionActionResult =
   | { ok: true }
-  | { ok: false; reason: 'invalid_id' | 'unsupported_platform' | 'unsupported_permission' | 'failed'; message?: string };
+  | {
+      ok: false;
+      reason:
+        | 'invalid_id'
+        | 'unsupported_platform'
+        | 'unsupported_permission'
+        | 'open_settings_failed'
+        | 'denied'
+        | 'failed';
+      message?: string;
+    };
 
 /**
  * macOS x-apple.systempreferences deep-link targets. The format changed
@@ -61,41 +72,35 @@ export async function openSystemPermissionPane(input: unknown): Promise<Permissi
     await shell.openExternal(url);
     return { ok: true };
   } catch (err) {
-    return { ok: false, reason: 'failed', message: errorMessage(err) };
+    return { ok: false, reason: 'open_settings_failed', message: errorMessage(err) };
   }
 }
 
 export async function requestPermissionAccess(input: unknown): Promise<PermissionActionResult> {
   const id = normalizePermissionId(input);
   if (!id) return { ok: false, reason: 'invalid_id' };
-  if (process.platform !== 'darwin') {
-    return { ok: false, reason: 'unsupported_platform' };
-  }
   try {
-    switch (id) {
-      case 'microphone': {
+    const plan = planPermissionRequest({
+      id,
+      platform: process.platform,
+      microphoneStatus:
+        id === 'microphone' && process.platform === 'darwin'
+          ? systemPreferences.getMediaAccessStatus('microphone')
+          : undefined,
+    });
+    switch (plan) {
+      case 'unsupported_platform':
+        return { ok: false, reason: 'unsupported_platform' };
+      case 'already_granted':
+        return { ok: true };
+      case 'open_settings':
+        return openSystemPermissionPane(id);
+      case 'request_microphone': {
         const granted = await systemPreferences.askForMediaAccess('microphone');
         return granted
           ? { ok: true }
-          : { ok: false, reason: 'failed', message: '用户拒绝了麦克风访问。' };
+          : { ok: false, reason: 'denied' };
       }
-      case 'notifications': {
-        if (!Notification.isSupported()) {
-          return { ok: false, reason: 'unsupported_permission', message: '当前 Electron 不支持通知。' };
-        }
-        // macOS shows the consent prompt the first time a Notification
-        // is created; sending a silent ping is the supported pattern.
-        const probe = new Notification({ title: 'Maka 通知权限自检', body: '已尝试请求通知权限。' });
-        probe.show();
-        return { ok: true };
-      }
-      case 'accessibility':
-      case 'screen_recording':
-      case 'automation':
-        // macOS does not expose a programmatic consent dialog for these
-        // three; we deep-link into the relevant System Settings pane
-        // instead so the action button is never inert.
-        return openSystemPermissionPane(id);
     }
   } catch (err) {
     return { ok: false, reason: 'failed', message: errorMessage(err) };

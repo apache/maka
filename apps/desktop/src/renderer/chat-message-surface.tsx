@@ -6,7 +6,7 @@ import {
   type ProviderType,
   type SettingsSection,
 } from '@maka/core';
-import { Alert, AlertAction, AlertDescription, AlertTitle, ChatView, useUiLocale } from '@maka/ui';
+import { Banner, Button, ChatView, useUiLocale } from '@maka/ui';
 import { OnboardingHero } from './OnboardingHero';
 import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import { getShellCopy } from './locales/shell-copy';
@@ -31,6 +31,7 @@ interface ChatMessageSurfaceProps extends Omit<
   onboardingState: OnboardingState | undefined;
   isOnboardingLoading: boolean;
   onOpenSettings: (section?: SettingsSection) => void;
+  onOpenConnectionDetail: (connectionSlug: string) => void;
   onAddProvider: (providerType: ProviderType) => void;
   onBrowseProviders: () => void;
   connections: LlmConnection[];
@@ -44,6 +45,7 @@ export function ChatMessageSurface({
   onboardingState,
   isOnboardingLoading,
   onOpenSettings,
+  onOpenConnectionDetail,
   onAddProvider,
   onBrowseProviders,
   connections,
@@ -62,10 +64,11 @@ export function ChatMessageSurface({
   );
   const emptyOverride: ReactNode =
     showOnboardingHero && onboardingState ? (
-      <div className="maka-onboarding-surface">
+      <div className="maka-onboarding-surface" data-maka-contract="onboarding-surface">
         <OnboardingHero
           state={onboardingState}
           onOpenSettings={onOpenSettings}
+          onOpenConnectionDetail={onOpenConnectionDetail}
           onAddProvider={onAddProvider}
           onBrowseProviders={onBrowseProviders}
           connections={connections}
@@ -78,12 +81,12 @@ export function ChatMessageSurface({
       // first snapshot resolves so EmptyChatHero doesn't
       // flash. Use an aria-busy live region so screen
       // readers know something is loading.
-      <div
+      (<div
         className="maka-onboarding-loading"
         role="status"
         aria-busy="true"
         aria-label={copy.loading}
-      />
+      />)
     ) : undefined;
 
   return (
@@ -95,27 +98,19 @@ export function ChatMessageSurface({
       />
       {sessionHealthNotice && (
         <div className="maka-session-health-notice">
-          <Alert
+          <Banner
+            status={sessionHealthNotice.tone === 'destructive' ? 'error' : sessionHealthNotice.tone === 'warning' ? 'warning' : 'info'}
             className="maka-session-health-notice-alert"
-            variant={sessionHealthNotice.tone === 'destructive' ? 'error' : sessionHealthNotice.tone === 'warning' ? 'warning' : 'info'}
             role="status"
             aria-label={sessionHealthNotice.tooltip ?? sessionHealthNotice.label}
-            title={sessionHealthNotice.tooltip}
-          >
-            <AlertTitle>{sessionHealthNotice.label}</AlertTitle>
-            {sessionHealthNotice.tooltip ? (
-              <AlertDescription>{sessionHealthNotice.tooltip}</AlertDescription>
-            ) : null}
-            <AlertAction>
-              <button
-                type="button"
-                className="maka-session-health-notice-action"
-                onClick={sessionHealthNotice.onClick}
-              >
-                {goToModelsLabel}
-              </button>
-            </AlertAction>
-          </Alert>
+            title={sessionHealthNotice.label}
+            description={sessionHealthNotice.tooltip}
+            endContent={<Button
+              label={goToModelsLabel}
+              variant="ghost"
+              size="sm"
+              onClick={sessionHealthNotice.onClick}
+            />} />
         </div>
       )}
     </>

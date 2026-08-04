@@ -2,12 +2,12 @@
  * Shared clipboard-copy feedback hook + tri-state phase type.
  *
  * PR-UI-LIB-EXTRACT-7 (WAWQAQ msg `510fef52`, round 8/10): pulled
- * out of `components.tsx`. The hook is consumed at four sites
- * inside `@maka/ui` (MessageCopyButton, CodeBlock in `markdown.tsx`,
- * ToolActivity, and the explore-agent preview); the `phase` type
+ * out of `components.tsx`. The hook is consumed at three sites
+ * inside `@maka/ui` (message metadata copy, ToolActivity, and the
+ * explore-agent preview); the `phase` type
  * is also referenced by `TurnFooterActions` which keeps its own
  * inline copy-feedback state. None of these are part of the
- * public API beyond what `index.ts` re-exports today.
+ * public API.
  *
  * byte-for-byte equivalent; behavior unchanged.
  *
@@ -20,13 +20,8 @@
  *      buried 5000+ lines deep in `components.tsx`; lifting them
  *      to a leaf module makes them findable and unit-testable
  *      without booting the whole renderer.
- *   2. Round 7 (PR-UI-LIB-EXTRACT-6) left a deliberate ESM cycle
- *      between `markdown.tsx` and `components.tsx` because
- *      `CodeBlock` imports this hook. This module is a leaf —
- *      both `markdown.tsx` and `components.tsx` depend on it,
- *      with no edges between them in this dimension. Same cycle-
- *      breaking pattern PR-UI-LIB-EXTRACT-5 used for round 5's
- *      earlier locale-helper cycle.
+ *   2. This leaf keeps the remaining product copy actions from
+ *      depending on the legacy mega-module.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -63,24 +58,37 @@ export function useClipboardCopyFeedback(resetDelay = 1400, options: { redact?: 
     }, resetDelay);
   }
 
-  async function copy(key: string, text: string) {
-    if (text.length === 0 || pendingCopyRef.current) return;
+  async function attempt(key: string, operation: () => Promise<void>): Promise<boolean> {
+    if (pendingCopyRef.current) return false;
     pendingCopyRef.current = key;
     clearResetTimer();
     setCopyState({ key, phase: 'pending' });
     try {
-      await navigator.clipboard.writeText(options.redact === false ? text : redactSecrets(text));
+      await operation();
       settle(key, 'copied');
+      return true;
     } catch {
       settle(key, 'failed');
+      return false;
     } finally {
       pendingCopyRef.current = null;
     }
+  }
+
+  async function copy(key: string, text: string) {
+    if (text.length === 0) return;
+    const output = options.redact === false ? text : redactSecrets(text);
+    await attempt(key, () => navigator.clipboard.writeText(output));
   }
 
   function phaseFor(key: string): ClipboardCopyPhase | null {
     return copyState?.key === key ? copyState.phase : null;
   }
 
-  return { copy, phaseFor, isPending: copyState?.phase === 'pending' };
+  return {
+    copy,
+    attempt,
+    phaseFor,
+    isPending: copyState?.phase === 'pending',
+  };
 }

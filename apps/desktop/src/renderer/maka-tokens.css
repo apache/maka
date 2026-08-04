@@ -14,15 +14,18 @@
      - Small tokenized radii + subtle border rings (--shadow-minimal-flat).
      - Multi-layer soft shadows with very low opacity (0.06) instead of one heavy shadow.
      - System UI fonts with optical antialiasing.
-     - 13px base font, 4px spacing unit → dense but readable.
+     - 14px base font, 4px spacing unit → dense but readable.
 
    ── Token authority (Round C consolidation) ────────────────────────────────
-   This file is the single source of truth for design tokens. Authority order
-   when two token names describe the same thing:
+   This file is the single source of truth for design tokens EXCEPT the type
+   scale, which moved to astryx-theme/makaTheme.ts: `typography.scale` there
+   generates the whole size ladder, and the four product size names below only
+   alias its rungs. Authority order when two token names describe the same
+   thing:
      1. AUTHORITATIVE — the --background / --foreground family (+ --accent, the
         status colors, and the derived --foreground-N / alpha / border / state
-        / spacing / radius / typography / elevation scales). New code consumes
-        these.
+        / spacing / radius / elevation scales), plus the font-size aliases of
+        the generated ladder. New code consumes these.
      2. COMPATIBILITY ALIASES — the --color-bg-* / --color-text-* /
         --color-border-* names (see "color-system compatibility aliases" in
         :root). Kept only for existing consumers. Do NOT add new --color-*
@@ -55,14 +58,18 @@
      white). --surface-canvas is what `.appFrame` paints behind everything;
      --background is what cards paint. */
   --background: oklch(1.000 0 0);
-  /* PR-UI-FRAME-4 (2026-06-22): pull back from the heavy gray plate.
-     参考实现's sidebar is a light glass-like near-white gradient, with
-     depth coming from translucent overlays and active rows, not a dark slab. */
-  /* PALETTE-LEAK-0: derive from --background instead of hardcoding zinc
-     h286 — palettes never override this token, so the sidebar/shell plate
-     stayed zinc after a palette switch. Default background (l=1.0)
-     resolves to the same 0.976 plate. */
-  --surface-canvas: oklch(from var(--background) calc(l - 0.024) c h);
+  /* Derived from --background, not hardcoded (PALETTE-LEAK-0: palettes
+     override --background and never this token, so a hardcoded zinc plate
+     survived every palette switch).
+
+     The step says "different material"; it does not carry the boundary on its
+     own — makaTheme.ts draws a 1px rule on the nav column for that. Sampled off
+     Cursor and Codex, both split their columns this way and keep the wash far
+     back: sidebar→content ΔL 0.025 and ~0.010, with a 1px line at each seam.
+     A wash wide enough to be the whole boundary reads as a gray slab pasted
+     next to the content rather than a second panel, which is the note
+     PR-UI-FRAME-4 left here and the reason this lands at 0.025 and not higher. */
+  --surface-canvas: oklch(from var(--background) calc(l - 0.025) c h);
   /* PR-GRAY-CARD-LIFT-3 (WAWQAQ msg `053ca971`): in the new
      gray-plate / white-card hierarchy, "elevated" cards live on the
      same pure white as base content cards — the lift comes from the
@@ -88,11 +95,9 @@
      (connected/ok semantics); running/focus-ring/link/nav-active/selection
      all follow --accent. */
   --accent: oklch(0.70 0.135 250);
-  /* The primary CTA (--action) is a pale blue chip (L0.85, low chroma) with
-     deep-blue text — a light, fresh button instead of a heavy solid. Checked
-     controls (--control) use a slightly deeper blue (L0.65, one step below
-     the accent) so the near-white glyph clears WCAG 1.4.11 non-text contrast
-     3:1 (3.09:1); the logo L0.70 only reaches 2.55:1. */
+  /* Checked controls (--control) use a slightly deeper blue (L0.65, one step
+     below the accent) so the near-white glyph clears WCAG 1.4.11 non-text
+     contrast 3:1 (3.09:1); the logo L0.70 only reaches 2.55:1. */
   /* PALETTE-LEAK-0: derive hue/chroma from --accent instead of hardcoding
      blue h250 — palettes only override the base tokens, so literals here
      kept the send button, onboarding CTA and every checked control blue
@@ -100,15 +105,21 @@
      Lightness anchors stay literal to preserve the WCAG 1.4.11 tuning;
      min(c, …) keeps the default palette byte-identical while following
      low-chroma palettes down. */
-  --action: oklch(from var(--accent) 0.85 min(c, 0.08) h);
-  --action-foreground: oklch(from var(--accent) 0.30 min(c, 0.06) h);
   --control: oklch(from var(--accent) 0.65 min(c, 0.135) h);
   --control-foreground: oklch(from var(--accent) 0.985 min(c, 0.003) h);
+  /* The SOLID accent tier: a filled accent surface that carries TEXT, and
+     accent-colored text/icons on a plain surface. --action (L0.85 chip) and
+     --control (L0.65, tuned for WCAG 1.4.11 non-text 3:1) are both too light
+     to clear 1.4.3's 4.5:1 for text, so neither can back a solid button label.
+     L0.52 is the lowest lightness that clears 4.5:1 against white for EVERY
+     palette (weakest is tokyo-night at 4.78:1); chroma and hue follow --accent
+     so palettes still read as themselves. This is the token the Astryx bridge
+     below hands to --color-accent. */
+  --accent-solid: oklch(from var(--accent) 0.52 c h);
+  --accent-wash: oklch(from var(--accent) 0.96 min(c, 0.035) h);
   --link: var(--accent);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
-  --nav-active: var(--accent);
-  --toast-accent: var(--accent);
   /* Cool info blue (h240, azure-family — see the blue-info alt themes at
      :773 nord h200 / :817 azure h240). Was amber h70, which collided with
      --warning's orange h55 (info + warning were indistinguishable). Blue is
@@ -118,13 +129,12 @@
   --success: oklch(0.55 0.17 145);      /* green — connected, ok */
   --destructive: oklch(0.58 0.24 28);   /* red — errors, denied */
 
-  /* Legacy brand affordance for a few emphasized surfaces. New CTA and checked
-     control states use --action / --control instead.
+  /* Legacy brand affordance for a few emphasized surfaces. New checked
+     control states use --control instead.
      PR-THEME-APPLY-AND-DONE-POLISH-0 (WAWQAQ msg `dec85e5b`): was a static
      "Solarpunk deep" green, which made palette switching invisible on the
      Done CTA and made every palette read as olive-green. */
   --brand-deep: var(--accent);
-  --brand-deep-hover: oklch(from var(--accent) calc(l - 0.06) c h);
   /* Fixed external channel identity; unlike palette-derived Maka accents. */
   --brand-wechat: #07c160;
   /* Maka's own identity colour, sampled from the `maka` lockup in the app
@@ -138,16 +148,12 @@
      emphasis, and using this for CTAs is exactly the palette-invisibility
      bug called out in the --brand-deep note above. */
   --maka-brand: #71a8fd;
-  /* Every MCP market tile now renders a real library brand mark on a neutral
-     plate (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk +
-     the vendored Feishu mark), so no per-brand plate-tint tokens are needed —
-     a colourful logo already supplies the brand identity. */
-  --bot-brand-default: var(--accent);
-  /* PALETTE-LEAK-0: semantic alias for informational system banners (the
-     plan-reminders 系统提醒 banner) — component CSS derives its tint family
-     from this instead of referencing var(--accent) directly (governance
-     contract #406 bans raw accent outside token blocks). */
-  --system-alert-accent: var(--accent);
+  /* Every MCP market tile renders a real library brand mark on a neutral plate
+     (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk + the
+     vendored Feishu mark), so no per-brand plate-tint token is needed — a
+     colourful logo already supplies the brand identity. The system-banner tint
+     alias went the same way: the plan-reminders banner derives from --accent
+     directly, which is one indirection fewer for the same result. */
 
   /* === text variants (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
@@ -206,7 +212,6 @@
   --muted:         oklch(from var(--foreground) l c h / 0.05);
   --muted-foreground: color-mix(in oklch, var(--foreground) 50%, var(--background));
   --foreground-secondary: color-mix(in oklch, var(--foreground) 80%, var(--background));
-  --ring:          oklch(from var(--foreground) l c h / 0.25);
   --state-hover-bg:    oklch(from var(--foreground) l c h / 0.04);
   --state-selected-bg: oklch(from var(--foreground) l c h / 0.065);
   /* PR5 FOREGROUND-ALPHA-TOKEN-0: raw foreground-alpha tiers for component
@@ -233,17 +238,14 @@
      Legacy `--color-*` names that predate the --background family, relocated
      here from reference-shell.css (Round C). Kept as thin aliases for the few
      consumers still on them: `--color-bg-container` backs the agents content
-     surface (reference-shell.css) + darwin glass card; `--color-border-tertiary`
-     the composer border (composer.css); `--color-text-quaternary` the darwin
-     sidebar label text (theme-glass.css). Authoritative source is the token
-     each aliases — see the token README at the top of this file. Do NOT add
-     new --color-* names.
+     surface (reference-shell.css) + darwin glass card. The border/text alias
+     tiers went out once their last consumers moved to the --background
+     family. Authoritative source is the token each aliases — see the token
+     README at the top of this file. Do NOT add new --color-* names.
      `--color-bg-container` is the one shipped exception where the alias name is
      the canonical handle for the content-card surface (resolves to
      --background); it carries its darwin overrides in "DARWIN GLASS" below. */
   --color-bg-container: var(--background);
-  --color-border-tertiary: color-mix(in srgb, var(--border) 92%, transparent);
-  --color-text-quaternary: var(--muted-foreground);
 
   /* === shadow opacity (subtle in light, stronger in dark) === */
   --shadow-blur-opacity:   0.06;
@@ -268,25 +270,6 @@
     rgba(0,0,0,0) 0 0 0 0,
     oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px;
 
-  --shadow-medium:
-    rgba(0,0,0,0) 0 0 0 0,
-    rgba(0,0,0,0) 0 0 0 0,
-    oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px,
-    oklch(from var(--foreground) l c h / 0.06) 0 1px 1px -0.5px,
-    oklch(from var(--foreground) l c h / 0.06) 0 3px 3px -1.5px,
-    oklch(from var(--foreground) l c h / 0.06) 0 6px 6px -3px,
-    oklch(from var(--foreground) l c h / 0.04) 0 12px 12px -6px;
-
-  --shadow-modal:
-    rgba(0,0,0,0) 0 0 0 0,
-    rgba(0,0,0,0) 0 0 0 0,
-    oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px,
-    oklch(from var(--foreground) l c h / 0.04) 0 1px 1px -0.5px,
-    oklch(from var(--foreground) l c h / 0.04) 0 3px 3px 0,
-    oklch(from var(--foreground) l c h / 0.02) 0 6px 6px 0,
-    oklch(from var(--foreground) l c h / 0.02) 0 12px 12px 0,
-    oklch(from var(--foreground) l c h / 0.02) 0 24px 24px 0;
-
   /* === z-index scale (semantic) === */
   --z-base: 0;
   --z-sticky: 20;
@@ -305,87 +288,218 @@
   --z-settings-fullpage: 35;
 
   /* === typography ===
-     Primary face is Geist (variable). Falls back to system-ui so the app stays
-     legible if the bundled font fails to load. Mono pairs with Geist Mono. */
-  /* PR-UI-10 (@yuejing 2026-05-22): explicit Chinese fallback chain.
-   * macOS: PingFang SC → Hiragino Sans GB
-   * Win: Microsoft YaHei → Microsoft YaHei UI
-   * Linux: Noto Sans CJK SC → Noto Sans SC → WenQuanYi Micro Hei
-   * Latin script still goes through Geist first (variable axis support);
-   * CJK falls back to the platform's preferred Chinese face. This is
-   * critical on Win/Linux where system-ui can fall back to a serif
-   * for CJK without explicit handling. */
-  /* PR-UI-ALIGN-0 (2026-06-21): 参考实现's "clean native" feel comes from
-     the SYSTEM font (SF Pro on macOS), not a bundled geometric face. Lead with
-     the system stack; CJK falls back to the platform Chinese face as before.
-     (Geist kept only as a late fallback.) */
-  --font-sans: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Microsoft YaHei UI", "Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Micro Hei", "Source Han Sans SC", "Geist Variable", sans-serif;
-  --font-mono: "Geist Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --font-default: var(--font-sans);
+     The product used to alias four ladder rungs here — heading 16 / stat 20 /
+     ui 14 / caption 12 — so a call site could name a size. A call site names a
+     ROLE now (see the role table below), and the size is the role's own atom,
+     so all four reached zero consumers and are gone; check-dead-css found
+     them, and type-scale-contract.test.ts asserts they stay gone.
 
-  /* === typography ===
-     PR-TYPOGRAPHY-CONVERGE-0 (issue #430 PR2, 2026-07-03), re-tiered for
-     #546 density: heading 15 / body 13 / caption 11. Body 13 is the root
-     (html font-size) and also the chrome/control tier — ui aliases base
-     (macOS/VS Code shape: body == chrome == 13, hierarchy by weight/color).
-     Heading 15 is the old body value, demoted to section/card/modal
-     titles only — those sites keep their exact pixels, renamed honestly.
-     Caption 11 is dense meta (timestamps, badges, kbd, overlines).
-     Bubble h1-h4 scale in em off body 13 so they track the root automatically. */
-  --font-size-heading: 15px;
-  /* Display tier for stat-tile values (convergence R4) — the summary tiles
-     used ad-hoc 1.5em/1.4em; one ladder step ends that. */
-  --font-size-stat: 20px;
-  --font-size-base: 13px;
-  --font-size-ui: var(--font-size-base);
-  --font-size-caption: 11px;
+     The ladder they aliased is still the authority: it is generated by the
+     Astryx type scale in astryx-theme/makaTheme.ts (`{base: 14, ratio: 1.125}`),
+     which supplies the matching 4px-grid line heights, and the roles read it
+     directly. See that file for why the density lives there rather than in an
+     `html { font-size }` multiplier. */
+
+  /* One line of body text, in absolute length: 14 × 1.4286 = 20px. Derived
+     from the scale rather than typed in, and declared here with the tiers it
+     is derived from — the agent-output surfaces that snap to it (transcript
+     disclosure rows, Markdown headings) sit in different subtrees, and a
+     variable defined on only one of them resolves to nothing on the others,
+     which fails as `line-height: <invalid>` rather than as a visible break. */
+  --maka-line-body: calc(var(--text-body-size) * var(--text-body-leading));
+
+  /* === text roles ===
+     A text style is one role, not four independent picks. Every call site in
+     the renderer names one of the tokens below and declares nothing else about
+     type; `font-size`, `line-height`, `font-weight` and `font-family` do not
+     appear at a call site at all, which is what type-scale-contract.test.ts
+     now checks. #1857 converged the sizes and #1878 the leadings; both removed
+     the divergence of the day without removing the ability to diverge again,
+     because the four properties stayed four separate choices per site.
+
+     The `font:` shorthand is the only mechanism CSS has that makes them
+     inseparable, and its reset semantics are the reason it works here rather
+     than a hazard to work around: it resets weight, style, variant and family,
+     and the role token supplies them, so no site can move one and leave the
+     others. #1878 banned the shorthand outright because an ad-hoc `font:`
+     hides a leading in its `/` slot from every longhand scan. That ban is
+     tightened rather than lifted — the only legal value is one of these
+     tokens.
+
+     Composed from Astryx's generated atoms only, never from literals: the
+     ladder stays a pure function of `typography.scale` in makaTheme.ts, so an
+     Astryx scale change moves these with it. The 42 blocks whose measured
+     values had no Astryx equivalent were hand-rolled picks the ladder never
+     offered — every Astryx heading is 600, yet 10 blocks used 700; the 12px
+     tier offers 400 and 600, yet 11 used 500. Which way a 500 resolves is not
+     a judgement call per site: a 12px site that TITLES something below it
+     takes heading-5 (600), everything else takes supporting (400).
+
+     There are no product roles, and that is a choice rather than a limit —
+     Astryx supports custom text types through `defineTheme` component
+     overrides (`astryx theme build` generates the augmentation). The table
+     below stays a pure projection of the vendor's own set so that an upgrade
+     is the only thing that can change what a role means. Two of the vendor's
+     fourteen are deliberately absent: `large` and `heading-6` have no site.
+
+     One coupling the names create, worth knowing before retuning: 97 of these
+     call sites are <strong> and section labels naming heading-4 / heading-5
+     for their WEIGHT, not because they are headings. A `weights.heading`
+     override in makaTheme.ts — a normal, vendor-blessed edit aimed at real
+     headings — moves them too.
+
+     The shorthand resets more than it names: `font-variant-*`, `font-style`,
+     `font-stretch` and the feature/variation settings all return to their
+     initial values. Any of those a site needs must be declared AFTER the role
+     — in the same rule, or in a rule that comes later. Measured, the stat
+     tiles' `tabular-nums` sat in the base rule while the role sat in the
+     modifier, and the figures stopped aligning.
+
+     Family is NOT part of the triplet at the call site. `font:` requires a
+     family slot, and any literal there would override the one monospace
+     authority in this file (`:where(code, kbd, samp, pre)` below, which
+     `:where()` gives zero specificity). So the slot reads --maka-font-family,
+     rebound on that same selector and inherited from there — the only two
+     places in the renderer that name a font STACK. A call site may rebind the
+     axis (the sidebar's ⌘N hint does, to opt a <kbd> back out of mono), but
+     only to another token: the axis is scanned by the same contract that bans
+     a literal size or leading, so it cannot become a third stack. Astryx's own
+     model agrees: Text has no family prop, family follows the element and the
+     `code` role.
+
+     The role table itself is NOT declared here. A custom property's var()
+     references are substituted where the property is DECLARED, not where it is
+     used, and the resolved string is what inherits — so a role composed once
+     on :root freezes its family slot to the root's sans and no descendant can
+     rebind it. Measured, not reasoned: with the table on :root, a real <pre>
+     whose --maka-font-family read "Geist Mono Variable" still computed
+     font-family: -apple-system, because its `font: var(--maka-text-supporting)`
+     carried the family :root had already substituted. See the two-anchor rule
+     next to the monospace selector below. */
+  --maka-font-family: var(--font-family-body);
+
 
   /* === line-height ===
-     PR-LEADING-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to a Tailwind leading-scale subset (drop
-     relaxed/loose, zero sites). Token names mirror Tailwind's leading-*
-     utilities so `var(--leading-*)` in CSS and `leading-*` in TSX share
-     one source — same bridge pattern as --space-* / p-N.
+     There is no product leading vocabulary. The four semantic tiers that used
+     to live here (none 1 / tight 1.25 / snug 1.375 / normal 1.5) are gone, and
+     every line-height in the renderer now names an Astryx role token.
 
-     Snug is the one tier that can't be cut: 40 sites at 1.3-1.4 (small-
-     title / UI text, 13/11px small-text dense zones) collapse to tight
-     (1.25, too tight) or normal (1.5, too loose) at ±0.1-0.2 on small
-     text. relaxed/loose had zero sites, dropped. */
-  --leading-none: 1;        /* single-line: kbd / tag / button label / count / timestamp */
-  --leading-tight: 1.25;   /* headings: h1-h4 / card titles */
-  --leading-snug: 1.375;   /* small titles / UI text: 13/11px dense zones */
-  --leading-normal: 1.5;   /* body / long-form / markdown */
+     They were not merely different numbers from Astryx's — they were a
+     different method, and the method is what could not survive. A unitless
+     ratio is one value applied across every tier it is used at; Astryx snaps
+     each tier's line box to the 4px grid on its own (`expandTypeScale.ts`:
+     target 1.5 under 20px, 1.4 through 31px, 1.25 above, snapped, floored at
+     the next 4px step at or above size + 4) and reports the quotient. So
+     1.4286 is not a chosen ratio, it is
+     20/14. No single ratio can sit on the grid at 12, 14, 16 and 22px at once,
+     which is why the two vocabularies could disagree by 1px on body copy while
+     both looked deliberate — and why picking a third number would not have
+     helped.
+
+     The grid is not decoration: Astryx sizes component boxes off the same 4px
+     scale, so a line box that lands on it stops fighting the box around it.
+     Its own Badge and Kbd carry `--text-supporting-leading` (20px) inside a
+     `--spacing-5` (20px) box; that identity is why no rule in this file needs
+     a `line-height: 1` escape hatch. Astryx does keep exactly one, and it is
+     worth naming rather than claiming there is none: the sortable table's rank
+     glyph (`useTableSortable.tsx`) sets `lineHeight: '1'` at 10px behind a
+     lint exception reading "no token for lineHeight:1 (tight badge)". It is a
+     glyph, not text — below the smallest governed size, in a box the scale
+     never sized. That exception is Astryx's own, in `@astryxdesign/core`, and
+     the boundary is worth being precise about: the contracts in this repo scan
+     first-party CSS, so a vendor component's inline React style was never in
+     their reach and needs no exemption here to stay legal. First-party PRODUCT
+     code holds no `lineHeight` inline style; the stories under
+     `packages/ui/stories/` do, which is why the boundary is scoped to what
+     the contracts actually scan rather than stated as an absolute.
+
+     The box-height follow-up this paragraph used to defer is #1879, and it has
+     landed, so the compact pills are no longer "tracked" — they are pinned.
+     Each single-line chip takes its height from the `--h-control-*` scale
+     below and centres its line box, which is the Badge/Kbd identity above
+     expressed with maka's own control ruler. The per-chip measurements are in
+     that PR rather than here: a log of before/after numbers in this file is
+     what the sentence it replaces already proved would rot.
+
+     Two relationships belong here, because nothing else records them.
+
+     First, most of these chips are not product CSS any more. Astryx ships a
+     `Badge` whose box IS this recipe — 20px off `--spacing-5`, pill radius,
+     supporting tier, `nowrap` — so the status pills, counts and category
+     badges are `<Badge variant=...>` at the call site, and their height, chrome
+     and per-state colour left this stylesheet with them. What stayed in CSS is
+     what Badge does not do: a chip with no chrome at all (a timestamp, a ⌘N
+     hint), one that truncates, one that wraps, or one whose colour is a
+     product concept Badge has no variant for.
+
+     Two things the swap changed that no rule records. Badge's weight is
+     `--font-weight-medium` and its inline padding is `--spacing-2`, so the six
+     chips that were semibold at 4–6px now read one step lighter and one step
+     wider. And Astryx keeps TWO badge archives: the semantic names
+     (`warning`, `error`, `info`, `success`) paint SOLID saturated fills — maka
+     retunes them to flat hex, and `warning` has no `light-dark()` at all —
+     while the colour names (`yellow`, `red`, `blue`, `green`) paint tints.
+     Chips whose hand-written chrome was a 5–18% wash take the colour archive,
+     so the swap does not turn a quiet marker into an alert. The exception is
+     Settings' status rows, which route through `statusBadgeVariant` and were
+     already on the semantic archive before this; one tone table per page beats
+     a per-chip opinion. Neither archive follows `data-maka-theme` — that is a
+     property of the Astryx palette, and buying it back would mean product CSS
+     repainting a component's own surface.
+
+     Second, `--h-control-md/lg/xl` now DERIVE from `--size-element-sm/md/lg`
+     rather than restating 28/32/36. That is Astryx's own control ruler — what
+     its Button, TextInput, Selector and SideNavItem read — and maka's md/lg/xl
+     are those three at shifted names. While the two were independent
+     arithmetic, a chip at `--h-control-lg` and an Astryx control beside it at
+     `--size-element-md` lined up by coincidence; retuning Astryx would have
+     reintroduced, at the box, the drift #1878 removed at the line. They agree
+     at `:root`, which is where both are declared and therefore where the
+     substitution happens — a retune inside a nested `<Theme>` would land on
+     that wrapper and leave `--h-control-*` frozen at the root value, so this
+     is "they agree" and not "they cannot disagree". The e2e resolves all six
+     rungs to numbers, which is what catches an upstream token being renamed
+     away. Where a box IS an Astryx component the fix is still its `size` prop
+     and not a height here — `.maka-sidebar-update-button` and the three
+     composer selectors were moved that way rather than pinned.
+     `.maka-composer-model-chip` is NOT one of those: that class sits on
+     `ModelChipStatic`'s inert `<span>`, never on the Button it renders when
+     clickable, so it pins like any other chip.
+
+     A consequence worth stating, because it limits what this convergence
+     bought: a unitless leading still inherits as a ratio. An element that
+     inherits a role's leading and then overrides its own font-size lands off
+     the grid again — measured, that is what the old file card did, holding
+     1.25 for a 14px name and a 12px size at once. The rule that
+     follows from it is that leading belongs on the element that sets the size,
+     never on a container above it. */
 
   /* === font-weight ===
      PR-FONT-WEIGHT-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to Tailwind font-weight utilities (drop
-     thin/extralight/light/extrabold/black, zero sites). Token names
-     mirror Tailwind's font-* utilities so `var(--font-weight-*)` in CSS
-     and `font-*` in TSX share one source. Variable-weight Geist +
+     four-tier scale for the weights Maka actually uses (drop
+     thin/extralight/light/extrabold/black, zero sites). Variable-weight Geist +
      system-ui means 550/620/650/680 are mid-axis picks to snap:
      550/620/650 → semibold (600), 680 → bold (700). */
   --font-weight-normal: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
-  --font-weight-bold: 700;
+  /* No --font-weight-bold. It reached zero consumers when call sites stopped
+     declaring weight, and the generated theme reads only normal/medium/
+     semibold; keeping it for the look of a complete series would be a product
+     name for an axis the roles own, which is what the two axes above are on
+     their way out for. */
 
   /* === letter-spacing ===
      PR-TRACKING-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to a Tailwind tracking-scale subset. No
+     four-tier tracking scale. No
      --tracking-tight: Maka is a CJK-first app, so avoid
      tightening CJK letter-spacing, so all negative values snap to
      normal (0). ALL-CAPS short labels use wider/widest (+5–10%
-     tracking). 1px absolute → widest (0.1em ≈ 1.3px @ 13px). */
+     tracking). 1px absolute → widest (0.1em ≈ 1.4px at the body tier). */
   --tracking-normal: 0;
   --tracking-wide: 0.025em;
   --tracking-wider: 0.05em;
   --tracking-widest: 0.1em;
-
-  /* === font-family (serif addition) ===
-     PR-FONT-FAMILY-MINOR-0 (issue #520 PR1): onboarding hero uses a
-     serif face; tokenize so font-family declarations reference tokens
-     instead of bare `Georgia, serif`. */
-  --font-serif: Georgia, "Times New Roman", Times, serif;
 
   /* === layout ===
      Concentric nesting — inner radius = outer radius − inset.
@@ -403,18 +517,13 @@
      illustrated itself with an input in the middle row of the search
      modal — 57px below the shell's top edge, 12px in from its sides,
      touching no corner at all. The rule's only worked example was its
-     only misuse, and a contract test pinned the result. Adjacency is
-     the whole rule; state it or the rule licenses nonsense.
+     only misuse. Adjacency is the whole rule; state it or the rule
+     licenses nonsense.
 
-     Both legitimate forms in this codebase:
-       1. Tier swap, when outer − inset lands on a tier — the segmented
-          track (8px surface) with a uniform 2px pad: 8 − 2 = 6 =
-          --radius-control for the buttons that hug its ends.
-          See styles/segmented.css.
-       2. `calc(var(--radius-*) - 1px)`, the border inset — a ::before
+     A legitimate form in this codebase is
+       `calc(var(--radius-*) - 1px)`, the border inset — a ::before
           overlay at inset-0 hugging the inner edge of a 1px border.
-          See primitives/menu.tsx and primitives/empty.tsx.
-     Both are corner-adjacent with a uniform inset. If a proposed
+     It is corner-adjacent with a uniform inset. If a proposed
      shrink is neither, it is not concentric — pick the tier the
      element's ROLE calls for instead. */
   --radius-control: 6px;
@@ -434,10 +543,8 @@
   /* PR-SPACING-CONVERGE-0 (issue #430 PR3, 2026-07-03):
      One ruler for every padding/gap/margin. Absolute 4px (not 0.25rem)
      so it holds under any root font-size — the previous 0.25rem was
-     3.75px under the 15px root, silently mis-aligning Tailwind's spacing
-     scale (p-2 = 7.5px) with hand-written px (padding: 8px). The
-     the `@theme inline` bridge in styles.css exports this same 4px to Tailwind so
-     p-2/gap-2/m-4 and var(--space-*) share one ruler.
+     3.75px under the 15px root, silently mis-aligning rem-based spacing
+     with hand-written px. Product CSS and `@maka/ui` both consume this ruler.
 
      Scale: 16-and-below keeps every even number (0/2/4/6/8/10/12) because
      dense UI needs the half-steps (6 between 4-8, 10 between 8-12).
@@ -446,7 +553,7 @@
      (hairline, not a spacing beat). Deliberately absent: 14/18/22/26/28/
      30/34/36/52/56 — snapped to the nearest scale value to kill magic
      numbers. Spacing has no single-property anchor like border-radius,
-     so the contract scopes to padding/margin/gap only (not width/height/
+     so the scale governs padding/margin/gap only (not width/height/
      inset/grid), per the adversarial review in #430. */
   --spacing: 4px;              /* base step — the single ruler */
   --space-0: 0;
@@ -470,8 +577,7 @@
   /* === motion ===
      Custom easing curves per emil-design-eng — the built-in CSS easings
      are too weak to feel intentional. Use --ease-out-strong for
-     feedback/state changes, --ease-in-out-strong for on-screen movement,
-     --ease-drawer for iOS-style drawer/sheet motion.
+     feedback/state changes and --ease-in-out-strong for on-screen movement.
 
      PR-MOTION-TOKEN-CONVERGE-0 (kenji's category 4, 2026-06-24):
      duration scale paired with the easing scale. The values come from
@@ -483,13 +589,19 @@
        --duration-emphasized — stronger hover/focus/status feedback
        --duration-large      — reserved structural motion, not default mount
 
-     Anything outside this scale needs a justifying comment. The
-     `motion-token-converge-contract.test.ts` enforces this by banning
-     bare `cubic-bezier(0.16, 1, 0.3, 1)` (must use --ease-out-strong)
-     and `transition: all` (must enumerate properties). */
+     Anything outside this scale needs a justifying comment. Two standing
+     rules, held by convention and review since the source-scanning guards
+     came out in #1724: no bare `cubic-bezier(0.16, 1, 0.3, 1)` (use
+     --ease-out-strong) and no `transition: all` (enumerate properties).
+
+     Astryx ships its own --duration-fast/medium/slow on the Theme wrapper
+     for its components' internals. Product CSS stays on the scale below,
+     with one standing exception: motion that has to stay in lockstep with
+     an adjacent Astryx component follows that component's token instead
+     (styles/chat-message.css does this for the tool detail row). Copy the
+     neighbour, or use this scale — never split the difference by hand. */
    --ease-out-strong: cubic-bezier(0.16, 1, 0.3, 1);
    --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
-   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
    --ease-linear: linear;
 
   --duration-quick: 120ms;
@@ -512,28 +624,26 @@
    --opacity-overlay: 0.04;   /* body::after subtle overlay (light) */
 
    /* === focus-ring recipe ===
-      --focus-ring is the strong accent color (existing); --ring is the
-      subtle foreground-derived color (existing, for compact/secondary
-      focus). These three geometry tokens converge outline width/offset
-      plus the outer focus-glow halo width so every focus ring shares one
-      recipe instead of hand-written 2px. The glow is the low-alpha
-      4px halo that sits outside the 2px ring on focus-within fields.
+      --focus-ring is the strong accent color. These two geometry tokens
+      converge outline width and offset so every focus ring shares one recipe
+      instead of hand-written 2px. The
+      recipe once carried a third, the outer glow halo width, but nothing
+      drew that halo.
       PR-FOCUS-RING-RECIPE-0 (issue #520 PR2). */
    --focus-ring-width: 2px;
    --focus-ring-offset: 2px;
-   --focus-glow-width: 4px;
 
    /* === transform amplitude (motion) ===
       Tokenize the geometric magnitude of press/hover feedback so the
-      motion contract covers amplitude, not just duration/easing. Press
-      scale (active 缩小), hover scale (悬停放大), hover lift (上浮). Reset
+      motion scale covers amplitude, not just duration/easing. Press
+      scale (active 缩小) and hover lift (上浮); no hover scale — nothing in
+      the app grows on hover. Reset
       transform: translate(0)/scale(1) uses literal 0/1. Decorative
       scale(1.1), strong lift -3px, sidebar slide translateX, and rotate
       are NOT tokenized (diverse, low coverage). Keyframe transform
       excluded — animation tracks, not interaction feedback.
       PR-TRANSFORM-AMPLITUDE-0 (issue #520 PR2). */
    --scale-press: 0.96;        /* active/press 缩小 (snap 0.96/0.97/0.98) */
-   --scale-hover: 1.03;        /* hover 放大 (snap 1.02/1.03) */
    --lift-hover: -1px;         /* hover 上浮 (snap -0.5/-1) */
 
    /* === page-card recipe ===
@@ -549,8 +659,6 @@
   --w-sidebar: 240px;
   --w-rail: 240px;
   --h-titlebar: 36px;
-  --h-toolbar: 40px;
-  --h-composer-min: 44px;
 
   /* OS window-resize corridor. A draggable app-region rect flush against a
      window edge takes the native resize hit area with it — that is the P0 WAWQAQ
@@ -584,31 +692,41 @@
   );
 
   /* session list geometry */
-  --w-sessionlist: 240px;
-  --h-list-header: 52px;
 
   /* === control-height scale (component sizing, #520 PR4 item 15) =========
      Interactive controls (button / input / select / tab / nav row / badge /
-     kbd) live on the 4px spacing ruler so CSS var(--h-control-*) and Tailwind
-     h-N share one scale (h-5=20, h-6=24, h-7=28, h-8=32, h-9=36, h-10=40).
+     kbd) live on the 4px spacing ruler and share the `--h-control-*` scale
+     (20, 24, 28, 32, 36, and 40px).
      The historic sidebar/会话/设置 height drift came from off-ruler bare px
      (22/26/30/34/38); this scale converges them. Square icon controls use
      the same token for width and height (their footprint = control size).
-     App-chrome bars (--h-titlebar/--h-toolbar/--h-composer-min/--h-list-header)
-     stay as their own semantic tokens — they are structure, not controls.
-     md (28) and xl (36) use calc(var(--spacing) * 7/9) directly because maka's
-     discrete spacing scale skips 7 and 9 — control-only tiers must not expand
-     the general --space-* scale (that would invite p-7 / gap-7 drift). */
+     The app-chrome bar (--h-titlebar) stays as its own semantic token — it is
+     structure, not a control.
+     xs/sm/2xl (20/24/40) stay on the --space-* ruler: Astryx has no element
+     token at those sizes, and 20px is what its own Badge and Kbd take from
+     --spacing-5, so that tier already agrees by construction. */
   --h-control-xs:  var(--space-5);  /* 20px — kbd, dot, tiny chip / close  */
   --h-control-sm:  var(--space-6);  /* 24px — small button, chip, sidebar
                                       topbar button, model switcher       */
-  --h-control-md:  calc(var(--spacing) * 7);  /* 28px — compact menu item, sm tab,
+  /* #1879: md/lg/xl DERIVE from Astryx rather than restating its numbers.
+     Astryx sizes Button, TextInput, Selector and SideNavItem off
+     `--size-element-sm/md/lg` (28/32/36); maka's md/lg/xl ARE those three at
+     shifted names. They used to be independent arithmetic on `--spacing`, so a
+     chip at `--h-control-lg` and an Astryx control beside it at
+     `--size-element-md` lined up by coincidence. Now they cannot disagree. */
+  --h-control-md:  var(--size-element-sm);  /* 28px — compact menu item, sm tab,
                                       round FAB (jump-to-bottom)          */
-  --h-control-lg:  var(--space-8);  /* 32px — default button, input, tab,
+  --h-control-lg:  var(--size-element-md);  /* 32px — default button, input, tab,
                                       sidebar nav row, session row,
-                                      settings nav row, select            */
-  --h-control-xl:  calc(var(--spacing) * 9);  /* 36px — prominent button,
-                                      first-run checklist row             */
+                                      settings nav row, select, first-run
+                                      stepper item                        */
+  /* #1879: this tier used to name "first-run checklist row" as a consumer.
+     Nothing in the renderer reads it — that row is the stepper item above, and
+     measured, its floor is 29px, so it takes `lg`. A tier documenting a
+     consumer it does not have is the same defect as an exemption documenting a
+     rule it does not govern; the tier stays (Astryx defines it and a prominent
+     button is a real future need) but it is honest about having no reader. */
+  --h-control-xl:  var(--size-element-lg);  /* 36px — no consumer today     */
   --h-control-2xl: var(--space-10); /* 40px — toolbar, large touch target  */
 
   /* === content measure (#520 PR4 item 16) ================================
@@ -632,9 +750,13 @@
    * (hue 0, no chroma) hierarchy. Lightness anchors keep existing
    * contrast tuning. */
   --background: oklch(0.205 0.004 286);
-  /* PALETTE-LEAK-0: derived (see light-mode note) — default background
-     (l=0.205) resolves to the same 0.14 shell. */
-  --surface-canvas: oklch(from var(--background) calc(l - 0.065) c h);
+  /* PALETTE-LEAK-0: derived (see light-mode note). Same 0.025 step as light —
+     the hairline carries the boundary in both modes, so neither needs a wash
+     wide enough to do it alone. The 0.065 this carried before was never seen on
+     the shell (Astryx painted its own surface over the frame plate until this
+     branch handed the columns their materials); against the product's #171719
+     content it rendered a near-black #09090b rail. */
+  --surface-canvas: oklch(from var(--background) calc(l - 0.025) c h);
   --background-elevated: color-mix(in srgb, var(--foreground) 2%, var(--background));
   --foreground: oklch(0.92 0.004 286);
 
@@ -650,15 +772,18 @@
      Lightness anchors stay literal to preserve the WCAG 1.4.11 tuning;
      min(c, …) keeps the default palette byte-identical while following
      low-chroma palettes down. */
-  --action: oklch(from var(--accent) 0.85 min(c, 0.08) h);
-  --action-foreground: oklch(from var(--accent) 0.30 min(c, 0.06) h);
   --control: oklch(from var(--accent) 0.65 min(c, 0.135) h);
   --control-foreground: oklch(from var(--accent) 0.985 min(c, 0.003) h);
+  /* Dark mode inverts the solid tier: the fill goes LIGHT and carries dark
+     ink, matching Astryx's own --color-on-accent (light-dark(#fff, #171717)).
+     L0.76 clears 4.5:1 against that ink for every palette (weakest is coral
+     at 7.16:1). See the light-mode note above for why --action/--control
+     cannot serve this role. */
+  --accent-solid: oklch(from var(--accent) 0.76 c h);
+  --accent-wash: oklch(from var(--accent) 0.28 min(c, 0.05) h);
   --link: var(--accent);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
-  --nav-active: var(--accent);
-  --toast-accent: var(--accent);
   --info: oklch(0.74 0.13 240);         /* blue — see light-mode note */
   --success: oklch(0.60 0.17 145);
   --destructive: oklch(0.70 0.19 22);
@@ -677,13 +802,6 @@
     0 0 0 1px oklch(1 0 0 / 0.08);
   --shadow-minimal-flat:
     0 0 0 1px oklch(1 0 0 / 0.08);
-  --shadow-medium:
-    0 0 0 1px oklch(1 0 0 / 0.09),
-    0 4px 12px -6px oklch(0 0 0 / 0.5);
-  --shadow-modal:
-    0 0 0 1px oklch(1 0 0 / 0.10),
-    0 12px 32px -8px oklch(0 0 0 / 0.6);
-
   /* Slate user bubble for dark mode — distinct from --accent and readable
      against the dark background.
      PR-DEFAULT-CANVAS-DEYELLOW-0: hue 250 to match the cool-neutral
@@ -698,8 +816,6 @@
   /* Brand deep follows accent in dark mode too; hover is a brighter
      variant for the darker surface. */
   --brand-deep: var(--accent);
-  --brand-deep-hover: oklch(from var(--accent) calc(l + 0.06) c h);
-  --bot-brand-default: var(--accent);
 }
 
 /* =============================================================================
@@ -715,7 +831,6 @@
 ============================================================================= */
 html[data-os="darwin"] {
   --color-bg-container: var(--background);
-  --color-text-quaternary: oklch(from var(--foreground) l c h / 0.45);
 }
 html[data-os="darwin"].dark {
   /* Dark glass lifts the card one lightness step off the darker shell. */
@@ -956,16 +1071,129 @@ html[data-os="darwin"].dark {
 }
 
 /* =============================================================================
+   ASTRYX ACCENT BRIDGE
+
+   The Maka Astryx theme (astryx-theme/makaTheme.ts) is a pure `extends` of
+   theme-neutral, so Astryx's accent family ships as near-black #262626. That
+   left the product with TWO accent authorities: maka-tokens said Maka blue,
+   Astryx said black. Every Astryx primary button, Switch, RadioList dot,
+   SegmentedControl selection, focus ring and selected-card ring rendered
+   black — and because those tokens never consulted --accent, the Appearance
+   page's 11 palettes had NO effect on any Astryx-rendered surface. Picking
+   「珊瑚」 recolored the chat accent and left all of Settings black.
+
+   Bridging here rather than in makaTheme.ts is deliberate: the theme file is
+   compiled to maka.css by `npm run astryx:theme`, and a build artifact cannot
+   reference runtime tokens that only exist once a palette attribute lands on
+   <html>. This block is unlayered (like the rest of this file) so it outranks
+   the @layer astryx-tokens import of maka.css regardless of specificity, and
+   it re-resolves per palette because --accent is redeclared on the same <html>
+   element that carries [data-maka-theme].
+
+   Scoped to [data-astryx-theme] — the attribute Astryx's <Theme> writes on
+   both <html> and its own wrapper — so only the Astryx token surface moves.
+   --color-on-accent is deliberately NOT overridden: Astryx's own
+   light-dark(#ffffff, #171717) is already the correct ink for the
+   --accent-solid tier in both modes (see the contrast notes at that token).
+============================================================================= */
+
+[data-astryx-theme] {
+  --color-accent: var(--accent-solid);
+  --color-text-accent: var(--accent-solid);
+  --color-icon-accent: var(--accent-solid);
+  --color-accent-muted: var(--accent-wash);
+}
+
+/* =============================================================================
    BASE STYLES
 ============================================================================= */
 
 @layer base {
   * { box-sizing: border-box; border-color: var(--border); }
 
-  html { font-size: var(--font-size-base); }
+  /* The root font-size stays at the browser default (16px) ON PURPOSE.
+     It used to be pinned to 13px to express Maka's density, but the root is
+     not a density knob: it is an implicit multiplier on every rem in the
+     document, including Astryx's Icon size atoms, which it authors as the
+     px-equivalents at a 16px root — the pin rendered the icon set at
+     9.75/13/16.25/19.5 instead of 12/16/20/24, measured in the live app.
+     (Astryx's spacing and radius tokens are px literals and never moved.)
+     Density now lives in the Astryx type scale
+     (astryx-theme/makaTheme.ts), which sets the body tier directly without
+     dragging every other rem down with it. Keep rem out of product CSS —
+     the spacing scale below is absolute px for the same reason. */
+
+  /* Astryx's reset hard-codes a monospace stack on :where(code, kbd, samp,
+     pre) that never consults --font-family-code, so every code element —
+     Markdown code blocks included — silently opted out of the theme and out
+     of the Geist Mono the app bundles. Point them back at the token; :where()
+     has zero specificity and reset is the lowest layer, so this is the whole
+     fix. Last of the parallel typography authorities.
+
+     Two declarations, and they are not duplicates — they serve the two kinds
+     of element this selector reaches, which is the distinction the first
+     revision of this branch got wrong by shipping only the rebind (measured:
+     a bare <code> fell back to the UA monospace stack, not Geist Mono).
+
+     The rebind serves elements that DO name a role: `font:` carries a
+     mandatory family slot, so a call site's shorthand would otherwise win over
+     this zero-specificity rule and hand a <pre> back to the sans stack. Every
+     role token reads the slot from --maka-font-family, which this rule sets
+     for the element and its subtree. That is what let the 17 monospace class
+     selectors become <code>/<pre> markup instead of product roles.
+
+     The longhand serves elements that do NOT name a role — a bare <code>
+     inside migrated prose. Inheritance passes computed values, not variables,
+     so such an element inherits the parent's resolved sans stack and no rebind
+     can reach it. It keeps its inherited SIZE, which is why this is a
+     font-family and not `font: var(--maka-text-body)`: Astryx's code role is
+     body-sized, and applying it here would move every inline <code> inside
+     12px supporting text up to 14px.
+
+     These are the only two declarations in the renderer that name a font
+     stack, and the only raw font longhand outside the role table — the
+     call-site ban in type-scale-contract.test.ts scopes around this file for
+     exactly that reason, and asserts the shape of these lines instead. */
+  /* The role table, anchored on two selectors rather than on :root alone.
+     Declaring the same list against the monospace selector composes it a
+     second time, THERE, against that element's own --maka-font-family. A <pre>
+     and everything under it inherits the mono-composed roles; everything else
+     inherits the root-composed ones. One vocabulary, two anchor points — no
+     per-role mono variants, and no universal selector. */
+  :root,
+  :where(code, kbd, samp, pre) {
+  --maka-text-body: var(--text-body-weight) var(--text-body-size)/var(--text-body-leading) var(--maka-font-family);
+  --maka-text-label: var(--text-label-weight) var(--text-label-size)/var(--text-label-leading) var(--maka-font-family);
+  --maka-text-supporting: var(--text-supporting-weight) var(--text-supporting-size)/var(--text-supporting-leading) var(--maka-font-family);
+  --maka-text-heading-1: var(--text-heading-1-weight) var(--text-heading-1-size)/var(--text-heading-1-leading) var(--maka-font-family);
+  --maka-text-heading-2: var(--text-heading-2-weight) var(--text-heading-2-size)/var(--text-heading-2-leading) var(--maka-font-family);
+  --maka-text-heading-3: var(--text-heading-3-weight) var(--text-heading-3-size)/var(--text-heading-3-leading) var(--maka-font-family);
+  --maka-text-heading-4: var(--text-heading-4-weight) var(--text-heading-4-size)/var(--text-heading-4-leading) var(--maka-font-family);
+  --maka-text-heading-5: var(--text-heading-5-weight) var(--text-heading-5-size)/var(--text-heading-5-leading) var(--maka-font-family);
+  --maka-text-display-1: var(--text-display-1-weight) var(--text-display-1-size)/var(--text-display-1-leading) var(--maka-font-family);
+  --maka-text-display-2: var(--text-display-2-weight) var(--text-display-2-size)/var(--text-display-2-leading) var(--maka-font-family);
+  --maka-text-display-3: var(--text-display-3-weight) var(--text-display-3-size)/var(--text-display-3-leading) var(--maka-font-family);
+    --maka-text-code: var(--text-code-weight) var(--text-code-size)/var(--text-code-leading) var(--font-family-code);
+  }
+
+  :where(code, kbd, samp, pre) {
+    --maka-font-family: var(--font-family-code);
+    font-family: var(--font-family-code);
+  }
 
   body {
-    font-family: var(--font-default);
+    /* The document's default text role, and the one site where declaring it
+       matters most: Astryx's reset puts `line-height: 1.5` on `:where(html)`,
+       so before this line every element that did not declare a leading of its
+       own inherited that ratio — measured 21px at the 14px body tier, off the
+       grid, on hundreds of nodes no stylesheet in this repo names. Declared
+       here rather than on `html` because the role it names is the document's,
+       not the root's; the root stays free of typography, per the contract
+       above. Naming the role here is also what makes the deletions in this
+       branch safe: measured across 86 surfaces, 79 of the 371 role-declaring
+       rules change nothing when removed, and they inherit their role from
+       this line. */
+    font: var(--maka-text-body);
     background: var(--background);
     color: var(--foreground);
     -webkit-font-smoothing: antialiased;
@@ -996,11 +1224,6 @@ html[data-os="darwin"].dark {
 
   ::selection { background: var(--selection); }
 
-  *:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 var(--focus-ring-width) var(--ring);
-  }
-
   /* Subtle film-grain overlay. Per the taste-skill and frontend-design
      skill, fixed pointer-events-none noise breaks the digital flatness
      without costing GPU repaints (it never enters a scroll container). */
@@ -1023,53 +1246,6 @@ html[data-os="darwin"].dark {
 }
 
 /* =============================================================================
-   UTILITY CLASSES
-============================================================================= */
-
-@layer utilities {
-  /* Hide scrollbar but keep scrolling */
-  .scrollbar-hide              { -ms-overflow-style: none; scrollbar-width: none; }
-  .scrollbar-hide::-webkit-scrollbar { display: none; }
-
-  /* Reveal scrollbar only on parent hover (use with .group) */
-  .scrollbar-hover::-webkit-scrollbar       { width: 4px; }
-  .scrollbar-hover::-webkit-scrollbar-track { background: transparent; }
-  .scrollbar-hover::-webkit-scrollbar-thumb { background: transparent; border-radius: var(--radius-control); }
-  .group:hover .scrollbar-hover::-webkit-scrollbar-thumb { background: var(--border); }
-
-  /* Shadow recipes — apply as standalone classes */
-  .shadow-minimal      { box-shadow: var(--shadow-minimal); }
-  .shadow-minimal-flat { box-shadow: var(--shadow-minimal-flat); }
-  .shadow-medium       { box-shadow: var(--shadow-medium); }
-  .shadow-modal        { box-shadow: var(--shadow-modal); }
-
-  /* iOS-style continuous corners (supported in WebKit/Chromium). */
-  .smooth-corners {
-    corner-shape: superellipse;
-    -webkit-corner-shape: superellipse;
-  }
-
-  /* "Pill" — used for status badges and labels.
-     Background is 5% foreground; text is 80% foreground. */
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-0-5) var(--space-2);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-medium);
-    color: var(--foreground-secondary);
-    background: var(--foreground-5);
-    border: var(--border-width-hairline) solid var(--border);
-    border-radius: var(--radius-pill);
-  }
-  .pill[data-tone="accent"]      { background: oklch(from var(--accent) l c h / 0.08); color: var(--accent); border-color: oklch(from var(--accent) l c h / 0.15); }
-  .pill[data-tone="info"]        { background: oklch(from var(--info) l c h / 0.10); color: var(--info-text); border-color: oklch(from var(--info) l c h / 0.20); }
-  .pill[data-tone="success"]     { background: oklch(from var(--success) l c h / 0.10); color: var(--success-text); border-color: oklch(from var(--success) l c h / 0.20); }
-  .pill[data-tone="destructive"] { background: oklch(from var(--destructive) l c h / 0.10); color: var(--destructive-text); border-color: oklch(from var(--destructive) l c h / 0.20); }
-}
-
-/* =============================================================================
    COMPONENT RECIPES — drop-in classes for our V0.1 UI
 
    These are literal class names used by the React components. Layout stays in JSX; this file
@@ -1081,12 +1257,12 @@ html[data-os="darwin"].dark {
   /* ---- App shell -------------------------------------------------- */
 
   .maka-shell {
+    font: var(--maka-text-body);
     display: grid;
     grid-template-columns: var(--w-sidebar) 1fr;
     height: 100dvh;
     background: var(--background);
     color: var(--foreground);
-    font-size: var(--font-size-base);
   }
 
   .maka-shell-rail-right {
@@ -1103,14 +1279,13 @@ html[data-os="darwin"].dark {
     overflow: hidden;
   }
   .maka-sidebar-header {
+    font: var(--maka-text-heading-4);
     height: var(--h-titlebar);
     padding: 0 var(--space-3);
     display: flex;
     align-items: center;
     justify-content: space-between;
     border-bottom: var(--border-width-hairline) solid var(--border);
-    font-weight: var(--font-weight-semibold);
-    font-size: var(--font-size-ui);
     letter-spacing: var(--tracking-wide);
     text-transform: uppercase;
     color: var(--foreground-secondary);
@@ -1119,22 +1294,21 @@ html[data-os="darwin"].dark {
     padding: var(--space-2) var(--space-1-5);
   }
   .maka-sidebar-row {
+    font: var(--maka-text-body);
     display: flex;
     align-items: center;
     gap: var(--space-2);
     padding: var(--space-1-5) var(--space-2-5);
     border-radius: var(--radius-control);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-snug);
     user-select: none;
     transition: background var(--duration-quick) var(--ease-out-strong), color var(--duration-quick) var(--ease-out-strong);
   }
   .maka-sidebar-row:hover    { background: var(--state-hover-bg); }
   .maka-sidebar-row[data-active="true"] {
+    font: var(--maka-text-label);
     background: var(--state-selected-bg);
     color: var(--foreground);
-    font-weight: var(--font-weight-medium);
   }
   .maka-sidebar-row[data-unread="true"]::before {
     content: "";
@@ -1145,13 +1319,13 @@ html[data-os="darwin"].dark {
   }
 
   .maka-sidebar-button {
+    font: var(--maka-text-body);
     appearance: none;
     background: transparent;
     border: none;
     padding: var(--space-1) var(--space-2);
     border-radius: var(--radius-control);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
   }
   .maka-sidebar-button:hover { background: var(--state-hover-bg); color: var(--foreground); }
 
@@ -1169,16 +1343,18 @@ html[data-os="darwin"].dark {
     background: transparent;
   }
   .maka-titlebar {
+    font: var(--maka-text-body);
     height: var(--h-titlebar);
     border-bottom: var(--border-width-hairline) solid var(--border);
     display: flex;
     align-items: center;
     gap: var(--space-3);
     padding: 0 var(--space-4);
-    font-size: var(--font-size-ui);
     color: var(--foreground-secondary);
   }
-  .maka-titlebar strong { color: var(--foreground); font-weight: var(--font-weight-medium); }
+  .maka-titlebar strong {
+  font: var(--maka-text-label);
+ color: var(--foreground); }
 
   /* ---- Chat surface ----------------------------------------------- */
 
@@ -1231,41 +1407,24 @@ html[data-os="darwin"].dark {
     content-visibility: visible;
   }
 
-  /* The streaming UI rework retired `.maka-turn-tools` (the tools-section
-     wrapper) and the `.maka-turn-thinking` reasoning `<details>` chrome. Tools
-     now render inline via the flat `ToolTrow` and reasoning via the
-     `DeepThinking` disclosure, both Tailwind-literal + the `TextShimmer`
-     primitive — see packages/ui/src/tool-activity.tsx and chat-view.tsx. */
+  /* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
+     Core's atom sheet already contains every compiled StyleX atom except the
+     five shimmer declarations below; these are copied verbatim from lab.css. */
+  @keyframes x1ofn8cw-B {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .xct3ic7:not(#\#):not(#\#):not(#\#) { background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%); }
+  .xakli9p:not(#\#):not(#\#):not(#\#) { background-size: 200% 100%; }
+  .x1ta4xzc:not(#\#):not(#\#):not(#\#) { background-clip: text; }
+  .x3mlza6:not(#\#):not(#\#):not(#\#) { animation-name: x1ofn8cw-B; }
+  .xeaay5l:not(#\#):not(#\#):not(#\#) { animation-duration: 4s; }
 
   /* ---- Tool activity ---------------------------------------------- */
 
-  /* The tool-activity card shell (the inline section + count pill, the
-     Collapsible card, its trigger header row, the body / intent, and the
-     args `<pre>` override) moved onto the `@maka/ui` chat substrate's
-     `toolVariants` literalize table (issue #332 PR3b —
-     packages/ui/src/primitives/chat.tsx). What stays here is the irreducible
-     residue that escapes the computed-style proof, re-keyed on the governed
-     `[data-slot="tool"]` hook instead of the retired `.maka-tool` class.
-     The running status dot's `@keyframes maka-tool-pulse` (below) likewise stays
-     because it is a functional status animation. */
-  [data-slot="tool"] {
-    opacity: 1;
-    transform: translateY(0);
-    transition: border-color var(--duration-base) var(--ease-out-strong);
-  }
-  /* The Collapsible trigger is the header row (laid out by
-     `toolVariants({ part: 'header' })`); as a real <button> it has no native
-     disclosure marker, so the marker-reset rules the native <summary> needed
-     are gone. */
-
-  @keyframes maka-tool-pulse {
-    0%, 100% { box-shadow: 0 0 0 3px oklch(from var(--status-running) l c h / 0.15); }
-    50%      { box-shadow: 0 0 0 5px oklch(from var(--status-running) l c h / 0.06); }
-  }
-
   /* ---- Composer --------------------------------------------------- */
 
-  .maka-composer[data-drag-active="true"] .maka-composer-inner {
+  .maka-composer[data-drag-active="true"] .maka-composer-astryx {
     border-color: oklch(from var(--focus-ring) l c h / 0.46);
     background: oklch(from var(--focus-ring) 0.98 calc(c * 0.20) h / 0.35);
     box-shadow:
@@ -1274,104 +1433,22 @@ html[data-os="darwin"].dark {
       0 1px 3px oklch(from var(--foreground) l c h / 0.04);
   }
   .maka-composer-toolbar {
+    font: var(--maka-text-body);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-  }
-
-  /* ---- Tabs ------------------------------------------------------- */
-
-  /* Shared tab spec (#499 P0-3): one `maka-tab` class + `underline`/`pill`
-   * variants on the Base UI Tabs primitive. Active/hover use the neutral
-   * state tokens — no brand color, no per-surface hand-written tab CSS.
-   * underline = neutral under-bar via the Base UI indicator (no bg fill);
-   * pill = neutral bg fill + bold (indicator hidden). */
-  .maka-tabs-list[data-variant="pill"] .maka-tab {
-    min-height: 34px;
-    border-radius: var(--radius-pill);
-    border: var(--border-width-hairline) solid transparent;
-    background: var(--foreground-5);
-    color: var(--foreground-secondary);
-    padding: 0 var(--space-4);
-  }
-  .maka-tabs-list[data-variant="pill"] .maka-tab:hover {
-    background: var(--state-hover-bg);
-    color: var(--foreground);
-  }
-  .maka-tabs-list[data-variant="pill"] .maka-tab[data-active] {
-    border-color: oklch(from var(--foreground) l c h / 0.16);
-    background: var(--state-selected-bg);
-    font-weight: var(--font-weight-semibold);
-  }
-  .maka-tabs-list[data-variant="underline"] .maka-tab[data-active] {
-    color: var(--foreground);
-  }
-
-  /* ---- Modal / Dialog --------------------------------------------- */
-
-  .maka-modal-backdrop {
-    position: fixed; inset: 0;
-    /* PR-UI-LAYOUT-13: harmonize with .settingsModalBackdrop (LAYOUT-2)
-     * — backdrop scrim derived from `--foreground` at low alpha
-     * (not `--background` which made the scrim transparent on light
-     * mode) + slightly stronger blur so the dialog reads as paused
-     * context. */
-    background: oklch(from var(--foreground) l c h / 0.40);
-    backdrop-filter: blur(10px) saturate(0.9);
-    -webkit-backdrop-filter: blur(10px) saturate(0.9);
-    display: grid; place-items: center;
-    z-index: var(--z-modal);
-    overscroll-behavior: contain;
-    opacity: 1;
-  }
-  .maka-modal {
-    background: var(--background);
-    border-radius: var(--radius-modal);
-    box-shadow: var(--shadow-modal);
-    width: min(520px, calc(100vw - 48px));
-    max-height: calc(100dvh - 80px);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    opacity: 1;
-  }
-  .maka-modal-header {
-    padding: var(--space-4) var(--space-5) var(--space-2) var(--space-5);
-    border-bottom: var(--border-width-hairline) solid var(--border);
-  }
-  .maka-modal-title {
-    font-size: var(--font-size-heading);
-    font-weight: var(--font-weight-semibold);
-    color: var(--foreground);
-    letter-spacing: var(--tracking-normal);
-  }
-  .maka-modal-subtitle {
-    font-size: var(--font-size-ui);
-    color: var(--foreground-secondary);
-    margin-top: var(--space-0-5);
-  }
-  .maka-modal-body { padding: var(--space-4) var(--space-5); overflow-y: auto; flex: 1; }
-  .maka-modal-footer {
-    padding: var(--space-3) var(--space-5);
-    border-top: var(--border-width-hairline) solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-2);
   }
 
   /* ---- Code blocks (used in args preview inside permission prompt) --- */
 
   .maka-code {
-    font-family: var(--font-mono);
+    font: var(--maka-text-code);
     /* Geist Mono ships programming ligatures on by default, which collapse a
        run like `=== 目录 ===` into a strikethrough-looking rule. Code and
        command surfaces read literally, so ligatures stay off. */
     font-variant-ligatures: none;
-    font-size: var(--font-size-ui);
     background: var(--foreground-3);
     border: var(--border-width-hairline) solid var(--border);
     border-radius: var(--radius-surface);
@@ -1394,9 +1471,8 @@ html[data-os="darwin"].dark {
 
 /* Governance-level keyframe for the `TextShimmer` primitive (streaming UI
    rework). A named `@keyframes` is a global rule, not an element property, so
-   it can't be a Tailwind leaf-literal — it lives here (the shared motion home)
-   like `maka-tool-pulse`, with the shimmer's other declarations
-   as literal utilities in the primitive. Sweeps a clipped light band left→right
+   it lives here in the shared motion home, with the
+   shimmer's other declarations in the primitive stylesheet. Sweeps a clipped light band left→right
    across the glyph shape by translating `background-position`; the two-layer
    primitive keeps an opaque base underneath so the text stays readable. Frozen
    by the global reduced-motion / e2e-fixture rules in base.css and the
@@ -1406,25 +1482,10 @@ html[data-os="darwin"].dark {
   to   { background-position: -150% 0; }
 }
 
-/* Governance-level keyframe for the streaming per-word fade-in (streaming UI
-   rework) — the replacement for the retired ▎ blink caret. markdown-body's
-   rehype pass wraps each freshly streamed word/char (after the stable
-   boundary) in `.maka-stream-fade` with a negative `animation-delay` (= -age)
-   so the entrance resumes mid-flight across React re-renders instead of
-   re-flashing. Only opacity animates (no layout). The wrapping is skipped
-   entirely under reduced-motion / e2e-fixture (the smoother's snap path), so
-   this never freezes text at opacity 0 in a deterministic capture. */
+/* Shared short opacity entrance used by continuing and tool-settle cues. */
 @keyframes maka-stream-fade-in {
   from { opacity: 0; }
   to   { opacity: 1; }
-}
-.maka-stream-fade {
-  /* --duration-large (280ms) is the fade window; FADE_MS in stream-fade.ts is
-     pinned to the same 280 so the negative animation-delay (= -age) lands at
-     the right point in the curve. Motion durations must come from a
-     var(--duration-*) token (motion-token-converge contract), so the window is
-     retuned there, not with a bare ms here. */
-  animation: maka-stream-fade-in var(--duration-large) var(--ease-out-strong) both;
 }
 
 /* #642: the footer settle-entrance keyframe (`maka-footer-fade-in`) is gone.
@@ -1443,59 +1504,22 @@ html[data-os="darwin"].dark {
   animation: maka-shimmer 1.5s var(--ease-in-out-strong) infinite;
 }
 
-/* Skeleton placeholder primitives — used while data is still in flight.
-   The base block carries the shimmer animation and a token-based tint so
-   they read the same in light + dark modes. Compose `.maka-skeleton-line`
-   widths via `style={{ width: '40%' }}` from the consuming component. */
-.maka-skeleton {
-  position: relative;
-  overflow: hidden;
-  background: var(--foreground-3);
-  border-radius: var(--radius-control);
-}
-.maka-skeleton::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    oklch(from var(--foreground) l c h / 0.06) 50%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  animation: maka-shimmer 1.6s var(--ease-in-out-strong) infinite;
-}
-.maka-skeleton-line {
-  height: 12px;
-  border-radius: var(--radius-pill);
-}
-.maka-skeleton-line[data-size="lg"] { height: 16px; }
-.maka-skeleton-line[data-size="sm"] { height: 9px; }
-.maka-skeleton-card {
-  height: 92px;
-  border-radius: var(--radius-surface);
-}
-.maka-skeleton-stack {
-  display: grid;
-  gap: var(--space-2-5);
-}
-
 /* =============================================================================
    Icon stroke governance: call sites had
    accumulated EIGHT different strokeWidth values (1.5 → 2) across 143
    usages, plus the lucide default of 2 wherever unspecified — the
    classic "can't say why it looks unpolished" tell. One CSS rule beats
    every SVG presentation attribute, so all lucide glyphs render at a
-   single weight without touching call sites. Width/height stay
-   per-call-site by contract (icon-system-contract forbids a global
-   size hammer). If a surface ever needs a heavier stroke, scope a more
-   specific selector with a comment.
+   single weight without touching call sites. Stroke is the only thing
+   hammered globally: width/height stay per call site, because a global
+   size rule would also catch the icons Astryx sizes through its own slot
+   props (Icon `size`, SideNavItem's `renderIconSlot`), and those are the
+   component's decision, not the product's. If a surface ever needs a
+   heavier stroke, scope a more specific selector with a comment.
 ============================================================================= */
 svg.lucide {
   stroke-width: 1.75;
 }
-
 
 /* =============================================================================
    REDUCED-MOTION

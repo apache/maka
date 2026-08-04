@@ -4,7 +4,10 @@ import { describe, it } from 'node:test';
 import {
   DAILY_REVIEW_LIST_LIMIT,
   buildDailyReviewSummary,
+  dailyReviewArchiveId,
   dailyUsageQuery,
+  normalizeDailyReviewArchive,
+  normalizeDailyReviewConfig,
   localDayBoundsAt,
   localDayBoundsForInstant,
   pickDailyReviewSessions,
@@ -187,5 +190,115 @@ describe('DAILY_REVIEW_LIST_LIMIT', () => {
     assert.ok(Number.isInteger(DAILY_REVIEW_LIST_LIMIT));
     assert.ok(DAILY_REVIEW_LIST_LIMIT > 0);
     assert.ok(DAILY_REVIEW_LIST_LIMIT <= 32);
+  });
+});
+
+describe('Daily Review range contract', () => {
+  const day = {
+    fromMs: new Date(2026, 7, 3, 0, 0, 0, 0).getTime(),
+    toMs: new Date(2026, 7, 4, 0, 0, 0, 0).getTime(),
+  };
+
+  it('writes one archive identity for each supported range', () => {
+    assert.equal(dailyReviewArchiveId(day, 1), '2026-08-03-1d');
+    assert.equal(dailyReviewArchiveId(day, 7), '2026-08-03-7d');
+    assert.equal(dailyReviewArchiveId(day, 30), '2026-08-03-30d');
+  });
+
+  it('maps legacy modes onto the range contract when reading', () => {
+    const legacy = normalizeDailyReviewArchive({
+      id: '2026-08-03-deep',
+      day,
+      mode: 'deep',
+      status: 'ok',
+      generatedAt: day.toMs,
+      trigger: 'manual',
+      modelKey: '',
+      sections: { summary: 'Seven days' },
+      totals: {
+        sessionCount: 1,
+        requestCount: 2,
+        totalTokens: 3,
+        costUsd: 0.04,
+        errorCount: 0,
+      },
+    });
+
+    assert.equal(legacy.range, 7);
+    assert.equal(legacy.id, '2026-08-03-deep');
+    assert.equal(legacy.sections.summary, 'Seven days');
+  });
+
+  it('rejects structurally invalid canonical archives', () => {
+    const valid = {
+      id: '2026-08-03-1d',
+      day,
+      range: 1,
+      status: 'ok',
+      generatedAt: day.toMs,
+      trigger: 'manual',
+      modelKey: '',
+      sections: { summary: 'Today' },
+      totals: {
+        sessionCount: 1,
+        requestCount: 2,
+        totalTokens: 3,
+        costUsd: 0.04,
+        errorCount: 0,
+      },
+    };
+    const invalid = [
+      { ...valid, day: undefined },
+      { ...valid, status: 'unknown' },
+      { ...valid, generatedAt: Number.NaN },
+      { ...valid, trigger: 'unknown' },
+      { ...valid, modelKey: 42 },
+      { ...valid, sections: { summary: 42 } },
+      { ...valid, sections: {} },
+      { ...valid, sections: { summary: '   ' } },
+      { ...valid, totals: { requestCount: 2 } },
+      { ...valid, range: 7 },
+      { ...valid, id: '2026-02-30-1d' },
+    ];
+
+    for (const archive of invalid) {
+      assert.throws(() => normalizeDailyReviewArchive(archive));
+    }
+
+    const { range: _range, ...legacy } = valid;
+    assert.throws(() =>
+      normalizeDailyReviewArchive({
+        ...legacy,
+        id: '2026-08-03-daily',
+        mode: 'deep',
+      }),
+    );
+    assert.throws(() =>
+      normalizeDailyReviewArchive({
+        ...legacy,
+        id: '2026-08-03-deep',
+        mode: 'deep',
+        sections: {},
+      }),
+    );
+  });
+
+  it('keeps only the three settings that control real behavior', () => {
+    assert.deepEqual(
+      normalizeDailyReviewConfig({
+        enabled: true,
+        executeTime: '09:30',
+        modelKey: 'openai::gpt-5',
+        sections: { summary: false, gaps: false, usage: false, code: false },
+        deepEnabled: true,
+        includeClaudeCode: true,
+        externalNotify: { enabled: true, channelId: 'unused' },
+      }),
+      {
+        enabled: true,
+        executeTime: '09:30',
+        modelKey: 'openai::gpt-5',
+      },
+    );
   });
 });

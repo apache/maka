@@ -113,7 +113,7 @@ const bySession = new Map<string, Connection>();
 // so two concurrent first calls for one conversation must share one attempt
 // instead of racing into a second connection (which the bridge would reject).
 const pendingAcquires = new Map<string, Promise<Connection>>();
-// Release generation per conversation. A delete/archive cannot reliably see an
+// Release epoch per conversation. A delete/archive cannot reliably see an
 // in-flight acquire, so instead of the release waiting on the acquire, the
 // acquire notices the bump after connecting and unwinds itself — otherwise its
 // resolveEndpoint would resurrect the just-disposed view and the connection

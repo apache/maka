@@ -2,31 +2,26 @@
   body {
     margin: 0;
   }
+/* Astryx 0.2.0 reset uses zero-specificity `:where([hidden])`, so component
+   display declarations can make native-hidden surfaces interactive again.
+   Justified !important: the HTML hidden invariant must beat every component
+   display mode. Remove when the pinned Astryx reset enforces the same invariant. */
+[hidden] {
+    display: none !important;
+  }
 .detailPane {
     min-width: 0;
     min-height: 0;
     overflow: hidden;
   }
-.maka-overlay-scrollarea {
-    min-width: 0;
-    min-height: 0;
-  }
-.maka-overlay-scrollarea-viewport {
-    min-width: 0;
-    min-height: 0;
-  }
-.maka-overlay-scrollarea-content {
-    min-width: 0;
-  }
 .maka-lazy-fallback {
+    font: var(--maka-text-heading-4);
     min-width: 0;
     min-height: 72px;
     display: grid;
     place-items: center;
     padding: var(--space-4);
     color: var(--muted-foreground);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-semibold);
     text-align: center;
   }
 .maka-lazy-fallback[data-surface="panel"] {
@@ -40,38 +35,7 @@
     align-self: stretch;
     min-height: min(280px, 45vh);
   }
-.os-theme-maka {
-    /* local: OverlayScrollbars theme overrides */
-    --os-size: 8px;
-    --os-padding-perpendicular: 1px;
-    --os-padding-axis: 2px;
-    --os-track-border-radius: var(--radius-surface);
-    --os-track-bg: transparent;
-    --os-track-bg-hover: transparent;
-    --os-track-bg-active: transparent;
-    --os-handle-border-radius: var(--radius-control);
-    --os-handle-bg: var(--border);
-    --os-handle-bg-hover: oklch(from var(--foreground) l c h / 0.22);
-    --os-handle-bg-active: oklch(from var(--foreground) l c h / 0.30);
-    --os-handle-interactive-area-offset: 6px;
-    --os-handle-min-size: 40px;
-    box-sizing: border-box;
-  }
-.os-theme-maka.os-scrollbar-vertical {
-    width: var(--os-size);
-  }
-.os-theme-maka.os-scrollbar-horizontal {
-    height: var(--os-size);
-  }
-.maka-overlay-scrollarea-viewport:focus-visible {
-    outline: none;
-    box-shadow: none;
-  }
-/* Form-control font inheritance is Tailwind preflight's job (`@layer base`:
-   button/input/select/textarea { font: inherit }). Do NOT re-declare it here:
-   an unlayered duplicate outranks every layered rule, which silently kills
-   all font utilities (text-*, font-*, leading-*) on form controls app-wide.
-   Locked by renderer-form-font-reset-contract.test.ts. */
+/* Form-control font inheritance is owned by the Astryx reset. */
 .maka-visually-hidden {
     position: absolute !important;
     width: 1px !important;
@@ -108,13 +72,15 @@ button {
     scroll-behavior: auto !important;
   }
 /* E2E-fixture renders must be deterministic. We still exercise the
-     normal DOM for every scenario, but pause purely decorative animation,
+     normal DOM for every scenario, but remove purely decorative animation,
      transitions, and caret blink so the rendered state does not depend on
-     the exact millisecond the fixture settles. */
+     the exact millisecond the fixture settles. `paused` is not equivalent:
+     an animation with `fill-mode: backwards` would be frozen in its hidden
+     entry frame instead of the component's settled state. */
 [data-maka-e2e-fixture="true"] *,
   [data-maka-e2e-fixture="true"] *::before,
   [data-maka-e2e-fixture="true"] *::after {
-    animation-play-state: paused !important;
+    animation: none !important;
     transition-duration: 0.01ms !important;
     caret-color: transparent !important;
   }

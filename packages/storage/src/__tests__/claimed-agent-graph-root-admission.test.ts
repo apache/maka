@@ -143,7 +143,7 @@ describe('claimed agent graph root admission', () => {
               ],
             }),
           ),
-        /linked child execution cannot have source messages/,
+        /host-authored execution cannot have source messages/,
       );
       await assert.rejects(
         () =>

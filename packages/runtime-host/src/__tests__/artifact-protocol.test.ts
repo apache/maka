@@ -75,10 +75,7 @@ describe('Artifact protocol', () => {
     assert.doesNotThrow(() =>
       failure('artifact.query', 'persistence_failed', 'Artifact projection is unavailable'),
     );
-    assert.throws(
-      () => failure('artifact.query', 'not_found', 'Artifact was not found'),
-      isInvalidFrame,
-    );
+    assert.doesNotThrow(() => failure('artifact.query', 'not_found', 'Session was not found'));
     assert.throws(
       () => failure('artifact.query', 'operation_conflict', 'Protected runtime evidence'),
       isInvalidFrame,

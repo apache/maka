@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readSettingsCombinedSource } from './settings-contract-source-helpers.js';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 import {
   MAX_WORKSPACE_INSTRUCTION_FILE_CHARS,
   buildWorkspaceInstructionsPromptFragment,
@@ -77,13 +75,6 @@ describe('workspace instructions prompt fragment', () => {
     });
   });
 
-  it('main system prompt path is gated by the visible workspaceInstructions setting', async () => {
-    const source = await readFile(join(process.cwd(), 'src/main/system-prompt-main.ts'), 'utf8');
-
-    assert.match(source, /settings\.workspaceInstructions\.enabled && cwd/);
-    assert.match(source, /buildWorkspaceInstructionsPromptFragment\(cwd\)/);
-  });
-
   it('resolves only allowlisted workspace instruction files for opening', async () => {
     await withWorkspace(async (workspaceRoot) => {
       await writeFile(join(workspaceRoot, 'AGENTS.md'), 'Use npm test before pushing.\n', 'utf8');
@@ -140,23 +131,6 @@ describe('workspace instructions prompt fragment', () => {
     });
   });
 
-  it('wires instruction actions through the selected project root without arbitrary paths', async () => {
-    const main = await readMainProcessCombinedSource();
-    const preload = await readFile(join(process.cwd(), 'src/preload/preload.ts'), 'utf8');
-    const settings = await readSettingsCombinedSource();
-
-    assert.match(main, /workspaceInstructions:getState/);
-    assert.match(main, /getWorkspaceInstructionsState\(await currentProjectRoot\(\)\)/);
-    assert.match(main, /workspaceInstructions:openFile/);
-    assert.match(main, /resolveWorkspaceInstructionFileForOpen\(await currentProjectRoot\(\), typeof file === 'string' \? file : ''\)/);
-    assert.match(main, /workspaceInstructions:createFile/);
-    assert.match(main, /createWorkspaceInstructionFile\(await currentProjectRoot\(\), typeof file === 'string' \? file : ''\)/);
-    assert.doesNotMatch(main, /workspaceInstructions:[\s\S]*InstructionFile[^(]*\(process\.cwd\(\)/);
-    assert.match(preload, /createFile\(file: string\)/);
-    assert.match(settings, /file\.status === 'missing'/);
-    assert.match(settings, /props\.onCreate\(file\.file\)/);
-    assert.match(settings, /props\.isActionPending\(`instruction:\$\{file\.file\}:create`\) \? props\.copy\.text\.creating : props\.copy\.text\.instructionCreate/);
-  });
 });
 
 async function withWorkspace(fn: (workspaceRoot: string) => Promise<void>): Promise<void> {

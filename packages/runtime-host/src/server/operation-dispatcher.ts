@@ -48,15 +48,34 @@ export type MessageOperationKey = Extract<
   'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
 >;
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
+export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
+export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.inspect.${string}`>;
+export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
 export type SessionContinuityOperationKey = Extract<
   OperationKey,
   'subscription.open' | 'subscription.close'
+>;
+export type SessionRevisionOperationKey = Extract<
+  OperationKey,
+  'session.branch.create' | 'session.revision.create'
+>;
+export type SessionRetirementOperationKey = Extract<
+  OperationKey,
+  'session.lifecycle.set' | 'session.remove'
+>;
+export type SessionCatalogOperationKey = Exclude<
+  Extract<OperationKey, `session.${string}`>,
+  SessionRevisionOperationKey | SessionRetirementOperationKey
 >;
 export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
 export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
 export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;
 export type MemoryOperationKey = Extract<OperationKey, `memory.${string}`>;
+export type OAuthOperationKey = Extract<OperationKey, `oauth.${string}`>;
+export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resource.${string}`>;
+export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
+export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
@@ -66,15 +85,43 @@ export type ConnectionEffectOperationHandlerMap = Pick<
 >;
 export type MessageOperationHandlerMap = Pick<OperationHandlerMap, MessageOperationKey>;
 export type InteractionOperationHandlerMap = Pick<OperationHandlerMap, InteractionOperationKey>;
+export type GoalOperationHandlerMap = Pick<OperationHandlerMap, GoalOperationKey>;
+export type ExecutionInspectOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ExecutionInspectOperationKey
+>;
+export type AgentGraphOperationHandlerMap = Pick<OperationHandlerMap, AgentGraphOperationKey>;
 export type SessionContinuityOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionContinuityOperationKey
+>;
+export type SessionCatalogOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  SessionCatalogOperationKey
+>;
+export type SessionRevisionOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  SessionRevisionOperationKey
+>;
+export type SessionRetirementOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  SessionRetirementOperationKey
 >;
 export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
 export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
 export type MemoryOperationHandlerMap = Pick<OperationHandlerMap, MemoryOperationKey>;
+export type OAuthOperationHandlerMap = Pick<OperationHandlerMap, OAuthOperationKey>;
+export type RuntimeResourceOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  RuntimeResourceOperationKey
+>;
+export type ClientCapabilityOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ClientCapabilityOperationKey
+>;
+export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, AutomationOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]

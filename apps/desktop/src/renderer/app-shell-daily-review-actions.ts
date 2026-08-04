@@ -1,4 +1,5 @@
-import type { DailyReviewSummary, UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core';
+import type { DailyReviewMarkdownActionInput } from '@maka/ui';
 import { dailyReviewActionErrorMessage, dailyReviewExportDefaultName } from './daily-review-actions';
 import { getShellCopy } from './locales/shell-copy.js';
 
@@ -13,20 +14,14 @@ type ComposerAppendHandle = {
   appendText(text: string): void;
 };
 
-type DailyReviewMarkdownInput = {
-  markdown: string;
-  label: string;
-  summary: DailyReviewSummary;
-};
-
 type DailyReviewFeedbackOptions = {
   shouldShowFeedback?: () => boolean;
 };
 
 export interface AppShellDailyReviewActions {
-  copyDailyReviewMarkdown(input: DailyReviewMarkdownInput, options?: DailyReviewFeedbackOptions): Promise<void>;
-  appendDailyReviewMarkdown(input: DailyReviewMarkdownInput): void;
-  saveDailyReviewMarkdown(input: DailyReviewMarkdownInput, options?: DailyReviewFeedbackOptions): Promise<void>;
+  copyDailyReviewMarkdown(input: DailyReviewMarkdownActionInput, options?: DailyReviewFeedbackOptions): Promise<void>;
+  appendDailyReviewMarkdown(input: DailyReviewMarkdownActionInput): void;
+  saveDailyReviewMarkdown(input: DailyReviewMarkdownActionInput, options?: DailyReviewFeedbackOptions): Promise<void>;
 }
 
 export function createAppShellDailyReviewActions(deps: {
@@ -37,14 +32,14 @@ export function createAppShellDailyReviewActions(deps: {
   const { uiLocale, composerRef, toastApi } = deps;
   const copy = getShellCopy(uiLocale).commandActions;
 
-  async function copyDailyReviewMarkdown(input: DailyReviewMarkdownInput, options: DailyReviewFeedbackOptions = {}) {
+  async function copyDailyReviewMarkdown(input: DailyReviewMarkdownActionInput, options: DailyReviewFeedbackOptions = {}) {
     const shouldShowFeedback = options.shouldShowFeedback ?? (() => true);
     try {
       await navigator.clipboard.writeText(input.markdown);
       if (shouldShowFeedback()) {
         toastApi.success(
           copy.reviewCopied(input.label),
-          copy.reviewSummary(input.summary.totals.sessionCount, input.summary.totals.requestCount),
+          copy.reviewSummary(input.totals.sessionCount, input.totals.requestCount),
         );
       }
     } catch (error) {
@@ -54,26 +49,26 @@ export function createAppShellDailyReviewActions(deps: {
     }
   }
 
-  function appendDailyReviewMarkdown(input: DailyReviewMarkdownInput): void {
+  function appendDailyReviewMarkdown(input: DailyReviewMarkdownActionInput): void {
     composerRef.current?.appendText(input.markdown);
     toastApi.success(
       copy.reviewPasted(input.label),
-      copy.reviewSummary(input.summary.totals.sessionCount, input.summary.totals.requestCount),
+      copy.reviewSummary(input.totals.sessionCount, input.totals.requestCount),
     );
   }
 
-  async function saveDailyReviewMarkdown(input: DailyReviewMarkdownInput, options: DailyReviewFeedbackOptions = {}) {
+  async function saveDailyReviewMarkdown(input: DailyReviewMarkdownActionInput, options: DailyReviewFeedbackOptions = {}) {
     const shouldShowFeedback = options.shouldShowFeedback ?? (() => true);
     try {
       const result = await window.maka.dailyReview.saveMarkdownToFile({
         markdown: input.markdown,
-        defaultName: dailyReviewExportDefaultName(input.label),
+        defaultName: dailyReviewExportDefaultName({ range: input.range, day: input.day }),
       });
       if (result.ok) {
         if (shouldShowFeedback()) {
           toastApi.success(
             copy.reviewSaved(input.label),
-            copy.reviewSummary(input.summary.totals.sessionCount, input.summary.totals.requestCount),
+            copy.reviewSummary(input.totals.sessionCount, input.totals.requestCount),
           );
         }
       } else if (result.reason === 'canceled') {

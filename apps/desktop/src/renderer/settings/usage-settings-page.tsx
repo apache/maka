@@ -1,5 +1,17 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import {
+  EmptyState,
+  SegmentedControl,
+  SegmentedControlItem,
+  Tab,
+  TabList,
+  Table,
+  type TableColumn,
+  type TablePlugin,
+  pixel,
+  proportional,
+} from '@astryxdesign/core';
+import {
   uiLocaleToIntlLocale,
   type AppSettings,
   type UpdateAppSettingsResult,
@@ -7,23 +19,14 @@ import {
   type UsageStats,
 } from '@maka/core';
 import {
-  Alert,
-  AlertAction,
-  AlertDescription,
   Button,
-  DataTable,
-  type DataTableColumn,
-  EmptyState,
-  Input,
-  Segmented,
-  SettingsSelect,
-  SettingsSwitch as Switch,
-  TabsList,
-  TabsPanel,
-  TabsRoot,
-  TabsTrigger,
+  IconButton,
+  TextInput,
+  Selector,
+  Switch,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
 import {
@@ -114,36 +117,32 @@ export function UsageSettingsPage(props: {
   return (
     <div className="settingsUsagePage">
       <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
-        <Segmented
+        <SegmentedControl
           value={usageDraft.range}
-          ariaLabel={copy.rangeAria}
-          options={[
-            ['24h', copy.ranges[0]],
-            ['7d', copy.ranges[1]],
-            ['30d', copy.ranges[2]],
-            ['all', copy.ranges[3]],
-          ]}
+          label={copy.rangeAria}
           onChange={(value) => void setRange(value as UsageRange)}
-        />
+        >
+          {(['24h', '7d', '30d', 'all'] as const).map((value, index) => (
+            <SegmentedControlItem key={value} value={value} label={copy.ranges[index]} />
+          ))}
+        </SegmentedControl>
         {/* Detail audit: 刷新 was a primary --action chip glued to the
             segmented — two control styles fighting in one row for a
             low-frequency utility. Same quiet icon form as the automations
             page refresh (one action, one shape everywhere); pinned to the
             row's trailing edge so the time cluster reads as a single
             left-aligned group. */}
-        <Button
-          type="button"
-          variant="quiet"
-          size="icon-sm"
-          disabled={refreshing}
+        <IconButton
+          variant="ghost"
+          size="sm"
+          isDisabled={refreshing}
           aria-busy={refreshing}
           data-pending={refreshing ? 'true' : undefined}
-          aria-label={refreshing ? copy.refreshingAria : copy.refreshAria}
-          title={refreshing ? copy.refreshingAria : copy.refreshAria}
+          label={refreshing ? copy.refreshingAria : copy.refreshAria}
+          tooltip={refreshing ? copy.refreshingAria : copy.refreshAria}
           onClick={() => void refresh()}
-        >
-          <RefreshCcw size={15} aria-hidden="true" />
-        </Button>
+          icon={<RefreshCcw size={15} aria-hidden="true" />}
+        />
       </div>
 
       <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
@@ -153,22 +152,25 @@ export function UsageSettingsPage(props: {
         <MetricCard title={copy.cacheTokens} value={String(stats?.summary.cacheTokens ?? 0)} detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)} />
       </div>
 
-      <TabsRoot
-        value={usageDraft.activeTab}
-        onValueChange={(activeTab) => void updateUsage({ activeTab: activeTab as UsageActiveTab })}
-      >
+      <div>
         <div className="settingsUsageTabsBar">
-          <TabsList variant="underline" className="settingsUsageTabs" aria-label={copy.viewAria}>
-            <TabsTrigger className="settingsUsageTab" value="requests">{copy.tabs[0]} <span>{tabCounts.requests}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="providers">{copy.tabs[1]} <span>{tabCounts.providers}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="models">{copy.tabs[2]} <span>{tabCounts.models}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="tools">{copy.tabs[3]} <span>{tabCounts.tools}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="pricing">{copy.tabs[4]} <span>{tabCounts.pricing}</span></TabsTrigger>
-          </TabsList>
+          <TabList
+            value={usageDraft.activeTab}
+            onChange={(activeTab) => void updateUsage({ activeTab: activeTab as UsageActiveTab })}
+            hasDivider
+            aria-label={copy.viewAria}
+          >
+            <Tab value="requests" label={copy.tabs[0]} endContent={<span>{tabCounts.requests}</span>} />
+            <Tab value="providers" label={copy.tabs[1]} endContent={<span>{tabCounts.providers}</span>} />
+            <Tab value="models" label={copy.tabs[2]} endContent={<span>{tabCounts.models}</span>} />
+            <Tab value="tools" label={copy.tabs[3]} endContent={<span>{tabCounts.tools}</span>} />
+            <Tab value="pricing" label={copy.tabs[4]} endContent={<span>{tabCounts.pricing}</span>} />
+          </TabList>
         </div>
 
-        <TabsPanel className="settingsUsageTabPanel" value="requests">
-          <UsageRequestsPanel
+        {usageDraft.activeTab === 'requests' ? (
+          <div className="settingsUsageTabPanel">
+            <UsageRequestsPanel
             stats={stats}
             logs={showRequestDetails ? filteredLogs : []}
             showDetails={usageDraft.showDetails}
@@ -185,25 +187,34 @@ export function UsageSettingsPage(props: {
             onStatusChange={(status) => void updateUsage({ status })}
             onToggleDetails={(showDetails) => void updateUsage({ showDetails })}
             onClearFilters={clearRequestFilters}
-          />
-        </TabsPanel>
+            />
+          </div>
+        ) : null}
 
-        <TabsPanel className="settingsUsageTabPanel" value="providers">
-          <UsageProvidersPanel stats={stats} copy={copy} />
-        </TabsPanel>
+        {usageDraft.activeTab === 'providers' ? (
+          <div className="settingsUsageTabPanel">
+            <UsageProvidersPanel stats={stats} copy={copy} />
+          </div>
+        ) : null}
 
-        <TabsPanel className="settingsUsageTabPanel" value="models">
-          <UsageModelsPanel stats={stats} copy={copy} />
-        </TabsPanel>
+        {usageDraft.activeTab === 'models' ? (
+          <div className="settingsUsageTabPanel">
+            <UsageModelsPanel stats={stats} copy={copy} />
+          </div>
+        ) : null}
 
-        <TabsPanel className="settingsUsageTabPanel" value="tools">
-          <UsageToolsPanel stats={stats} copy={copy} />
-        </TabsPanel>
+        {usageDraft.activeTab === 'tools' ? (
+          <div className="settingsUsageTabPanel">
+            <UsageToolsPanel stats={stats} copy={copy} />
+          </div>
+        ) : null}
 
-        <TabsPanel className="settingsUsageTabPanel" value="pricing">
-          <UsagePricingPanel stats={stats} copy={copy} />
-        </TabsPanel>
-      </TabsRoot>
+        {usageDraft.activeTab === 'pricing' ? (
+          <div className="settingsUsageTabPanel">
+            <UsagePricingPanel stats={stats} copy={copy} />
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -234,51 +245,57 @@ function UsageRequestsPanel(props: {
 }) {
   if (!props.showDetails) {
     return (
-      <Alert variant="info">
-        <AlertDescription>{props.copy.summaryOnly}</AlertDescription>
-        <AlertAction>
-          <Button type="button" variant="secondary" size="sm" onClick={props.onEnableDetails}>
-            {props.copy.showDetails}
-          </Button>
-        </AlertAction>
-      </Alert>
+      <Banner
+        status="info"
+        title={props.copy.summaryOnly}
+        endContent={<Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />} />
     );
   }
   return (
     <>
       <div className="settingsUsageFilters" role="group" aria-label={props.copy.filtersAria}>
-        <Input value={props.modelFilter} onChange={(event) => props.onModelFilterChange(event.currentTarget.value)} placeholder={props.copy.filterPlaceholder} aria-label={props.copy.filterAria} />
-        <SettingsSelect
+        <div className="settingsUsageModelFilter">
+          <TextInput
+            value={props.modelFilter}
+            onChange={(value) => props.onModelFilterChange(value)}
+            placeholder={props.copy.filterPlaceholder}
+            label={props.copy.filterAria}
+            isLabelHidden
+            width="100%"
+          />
+        </div>
+        <Selector
           value={props.status}
-          ariaLabel={props.copy.statusAria}
+          label={props.copy.statusAria}
+          isLabelHidden
           options={[
-            ['all', props.copy.statuses[0]],
-            ['success', props.copy.statuses[1]],
-            ['error', props.copy.statuses[2]],
-          ] satisfies Array<readonly [AppSettings['usage']['status'], string]>}
-          onChange={props.onStatusChange}
+            { value: 'all', label: props.copy.statuses[0] },
+            { value: 'success', label: props.copy.statuses[1] },
+            { value: 'error', label: props.copy.statuses[2] },
+          ]}
+          width={320}
+          onChange={(value) => props.onStatusChange(value as AppSettings['usage']['status'])}
         />
-        <label className="settingsUsageDetailToggle">
+        <div className="settingsUsageDetailToggle">
           <span>{props.copy.details}</span>
           <Switch
-            ariaLabel={props.copy.detailsAria}
-            checked={props.showDetails}
+            label={props.copy.detailsAria}
+            isLabelHidden
+            value={props.showDetails}
             onChange={props.onToggleDetails}
           />
-        </label>
+        </div>
         <small className="settingsUsageRecordCount">{props.copy.recordCount(props.recordCount)}</small>
         <Button
           className="settingsUsageClearFilter"
-          type="button"
           variant="ghost"
           size="sm"
-          disabled={!props.hasRequestFilters}
+          isDisabled={!props.hasRequestFilters}
           aria-hidden={!props.hasRequestFilters ? 'true' : undefined}
           tabIndex={!props.hasRequestFilters ? -1 : undefined}
           onClick={props.hasRequestFilters ? props.onClearFilters : undefined}
-        >
-          {props.copy.clearFilters}
-        </Button>
+          label={props.copy.clearFilters}
+        />
       </div>
       <UsageStatsTable
         ariaLabel={props.copy.tables.requestsAria}
@@ -390,9 +407,7 @@ function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSet
   const label = shortUsageSessionId(row.sessionId);
   if (!onOpenSession) return label;
   return (
-    <Button type="button" variant="ghost" size="sm" onClick={() => onOpenSession(row.sessionId)}>
-      {copy.tables.openSession(label)}
-    </Button>
+    <Button variant="ghost" size="sm" onClick={() => onOpenSession(row.sessionId)} label={copy.tables.openSession(label)} />
   );
 }
 
@@ -407,17 +422,29 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
   }
 }
 
-// ── Shared table wrapper ────────────────────────────────────────────────────
-// The hairline/column-rhythm/tabular-nums recipe now lives in the shared
-// `DataTable` primitive (@maka/ui) — the #1252 table grew health + permission
-// consumers, so it was promoted. This thin wrapper keeps the usage-local
-// concern the primitive deliberately omits: routing an empty tab to the shared
-// EmptyState (icon + copy) instead of a bare header row. All five tabs funnel
-// through it, so every tab inherits the same table and the same empty surface.
+// ── Usage table mapping ─────────────────────────────────────────────────────
+// Astryx Table owns table geometry, scrolling, dividers, density, and cell
+// semantics. This page only maps its product rows and empty-state copy into
+// that public API.
 
-interface UsageColumn extends DataTableColumn {
+interface UsageColumn {
   header: string;
+  numeric?: boolean;
+  grow?: boolean;
 }
+
+type UsageTableRow = Record<string, unknown> & {
+  id: number;
+  cells: Array<ReactNode>;
+};
+
+const usageTablePlugins = {
+  rowHeader: {
+    transformBodyCell: (cell, _column, _row, columnIndex) => columnIndex === 0
+      ? { ...cell, htmlProps: { ...cell.htmlProps, role: 'rowheader' } }
+      : cell,
+  },
+} satisfies Record<string, TablePlugin<UsageTableRow>>;
 
 interface UsageEmpty {
   /** A lucide icon (same shape EmptyState accepts). */
@@ -435,19 +462,38 @@ function UsageStatsTable(props: {
   if (props.rows.length === 0) {
     return (
       <EmptyState
-        Icon={props.empty.Icon}
+        icon={<props.empty.Icon />}
         title={props.empty.title}
-        body={props.empty.body ?? ''}
-        extraClassName="settingsUsageEmpty"
+        description={props.empty.body ?? ''}
+        className="settingsUsageEmpty"
       />
     );
   }
+  const data: UsageTableRow[] = props.rows.map((cells, id) => ({ id, cells }));
+  const columns: Array<TableColumn<UsageTableRow>> = props.columns.map((column, index) => ({
+    key: `cell-${index}`,
+    header: column.header,
+    align: column.numeric ? 'end' : 'start',
+    width: column.grow ? proportional(1) : pixel(column.numeric ? 88 : 120),
+    renderCell: (row) => (
+      <span className={column.numeric ? 'settingsUsageNumericCell' : undefined}>
+        {row.cells[index]}
+      </span>
+    ),
+  }));
+
   return (
-    <DataTable
-      ariaLabel={props.ariaLabel}
-      columns={props.columns}
-      rows={props.rows}
-      className="settingsUsageTable"
-    />
+    <div className="settingsUsageTable">
+      <Table
+        aria-label={props.ariaLabel}
+        data={data}
+        columns={columns}
+        idKey="id"
+        density="compact"
+        dividers="rows"
+        textOverflow="truncate"
+        plugins={usageTablePlugins}
+      />
+    </div>
   );
 }

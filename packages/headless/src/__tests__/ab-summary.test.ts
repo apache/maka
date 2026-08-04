@@ -85,6 +85,61 @@ describe('summarizeAbComparison', () => {
     assert.equal(result.taskLevel.losses, 1);
   });
 
+  test('classifies a scored completed benchmark deadline as budget exhausted', () => {
+    const deadlineFailure = {
+      ...completed('long-task', false),
+      status: 'failed' as const,
+      errorClass: 'budget_exhausted',
+      deadlineSettlement: { source: 'benchmark.deadline' as const, mode: 'immediate' as const },
+    };
+    const result = summarizeAbComparison({
+      runId: 'ab-run',
+      roundId: 'ab-summary',
+      baselineArmId: 'maka-baseline',
+      candidateArmId: 'candidate',
+      evaluationTaskIds: ['long-task'],
+      baselineRuns: [[deadlineFailure]],
+      candidateRuns: [[completed('long-task', true)]],
+    });
+
+    assert.equal(result.baseline.valid, 1);
+    assert.equal(result.baseline.budgetExhausted, 1);
+    assert.equal(result.baseline.passRate, 0);
+  });
+
+  test('uses one shared paired denominator for non-budget conditional outcomes', () => {
+    const baselineBudget = {
+      ...completed('baseline-budget', false),
+      status: 'failed' as const,
+      errorClass: 'budget_exhausted',
+    };
+    const candidateBudget = {
+      ...completed('candidate-budget', false),
+      status: 'failed' as const,
+      errorClass: 'budget_exhausted',
+    };
+    const result = summarizeAbComparison({
+      runId: 'ab-run',
+      roundId: 'ab-summary',
+      baselineArmId: 'baseline',
+      candidateArmId: 'candidate',
+      evaluationTaskIds: ['quality', 'baseline-budget', 'candidate-budget'],
+      baselineRuns: [
+        [completed('quality', true), baselineBudget, completed('candidate-budget', false)],
+      ],
+      candidateRuns: [
+        [completed('quality', false), completed('baseline-budget', true), candidateBudget],
+      ],
+    });
+    const paired = result.pairedAttempts;
+
+    assert.equal(paired.evaluatedPairs, 3);
+    assert.equal(paired.nonBudgetEvaluatedPairs, 1);
+    assert.equal(paired.baselineNonBudgetPassed, 1);
+    assert.equal(paired.candidateNonBudgetPassed, 0);
+    assert.deepEqual(paired.budgetExcludedPairIds, ['baseline-budget#r0', 'candidate-budget#r0']);
+  });
+
   test('counts an unattested timeout as an observed budget failure with an attestation warning', () => {
     const unverifiedTimeout = {
       ...budgetExhausted('long-task'),

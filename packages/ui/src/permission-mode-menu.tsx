@@ -1,18 +1,28 @@
 import type { ChatDefaultPermissionMode, PermissionMode } from '@maka/core';
 import { CHAT_DEFAULT_PERMISSION_MODES } from '@maka/core';
 import type { UiLocale } from '@maka/core';
+import {
+  Selector,
+  SelectorOption,
+  type SelectorOptionData,
+} from '@astryxdesign/core/Selector';
+import {
+  DropdownMenu,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@astryxdesign/core/DropdownMenu';
+import { Eye, ShieldAlert, ShieldCheck } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import {
-  SelectItem,
-  SelectPopup,
-  SelectPortal,
-  SelectPositioner,
-  SelectRoot,
-  SelectTrigger,
-  SelectValue,
-  type PickerTriggerAppearance,
-} from './ui.js';
+import { cn } from './utils.js';
+
+type PermissionModeAppearance = 'field' | 'icon';
+
+function permissionModeIcon(mode: PermissionMode) {
+  if (mode === 'bypass') return <ShieldAlert size={15} aria-hidden="true" />;
+  if (mode === 'explore') return <Eye size={15} aria-hidden="true" />;
+  return <ShieldCheck size={15} aria-hidden="true" />;
+}
 
 export interface PermissionModeMeta {
   label: string;
@@ -41,19 +51,17 @@ export function getPermissionModeMeta(locale: UiLocale): Record<PermissionMode, 
 export const PERMISSION_MODE_ORDER: readonly ChatDefaultPermissionMode[] = CHAT_DEFAULT_PERMISSION_MODES;
 
 /**
- * The shared permission-mode picker, built on Base UI Select — the
- * semantically correct primitive for a single-value choice (the earlier
- * Menu + hand-styled "chip" trigger was a category error: Menu is for
- * actions, and the bespoke chip CSS existed to compensate). Both the
- * composer and Settings → 通用 → 默认权限模式 render this, so labels,
- * hints, and markup can't drift. Every option shows its label AND full
- * hint in the popup so the user never has to select a mode to learn what
- * it does; the selected option carries the standard Select check indicator.
+ * Shared permission-mode picker.
  *
- * Legacy `execute` sessions collapse to Auto for display because that mode
- * no longer maps to a boundary of its own. A read-only (`explore`) session
- * is a state without a matching option, so the Select carries no value at
- * all and the trigger is labelled from the display state instead.
+ * - **field** (Settings): Astryx Selector with option hints — the correct
+ *   single-value primitive.
+ * - **icon** (quiet composer footer): ghost icon button + radio menu of the
+ *   two selectable modes (label only). Hints stay on the trigger tooltip /
+ *   aria-description so the open panel stays short and matches the ＋ control.
+ *
+ * Legacy `execute` sessions collapse to Auto for display. A read-only
+ * (`explore`) session has no matching option, so the control shows that state
+ * without selecting Auto or full access.
  */
 export function PermissionModeSelect(props: {
   activeMode: PermissionMode;
@@ -63,7 +71,7 @@ export function PermissionModeSelect(props: {
   disabledReason?: string;
   ariaLabel?: string;
   className?: string;
-  appearance?: PickerTriggerAppearance;
+  appearance?: PermissionModeAppearance;
 }) {
   const locale = useUiLocale();
   const permissionCopy = getConversationCopy(locale).permissions;
@@ -74,51 +82,84 @@ export function PermissionModeSelect(props: {
   const displayMode: PermissionMode =
     props.activeMode === 'execute' ? 'ask' : props.activeMode;
   const meta = modeMeta[displayMode];
-  // A display state with no matching option is expressed as "no value", the
-  // supported way to say nothing is selected. Passing an unmatched value
-  // instead would depend on Base UI treating it as stale and trying to reset
-  // it to null — behaviour we would only be surviving, not relying on.
-  // The trigger reads its label from the display state, so it stays correct
-  // whether or not the Select holds a value.
-  const selectedValue: ChatDefaultPermissionMode | null = PERMISSION_MODE_ORDER.includes(
+  const selectedValue: ChatDefaultPermissionMode | undefined = PERMISSION_MODE_ORDER.includes(
     displayMode as ChatDefaultPermissionMode,
   )
     ? (displayMode as ChatDefaultPermissionMode)
-    : null;
+    : undefined;
+  const options: SelectorOptionData[] = PERMISSION_MODE_ORDER.map((mode) => ({
+    value: mode,
+    label: modeMeta[mode].label,
+  }));
+  const ariaLabel = props.ariaLabel ?? permissionCopy.modeAriaLabel(meta.label);
+
+  // Composer footer: match the ＋ ghost icon button. Astryx puts DropdownMenu
+  // className on the panel, so product anchors wrap the whole control.
+  if (props.appearance === 'icon') {
+    return (
+      <span className={cn('permissionModeIcon', props.className)}>
+        <DropdownMenu
+          placement="above"
+          hasChevron={false}
+          className="maka-composer-quiet-menu"
+          button={{
+            label: ariaLabel,
+            icon: permissionModeIcon(displayMode),
+            isIconOnly: true,
+            variant: 'ghost',
+            size: 'sm',
+            isDisabled: props.disabled,
+            tooltip: props.disabledReason ?? `${meta.label} — ${meta.hint}`,
+            'aria-description': meta.hint,
+          }}
+        >
+          <DropdownMenuRadioGroup
+            value={selectedValue}
+            aria-label={ariaLabel}
+            onChange={(value) => {
+              void props.onSelect(value as ChatDefaultPermissionMode);
+            }}
+          >
+            {PERMISSION_MODE_ORDER.map((mode) => (
+              <DropdownMenuRadioItem
+                key={mode}
+                value={mode}
+                label={modeMeta[mode].label}
+                icon={permissionModeIcon(mode)}
+                isDisabled={props.disabled}
+              />
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenu>
+      </span>
+    );
+  }
+
   return (
-    <SelectRoot
+    <Selector
+      label={ariaLabel}
+      isLabelHidden
       value={selectedValue}
-      items={PERMISSION_MODE_ORDER.map((mode) => ({ value: mode, label: modeMeta[mode].label }))}
-      disabled={props.disabled}
-      onValueChange={(value) => {
-        if (value !== null) void props.onSelect(value as ChatDefaultPermissionMode);
-      }}
-    >
-      <SelectTrigger
-        appearance={props.appearance}
-        aria-label={props.ariaLabel ?? permissionCopy.modeAriaLabel(meta.label)}
-        title={props.disabledReason ?? meta.hint}
-        className={props.className}
-      >
-        <SelectValue>{() => meta.label}</SelectValue>
-      </SelectTrigger>
-      <SelectPortal>
-        <SelectPositioner alignItemWithTrigger={false} align={props.align ?? 'start'} sideOffset={6}>
-          <SelectPopup className="min-w-[280px] max-w-[320px]">
-            {PERMISSION_MODE_ORDER.map((mode) => {
-              const optionMeta = modeMeta[mode];
-              return (
-                <SelectItem key={mode} value={mode}>
-                  <span className="flex flex-col gap-0.5">
-                    <span className="text-sm font-medium text-foreground">{optionMeta.label}</span>
-                    <span className="text-xs leading-snug text-muted-foreground">{optionMeta.hint}</span>
-                  </span>
-                </SelectItem>
-              );
-            })}
-          </SelectPopup>
-        </SelectPositioner>
-      </SelectPortal>
-    </SelectRoot>
+      placeholder={meta.label}
+      options={options}
+      onChange={(value) =>
+        void props.onSelect(value as ChatDefaultPermissionMode)
+      }
+      isDisabled={props.disabled}
+      disabledMessage={props.disabledReason}
+      aria-description={meta.hint}
+      placement="below"
+      width={320}
+      className={cn('permissionModeSelector', props.className)}
+      renderOption={(option) => (
+        <SelectorOption
+          icon={permissionModeIcon(option.value as PermissionMode)}
+          label={option.label ?? option.value}
+          description={
+            modeMeta[option.value as ChatDefaultPermissionMode].hint
+          }
+        />
+      )}
+    />
   );
 }

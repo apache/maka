@@ -45,6 +45,10 @@ import {
 } from './interaction-record-schema.js';
 import { isTokenUsageFields } from './usage-record-schema.js';
 import { isToolRecoveryFactEnvelope, type ToolRecoveryFactEnvelope } from './tool-recovery-fact.js';
+import {
+  isRuntimeEventWorkspaceFactEnvelope,
+  type RuntimeEventWorkspaceFactEnvelope,
+} from './workspace-version-authority.js';
 
 // ============================================================================
 // Role / Author / Status
@@ -253,6 +257,25 @@ export interface RuntimeEventProtocolMarker {
   toolBoundary: ToolBoundaryProtocol;
 }
 
+export interface RuntimeEventContinuationStartV2 {
+  protocol: 'continuation_start_v2';
+  /** Mirrors store-owned claim state; recovery never trusts this field alone. */
+  provenance: 'runtime_admission' | 'claim_repair';
+  claimId: string;
+  boundaryDigest: `sha256:${string}`;
+  immediateSource: {
+    sessionId: string;
+    invocationId: string;
+    runId: string;
+    turnId: string;
+    highWater: number;
+    prefixDigest: `sha256:${string}`;
+  };
+  replayManifestDigest: `sha256:${string}`;
+  providerProjectionVersion: 1;
+  providerReplayDigest: `sha256:${string}`;
+}
+
 interface RuntimeEventAnswerAcceptedIdentity {
   requestId: string;
 }
@@ -301,6 +324,10 @@ export interface RuntimeEventActions {
   toolRecovery?: ToolRecoveryFactEnvelope;
   /** Protocols that were actually active from the first event of this run. */
   runtimeProtocol?: RuntimeEventProtocolMarker;
+  /** Durable provider-call T1 for a claimed continuation. */
+  continuationStart?: RuntimeEventContinuationStartV2;
+  /** Reserved workspace authority fact; only its atomic SQLite writer may persist it. */
+  workspaceFact?: RuntimeEventWorkspaceFactEnvelope;
 }
 
 // ============================================================================
@@ -344,6 +371,7 @@ export type ToolRecoveryMode =
   | 'idempotent'
   | 'reconcile'
   | 'reattach'
+  | 'outcome_unknown'
   | 'never_auto_retry';
 
 // ============================================================================
@@ -355,7 +383,9 @@ export type ToolRecoveryMode =
  *
  * Phase 0-3 identity contract: one `invocationId` maps to one `runId`.
  * Invocation identifies provider/tool execution while Run identifies its
- * durable operational ledger. A continuation creates fresh values for both;
+ * durable operational ledger. Store-owned control-plane streams (for example,
+ * workspace version authority) use reserved identities and have no AgentRun
+ * header. A continuation creates fresh values for both;
  * `turnId` names the user turn and `ts` is Unix ms.
  *
  * `partial: true` marks a transient chunk (streaming text, progress) that
@@ -396,7 +426,7 @@ const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
 );
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
-  ['displayText', 'origin', 'attachments', 'quotes', 'steering'],
+  ['displayText', 'origin', 'attachments', 'quotes', 'inlineReferences', 'steering'],
 );
 const THINKING_CONTENT_SHAPE = defineObjectShape<RuntimeEventThinkingContent>()(
   ['kind', 'text'],
@@ -431,6 +461,8 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'toolDispatch',
     'toolRecovery',
     'runtimeProtocol',
+    'continuationStart',
+    'workspaceFact',
   ],
 );
 const ANSWER_ACCEPTED_IDENTITY_SHAPE = defineObjectShape<RuntimeEventAnswerAcceptedIdentity>()(
@@ -459,6 +491,22 @@ const RUNTIME_PROTOCOL_MARKER_SHAPE = defineObjectShape<RuntimeEventProtocolMark
   ['toolBoundary'],
   [],
 );
+const RUNTIME_CONTINUATION_START_SHAPE = defineObjectShape<RuntimeEventContinuationStartV2>()(
+  [
+    'protocol',
+    'provenance',
+    'claimId',
+    'boundaryDigest',
+    'immediateSource',
+    'replayManifestDigest',
+    'providerProjectionVersion',
+    'providerReplayDigest',
+  ],
+  [],
+);
+const RUNTIME_CONTINUATION_SOURCE_SHAPE = defineObjectShape<
+  RuntimeEventContinuationStartV2['immediateSource']
+>()(['sessionId', 'invocationId', 'runId', 'turnId', 'highWater', 'prefixDigest'], []);
 const RUNTIME_TOKEN_USAGE_SHAPE = defineObjectShape<RuntimeEventTokenUsage>()(
   ['input', 'output'],
   [
@@ -588,6 +636,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         ...(value.displayText !== undefined ? { displayText: value.displayText } : {}),
         ...(value.attachments !== undefined ? { attachments: value.attachments } : {}),
         ...(value.quotes !== undefined ? { quotes: value.quotes } : {}),
+        ...(value.inlineReferences !== undefined
+          ? { inlineReferences: value.inlineReferences }
+          : {}),
       });
     case 'thinking':
       return (
@@ -630,6 +681,9 @@ function isTurnOrigin(value: unknown): value is TurnOrigin {
   if (value.kind === 'automation') {
     return Object.keys(value).length === 2 && typeof value.automationId === 'string';
   }
+  if (value.kind === 'goal') {
+    return Object.keys(value).length === 2 && typeof value.goalId === 'string';
+  }
   return (
     value.kind === 'agent_graph' &&
     Object.keys(value).length === 4 &&
@@ -670,7 +724,10 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.tokenUsage === undefined || isRuntimeTokenUsage(value.tokenUsage)) &&
     (value.toolDispatch === undefined || isRuntimeToolDispatch(value.toolDispatch)) &&
     (value.toolRecovery === undefined || isToolRecoveryFactEnvelope(value.toolRecovery)) &&
-    (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol))
+    (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol)) &&
+    (value.continuationStart === undefined ||
+      isRuntimeContinuationStart(value.continuationStart)) &&
+    (value.workspaceFact === undefined || isRuntimeEventWorkspaceFactEnvelope(value.workspaceFact))
   );
 }
 
@@ -725,6 +782,7 @@ function isRuntimeToolDispatch(value: unknown): value is RuntimeEventToolDispatc
       value.recoveryMode === 'idempotent' ||
       value.recoveryMode === 'reconcile' ||
       value.recoveryMode === 'reattach' ||
+      value.recoveryMode === 'outcome_unknown' ||
       value.recoveryMode === 'never_auto_retry')
   );
 }
@@ -735,6 +793,37 @@ function isRuntimeProtocolMarker(value: unknown): value is RuntimeEventProtocolM
     hasExactShape(value, RUNTIME_PROTOCOL_MARKER_SHAPE) &&
     value.toolBoundary === TOOL_BOUNDARY_PROTOCOL_V1
   );
+}
+
+function isRuntimeContinuationStart(value: unknown): value is RuntimeEventContinuationStartV2 {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, RUNTIME_CONTINUATION_START_SHAPE) &&
+    value.protocol === 'continuation_start_v2' &&
+    (value.provenance === 'runtime_admission' || value.provenance === 'claim_repair') &&
+    isNonEmptyString(value.claimId) &&
+    isSha256Digest(value.boundaryDigest) &&
+    isRecord(value.immediateSource) &&
+    hasExactShape(value.immediateSource, RUNTIME_CONTINUATION_SOURCE_SHAPE) &&
+    isNonEmptyString(value.immediateSource.sessionId) &&
+    isNonEmptyString(value.immediateSource.invocationId) &&
+    isNonEmptyString(value.immediateSource.runId) &&
+    isNonEmptyString(value.immediateSource.turnId) &&
+    Number.isSafeInteger(value.immediateSource.highWater) &&
+    (value.immediateSource.highWater as number) > 0 &&
+    isSha256Digest(value.immediateSource.prefixDigest) &&
+    isSha256Digest(value.replayManifestDigest) &&
+    value.providerProjectionVersion === 1 &&
+    isSha256Digest(value.providerReplayDigest)
+  );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isSha256Digest(value: unknown): value is `sha256:${string}` {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 function isRuntimeTokenUsage(value: unknown): value is RuntimeEventTokenUsage {

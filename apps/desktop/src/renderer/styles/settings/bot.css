@@ -1,3 +1,10 @@
+/* Astryx convergence: the pre-#1972 remote-access dialect is retired — page
+   containers → SettingsPage, section headers → SettingsSection, the runtime
+   tinted card + <dl> status grid → SettingsSection + MetadataList, the
+   quick-setup plate → Astryx Card, list grids → the kit's rows body. What
+   stays below is genuine art (brand plate, QR frames, onboarding glyphs) and
+   the row-level behaviors (attention wash, planned opacity). */
+
 .settingsBotLogo {
   width: 32px;
   height: 32px;
@@ -15,65 +22,26 @@
   height: 44px;
 }
 
-.settingsRemoteAccessOverview,
-.settingsRemoteAccessDetail,
-.settingsBotDetail {
-  display: grid;
-  align-content: start;
-}
-
-.settingsRemoteAccessOverview {
-  gap: var(--space-8);
-}
-
-.settingsRemoteAccessSection {
-  display: grid;
-  gap: var(--space-2-5);
-}
-
-.settingsRemoteAccessSectionHeader,
-.settingsBotConfigurationHeader {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding-inline: var(--space-1);
-}
-
-.settingsRemoteAccessSectionHeader h3,
-.settingsBotConfigurationHeader h4 {
-  margin: 0;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
-.settingsRemoteAccessSectionHeader span,
-.settingsBotConfigurationHeader span {
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-}
-
-.settingsRemoteAccessActiveList {
-  display: grid;
-  gap: var(--space-1);
-}
-
 .settingsRemoteAccessChannelRow,
 .settingsRemoteAccessCatalogRow {
   min-height: 64px;
   min-width: 0;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-2-5);
+  /* Deep-review fix: flush inline — kit rows edge-align with the section
+     heading; the 10px inset was a leftover from the old card grid. */
+  padding: var(--space-2) 0;
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-title"] {
+.settingsRemoteAccessItemTitle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
   min-width: 0;
   flex-wrap: wrap;
   overflow-wrap: anywhere;
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-description"] {
+.settingsRemoteAccessItemDescription {
   overflow-wrap: anywhere;
 }
 
@@ -81,22 +49,9 @@
   background: oklch(from var(--warning) l c h / 0.06);
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-actions"],
-.settingsRemoteAccessCatalogRow [data-slot="item-actions"] {
+.settingsRemoteAccessItemActions {
+  display: flex;
   color: var(--muted-foreground);
-}
-
-/* The active-list empty slot rides the shared EmptyState card primitive;
-   trim its default page-scale padding so it sits compactly inside the
-   settings list instead of the full-height module-page treatment. */
-.settingsRemoteAccessEmpty {
-  padding: var(--space-5);
-}
-
-.settingsRemoteAccessCatalog {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-1);
 }
 
 .settingsRemoteAccessCatalogRow[data-support="planned"] {
@@ -104,13 +59,12 @@
 }
 
 .settingsRemoteAccessBack {
+  /* Deep-review fix: the page gap owns vertical rhythm now; only the optical
+     inline outdent stays so the ghost button's label aligns with content. */
   justify-self: start;
-  margin: 0 0 var(--space-4) calc(var(--space-2) * -1);
+  margin-inline-start: calc(var(--space-2) * -1);
 }
 
-.settingsBotDetail {
-  gap: var(--space-4);
-}
 
 .settingsBotDetailHeader {
   display: grid;
@@ -131,128 +85,52 @@
   grid-row: 1;
 }
 
-.settingsBotDetailHeader > [data-slot="switch"] {
+.settingsBotDetailHeader > .settingsBotDetailSwitch {
   grid-column: 3;
   grid-row: 1;
   justify-self: end;
 }
 
 .settingsBotDetailHeader h3 {
+  font: var(--maka-text-heading-3);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
   margin: 0 0 var(--space-1);
   color: var(--foreground);
-  font-size: var(--font-size-heading);
 }
 
 .settingsBotDetailHeader p {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .settingsBotEnableHint {
+  font: var(--maka-text-supporting);
   display: block;
   margin-top: var(--space-1);
   color: var(--warning-text, var(--foreground-secondary));
-  font-size: var(--font-size-caption);
 }
 
 .settingsBotConfigDocLink {
+  font: var(--maka-text-label);
   grid-column: 2;
   grid-row: 2;
   justify-self: start;
   color: var(--link);
   text-decoration: none;
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
 }
 .settingsBotConfigDocLink:hover {
   text-decoration: underline;
 }
 
-.settingsBotRuntime {
-  display: grid;
-  gap: var(--space-4);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-3);
-  padding: var(--space-4);
-}
-
-.settingsBotRuntimeHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.settingsBotRuntimeHeader h4 {
-  margin: 0 0 var(--space-1);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
-.settingsBotRuntimeHeader p {
-  margin: 0;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-}
-
-.settingsBotStatusGrid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-4);
-  margin: 0;
-}
-.settingsBotStatusGrid div {
-  min-width: 0;
-}
-.settingsBotStatusGrid dt {
-  margin-bottom: var(--space-1);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-}
-.settingsBotStatusGrid dd {
-  min-width: 0;
-  margin: 0;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  overflow-wrap: anywhere;
-}
-
-.settingsBotConfigurationHeader {
-  margin-top: var(--space-2);
-}
-
-@media (max-width: 900px) {
-  .settingsRemoteAccessCatalog {
-    grid-template-columns: 1fr;
-  }
-
-  .settingsBotRuntimeHeader {
-    flex-direction: column;
-  }
-
-  .settingsBotStatusGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 /* At the restored/sanitized 480px window floor, the fixed Settings navigation
    leaves a narrow content column. Keep provider summaries readable instead of
    squeezing the logo, title, status chip, and switch into one row. */
 @media (max-width: 620px) {
-  .settingsRemoteAccessSectionHeader,
-  .settingsBotConfigurationHeader {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
   .settingsBotDetailHeader {
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
@@ -267,220 +145,18 @@
     grid-row: 3;
   }
 
-  .settingsBotStatusGrid {
-    grid-template-columns: 1fr;
-  }
-
   .settingsRemoteAccessChannelRow,
   .settingsRemoteAccessCatalogRow {
     gap: var(--space-2);
-    padding-inline: var(--space-2);
   }
 
   /* The whole row remains the named button. In the narrow layout, dropping
      the redundant chevron leaves enough room for the provider name, status
      chip, and a useful diagnostic summary. */
-  .settingsRemoteAccessChannelRow [data-slot="item-actions"],
-  .settingsRemoteAccessCatalogRow [data-slot="item-actions"] {
+  .settingsRemoteAccessItemActions {
     display: none;
   }
 }
-
-.settingsUsagePage {
-  display: grid;
-  align-content: start;
-  /* #1364: pin the single column to `minmax(0, 1fr)`. With the implicit
-     `auto` track, every block's min-content propagated into the track size —
-     the five-tab bar (~453px intrinsic) and the requests table dragged the
-     whole page into horizontal scroll even though both scroll within
-     themselves. An explicit 0-floor track is the grid-level equivalent of
-     `min-width: 0` on every row. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2-5);
-}
-
-.settingsUsageToolbar,
-.settingsUsageFilters {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-}
-
-/* Detail audit: the range segmented reads as a single left-aligned time
-   cluster; the low-frequency refresh is pushed to the row's trailing edge
-   (mixed-type controls align on the shared centerline via align-items). */
-.settingsUsageToolbar {
-  justify-content: space-between;
-}
-
-/* House tab language (skills / MCP precedent): an underline TabsList with
-   count pills, sitting on a hairline that spans the panel width. */
-.settingsUsageTabsBar {
-  display: flex;
-  align-items: center;
-  border-bottom: var(--border-width-hairline) solid var(--border);
-  /* #1364: five nowrap tabs + count pills are ~453px min-content — wider than
-     the whole content column at the 480px window floor, and the bar dragged
-     the page into horizontal scroll. Tabs stay one line by design, so the bar
-     scrolls within itself (the hairline still spans the visible width). */
-  overflow-x: auto;
-}
-
-.settingsUsageTabs {
-  display: flex;
-  gap: var(--space-4);
-  border-bottom: 0;
-}
-
-.settingsUsageTab {
-  position: relative;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 1px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.settingsUsageTab span {
-  min-width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding-inline: var(--space-1);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.06);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  font-variant-numeric: tabular-nums;
-}
-
-.settingsUsageTabPanel {
-  display: grid;
-  align-content: start;
-  /* #1364: same 0-floor track as `.settingsUsagePage` — the requests table's
-     intrinsic width must stop here and scroll inside its own container. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2);
-  min-height: 0;
-  margin-top: var(--space-2-5);
-}
-
-/* Empty tab: the shared EmptyState card, nudged to the density of the
-   stats surface rather than the full page hero. */
-.settingsUsageEmpty {
-  padding: var(--space-6);
-}
-
-/* #1364: was a five-track grid (`minmax(260px, 1fr) 148px 108px 92px 92px`,
-   ~724px min-content) behind a 900px viewport breakpoint. The settings column
-   is narrower than the viewport by the sidebar's width, so between the
-   breakpoint and ~1100px the grid overflowed the page — same lesson as the
-   #1361 permission rows: the threshold depends on the controls' widths, not on
-   the window, so wrap structurally instead. The filter input grows from its
-   old 260px track; the select/toggle/count/clear keep their natural widths and
-   fall to the next line when they no longer fit. */
-.settingsUsageFilters > input {
-  flex: 1 1 260px;
-  min-width: 0;
-}
-
-.settingsUsageDetailToggle {
-  min-height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-1-5);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-none);
-  white-space: nowrap;
-}
-
-.settingsUsageRecordCount {
-  font-variant-numeric: tabular-nums;
-  min-height: 34px;
-  display: inline-flex;
-  align-items: center;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-none);
-  white-space: nowrap;
-}
-
-.settingsUsageClearFilter {
-  justify-self: start;
-  min-width: 86px;
-}
-
-.settingsUsageClearFilter[aria-hidden="true"] {
-  visibility: hidden;
-}
-
-/* #1364: the filters row wraps structurally now (see `.settingsUsageFilters >
-   input` above), so its 900px single-column fallback is gone. The toggle keeps
-   its narrow-layout alignment tweak. */
-@media (max-width: 900px) {
-  .settingsUsageDetailToggle {
-    justify-content: flex-start;
-  }
-}
-
-.settingsUsageSummary {
-  display: grid;
-  /* #1364: was `repeat(4, minmax(0, 1fr))` — the same hard-track division
-     #1361 fixed on the Permissions/Health summaries. At the 480px window
-     floor each metric tile collapsed to ~32px and its value overflowed.
-     `auto-fit` keeps four even tracks at full width and folds to fewer,
-     readable columns when narrow. */
-  grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
-  gap: var(--space-1-5);
-}
-
-/* Gateway posture strip: five compact metric tiles. Reusing the usage
-   summary (exactly four columns) left the fifth tile orphaned on a second
-   row. This strip is 5-up on wide and drops to a clean 3-up (3 + 2, no lone
-   orphan) when the settings pane narrows. */
-.settingsGatewaySummary {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: var(--space-1-5);
-}
-
-@media (max-width: 760px) {
-  .settingsGatewaySummary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-/* Convergence R4: recipe lives in the StatTile primitive; this class keeps
-   only the metric-strip density override. */
-.settingsMetricCard {
-  min-height: 52px;
-  justify-content: center;
-  gap: var(--space-0-5);
-  padding: var(--space-1-5) var(--space-2-5);
-}
-
-/* #520 PR9: .settingsStatsTable retired onto the local native
-   SimpleStatsTable in usage-settings-page.tsx (inline Tailwind classes,
-   no public primitive — a single HTML <table> consumer did not justify one). */
-
-/* .settingsRow / .settingsRows moved to rows.css — the single style home
-   for the settings-rows.tsx primitives (PR-SETTINGS-ROWS-CONVERGENCE-0). */
-
-/* #520 PR9: .settingsBadge retired onto the Chip primitive variant="neutral"
-   (packages/ui/src/primitives/chip.tsx, size="sm"). Generic settings labels
-   stay squared (radius-control), not pill Badge. */
 
 .settingsBotActionStack {
   display: flex;
@@ -493,74 +169,6 @@
 .settingsBotSetupModes,
 .settingsBotBrandChoice {
   justify-self: start;
-}
-
-.settingsBotQuickSetup {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-3);
-}
-
-.settingsBotQuickSetup strong {
-  display: block;
-  margin-bottom: var(--space-1);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-}
-
-.settingsBotQuickSetup p {
-  max-width: 58ch;
-  margin: 0;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
-}
-
-.settingsBotQuickSetup .settingsBotBrandChoice {
-  grid-column: 1;
-}
-
-.settingsBotQuickSetup > button:last-child {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-}
-
-.settingsBotOnboardingModal {
-  /* Keep the shared DialogContent viewport positioning. `relative` here
-     overrides its fixed centering and pushes the popup toward the bottom. */
-  position: fixed;
-  width: min(520px, calc(100vw - 32px));
-  overflow: visible;
-}
-
-.settingsBotOnboardingBrand {
-  position: absolute;
-  top: -26px;
-  left: 50%;
-  display: grid;
-  width: 56px;
-  height: 56px;
-  place-items: center;
-  transform: translateX(-50%);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: 50%;
-  background: var(--background);
-  box-shadow: var(--shadow-medium);
-}
-
-.settingsBotOnboardingBrand .settingsBotLogo {
-  width: 38px;
-  height: 38px;
-}
-
-.settingsBotOnboardingModal [data-slot="dialog-header"] {
-  padding-top: var(--space-8);
-  text-align: center;
 }
 
 .settingsBotOnboardingBody {
@@ -620,9 +228,8 @@
 }
 
 .settingsBotOnboardingStatus {
+  font: var(--maka-text-label);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
 }
 
 .settingsBotOnboardingStatus[data-state="error"],
@@ -631,8 +238,8 @@
 }
 
 .settingsBotOnboardingPrivacy {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .settingsBotOnboardingActions {
@@ -648,15 +255,6 @@
 }
 
 @media (max-width: 620px) {
-  .settingsBotQuickSetup {
-    grid-template-columns: 1fr;
-  }
-
-  .settingsBotQuickSetup > button:last-child {
-    grid-column: 1;
-    grid-row: auto;
-  }
-
   .settingsBotOnboardingBody {
     padding-inline: var(--space-4);
   }
@@ -673,27 +271,14 @@
   gap: var(--space-2-5);
 }
 
-.settingsBotAdvancedToggle {
-  align-self: flex-start;
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  padding: var(--space-1) 0;
-  font-size: var(--font-size-ui);
-  text-decoration: underline;
-  text-decoration-style: dotted;
-  text-underline-offset: 3px;
-}
-
-.settingsBotAdvancedToggle:hover {
-  color: var(--foreground);
-}
-
 .settingsBotAdvancedBody {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   padding-left: var(--space-3);
   border-left: var(--border-width-thick) solid var(--border);
+}
+
+.settingsBotBannerDescription {
+  overflow-wrap: anywhere;
 }

@@ -10,7 +10,7 @@ Maka 是一个 **log-first、projection-driven** 的 Agent Runtime：运行事�
 
 ```mermaid
 flowchart LR
-    U["Desktop / CLI / Bot / Gateway"] --> S["SessionManager"]
+    U["Desktop / CLI / Bot"] --> S["SessionManager"]
     S --> R["AgentRun + Runtime Runner"]
     R --> T["Tool Runtime"]
     R --> L["Runtime Event Log"]

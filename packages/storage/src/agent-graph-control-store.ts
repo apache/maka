@@ -1,17 +1,21 @@
 import { join } from 'node:path';
-import { SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from './operational-state-store.js';
 import {
   createSqliteSessionMetadataStore,
   type SqliteSessionMetadataStore,
 } from './sqlite-session-metadata-store.js';
 
 /**
- * Open the SQLite metadata control plane used by one host-owned agent graph
- * coordinator. Session JSONL remains the transcript authority; graph
- * schedule/topology/claim relationships are queried from SQLite.
+ * Open the metadata repository owned by the operational database. Session
+ * JSONL remains the transcript-body authority; graph schedule/topology/claim
+ * relationships are canonical in runtime.sqlite.
  */
 export function createAgentGraphControlStore(workspaceRoot: string): SqliteSessionMetadataStore {
-  return createSqliteSessionMetadataStore(
-    join(workspaceRoot, SQLITE_SESSION_METADATA_DATABASE_NAME),
-  );
+  const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
+  return createSqliteSessionMetadataStore(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME), {
+    databaseLease,
+  });
 }

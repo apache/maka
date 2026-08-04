@@ -2,41 +2,28 @@
 //
 // ⌘K / Ctrl+K command palette. Combines static actions (new chat, theme
 // switch, open settings, open keyboard help) with the live session list so
-// the user can fuzzy-search across both. Renders as a Base UI Dialog modal;
-// Arrow/Enter/Esc navigation is local to the input, focus trap + restore +
-// Esc-dismiss come from DialogRoot/DialogContent (#520 PR7).
+// the user can fuzzy-search across both. Astryx owns the dialog, input,
+// listbox, keyboard navigation, focus, and dismissal.
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
   CornerDownLeft,
-  Search,
-  X,
 } from '@maka/ui/icons';
 import {
-  Button,
-  DialogContent,
-  DialogRoot,
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-  Kbd,
-  KbdGroup,
+  CommandPalette as AstryxCommandPalette,
+  CommandPaletteFooter,
+  CommandPaletteInput,
+  AstryxLocaleProvider,
+  type SearchSource,
+  type SearchableItem,
   useUiLocale,
 } from '@maka/ui';
-import { Autocomplete } from '@base-ui/react/autocomplete';
-import { useThreadSearch } from './use-thread-search';
-import { buildContentSearchCommands } from './command-palette-content-search';
+import { Kbd } from '@astryxdesign/core/Kbd';
+import { EmptyState } from '@astryxdesign/core/EmptyState';
 import type { Command, CommandKind } from './command-palette-types';
-import type { UseThreadSearchDeps } from './use-thread-search';
 import { getShellCopy } from './locales/shell-copy';
 export type { Command, CommandKind } from './command-palette-types';
-export { buildContentSearchCommands } from './command-palette-content-search';
 export { buildCommandList, buildSessionCommands } from './command-palette-commands';
 
 // `Command` / `CommandKind` types live in `./command-palette-types`
@@ -68,7 +55,7 @@ export function useCommandPalette(): [boolean, () => void, () => void] {
 function fuzzy(query: string, text: string): boolean {
   // Cheap subsequence match: every char of query (lowercase) must appear in
   // order somewhere inside text (lowercase). Good enough for a palette with
-  // <100 commands; we can swap in a real fuzzy matcher later.
+// <100 commands; we can swap in a real fuzzy matcher later.
   if (!query) return true;
   let i = 0;
   const q = query.toLowerCase();
@@ -81,256 +68,139 @@ function fuzzy(query: string, text: string): boolean {
 
 export function CommandPalette(props: {
   commands: Command[];
-  onClose(): void;
-  /**
-   * Navigate to a session. Called when the user activates a content-
-   * search hit so the palette can jump to the matched session and,
-   * when the backend supplied one, scroll to the matched turn.
-   */
-  onSelectSession?: (sessionId: string, turnId?: string) => void;
-  /** Funnel bridge: hands the current query to the search modal (the
-   *  browse surface over the same thread-search backend). */
-  onOpenSearchModal?: (query: string) => void;
-  threadSearchDeps?: UseThreadSearchDeps;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).commandPalette;
-  const inputRef = useRef<HTMLInputElement>(null);
-  const commitPendingRef = useRef(false);
-  const [query, setQuery] = useState('');
-  const [committedCommandId, setCommittedCommandId] = useState<string | null>(null);
+  const astryxOverrides = useMemo(
+    () => ({
+      '@astryx.commandPalette.list.label': copy.resultsLabel,
+    }),
+    [copy.resultsLabel],
+  );
+  type PaletteItem = SearchableItem<{
+    command: Command;
+    group: string;
+  }>;
+  const items = useMemo<PaletteItem[]>(
+    () =>
+      props.commands.map((command) => ({
+        id: command.id,
+        label: command.label,
+        auxiliaryData: { command, group: command.group },
+      })),
+    [props.commands],
+  );
+  const itemById = useMemo(
+    () => new Map(items.map((item) => [item.id, item])),
+    [items],
+  );
+  const pendingCommandRef = useRef<Command | null>(null);
 
-  // Focus + select the search input as soon as the dialog mounts.
-  // DialogContent.initialFocus points Base UI at the input for the focus
-  // trap; this useEffect adds the select-all so the first keystroke
-  // replaces the previous query.
   useEffect(() => {
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, []);
-
-  // PR-SEARCH-2.6: content-search hits from local thread store. The
-  // hook handles debounce, ticket-based race control, and unmount
-  // safety. Query body never enters telemetry or local history.
-  const threadSearch = useThreadSearch(query, props.threadSearchDeps);
-
-  // Keystrokes stay urgent; list filtering renders at deferred priority
-  // (vercel rerender-use-deferred-value) so fast typing in the palette
-  // never waits on the filter + content-command list re-render.
-  const deferredQuery = useDeferredValue(query);
-  const filtered = useMemo(() => {
-    const q = deferredQuery.trim();
-    if (!q) return props.commands;
-    return props.commands.filter((cmd) => {
-      if (fuzzy(q, cmd.label)) return true;
-      if (cmd.hint && fuzzy(q, cmd.hint)) return true;
-      if (cmd.keywords && cmd.keywords.some((kw) => fuzzy(q, kw))) return true;
-      return false;
+    if (props.isOpen) return;
+    const command = pendingCommandRef.current;
+    pendingCommandRef.current = null;
+    if (!command) return;
+    const frame = window.requestAnimationFrame(() => {
+      void Promise.resolve(command.run()).catch(() => undefined);
     });
-  }, [props.commands, deferredQuery]);
+    return () => window.cancelAnimationFrame(frame);
+  }, [props.isOpen]);
+  const searchSource = useMemo<SearchSource<PaletteItem>>(
+    () => ({
+      bootstrap: () => items,
+      search: (query) => {
+        const normalized = query.trim();
+        if (!normalized) return items;
+        return items.filter(({ auxiliaryData }) => {
+          const command = auxiliaryData?.command;
+          if (!command) return false;
+          if (fuzzy(normalized, command.label)) return true;
+          if (command.hint && fuzzy(normalized, command.hint)) return true;
+          return command.keywords?.some((keyword) =>
+            fuzzy(normalized, keyword),
+          ) ?? false;
+        });
+      },
+    }),
+    [items],
+  );
 
-  // Build content-search commands from the hook state. These are
-  // merged into the palette's command list after the existing
-  // fuzzy-matched commands so the user sees actions / settings /
-  // sessions first, then matched content. Single empty / blocked /
-  // error tile per state.
-  const contentCommands = useMemo(() => {
-    return buildContentSearchCommands(threadSearch.state, props.onSelectSession, props.onOpenSearchModal, locale);
-  }, [threadSearch.state, props.onSelectSession, props.onOpenSearchModal, locale]);
-
-  // Combine. Filtered commands keep their existing order; content
-  // commands always sit at the end so they don't disrupt muscle
-  // memory for cmd-K + first-letter navigation.
-  const combined = useMemo(() => [...filtered, ...contentCommands], [filtered, contentCommands]);
-
-  const grouped = useMemo(() => groupCommands(combined), [combined]);
-
-  function commit(cmd: Command | undefined) {
-    if (!cmd) return;
-    if (commitPendingRef.current) return;
-    // xuan `fd675604`: disabled commands are inert. We MUST NOT fire
-    // their `run()` and MUST NOT close the palette — that would make
-    // a status tile (blocked / loading / error / empty) look like a
-    // user action.
-    if (cmd.disabled) return;
-    commitPendingRef.current = true;
-    setCommittedCommandId(cmd.id);
-    void (async () => {
-      try {
-        await cmd.run();
-      } finally {
-        props.onClose();
-      }
-    })().catch(() => undefined);
+  function commit(commandId: string) {
+    const command = itemById.get(commandId)?.auxiliaryData?.command;
+    if (!command || pendingCommandRef.current) return;
+    pendingCommandRef.current = command;
+    props.onOpenChange(false);
   }
 
   return (
-    <DialogRoot
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
-    >
-      <DialogContent
-        className="maka-modal maka-palette-modal top-[12vh] -translate-y-0"
-        aria-label={copy.label}
-        initialFocus={inputRef}
-        showClose={false}
-      >
-        {/*
-          #520 PR8: Autocomplete owns the listbox/option ARIA + ArrowUp/Down/
-          Enter/Escape keyboard nav (activedescendant mode). `inline` keeps the
-          list in the modal body. `mode="none"` + `filter={null}` preserve the
-          palette's own fuzzy + content-search filtering — Autocomplete does not
-          re-filter the combined list locally. `autoHighlight="always"` so Enter
-          on the first command works without an extra ArrowDown.
-        */}
-        <Autocomplete.Root
-          inline
-          open
-          mode="none"
-          autoHighlight="always"
-          keepHighlight
-          filter={null}
-          value={query}
-          onValueChange={(next, details) => {
-            // item-press (click / Enter on highlighted) is a selection, not
-            // input — never write the command object back into the query.
-            if (details.reason === 'item-press') return;
-            setQuery(next);
-          }}
-          itemToStringValue={(cmd) => cmd.label}
-          items={combined}
-        >
-          <div className="maka-palette-header">
-            <InputGroup
-              className="maka-palette-input-wrap"
-              aria-label={copy.searchLabel}
-              onMouseDown={(event) => {
-                const target = event.target as HTMLElement;
-                if (target.closest('input')) return;
-                event.preventDefault();
-                inputRef.current?.focus();
-              }}
-            >
-              <InputGroupAddon align="inline-start" className="maka-palette-search-icon" aria-hidden="true">
-                <Search />
-              </InputGroupAddon>
-              <Autocomplete.Input
-                render={
-                  <InputGroupInput
-                    ref={inputRef}
-                    className="maka-palette-input"
-                    type="text"
-                    placeholder={copy.placeholder}
-                    aria-label={copy.placeholder}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                }
-              />
-            </InputGroup>
-            <Button
-              type="button"
-              variant="quiet"
-              size="icon-sm"
-              aria-label={copy.closeLabel}
-              onClick={props.onClose}
-            >
-              <X aria-hidden="true" />
-            </Button>
-          </div>
-          <Autocomplete.List className="maka-palette-list" id="maka-palette-list" aria-label={copy.resultsLabel}>
-            {grouped.length === 0 ? (
-              <Empty className="maka-palette-empty py-8 md:py-10 gap-3">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Search aria-hidden="true" />
-                  </EmptyMedia>
-                  <EmptyTitle>{copy.emptyTitle}</EmptyTitle>
-                  <EmptyDescription>{copy.emptyDescription}</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            ) : (
-              grouped.map((group) => (
-                <Autocomplete.Group key={group.label} className="maka-palette-group">
-                  <Autocomplete.GroupLabel className="maka-palette-group-label">
-                    {group.label}
-                  </Autocomplete.GroupLabel>
-                  {group.items.map((entry) => {
-                    const cmd = entry.command;
-                    const commandCommitPending = committedCommandId === cmd.id;
-                    return (
-                      <Autocomplete.Item
-                        key={cmd.id}
-                        value={cmd}
-                        index={entry.index}
-                        onClick={() => commit(cmd)}
-                        disabled={cmd.disabled}
-                        aria-busy={commandCommitPending ? 'true' : undefined}
-                        data-disabled={cmd.disabled ? 'true' : undefined}
-                        data-pending={commandCommitPending ? 'true' : undefined}
-                        className="maka-palette-item"
-                      >
-                        <span className="maka-palette-icon" aria-hidden="true">
-                          <cmd.Icon size={15} />
-                        </span>
-                        <span className="maka-palette-label">{cmd.label}</span>
-                        {cmd.hint && (
-                          <span className="maka-palette-hint">
-                            {cmd.hint}
-                            <ChevronRight size={12} aria-hidden="true" />
-                          </span>
-                        )}
-                        {!cmd.hint && (
-                          <span className="maka-palette-hint maka-palette-cursor" aria-hidden="true">
-                            <CornerDownLeft size={12} />
-                          </span>
-                        )}
-                      </Autocomplete.Item>
-                    );
-                  })}
-                </Autocomplete.Group>
-              ))
-            )}
-          </Autocomplete.List>
-        </Autocomplete.Root>
-        <div className="maka-palette-footer">
-          <span className="maka-palette-footer-hint">
-            <KbdGroup>
-              <Kbd>↑</Kbd>
-              <Kbd>↓</Kbd>
-            </KbdGroup>
-            <span>{copy.selectHint}</span>
-          </span>
-          <span className="maka-palette-footer-hint">
-            <Kbd>↵</Kbd>
-            <span>{copy.runHint}</span>
-          </span>
-          <span className="maka-palette-footer-hint">
-            <Kbd>Esc</Kbd>
-            <span>{copy.closeHint}</span>
-          </span>
-        </div>
-      </DialogContent>
-    </DialogRoot>
+    <AstryxLocaleProvider overrides={astryxOverrides}>
+      <AstryxCommandPalette
+        isOpen={props.isOpen}
+        onOpenChange={props.onOpenChange}
+        searchSource={searchSource}
+        label={copy.label}
+        width={584}
+        maxHeight="min(620px, 68vh)"
+        input={(
+          <CommandPaletteInput
+            placeholder={copy.placeholder}
+            label={copy.searchLabel}
+          />
+        )}
+        emptySearchText={(
+          <EmptyState
+            role="presentation"
+            className="maka-palette-empty"
+            title={copy.emptyTitle}
+            description={copy.emptyDescription}
+            isCompact
+          />
+        )}
+        emptyBootstrapText={copy.emptyDescription}
+        onValueChange={commit}
+        renderItem={(item) => {
+          const command = item.auxiliaryData?.command;
+          if (!command) return item.label;
+          return (
+            <>
+              <span className="maka-palette-icon" aria-hidden="true">
+                <command.Icon size={15} />
+              </span>
+              <span className="maka-palette-label">{command.label}</span>
+              {command.hint ? (
+                <span className="maka-palette-hint">
+                  {command.hint}
+                  <ChevronRight size={12} aria-hidden="true" />
+                </span>
+              ) : (
+                <span className="maka-palette-hint maka-palette-cursor" aria-hidden="true">
+                  <CornerDownLeft size={12} />
+                </span>
+              )}
+            </>
+          );
+        }}
+        footer={(
+          <CommandPaletteFooter>
+            <span className="maka-palette-footer-hint">
+              <Kbd keys="up" />
+              <Kbd keys="down" />
+              <span>{copy.selectHint}</span>
+            </span>
+            <span className="maka-palette-footer-hint">
+              <Kbd keys="enter" />
+              <span>{copy.runHint}</span>
+            </span>
+            <span className="maka-palette-footer-hint">
+              <Kbd keys="escape" />
+              <span>{copy.closeHint}</span>
+            </span>
+          </CommandPaletteFooter>
+        )}
+      />
+    </AstryxLocaleProvider>
   );
 }
-
-function groupCommands(commands: Command[]): Array<{ label: string; items: Array<{ command: Command; index: number }> }> {
-  const order: string[] = [];
-  const map = new Map<string, Array<{ command: Command; index: number }>>();
-  commands.forEach((command, index) => {
-    if (!map.has(command.group)) {
-      map.set(command.group, []);
-      order.push(command.group);
-    }
-    map.get(command.group)!.push({ command, index });
-  });
-  return order.map((label) => ({ label, items: map.get(label)! }));
-}
-
-// `buildContentSearchCommands` moved to
-// `./command-palette-content-search` so it can be unit-tested without
-// JSX compilation. Re-exported via the explicit `export { ... }` at
-// the top of this file.

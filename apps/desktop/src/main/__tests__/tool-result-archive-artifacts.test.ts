@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { createArtifactStore, type ArtifactStore } from '@maka/storage';
+import { createSqliteArtifactStore, type ArtifactStore } from '@maka/storage';
 import type { ToolResultArchiveRecorderInput } from '@maka/runtime';
 import {
   persistArchivedToolResultToArtifacts,
@@ -84,7 +84,7 @@ function archiveEvent(): ToolResultArchiveRecorderInput {
 async function withStore(fn: (store: ArtifactStore) => Promise<void>): Promise<void> {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-tool-result-archive-'));
   try {
-    await fn(createArtifactStore(workspaceRoot));
+    await fn(createSqliteArtifactStore(workspaceRoot));
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }

@@ -37,6 +37,16 @@ export const COMPUTER_USE_ERROR_CODES = [
   'service_unavailable',
   'service_mismatch',
   'outcome_unknown',
+  /**
+   * The action reached the target and the target declined to perform it.
+   *
+   * Its own member, because `capture_failed` names the wrong subsystem and
+   * `unsupported_action` is where "the element does not offer this" already
+   * lands. The difference between "it does not offer this" and "it offered it,
+   * we tried, the OS said no" is the difference between try something else and
+   * try again, so a model that reads one code for both loses its next move.
+   */
+  'dispatch_refused',
 ] as const;
 
 export type ComputerUseErrorCode = (typeof COMPUTER_USE_ERROR_CODES)[number];

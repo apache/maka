@@ -92,10 +92,12 @@ process.on('message', (message: unknown) => {
     process.send?.({ type: 'shutdown-requested' });
   }
 });
-process.send?.({ type: 'ready', hostEpoch: host.hostEpoch, endpoint: host.endpoint });
-
 try {
-  await runRuntimeHostProcessLifecycle(host, { closeOnDisconnect: true });
+  await runRuntimeHostProcessLifecycle(host, {
+    closeOnDisconnect: true,
+    onReady: () =>
+      process.send?.({ type: 'ready', hostEpoch: host.hostEpoch, endpoint: host.endpoint }),
+  });
 } catch {
   process.exitCode = 1;
 }

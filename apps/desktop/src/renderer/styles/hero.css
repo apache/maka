@@ -54,45 +54,47 @@
     color: var(--maka-brand);
   }
 .maka-hero-eyebrow {
+    font: var(--maka-text-heading-5);
     display: inline-flex;
     align-items: center;
     gap: var(--space-1-5);
     color: var(--brand-deep);
-    font-size: var(--font-size-caption);
-    font-weight: var(--font-weight-bold);
     letter-spacing: var(--tracking-widest);
     text-transform: uppercase;
   }
 .maka-hero h1 {
+    font: var(--maka-text-display-1);
     margin: 0;
     max-width: 34ch;
     /* Hero typography uses
        `.welcome-title` with `Instrument Sans` variable font at wght:500
-       for hero. Maka uses Geist Variable; the heading is pulled to 32px
-       with semibold weight + tight leading (PR-FONT-WEIGHT-CONVERGE-0 /
-       PR-LEADING-CONVERGE-0, #520 PR1). The earlier `font-variation-settings
+       for hero. Maka uses the system stack; the heading takes the top rung
+       of the type scale with semibold weight, and its leading from the role
+       that shares that rung (display-1, measured 40px at 28px).
+       This was `2.1333em` until the type-scale convergence: an em multiplier
+       hand-derived from a 15px body, which then silently rendered 27.7px
+       once the body became 13px — the comment still claimed 32px. That is
+       what an em ladder costs. The ladder rung is the same size the page
+       actually shipped, now stated once instead of recomputed per base.
+       The earlier `font-variation-settings
        "wght" 550, "wdth" 105` was dropped: wght folds into the font-weight
        token, and the wdth:105 "wider" axis was a one-off that bypassed the
        token scale. Standard width keeps the hero optically distinct via
        size + weight + leading alone. */
-    font-size: 2.1333em;
-    font-weight: var(--font-weight-semibold);
     letter-spacing: var(--tracking-normal);
-    line-height: var(--leading-tight);
     text-wrap: balance;
   }
 .maka-hero p {
+    font: var(--maka-text-body);
     margin: 0;
     max-width: 54ch;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
     text-wrap: pretty;
   }
 /* #1433: the daily empty chat is a returning user's landing surface, not a
-   launch screen, so its greeting steps down from the 2.1333em first-run
-   hero scale to ~20px. The OnboardingHero variants keep the large scale —
+   launch screen, so its greeting steps down from the first-run hero rung
+   to 20px. The OnboardingHero variants keep the large scale —
    they are seen once, and there the headline is the whole message. */
 .maka-hero-empty-chat:not(.maka-hero-deep-research) h1 {
-    font-size: 1.5385em;
+    font: var(--maka-text-heading-1);
   }

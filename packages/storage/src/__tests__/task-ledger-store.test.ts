@@ -104,6 +104,75 @@ describe('TaskLedgerStore', () => {
     assert.equal(events[2]?.refs?.toolCallId, 'call-2');
   });
 
+  it('copies Task Ledger state at a turn boundary and rewrites Session and Run ownership', async () => {
+    const root = await tempRoot();
+    const store = createTaskLedgerStore(root);
+    const {
+      created: [task],
+    } = await store.create(SESSION_ID, [{ subject: 'copy boundary task' }], {
+      runId: 'source-run',
+      turnId: 'turn-retained',
+      source: 'tool',
+      actor: 'main_agent',
+    });
+    assert.ok(task);
+    await store.update(
+      SESSION_ID,
+      task.id,
+      { status: 'in_progress' },
+      {
+        runId: 'later-run',
+        turnId: 'turn-later',
+        source: 'tool',
+        actor: 'main_agent',
+      },
+    );
+
+    await assert.rejects(
+      () =>
+        store.copyConversationTaskLedger({
+          sourceSessionId: SESSION_ID,
+          targetSessionId: 'session-copy-missing-run',
+          turnIds: ['turn-retained'],
+          runIdMap: [],
+        }),
+      /missing AgentRun source-run/,
+    );
+    assert.deepEqual(await store.list('session-copy-missing-run'), []);
+
+    await store.copyConversationTaskLedger({
+      sourceSessionId: SESSION_ID,
+      targetSessionId: 'session-copy',
+      turnIds: ['turn-retained'],
+      runIdMap: [{ sourceRunId: 'source-run', targetRunId: 'target-run' }],
+    });
+
+    const copied = await store.list('session-copy');
+    assert.equal(copied.length, 1);
+    assert.equal(copied[0]?.status, 'pending');
+    assert.equal(copied[0]?.owner?.runId, 'target-run');
+    const [event] = (
+      await readFile(join(root, 'sessions', 'session-copy', 'task-events.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            sessionId: string;
+            refs?: { runId?: string; turnId?: string };
+          },
+      );
+    assert.equal(event?.sessionId, 'session-copy');
+    assert.deepEqual(event?.refs, {
+      runId: 'target-run',
+      turnId: 'turn-retained',
+    });
+    await store.purgeConversationTaskLedger('session-copy');
+    assert.deepEqual(await store.list('session-copy'), []);
+    assert.equal((await store.list(SESSION_ID))[0]?.status, 'in_progress');
+  });
+
   it('clears stale evidence when tasks leave evidence-bearing statuses', async () => {
     const root = await tempRoot();
     const store = createTaskLedgerStore(root);
@@ -978,7 +1047,7 @@ describe('TaskLedgerStore', () => {
     assert.ok(first && second);
     const owner = {
       actor: 'child_agent' as const,
-      agentId: 'expert:code-review:correctness-reviewer',
+      agentId: 'local-read',
       turnId: 'child-turn',
     };
     const scope = { parentRunId: 'lead-run' };

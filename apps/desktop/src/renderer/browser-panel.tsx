@@ -17,20 +17,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core';
 import {
-  Button,
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-  Input,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
+  IconButton,
+  TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { getBrowserCopy, type BrowserCopy } from './locales/browser-copy';
 
 const EMPTY_STATE: BrowserState = {
@@ -152,91 +146,81 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   return (
     <div className="maka-browser-panel" aria-label={copy.panelAria}>
       <div className="maka-browser-toolbar">
-        <Tooltip>
-          <TooltipTrigger
-            render={<Button variant="quiet" size="icon-sm" />}
-            type="button"
-            aria-label={copy.backAria}
-            disabled={!state.canGoBack}
+        <Tooltip content={copy.back}>
+          <IconButton
+            label={copy.backAria}
+            icon={<ChevronLeft size={16} aria-hidden />}
+            variant="ghost"
+            size="sm"
+            isDisabled={!state.canGoBack}
             onClick={() => void window.maka.browser.back(sessionId)}
-          >
-            <ChevronLeft size={16} aria-hidden />
-          </TooltipTrigger>
-          <TooltipContent>{copy.back}</TooltipContent>
+          />
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={<Button variant="quiet" size="icon-sm" />}
-            type="button"
-            aria-label={copy.forwardAria}
-            disabled={!state.canGoForward}
+        <Tooltip content={copy.forward}>
+          <IconButton
+            label={copy.forwardAria}
+            icon={<ChevronRight size={16} aria-hidden />}
+            variant="ghost"
+            size="sm"
+            isDisabled={!state.canGoForward}
             onClick={() => void window.maka.browser.forward(sessionId)}
-          >
-            <ChevronRight size={16} aria-hidden />
-          </TooltipTrigger>
-          <TooltipContent>{copy.forward}</TooltipContent>
+          />
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={<Button variant="quiet" size="icon-sm" />}
-            type="button"
-            aria-label={state.loading ? copy.stopAria : copy.refreshAria}
-            disabled={!state.hasPage && !state.loading}
+        <Tooltip content={state.loading ? copy.stop : copy.refresh}>
+          <IconButton
+            label={state.loading ? copy.stopAria : copy.refreshAria}
+            icon={state.loading ? <X size={16} aria-hidden /> : <RotateCw size={16} aria-hidden />}
+            variant="ghost"
+            size="sm"
+            isDisabled={!state.hasPage && !state.loading}
             onClick={() =>
               state.loading ? void window.maka.browser.stop(sessionId) : void window.maka.browser.reload(sessionId)
             }
-          >
-            {state.loading ? <X size={16} aria-hidden /> : <RotateCw size={16} aria-hidden />}
-          </TooltipTrigger>
-          <TooltipContent>{state.loading ? copy.stop : copy.refresh}</TooltipContent>
+          />
         </Tooltip>
-        <Input
-          className="maka-browser-address"
-          type="text"
-          spellCheck={false}
-          aria-label={copy.addressAria}
-          placeholder={copy.addressPlaceholder}
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-          onFocus={() => {
-            editingRef.current = true;
-          }}
-          onBlur={() => {
-            editingRef.current = false;
-            setAddress(state.url);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.currentTarget.blur();
-              go();
-            }
-          }}
-        />
-        <Tooltip>
-          <TooltipTrigger
-            render={<Button variant="quiet" size="icon-sm" />}
-            type="button"
-            aria-label={copy.closeAria}
+        <div className="maka-browser-address-field">
+          <TextInput
+            type="text"
+            label={copy.addressAria}
+            isLabelHidden
+            width="100%"
+            placeholder={copy.addressPlaceholder}
+            value={address}
+            onChange={setAddress}
+            onFocus={() => {
+              editingRef.current = true;
+            }}
+            onBlur={() => {
+              editingRef.current = false;
+              setAddress(state.url);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.currentTarget.blur();
+                go();
+              }
+            }}
+          />
+        </div>
+        <Tooltip content={copy.close}>
+          <IconButton
+            label={copy.closeAria}
+            icon={<X size={16} aria-hidden />}
+            variant="ghost"
+            size="sm"
             onClick={() => void window.maka.browser.close(sessionId)}
-          >
-            <X size={16} aria-hidden />
-          </TooltipTrigger>
-          <TooltipContent>{copy.close}</TooltipContent>
+          />
         </Tooltip>
       </div>
       <div className="maka-browser-strip" ref={stripRef}>
         {!state.hasPage && (
-          <Empty className="maka-browser-empty absolute inset-0 py-10 md:py-12">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <Globe aria-hidden="true" />
-              </EmptyMedia>
-              <EmptyTitle>{copy.title}</EmptyTitle>
-              <EmptyDescription className="maka-browser-empty-hint">
-                {copy.description}
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <EmptyState
+            className="maka-browser-empty"
+            icon={<Globe aria-hidden="true" />}
+            title={copy.title}
+            description={copy.description}
+            isCompact
+          />
         )}
       </div>
     </div>

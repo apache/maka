@@ -1,221 +1,41 @@
-/* ============================================================================
-   Command palette
-   ----------------------------------------------------------------------------
-   Split out of chat-header.css (#546 PR2, relocate — zero visual change).
-   The command-palette modal, input, list, items, and footer. Shared
-   keycap styling lives in the @maka/ui Kbd primitive.                 */
-
-.maka-palette-modal {
-  width: min(584px, calc(100vw - 32px));
-  max-height: min(620px, 68vh);
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  overflow: hidden;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-modal);
-  box-shadow: var(--shadow-modal);
-}
-
-.maka-palette-modal,
-.maka-palette-header,
-.maka-palette-list,
-.maka-palette-group-label,
-.maka-palette-item,
-.maka-palette-hint,
-.maka-palette-footer {
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-.maka-palette-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--h-control-md);
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2-5) var(--space-3);
-}
-
-.maka-palette-input-wrap {
-  width: 100%;
-  min-height: var(--h-control-xl);
-  border-radius: var(--radius-control);
-  border-color: var(--border);
-  background: var(--background);
-  transition:
-    border-color var(--duration-quick) var(--ease-out-strong),
-    box-shadow var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-palette-input-wrap:has(input:focus) {
-  border-color: var(--ring);
-  background: var(--background);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.12);
-}
-
-.maka-palette-search-icon {
-  padding-inline-start: var(--space-2-5);
-  padding-inline-end: 0;
-  color: var(--muted-foreground);
-}
-
-.maka-palette-input {
-  padding-inline: var(--space-2);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
-  outline: none;
-  box-shadow: none;
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-.maka-palette-input:focus,
-.maka-palette-input:focus-visible {
-  outline: none;
-  box-shadow: none;
-}
-
-.maka-palette-input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.maka-palette-list {
-  border-top: var(--border-width-hairline) solid var(--border);
-  overflow-y: auto;
-  padding: var(--space-1-5);
-}
-
-.maka-palette-group + .maka-palette-group {
-  margin-top: var(--space-1);
-}
-
-.maka-palette-group-label {
-  padding: var(--space-1) var(--space-2) var(--space-0-5);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--tracking-normal);
-  text-transform: none;
-}
-
-.maka-palette-item {
-  width: 100%;
-  min-height: var(--h-control-lg);
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--foreground);
-  padding: var(--space-1) var(--space-2);
-  text-align: left;
-  font-size: var(--font-size-caption);
-  cursor: default;
-  transition:
-    background-color var(--duration-base) var(--ease-out-strong),
-    color var(--duration-base) var(--ease-out-strong),
-    opacity var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-palette-item:hover:not([data-disabled="true"]) {
-  background: var(--state-hover-bg);
-}
-
-/* #520 PR8: Autocomplete.Item exposes the active (highlighted) item via
-   data-highlighted (activedescendant mode — the input keeps focus, so the
-   item itself is no longer :focus-visible). */
-.maka-palette-item[data-highlighted] {
-  background: var(--state-selected-bg);
-  color: var(--foreground);
-}
-
-.maka-palette-item:active:not([data-disabled="true"]) {
-  background: var(--state-selected-bg);
-}
-
-.maka-palette-item:focus-visible {
-  outline: var(--focus-ring-width) solid var(--ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-palette-item[data-disabled="true"] {
-  color: var(--muted-foreground);
-  cursor: default;
-  opacity: var(--opacity-disabled);
-}
-
-.maka-palette-item[data-pending="true"] {
-  cursor: progress;
-}
+/* Astryx owns the command palette surface, input, listbox, rows, states, and
+ * footer. Maka styles only product content rendered inside those slots. */
 
 .maka-palette-icon {
   display: grid;
   place-items: center;
   width: 18px;
   height: 18px;
-  border-radius: var(--radius-control);
   color: var(--muted-foreground);
-  transition:
-    background-color var(--duration-base) var(--ease-out-strong),
-    color var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-palette-item[data-highlighted] .maka-palette-icon {
-  color: var(--foreground);
-}
-
-/* #520 PR8: the CornerDownLeft cursor hint shows only on the highlighted
-   item (was `!cmd.hint && active` in JS; now CSS-driven via data-highlighted
-   so we don't need a hand-rolled highlight state). */
-.maka-palette-cursor {
-  visibility: hidden;
-}
-.maka-palette-item[data-highlighted] .maka-palette-cursor {
-  visibility: visible;
 }
 
 .maka-palette-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.maka-palette-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-
-.maka-palette-item[data-pending="true"] .maka-palette-hint {
-  color: var(--status-running);
-}
-
-.maka-palette-empty {
-  color: var(--muted-foreground);
-}
-
-.maka-palette-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-3);
-  min-height: var(--h-control-md);
-  padding: var(--space-1) var(--space-3);
-  border-top: var(--border-width-hairline) solid var(--border);
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-}
-
+.maka-palette-hint,
 .maka-palette-footer-hint {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
   white-space: nowrap;
+}
+
+.maka-palette-hint {
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.maka-palette-empty {
+  gap: 10px;
+  padding-block: 26px;
+  color: var(--muted-foreground);
+}
+
+@media (min-width: 768px) {
+  .maka-palette-empty { padding-block: 32px; }
 }

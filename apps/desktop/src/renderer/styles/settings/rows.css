@@ -1,494 +1,124 @@
-/* Settings row primitives — the single style home for the primitives
-   rendered by settings/settings-rows.tsx (.settingsRows / .settingsRow)
-   and the form-row family that shares the same grouped-card rhythm
-   (.settingsFormRow / .settingsField / .settingsFormGrid).
-
-   PR-SETTINGS-ROWS-CONVERGENCE-0: these rules were previously scattered
-   across bot.css (base layout), connection.css (hover + hint),
-   provider-editor.css (label/value typography), and nav-sidebar.css
-   (form rows + width variants), which let the two row kinds drift:
-   .settingsFormRow titles rendered 15px while .settingsRow titles on
-   the SAME page (通用: 默认模型 vs 隐身模式) rendered 13px, with
-   different padding. One file, one typography contract:
-
-   - row title (strong):        --font-size-heading / medium
-   - field label (span):        --font-size-ui / medium
-   - hint (small):              --font-size-base, muted
-   - value (.settingsRow span): --font-size-ui, secondary */
-
-/* PR-SETTINGS-GROUPED-CARD-0 (WAWQAQ msg `1abecd66`): grouped card —
-   outer card + hairline dividers, no per-row chrome. The ONLY card
-   primitive on settings pages (see .settingsStructuredPage note in
-   nav-sidebar.css). */
+/* The open row group (SettingsSection variant='rows'). The Astryx settings
+   idiom — the CLI's settings/settings-dialog templates and `astryx docs
+   layout` — is edge-to-edge rows split by hairline dividers, with NO card
+   chrome ("no stacked full-width Cards as page structure"). The former
+   `.settingsRows` Card is gone; this is a plain block that owns only the
+   row track and the divider rhythm. */
 .settingsRows {
   display: grid;
+  /* Explicit track (#1362): the implicit `auto` track sizes to the widest
+     child's max-content, so one wide row (an English SegmentedControl, a
+     long input placeholder) would push every row past the content column.
+     minmax(0,1fr) pins the track and lets rows wrap instead of clip. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
-  border: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.08);
-  overflow: hidden;
-  /* #1362: the card is the query container for the row-stacking rules at the
-     bottom of this file. Rows respond to the width the card actually has —
-     the settings content column is narrower than the window by the nav
-     sidebar, so viewport @media blocks systematically fire too late/early
-     (the #1361 540px and #1364 900px lessons). Same mechanism as the
-     interaction prompt's inline-size container in interaction-prompts.css. */
   container: settings-rows / inline-size;
 }
 
-/* Label/value row: title + hint stack on the left, value or a single
-   control on the right column.
+/* Hairline between neighboring rows — the templates' own row-then-Divider
+   idiom, owned by the group so call sites can't forget it. */
+.settingsRows > * + *,
+.settingsRowsGroup > * + * {
+  border-block-start: var(--border-width-hairline) solid var(--border);
+}
 
-   THE LABEL IS THE CONTENT; the right column is the accessory. So the
-   right track is sized to what it actually holds and the label takes
-   everything else — `fit-content(45%)`, not a proportional share.
+/* Form blocks inside a row group (SettingsField / SettingsActions): block
+   padding only — the open idiom has no inline inset, so fields stay flush
+   with the section heading and the Item rows around them. */
+.settingsRows > .settingsFieldRow,
+.settingsRowsGroup > .settingsFieldRow {
+  padding-block: var(--space-3);
+}
 
-   This used to read `minmax(150px, 0.36fr) minmax(0, 1fr)`, which is
-   backwards: it handed the accessory 1fr and rationed the content to
-   0.36fr. Nothing in this codebase ever fills that 1fr — every right
-   column is a switch, a ~94px time field, a capped select, or (28 rows
-   across 5 pages, via SettingRow) a short read-only string. Measured on
-   the 数据 and 开放网关 pages at a ~1076px row: the value used ~64px of
-   a ~791px track while the label was pinned to ~285px and wrapped its
-   hint to four lines — mid-word in Chinese, which has no spaces to break
-   at — with ~730px sitting blank between them.
-
-   #1524 already made this trade for switches and the compact bucket, but
-   it enumerated control types instead of stating the rule, so read-only
-   values — the most common right column in the app — kept the backwards
-   default. Stating it as the default is what makes it hold for the next
-   row someone adds.
-
-   `fit-content(45%)` rather than `auto` because the cap is load-bearing:
-   the workspace path on the 数据 page is a ~690px unbroken string, and an
-   `auto` track sizes to max-content, which would starve the label exactly
-   the way the old default did — just in the other direction. 45% matches
-   the share the select bucket below already caps at. A value longer than
-   the cap wraps, which is the documented intent for mono paths (see the
-   `[data-mono]` rule further down).
-
-   Controls that genuinely fill their track opt out: see the select rule
-   below, whose `w-full` trigger collapses under an intrinsic track. */
-.settingsRow {
+/* Not on .settingsActionRow — that one stays the flex cluster from form.css
+   (grid would stretch each button to a full-width stacked bar). */
+.settingsRows > .settingsFieldRow:not(.settingsActionRow),
+.settingsRowsGroup > .settingsFieldRow:not(.settingsActionRow) {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) fit-content(45%);
-  align-items: center;
-  gap: var(--space-4);
-  /* Same padding as .settingsFormRow below so the two row kinds read
-     as one rhythm when stacked on a page (was 16/20 vs 20/24). */
-  padding: var(--space-5) var(--space-6);
-  border: 0;
-  border-bottom: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
-  border-radius: 0;
-  background: transparent;
-  transition: background var(--duration-base) var(--ease-out-strong);
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
 }
 
-/* Detail audit + alignment-governance round: bare Switch controls sat at
-   the value column's START (x≈mid-page) while inputs/selects hug the right
-   rail. The original fix tag-qualified the selector with a button prefix, but
-   Base UI renders the Switch root as a SPAN — the selector matched nothing
-   and rotted silently. Tag-AGNOSTIC by rule: role is the contract, the
-   rendered tag never is. */
-.settingsRow > [role="switch"] {
-  justify-self: end;
+/* A semantic wrapper (role="group" + aria-label) around consecutive rows in
+   a group. Lays out exactly like the group itself so its rows keep the
+   shared track and divider rhythm. */
+.settingsRowsGroup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 
-/* #1524's switch and `[data-control-width="compact"]` track splits lived
-   here. Both said `minmax(0, 1fr) auto` — which is what the default above
-   now says, only stated as the rule rather than as two exceptions to it.
-   A 32px switch and a ~94px time field both sit well under the 45% cap,
-   so they size identically and the rules were pure duplication. The
-   `compact` attribute stays: it still carries the control-width and
-   stacking rules further down.
-
-   Selects can't take the intrinsic track above: their trigger is `w-full`
-   under a 320px cap, so an `auto` track collapses it to the width of
-   whatever option happens to be selected (measured: 320px → 118px).
-   They get an explicit cap instead, and it has to be BOTH absolute and
-   proportional. A flat `minmax(0, 320px)` holds 320px all the way down
-   and eats the label instead — at a 468px card (just above the 460px
-   stacking breakpoint) that leaves the label 82px. Capping by share as
-   well keeps the split sane at every width: measured 353/302 at a 720px
-   card, 214/188 at 468px. */
-.settingsRow[data-control-width="select"] {
-  grid-template-columns: minmax(0, 1fr) minmax(0, min(320px, 45%));
-}
-
-.settingsRow:last-child {
-  border-bottom: 0;
-}
-
-.settingsRow:hover {
-  background: var(--state-hover-bg);
-}
-
-.settingsRow > div {
+.settingsReadOnlyValue {
   min-width: 0;
+  max-width: min(320px, 45cqi);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-body);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: end;
 }
 
-/* PR-SETTINGS-ROW-SPACIOUS-0 (2026-06-23, WAWQAQ msg `f7e9d166`):
-   reference rows are MUCH more spacious than maka's. WAWQAQ's screenshot
-   of QoderWork's preferences card showed rows ~80–90px tall with
-   noticeable internal padding. Bumped: min-height 56→72, padding
-   16/20 → 20/24, gap inside row 16→20, label 14→15px, hint 12→13. */
-.settingsFormRow {
-  min-height: 72px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-5);
-  padding: var(--space-5) var(--space-6);
-  border: 0;
-  border-bottom: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
-  border-radius: 0;
-  background: transparent;
-  transition: background var(--duration-base) var(--ease-out-strong);
-}
-
-/* #1362: the label stack is a flex item; without min-width:0 its intrinsic
-   min-content (the widest unbreakable run) sets the row's minimum and the
-   card clips at narrow widths instead of letting the text wrap. */
-.settingsFormRow > div:first-child {
-  min-width: 0;
-}
-
-/* #1363 review: a row whose control side is more than a bare switch (e.g.
-   Memory's status Chip + switch) groups them into one cluster, so the
-   stacked layout keeps them on one line together. The internal gap matches
-   the row gap, so the wide layout is pixel-identical to the former loose
-   siblings. */
 .settingsFormRowControlCluster {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
-  gap: var(--space-5);
-  /* No min-width:0 here — the cluster's floor is its widest nowrap chip;
-     shrinking below that bleeds the chip out of the box. The LABEL side
-     owns the squeeze (it has min-width:0 and wraps). */
+  gap: var(--space-2);
 }
 
-/* Detail audit round 3: vertical variant for full-width controls (the
-   personalization tone textarea) living inside the shared card rows. */
-.settingsFormRow[data-orient="vertical"] {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--space-3);
-}
-
-.settingsFormRow[data-orient="vertical"] .settingsActionRow {
-  margin: 0;
-}
-
-.settingsFormRow:last-child {
-  border-bottom: 0;
-}
-
-.settingsFormRow:hover {
-  background: var(--state-hover-bg);
-}
-
-/* === typography ========================================================= */
-
-/* Row titles — one tier for BOTH row kinds. No `white-space: nowrap` here:
-   the label column has a fixed 150px minimum, so a nowrap title longer than
-   the column bled into the value column instead of wrapping (#1362; the
-   nowrap never affected titles that fit). */
-.settingsRow strong,
-.settingsFormRow strong {
+.settingsReadOnlyValue[data-mono="true"] {
+  /* Machine text renders as its own full-width line under the description
+     (see SettingRow) — never as a right-anchored ragged block. */
   display: block;
-  color: var(--foreground);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
-  /* Last resort for unbreakable runs (product names like "Claude", env-var
-     tokens) on a squeezed label column: break inside the word rather than
-     bleed past the card. No effect while the title fits. */
-  overflow-wrap: anywhere;
-}
-
-/* Field labels — one tier BELOW row titles so the proxy grid's 代理协议 /
-   服务器地址 / 端口 labels don't compete with the 代理服务器 row title
-   (they used to share the 15px heading tier). */
-.settingsField span,
-.settingsFormGrid label span {
-  display: block;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
-}
-
-/* Hints — the most-read body text on the page; body tier (13). */
-.settingsRow small,
-.settingsFormRow small,
-.settingsField small {
-  display: block;
-  margin-top: var(--space-1-5);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-base);
-  line-height: var(--leading-normal);
-  /* Hints carry paths and URLs — same last-resort break as the titles. */
-  overflow-wrap: anywhere;
-}
-
-.settingsRow > span {
-  /* PR-SETTINGS-MOTION-TYPO-TOKENS-0 (round 15/15): `tabular-nums` so
-     numeric values (version strings, model IDs, counts) align cleanly
-     when stacked vertically. baseline-ui + /typeset both require this
-     for any numeric data. */
-  min-width: 0;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-/* Long machine values (workspace path): right-aligned proportional text
-   wraps into a ragged multi-line block. Mono + left-aligned + caption
-   size reads as the file path it is. */
-.settingsRow > span[data-mono="true"] {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  text-align: left;
-  line-height: var(--leading-normal);
+  max-width: 100%;
+  font: var(--maka-text-code);
+  text-align: start;
   word-break: break-all;
 }
 
-.settingsFieldWarning {
-  display: block;
-  margin-top: var(--space-1);
-  color: var(--warning-text, var(--info-text));
+/* A multi-button flow rendered under a row's description (Permission Center
+   grant cluster). Breathing room from the text above; buttons are real
+   interactive children so the description stays plain supporting text. */
+.settingsRowActionsUnder {
+  margin-block-start: var(--space-2);
 }
 
-/* === control-width variants ============================================ */
-
-/* PR daily-review-bundled (@kenji audit finding #5): semantic width
-   bucket on the row, not a class selector keyed off the input
-   className. Different settings rows ask for different control
-   widths (time-pickers want compact, free-text selects want a 320px
-   cap); keying off the row makes the contract local and obvious. */
-.settingsRow[data-control-width="compact"] > input,
-.settingsRow[data-control-width="compact"] > .settingsTimeInput {
-  /* `width: auto` over the Input primitive's `w-full`: a 140px flat cap
-     stretched the box to 140px while `08:00` + the picker glyph only ink
-     ~80px, leaving a ~60px dead strip inside the field's right edge. The
-     field now hugs its content and stays pinned to the same right rail as
-     the switch rows above it; 140px remains the ceiling for the wider
-     compact controls that share this bucket. */
-  width: auto;
-  max-width: 140px;
-  justify-self: end;
+/* A quiet subgroup label inside a row group (health layers, palette groups):
+   more air above than below so it binds to the rows it introduces. */
+.settingsRows > .settingsRowsSubheading {
+  padding-block: var(--space-3) var(--space-1);
 }
 
-.settingsRow[data-control-width="select"] > .settingsSelectTrigger {
-  justify-self: end;
-}
-
-/* === fields and grids =================================================== */
-
-.settingsFormGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-
-/* #1362: non-row children of a rows card — the proxy sub-form's grids,
-   bypass field, info alert, and action row — sat flush against the card
-   edge while every sibling row is inset 24px. One horizontal inset for
-   everything inside a card. */
-.settingsRows > .settingsFormGrid,
-.settingsRows > .settingsField,
-.settingsRows > .settingsActionRow,
-.settingsRows > [data-slot="alert"] {
-  margin: var(--space-4) var(--space-6);
-}
-
-/* The Alert primitive carries `w-full`; with horizontal margins that is
-   wider than the card. The stretched grid-item width (auto) is the right
-   one here. */
-.settingsRows > [data-slot="alert"] {
-  width: auto;
-}
-
-.settingsRows > .settingsFormGrid + .settingsFormRow {
-  border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
-}
-
-.settingsFormGridProxy {
-  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.8fr) minmax(84px, 0.5fr);
-}
-
-.settingsField,
-.settingsFormGrid label {
-  display: grid;
-  gap: var(--space-1);
-}
-
-/* PR-S2 (2026-06-23): reference-style horizontal Settings row — label
-   stack on the left (title + description), control aligned right. Use
-   `<div className="settingsField" data-orient="horizontal">` on rows
-   whose control is a single inline element (Input, Switch, Segmented,
-   Select). Leave the default vertical stack for full-width controls
-   (Textarea, multi-line forms). The 1px hairline divider between rows
-   pulls the look closer to reference's flat divider list and away from
-   the previous "each row in its own implicit card" feel. */
-.settingsField[data-orient="horizontal"] {
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "label control"
-    "hint  control";
-  column-gap: var(--space-4);
-  row-gap: var(--space-0-5);
+/* StatusDot + text, the quiet status idiom shared by health / permission /
+   memory / web-search rows. */
+.settingsStatus {
+  display: inline-flex;
   align-items: center;
-  padding: var(--space-3) 0;
-  border-bottom: var(--border-width-hairline) solid var(--border);
+  gap: var(--space-1-5);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-body);
+  white-space: nowrap;
 }
-.settingsField[data-orient="horizontal"] > span {
-  grid-area: label;
-  align-self: end;
-}
-.settingsField[data-orient="horizontal"] > small {
-  grid-area: hint;
-  margin-top: 0;
-  align-self: start;
-}
-.settingsField[data-orient="horizontal"] > :not(span):not(small) {
-  grid-area: control;
-  justify-self: end;
-  align-self: center;
+
+/* The row's end slot (SettingsRow `end`): right-aligned, allowed to wrap,
+   and capped so a wide control shrinks/wraps before it crushes the label. */
+.settingsRowEnd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
   min-width: 0;
-}
-/* Allow inputs to take a comfortable cap width on horizontal rows so
-   the description column has space to breathe.
-   PR-SETTINGS-INPUT-POLISH-0: cap from 280 → 320 since rows are now
-   roomier (24px L/R padding). */
-.settingsField[data-orient="horizontal"] > input,
-.settingsField[data-orient="horizontal"] > .settingsSelectTrigger {
-  max-width: 320px;
-}
-/* The horizontal row above the first one shouldn't carry a top border;
-   below the last one the section footer takes over. The default
-   border-bottom is fine for the inter-row hairlines. */
-.settingsField[data-orient="horizontal"] + .settingsField[data-orient="horizontal"] {
-  border-top: 0;
+  max-width: min(360px, 62cqi);
 }
 
-/* === focus and motion =================================================== */
-
-/* PR-SETTINGS-A11Y-POLISH-0 (round 11/15) — keyboard-only focus ring
-   on settings rows + inputs. Reference's settings cards use a 2px
-   ring on focus-visible; maka had no visible affordance. Use the
-   accent color with 2px outline + 2px offset so it doesn't blend
-   with the row's hairline divider. */
-.settingsFormRow:focus-visible,
-.settingsRow:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-  background: oklch(from var(--focus-ring) l c h / 0.04);
-}
-
-.settingsFormGrid select:focus-visible {
-  outline: none;
-  border-color: var(--focus-ring);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.18);
-}
-
-/* PR-SETTINGS-A11Y-POLISH-0 — respect prefers-reduced-motion. The
-   interaction still fires, just instantly.
-   Justified: a11y reduced-motion override; the only `!important` in this
-   file, tracked in renderer-important-audit-contract.test.ts. */
-@media (prefers-reduced-motion: reduce) {
-  .settingsFormRow,
-  .settingsRow,
-  .settingsField input,
-  .settingsField textarea {
-    transition: none !important;
-  }
-}
-
-/* === narrow-card row stacking (#1362) =================================== */
-
-/* THE row-wrapping decision for every form-row page (#1303 tracking):
-   below 460px of CARD width — not viewport width — label/control rows
-   stack vertically. 460px is the app's one container breakpoint (shared
-   with interaction-prompts.css) and sits just above the widest one-line
-   row minimum (150px label floor + gap + a ~180px intrinsic-width input
-   + 48px row padding ≈ 394px), with margin for the select triggers'
-   320px cap to stay usable. Switch rows are the exception: a switch is
-   ~40px wide and always fits beside its label — stacking it reads as a
-   detached orphan, so those rows keep two columns and let the label wrap. */
 @container settings-rows (max-width: 460px) {
-  .settingsRow {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: var(--space-2-5);
+  .settingsReadOnlyValue,
+  .settingsRowEnd {
+    max-width: 100%;
+    text-align: start;
   }
 
-  /* Repeat the control-width variants so the narrow track has enough
-     specificity to beat their wide declarations above. */
-  .settingsRow[data-control-width="compact"],
-  .settingsRow[data-control-width="select"] {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* #1363 review: the exception applies only when the switch is the row's
-     ONLY control (label + switch, nothing else). A three-part row — e.g.
-     Memory's label + status Chip + switch — held horizontal would crush
-     the label to a char-per-line sliver, so it stacks like any other row.
-     `:not(input)` spares Base UI Switch's hidden sibling checkbox, which
-     is a real third child on every switch row. */
-  .settingsRow:has(> [role="switch"]):not(:has(> :nth-child(3):not(input))) {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  /* #1524 gave the compact and select buckets their own full-width track
-     splits at `.settingsRow[data-control-width="…"]` — specificity 0,2,0.
-     A container query adds NO specificity to the rules inside it, so those
-     two outrank the plain `.settingsRow` stacking rule above (0,1,0) and
-     those rows kept two columns all the way down. Restate them here at
-     matching specificity so they stack like every other row.
-
-     The `justify-self: start` rules just below are the tell that stacking
-     was always the intent for these buckets: start-aligning a control only
-     makes sense once it sits under its label rather than beside it. */
-  .settingsRow[data-control-width="compact"],
-  .settingsRow[data-control-width="select"] {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* Values and controls sit under their label now; right-alignment against
-     the card edge would detach them from it. */
-  .settingsRow > span {
-    text-align: left;
-  }
-
-  .settingsRow[data-control-width="compact"] > input,
-  .settingsRow[data-control-width="compact"] > .settingsTimeInput,
-  .settingsRow[data-control-width="select"] > .settingsSelectTrigger {
-    justify-self: start;
-  }
-
-  .settingsFormRow {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--space-2-5);
-  }
-
-  .settingsFormRow:has(> [role="switch"]):not(:has(> :nth-child(3):not(input))) {
-    flex-direction: row;
-    align-items: center;
-    gap: var(--space-5);
-  }
-
-  .settingsFormGrid,
-  .settingsFormGridProxy {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* The Button primitive is `shrink-0` with a fixed height; on a squeezed
-     card an action button wider than the row would bleed past the card
-     edge. Let it shrink and let the label wrap, keeping the primitive's
-     32px as a floor. */
-  .settingsActionRow > [data-slot="button"] {
+  .settingsActionRow > button {
     flex-shrink: 1;
     height: auto;
     min-height: 2rem;

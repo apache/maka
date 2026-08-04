@@ -1,0 +1,139 @@
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+import {
+  decodeClientFrame,
+  decodeHostFrame,
+  HOST_OPERATION_SPECS,
+  RuntimeHostProtocolError,
+  type SessionCatalogProjection,
+} from '../protocol/index.js';
+
+describe('Session revision protocol', () => {
+  test('declares exact ready-only branch and revision commands', () => {
+    for (const operation of ['session.branch.create', 'session.revision.create'] as const) {
+      assert.equal(HOST_OPERATION_SPECS[operation].mode, 'command');
+      assert.equal(HOST_OPERATION_SPECS[operation].availability, 'ready');
+      assert.deepEqual(
+        decodeClientFrame({
+          requestId: 'request-1',
+          operation,
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            sourceTurnId: 'turn-1',
+            expectedSourceRevision: 3,
+          },
+        }),
+        {
+          requestId: 'request-1',
+          operation,
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            sourceTurnId: 'turn-1',
+            expectedSourceRevision: 3,
+          },
+        },
+      );
+    }
+  });
+
+  test('rejects aliasing, unknown fields, and mismatched response identities', () => {
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-1',
+          operation: 'session.branch.create',
+          input: {
+            sourceSessionId: 'same-session',
+            targetSessionId: 'same-session',
+            sourceTurnId: 'turn-1',
+            expectedSourceRevision: 1,
+          },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-1',
+          operation: 'session.revision.create',
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            sourceTurnId: 'turn-1',
+            expectedSourceRevision: 1,
+            ignored: true,
+          },
+        }),
+      isInvalidFrame,
+    );
+    const input = {
+      sourceSessionId: 'source-session',
+      targetSessionId: 'target-session',
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: 1,
+    };
+    assert.throws(
+      () =>
+        HOST_OPERATION_SPECS['session.branch.create'].assertOutputForInput?.(input, {
+          kind: 'committed',
+          session: sessionProjection('wrong-target'),
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('preserves optimistic source revision conflicts on the wire', () => {
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'request-1',
+        operation: 'session.revision.create',
+        ok: true,
+        result: {
+          kind: 'source_revision_conflict',
+          expectedRevision: 4,
+          actualRevision: 5,
+        },
+      }),
+      {
+        requestId: 'request-1',
+        operation: 'session.revision.create',
+        ok: true,
+        result: {
+          kind: 'source_revision_conflict',
+          expectedRevision: 4,
+          actualRevision: 5,
+        },
+      },
+    );
+  });
+});
+
+function sessionProjection(id: string): SessionCatalogProjection {
+  return {
+    id,
+    revision: 1,
+    cwd: '/workspace',
+    createdAt: 1,
+    lastUsedAt: 1,
+    name: 'Session',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    labelsTruncated: false,
+    hasUnread: false,
+    status: 'active',
+    backend: 'fake',
+    llmConnectionSlug: 'fake',
+    connectionLocked: false,
+    model: 'fake-model',
+    permissionMode: 'ask',
+    collaborationMode: 'agent',
+    orchestrationMode: 'default',
+  };
+}
+
+function isInvalidFrame(error: unknown): boolean {
+  return error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame';
+}

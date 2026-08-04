@@ -42,6 +42,7 @@ import type {
   CuSemanticAction,
 } from '@maka/runtime';
 import { normalizeCuaDriverOutcome } from './cua-driver-result.js';
+import { exceedsFrameCap, FRAME_COMPRESS_THRESHOLD_BYTES } from './frame-budget.js';
 import {
   CuaDriverLifecycleError,
   cuaDriverLifecycleMessage,
@@ -80,14 +81,14 @@ import {
   type CuaStoredObservation,
   type CuaTargetResolutionDeps,
 } from './cua-driver-target-resolution.js';
-// Frames larger than this get compressed (to JPEG) before the cap check. Small
-// crisp PNGs (simple screens) pass through untouched.
-const COMPRESS_FRAME_THRESHOLD = 1.5 * 1024 * 1024;
-const CUA_DRIVER_FRAME_MAX_BYTES = 8 * 1024 * 1024;
+// One frame budget for both backends, in `frame-budget.ts`. These used to be
+// private copies with values that matched the shared ones, which is a pair of
+// numbers that stay equal only for as long as nobody edits one of them.
+const COMPRESS_FRAME_THRESHOLD = FRAME_COMPRESS_THRESHOLD_BYTES;
 const MAX_OBSERVATIONS_PER_SESSION = 16;
 
 function exceedsCuaDriverFrameCap(byteLength: number): boolean {
-  return byteLength > CUA_DRIVER_FRAME_MAX_BYTES;
+  return exceedsFrameCap(byteLength);
 }
 
 type CuaDriverCaptureFailure = CuRunResult & {

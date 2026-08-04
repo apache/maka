@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core';
 import { createInMemoryTaskRunStore, runTaskOnce } from '@maka/headless';
-import { createAgentRunStore, createRuntimeEventStore, createSessionStore } from '@maka/storage';
+import type { SessionInspectDocument } from '@maka/runtime';
+import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import { createSessionStore } from '@maka/storage';
+import {
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import {
   openHeadlessExecutionStoresForWrite,
   openInteractiveExecutionStoresForWrite,
@@ -20,6 +26,7 @@ import {
   inspectResolvedTarget,
   resolveInspectTarget,
   runMakaInspectCli,
+  type InspectCommandDependencies,
   withInspectCommandStores,
 } from '../inspect-command.js';
 
@@ -237,12 +244,96 @@ describe('inspect CLI storage authority boundary', () => {
       }
     });
   });
+
+  test('routes an exclusively locked Interactive root through the existing Runtime Host', async () => {
+    await withDiskRoot('maka-inspect-live-host-', async (root) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const writer = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const session = await writer.sessionStore.create(sessionInput('Live Host session'));
+      const requests: string[] = [];
+      const connection = {
+        request: async (operation: string) => {
+          requests.push(operation);
+          if (operation === 'execution.inspect.resolve') {
+            return {
+              status: 'resolved',
+              candidates: [{ kind: 'session', id: session.id }],
+              truncated: false,
+            };
+          }
+          if (operation === 'execution.inspect.query') {
+            return { kind: 'session', document: sessionInspectDocument(session.id) };
+          }
+          throw new Error(`Unexpected operation: ${operation}`);
+        },
+        close: async () => undefined,
+      } as unknown as RuntimeHostConnection;
+      const dependencies: InspectCommandDependencies = {
+        connectExistingHost: (async () => ({
+          kind: 'connected',
+          connection,
+          registration: {
+            kind: 'maka-runtime-host',
+            schemaVersion: 1,
+            rootId: capability.rootId,
+            hostEpoch: 'host-1',
+            endpoint: '/tmp/runtime-host.sock',
+            protocolMin: 0,
+            protocolMax: 0,
+            state: 'ready',
+            pid: 1,
+            createdAt: new Date(0).toISOString(),
+          },
+        })) as InspectCommandDependencies['connectExistingHost'],
+      };
+      const output = captureIo();
+      try {
+        assert.equal(
+          await runMakaInspectCli([session.id, '--store', root, '--json'], output.io, dependencies),
+          0,
+        );
+        assert.equal(output.stderr(), '');
+        assert.equal((JSON.parse(output.stdout()) as { kind: string }).kind, 'session');
+        assert.deepEqual(requests, ['execution.inspect.resolve', 'execution.inspect.query']);
+      } finally {
+        await writer.sessionStore.close?.();
+        await owner.close();
+      }
+    });
+  });
+
+  test('reports an unavailable live Host without exposing a stack', async () => {
+    await withDiskRoot('maka-inspect-live-host-unavailable-', async (root) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const output = captureIo();
+      try {
+        const dependencies: InspectCommandDependencies = {
+          connectExistingHost: (async () => ({
+            kind: 'unavailable',
+            reason: 'connect_failed',
+          })) as InspectCommandDependencies['connectExistingHost'],
+        };
+        assert.equal(
+          await runMakaInspectCli(['missing', '--store', root], output.io, dependencies),
+          1,
+        );
+        assert.match(output.stderr(), /Runtime Host is unavailable \(connect_failed\)/);
+        assert.doesNotMatch(output.stderr(), /LiveInspectError|\n\s+at /);
+      } finally {
+        await owner.close();
+      }
+    });
+  });
 });
 
 type InspectCommandTestStores = {
   sessionStore: ReturnType<typeof createSessionStore>;
-  agentRunStore: ReturnType<typeof createAgentRunStore>;
-  runtimeEventStore: ReturnType<typeof createRuntimeEventStore>;
+  agentRunStore: ReturnType<typeof createLegacyAgentRunStoreForTest>;
+  runtimeEventStore: ReturnType<typeof createLegacyRuntimeEventStoreForTest>;
   taskRunStore: ReturnType<typeof createInMemoryTaskRunStore>;
 };
 
@@ -278,13 +369,30 @@ function runHeader(sessionId: string, runId: string): AgentRunHeader {
   };
 }
 
+function sessionInspectDocument(sessionId: string): SessionInspectDocument {
+  return {
+    schemaVersion: 'maka.session_inspect.v1',
+    kind: 'session',
+    session: {
+      sessionId,
+      name: 'Live Host session',
+      status: 'active',
+      createdAt: 1,
+      lastUsedAt: 1,
+      isArchived: false,
+    },
+    agentRuns: [],
+    diagnostics: [],
+  };
+}
+
 async function withStores(run: (stores: InspectCommandTestStores) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-unified-inspect-'));
   try {
     await run({
       sessionStore: createSessionStore(root),
-      agentRunStore: createAgentRunStore(root),
-      runtimeEventStore: createRuntimeEventStore(root),
+      agentRunStore: createLegacyAgentRunStoreForTest(root),
+      runtimeEventStore: createLegacyRuntimeEventStoreForTest(root),
       taskRunStore: createInMemoryTaskRunStore(),
     });
   } finally {

@@ -139,6 +139,43 @@ describe('sandbox boundary failure tool result metadata', () => {
   });
 });
 
+describe('uncertain tool outcome metadata', () => {
+  test('preserves a non-retryable outcome_unknown signal', () => {
+    const result = {
+      kind: 'text',
+      text: 'outcome_unknown: the provider accepted the action but did not return a result.',
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    } as const;
+
+    assert.deepEqual(decodeCanonicalToolResultContent(result), result);
+    assert.deepEqual(
+      toolResultContent(decodeStoredMessageForRecovery(storedToolResult(result))),
+      result,
+    );
+  });
+
+  test('rejects widened or retryable uncertain outcome signals', () => {
+    for (const uncertainOutcome of [
+      { code: 'outcome_unknown', retrySafe: true },
+      { code: 'provider_failed', retrySafe: false },
+      { code: 'outcome_unknown', retrySafe: false, unexpected: true },
+    ]) {
+      assert.throws(
+        () =>
+          decodeCanonicalToolResultContent({
+            kind: 'text',
+            text: 'uncertain',
+            uncertainOutcome,
+          }),
+        /Invalid tool result content/,
+      );
+    }
+  });
+});
+
 function legacySubagentResult(): Record<string, unknown> {
   return {
     kind: 'subagent',

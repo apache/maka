@@ -1,21 +1,11 @@
-import { Fragment, useCallback, useMemo, useRef, type ReactNode } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
+import { Fragment, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import {
   AlertTriangle,
-  ArrowDown,
   ArrowRight,
-  BookOpen,
-  ChevronLeft,
-  ChevronRight,
-  GitBranch,
-  History,
-  Target,
-  Sparkles,
   TextQuote,
 } from './icons.js';
 import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
-import { OverlayScrollArea } from './overlay-scroll-area.js';
 import { PromptAnchorRail } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type {
@@ -26,10 +16,11 @@ import type {
   StoredMessage,
 } from '@maka/core';
 import { isDeepResearchSession } from '@maka/core';
+import { Button, ButtonGroup, ChatMessage, ChatMessageList, EmptyState } from '@astryxdesign/core';
+import { useChatLayoutContext } from '@astryxdesign/core/Chat';
+import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat, materializeTurns, overlayLiveTurn, overlayShellRunUpdates } from './materialize.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
-import { Message } from './primitives/chat.js';
-import { EmptyState } from './empty-state.js';
 import {
   ModelContinuingIndicator,
   ModelProviderRetryIndicator,
@@ -42,6 +33,7 @@ import {
 import { useChatScroll } from './use-chat-scroll.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { SessionContextLayer } from './session-context-layer.js';
 
 export function ChatView(props: {
   messages: StoredMessage[];
@@ -336,13 +328,13 @@ export function ChatView(props: {
     return items;
   }, [props.conversationItems]);
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
-  const {
-    highlightedTurnId,
-    onScroll,
-    pinnedToBottom,
-    scrollToBottom,
-    viewportRef: scrollRef,
-  } = useChatScroll({
+  const chatLayout = useChatLayoutContext();
+  if (!chatLayout) {
+    throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
+  }
+  const scrollRef = chatLayout.scrollContainerRef;
+  const { highlightedTurnId } = useChatScroll({
+    scrollRef,
     sessionId: props.activeSession?.id,
     hasTurns: turns.length > 0,
     messages: props.messages,
@@ -353,10 +345,27 @@ export function ChatView(props: {
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
   );
+  const selectionActionsLayer = useLayer({
+    mode: 'fixed',
+    lightDismiss: true,
+    onHide: clearSelectionQuote,
+  });
+  useEffect(() => {
+    if (selectionQuote) selectionActionsLayer.show();
+    else selectionActionsLayer.hide();
+  }, [selectionQuote, selectionActionsLayer.show, selectionActionsLayer.hide]);
+  const selectionActionsLabel = [
+    props.onQuoteSelection ? copy.quoteSelection : null,
+    props.onAskAboutSelection ? copy.askInSidePanel : null,
+  ].filter((label): label is string => label !== null).join(' / ');
 
   if (!props.activeSession) {
+    const conversationItems = props.conversationItems ?? [];
+    const emptyContent = props.emptyOverride ?? (
+      <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
+    );
     return (
-      <main className="maka-main detailPane agents-chat-panel agents-chat-view-root">
+      <main className="maka-main agents-chat-panel agents-chat-view-root">
         {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
             browser-style session tab + the duplicate "新建对话" plus
             button were removed. The session name lives in the sidebar;
@@ -372,75 +381,67 @@ export function ChatView(props: {
             header used to be rendered here anyway, holding a lone spacer, to
             occupy the window titlebar line — which the shell's titlebar row now
             owns. */}
-        <OverlayScrollArea
-          className="maka-chat messages"
-          viewportClassName="maka-chatViewport"
-          contentClassName="maka-chatContent"
+        <ChatMessageList
+          className="maka-chat-message-list maka-chatContent"
+          density="compact"
+          gap={4}
+          emptyState={conversationItems.length === 0 ? emptyContent : undefined}
         >
-          {props.emptyOverride ?? <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />}
-          {props.conversationItems?.map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
-        </OverlayScrollArea>
+          {conversationItems.length > 0 ? (
+            <>
+              {emptyContent}
+              {conversationItems.map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
+            </>
+          ) : null}
+        </ChatMessageList>
       </main>
     );
   }
 
   const deepResearchActive = isDeepResearchSession(props.activeSession.labels);
+  const conversationItems = props.conversationItems ?? [];
+  const showEmptyState = chat.length === 0 && !streamingActive && conversationItems.length === 0;
+  const emptyContent = props.messageLoading
+    ? undefined
+    : props.messageLoadError
+      ? (
+          <EmptyState
+            role="alert"
+            aria-busy={props.messageLoadRetryPending ? 'true' : undefined}
+            icon={<AlertTriangle />}
+            title={copy.loadFailed}
+            description={props.messageLoadError}
+            actions={props.onRetryMessages ? (
+              <Button
+                label={props.messageLoadRetryPending ? copy.loading : copy.retryLoad}
+                variant="primary"
+                onClick={props.onRetryMessages}
+                isDisabled={props.messageLoadRetryPending}
+              />
+            ) : undefined}
+          />
+        )
+      : props.emptyOverride ?? (
+          deepResearchActive ? (
+            <DeepResearchEmptyHero onPromptSuggestion={props.onPromptSuggestion} />
+          ) : (
+            <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
+          )
+        );
 
   return (
-    <main className="maka-main detailPane agents-chat-panel agents-chat-view-root">
-      {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d): no more browser-style
-          session tab in the chat header. Session name + model live in
-          the sidebar; the new-task button at the top of the sidebar is
-          the canonical create-session entry. The chat header is now
-          just a thin chrome strip carrying the permission-mode
-          switcher and the per-session memory/mode chips. */}
-      <header className="maka-chat-header">
-        {props.memoryActive && (
-          /* This status pill is a semantic header control rather than a
-             shared Button size or neutral variant. */
-          <BaseButton
-            type="button"
-            className="maka-chat-header-memory-pill"
-            data-active="true"
-            onClick={() => props.onOpenMemorySettings?.()}
-            title={copy.memoryTitle}
-            aria-label={copy.memoryAriaLabel}
-          >
-            <BookOpen size={12} aria-hidden="true" />
-            <span>{copy.memory}</span>
-          </BaseButton>
-        )}
-        {deepResearchActive && (
-          <span
-            className="maka-chat-header-mode-pill"
-            data-mode="deep-research"
-            title={copy.deepResearchTitle}
-            aria-label={copy.deepResearchAriaLabel}
-          >
-            <Sparkles size={12} aria-hidden="true" />
-            <span>{copy.deepResearch}</span>
-          </span>
-        )}
-        {props.goalIndicator && (
-          /* Goal kill-switch pill: an active autonomous loop must be visible and
-             stoppable. Reuses the mode-pill styling; clicking it clears the goal
-             (the shell confirms), so the user always has a one-click stop. */
-          <BaseButton
-            type="button"
-            className="maka-chat-header-mode-pill"
-            data-mode="goal"
-            onClick={() => props.goalIndicator?.onClear()}
-            title={copy.clearGoal(props.goalIndicator.condition, props.goalIndicator.iterations, props.goalIndicator.maxIterations, props.goalIndicator.status)}
-            aria-label={copy.clearGoalAriaLabel(props.goalIndicator.iterations, props.goalIndicator.maxIterations)}
-          >
-            <Target size={12} aria-hidden="true" />
-            <span>{copy.goalLabel(props.goalIndicator.iterations, props.goalIndicator.maxIterations)}</span>
-          </BaseButton>
-        )}
-        {/* PR-MOVE-PERMISSION-MODE: switcher relocated into the
-            composer left-controls. Header keeps the per-session status
-            chips only. */}
-      </header>
+    <main className="maka-main agents-chat-panel agents-chat-view-root">
+      <SessionContextLayer
+        sessionName={props.activeSession.name}
+        branch={props.branchBanner}
+        onBranchNavigate={props.onBranchBannerClick}
+        revision={props.revisionNavigation}
+        onRevisionNavigate={props.onRevisionNavigate}
+        memoryActive={props.memoryActive}
+        onOpenMemorySettings={props.onOpenMemorySettings}
+        deepResearchActive={deepResearchActive}
+        goal={props.goalIndicator}
+      />
       {deepResearchActive && props.deepResearchRun && (
         <DeepResearchProgressPanel
           run={props.deepResearchRun}
@@ -449,174 +450,135 @@ export function ChatView(props: {
         />
       )}
       <div className="maka-chat-shell">
-        {props.revisionNavigation && (
-          <SessionRevisionNavigator
-            navigation={props.revisionNavigation}
-            onNavigate={props.onRevisionNavigate}
-          />
-        )}
-        {props.branchBanner && (
-          <SessionBranchBanner
-            banner={props.branchBanner}
-            onClick={props.onBranchBannerClick}
-          />
-        )}
-        <OverlayScrollArea
-          ref={scrollRef}
-          className="maka-chat messages"
-          viewportClassName="maka-chatViewport"
-          contentClassName="maka-chatContent"
-          onScroll={onScroll}
+        <ChatMessageList
+          className="maka-chat-message-list maka-chatContent"
+          density="compact"
+          gap={4}
+          isStreaming={streamingActive}
+          emptyState={showEmptyState ? emptyContent : undefined}
         >
-          {chat.length === 0 && !streamingActive && (
-            props.messageLoading ? null : props.messageLoadError ? (
-              <div role="alert" aria-busy={props.messageLoadRetryPending ? 'true' : undefined}>
-                <EmptyState
-                  Icon={AlertTriangle}
-                  title={copy.loadFailed}
-                  body={props.messageLoadError}
-                  cta={props.onRetryMessages ? {
-                    label: props.messageLoadRetryPending ? copy.loading : copy.retryLoad,
-                    onClick: props.onRetryMessages,
-                    disabled: props.messageLoadRetryPending,
-                  } : undefined}
-                />
-              </div>
-            ) : props.emptyOverride ?? (
-              deepResearchActive ? (
-                <DeepResearchEmptyHero onPromptSuggestion={props.onPromptSuggestion} />
-              ) : (
-                <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
-              )
-            )
+          {showEmptyState ? null : (
+            <>
+              {chat.length === 0 && !streamingActive ? emptyContent : null}
+              {turns.map((turn) => {
+                return (
+                  <Fragment key={turn.turnId}>
+                    <TurnView
+                      turn={turn}
+                      userLabel={props.userLabel}
+                      footerActions={props.turnFooterActionsByTurn?.[turn.turnId]}
+                      onFooterAction={stableTurnFooterAction}
+                      onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
+                      editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
+                      editUserMessageDisabled={
+                        streamingActive || props.activeSession?.status === 'running'
+                      }
+                      failedReasonLabel={props.turnFailedReasonLabels?.[turn.turnId]}
+                      failedRecoveryLabel={props.turnFailedRecoveryLabels?.[turn.turnId]}
+                      safeResumeAction={props.safeResumeAction?.turnId === turn.turnId
+                        ? props.safeResumeAction
+                        : undefined}
+                      lineageBadges={props.turnLineageBadgesByTurn?.[turn.turnId]}
+                      onLineageBadgeClick={stableLineageBadgeClick}
+                      onReadAttachmentBytes={props.onReadAttachmentBytes}
+                      searchHighlighted={highlightedTurnId === turn.turnId}
+                      liveStreaming={
+                        turn.turnId === tailTurnId
+                          ? {
+                              onStreamingSettled: props.onStreamingSettled,
+                              processingIndicator: props.processingIndicator,
+                              continuingIndicator: props.continuingIndicator,
+                              providerRetry: props.liveTurn?.providerRetry,
+                            }
+                          : undefined
+                      }
+                    />
+                    {conversationItemsByTurn.get(turn.turnId)?.map((item) => (
+                      <Fragment key={item.id}>{item.content}</Fragment>
+                    ))}
+                  </Fragment>
+                );
+              })}
+              {/* #642 fallback: streaming began before the optimistic user turn
+                  materialized (rare — e.g. an event replay while messages are still
+                  loading), so there is no tail turn to inject into. Render the live
+                  answer in a bare `.maka-turn` so it isn't dropped. Mutually
+                  exclusive with the tail injection above (only fires when
+                  `tailTurnId` is undefined), so the answer never double-renders. */}
+              {streamingActive && !tailTurnId && (
+                <section className="maka-turn" data-live-streaming="true">
+                  <ChatMessage sender="assistant" className="maka-chat-message maka-assistant-answer">
+                    <div className="maka-assistant-answer-content">
+                      {props.liveTurn?.providerRetry ? (
+                        <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
+                      ) : (
+                        <>
+                          {props.processingIndicator && <ModelProcessingIndicator />}
+                          {props.continuingIndicator && !props.processingIndicator && <ModelContinuingIndicator />}
+                        </>
+                      )}
+                    </div>
+                    <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+                  </ChatMessage>
+                </section>
+              )}
+              {conversationItems
+                .filter((item) => !turnIds.has(item.afterTurnId))
+                .map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
+            </>
           )}
-          {turns.map((turn) => {
-            return (
-              <Fragment key={turn.turnId}>
-                <TurnView
-                  turn={turn}
-                  userLabel={props.userLabel}
-                  footerActions={props.turnFooterActionsByTurn?.[turn.turnId]}
-                  onFooterAction={stableTurnFooterAction}
-                  onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
-                  editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
-                  editUserMessageDisabled={
-                    streamingActive || props.activeSession?.status === 'running'
-                  }
-                  failedReasonLabel={props.turnFailedReasonLabels?.[turn.turnId]}
-                  failedRecoveryLabel={props.turnFailedRecoveryLabels?.[turn.turnId]}
-                  safeResumeAction={props.safeResumeAction?.turnId === turn.turnId
-                    ? props.safeResumeAction
-                    : undefined}
-                  lineageBadges={props.turnLineageBadgesByTurn?.[turn.turnId]}
-                  onLineageBadgeClick={stableLineageBadgeClick}
-                  onReadAttachmentBytes={props.onReadAttachmentBytes}
-                  searchHighlighted={highlightedTurnId === turn.turnId}
-                  liveStreaming={
-                    turn.turnId === tailTurnId
-                      ? {
-                          onStreamingSettled: props.onStreamingSettled,
-                          processingIndicator: props.processingIndicator,
-                          continuingIndicator: props.continuingIndicator,
-                          providerRetry: props.liveTurn?.providerRetry,
-                        }
-                      : undefined
-                  }
-                />
-                {conversationItemsByTurn.get(turn.turnId)?.map((item) => (
-                  <Fragment key={item.id}>{item.content}</Fragment>
-                ))}
-              </Fragment>
-            );
-          })}
-          {/* #642 fallback: streaming began before the optimistic user turn
-              materialized (rare — e.g. an event replay while messages are still
-              loading), so there is no tail turn to inject into. Render the live
-              answer in a bare `.maka-turn` so it isn't dropped. Mutually
-              exclusive with the tail injection above (only fires when
-              `tailTurnId` is undefined), so the answer never double-renders. */}
-          {streamingActive && !tailTurnId && (
-            <section className="maka-turn" data-live-streaming="true">
-              <Message variant="assistant" className="group/answer">
-                <div className="flex flex-col gap-2">
-                  {props.liveTurn?.providerRetry ? (
-                    <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
-                  ) : (
-                    <>
-                      {props.processingIndicator && <ModelProcessingIndicator />}
-                      {props.continuingIndicator && !props.processingIndicator && <ModelContinuingIndicator />}
-                    </>
-                  )}
-                </div>
-                <div aria-hidden="true" className="mt-0.5 h-8" />
-              </Message>
-            </section>
-          )}
-          {props.conversationItems
-            ?.filter((item) => !turnIds.has(item.afterTurnId))
-            .map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
-          {/* Defensive: if any tool ended up outside a turn (e.g. legacy
-              sessions without turnId), render those at the very end so they
-              still appear instead of vanishing. materializeTurns already
-              folds these into the `__loose` turn, so this is normally a
-              no-op. */}
-        </OverlayScrollArea>
+        </ChatMessageList>
         <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} />
-        {!pinnedToBottom && (
-          <BaseButton
-            type="button"
-            className="maka-chat-jump-bottom"
-            onClick={scrollToBottom}
-            aria-label={copy.jumpLatest}
-          >
-            <ArrowDown size={16} aria-hidden="true" />
-          </BaseButton>
-        )}
         {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
-          <div
-            className="maka-quote-actions"
-            style={{
-              top: `${Math.max(8, selectionQuote.rect.top - 42)}px`,
-              left: `${selectionQuote.rect.left + selectionQuote.rect.width / 2}px`,
-            }}
-            // Keep the live selection alive while clicking an action.
-            onMouseDown={(event) => event.preventDefault()}
-          >
-            {props.onQuoteSelection ? (
-              <button
-                type="button"
-                className="maka-quote-action"
-                onClick={() => {
-                  props.onQuoteSelection?.({
-                    text: selectionQuote.text,
-                    ...(selectionQuote.turnId ? { turnId: selectionQuote.turnId } : {}),
-                  });
-                  clearSelectionQuote();
-                  window.getSelection()?.removeAllRanges();
-                }}
+          selectionActionsLayer.render(
+            <div
+              className="maka-quote-actions"
+              // Keep the live selection alive while clicking an action.
+              onMouseDown={(event) => event.preventDefault()}
+            >
+              <ButtonGroup
+                label={selectionActionsLabel}
+                size="sm"
+                elevation="med"
               >
-                <TextQuote size={14} aria-hidden="true" />
-                {copy.quoteSelection}
-              </button>
-            ) : null}
-            {props.onAskAboutSelection ? (
-              <button
-                type="button"
-                className="maka-quote-action"
-                onClick={() => {
-                  props.onAskAboutSelection?.({
-                    text: selectionQuote.text,
-                    ...(selectionQuote.turnId ? { turnId: selectionQuote.turnId } : {}),
-                  });
-                  clearSelectionQuote();
-                  window.getSelection()?.removeAllRanges();
-                }}
-              >
-                <TextQuote size={14} aria-hidden="true" />
-                {copy.askInSidePanel}
-              </button>
-            ) : null}
-          </div>
+                {props.onQuoteSelection ? (
+                  <Button
+                    type="button"
+                    label={copy.quoteSelection}
+                    icon={<TextQuote aria-hidden="true" />}
+                    onClick={() => {
+                      props.onQuoteSelection?.({
+                        text: selectionQuote.text,
+                        ...(selectionQuote.turnId ? { turnId: selectionQuote.turnId } : {}),
+                      });
+                      clearSelectionQuote();
+                      window.getSelection()?.removeAllRanges();
+                    }}
+                  />
+                ) : null}
+                {props.onAskAboutSelection ? (
+                  <Button
+                    type="button"
+                    label={copy.askInSidePanel}
+                    icon={<TextQuote aria-hidden="true" />}
+                    onClick={() => {
+                      props.onAskAboutSelection?.({
+                        text: selectionQuote.text,
+                        ...(selectionQuote.turnId ? { turnId: selectionQuote.turnId } : {}),
+                      });
+                      clearSelectionQuote();
+                      window.getSelection()?.removeAllRanges();
+                    }}
+                  />
+                ) : null}
+              </ButtonGroup>
+            </div>,
+            {
+              x: selectionQuote.rect.left + selectionQuote.rect.width / 2,
+              y: Math.max(8, selectionQuote.rect.top - 42),
+              style: { transform: 'translateX(-50%)' },
+            },
+          )
         ) : null}
       </div>
     </main>
@@ -664,15 +626,16 @@ export function DeepResearchProgressPanel({
             {completedItems}/{run.checklist.length}
           </span>
           {run.status === 'completed' && onContinue && (
-            <BaseButton
+            <Button
               type="button"
+              label={copy.handoffAction}
+              endContent={<ArrowRight size={12} aria-hidden="true" />}
+              variant="secondary"
+              size="sm"
               className="maka-deep-research-handoff-button"
               onClick={() => onContinue(run)}
-              title={copy.handoffTitle}
-            >
-              <span>{copy.handoffAction}</span>
-              <ArrowRight size={12} aria-hidden="true" />
-            </BaseButton>
+              tooltip={copy.handoffTitle}
+            />
           )}
         </div>
       </div>
@@ -744,83 +707,6 @@ export function DeepResearchProgressPanel({
 
 // PR-MOVE-PERMISSION-MODE: the chat-header `PermissionModeSwitcher`
 // radiogroup was deleted. Mode picking now lives inside the composer's
-// left-controls as a Base UI Select (PermissionModeSelect), so the picker
+// left-controls as a shared Select (PermissionModeSelect), so the picker
 // sits where you actually start typing, matching the reference product.
 // Keyboard arrow/Home/End handling is delegated to the Select primitive.
-
-
-/**
- * Branched session banner (PR109f). Surfaces above the chat surface
- * when the active session has `parentSessionId` set. Click jumps the
- * user back to the parent session.
- */
-function SessionRevisionNavigator(props: {
-  navigation: {
-    current: number;
-    total: number;
-    previousSessionId?: string;
-    nextSessionId?: string;
-  };
-  onNavigate?: (sessionId: string) => void;
-}) {
-  const copy = getConversationCopy(useUiLocale()).chat;
-  const { navigation } = props;
-  return (
-    <div
-      className="maka-session-revision-nav"
-      role="toolbar"
-      aria-label={copy.revisionVersionsAriaLabel}
-    >
-      <History size={12} aria-hidden="true" />
-      <span>{copy.revisionVersion(navigation.current, navigation.total)}</span>
-      <BaseButton
-        type="button"
-        className="maka-session-revision-nav-action"
-        disabled={!navigation.previousSessionId}
-        aria-label={copy.previousRevision}
-        onClick={() => {
-          if (navigation.previousSessionId) props.onNavigate?.(navigation.previousSessionId);
-        }}
-      >
-        <ChevronLeft size={13} aria-hidden="true" />
-      </BaseButton>
-      <BaseButton
-        type="button"
-        className="maka-session-revision-nav-action"
-        disabled={!navigation.nextSessionId}
-        aria-label={copy.nextRevision}
-        onClick={() => {
-          if (navigation.nextSessionId) props.onNavigate?.(navigation.nextSessionId);
-        }}
-      >
-        <ChevronRight size={13} aria-hidden="true" />
-      </BaseButton>
-    </div>
-  );
-}
-
-function SessionBranchBanner(props: {
-  banner: {
-    parentSessionId: string;
-    parentSessionName: string;
-    fromAbortedTurn?: boolean;
-  };
-  onClick?: (parentSessionId: string) => void;
-}) {
-  const { banner } = props;
-  const copy = getConversationCopy(useUiLocale()).chat;
-  return (
-    <BaseButton
-      type="button"
-      className="maka-session-branch-banner"
-      data-from-aborted={banner.fromAbortedTurn || undefined}
-      onClick={() => props.onClick?.(banner.parentSessionId)}
-      aria-label={copy.branchTitle(banner.parentSessionName, Boolean(banner.fromAbortedTurn))}
-    >
-      <GitBranch size={12} aria-hidden="true" />
-      <span>
-        {copy.branchLabel(banner.parentSessionName, Boolean(banner.fromAbortedTurn))}
-      </span>
-    </BaseButton>
-  );
-}

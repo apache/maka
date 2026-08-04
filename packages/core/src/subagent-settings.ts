@@ -1,0 +1,86 @@
+import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
+
+export const SUBAGENT_PROFILES = ['local_read', 'web_research', 'implementation'] as const;
+export type SubagentProfile = (typeof SUBAGENT_PROFILES)[number];
+
+export const MAX_SUBAGENT_PRESETS = 64;
+export const SUBAGENT_PRESET_ID_MAX_CHARS = 128;
+const SAFE_SUBAGENT_PRESET_ID = /^[A-Za-z0-9._:-]+$/;
+
+/** User-approved model route for one catalog subagent capability. */
+export interface SubagentPreset {
+  id: string;
+  name: string;
+  description: string;
+  profile: SubagentProfile;
+  connectionSlug: string;
+  model: string;
+  thinkingLevel?: ThinkingLevel;
+  enabled: boolean;
+}
+
+export interface SubagentSettings {
+  presets: SubagentPreset[];
+}
+
+export function isSubagentProfile(value: unknown): value is SubagentProfile {
+  return typeof value === 'string' && (SUBAGENT_PROFILES as readonly string[]).includes(value);
+}
+
+export function isSafeSubagentPresetId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= SUBAGENT_PRESET_ID_MAX_CHARS &&
+    SAFE_SUBAGENT_PRESET_ID.test(value)
+  );
+}
+
+export function normalizeSubagentSettings(input: unknown): SubagentSettings {
+  if (
+    !input ||
+    typeof input !== 'object' ||
+    !Array.isArray((input as { presets?: unknown }).presets)
+  ) {
+    return { presets: [] };
+  }
+  const presets: SubagentPreset[] = [];
+  const seen = new Set<string>();
+  for (const candidate of (input as { presets: unknown[] }).presets) {
+    if (presets.length >= MAX_SUBAGENT_PRESETS) break;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const value = candidate as Record<string, unknown>;
+    if (
+      !isSafeSubagentPresetId(value.id) ||
+      seen.has(value.id) ||
+      !isSubagentProfile(value.profile) ||
+      typeof value.name !== 'string' ||
+      value.name.trim().length < 1 ||
+      value.name.trim().length > 128 ||
+      typeof value.connectionSlug !== 'string' ||
+      value.connectionSlug.trim().length < 1 ||
+      value.connectionSlug.trim().length > 128 ||
+      typeof value.model !== 'string' ||
+      value.model.trim().length < 1 ||
+      value.model.trim().length > 512 ||
+      (value.enabled !== true && value.enabled !== false) ||
+      (value.thinkingLevel !== undefined && !isThinkingLevel(value.thinkingLevel))
+    ) {
+      continue;
+    }
+    const id = value.id;
+    seen.add(id);
+    presets.push({
+      id,
+      name: value.name.trim(),
+      description:
+        typeof value.description === 'string' ? value.description.trim().slice(0, 1_000) : '',
+      profile: value.profile,
+      connectionSlug: value.connectionSlug.trim(),
+      model: value.model.trim(),
+      ...(value.thinkingLevel !== undefined ? { thinkingLevel: value.thinkingLevel } : {}),
+      enabled: value.enabled,
+    });
+  }
+  return { presets };
+}

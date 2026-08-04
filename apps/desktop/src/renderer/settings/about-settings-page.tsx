@@ -1,11 +1,21 @@
 import { useEffect, useId, useState } from 'react';
+import { Badge, List, ListItem } from '@astryxdesign/core';
 import { Sparkles } from '@maka/ui/icons';
-import { Alert, AlertDescription, AlertTitle, Button, PageHeader, SectionHeader, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { SettingsRows, SettingRow } from './settings-rows';
+import {
+  Banner,
+  Button,
+  PageHeader,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
+import { SettingRow } from './settings-rows';
+import { SettingsActions, SettingsPage, SettingsSection } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
+import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 
 type AppInfo = Awaited<ReturnType<typeof window.maka.app.info>>;
 
@@ -18,6 +28,7 @@ const PLATFORM_LABEL: Record<string, string> = {
 export function AboutSettingsPage() {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).about;
+  const sharedCopy = getSettingsSharedCopy(locale);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [copyingEnvSummary, setCopyingEnvSummary] = useState(false);
@@ -62,12 +73,13 @@ export function AboutSettingsPage() {
 
   if (!info) {
     return (
-      <div className="settingsStructuredPage">
-        <Alert variant="info" role="alert">
-          <AlertTitle>{copy.unavailable}</AlertTitle>
-          <AlertDescription>{infoError}</AlertDescription>
-        </Alert>
-      </div>
+      <SettingsPage>
+        <Banner
+          status="info"
+          role="alert"
+          title={copy.unavailable}
+          description={infoError} />
+      </SettingsPage>
     );
   }
 
@@ -113,7 +125,7 @@ export function AboutSettingsPage() {
   }
 
   return (
-    <div className="settingsAboutPage">
+    <SettingsPage>
       <PageHeader
         as_wrapper="div"
         className="settingsAboutHero"
@@ -124,32 +136,32 @@ export function AboutSettingsPage() {
         title="Maka"
         badge={
           <>
-            <span className="settingsAboutVersion">v{info.appVersion}</span>
-            <span className="settingsAboutChannel">
-              {info.buildMode === 'dev'
+            <Badge variant="neutral" label={`v${info.appVersion}`} />
+            <Badge
+              variant="blue"
+              label={info.buildMode === 'dev'
                 ? info.buildCommit
                   ? `${copy.devBuild} · ${info.buildCommit}`
                   : copy.devBuild
                 : copy.packagedBuild}
-            </span>
+            />
           </>
         }
         subtitle={copy.subtitle}
         subtitleClassName="settingsAboutTagline"
       />
-
-      <section className="settingsPrivacyBlock" aria-label={copy.privacyLabel}>
-        <SectionHeader as="h3" title={copy.privacyTitle} />
-        <Alert variant="passive">
-          <AlertDescription>
-            <ul className="settingsPrivacyPoints">
-              {copy.privacyPoints.map((point) => <li key={point}>{point}</li>)}
-            </ul>
-          </AlertDescription>
-        </Alert>
-      </section>
-
-      <SettingsRows>
+      {/* Detail audit: the five privacy commitments rendered inside an info
+          Banner — five lines of bold status-blue body copy, the exact blue
+          flood DESIGN.md's Signal-Not-Texture rule forbids. They are ordinary
+          statements, so they read as a quiet marker list in a labeled group. */}
+      <SettingsSection variant="bare" title={copy.privacyTitle}>
+        <List aria-label={copy.privacyLabel} density="compact" listStyle="disc">
+          {/* Fragment-wrapped: ListItem single-line-truncates STRING labels,
+              and a privacy commitment must wrap, not ellipsize. */}
+          {copy.privacyPoints.map((point) => <ListItem key={point} label={<>{point}</>} />)}
+        </List>
+      </SettingsSection>
+      <SettingsSection title={sharedCopy.groups.buildInfo} description={sharedCopy.groups.buildInfoHelp}>
         <SettingRow
           title={copy.runtime}
           detail={copy.runtimeDetail}
@@ -167,16 +179,13 @@ export function AboutSettingsPage() {
           detail={copy.storageDetail}
           value={copy.local}
         />
-      </SettingsRows>
-
-      <div className="settingsActionRow">
-        <Button type="button" disabled={copyingEnvSummary} aria-describedby={envSummaryHelpId} onClick={() => void copyEnvSummary()}>
-          {copyingEnvSummary ? copy.copying : copy.copyEnvironment}
-        </Button>
-      </div>
-      <p id={envSummaryHelpId} className="settingsHelpText">
-        {copy.copyHelp}
-      </p>
-    </div>
+        <SettingsActions>
+          <Button variant="primary" isDisabled={copyingEnvSummary} aria-describedby={envSummaryHelpId} onClick={() => void copyEnvSummary()} label={copyingEnvSummary ? copy.copying : copy.copyEnvironment} />
+          <p id={envSummaryHelpId}>
+            {copy.copyHelp}
+          </p>
+        </SettingsActions>
+      </SettingsSection>
+    </SettingsPage>
   );
 }

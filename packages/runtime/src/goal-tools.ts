@@ -8,7 +8,13 @@
 
 import { z } from 'zod';
 import type { MakaTool } from './tool-runtime.js';
-import { TERMINAL_GOAL_STATUSES, type GoalManager, type GoalState } from './goal-state.js';
+import {
+  GOAL_CONDITION_TEXT_LIMIT,
+  isGoalTextWithinLimit,
+  TERMINAL_GOAL_STATUSES,
+  type GoalManager,
+  type GoalState,
+} from './goal-state.js';
 import type { GoalContinuationCoordinator } from './goal-continuation.js';
 
 export const GOAL_SET_TOOL_NAME = 'GoalSet';
@@ -23,6 +29,8 @@ export interface GoalToolsDeps {
   goalContinuation: Pick<GoalContinuationCoordinator, 'activateGoal' | 'mutateGoal'>;
   /** Current cumulative token count for a session (baseline for budget). */
   getTokenCount?: (sessionId: string) => number;
+  /** Reject new model-owned mutations while the enclosing authority drains. */
+  isAvailable?: () => boolean;
   now?: () => number;
 }
 
@@ -58,7 +66,10 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         .string()
         .trim()
         .min(1)
-        .max(500)
+        .max(GOAL_CONDITION_TEXT_LIMIT.codeUnits)
+        .refine((value) => isGoalTextWithinLimit(value, GOAL_CONDITION_TEXT_LIMIT), {
+          message: 'Goal condition exceeds its UTF-8 byte limit',
+        })
         .describe(
           'The objective to achieve. Should be observable and verifiable (e.g. "all tests in packages/runtime pass", "PR #522 review comments addressed").',
         ),
@@ -88,6 +99,7 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         ),
     }),
     impl: (input, ctx) => {
+      if (deps.isAvailable?.() === false) return 'Goal authority is unavailable.';
       const existing = deps.goalManager.get(ctx.sessionId);
       if (existing && !TERMINAL_GOAL_STATUSES.has(existing.status)) {
         return (
@@ -129,6 +141,7 @@ function buildGoalClearTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
     description: 'Clear the active goal, stopping autonomous execution after the current turn.',
     parameters: z.object({}),
     impl: (_input, ctx) => {
+      if (deps.isAvailable?.() === false) return 'Goal authority is unavailable.';
       const current = deps.goalManager.get(ctx.sessionId);
       if (!current || TERMINAL_GOAL_STATUSES.has(current.status)) {
         return 'No active goal to clear.';
@@ -152,6 +165,7 @@ function buildGoalPauseTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
       'Pause the active goal. Autonomous continuation stops until GoalResume is called; state is preserved.',
     parameters: z.object({}),
     impl: (_input, ctx) => {
+      if (deps.isAvailable?.() === false) return 'Goal authority is unavailable.';
       const current = deps.goalManager.get(ctx.sessionId);
       if (!current || (current.status !== 'active' && current.status !== 'waiting')) {
         return 'No active goal to pause.';
@@ -174,6 +188,7 @@ function buildGoalResumeTool(deps: GoalToolsDeps): MakaTool<Record<string, never
     description: 'Resume a paused goal, re-enabling autonomous continuation.',
     parameters: z.object({}),
     impl: (_input, ctx) => {
+      if (deps.isAvailable?.() === false) return 'Goal authority is unavailable.';
       if (deps.goalManager.get(ctx.sessionId)?.status !== 'paused') {
         return 'No paused goal to resume.';
       }

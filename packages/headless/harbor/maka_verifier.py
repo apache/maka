@@ -7,6 +7,7 @@ whole Harbor trial would violate Pass@1.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -50,6 +51,11 @@ class _TimedVerifierEnvironment:
         self._environment = environment
         self._timeout_sec = timeout_sec
         self.timed_out = False
+        self.recovery_budget_limited = False
+
+    def set_timeout(self, timeout_sec: float, *, recovery_budget_limited: bool) -> None:
+        self._timeout_sec = timeout_sec
+        self.recovery_budget_limited = recovery_budget_limited
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._environment, name)
@@ -77,17 +83,30 @@ class MakaVerifier(Verifier):
         self,
         *args: Any,
         attempt_timeout_sec: float | None = None,
-        max_attempts: int = 2,
+        max_attempts: int = 3,
+        retry_backoff_sec: float = 1,
+        total_timeout_sec: float | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        native_timeout = attempt_timeout_sec or self.task.config.verifier.timeout_sec
+        native_timeout = (
+            self.task.config.verifier.timeout_sec
+            if attempt_timeout_sec is None
+            else attempt_timeout_sec
+        )
         if not math.isfinite(native_timeout) or native_timeout <= 0:
             raise ValueError("attempt_timeout_sec must be a positive finite number")
-        if max_attempts != 2:
-            raise ValueError("Maka verifier policy requires exactly two attempts")
+        if max_attempts != 3:
+            raise ValueError("Maka verifier policy requires exactly three attempts")
+        if not math.isfinite(retry_backoff_sec) or retry_backoff_sec < 0:
+            raise ValueError("retry_backoff_sec must be a non-negative finite number")
+        total_timeout = native_timeout * 2 if total_timeout_sec is None else total_timeout_sec
+        if not math.isfinite(total_timeout) or total_timeout < native_timeout:
+            raise ValueError("total_timeout_sec must cover at least one verifier attempt")
         self._attempt_timeout_sec = float(native_timeout)
         self._max_attempts = max_attempts
+        self._retry_backoff_sec = float(retry_backoff_sec)
+        self._total_timeout_sec = float(total_timeout)
         self._base_environment = self.environment
         self._timed_environment = _TimedVerifierEnvironment(
             self._base_environment,
@@ -98,8 +117,17 @@ class MakaVerifier(Verifier):
     async def verify(self) -> VerifierResult:
         attempts: list[dict[str, Any]] = []
         last_error: Exception | None = None
+        deadline = time.monotonic() + self._total_timeout_sec
         for attempt in range(1, self._max_attempts + 1):
             await self._clear_attempt_outputs()
+            remaining_sec = deadline - time.monotonic()
+            if remaining_sec <= 0:
+                self._raise_infrastructure_exhausted(attempts, last_error)
+            attempt_timeout_sec = min(self._attempt_timeout_sec, remaining_sec)
+            self._timed_environment.set_timeout(
+                attempt_timeout_sec,
+                recovery_budget_limited=attempt_timeout_sec < self._attempt_timeout_sec,
+            )
             self._timed_environment.timed_out = False
             started = time.monotonic()
             result: VerifierResult | None = None
@@ -131,22 +159,36 @@ class MakaVerifier(Verifier):
                 self._write_outcome("candidate_timeout", attempts)
                 return VerifierResult(rewards={"reward": 0})
             if attempt < self._max_attempts:
-                last_error = None
+                backoff_sec = self._retry_backoff_sec * (2 ** (attempt - 1))
+                if backoff_sec >= deadline - time.monotonic():
+                    self._raise_infrastructure_exhausted(attempts, last_error)
+                await asyncio.sleep(backoff_sec)
                 continue
 
-            self._write_outcome("infra_failed", attempts)
-            raise MakaVerifierInfrastructureError(
-                "verifier infrastructure failed after two attempts"
-            ) from last_error
+            self._raise_infrastructure_exhausted(attempts, last_error)
 
         raise AssertionError("unreachable verifier attempt state")
+
+    def _raise_infrastructure_exhausted(
+        self,
+        attempts: list[dict[str, Any]],
+        last_error: Exception | None,
+    ) -> None:
+        self._write_outcome("infra_failed", attempts)
+        raise MakaVerifierInfrastructureError(
+            f"verifier infrastructure recovery exhausted after {len(attempts)} attempts"
+        ) from last_error
 
     def _classify_attempt(
         self,
         result: VerifierResult | None,
     ) -> str:
         if self._timed_environment.timed_out:
-            return "timeout"
+            return (
+                "infra_failed"
+                if self._timed_environment.recovery_budget_limited
+                else "timeout"
+            )
         reward = _reward(result)
         if reward is not None and reward > 0:
             return "passed"

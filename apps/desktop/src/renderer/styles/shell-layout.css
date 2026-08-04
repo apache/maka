@@ -1,5 +1,7 @@
-/* Shell layout — app frame, 2-col shell, panels, topbar rail, resize handle, main column, workspace top actions. Relocated from sidebar.css — issue #546 PR3. */
+/* Shell layout — app frame, panels, topbar rail, main column, workspace top actions. */
 .appFrame {
+  font: var(--maka-text-body);
+  position: relative;
   height: 100dvh;
   width: 100%;
   padding: 0;
@@ -15,17 +17,11 @@
      frame always spans the window regardless of inner content's
      max-content. The preload centering is unaffected (it's the only
      child at that point and still centers). */
-  /* PR-CHAT-CHROME-FIX-1 (WAWQAQ msg `4a1b8c13`): the appFrame root
-     was the LAST place still painting the 172deg "上面灰下面白"
-     gradient — round-0 only killed the gradient on
-     `.maka-shell-2col`, and the macOS rule put `shell` to
-     `transparent`, so the appFrame gradient bled through and
-     revived the visual WAWQAQ explicitly rejected. Keep this flat:
-     the shell/backplate is neutral, while `.maka-panel-detail`
-     paints the white content surface. */
+  /* The backplate under the preload skeleton and behind the shell before it
+     mounts. AppShell paints both columns over this, so it is not a shell
+     surface — it is what the window shows when there is no shell yet. */
   background: var(--surface-canvas);
   color: var(--foreground);
-  font-size: var(--font-size-base);
   box-sizing: border-box;
 }
 
@@ -33,46 +29,156 @@
   height: 100%;
 }
 
-.maka-shell-2col {
-  --maka-sidebar-exit-offset: calc(var(--space-2) * -1);
-  position: relative;
-  display: grid;
-  /* The titlebar is a ROW, not an overlay. Everything else lives in row 2, so
-     no panel needs a ruler telling it where the titlebar ends: content cannot
-     reach into a row it is not in. This replaced four separate titlebar-
-     avoidance paddings and two hand-summed "how wide is my sibling" insets,
-     one of which had drifted 12px out of sync with the button size it claimed
-     to add up. `--h-titlebar` is the one height: main-window.ts hands the same
-     number to the native `titleBarOverlay`, and a contract test fails if the
-     two drift. */
-  grid-template-rows: var(--h-titlebar) minmax(0, 1fr);
-  align-items: stretch;
-  gap: 0;
+/* Astryx AppShell owns the column layout AND the column materials: on
+   `variant="elevated"` it paints the nav column --color-background-body and the
+   content column --color-background-surface, both of which makaTheme.ts points
+   back at the product palette. Window chrome is a transparent absolute
+   hit-test overlay on the frame — not an AppShell topNav row — so both columns
+   paint to the window top (Codex / Claude Desktop / Cursor). */
+.maka-shell-astryx {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
-  transition: grid-template-columns var(--duration-large) var(--ease-drawer);
-  /* PR-CHAT-CHROME-FIX-0 (WAWQAQ msg `1e693dee` + `486b5611`):
-     the shell used to carry a 172deg gradient from `--foreground-3`
-     to `--background`. The session sidebar is transparent and
-     showed the gradient through, so users saw "gray top, white
-     bottom" on the sidebar — distracting, and also produced a
-     visible seam where the gradient met the flat-white floating
-     detail panel. Keep the shell flat neutral; no gradient or
-     divider line. */
-  background: var(--surface-canvas);
 }
 
-.app.maka-shell-2col {
-  grid-template-columns:
-    var(--maka-session-list-expanded-width)
-    var(--maka-resize-handle-width, 0px)
-    minmax(0, 1fr);
+/* Continuous Collapse: at 48px the rail is icons and nothing else, and the
+   traffic lights are wider than it is (measured ~62px) — a column edge there
+   would run straight through the light cluster. Collapsed, the rail drops both
+   halves of that edge, the wash and the hairline, so the lights sit on one
+   surface; expanded, the theme's border and AppShell's wash mark the column.
+   This is the only rule that overrides a column's material, and it is the
+   reason the ease (makaTheme.ts, app-shell-sidenav `base`) exists.
+
+   It has to live in product CSS rather than the theme: AppShell only forwards
+   `variant` to themeProps and has no notion of the product's collapsed state.
+   No `!important` though — Astryx's StyleX sheet is wrapped in
+   `@layer astryx-base` and imported into `astryx-components`, which this file's
+   `components` layer outranks outright; the specificity padding StyleX emits
+   does not survive a layer boundary. The border override on the next line never
+   carried the flag and has always worked, which is the same evidence read from
+   the other side.
+
+   Painting with --color-background-surface rather than --background is
+   deliberate: the rail is taking the CONTENT COLUMN's material, and that token
+   is what AppShell paints the content column with. Naming the value instead
+   would fork the mapping the moment makaTheme.ts changes it. */
+.appFrame[data-sidebar-state="collapsed"] .astryx-app-shell-sidenav {
+  background: var(--color-background-surface);
+  border-inline-end-color: transparent;
 }
 
-.app.maka-shell-2col[data-sidebar-state="collapsed"] {
-  grid-template-columns:
-    0px
-    var(--maka-resize-handle-width, 0px)
-    minmax(0, 1fr);
+/* WAWQAQ msg `9f313715` (2026-08-03): the content column is a rounded floating
+   plate flush to the sidebar — its edge is the ONE boundary on that seam. The
+   theme's full-height sidenav hairline (`.astryx-app-shell-sidenav.elevated`
+   in the built maka.css) ran on the same seam, so beside the plate's top-left
+   corner radius both lines showed and read as a doubled border. The collapsed
+   rail already dropped this edge (rule above); drop it expanded too — column
+   separation is tonal (the plate's fill against the canvas), per DESIGN.md's
+   One Working Plane rule. Override lives here because maka.css is a generated
+   artifact (`npm run astryx:theme`), not a hand-edited file. */
+.maka-shell-astryx .astryx-app-shell-sidenav {
+  border-inline-end-color: transparent;
+}
+
+
+/* The column resize handle is the one control positioned against the column BOX
+   rather than flowing inside it (Astryx gives it `position:absolute; top:0;
+   inset-block-end:0`), so the columns' `padding-top` clearance does not move it
+   and its top 36px lands under the chrome strip. The strip is the topmost hit
+   surface across the whole band, so that part of the handle cannot be grabbed at
+   all — pointer-down there reaches the OS as a window drag instead. Start the
+   handle below the strip; `inset-block-end: 0` still takes it to the bottom. */
+.maka-shell-astryx .astryx-resize-handle {
+  top: var(--h-titlebar);
+}
+
+/* The content column is a rounded floating plate over the shell canvas —
+   flush to the sidebar on the left, a small gap on the other three sides. */
+.maka-shell-astryx .astryx-layout-content {
+  background: var(--agents-layout-bg);
+}
+
+.maka-shell-astryx .maka-panel-detail {
+  width: calc(100% - var(--agents-content-area-gap));
+  height: calc(100% - 2 * var(--agents-content-area-gap));
+  margin: var(--agents-content-area-gap) var(--agents-content-area-gap) var(--agents-content-area-gap) 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-modal);
+  background: var(--agents-content-area-bg);
+  overflow: hidden;
+  /* Clear the absolute chrome strip so content starts below the transparent
+     titleband. */
+  padding-top: calc(var(--h-titlebar) - var(--agents-content-area-gap));
+  box-sizing: border-box;
+}
+
+/* Same top clear for the sidebar column so list/nav content sits below the
+   traffic-light / left chrome cluster while the transparent plate shows. */
+.maka-shell-astryx .maka-session-panel {
+  padding-top: var(--h-titlebar);
+  box-sizing: border-box;
+}
+
+/* Collapse/expand easing. The declaration has to sit on an element that lives
+   across the toggle, and SideNav's own root is not one: expanded it wraps the
+   <nav> in a div for the overlay resize handle, collapsed it renders the bare
+   <nav>, so React unmounts and remounts that subtree. A transition on the nav
+   has nothing to interpolate from — measured live, the very first frame after
+   the click is already 48px across all 144 sampled frames. `.maka-sidenav-motion`
+   is the product's own wrapper outside SideNav, so it is the same node before
+   and after and its width really does animate.
+
+   The wrapper is therefore the width authority while the ease runs, and its
+   child must follow rather than assert its own. `width: 100% !important` is
+   load-bearing in the COLLAPSED direction: SideNav's `rootCollapsed` is a
+   StyleX atom padded to specificity 0-4-0 (`.xhgvbfk:not(#\#)` four times over)
+   against this rule's 0-2-0, so without the flag the nav would snap to 48px
+   while the wrapper was still easing toward it. Expanded, SideNav's inline
+   width sits on the <nav>, which is wrapped one level deeper by the resize
+   handle's container, so it is never what this rule is competing with.
+
+   Only a pointer drag suppresses the ease. A standing transition would catch the
+   width the resize handle feeds back on every pointer move, restarting the ease
+   each time so the rail trails the cursor. The gate asks the component that owns
+   the answer: Astryx marks its handle `data-resizing` while a drag is in flight
+   and clears it on pointer-up. The handle is a descendant of the wrapper (it is
+   the nav's sibling one level in), so plain `:has()` reads it.
+
+   Separator focus is deliberately NOT part of the gate — it was, and it left
+   the ease dead for every collapse after the handle had once been touched. */
+.maka-shell-astryx .maka-sidenav-motion {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  /* The nav sizes itself against a definite height (`.maka-session-panel`
+     is `height: 100%`); without one here the wrapper grows to the unclipped
+     content and the footer leaves the window — the geometry
+     e2e/sidebar-geometry.spec.ts locks. */
+  height: 100%;
+  width: var(--maka-sidenav-width);
+  transition: width var(--duration-large) var(--ease-out-strong);
+}
+
+/* Same source as Astryx's own `rootCollapsed` width, so the rail cannot drift
+   from the value SideNav lands on when the ease finishes. Keyed off the shell's
+   own collapsed flag — the wrapper carried a second copy of it until this rule
+   read the one `.appFrame` already publishes and the hairlines already use. */
+.appFrame[data-sidebar-state='collapsed'] .maka-sidenav-motion {
+  width: var(--spacing-12);
+}
+
+.maka-shell-astryx .maka-sidenav-motion:has([data-resizing]) {
+  transition: none;
+}
+
+.maka-shell-astryx .maka-sidenav-motion > * {
+  /* !important: beats SideNav's inline width — see the note above. */
+  width: 100% !important;
+  min-width: 0;
 }
 
 .maka-panel {
@@ -81,75 +187,22 @@
   overflow: hidden;
 }
 
-.maka-floating-panel {
-  border: 0;
-  border-radius: 0;
-  background: var(--background);
-  box-shadow: none;
-}
-
-.maka-panel-list.maka-floating-panel {
-  border-right: 0;
-  background: transparent;
-  opacity: 1;
-  transform: translateX(0);
-  transition:
-    opacity var(--duration-quick) var(--ease-out-strong),
-    transform var(--duration-large) var(--ease-drawer);
-}
-
-.maka-shell-2col .maka-panel-list > .maka-session-panel {
-  width: var(--maka-session-list-expanded-width);
-}
-
-.maka-panel-detail.maka-floating-panel {
-  /* Right column = the workspace content surface (chat / module /
-     artifact panes share it). Border and box-shadow already null'd by
-     the base `.maka-floating-panel` rule above; only the geometry and
-     layout-mode bits live here.
-     PR-CHAT-CHROME-FIX-0 (WAWQAQ msg `486b5611`): symmetric `margin:
-     4px` so all four sides have a gap and the radius reads as a real
-     floating-card edge — was `4px 4px 4px 0` before.
-     PR-CHAT-CHROME-FIX-1 (WAWQAQ msg `4a1b8c13`): "圆盘感觉不对劲，
-     很不明显，尤其是下面的看都看不到" — 6px radius + 4px margin on
-     a same-color surface had no visual handle for the eye. Bumped
-     radius to 12px (matches reference's surface plate), added a soft
-     drop-shadow so the curved edge actually reads against the sidebar
-     translucent backdrop and the bottom corners are visible. The
-     window's outer rounded chrome on macOS is ~10–12px; matching that
-     reads as "card inside chrome" rather than "rectangle bleeding off
-     the bottom". */
-  margin: var(--space-1);
-  border-radius: var(--radius-modal);
-  background: var(--background);
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  box-shadow:
-    0 1px 3px oklch(from var(--foreground) l c h / 0.06),
-    0 8px 24px oklch(from var(--foreground) l c h / 0.08);
-}
-
-.maka-shell-2col[data-sidebar-state="collapsed"] .maka-panel-list.maka-floating-panel {
-  border-right: 0;
-  opacity: 0;
-  transform: translateX(var(--maka-sidebar-exit-offset));
-}
-
 /* The window's only drag surface, and the only `-webkit-app-region: drag` in
-   the app. It is an ordinary grid row holding ordinary in-flow children, which
-   is what makes the arithmetic disappear: the draggable region is whatever the
-   row has left after its action clusters carve themselves out with `no-drag`.
+   the app. It is a transparent absolute overlay — pure hit-test chrome — so
+   column surfaces paint through it. Action clusters carve themselves out with
+   `no-drag`. Chromium builds drag regions in document order: this node must
+   precede the columns so later no-drag controls can subtract from it.
 
    This replaced an arrangement where every container that happened to overlap
    the titlebar declared its own drag region and then reserved room for its
    neighbours with a hand-summed `margin-left`/`margin-right` ruler. Those
-   rulers encoded "how many titlebar buttons exist right now" — state-dependent,
-   since the rail renders a third button (新任务) only while the sidebar is
-   collapsed. The sidebar's strip reserved room for two, the third button landed
-   in the space nobody reserved, and clicks on it reached the OS as window drags.
+   rulers encoded "how many titlebar buttons exist right now" — state-dependent
+   when a third titlebar button (新任务) only appeared while the sidebar was
+   collapsed (that button is gone now; 新任务 stays on the SideNav rail). The
+   sidebar's strip reserved room for two, the third button landed in the space
+   nobody reserved, and clicks on it reached the OS as window drags.
 
-   The margin keeps the drag rect off the window frame on the three sides it
+   The inset keeps the drag rect off the window frame on the three sides it
    touches, so the OS keeps its resize corridor there. It is DEFENSIVE, not
    demonstrated: this area's other bug (`af681c1`, msg `5b85fdb1`) was a window
    that could not be resized from its edges, and no automated check in this repo
@@ -163,12 +216,21 @@
    places to keep the clusters at an exact pixel — which is the habit this whole
    change exists to remove. */
 .maka-window-titlebar {
-  grid-column: 1 / -1;
-  grid-row: 1;
-  margin: var(--maka-window-resize-edge) var(--maka-window-resize-edge) 0;
+  position: absolute;
+  z-index: var(--z-titlebar);
+  top: var(--maka-window-resize-edge);
+  left: var(--maka-window-resize-edge);
+  right: var(--maka-window-resize-edge);
+  height: calc(var(--h-titlebar) - var(--maka-window-resize-edge));
+  min-height: calc(var(--h-titlebar) - var(--maka-window-resize-edge));
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  /* No paint: column surfaces under this strip own the color (canvas left,
+     --background right). Windows titleBarOverlay still samples --background
+     for the OS caption strip on the content side. */
+  background: transparent;
   /* One gutter rule per side: our own `--space-6` of breathing room, or the
      platform's native-control safe area when that is wider. Nothing here knows
      which platform it is on or how wide any control is — `max()` picks whichever
@@ -190,106 +252,23 @@
     opacity var(--duration-quick) var(--ease-out-strong),
     transform var(--duration-base) var(--ease-out-strong);
   -webkit-app-region: no-drag;
-}
-
-.maka-resize-handle {
-  position: relative;
-  width: var(--maka-resize-handle-width, 0px);
-  box-sizing: content-box;
-  padding-inline: var(--space-1);
-  margin-inline: calc(var(--space-1) * -1);
-  outline: none;
-  cursor: col-resize;
-  user-select: none;
-  touch-action: none;
-  background: transparent;
-  /* No `no-drag` needed: the handle spans row 2 only. It used to run the full
-     window height and overlap the drag band, escaping it only because the
-     sidebar's drag strip happened to end 2px to its left. */
-}
-
-.maka-shell-2col[data-sidebar-state="collapsed"] .maka-resize-handle {
-  pointer-events: none;
-  cursor: default;
-}
-
-.maka-shell-2col[data-sidebar-state="collapsed"] .maka-resize-handle::after {
-  display: none;
-}
-
-.maka-resize-handle::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 14px;
-  bottom: 14px;
-  width: 1px;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  transition: background var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-resize-handle:hover::after,
-.isResizingColumns .maka-resize-handle::after {
-  background: color-mix(in oklch, var(--foreground) 20%, var(--background));
-}
-
-/* Keyboard-focused separator: replace the suppressed native outline with a
-   visible accent ring on the pseudo-element. Hover styling intentionally
-   overrides via cascade order. */
-.maka-resize-handle:focus-visible::after {
-  background: var(--ring);
-  width: 1px;
-  left: 4px;
-}
-
-.isResizingColumns {
-  cursor: col-resize;
-  user-select: none;
-}
-
-.isResizingColumns .maka-shell-2col {
-  transition: none;
-}
-
-.maka-shell-2col:has(> .maka-resize-handle:focus) {
-  transition: none;
+  /* Match SideNav unselected icon ink (secondary), not ghost Button primary. */
+  color: var(--foreground-secondary);
 }
 
 .mainColumn {
   min-width: 0;
   min-height: 0;
   height: 100%;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: transparent;
 }
 
 .mainColumn[data-home-surface="true"] {
-  grid-template-rows: minmax(0, 1fr) auto;
   align-content: stretch;
   padding-bottom: 0;
-}
-
-.mainColumn[data-home-surface="true"] .maka-main,
-.mainColumn[data-home-surface="true"] .maka-chat-shell,
-.mainColumn[data-home-surface="true"] .messages {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.mainColumn[data-home-surface="true"] .maka-chatViewport {
-  height: 100%;
-}
-
-.mainColumn[data-home-surface="true"] .maka-chatContent {
-  min-height: 100%;
-  box-sizing: border-box;
-  padding: clamp(var(--space-16), 10vh, 116px) 0 clamp(var(--space-5), 4vh, var(--space-10));
-  display: grid;
-  gap: 0;
-  align-content: center;
 }
 
 /* Right-hand cluster of the titlebar row. `margin-left: auto` is the whole
@@ -306,7 +285,15 @@
   color: var(--foreground-secondary);
 }
 
-/* `.maka-titlebar-action` needs no `no-drag` of its own: every one of these
+/* Titlebar chrome glyph ink is set where the glyph is: `ChromeIcon`
+   (app-shell-chrome-actions.tsx) renders Astryx Icon with `color="secondary"`,
+   and Icon puts `color: var(--color-icon-secondary)` on the svg ITSELF. A
+   button-level rule cannot reach past that — a child's own `color` always beats
+   an inherited one — so the ghost variant's primary text never applied to these
+   glyphs and the override that used to sit here corrected nothing. It also
+   over-reached onto button label text, which these buttons happen not to have.
+
+   `.maka-titlebar-action` needs no `no-drag` of its own: every one of these
    buttons lives inside `.maka-shell-topbar-rail` or
    `.maka-workspace-top-actions`, and each of those carves out a rect covering
    its children. A per-button rule (plus a `*` descendant rule for the icons)

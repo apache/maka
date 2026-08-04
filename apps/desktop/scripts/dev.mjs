@@ -11,7 +11,9 @@
  *         └→ ui
  *
  *   libs (tsc --build tsconfig.lib.json) ─── covers core+storage+runtime+ui
- *   preload (esbuild)                     ─── parallel, no tsc dependency
+ *     ├─→ preload (esbuild)
+ *     └─→ filesystem worker (esbuild)
+ *   cursor overlay (esbuild)              ─── independent
  *   main (esbuild)                        ─── fast app bundle for Electron
  *   Vite dev server + Electron            ─── fork
  */
@@ -65,15 +67,19 @@ function resolveElectronBin() {
 const TIMER_START = Date.now();
 
 // Phase 1: all library packages via `tsc --build` (single process, shared
-// .tsbuildinfo, sub-project incremental detection).  Also runs preload
-// (esbuild is fast) in parallel since it has no tsc dependency.
-log('build', 'libraries — starting (tsc --build + preload)');
+// .tsbuildinfo, sub-project incremental detection). The preload bundle imports
+// workspace package dist files, so it starts only after that build is ready.
+log('build', 'libraries — starting (tsc --build)');
+const librariesBuild = runNodeTool(REPO_ROOT, TSC_CLI, ['--build', 'tsconfig.lib.json']).then(
+  () => log('build', 'libraries (all) — done'),
+  (e) => {
+    log('build', `libraries — FAILED: ${e.message}`);
+    throw e;
+  },
+);
 await Promise.all([
-  runNodeTool(REPO_ROOT, TSC_CLI, ['--build', 'tsconfig.lib.json']).then(
-    () => log('build', 'libraries (all) — done'),
-    (e) => { log('build', `libraries — FAILED: ${e.message}`); throw e; },
-  ),
-  runNodeTool(REPO_ROOT, RUNTIME_WORKER_BUILD, []).then(
+  librariesBuild,
+  librariesBuild.then(() => runNodeTool(REPO_ROOT, RUNTIME_WORKER_BUILD, [])).then(
     () => log('build', 'filesystem worker bundle — done'),
     (e) => { log('build', `filesystem worker bundle — FAILED: ${e.message}`); throw e; },
   ),
@@ -81,7 +87,7 @@ await Promise.all([
   // esbuild's postinstall swaps that file for a platform-native binary,
   // and executing a Mach-O file with node throws SyntaxError (broke
   // `npm run dev` on any machine where postinstall ran).
-  esbuildBuild({
+  librariesBuild.then(() => esbuildBuild({
     absWorkingDir: DESKTOP_DIR,
     entryPoints: ['src/preload/preload.ts'],
     bundle: true,
@@ -90,7 +96,7 @@ await Promise.all([
     outfile: 'dist/preload/preload.cjs',
     external: ['electron'],
     logLevel: 'warning',
-  }).then(
+  })).then(
     () => log('build', 'preload — done'),
     (e) => { log('build', `preload — FAILED: ${e.message}`); throw e; },
   ),

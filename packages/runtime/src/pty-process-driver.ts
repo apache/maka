@@ -88,14 +88,6 @@ export class PtyProcessDriver {
     this.pty.resize(cols, rows);
   }
 
-  pause(): void {
-    this.pty.pause();
-  }
-
-  resume(): void {
-    this.pty.resume();
-  }
-
   kill(signal: 'SIGTERM' | 'SIGKILL'): void {
     killPty(this.pty, signal);
   }

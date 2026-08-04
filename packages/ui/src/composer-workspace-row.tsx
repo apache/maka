@@ -1,15 +1,19 @@
 /**
  * Composer workspace row (issue #1044) — the workspace picker + git branch
- * picker rendered below the composer card. Extracted from `composer.tsx`;
+ * picker rendered above the composer card. Extracted from `composer.tsx`;
  * purely presentational: both pickers are standard compact menu triggers fed
  * by host-injected props. Shared Button owns their visual and interaction
  * states; local classes only constrain layout and label truncation.
  */
 
 import type { ProjectRecord } from '@maka/core';
+import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
+import { Divider } from '@astryxdesign/core/Divider';
+import { useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, FolderOpen, GitBranch, Plus } from './icons.js';
-import { Button as UiButton } from './ui.js';
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from './primitives/menu.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -46,123 +50,121 @@ export function ComposerWorkspaceRow(props: {
 }) {
   const wp = props.workspacePicker;
   const copy = getConversationCopy(useUiLocale()).workspace;
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(
+    wp.defaultOpen ?? false,
+  );
   return (
     <div className="maka-composer-workspace-row">
       {/* The workspace and branch pickers are standard compact menu
           triggers. Shared Button owns their visual and interaction states;
           local classes only constrain layout and label truncation. */}
-      <Menu defaultOpen={wp.defaultOpen}>
-        <MenuTrigger
-          render={({ onClick: menuToggleClick, ...triggerRest }) => (
-            <UiButton
-              {...triggerRest}
-              onClick={(e) => {
-                menuToggleClick?.(e);
-              }}
-              type="button"
-              variant="quiet"
-              size="sm"
-              className="maka-composer-workspace-picker"
-              disabled={wp.pending === true}
-              aria-busy={wp.pending === true ? 'true' : undefined}
-              title={copy.chooseTitle(wp.branch ?? undefined)}
-              aria-label={copy.chooseAriaLabel(wp.label ?? copy.current, wp.branch ?? undefined)}
-            >
-              <FolderOpen size={13} aria-hidden="true" />
-              {wp.label
-                ? <span className="maka-composer-workspace-current">{wp.label}</span>
-                : <span>{copy.choose}</span>}
-              <ChevronDown size={12} aria-hidden="true" />
-            </UiButton>
-          )}
-        />
-        <MenuPopup className="maka-composer-workspace-menu" align="start" side="top" sideOffset={6}>
+      <DropdownMenu
+        isMenuOpen={workspaceMenuOpen}
+        onOpenChange={setWorkspaceMenuOpen}
+        placement="above"
+        button={{
+          label: copy.chooseAriaLabel(
+            wp.label ?? copy.current,
+            wp.branch ?? undefined,
+          ),
+          icon: <FolderOpen size={13} aria-hidden="true" />,
+          endContent: <ChevronDown size={12} aria-hidden="true" />,
+          variant: 'ghost',
+          size: 'sm',
+          className: 'maka-composer-workspace-picker',
+          isDisabled: wp.pending === true,
+          'aria-busy': wp.pending === true ? 'true' : undefined,
+          tooltip: copy.chooseTitle(wp.branch ?? undefined),
+          children: wp.label
+            ? <span className="maka-composer-workspace-current">{wp.label}</span>
+            : copy.choose,
+        }}
+        className="maka-composer-workspace-menu"
+      >
           <div className="maka-composer-project-scroll">
             {wp.projects.map((project) => (
-              <MenuItem
+              <DropdownMenuItem
                 key={project.id}
-                data-active={project.id === wp.selectedProjectId}
                 onClick={() => {
                   if (project.available) wp.onSelectProject(project.id);
                   else wp.onRelink(project.id);
                 }}
-              >
-                {project.available
+                icon={project.available
                   ? <FolderOpen size={13} aria-hidden="true" />
                   : <AlertTriangle size={13} aria-hidden="true" />}
-                <span>{project.name}</span>
-                {!project.available && <span className="maka-composer-project-status">{copy.relink}</span>}
-                {project.id === wp.selectedProjectId && project.available && (
+                label={project.name}
+                endContent={!project.available
+                  ? <span className="maka-composer-project-status">{copy.relink}</span>
+                  : project.id === wp.selectedProjectId ? (
                   <Check size={12} aria-hidden="true" className="maka-composer-project-check" />
-                )}
-              </MenuItem>
+                    ) : undefined}
+              />
             ))}
           </div>
-          <MenuSeparator />
-          <MenuItem onClick={() => { wp.onAdd(); }}>
-            <Plus size={13} aria-hidden="true" />
-            <span>{copy.addProject}</span>
-          </MenuItem>
-          <MenuSeparator />
-          <MenuItem className="maka-composer-no-project" onClick={() => { wp.onSelectNoProject(); }}>
-            <span>{copy.noProject}</span>
-            {wp.selectedProjectId === null && (
+          <Divider orientation="horizontal" />
+          <DropdownMenuItem
+            onClick={() => {
+              wp.onAdd();
+            }}
+            icon={<Plus size={13} aria-hidden="true" />}
+            label={copy.addProject}
+          />
+          <Divider orientation="horizontal" />
+          <DropdownMenuItem
+            className="maka-composer-no-project"
+            onClick={() => {
+              wp.onSelectNoProject();
+            }}
+            label={copy.noProject}
+            endContent={wp.selectedProjectId === null ? (
               <Check size={12} aria-hidden="true" className="maka-composer-project-check" />
-            )}
-          </MenuItem>
-        </MenuPopup>
-      </Menu>
+            ) : undefined}
+          />
+      </DropdownMenu>
       {props.branchPicker && (() => {
         const bp = props.branchPicker!;
         const triggerDisabled = bp.pending === true;
         return (
-          <Menu>
-            <MenuTrigger
-              render={({ onClick: menuToggleClick, ...triggerRest }) => (
-                <UiButton
-                  {...triggerRest}
-                  onClick={(e) => {
-                    bp.onOpen();
-                    menuToggleClick?.(e);
-                  }}
-                  type="button"
-                  variant="quiet"
-                  size="sm"
-                  className="maka-composer-branch-picker"
-                  disabled={triggerDisabled}
-                  aria-busy={triggerDisabled ? 'true' : undefined}
-                  title={copy.branchTitle(bp.branch ?? undefined)}
-                  aria-label={copy.branchAriaLabel(bp.branch ?? undefined)}
-                >
-                  <GitBranch size={13} aria-hidden="true" />
-                  <span className="maka-composer-branch-current">{bp.branch ?? '—'}</span>
-                  <ChevronDown size={12} aria-hidden="true" />
-                </UiButton>
-              )}
-            />
-            <MenuPopup className="maka-composer-branch-menu" align="start" side="top" sideOffset={6}>
+          <DropdownMenu
+            onClick={bp.onOpen}
+            placement="above"
+            button={{
+              label: copy.branchAriaLabel(bp.branch ?? undefined),
+              icon: <GitBranch size={13} aria-hidden="true" />,
+              endContent: <ChevronDown size={12} aria-hidden="true" />,
+              variant: 'ghost',
+              size: 'sm',
+              className: 'maka-composer-branch-picker',
+              isDisabled: triggerDisabled,
+              'aria-busy': triggerDisabled ? 'true' : undefined,
+              tooltip: copy.branchTitle(bp.branch ?? undefined),
+              children: (
+                <span className="maka-composer-branch-current">
+                  {bp.branch ?? '—'}
+                </span>
+              ),
+            }}
+            className="maka-composer-branch-menu"
+          >
               {bp.branches.length === 0 ? (
                 <div className="maka-composer-branch-empty">{copy.noBranches}</div>
               ) : (
                 bp.branches.map((b) => (
-                  <MenuItem
+                  <DropdownMenuItem
                     key={b}
-                    data-active={b === bp.branch}
                     onClick={() => {
                       if (b === bp.branch) return;
                       void bp.onSelect(b);
                     }}
-                  >
-                    <GitBranch size={13} aria-hidden="true" />
-                    <span>{b}</span>
-                    {b === bp.branch && (
+                    icon={<GitBranch size={13} aria-hidden="true" />}
+                    label={b}
+                    endContent={b === bp.branch ? (
                       <Check size={12} aria-hidden="true" className="maka-composer-branch-check" />
-                    )}
-                  </MenuItem>
+                    ) : undefined}
+                  />
                 ))
               )}
-            </MenuPopup>
-          </Menu>
+          </DropdownMenu>
         );
       })()}
     </div>

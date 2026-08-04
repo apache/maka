@@ -29,15 +29,35 @@ export const AGENT_RUN_STATUSES = [
 
 export type AgentRunStatus = (typeof AGENT_RUN_STATUSES)[number];
 
-export interface AgentRunContinuationSource {
+export interface AgentRunContinuationSourceV1 {
   sourceInvocationId: string;
   sourceRunId: string;
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
 }
 
+export interface AgentRunContinuationSourceV2 extends AgentRunContinuationSourceV1 {
+  protocol: 'continuation_source_v2';
+  claimId: string;
+  boundaryDigest: `sha256:${string}`;
+  sourcePrefixDigest: `sha256:${string}`;
+  replayManifestDigest: `sha256:${string}`;
+}
+
+export type AgentRunContinuationSource =
+  | AgentRunContinuationSourceV1
+  | AgentRunContinuationSourceV2;
+
 export type RootExecutionDescriptor =
   | { kind: 'external_message' }
+  | { kind: 'automation'; automationId: string }
+  | { kind: 'goal'; goalId: string }
+  | {
+      kind: 'agent_graph_supervisor_wake';
+      graphId: string;
+      wakeId: string;
+      attemptId: string;
+    }
   | {
       kind: 'linked_child_initial';
       agentId: string;
@@ -62,8 +82,22 @@ export type RootExecutionDescriptor =
       agentName: string;
     };
 
-const AGENT_RUN_CONTINUATION_SOURCE_SHAPE = defineObjectShape<AgentRunContinuationSource>()(
+const AGENT_RUN_CONTINUATION_SOURCE_V1_SHAPE = defineObjectShape<AgentRunContinuationSourceV1>()(
   ['sourceInvocationId', 'sourceRunId', 'sourceTurnId', 'sourceRuntimeEventHighWater'],
+  [],
+);
+const AGENT_RUN_CONTINUATION_SOURCE_V2_SHAPE = defineObjectShape<AgentRunContinuationSourceV2>()(
+  [
+    'protocol',
+    'claimId',
+    'boundaryDigest',
+    'sourceInvocationId',
+    'sourceRunId',
+    'sourceTurnId',
+    'sourceRuntimeEventHighWater',
+    'sourcePrefixDigest',
+    'replayManifestDigest',
+  ],
   [],
 );
 
@@ -108,6 +142,8 @@ export interface AgentRunHeader {
   continuationSource?: AgentRunContinuationSource;
   /** Non-user trigger for this run (e.g. a scheduled automation fire). */
   automationId?: string;
+  /** Host-owned Goal generation that triggered this continuation Run. */
+  goalId?: string;
   /** Durable graph milestone that caused this host-authored supervisor turn. */
   agentGraphWakeId?: string;
   /** Durable delivery attempt for this host-authored supervisor turn. */
@@ -116,6 +152,65 @@ export interface AgentRunHeader {
   failureMessage?: string;
   abortSource?: string;
   traceWriteError?: string;
+}
+
+type HostedRootExecutionDescriptor = Extract<
+  RootExecutionDescriptor,
+  { kind: 'automation' | 'goal' | 'agent_graph_supervisor_wake' }
+>;
+
+export function agentRunMatchesHostedRootExecution(
+  run: AgentRunHeader,
+  execution: HostedRootExecutionDescriptor,
+): boolean {
+  const authorityMatches = hostedRootAuthorityMatches(run, execution);
+  return (
+    authorityMatches &&
+    run.parentRunId === undefined &&
+    run.resumedFromRunId === undefined &&
+    run.retriedFromRunId === undefined &&
+    run.agentId === undefined &&
+    run.agentName === undefined &&
+    run.parentTurnId === undefined &&
+    run.retriedFromTurnId === undefined &&
+    run.regeneratedFromTurnId === undefined &&
+    run.branchOfTurnId === undefined &&
+    run.parentSessionId === undefined &&
+    run.continuationSource === undefined
+  );
+}
+
+function hostedRootAuthorityMatches(
+  run: AgentRunHeader,
+  execution: HostedRootExecutionDescriptor,
+): boolean {
+  switch (execution.kind) {
+    case 'automation':
+      return (
+        run.automationId === execution.automationId &&
+        run.goalId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'goal':
+      return (
+        run.goalId === execution.goalId &&
+        run.automationId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'agent_graph_supervisor_wake':
+      return (
+        execution.wakeId.startsWith(`${execution.graphId}:`) &&
+        run.agentGraphWakeId === execution.wakeId &&
+        run.agentGraphWakeAttemptId === execution.attemptId &&
+        run.orchestrationMode === 'graph' &&
+        run.orchestrationSource === 'turn_override' &&
+        run.agentSwarmAuthorization === 'none' &&
+        run.automationId === undefined &&
+        run.goalId === undefined
+      );
+  }
 }
 
 export interface AgentRunInputSummary {
@@ -137,12 +232,14 @@ export const AGENT_RUN_EVENT_TYPES = [
   'plan_execution_interrupted',
   'plan_execution_resumed',
   'plan_transition_failed',
+  'graph_supervisor_yielded',
   'run_status_changed',
   'model_resolved',
   'model_resolve_failed',
   'model_stream_started',
   'model_stream_completed',
   'model_stream_failed',
+  'send_diagnostics_recorded',
   'tool_started',
   'tool_completed',
   'tool_failed',
@@ -163,9 +260,11 @@ export const AGENT_RUN_EVENT_TYPES = [
   'sandbox_escalation_applied',
   'sandbox_escalation_failed',
   'sandbox_denial_detected',
-  'usage_recorded',
   'provider_request_captured',
   'provider_request_attempt_recorded',
+  // No current writer; shipped ledgers still carry it and strict reads must not reject them (#1942).
+  'usage_recorded',
+  'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
   'active_full_compact_block_recorded',
   'semantic_compact_block_recorded',
@@ -221,6 +320,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'workspaceIdentity',
     'continuationSource',
     'automationId',
+    'goalId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
     'failureClass',
@@ -261,6 +361,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       isEffectiveOrchestrationSource(value.orchestrationSource)) &&
     (value.agentSwarmAuthorization === undefined ||
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
+    !(value.automationId !== undefined && value.goalId !== undefined) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalString(value.invocationId) &&
@@ -278,6 +379,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.parentSessionId,
       value.workspaceIdentity,
       value.automationId,
+      value.goalId,
       value.agentGraphWakeId,
       value.agentGraphWakeAttemptId,
       value.failureClass,
@@ -286,17 +388,45 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.traceWriteError,
     ].every(isOptionalString) &&
     (value.continuationSource === undefined ||
-      (isRecord(value.continuationSource) &&
-        hasExactShape(value.continuationSource, AGENT_RUN_CONTINUATION_SOURCE_SHAPE) &&
-        typeof value.continuationSource.sourceInvocationId === 'string' &&
-        typeof value.continuationSource.sourceRunId === 'string' &&
-        typeof value.continuationSource.sourceTurnId === 'string' &&
-        typeof value.continuationSource.sourceRuntimeEventHighWater === 'number' &&
-        Number.isSafeInteger(value.continuationSource.sourceRuntimeEventHighWater) &&
-        value.continuationSource.sourceRuntimeEventHighWater >= 0));
+      isAgentRunContinuationSource(value.continuationSource));
   if (!valid) throw new Error('Invalid AgentRun header schema');
   if (status !== value.status) return { ...value, status } as unknown as AgentRunHeader;
   return value as unknown as AgentRunHeader;
+}
+
+function isAgentRunContinuationSource(value: unknown): value is AgentRunContinuationSource {
+  if (!isRecord(value)) return false;
+  const common =
+    typeof value.sourceInvocationId === 'string' &&
+    typeof value.sourceRunId === 'string' &&
+    typeof value.sourceTurnId === 'string' &&
+    typeof value.sourceRuntimeEventHighWater === 'number' &&
+    Number.isSafeInteger(value.sourceRuntimeEventHighWater) &&
+    value.sourceRuntimeEventHighWater >= 0;
+  if (!common) return false;
+  if (hasExactShape(value, AGENT_RUN_CONTINUATION_SOURCE_V1_SHAPE)) return true;
+  return (
+    hasExactShape(value, AGENT_RUN_CONTINUATION_SOURCE_V2_SHAPE) &&
+    value.protocol === 'continuation_source_v2' &&
+    typeof value.claimId === 'string' &&
+    value.claimId.length > 0 &&
+    typeof value.sourceInvocationId === 'string' &&
+    value.sourceInvocationId.length > 0 &&
+    typeof value.sourceRunId === 'string' &&
+    value.sourceRunId.length > 0 &&
+    typeof value.sourceTurnId === 'string' &&
+    value.sourceTurnId.length > 0 &&
+    typeof value.sourceRuntimeEventHighWater === 'number' &&
+    value.sourceRuntimeEventHighWater > 0 &&
+    isSha256Digest(value.boundaryDigest) &&
+    isSha256Digest(value.sourcePrefixDigest) &&
+    isSha256Digest(value.replayManifestDigest) &&
+    value.replayManifestDigest === value.boundaryDigest
+  );
+}
+
+function isSha256Digest(value: unknown): value is `sha256:${string}` {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 export function decodeAgentRunEvent(value: unknown): AgentRunEvent {
@@ -354,12 +484,18 @@ export interface AgentRunStore {
 
 /**
  * Whether a run contributes directly to the owning session's transcript.
- * Continuations carry parent lineage for recovery, but unlike child-agent runs
- * their output remains part of the parent session conversation.
+ * Top-level continuations carry parent lineage for recovery, but unlike
+ * child-agent runs their output remains part of the parent session
+ * conversation. A legacy child retry may also carry continuation authority;
+ * its agent identity keeps it outside the owning session transcript.
  */
 export function isSessionInlineRun(run: {
   readonly parentRunId?: string;
   readonly continuationSource?: unknown;
+  readonly agentId?: string;
 }): boolean {
-  return run.parentRunId === undefined || run.continuationSource !== undefined;
+  return (
+    run.parentRunId === undefined ||
+    (run.continuationSource !== undefined && run.agentId === undefined)
+  );
 }

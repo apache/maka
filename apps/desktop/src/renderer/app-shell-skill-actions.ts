@@ -6,7 +6,7 @@ import type {
   ManagedSkillUpdatePreview,
   SkillEntry,
 } from '@maka/ui';
-import { createSkillFailureCopy, openSkillFailureCopy } from './app-shell-copy';
+import { openSkillFailureCopy } from './app-shell-copy';
 import { createOpenSkillAction } from './app-shell-open-skill-action';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
@@ -19,7 +19,6 @@ export interface AppShellSkillActions {
   refreshSkills(options?: { shouldShowError?: () => boolean }): Promise<void>;
   refreshManagedSkillSources(options?: { shouldShowError?: () => boolean }): Promise<void>;
   refreshBundledSkillCatalog(options?: { shouldShowError?: () => boolean }): Promise<void>;
-  createSkillTemplate(): Promise<void>;
   importManagedSkillSource(): Promise<void>;
   installManagedSkill(sourceId: string): Promise<void>;
   installBundledSkill(id: string): Promise<void>;
@@ -115,39 +114,6 @@ export function createAppShellSkillActions(deps: {
         toastApi.error(
           copy.installBundledFailedTitle,
           localizedShellErrorMessage(error, copy.installBundledFallback, uiLocale),
-        );
-      }
-    }
-  }
-
-  async function createSkillTemplate() {
-    try {
-      const result = await window.maka.skills.createStarter();
-      if (!result.ok) {
-        if (isSkillsSurfaceActive())
-          toastApi.error(copy.createTemplateFailedTitle, createSkillFailureCopy(result.reason, uiLocale));
-        return;
-      }
-      await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
-      if (!isSkillsSurfaceActive()) return;
-      // Idempotent seeding: a repeat 添加 click reuses the existing 示例技能
-      // instead of minting a duplicate. Tell the user we opened the existing
-      // one rather than pretending a new skill was created.
-      if (result.created) {
-        toastApi.success(copy.createdTemplateTitle, copy.createdTemplateDescription(result.skill.id));
-      } else {
-        toastApi.success(copy.openedExistingTemplateTitle, copy.openedExistingTemplateDescription);
-      }
-      const openResult = await window.maka.skills.open(result.skill.id, 'file');
-      if (!openResult.ok) {
-        if (isSkillsSurfaceActive())
-          toastApi.error(copy.openTemplateFailedTitle, openSkillFailureCopy(openResult.reason, uiLocale));
-      }
-    } catch (error) {
-      if (isSkillsSurfaceActive()) {
-        toastApi.error(
-          copy.createTemplateFailedTitle,
-          localizedShellErrorMessage(error, copy.createTemplateFallback, uiLocale),
         );
       }
     }
@@ -305,7 +271,6 @@ export function createAppShellSkillActions(deps: {
     refreshSkills,
     refreshManagedSkillSources,
     refreshBundledSkillCatalog,
-    createSkillTemplate,
     importManagedSkillSource,
     installManagedSkill,
     installBundledSkill,

@@ -41,6 +41,7 @@ test('xAI OAuth refresh preserves a rotated refresh token through the shared pro
         expires_in: 3_600,
         token_type: 'Bearer',
         scope: 'openid offline_access grok-cli:access api:access',
+        provider_extension: { version: 2 },
       });
     },
   });

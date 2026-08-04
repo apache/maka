@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { SessionEvent } from '@maka/core';
 import {
   armLiveTurn,
+  ChatSurfaceLayout,
   ChatView,
   LocaleProvider,
   type LiveTurnProjection,
@@ -14,7 +15,10 @@ import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-ses
 
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
-    createElement(LocaleProvider, { locale: 'zh', children: child }),
+    createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(ChatSurfaceLayout, { composer: null, children: child }),
+    }),
   );
 }
 
@@ -62,7 +66,7 @@ describe('single live-turn handoff', () => {
       steps: [{
         stepId: 'assistant-1',
         thinking: { text: '先检查', truncated: false, complete: true },
-        text: { text: '最终答案', truncated: false, complete: false },
+        text: { text: '最终答案', truncated: false, complete: true },
         tools: [{
           toolUseId: 'tool-1',
           toolName: 'Bash',
@@ -74,15 +78,14 @@ describe('single live-turn handoff', () => {
       }],
     });
 
-    // #1307: the render-layer fold (foldTimeline) keeps answer text as the
-    // grouping boundary and leaves a pure-thinking run bare, so the reasoning
-    // renders as the 深度思考 disclosure above the answer while the tool folds
-    // into one collapsed "Processing" block below it (its body is not in the
-    // static markup; the summary line carries the tool roll-up).
-    assert.equal((markup.match(/data-processing="block"/g) ?? []).length, 1);
+    // The render-layer fold keeps answer text as the grouping boundary, but
+    // adds no second Processing disclosure around the native reasoning and
+    // Astryx tool-call disclosures.
+    assert.equal((markup.match(/data-processing="block"/g) ?? []).length, 0);
+    assert.equal((markup.match(/astryx-chat-tool-calls/g) ?? []).length, 1);
     assert.ok(markup.indexOf('深度思考') >= 0);
     assert.ok(markup.indexOf('深度思考') < markup.indexOf('最终答案'));
-    assert.ok(markup.indexOf('最终答案') < markup.indexOf('运行 1 条命令'));
+    assert.ok(markup.indexOf('最终答案') < markup.indexOf('Bash'));
     assert.equal((markup.match(/data-turn-id=/g) ?? []).length, 1);
   });
 
@@ -139,7 +142,8 @@ describe('single live-turn handoff', () => {
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
-    assert.equal(markup.split(text).length - 1, 1);
+    assert.equal((markup.match(/maka-bubble-streaming/g) ?? []).length, 1);
+    assert.equal(markup.split(text).length - 1, 0);
   });
 
   it('reduces events into the projection and settles only after committed history refreshes', async () => {

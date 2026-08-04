@@ -11,6 +11,7 @@ import {
   PERMISSION_SESSION_ID,
   PROCESSING_SESSION_ID,
   STALE_FAKE_SESSION_ID,
+  STREAMING_SESSION_ID,
   TURN_CONTROL_BRANCH_ORPHAN_SESSION_ID,
   TURN_CONTROL_BRANCH_VISIBLE_SESSION_ID,
   TURN_CONTROL_PRIMARY_SESSION_ID,
@@ -91,6 +92,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'artifact-pane',
   'artifact-errors',
   'streaming-sidebar',
+  'disclosure-output',
   // PR-STREAM-TURN-CENTER: active session renders the live answer bubble in
   // the main panel (below a committed turn) so
   // streaming-vs-committed horizontal alignment is locked deterministically.
@@ -123,8 +125,6 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-daily-review',
   'settings-permissions',
   'settings-voice',
-  'settings-gateway',
-  'settings-search',
   'settings-usage',
   'settings-health',
   'module-skills',
@@ -178,14 +178,14 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   // so xuan's Phase 2 modal gate has a stable fixture state.
   'sidebar-search-modal-open',
   // PR-shared primitive-COMMAND-INPUT-0: same 60-session seed; differs only in
-  // `paletteOpen: true`, which auto-opens CommandPalette so shared primitive
-  // InputGroup changes to the command input shell have a stable fixture state.
+  // `paletteOpen: true`, which auto-opens CommandPalette so command-input
+  // shell changes have a stable fixture state.
   'command-palette-open',
   // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
   // kenji `b3d156e9`): same 60-session seed; differs in
   // `focusActiveRow: true`, which programmatically focuses the
   // active row's button after mount so `:focus-within` triggers
-  // and the `.maka-list-row-menu-trigger` becomes visible.
+  // and the official session item receives focus.
   // Captures the overflow-trigger state so reviewers can verify
   // the time meta + unread dot are hidden underneath (no overlap).
   'sidebar-row-actions-visible',
@@ -470,6 +470,12 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
         activeSessionId: TURN_SESSION_ID,
         liveTurnBySession: streamingLiveTurns(),
       };
+    case 'disclosure-output':
+      return {
+        ...state,
+        activeSessionId: STREAMING_SESSION_ID,
+        liveTurnBySession: streamingLiveTurns(),
+      };
     case 'streaming-answer':
       // Active session = the committed turn-narrative session, PLUS a live
       // answer streaming into it. The main panel then shows a settled turn
@@ -540,10 +546,6 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'permissions' };
     case 'settings-voice':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'voice' };
-    case 'settings-gateway':
-      return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'open-gateway' };
-    case 'settings-search':
-      return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'search' };
     case 'settings-usage':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'usage' };
     case 'settings-health':
@@ -554,8 +556,7 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       return {
         ...state,
         activeSessionId: TURN_SESSION_ID,
-        composerText: '请整理这次会议的行动项',
-        composerSkills: [{ id: 'meeting-followup', name: '会议跟进' }],
+        composerText: '/skill:meeting-followup 请整理这次会议的行动项',
       };
     case 'module-mcp':
       // Open the 扩展 → MCP module directly so the alignment audit reaches the

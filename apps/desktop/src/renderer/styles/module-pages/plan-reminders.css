@@ -41,28 +41,18 @@
   max-width: 560px;
 }
 
-.maka-plan-eyebrow {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--tracking-normal);
-}
 
 .maka-plan-heading h2 {
+  font: var(--maka-text-display-2);
   margin: 0;
   color: var(--foreground);
-  font-size: 2em;
-  font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
-  line-height: var(--leading-tight);
 }
 
 .maka-plan-heading p:last-child {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .maka-plan-top-actions {
@@ -90,26 +80,6 @@
   gap: var(--space-2-5);
   flex-wrap: wrap;
   row-gap: var(--space-2-5);
-}
-
-.maka-plan-tabs-list {
-  gap: var(--space-4);
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
-}
-
-.maka-plan-tab {
-  position: relative;
-  gap: var(--space-1-5);
-  min-width: 0;
-  height: 28px;
-  padding: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-plan-toolbar {
@@ -193,16 +163,40 @@
   gap: var(--space-1);
 }
 
-.maka-plan-dialog {
-  max-height: min(86dvh, 760px);
-}
-
 .maka-plan-form {
   border: 0;
   border-radius: 0;
   background: var(--background);
-  padding: var(--space-3);
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5) var(--space-4);
   overflow: auto;
+}
+
+/* Right-side sheet (reference layout): pinned to the window edge full-height,
+   rounded on the exposed edge only, with a whisper backdrop so the task list
+   stays readable behind it. */
+.maka-plan-dialog {
+  margin: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  border-radius: var(--radius-modal) 0 0 var(--radius-modal);
+}
+
+.maka-plan-dialog::backdrop {
+  background: oklch(from var(--foreground) l c h / 0.08);
+}
+
+/* The reference wraps each group's rows in an inset rounded container. */
+.maka-plan-rows {
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--background);
+  padding-inline: var(--space-3);
+  overflow: hidden;
+}
+
+.maka-plan-form-footer {
+  justify-content: flex-end;
 }
 
 .maka-plan-form-header {
@@ -216,45 +210,70 @@
   gap: var(--space-1);
 }
 
-.maka-plan-form-title {
+.maka-plan-form-kicker {
+  font: var(--maka-text-supporting);
   margin: 0;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-tight);
+  color: var(--muted-foreground);
 }
 
-.maka-plan-form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-1-5);
-}
-
-.maka-plan-field {
-  display: grid;
-  gap: var(--space-0-5);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-plan-field input,
-.maka-plan-field textarea {
+/* The large borderless title — the form's one display element. A raw input
+   wrapped in Astryx Field (label + status stay accessible); chrome-free so
+   the dialog opens straight into naming the task, like the reference panel. */
+.maka-plan-title-input {
+  font: var(--maka-text-heading-2);
   width: 100%;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
   color: var(--foreground);
-  font: inherit;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  padding: var(--space-1-5) var(--space-2);
-  outline: none;
+}
+
+.maka-plan-title-input::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* One labeled group: quiet label over hairline-divided label/control rows —
+   the settings open-row idiom, scoped to the dialog. */
+.maka-plan-group {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.maka-plan-group-label {
+  font: var(--maka-text-supporting);
+  margin: 0;
+  color: var(--muted-foreground);
+}
+
+.maka-plan-rows {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.maka-plan-rows > * + * {
+  border-block-start: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-plan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  min-height: 44px;
+  padding-block: var(--space-1-5);
+}
+
+.maka-plan-row-label {
+  font: var(--maka-text-body);
+  color: var(--foreground);
 }
 
 .maka-plan-presets {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-1);
 }
 
@@ -265,39 +284,18 @@
   white-space: nowrap;
 }
 
-.maka-plan-validation {
-  margin: 0;
-  border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.34);
-  border-radius: var(--radius-control);
-  background: oklch(from var(--warning) l c h / 0.08);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
-  padding: var(--space-1) var(--space-2);
-}
-
-.maka-plan-delivery-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-1-5);
-}
-
 .maka-plan-delivery-help {
+  font: var(--maka-text-supporting);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
 }
 
 .maka-plan-search,
 .maka-plan-compact-select {
+  font: var(--maka-text-heading-5);
   display: grid;
   gap: var(--space-1);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-plan-search {
@@ -313,28 +311,8 @@
   width: 168px;
 }
 
-/* PR-UI-ALIGN-1 (2026-06-21): the reference's task toolbar is a single bare
-   sort control on the right of the tabs — not a form. Hide the stacked field
-   labels (排序 / 搜索计划提醒 / 状态) so the controls read as light inline chips,
-   and let the bar sit on the tabs row instead of wrapping to its own block. */
-.maka-plan-toolbar label > span:first-child {
-  display: none;
-}
-
-.maka-plan-search input {
-  width: 100%;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  outline: none;
-  padding: var(--space-1-5) var(--space-2);
-}
-
 .maka-plan-search-summary {
+  font: var(--maka-text-heading-5);
   font-variant-numeric: tabular-nums;
   display: flex;
   min-width: 0;
@@ -342,8 +320,6 @@
   justify-content: space-between;
   gap: var(--space-1-5);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-plan-empty {
@@ -360,23 +336,30 @@
 }
 
 .maka-plan-card-title {
+  font: var(--maka-text-heading-3);
   margin: 0;
   min-width: 0;
   color: var(--foreground);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
   overflow-wrap: anywhere;
 }
 
+/* #1879 measured this row and deliberately leaves its height unpinned, which
+   is the opposite of what that issue assumed (it read the row as already
+   pinned and offered it as the shape the other chips should take; it declares
+   no height at all — the 20px it measures at comes from the Badge beside the
+   message). It must stay unpinned: the message wraps by design
+   (`overflow-wrap: anywhere` below), and measured, replacing it with a long
+   string grows this row well past its one-line 20px. A pinned height would
+   clip all of that to one line. Multi-line capability is what disqualifies a
+   row from the single-line chip family — same call as
+   `.maka-plan-card-schedule` and `.settingsMemoryBackupCandidate`. */
 .maka-plan-card-run {
+  font: var(--maka-text-supporting);
   display: flex;
   min-width: 0;
   gap: var(--space-1);
   align-items: flex-start;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .maka-plan-card-run > :first-child {
@@ -388,7 +371,16 @@
   overflow-wrap: anywhere;
 }
 
+/* #1879: unpinned on purpose. `flex-wrap: wrap` is not decorative here —
+   measured, this row wraps to a second row at the 480px window floor. (The
+   pixel height is not recorded: a wrap threshold is a font metric, and CI
+   Linux reported a different one than macOS did, which is exactly why the e2e
+   for this asserts the relation and not a figure.) It is a wrapping meta row,
+   not a single-line chip; its height tracking its content is correct
+   behaviour, so there is nothing here for a box-height pin to fix. The chip
+   inside it (`.maka-plan-card-countdown`) is an Astryx Badge instead. */
 .maka-plan-card-schedule {
+  font: var(--maka-text-supporting);
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
@@ -396,8 +388,6 @@
   column-gap: var(--space-1);
   row-gap: var(--space-0-5);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .maka-plan-card-schedule > span {
@@ -415,22 +405,18 @@
    steady state, so the pill is neutral (foreground wash) rather than
    accent-tinted — colour is reserved for genuinely exceptional states
    (e.g. an overdue run), which would opt in via a data-attribute. */
+/* #1879: it had pill chrome and no height, so its own leading at 40px doubled
+   the box to 40px, measured. It is an Astryx `Badge` now — neutral is the
+   variant that keeps the exception-only rule above — so the box (20px off
+   `--spacing-5`), radius, padding, caption type and `nowrap` all come from the
+   component. Only the gap to the preceding text is product layout. */
 .maka-plan-card-countdown {
-  display: inline-block;
   margin-left: var(--space-1);
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.08);
-  color: var(--foreground-secondary);
-  font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-caption);
-  letter-spacing: var(--tracking-normal);
 }
 
 .maka-plan-card-note {
+  font: var(--maka-text-body);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
   margin: 0;
   padding: 0;
   overflow-wrap: anywhere;
@@ -448,10 +434,6 @@
   padding: var(--space-1-5) var(--space-2-5);
 }
 
-/* .maka-plan-run-status is now the Chip primitive (squared status label);
-   its tone→alpha comes from chip.tsx and the triggered/blocked/failed mapping
-   from planRunStatusChipTone in plan-reminder-panel.tsx. No bespoke CSS. */
-
 .maka-plan-run-main {
   display: grid;
   gap: 1px;
@@ -459,9 +441,9 @@
 }
 
 .maka-plan-run-main strong {
+  font: var(--maka-text-heading-4);
   min-width: 0;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -469,9 +451,8 @@
 
 .maka-plan-run-main span,
 .maka-plan-run-row time {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
 }
 
 .maka-plan-run-row time {
@@ -496,11 +477,6 @@
   }
 
   .maka-plan-card,
-  .maka-plan-form-grid,
-  .maka-plan-delivery-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .maka-plan-card {
     gap: var(--space-2);
   }

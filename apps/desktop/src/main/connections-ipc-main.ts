@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import type { IpcMain } from 'electron';
 import {
   buildConnectionModelCatalogEntries,
   generalizedErrorMessageChinese,
@@ -19,6 +19,7 @@ import {
 } from './connection-model-discovery.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { createConnectionWithCredential } from './create-connection-with-credential.js';
+import { deleteConnectionWithCredential } from './delete-connection-with-credential.js';
 import { connectionTestStatusPatch } from './connection-test-status.js';
 
 type ConnectionStore = ReturnType<typeof createConnectionStore>;
@@ -29,10 +30,12 @@ interface ConnectionInputNormalizerDeps {
 }
 
 interface ConnectionsIpcDeps extends ConnectionInputNormalizerDeps {
+  ipcMain: Pick<IpcMain, 'handle'>;
   credentialStore: CredentialStore;
   syncOAuthModelConnections: () => Promise<void>;
   resolveConnectionSecret: (slug: string) => Promise<string | null>;
   hasConnectionSecret: (connection: LlmConnection) => Promise<boolean>;
+  disconnectManagedOAuthConnection: (connection: LlmConnection) => Promise<void>;
   emitConnectionListChanged: () => void;
   /**
    * Override for remote model discovery. Only E2E supplies this, to keep the
@@ -135,11 +138,13 @@ async function normalizeUpdateConnectionInput(
 
 export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
   const {
+    ipcMain,
     connectionStore,
     credentialStore,
     syncOAuthModelConnections,
     resolveConnectionSecret,
     hasConnectionSecret,
+    disconnectManagedOAuthConnection,
     emitConnectionListChanged,
     fetchModels,
   } = deps;
@@ -205,8 +210,10 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
   });
   ipcMain.handle('connections:delete', async (_event, slug: string) => {
     slug = normalizeConnectionSlugForIpc(slug, 'connection slug');
-    await connectionStore.delete(slug);
-    await credentialStore.deleteSecret(slug);
+    await deleteConnectionWithCredential(
+      { connectionStore, credentialStore, disconnectManagedOAuthConnection },
+      slug,
+    );
     emitConnectionListChanged();
   });
   ipcMain.handle('connections:test', async (_event, slug: string, opts?: { model?: string }) => {

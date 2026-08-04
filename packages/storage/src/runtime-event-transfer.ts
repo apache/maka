@@ -1,20 +1,50 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { decodePersistedRuntimeEvent, type RuntimeEvent, type RuntimeEventStore } from '@maka/core';
-import { createRuntimeEventStore } from './agent-run-store.js';
+import { decodePersistedRuntimeEvent, type RuntimeEvent } from '@maka/core';
+import {
+  createRuntimeEventStore,
+  type BoundedEvidenceReadResult,
+  type EvidenceReadBudget,
+} from './agent-run-store.js';
+import { classifyJsonRecord } from './json-prefix.js';
 import type { SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from './operational-state-store.js';
 
-export const SQLITE_RUNTIME_DATABASE_NAME = 'runtime.sqlite';
+export const SQLITE_RUNTIME_DATABASE_NAME = OPERATIONAL_STATE_DATABASE_NAME;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export type RuntimeEventPersistence = {
-  kind: 'jsonl' | 'sqlite';
-  runtimeEventStore: RuntimeEventStore;
-  runtimeCommitStore?: SqliteRuntimeStore;
+  kind: 'sqlite';
+  runtimeEventStore: SqliteRuntimeStore;
+  runtimeCommitStore: SqliteRuntimeStore;
   importReport?: LegacyRuntimeEventImportReport;
   close(): void;
 };
+
+export type RuntimeEventReadPersistence = {
+  kind: 'jsonl' | 'sqlite';
+  runtimeEventStore: RuntimeEventReadStore;
+  close(): void;
+};
+
+export interface RuntimeEventExportSource {
+  readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  readImmutableRuntimeEvents?(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+}
+
+export interface RuntimeEventReadStore extends RuntimeEventExportSource {
+  readRuntimeEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
+  readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+}
 
 export interface RuntimeEventImportReport {
   eventsRead: number;
@@ -28,17 +58,10 @@ export interface LegacyRuntimeEventImportReport extends RuntimeEventImportReport
 
 export async function openRuntimeEventPersistence(input: {
   workspaceRoot: string;
-  sqliteCanonical: boolean;
 }): Promise<RuntimeEventPersistence> {
   const databasePath = join(input.workspaceRoot, SQLITE_RUNTIME_DATABASE_NAME);
-  if (!input.sqliteCanonical && !(await pathExists(databasePath))) {
-    return {
-      kind: 'jsonl',
-      runtimeEventStore: createRuntimeEventStore(input.workspaceRoot),
-      close: () => {},
-    };
-  }
-  const store = createSqliteRuntimeStore(databasePath);
+  const databaseLease = acquireOperationalStateDatabase(input.workspaceRoot);
+  const store = createSqliteRuntimeStore(databasePath, { databaseLease });
   try {
     const importReport = await importLegacyRuntimeEventJsonlTree({
       workspaceRoot: input.workspaceRoot,
@@ -57,6 +80,32 @@ export async function openRuntimeEventPersistence(input: {
   }
 }
 
+/**
+ * Open the canonical RuntimeEvent read model without mutating the storage root.
+ *
+ * A legacy-only root remains readable until a writer performs the one-way
+ * import. Once runtime.sqlite exists, readers never merge or fall back to
+ * JSONL, so SQLite-only facts cannot disappear behind a stale file projection.
+ */
+export async function openRuntimeEventReadPersistence(input: {
+  workspaceRoot: string;
+}): Promise<RuntimeEventReadPersistence> {
+  const databasePath = join(input.workspaceRoot, SQLITE_RUNTIME_DATABASE_NAME);
+  if (!(await pathExists(databasePath))) {
+    return {
+      kind: 'jsonl',
+      runtimeEventStore: asRuntimeEventReader(createRuntimeEventStore(input.workspaceRoot)),
+      close: () => {},
+    };
+  }
+  const store = createSqliteRuntimeStore(databasePath, { readOnly: true });
+  return {
+    kind: 'sqlite',
+    runtimeEventStore: asRuntimeEventReader(store),
+    close: () => store.close(),
+  };
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path);
@@ -68,7 +117,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 export async function exportRuntimeEventsToJsonl(
-  source: RuntimeEventStore,
+  source: RuntimeEventExportSource,
   sessionId: string,
   runId: string,
 ): Promise<string> {
@@ -76,6 +125,18 @@ export async function exportRuntimeEventsToJsonl(
     ? await source.readImmutableRuntimeEvents(sessionId, runId)
     : await source.readRuntimeEvents(sessionId, runId);
   return events.length === 0 ? '' : `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+}
+
+function asRuntimeEventReader(store: RuntimeEventReadStore): RuntimeEventReadStore {
+  return Object.freeze({
+    readRuntimeEvents: (sessionId: string, runId: string) =>
+      store.readRuntimeEvents(sessionId, runId),
+    readRuntimeEventsBounded: (sessionId: string, runId: string, budget: EvidenceReadBudget) =>
+      store.readRuntimeEventsBounded(sessionId, runId, budget),
+    readImmutableRuntimeEvents: (sessionId: string, runId: string) =>
+      store.readImmutableRuntimeEvents(sessionId, runId),
+    readSessionRuntimeEvents: (sessionId: string) => store.readSessionRuntimeEvents(sessionId),
+  });
 }
 
 export async function importRuntimeEventsFromJsonl(input: {
@@ -182,6 +243,14 @@ function parseLegacyRuntimeEventJsonl(
 ): RuntimeEvent[] {
   const events: RuntimeEvent[] = [];
   const lines = jsonl.split('\n');
+  let lastNonEmptyIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index]?.trim()) {
+      lastNonEmptyIndex = index;
+      break;
+    }
+  }
+  const endsWithNewline = jsonl.endsWith('\n');
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (!line?.trim()) continue;
@@ -191,6 +260,13 @@ function parseLegacyRuntimeEventJsonl(
       if (isLegacyStreamPartialSnapshot(parsed)) continue;
       event = decodePersistedRuntimeEvent(parsed);
     } catch (error) {
+      if (
+        !endsWithNewline &&
+        index === lastNonEmptyIndex &&
+        classifyJsonRecord(line) === 'incomplete-prefix'
+      ) {
+        continue;
+      }
       throw new Error(`Invalid legacy RuntimeEvent JSONL line ${index + 1} for run ${runId}`, {
         cause: error,
       });

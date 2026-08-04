@@ -157,14 +157,16 @@ describe('ToolRuntime child-agent run permits', () => {
         });
       });
     });
+    const firstCount = Math.floor(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN / 2);
+    const secondCount = MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN - firstCount + 1;
     const first = executeTool(
       runtime,
-      childBatchProbeTool(3, false, 'first_batch_probe', 'first'),
+      childBatchProbeTool(firstCount, false, 'first_batch_probe', 'first'),
       new AbortController(),
     );
     const second = executeTool(
       runtime,
-      childBatchProbeTool(3, false, 'second_batch_probe', 'second'),
+      childBatchProbeTool(secondCount, false, 'second_batch_probe', 'second'),
       new AbortController(),
     );
 
@@ -173,7 +175,7 @@ describe('ToolRuntime child-agent run permits', () => {
     assert.equal(active.size, MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
 
     releases.get(started[0]!)?.();
-    await waitFor(() => started.length === 6);
+    await waitFor(() => started.length === MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN + 1);
     assert.equal(maxActive, MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
 
     for (const release of releases.values()) release();

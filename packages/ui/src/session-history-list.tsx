@@ -1,4 +1,13 @@
-import { memo, useEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
+import {
+  memo,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type KeyboardEvent,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord, SessionSummary, UiLocale } from '@maka/core';
 import { formatCompactTimestamp } from '@maka/core';
@@ -6,46 +15,37 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  Ban,
   Bot,
-  ChevronRight,
-  CircleCheckBig,
-  Eye,
   FolderGit2,
   FolderOpen,
-  Hourglass,
-  Loader2,
-  MessageSquare,
-  MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
-  Plus,
-  ShieldAlert,
+  Plug,
+  SquarePen,
   Trash2,
 } from './icons.js';
-import { EmptyState } from './empty-state.js';
-import { OverlayScrollArea } from './overlay-scroll-area.js';
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from './primitives/menu.js';
-import { Button as UiButton } from './ui.js';
-import { Button as BaseButton } from '@base-ui/react/button';
+import { Badge } from '@astryxdesign/core/Badge';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { MoreMenu } from '@astryxdesign/core/MoreMenu';
+import {
+  SideNavItem,
+  SideNavSection,
+} from '@astryxdesign/core/SideNav';
+import { VStack } from '@astryxdesign/core/Stack';
+import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
-const PROJECT_GROUP_PREVIEW_LIMIT = 4;
 
 export interface SessionRowActions {
-  /** Flag (pin) state toggle. */
   onToggleFlag(sessionId: string, next: boolean): void | Promise<void>;
-  /** Move to / out of the archive bucket. */
   onArchive(sessionId: string): void | Promise<void>;
   onUnarchive(sessionId: string): void | Promise<void>;
-  /** Rename via inline prompt. Receives the new (trimmed) name. */
   onRename(sessionId: string, name: string): void | Promise<void>;
-  /** Permanent removal — caller is responsible for the confirm gate. */
   onDelete(sessionId: string): void | Promise<void>;
 }
 
@@ -67,152 +67,85 @@ export interface SessionHistoryGroup {
 export function SessionHistoryList(props: {
   sessions: SessionSummary[];
   activeId?: string;
-  /**
-   * Per-session-id boolean flag: true when the session has a live streaming
-   * delta in flight. Rendered as a small pulsing accent dot on the row.
-   * Caller derives this from the live-turn projection so the sidebar
-   * shows live activity without subscribing to the stream itself.
-   */
   streamingSessionIds?: Set<string>;
-  /**
-   * Per-session-id boolean flag: true when the session's backend / connection
-   * is stale (`backend='fake'` or `llmConnectionSlug` no longer resolves).
-   * The row dims + shows a small "已过期" pill so users notice in the list
-   * before clicking in and seeing the chat header banner. Caller derives this
-   * by joining `sessions` against `connections` — keeps SessionListPanel
-   * unaware of the connection store.
-   */
   staleSessionIds?: Set<string>;
-  /** Pre-computed groups used by the project view. */
   groups?: ReadonlyArray<SessionHistoryGroup>;
   worktreeSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
-  /** Linked subagent Sessions keyed by their durable parent Session id. */
   childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
   groupVariant?: SessionHistoryGroupVariant;
+  /** Optional section chrome (title + end actions) wrapping the history. */
+  heading?: string;
+  headingEnd?: ReactNode;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
-  // 参考实现 keeps the lower sidebar region as stable chat history
-  // even when Skills / Scheduled Tasks are open in the main pane.
-  const sessionListTitle = copy.title;
-  // PR-UX-POLISH-1 commit 4 (WAWQAQ msg `e0dbad11` + kenji msg
-  // `2844f64f`): in-list `筛选会话` filter input removed. All search
-  // capability lives in the top-level `搜索` modal (PR-SEARCH-MODAL-
-  // REAL-0 wires it to the desktop preload's thread search in the same PR).
-  // The previous `searchQuery` state + `searchInputRef` + ⌘F/Ctrl+F
-  // focus binding are gone with it; ⌘F is freed for future use.
-  // `filteredSessions` collapses to a direct passthrough of
-  // `props.sessions` — group rendering downstream still partitions
-  // by status / time / filter.
+  const sessionListTitle = props.heading ?? copy.title;
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    // PR-SIDEBAR-IA-0 Phase 2 fixup (xuan `71687cc7`): the
-    // ArrowLeft/ArrowRight filter cycle was REMOVED. Hidden state
-    // without visible UI is harder for users to discover and harder
-    // for review to verify. If we re-introduce Pinned/Archived
-    // access in the future it will be a deliberate, visible,
-    // lightweight control (per kenji `9f683ea8`).
-    if (event.key === 'Delete' || event.key === 'Backspace') {
-      // Delete on a focused row opens the App-level confirmation (which
-      // toast.confirm()s); we do not delete silently per the lifecycle
-      // contract.
-      const active = document.activeElement as HTMLElement | null;
-      const row = active?.closest('.maka-list-row');
-      const sessionId = row?.querySelector<HTMLButtonElement>('.maka-list-row-main')?.dataset.sessionId;
-      if (sessionId && props.rowActions) {
-        event.preventDefault();
-        void props.rowActions.onDelete(sessionId);
-      }
-      return;
-    }
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown' && event.key !== 'Home' && event.key !== 'End') {
-      return;
-    }
-    const list = event.currentTarget;
-    const focusables = Array.from(
-      list.querySelectorAll<HTMLButtonElement>('.maka-list-row-main'),
-    );
-    if (focusables.length === 0) return;
+    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
     const active = document.activeElement as HTMLElement | null;
-    const currentIndex = active ? focusables.indexOf(active as HTMLButtonElement) : -1;
-    let nextIndex = currentIndex;
-    switch (event.key) {
-      case 'ArrowDown':
-        nextIndex = currentIndex < 0 ? 0 : Math.min(focusables.length - 1, currentIndex + 1);
-        break;
-      case 'ArrowUp':
-        nextIndex = currentIndex <= 0 ? 0 : currentIndex - 1;
-        break;
-      case 'Home':
-        nextIndex = 0;
-        break;
-      case 'End':
-        nextIndex = focusables.length - 1;
-        break;
+    if (!active || active.matches('input, textarea, [contenteditable="true"]')) return;
+    const row = active.closest<HTMLElement>(
+      '[data-maka-contract="session-row"], [data-session-id]',
+    );
+    const sessionId =
+      row?.dataset.sessionId ??
+      row?.querySelector<HTMLElement>('[data-session-id]')?.dataset.sessionId;
+    if (sessionId && props.rowActions) {
+      event.preventDefault();
+      void props.rowActions.onDelete(sessionId);
     }
-    if (nextIndex === currentIndex) return;
-    event.preventDefault();
-    focusables[nextIndex]?.focus({ preventScroll: false });
-    focusables[nextIndex]?.scrollIntoView({ block: 'nearest' });
   }
 
+  const body = (
+    <SessionListGroups
+      groups={
+        props.groups
+          ? props.groups.map((g) => ({
+              key: g.id,
+              label: g.label,
+              sessions: g.sessions,
+              project: g.project,
+            }))
+          : groupSessionsForHistory(props.sessions, locale).map((g) => ({
+              key: g.id,
+              label: g.label,
+              sessions: g.sessions,
+            }))
+      }
+      groupVariant={props.groupVariant ?? 'conversation'}
+      activeId={props.activeId}
+      streamingSessionIds={props.streamingSessionIds}
+      staleSessionIds={props.staleSessionIds}
+      childSessionsByParentId={props.childSessionsByParentId}
+      worktreeSessionIds={props.worktreeSessionIds}
+      onSelectSession={props.onSelectSession}
+      rowActions={props.rowActions}
+      projectActions={props.projectActions}
+    />
+  );
+
+  // Outer SideNav is the sole navigation landmark; this is scroll content only.
   return (
-    <section className="maka-session-list" aria-label={sessionListTitle}>
-      {props.sessions.length === 0 &&
-      !(props.groupVariant === 'project' && (props.groups?.length ?? 0) > 0) ? (
-        // WAWQAQ msg `f56f38c1` (2026-06-20): the create-session CTA
-        // belongs in the sidebar header / nav rail, never in the
-        // bottom session-history empty state. The empty state here is
-        // pure "no sessions yet" copy — no inline CTA. The top-of-
-        // sidebar `+ 新任务` button is the only create-session entry.
-        <EmptyState
-          Icon={MessageSquare}
-          title={copy.emptyTitle}
-          body={copy.emptyBody}
-          extraClassName="maka-session-empty-state"
-        />
-      ) : (
-        <OverlayScrollArea
-          className="maka-list-stack"
-          viewportClassName="maka-list-stackViewport"
-          contentClassName="maka-list-stackContent"
-          onKeyDown={handleListKeyDown}
+    <div className="maka-session-list" aria-label={sessionListTitle} onKeyDown={handleListKeyDown}>
+      {props.heading ? (
+        <SideNavSection
+          title={props.heading}
+          endContent={props.headingEnd}
+          className="maka-session-heading-section"
         >
-          <SessionListGroups
-            groups={
-              props.groups
-                ? props.groups.map((g) => ({
-                    key: g.id,
-                    label: g.label,
-                    sessions: g.sessions,
-                    project: g.project,
-                  }))
-                : groupSessionsForHistory(props.sessions, locale).map((g) => ({
-                    key: g.id,
-                    label: g.label,
-                    sessions: g.sessions,
-                  }))
-            }
-            groupVariant={props.groupVariant ?? 'conversation'}
-            activeId={props.activeId}
-            streamingSessionIds={props.streamingSessionIds}
-            staleSessionIds={props.staleSessionIds}
-            childSessionsByParentId={props.childSessionsByParentId}
-            worktreeSessionIds={props.worktreeSessionIds}
-            onSelectSession={props.onSelectSession}
-            rowActions={props.rowActions}
-            projectActions={props.projectActions}
-          />
-        </OverlayScrollArea>
+          {body}
+        </SideNavSection>
+      ) : (
+        body
       )}
-    </section>
+    </div>
   );
 }
 
-/** Render either the flat conversation groups or project disclosures. */
 function SessionListGroups(props: {
   groups: ReadonlyArray<{
     key: string;
@@ -230,40 +163,96 @@ function SessionListGroups(props: {
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
 }) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
+
+  function commitProjectRename(project: ProjectRecord, name: string) {
+    setEditingProjectId(null);
+    if (!props.projectActions || !name || name === project.name) return;
+    void Promise.resolve(props.projectActions.onRename(project.id, name)).catch(() => {
+      // AppShell owns visible project-action failure feedback.
+    });
+  }
+
+  function renderSessionTree(session: SessionSummary, nested: boolean): ReactNode {
+    const childSessions = props.childSessionsByParentId?.get(session.id);
+    const childNodes =
+      childSessions && childSessions.length > 0
+        ? childSessions.map((child) => renderSessionTree(child, true))
+        : undefined;
+    return (
+      <SessionNavRow
+        key={session.id}
+        session={session}
+        nested={nested}
+        active={session.id === props.activeId}
+        streaming={props.streamingSessionIds?.has(session.id) ?? false}
+        stale={props.staleSessionIds?.has(session.id) ?? false}
+        worktree={props.worktreeSessionIds?.has(session.id) ?? false}
+        editing={editingSessionId === session.id}
+        onSelectSession={props.onSelectSession}
+        actions={props.rowActions}
+        setEditingSessionId={setEditingSessionId}
+      >
+        {childNodes}
+      </SessionNavRow>
+    );
+  }
+
   if (props.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
-    return (
-      <>
-        {activeGroups.map((group) => (
-          <ProjectSessionGroup
+
+    function renderProjectGroup(
+      group: (typeof props.groups)[number],
+    ): ReactNode {
+      const project = group.project;
+      const isEditing = Boolean(project && editingProjectId === project.id);
+      if (isEditing && project) {
+        return (
+          <ProjectRenameRow
             key={group.key}
             groupKey={group.key}
             label={group.label}
-            sessions={group.sessions}
-            project={group.project}
-            activeId={props.activeId}
-            streamingSessionIds={props.streamingSessionIds}
-            staleSessionIds={props.staleSessionIds}
-            childSessionsByParentId={props.childSessionsByParentId}
-            worktreeSessionIds={props.worktreeSessionIds}
-            onSelectSession={props.onSelectSession}
-            rowActions={props.rowActions}
-            projectActions={props.projectActions}
+            onCommit={(name) => commitProjectRename(project, name)}
+            onCancel={() => setEditingProjectId(null)}
           />
-        ))}
+        );
+      }
+      return (
+        <ProjectNavRow
+          key={group.key}
+          groupKey={group.key}
+          label={group.label}
+          project={project}
+          sessions={group.sessions}
+          projectActions={props.projectActions}
+          onStartRename={() => {
+            if (project) setEditingProjectId(project.id);
+          }}
+          renderSession={(session) => renderSessionTree(session, false)}
+        />
+      );
+    }
+
+    return (
+      <>
+        {activeGroups.map(renderProjectGroup)}
         {archivedGroups.length > 0 && (
-          <ArchivedProjectGroups
-            groups={archivedGroups}
-            activeId={props.activeId}
-            streamingSessionIds={props.streamingSessionIds}
-            staleSessionIds={props.staleSessionIds}
-            childSessionsByParentId={props.childSessionsByParentId}
-            worktreeSessionIds={props.worktreeSessionIds}
-            onSelectSession={props.onSelectSession}
-            rowActions={props.rowActions}
-            projectActions={props.projectActions}
-          />
+          <SideNavItem
+            label={copy.archivedProjects}
+            collapsible={{
+              isCollapsed: !archivedExpanded,
+              onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
+            }}
+          >
+            {/* Always mount children: Astryx derives collapsible chrome from
+                !!children. Nulling on collapse removes the chevron and makes
+                the controlled isCollapsed prop a no-op. */}
+            {archivedGroups.map(renderProjectGroup)}
+          </SideNavItem>
         )}
       </>
     );
@@ -272,136 +261,279 @@ function SessionListGroups(props: {
   return (
     <>
       {props.groups.map((group) => {
-        return (
-          <div key={group.key} className="maka-list-group" data-variant="conversation">
-            {group.label ? (
-              <div className="maka-list-group-label">
-                <span>{group.label}</span>
-              </div>
-            ) : null}
-            <div>
-              {group.sessions.map((session) => (
-                <SessionTreeRow
-                  key={session.id}
-                  session={session}
-                  activeId={props.activeId}
-                  streamingSessionIds={props.streamingSessionIds}
-                  staleSessionIds={props.staleSessionIds}
-                  childSessionsByParentId={props.childSessionsByParentId}
-                  worktreeSessionIds={props.worktreeSessionIds}
-                  onSelectSession={props.onSelectSession}
-                  rowActions={props.rowActions}
-                />
-              ))}
+        const items = group.sessions.map((session) => renderSessionTree(session, false));
+        if (!group.label) {
+          return (
+            <div key={group.key} className="maka-session-group">
+              {items}
             </div>
-          </div>
+          );
+        }
+        return (
+          <SideNavSection key={group.key} title={group.label} className="maka-session-group">
+            {items}
+          </SideNavSection>
         );
       })}
     </>
   );
 }
 
-interface ProjectGroupSharedProps {
-  activeId?: string;
-  streamingSessionIds?: Set<string>;
-  staleSessionIds?: Set<string>;
-  childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
-  worktreeSessionIds?: ReadonlySet<string>;
-  onSelectSession(sessionId: string): void;
-  rowActions?: SessionRowActions;
+function ProjectNavRow(props: {
+  groupKey: string;
+  label: string;
+  project?: ProjectRecord;
+  sessions: SessionSummary[];
   projectActions?: ProjectRowActions;
-}
-
-function ArchivedProjectGroups(
-  props: ProjectGroupSharedProps & {
-    groups: ReadonlyArray<{
-      key: string;
-      label: string;
-      sessions: SessionSummary[];
-      project?: ProjectRecord;
-    }>;
-  },
-) {
-  const copy = getConversationCopy(useUiLocale()).sessions;
-  const [expanded, setExpanded] = useState(false);
+  onStartRename(): void;
+  renderSession(session: SessionSummary): ReactNode;
+}) {
+  // Collapsible only when there is a real session subtree. An empty VStack is
+  // still truthy children for Astryx (!!children) and fabricates a disclosure.
+  const hasSessions = props.sessions.length > 0;
   return (
-    <div className="maka-list-archived-projects">
-      <BaseButton
-        type="button"
-        className="maka-list-archived-projects-heading"
-        onClick={() => setExpanded((current) => !current)}
-        aria-expanded={expanded}
-        aria-label={copy.archivedProjectsAriaLabel}
-      >
-        <ChevronRight size={13} aria-hidden="true" />
-        <span>{copy.archivedProjects}</span>
-        <span className="maka-list-project-count">{props.groups.length}</span>
-      </BaseButton>
-      {expanded &&
-        props.groups.map((group) => (
-          <ProjectSessionGroup
-            key={group.key}
-            {...props}
-            groupKey={group.key}
-            label={group.label}
-            sessions={group.sessions}
-            project={group.project}
+    <div data-project-id={props.groupKey} className="maka-project-row">
+      <SideNavItem
+        label={props.label}
+        icon={FolderOpen}
+        collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
+        endContent={
+          <ProjectItemEndContent
+            project={props.project}
+            sessionCount={props.sessions.length}
+            actions={props.projectActions}
+            onStartRename={props.onStartRename}
           />
-        ))}
+        }
+      >
+        {/* Nest indent zeroed one level in sidebar.css (time-sort left edge). */}
+        {hasSessions ? (
+          <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
+        ) : undefined}
+      </SideNavItem>
     </div>
   );
 }
 
-function ProjectSessionGroup(props: ProjectGroupSharedProps & {
-  groupKey: string;
-  label: string;
-  sessions: SessionSummary[];
-  project?: ProjectRecord;
+/** Keeps trailing controls from activating the parent SideNavItem button. */
+function EndContentHitTarget(props: { children: ReactNode; className?: string }) {
+  return (
+    <span
+      className={props.className}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      {props.children}
+    </span>
+  );
+}
+
+const SessionNavRow = memo(function SessionNavRow(props: {
+  session: SessionSummary;
+  nested: boolean;
+  active: boolean;
+  streaming: boolean;
+  stale: boolean;
+  worktree: boolean;
+  editing: boolean;
+  onSelectSession(sessionId: string): void;
+  actions?: SessionRowActions;
+  setEditingSessionId: Dispatch<SetStateAction<string | null>>;
+  children?: ReactNode;
+}) {
+  const locale = useUiLocale();
+  const metaTitle = formatSessionMeta(props.session, locale);
+  const childArray = props.children
+    ? Array.isArray(props.children)
+      ? props.children
+      : [props.children]
+    : [];
+  const hasChildren = childArray.some(Boolean);
+
+  if (props.editing) {
+    return (
+      <SessionRenameRow
+        session={props.session}
+        onCommit={(name) => {
+          props.setEditingSessionId(null);
+          if (!props.actions || !name || name === props.session.name) return;
+          void Promise.resolve(props.actions.onRename(props.session.id, name)).catch(() => {
+            // AppShell owns visible session-action failure feedback.
+          });
+        }}
+        onCancel={() => props.setEditingSessionId(null)}
+      />
+    );
+  }
+
+  return (
+    <div
+      className="maka-session-row"
+      data-maka-contract="session-row"
+      data-session-id={props.session.id}
+      data-subagent={props.nested ? 'true' : undefined}
+      data-stale={props.stale ? 'true' : undefined}
+      title={metaTitle}
+    >
+      <SideNavItem
+        label={props.session.name}
+        // Nested (subagent) rows: native leading Bot icon keeps hierarchy
+        // readable without CSS nest-padding overrides. Parent rows stay iconless.
+        icon={props.nested ? Bot : undefined}
+        size="md"
+        isSelected={props.active}
+        collapsible={hasChildren ? { defaultIsCollapsed: false } : undefined}
+        onClick={(event) => {
+          if (event.detail > 1 && props.actions) {
+            props.setEditingSessionId(props.session.id);
+            return;
+          }
+          props.onSelectSession(props.session.id);
+        }}
+        endContent={
+          <SessionItemEndContent
+            session={props.session}
+            active={props.active}
+            streaming={props.streaming}
+            stale={props.stale}
+            worktree={props.worktree}
+            actions={props.actions}
+            setEditingSessionId={props.setEditingSessionId}
+          />
+        }
+      >
+        {hasChildren ? props.children : undefined}
+      </SideNavItem>
+    </div>
+  );
+});
+
+function SessionRenameRow(props: {
+  session: SessionSummary;
+  onCommit(name: string): void;
+  onCancel(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const [revealed, setRevealed] = useState(false);
-  const activeSessionId = props.sessions.some((session) => session.id === props.activeId)
-    ? props.activeId
-    : undefined;
-  const [disclosure, setDisclosure] = useState({
-    expanded: props.sessions.length > 0,
-    observedActiveSessionId: activeSessionId,
-  });
-  if (activeSessionId !== disclosure.observedActiveSessionId) {
-    setDisclosure({
-      expanded: activeSessionId ? true : disclosure.expanded,
-      observedActiveSessionId: activeSessionId,
-    });
-  }
-  const expanded = disclosure.expanded;
-  const [editing, setEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const escapeCancelledRef = useRef(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  return (
+    <div
+      className="maka-session-row maka-session-row--editing"
+      data-maka-contract="session-row"
+      data-session-id={props.session.id}
+    >
+      <input
+        ref={inputRef}
+        className="maka-session-rename-input"
+        defaultValue={props.session.name}
+        maxLength={80}
+        aria-label={copy.renameAriaLabel}
+        onBlur={(event) => {
+          if (escapeCancelledRef.current) {
+            escapeCancelledRef.current = false;
+            return;
+          }
+          props.onCommit(event.currentTarget.value.trim());
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.nativeEvent.isComposing || event.key === 'Process') return;
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            props.onCommit(event.currentTarget.value.trim());
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            escapeCancelledRef.current = true;
+            props.onCancel();
+          }
+        }}
+        autoComplete="off"
+        spellCheck={false}
+      />
+    </div>
+  );
+}
+
+function ProjectRenameRow(props: {
+  groupKey: string;
+  label: string;
+  onCommit(name: string): void;
+  onCancel(): void;
+}) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const inputRef = useRef<HTMLInputElement>(null);
+  const escapeCancelledRef = useRef(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  return (
+    <div
+      data-project-id={props.groupKey}
+      className="maka-session-row maka-session-row--editing"
+    >
+      <input
+        ref={inputRef}
+        className="maka-session-rename-input"
+        defaultValue={props.label}
+        maxLength={80}
+        aria-label={copy.projectRename}
+        onBlur={(event) => {
+          if (escapeCancelledRef.current) {
+            escapeCancelledRef.current = false;
+            return;
+          }
+          props.onCommit(event.currentTarget.value.trim());
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.nativeEvent.isComposing || event.key === 'Process') return;
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            props.onCommit(event.currentTarget.value.trim());
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            escapeCancelledRef.current = true;
+            props.onCancel();
+          }
+        }}
+        autoComplete="off"
+        spellCheck={false}
+      />
+    </div>
+  );
+}
+
+function ProjectItemEndContent(props: {
+  project?: ProjectRecord;
+  sessionCount: number;
+  actions?: ProjectRowActions;
+  onStartRename(): void;
+}) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const [menuOpen, setMenuOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const mountedRef = useMountedRef();
   const pendingActionRef = useRef<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const escapeCancelledRef = useRef(false);
-  const activeIsHidden = props.activeId
-    ? props.sessions.findIndex((session) => session.id === props.activeId) >= PROJECT_GROUP_PREVIEW_LIMIT
-    : false;
-  const showAll = revealed || activeIsHidden;
-  const visibleSessions = showAll
-    ? props.sessions
-    : props.sessions.slice(0, PROJECT_GROUP_PREVIEW_LIMIT);
-  const hiddenCount = props.sessions.length - visibleSessions.length;
+  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
   const project = props.project;
-  const canExpand = props.sessions.length > 0;
+  const actions = props.actions;
 
-  useEffect(() => {
-    if (!editing) return;
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, [editing]);
-
-  useEffect(() => {
-    return () => {
+  useEffect(
+    () => () => {
       pendingActionRef.current = null;
-    };
-  }, []);
+    },
+    [],
+  );
 
   function runProjectAction(actionId: string, action: () => void | Promise<void>) {
     if (pendingActionRef.current) return;
@@ -419,277 +551,289 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
     })();
   }
 
-  function commitRename(value: string) {
-    const name = value.trim();
-    setEditing(false);
-    if (!project || !props.projectActions || !name || name === project.name) return;
-    runProjectAction('rename', () => props.projectActions!.onRename(project.id, name));
+  // Projects keep a permanent MoreMenu (SideNavEndContent pattern). Hover-only
+  // would fire on nested session rows if wired to the project wrapper.
+  const menuItems = project && actions
+    ? project.archivedAt !== undefined
+      ? [
+          {
+            label: copy.projectRestore,
+            icon: ArchiveRestore,
+            onClick: () => runProjectAction('restore', () => actions.onRestore(project.id)),
+          },
+        ]
+      : [
+          ...(project.available
+            ? [
+                {
+                  label: copy.projectNewTask,
+                  icon: SquarePen,
+                  onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
+                },
+              ]
+            : [
+                {
+                  label: copy.projectRelink,
+                  icon: Plug,
+                  onClick: () => runProjectAction('relink', () => actions.onRelink(project.id)),
+                },
+              ]),
+          {
+            label: copy.projectRename,
+            icon: Pencil,
+            onClick: () => {
+              pendingMenuIntentRef.current = props.onStartRename;
+            },
+          },
+          {
+            label: copy.projectArchive,
+            icon: Archive,
+            onClick: () => runProjectAction('archive', () => actions.onArchive(project.id)),
+          },
+        ]
+    : [];
+
+  return (
+    <EndContentHitTarget className="maka-session-row-end maka-project-item-end">
+      {project && !project.available && (
+        <AlertTriangle size={12} aria-label={copy.projectUnavailable} />
+      )}
+      <Badge variant="neutral" label={props.sessionCount} />
+      {menuItems.length > 0 && (
+        <MoreMenu
+          size="sm"
+          label={copy.projectActionsAriaLabel(project?.name ?? '')}
+          isDisabled={pendingAction !== null}
+          isMenuOpen={menuOpen}
+          onOpenChange={(open) => {
+            setMenuOpen(open);
+            if (open) return;
+            const intent = pendingMenuIntentRef.current;
+            pendingMenuIntentRef.current = null;
+            if (intent) window.requestAnimationFrame(intent);
+          }}
+          items={menuItems}
+        />
+      )}
+    </EndContentHitTarget>
+  );
+}
+
+const SessionItemEndContent = memo(function SessionItemEndContent(props: {
+  session: SessionSummary;
+  active: boolean;
+  streaming: boolean;
+  stale: boolean;
+  worktree: boolean;
+  actions?: SessionRowActions;
+  setEditingSessionId: Dispatch<SetStateAction<string | null>>;
+}) {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).sessions;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<SessionRowActionId | null>(null);
+  const mountedRef = useMountedRef();
+  const pendingActionRef = useRef<SessionRowActionId | null>(null);
+  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
+  const actions = props.actions;
+  const statusDot = resolveSessionStatusDot(props.session, props.streaming, props.active, locale);
+
+  useEffect(
+    () => () => {
+      pendingActionRef.current = null;
+    },
+    [],
+  );
+
+  function runRowAction(actionId: SessionRowActionId, action: () => void | Promise<void>) {
+    if (pendingActionRef.current) return;
+    pendingActionRef.current = actionId;
+    setPendingAction(actionId);
+    void (async () => {
+      try {
+        await action();
+      } catch {
+        // AppShell owns visible session-action failure feedback.
+      } finally {
+        pendingActionRef.current = null;
+        if (mountedRef.current) setPendingAction(null);
+      }
+    })();
   }
 
+  // Signal (status/unread) and action (MoreMenu) are orthogonal — same as
+  // project rows (badge + menu). No hover XOR state machine.
+  const signal = statusDot ? (
+    <StatusDot
+      variant={statusDot.variant}
+      label={statusDot.label}
+      isPulsing={statusDot.isPulsing}
+      tooltip={statusDot.tooltip}
+      data-session-status={props.session.status}
+    />
+  ) : shouldShowSessionUnreadDot(props.session, props.streaming, props.active) ? (
+    <StatusDot variant="accent" label={copy.unreadAriaLabel} data-session-status="unread" />
+  ) : null;
+
   return (
-    <div
-      className="maka-list-group"
-      data-variant="project"
-      data-unavailable={project && !project.available ? 'true' : undefined}
-      data-expanded={expanded ? 'true' : 'false'}
-    >
-      <div className="maka-list-project-header">
-        {editing ? (
-          <form
-            className="maka-list-project-heading maka-list-project-rename"
-            onSubmit={(event) => {
-              event.preventDefault();
-              commitRename(inputRef.current?.value ?? '');
-            }}
-          >
-            <FolderOpen size={14} aria-hidden="true" />
-            <input
-              ref={inputRef}
-              defaultValue={props.label}
-              maxLength={80}
-              aria-label={copy.projectRename}
-              onBlur={(event) => {
-                if (escapeCancelledRef.current) {
-                  escapeCancelledRef.current = false;
-                  return;
-                }
-                commitRename(event.currentTarget.value);
-              }}
-              onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing || event.key === 'Process') return;
-                if (event.key === 'Escape') {
-                  event.preventDefault();
-                  escapeCancelledRef.current = true;
-                  setEditing(false);
-                }
-              }}
-            />
-          </form>
-        ) : (
-          <BaseButton
-            type="button"
-            className="maka-list-project-heading"
-            onClick={() => {
-              if (canExpand) {
-                setDisclosure((current) => ({
-                  ...current,
-                  expanded: !current.expanded,
-                }));
+    <EndContentHitTarget className="maka-session-row-end">
+      {props.stale && (
+        <Tooltip content={copy.staleTitle}>
+          {/* `yellow`, not `warning`. Astryx keeps two archives: the semantic
+              names paint a solid saturated fill (maka's `warning` is a flat
+              #ffce2f that does not adapt to dark mode), the colour names paint
+              a tint. This pill sits on every stale row in the rail, where the
+              chrome it replaced was an 18% wash — a solid block on each row
+              reads as an alert the state does not mean. */}
+          <Badge
+            variant="yellow"
+            label={copy.stale}
+            className="maka-list-row-stale-pill"
+            /* The reason belongs in the name, not only in the Tooltip. `title`
+               used to carry it, and a screen reader read it as the accessible
+               description; Astryx's Tooltip points `aria-describedby` at a
+               popover that is `display: none` until hovered, so off the mouse
+               the description computes to empty. */
+            aria-label={`${copy.staleAriaLabel}. ${copy.staleTitle}`}
+          />
+        </Tooltip>
+      )}
+      {props.worktree && (
+        <FolderGit2
+          size={12}
+          aria-label={copy.worktreeAriaLabel}
+          className="maka-session-worktree-icon"
+        />
+      )}
+      {signal}
+      {actions ? (
+        <span className="maka-session-row-trailing">
+          <MoreMenu
+            size="sm"
+            label={copy.actionsAriaLabel}
+            isDisabled={pendingAction !== null}
+            isMenuOpen={menuOpen}
+            onOpenChange={(open) => {
+              setMenuOpen(open);
+              if (open) return;
+              const intent = pendingMenuIntentRef.current;
+              pendingMenuIntentRef.current = null;
+              if (intent) {
+                window.requestAnimationFrame(() => {
+                  intent();
+                });
               }
             }}
-            disabled={!canExpand}
-            aria-expanded={canExpand ? expanded : false}
-            aria-controls={canExpand ? `maka-list-group-body-${props.groupKey}` : undefined}
-          >
-            <FolderOpen size={14} aria-hidden="true" />
-            <span className="maka-list-project-name">{props.label}</span>
-            {project && !project.available && (
-              <AlertTriangle
-                size={12}
-                aria-label={copy.projectUnavailable}
-              />
-            )}
-            <span className="maka-list-project-count">{props.sessions.length}</span>
-          </BaseButton>
-        )}
-        {project && props.projectActions && !editing && (
-          <Menu>
-            <MenuTrigger
-              render={<UiButton variant="quiet" size="icon-sm" />}
-              className="maka-list-project-menu-trigger"
-              aria-label={copy.projectActionsAriaLabel(project.name)}
-              disabled={pendingAction !== null}
-            >
-              {pendingAction ? (
-                <Loader2 size={14} aria-hidden="true" />
-              ) : (
-                <MoreHorizontal size={14} aria-hidden="true" />
-              )}
-            </MenuTrigger>
-            <MenuPopup align="end" side="bottom">
-              {project.archivedAt !== undefined ? (
-                <MenuItem
-                  onClick={() =>
-                    runProjectAction('restore', () => props.projectActions!.onRestore(project.id))
-                  }
-                >
-                  <ArchiveRestore size={15} aria-hidden="true" />
-                  {copy.projectRestore}
-                </MenuItem>
-              ) : (
-                <>
-                  {project.available ? (
-                    <MenuItem
-                      onClick={() =>
-                        runProjectAction('new', () => props.projectActions!.onNew(project.id))
-                      }
-                    >
-                      <Plus size={15} aria-hidden="true" />
-                      {copy.projectNewTask}
-                    </MenuItem>
-                  ) : (
-                    <MenuItem
-                      onClick={() =>
-                        runProjectAction('relink', () =>
-                          props.projectActions!.onRelink(project.id))
-                      }
-                    >
-                      <FolderOpen size={15} aria-hidden="true" />
-                      {copy.projectRelink}
-                    </MenuItem>
-                  )}
-                  <MenuSeparator />
-                  <MenuItem
-                    onClick={() => {
-                      if (!pendingActionRef.current) setEditing(true);
-                    }}
-                  >
-                    <Pencil size={15} aria-hidden="true" />
-                    {copy.projectRename}
-                  </MenuItem>
-                  <MenuItem
-                    onClick={() =>
-                      runProjectAction('archive', () =>
-                        props.projectActions!.onArchive(project.id))
-                    }
-                  >
-                    <Archive size={15} aria-hidden="true" />
-                    {copy.projectArchive}
-                  </MenuItem>
-                </>
-              )}
-            </MenuPopup>
-          </Menu>
-        )}
-      </div>
-      {expanded && (
-        <>
-          <div id={`maka-list-group-body-${props.groupKey}`}>
-            {visibleSessions.map((session) => (
-              <SessionTreeRow
-                key={session.id}
-                session={session}
-                activeId={props.activeId}
-                streamingSessionIds={props.streamingSessionIds}
-                staleSessionIds={props.staleSessionIds}
-                childSessionsByParentId={props.childSessionsByParentId}
-                worktreeSessionIds={props.worktreeSessionIds}
-                onSelectSession={props.onSelectSession}
-                rowActions={props.rowActions}
-              />
-            ))}
-          </div>
-          {hiddenCount > 0 && (
-            <BaseButton
-              type="button"
-              className="maka-list-project-more"
-              onClick={() => setRevealed(true)}
-              aria-label={copy.showMoreAriaLabel(hiddenCount)}
-            >
-              {copy.showMore}
-            </BaseButton>
-          )}
-        </>
+            items={[
+              {
+                label: props.session.isFlagged ? copy.unpin : copy.pin,
+                icon: props.session.isFlagged ? PinOff : Pin,
+                onClick: () =>
+                  runRowAction('flag', () =>
+                    actions.onToggleFlag(props.session.id, !props.session.isFlagged),
+                  ),
+              },
+              {
+                label: copy.rename,
+                icon: Pencil,
+                onClick: () => {
+                  pendingMenuIntentRef.current = () =>
+                    props.setEditingSessionId(props.session.id);
+                },
+              },
+              {
+                label: props.session.isArchived ? copy.unarchive : copy.archive,
+                icon: props.session.isArchived ? ArchiveRestore : Archive,
+                onClick: () =>
+                  runRowAction('archive', () =>
+                    props.session.isArchived
+                      ? actions.onUnarchive(props.session.id)
+                      : actions.onArchive(props.session.id),
+                  ),
+              },
+              { type: 'divider' },
+              {
+                label: copy.delete,
+                icon: Trash2,
+                onClick: () => {
+                  pendingMenuIntentRef.current = () =>
+                    runRowAction('delete', () => actions.onDelete(props.session.id));
+                },
+              },
+            ]}
+          />
+        </span>
+      ) : (
+        <span className="maka-session-row-trailing">
+          {signal ? null : <span className="maka-session-row-trailing-spacer" aria-hidden="true" />}
+        </span>
       )}
-    </div>
+    </EndContentHitTarget>
   );
-}
+});
 
-function SessionTreeRow(props: {
-  session: SessionSummary;
-  activeId?: string;
-  streamingSessionIds?: Set<string>;
-  staleSessionIds?: Set<string>;
-  childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
-  worktreeSessionIds?: ReadonlySet<string>;
-  onSelectSession(sessionId: string): void;
-  rowActions?: SessionRowActions;
-  depth?: number;
-}) {
-  const depth = props.depth ?? 0;
-  const children = props.childSessionsByParentId?.get(props.session.id) ?? [];
-  return (
-    <div
-      className="maka-list-session-tree"
-      data-depth={depth > 0 ? String(depth) : undefined}
-    >
-      <SessionRow
-        session={props.session}
-        active={props.session.id === props.activeId}
-        streaming={props.streamingSessionIds?.has(props.session.id) ?? false}
-        stale={props.staleSessionIds?.has(props.session.id) ?? false}
-        worktree={props.worktreeSessionIds?.has(props.session.id) ?? false}
-        nested={depth > 0}
-        onSelect={props.onSelectSession}
-        actions={props.rowActions}
-      />
-      {children.length > 0 && (
-        <div className="maka-list-session-children">
-          {children.map((child) => (
-            <SessionTreeRow
-              key={child.id}
-              {...props}
-              session={child}
-              depth={depth + 1}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+function resolveSessionStatusDot(
+  session: SessionSummary,
+  streaming: boolean,
+  active: boolean,
+  locale: UiLocale,
+): { variant: StatusDotVariant; label: string; isPulsing?: boolean; tooltip?: string } | null {
+  if (streaming) {
+    const copy = getConversationCopy(locale).sessions;
+    return {
+      variant: 'accent',
+      label: copy.respondingAriaLabel,
+      isPulsing: true,
+      tooltip: copy.respondingTitle,
+    };
+  }
 
-/**
- * Small inline icon next to the session name representing its
- * lifecycle status. Hidden for `active`
- * since that's the default and would add visual noise to most rows.
- *
- * `aborted` is rendered as muted history: not an error, not active,
- * and not silently swallowed.
- *
- * Caller is expected to pass a session with a SessionStatus from
- * `@maka/core` — typed as the SessionSummary from props avoids
- * pulling the core type into this file's import list.
- */
-function SessionStatusIcon(props: { session: SessionSummary }) {
-  const locale = useUiLocale();
-  const { session } = props;
   const status = session.status;
-  // Active is the default; no icon to reduce noise. Aborted retains a
-  // muted icon (per @kenji review on PR109b — aborted is dormant
-  // history that must remain visible, not silently swallowed as active).
+  if (status === 'active' && !active) {
+    // Idle rows keep a quiet neutral dot (shell-side-nav pattern).
+    return null;
+  }
   if (status === 'active') return null;
-  const Icon = STATUS_ICON_BY_STATUS[status as keyof typeof STATUS_ICON_BY_STATUS];
-  if (!Icon) return null;
+
   const { label, tone } = presentSessionStatus(status, locale);
-  // `blocked` may attach a reason; we surface the generalized text in
-  // the tooltip without exposing the raw enum identifier (per @kenji
-  // i18n contract). The shared presentation module owns the mapping so
-  // sidebar and renderer surfaces cannot drift.
-  const blockedDetail = status === 'blocked' && session.blockedReason
-    ? describeBlockedReason(session.blockedReason, locale)
-    : null;
-  const title = blockedDetail ? `${label} · ${blockedDetail}` : label;
-  return (
-    <span
-      className="maka-list-row-status-icon"
-      data-tone={tone}
-      data-status={status}
-      aria-label={title}
-      title={title}
-    >
-      <Icon size={12} aria-hidden="true" />
-    </span>
-  );
+  const blockedDetail =
+    status === 'blocked' && session.blockedReason
+      ? describeBlockedReason(session.blockedReason, locale)
+      : null;
+  return {
+    variant: toneToStatusDotVariant(tone),
+    label,
+    isPulsing: status === 'running',
+    tooltip: blockedDetail ? `${label} · ${blockedDetail}` : label,
+  };
 }
 
-/**
- * PawWork-style sidebar attention priority: asking/busy/error outrank unread,
- * and unread outranks plain time. The status icon beside the name already
- * carries asking/busy/error in Maka, so the right slot only shows the unread
- * dot when no higher-priority row state is active.
- */
-function shouldShowSessionUnreadDot(session: SessionSummary, streaming: boolean, active: boolean): boolean {
+function toneToStatusDotVariant(
+  tone: ReturnType<typeof presentSessionStatus>['tone'],
+): StatusDotVariant {
+  switch (tone) {
+    case 'accent':
+      return 'accent';
+    case 'warning':
+      return 'warning';
+    case 'destructive':
+      return 'error';
+    case 'success':
+      return 'success';
+    case 'info':
+      return 'accent';
+    case 'muted':
+    case 'neutral':
+    default:
+      return 'neutral';
+  }
+}
+
+function shouldShowSessionUnreadDot(
+  session: SessionSummary,
+  streaming: boolean,
+  active: boolean,
+): boolean {
   if (active) return false;
   if (!session.hasUnread) return false;
   if (streaming) return false;
@@ -701,326 +845,6 @@ const SIDEBAR_UNREAD_SUPPRESSED_STATUSES = new Set<string>([
   'waiting_for_user',
   'blocked',
 ]);
-
-const STATUS_ICON_BY_STATUS = {
-  running: Loader2,
-  waiting_for_user: Hourglass,
-  blocked: ShieldAlert,
-  review: Eye,
-  done: CircleCheckBig,
-  archived: Archive,
-  aborted: Ban,
-} as const;
-
-const SessionRow = memo(function SessionRow(props: {
-  session: SessionSummary;
-  active: boolean;
-  /** This session has a live streaming delta in flight. */
-  streaming?: boolean;
-  /**
-   * This session's backend / connection is stale (FakeBackend or a removed
-   * connection slug). Dims the row + renders a small "已过期" pill so the
-   * user can spot broken sessions in the list before clicking in.
-   */
-  stale?: boolean;
-  /** This session runs from a linked Git worktree. */
-  worktree?: boolean;
-  /** Render this linked child as an indented nested Session row. */
-  nested?: boolean;
-  onSelect(sessionId: string): void;
-  actions?: SessionRowActions;
-}) {
-  const { session, active, streaming, stale, worktree, nested, actions, onSelect } = props;
-  const locale = useUiLocale();
-  const copy = getConversationCopy(locale).sessions;
-  const [editing, setEditing] = useState(false);
-  const [actionsVisible, setActionsVisible] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [pendingAction, setPendingAction] = useState<SessionRowActionId | null>(null);
-  const rowMountedRef = useMountedRef();
-  const pendingActionRef = useRef<SessionRowActionId | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  // PR-FE-BUG-HUNT-11: Escape on the rename input has to suppress the
-  // blur-fires-on-unmount commit. Without this ref, the sequence
-  //   type → Escape → setEditing(false) → input unmounts → blur fires
-  //   with the typed value → commitRename(typed) → rename happens
-  // would silently commit the user's typed value despite the cancel.
-  const escapeCancelledRef = useRef(false);
-  const actionBusy = pendingAction !== null;
-  const actionTriggerVisible = actionsVisible || menuOpen;
-
-  useEffect(() => {
-    return () => {
-      pendingActionRef.current = null;
-    };
-  }, []);
-
-  // Auto-focus + select-all when the row enters edit mode so the user can
-  // overwrite the current name without an extra Cmd+A.
-  useEffect(() => {
-    if (!editing) return;
-    const input = inputRef.current;
-    if (!input) return;
-    input.focus();
-    input.select();
-  }, [editing]);
-
-  function startRename() {
-    if (!actions || pendingActionRef.current) return;
-    setEditing(true);
-  }
-
-  function runRowAction(actionId: SessionRowActionId, action: () => void | Promise<void>) {
-    if (pendingActionRef.current) return;
-    pendingActionRef.current = actionId;
-    setPendingAction(actionId);
-    void (async () => {
-      try {
-        await action();
-      } catch {
-        // The AppShell row-action owner reports the visible failure toast.
-      } finally {
-        pendingActionRef.current = null;
-        if (rowMountedRef.current) setPendingAction(null);
-      }
-    })();
-  }
-
-  function commitRename(rawValue: string) {
-    const trimmed = rawValue.trim();
-    setEditing(false);
-    if (!trimmed || trimmed === session.name) return;
-    if (!actions) return;
-    runRowAction('rename', () => actions.onRename(session.id, trimmed));
-  }
-
-  function handleDelete() {
-    if (!actions) return;
-    // Delegation: the App-level handler owns the confirmation flow via the
-    // toast system (PR24), so SessionRow stays presentation-only.
-    runRowAction('delete', () => actions.onDelete(session.id));
-  }
-
-  function handleRowBlur(event: FocusEvent<HTMLDivElement>) {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-    setActionsVisible(false);
-  }
-
-  return (
-    <div
-      className="maka-list-row"
-      data-active={active}
-      data-editing={editing}
-      data-menu-open={menuOpen ? 'true' : undefined}
-      data-streaming={streaming ? 'true' : undefined}
-      data-stale={stale ? 'true' : undefined}
-      data-subagent={nested ? 'true' : undefined}
-      onMouseEnter={() => setActionsVisible(true)}
-      onMouseLeave={(event) => {
-        if (event.currentTarget.contains(document.activeElement)) return;
-        setActionsVisible(false);
-      }}
-      onFocus={() => setActionsVisible(true)}
-      onBlur={handleRowBlur}
-    >
-      {editing ? (
-        <form
-          className="maka-list-row-main"
-          onSubmit={(event) => {
-            event.preventDefault();
-            commitRename(inputRef.current?.value ?? '');
-          }}
-        >
-          <div>
-            <input
-              ref={inputRef}
-              className="maka-list-row-rename-input"
-              defaultValue={session.name}
-              maxLength={80}
-              aria-label={copy.renameAriaLabel}
-              onBlur={(event) => {
-                // PR-FE-BUG-HUNT-11: skip the commit when the blur was
-                // caused by Escape cancelling edit mode (input unmounts
-                // → blur fires with the typed value otherwise).
-                if (escapeCancelledRef.current) {
-                  escapeCancelledRef.current = false;
-                  return;
-                }
-                commitRename(event.currentTarget.value);
-              }}
-              onKeyDown={(event) => {
-                // IME guard so committing CJK characters with Enter doesn't
-                // submit the rename before the user is done.
-                if (event.nativeEvent.isComposing || event.key === 'Process') return;
-                if (event.key === 'Escape') {
-                  event.preventDefault();
-                  escapeCancelledRef.current = true;
-                  setEditing(false);
-                }
-              }}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <div className="maka-list-row-meta">{formatSessionMeta(session, locale)}</div>
-          </div>
-        </form>
-      ) : (
-        // PR-SIDEBAR-IA-0 Phase 3 (WAWQAQ `14ed98b5` "list 很丑、很肥很
-        // 臃肿"; xuan `6b28984e` Phase 2 sign-off + Phase 3 32-40px
-        // target; xuan `2d4526b5` tightening: NO native title= snippet,
-        // title is ONLY for name truncation): slim row.
-        //
-        // The button is the row's hit target. The native `title=`
-        // attribute carries ONLY the session name so it serves as a
-        // truncation tooltip when the name overflows the row. The
-        // `lastMessagePreview` snippet is intentionally NOT exposed
-        // here — per xuan `2d4526b5`, snippet visibility is a
-        // separate, deliberate design (future PR), not a Phase 3
-        // afterthought via native tooltip.
-        //
-        // `data-active` on the row controls the active-state accent
-        // rail + bg tint via CSS; the row's `name` cluster also
-        // recolors to accent on selected so the row reads as
-        // "current" without a heavy full-bg pill.
-        /* PR-SESSION-ROW-MAIN-PRIMITIVE-0 (round 14/30): the
-           single most-clicked button in the app — every session
-           row's main click target. This composite navigation row keeps its
-           grid layout and multi-line density in the semantic row seam rather
-           than masquerading as a shared Button size. */
-        <BaseButton
-          className="maka-list-row-main"
-          type="button"
-          data-session-id={session.id}
-          aria-current={active ? 'true' : undefined}
-          title={session.name}
-          onClick={() => onSelect(session.id)}
-          onDoubleClick={(event) => {
-            event.stopPropagation();
-            if (actions && !pendingActionRef.current) setEditing(true);
-          }}
-        >
-          {/*
-            PR-SIDEBAR-IA-0 Phase 3 layout (xuan `2d4526b5`):
-              [.maka-list-row-text  (col 1: minmax(0,1fr))] [meta/unread  (col 2: auto)]
-            The text container holds the name cluster (status icons +
-            name + stale pill) and truncates via min-width: 0. The
-            meta column sits at the inline-end with a clear gap so
-            "会话 02" doesn't run into "0m ago".
-          */}
-          <div className="maka-list-row-text">
-            <div className="maka-list-row-name">
-              {nested && (
-                <Bot
-                  size={12}
-                  aria-hidden="true"
-                  className="maka-list-row-subagent-icon"
-                />
-              )}
-              {worktree && (
-                <FolderGit2
-                  size={12}
-                  aria-label={copy.worktreeAriaLabel}
-                  className="maka-list-row-worktree-icon"
-                />
-              )}
-              {streaming && (
-                <span
-                  className="maka-list-row-streaming-dot"
-                  aria-label={copy.respondingAriaLabel}
-                  title={copy.respondingTitle}
-                />
-              )}
-              <SessionStatusIcon session={session} />
-              <span>{session.name}</span>
-              {stale && (
-                <span
-                  className="maka-list-row-stale-pill"
-                  // The pill semantics match the chat-header banner: the
-                  // session uses a backend / connection that no longer exists,
-                  // but @xuan's send-path silent rebind will swap to the
-                  // default on send. Tooltip explains why.
-                  title={copy.staleTitle}
-                  aria-label={copy.staleAriaLabel}
-                >
-                  {copy.stale}
-                </span>
-              )}
-            </div>
-          </div>
-          {/*
-            PR-SIDEBAR-IA-0 Phase 3 (xuan `2d4526b5`): snippet preview
-            (`.maka-list-row-preview`) is no longer rendered in the
-            default DOM AND is no longer exposed via native `title=`
-            tooltip. Snippet visibility is deliberately deferred to a
-            future PR with its own hover/focus detail design.
-            `formatSessionMeta` shows the relative time inline in the
-            row's `auto` grid column (sibling of `.maka-list-row-text`,
-            not nested inside it — required for proper gap + alignment).
-            The unread dot replaces the time only when no higher-priority
-            row state is active. Borrowed from PawWork's sidebar priority:
-            asking/busy/error outrank unread; unread outranks plain time.
-          */}
-          {shouldShowSessionUnreadDot(session, Boolean(streaming), active) ? (
-            <span className="maka-list-row-unread" aria-label={copy.unreadAriaLabel} />
-          ) : (
-            <span className="maka-list-row-meta">{formatSessionMeta(session, locale)}</span>
-          )}
-        </BaseButton>
-      )}
-      {actions && !editing && (
-        <Menu open={menuOpen} onOpenChange={setMenuOpen}>
-          <MenuTrigger
-            aria-label={copy.actionsAriaLabel}
-            aria-hidden={actionTriggerVisible ? undefined : 'true'}
-            className="maka-list-row-menu-trigger"
-            data-visible={actionTriggerVisible ? 'true' : undefined}
-            disabled={actionBusy}
-            tabIndex={actionTriggerVisible ? 0 : -1}
-          >
-            <MoreHorizontal size={16} aria-hidden="true" />
-          </MenuTrigger>
-          <MenuPopup align="end" side="bottom">
-            <MenuItem
-              disabled={actionBusy}
-              onClick={() => runRowAction('flag', () => actions.onToggleFlag(session.id, !session.isFlagged))}
-            >
-              {session.isFlagged
-                ? <PinOff size={16} aria-hidden="true" />
-                : <Pin size={16} aria-hidden="true" />}
-              {session.isFlagged ? copy.unpin : copy.pin}
-            </MenuItem>
-            <MenuItem disabled={actionBusy} onClick={startRename}>
-              <Pencil size={16} aria-hidden="true" />
-              {copy.rename}
-            </MenuItem>
-            <MenuItem
-              disabled={actionBusy}
-              onClick={() => runRowAction('archive', () => (
-                session.isArchived
-                  ? actions.onUnarchive(session.id)
-                  : actions.onArchive(session.id)
-              ))}
-            >
-              {session.isArchived
-                ? <ArchiveRestore size={16} aria-hidden="true" />
-                : <Archive size={16} aria-hidden="true" />}
-              {session.isArchived ? copy.unarchive : copy.archive}
-            </MenuItem>
-            <MenuSeparator />
-            <MenuItem
-              variant="destructive"
-              disabled={actionBusy}
-              onClick={handleDelete}
-            >
-              <Trash2 size={16} aria-hidden="true" />
-              {copy.delete}
-            </MenuItem>
-          </MenuPopup>
-        </Menu>
-      )}
-    </div>
-  );
-});
 
 interface SessionGroup {
   id: 'pinned' | 'unpinned';
@@ -1041,7 +865,9 @@ function groupSessionsForHistory(sessions: SessionSummary[], locale: UiLocale): 
     groups.push({ id: 'pinned', label: copy.pinned, sessions: pinned });
   }
   if (unpinned.length > 0) {
-    groups.push({ id: 'unpinned', label: '', sessions: unpinned });
+    // Visible SideNavSection title so pinned / recent read as two zones
+    // (empty label used to drop the section chrome and blur the boundary).
+    groups.push({ id: 'unpinned', label: copy.recent, sessions: unpinned });
   }
   return groups;
 }

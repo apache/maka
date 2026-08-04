@@ -114,6 +114,31 @@ describe('plan reminder contract', () => {
       normalizeCreatePlanReminderInput({ title: 'x', runAt: now + 1, recurrence: 'cron' }, now).ok,
       false,
     );
+    assert.deepEqual(normalizePlanReminderCronExpression('MON * * * *'), {
+      ok: false,
+      reason: 'invalid_cron',
+      message: 'Plan reminder cron fields support only numbers, *, ranges, lists, and steps',
+    });
+    assert.deepEqual(normalizePlanReminderCronExpression('*/100 * * * *'), {
+      ok: false,
+      reason: 'invalid_cron',
+      message: 'Plan reminder cron field value must be between 1 and 60',
+    });
+  });
+
+  it('normalizes user whitespace but keeps direct schedule values strict', () => {
+    assert.deepEqual(normalizePlanReminderCronExpression(' \t*/5   * * * *\n'), {
+      ok: true,
+      value: '*/5 * * * *',
+    });
+    const after = new Date(2026, 0, 5, 8, 0, 0, 0).getTime();
+    assert.equal(
+      nextPlanReminderRunAtAfter(
+        { kind: 'cron', startAt: after, expression: ' */5 * * * *' },
+        after,
+      ),
+      undefined,
+    );
   });
 
   it('normalizes bot delivery with a closed platform and sanitized chat id', () => {

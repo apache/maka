@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import type { Task } from '@maka/core';
-import { deriveTaskLedgerPanelModel } from '../task-ledger-panel.js';
+import { LocaleProvider } from '../locale-context.js';
+import { deriveTaskLedgerPanelModel, TaskLedgerPanel } from '../task-ledger-panel.js';
 
 function task(input: Partial<Task> & Pick<Task, 'id' | 'key' | 'status'>): Task {
   return {
@@ -37,4 +40,37 @@ describe('task ledger panel model', () => {
     assert.equal(model.recentTerminalCount, 3);
     assert.deepEqual(model.recentTerminalTree.map((item) => item.key), ['T1', 'T1.1', 'T3', 'T4']);
   });
+});
+
+describe('task ledger disclosure', () => {
+  test('delegates the recent-task disclosure and chevron to Astryx without changing the count', () => {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(TaskLedgerPanel, {
+        tasks: [
+          task({ id: 'active', key: 'T1', status: 'in_progress' }),
+          task({ id: 'done', key: 'T2', status: 'completed', endedAt: 2 }),
+        ],
+      }),
+    }));
+
+    assert.match(markup, /class="[^"]*astryx-collapsible[^"]*maka-task-ledger-terminal[^"]*"/);
+    const trigger = markup.match(/(<button[^>]*aria-expanded="false"[\s\S]*?<\/button>)/)?.[1] ?? '';
+    assert.match(trigger, /最近结束/);
+    assert.match(trigger, />1</);
+    assert.doesNotMatch(trigger, /lucide-chevron-down/);
+  });
+});
+
+test('task ledger exposes real parent-child groups instead of aria-level-only rows', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'zh',
+    children: createElement(TaskLedgerPanel, {
+      tasks: [
+        task({ id: 'parent', key: 'T1', subject: 'Parent', status: 'in_progress' }),
+        task({ id: 'child', parentId: 'parent', key: 'T1.1', subject: 'Child', status: 'pending' }),
+      ],
+    }),
+  }));
+  assert.match(markup, /role="treeitem"[^>]*aria-level="1"[\s\S]*role="group"[\s\S]*aria-level="2"/);
 });

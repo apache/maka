@@ -3,7 +3,6 @@ import type {
   ConnectionModelDiscoveryResult,
   ConnectionTestErrorClass,
   ConnectionTestSummary,
-  RuntimePolicy,
 } from '@maka/core/runtime-policy';
 import {
   createConnectionEffectFetchTransport,
@@ -38,6 +37,7 @@ import type {
 } from '../protocol/index.js';
 import type { ConnectionEffectOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
+import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 type ModelDiscoveryRunner = (
   connection: ConnectionCatalogEntry,
@@ -213,7 +213,7 @@ export class HostConnectionEffectCoordinator {
     run: (fetch: typeof globalThis.fetch) => Promise<T>,
   ): Promise<T> {
     const transport = this.#createTransport(
-      toProxySnapshot(prepared.networkProxy, prepared.secretMaterial),
+      toRuntimePolicyProxy(prepared.networkProxy, prepared.secretMaterial.networkProxy?.secret),
     );
     try {
       return await run(transport.fetch);
@@ -283,29 +283,6 @@ function projectSuperseded(
 
 function connectionSecret(material: RuntimePolicyOperationSecretMaterial): string {
   return material.connection?.secret ?? '';
-}
-
-function toProxySnapshot(
-  proxy: RuntimePolicy['networkProxy'],
-  material: RuntimePolicyOperationSecretMaterial,
-): ConnectionEffectProxySnapshot | null {
-  if (!proxy.enabled) return null;
-  if (proxy.authEnabled && !material.networkProxy) {
-    throw new Error('Connection effect proxy admission omitted credential material');
-  }
-  return {
-    enabled: true,
-    type: proxy.protocol,
-    host: proxy.host,
-    port: proxy.port,
-    ...(proxy.authEnabled
-      ? {
-          username: proxy.username,
-          password: material.networkProxy!.secret,
-        }
-      : {}),
-    bypassList: [...new Set([...proxy.bypassList, ...proxy.autoBypassDomains])],
-  };
 }
 
 function projectConnectionTest(

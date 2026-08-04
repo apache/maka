@@ -38,7 +38,7 @@ describe('Desktop session turn Goal boundary', () => {
       turnId: 'turn-1',
       goalBoundary: 'external',
       activities: registry,
-      beginExternalTurn: () => ({
+      beginObservedTurn: () => ({
         kind: 'registered',
         settle: async (outcome) => {
           assert.equal(registry.whenIdle('session-1'), undefined);
@@ -75,7 +75,7 @@ describe('Desktop session turn Goal boundary', () => {
           turnId: 'turn-1',
           goalBoundary,
           activities: registry,
-          beginExternalTurn: () => {
+          beginObservedTurn: () => {
             settlements++;
             return { kind: 'unavailable', reason: 'unused' };
           },
@@ -114,7 +114,7 @@ describe('Desktop session turn Goal boundary', () => {
       turnId: 'turn-closed',
       goalBoundary: 'external',
       activities: registry,
-      beginExternalTurn: (sessionId, turnId) => coordinator.beginExternalTurn(sessionId, turnId),
+      beginObservedTurn: (sessionId, turnId) => coordinator.beginObservedTurn(sessionId, turnId),
       onEvent: () => {},
       onStreamError: () => {},
       onDrained: () => {},

@@ -3,138 +3,76 @@
    PR-UI-9 — Health Center page
 
    Consumes PR-HC-1 `HealthSnapshot`. Groups signals by `layer` so the user
-   never sees a single aggregated green dot. The summary tiles up top give a
-   one-glance count per status; the per-layer sections give the actual
-   diagnostic detail.
+   never sees a single aggregated green dot.
+
+   Astryx alignment pass: the five colored StatTiles, standalone blocker
+   pills, bespoke layer headers, and the bordered signal-list card are gone —
+   the page is SettingsSections with open rows now. What remains here is the
+   page's own typography: the summary count line, per-signal identity/meta
+   text, and the footnote.
 ============================================================================= */
 
-.settingsHealthPage {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-5);
-  }
-
-/* Polish wave Item 5: the intro gray-banner PageHeader (.settingsHealthIntro
-   + .settingsHealthMeta) was converged onto the shared SectionHeader
-   primitive; its bespoke banner/meta chrome is retired here. */
-
-.settingsHealthSummary {
-    /* PR-HEALTH-SUMMARY-LIST-A11Y-0 (round 19/30): switched from
-       `<section role="list">` to semantic `<ul>`. Reset the UA's
-       default bullet + 40px padding-left so the 5-column grid
-       stays the same. */
-    list-style: none;
+/* One quiet tabular line instead of a five-tile dashboard. Color only where
+   it is a signal: warning/error counts above zero. */
+.settingsHealthSummaryLine {
     margin: 0;
-    padding: 0;
-    display: grid;
-    /* #1361: was `repeat(5, minmax(0, 1fr))`. Five hard tracks kept dividing
-       whatever width they were given, so at the 480px window floor each tile
-       collapsed to ~30px — 4px of content box after padding, which even a
-       single digit overflows. That is the sibling of the #1304 Open Gateway
-       overflow: #1335 taught StatTile to wrap its own text, but a tile squeezed
-       below one character wide has nothing left to wrap into. `auto-fit` still
-       yields five even tracks at full width (only five tiles exist, and 1fr
-       stretches them) while folding to two readable columns when narrow. */
-    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-    gap: var(--space-2-5);
-  }
-
-.settingsHealthBlockers {
+    padding-block: var(--space-2);
     display: flex;
     flex-wrap: wrap;
+    gap: var(--space-1) var(--space-4);
+    font: var(--maka-text-body);
+    font-variant-numeric: tabular-nums;
+    color: var(--foreground-secondary);
+  }
+
+.settingsHealthSummaryLine [data-tone="warning"] {
+    color: var(--warning-text, var(--info-text));
+  }
+
+.settingsHealthSummaryLine [data-tone="destructive"] {
+    color: var(--destructive-text);
+  }
+
+.settingsHealthSignalIdentity,
+.settingsHealthSignalMeta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
     gap: var(--space-2);
   }
 
-.settingsHealthLayer {
+.settingsHealthSignalDescription {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-2-5);
-  }
-
-.settingsHealthLayer > header h4 {
-    margin: 0 0 var(--space-0-5);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-semibold);
-    color: var(--foreground);
-  }
-
-.settingsHealthLayer > header small {
-    color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-  }
-
-/* Polish wave Item 2: the per-signal bordered blocks (.settingsHealthSignalRow*
-   + its status-tinted borders and bespoke meta/blocker chrome) were converged
-   onto the shared Item row primitive + Chip. The list is now the ONE hairline
-   card; rows divide with a per-row top hairline. Status color is exception-only
-   (carried by the Chip's tone scale, not a tinted row border). */
-
-.settingsHealthSignalList {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    border: var(--border-width-hairline) solid var(--border);
-    border-radius: var(--radius-surface);
-    background: var(--background);
-    overflow: hidden;
-  }
-
-.settingsHealthSignalList > li + li {
-    border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
-  }
-
-/* #1361: at the restored/sanitized 480px window floor (`SAFE_MIN_WIDTH`) the
-   fixed Settings navigation leaves a ~190px content column. The page header's
-   action cluster (read-only badge + last-read timestamp + refresh) never
-   shrinks, so on one row it starved the title/subtitle column down to a few
-   pixels. Stack it instead — same treatment the Remote Access page already
-   applies to its own section headers at this breakpoint. */
-@media (max-width: 620px) {
-  .settingsHealthPage > [data-slot="section-header"] {
-    align-items: flex-start;
     flex-direction: column;
     gap: var(--space-1);
   }
 
-  /* The cluster is `shrink-0` by primitive contract and holds three items
-     (read-only badge + nowrap timestamp + refresh), ~239px intrinsic. Stacking
-     the header is not enough on its own — the cluster itself has to wrap. */
-  .settingsHealthPage > [data-slot="section-header"] [data-slot="section-header-action"] {
-    flex-wrap: wrap;
+.settingsHealthSignalDescription small,
+.settingsHealthSignalMeta {
+    font: var(--maka-text-supporting);
+    color: var(--muted-foreground);
   }
 
-  /* Blocker badges carry a full sentence ("2 条健康信号会阻塞能力"), ~150px
-     intrinsic — wider than the whole content column at the 480px floor. The row
-     already wraps *between* badges, but that does not help when one badge alone
-     overflows, and `white-space` alone does nothing either: Badge is a
-     `shrink-0` inline-flex with a 22px min-width, so it always takes its
-     max-content width and never feels pressure to wrap. Let these two shrink,
-     then wrap internally.
-
-     Page-level on purpose — Badge's `whitespace-nowrap` + `shrink-0` default is
-     right for the short status labels it normally holds, so the primitive stays
-     as it is. The real oddity is this page putting a sentence in a pill; if the
-     blockers row is ever reworked, prefer a text row over a Badge and this
-     override can go. */
-  .settingsHealthBlockers [data-slot="badge"] {
-    flex-shrink: 1;
-    min-width: 0;
-    /* Badge pins its height (`h-4.5`/`h-5.5`) for single-line pills, so wrapping
-       without releasing that height clips the second line. */
-    height: auto;
-    min-height: 1.125rem; /* Badge's own `sm:h-4.5`, kept as the floor. */
-    padding-block: var(--space-0-5);
-    white-space: normal;
+.settingsHealthSignalMeta {
+    font-variant-numeric: tabular-nums;
   }
-}
 
-.settingsHealthFootnote {
-    margin: 0;
-    padding: var(--space-3) var(--space-3);
-    border: var(--border-width-hairline) dashed var(--border);
-    border-radius: var(--radius-surface);
-    background: var(--foreground-3);
-    color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
+/* Blocking flags as short colored text, not sentence pills. */
+.settingsHealthSignalMeta [data-tone="destructive"] {
+    color: var(--destructive-text);
   }
+
+.settingsHealthSignalMeta [data-tone="warning"] {
+    color: var(--warning-text, var(--info-text));
+  }
+
+
+.settingsHealthMetaLabel {
+  font: var(--maka-text-supporting);
+ color: var(--foreground-secondary); white-space: nowrap; }
+.settingsHealthSignalLabel {
+  font: var(--maka-text-heading-4);
+ color: var(--foreground); }
+.settingsHealthSignalScope {
+  font: var(--maka-text-supporting);
+ color: var(--muted-foreground); letter-spacing: var(--tracking-wider); text-transform: uppercase; }

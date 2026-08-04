@@ -16,6 +16,9 @@
     background: var(--background);
   }
 
+/* #1565 PR 3: the card face (destructive tint, border, radius, shadow) is
+   owned by the Astryx Card in error-boundary.tsx (variant="red",
+   elevation="high"); this class keeps only the icon/copy grid geometry. */
 .maka-error-card {
     display: grid;
     grid-template-columns: 32px minmax(0, 1fr);
@@ -23,9 +26,6 @@
     gap: var(--space-3);
     max-width: 520px;
     padding: var(--space-3) var(--space-4);
-    border: var(--border-width-hairline) solid oklch(from var(--destructive) l c h / 0.3);
-    background: var(--background-elevated);
-    box-shadow: var(--shadow-modal);
   }
 
 .maka-error-icon {
@@ -45,21 +45,20 @@
   }
 
 .maka-error-copy h2 {
+    font: var(--maka-text-heading-4);
     margin: 0;
     color: var(--foreground);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-semibold);
   }
 
 .maka-error-copy p {
+    font: var(--maka-text-body);
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
     max-width: 56ch;
   }
 
 .maka-error-stack {
+    font: var(--maka-text-supporting);
     margin: var(--space-1) 0 0;
     max-height: 220px;
     padding: var(--space-2-5) var(--space-3);
@@ -68,9 +67,6 @@
     background: var(--foreground-3);
     color: var(--foreground-secondary);
     overflow: auto;
-    font-family: var(--font-mono);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -81,6 +77,8 @@
     gap: var(--space-2);
     margin-top: var(--space-1-5);
   }
+
+.maka-error-copy-action { min-width: 72px; }
 
 .maka-error-copy-action[data-copy-state="pending"] {
     cursor: progress;

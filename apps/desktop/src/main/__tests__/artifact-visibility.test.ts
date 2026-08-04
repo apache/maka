@@ -35,6 +35,7 @@ describe('generated artifact visibility', () => {
     const visibleSources: Array<ArtifactSource | undefined> = [
       'tool_result',
       'tool_result_archive',
+      'subagent_writeback',
       'deep_research',
       'export',
       'snapshot',

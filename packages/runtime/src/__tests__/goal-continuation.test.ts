@@ -42,6 +42,10 @@ function controlledCall<T>() {
       return result.promise;
     },
     started,
+    settled: result.promise.then(
+      () => undefined,
+      () => undefined,
+    ),
     resolve: result.resolve,
     reject: result.reject,
   };
@@ -142,6 +146,7 @@ function setup(opts?: {
         const next = { ...defaultEvaluation, ...evaluationQueue.shift() };
         return JSON.stringify(next);
       },
+      close: async () => {},
     },
     getRecentContext: async () => 'recent context',
     getTokenCount: opts?.tokenCount !== undefined ? () => opts.tokenCount! : undefined,
@@ -181,17 +186,17 @@ function settleExternal(
   outcome: GoalTurnOutcome,
 ): Promise<void> {
   assert.ok(outcome.turnId, 'an external turn must have a stable identity before it starts');
-  const registration = coordinator.beginExternalTurn(sessionId, outcome.turnId);
+  const registration = coordinator.beginObservedTurn(sessionId, outcome.turnId);
   assert.equal(registration.kind, 'registered');
   return registration.settle(outcome);
 }
 
-function registerExternalTurn(
+function registerObservedTurn(
   coordinator: GoalContinuationCoordinator,
   sessionId: string,
   turnId: string,
 ) {
-  const registration = coordinator.beginExternalTurn(sessionId, turnId);
+  const registration = coordinator.beginObservedTurn(sessionId, turnId);
   assert.equal(registration.kind, 'registered');
   return registration.settle;
 }
@@ -219,7 +224,7 @@ describe('GoalContinuationCoordinator settlement', () => {
     const { manager, coordinator } = setup({
       evaluations: [{ met: true, reason: 'same-turn Goal verified' }],
     });
-    const settle = registerExternalTurn(coordinator, SESSION, 'turn-owner');
+    const settle = registerObservedTurn(coordinator, SESSION, 'turn-owner');
     const tools = goalToolsFor(manager, coordinator);
     const set = tools.find((tool) => tool.name === GOAL_SET_TOOL_NAME);
     assert.ok(set);
@@ -240,8 +245,8 @@ describe('GoalContinuationCoordinator settlement', () => {
       evaluations++;
       return evaluate(...args);
     };
-    const settleOther = registerExternalTurn(coordinator, SESSION, 'turn-other');
-    const settleOwner = registerExternalTurn(coordinator, SESSION, 'turn-owner');
+    const settleOther = registerObservedTurn(coordinator, SESSION, 'turn-other');
+    const settleOwner = registerObservedTurn(coordinator, SESSION, 'turn-owner');
     const set = goalToolsFor(manager, coordinator).find((tool) => tool.name === GOAL_SET_TOOL_NAME);
     assert.ok(set);
     await set.impl({ condition: 'ship' }, goalToolContext('turn-owner'));
@@ -261,8 +266,8 @@ describe('GoalContinuationCoordinator settlement', () => {
 
   test('an older unbound turn cannot activate a Goal after another turn activated and cleared one', async () => {
     const { manager, coordinator } = setup();
-    registerExternalTurn(coordinator, SESSION, 'turn-old');
-    registerExternalTurn(coordinator, SESSION, 'turn-owner');
+    registerObservedTurn(coordinator, SESSION, 'turn-old');
+    registerObservedTurn(coordinator, SESSION, 'turn-owner');
     const tools = goalToolsFor(manager, coordinator);
     const set = tools.find((tool) => tool.name === GOAL_SET_TOOL_NAME);
     const clear = tools.find((tool) => tool.name === GOAL_CLEAR_TOOL_NAME);
@@ -284,8 +289,8 @@ describe('GoalContinuationCoordinator settlement', () => {
     const { manager, coordinator } = setup();
     manager.create(SESSION, 'paused goal');
     manager.pause(SESSION);
-    registerExternalTurn(coordinator, SESSION, 'turn-old');
-    registerExternalTurn(coordinator, SESSION, 'turn-clear');
+    registerObservedTurn(coordinator, SESSION, 'turn-old');
+    registerObservedTurn(coordinator, SESSION, 'turn-clear');
     const tools = goalToolsFor(manager, coordinator);
     const clear = tools.find((tool) => tool.name === GOAL_CLEAR_TOOL_NAME);
     const set = tools.find((tool) => tool.name === GOAL_SET_TOOL_NAME);
@@ -305,8 +310,8 @@ describe('GoalContinuationCoordinator settlement', () => {
   test('an old Goal turn cannot pause or clear a replacement Goal', async () => {
     const { manager, coordinator } = setup();
     manager.create(SESSION, 'first');
-    registerExternalTurn(coordinator, SESSION, 'turn-old');
-    registerExternalTurn(coordinator, SESSION, 'turn-clear');
+    registerObservedTurn(coordinator, SESSION, 'turn-old');
+    registerObservedTurn(coordinator, SESSION, 'turn-clear');
     const tools = goalToolsFor(manager, coordinator);
     const clear = tools.find((tool) => tool.name === GOAL_CLEAR_TOOL_NAME);
     const pause = tools.find((tool) => tool.name === GOAL_PAUSE_TOOL_NAME);
@@ -316,7 +321,7 @@ describe('GoalContinuationCoordinator settlement', () => {
     assert.ok(set);
 
     await clear.impl({}, goalToolContext('turn-clear'));
-    registerExternalTurn(coordinator, SESSION, 'turn-replacement');
+    registerObservedTurn(coordinator, SESSION, 'turn-replacement');
     await set.impl({ condition: 'replacement' }, goalToolContext('turn-replacement'));
 
     assert.match(
@@ -334,7 +339,7 @@ describe('GoalContinuationCoordinator settlement', () => {
   test('a removed external turn cannot create or resume a Goal through the real tools', async (t) => {
     await t.test('GoalSet after permanent removal', async () => {
       const { manager, coordinator } = setup();
-      registerExternalTurn(coordinator, SESSION, 'turn-deleted');
+      registerObservedTurn(coordinator, SESSION, 'turn-deleted');
       const set = goalToolsFor(manager, coordinator).find(
         (tool) => tool.name === GOAL_SET_TOOL_NAME,
       );
@@ -355,7 +360,7 @@ describe('GoalContinuationCoordinator settlement', () => {
       const { manager, coordinator } = setup();
       manager.create(SESSION, 'old');
       manager.pause(SESSION);
-      registerExternalTurn(coordinator, SESSION, 'turn-archived');
+      registerObservedTurn(coordinator, SESSION, 'turn-archived');
       const resume = goalToolsFor(manager, coordinator).find(
         (tool) => tool.name === GOAL_RESUME_TOOL_NAME,
       );
@@ -379,13 +384,13 @@ describe('GoalContinuationCoordinator settlement', () => {
     const { coordinator } = setup();
     coordinator.beginSessionClose(SESSION, 'archive').commit();
 
-    assert.deepEqual(coordinator.beginExternalTurn(SESSION, 'turn-closed'), {
+    assert.deepEqual(coordinator.beginObservedTurn(SESSION, 'turn-closed'), {
       kind: 'unavailable',
       reason: 'Goal continuation session is closed.',
     });
 
     coordinator.unarchiveSession(SESSION);
-    assert.equal(coordinator.beginExternalTurn(SESSION, 'turn-reopened').kind, 'registered');
+    assert.equal(coordinator.beginObservedTurn(SESSION, 'turn-reopened').kind, 'registered');
   });
 
   test('a rolled-back session close leaves revoked continuation visibly paused', async (t) => {
@@ -416,7 +421,7 @@ describe('GoalContinuationCoordinator settlement', () => {
       );
       assert.equal(attemptedPrompts.length, 1);
 
-      registerExternalTurn(coordinator, SESSION, 'turn-resume');
+      registerObservedTurn(coordinator, SESSION, 'turn-resume');
       const resume = goalToolsFor(manager, coordinator).find(
         (tool) => tool.name === GOAL_RESUME_TOOL_NAME,
       );
@@ -456,7 +461,7 @@ describe('GoalContinuationCoordinator settlement', () => {
       const { manager, coordinator } = setup({
         evaluations: [{ met: true, reason: 'resumed Goal verified' }],
       });
-      const settle = registerExternalTurn(coordinator, SESSION, 'turn-control');
+      const settle = registerObservedTurn(coordinator, SESSION, 'turn-control');
       const tools = goalToolsFor(manager, coordinator);
       const context = goalToolContext('turn-control');
       const set = tools.find((tool) => tool.name === GOAL_SET_TOOL_NAME);
@@ -479,7 +484,7 @@ describe('GoalContinuationCoordinator settlement', () => {
         evaluations: [{ met: true, reason: 'replacement Goal verified' }],
       });
       manager.create(SESSION, 'old Goal');
-      const settle = registerExternalTurn(coordinator, SESSION, 'turn-control');
+      const settle = registerObservedTurn(coordinator, SESSION, 'turn-control');
       const tools = goalToolsFor(manager, coordinator);
       const context = goalToolContext('turn-control');
       const clear = tools.find((tool) => tool.name === GOAL_CLEAR_TOOL_NAME);
@@ -689,7 +694,7 @@ describe('GoalContinuationCoordinator settlement', () => {
       return '{"met":true,"reason":"must not evaluate"}';
     };
     manager.create(SESSION, 'ship');
-    const settleLate = registerExternalTurn(coordinator, SESSION, 'turn-late');
+    const settleLate = registerObservedTurn(coordinator, SESSION, 'turn-late');
 
     await settleExternal(coordinator, SESSION, {
       kind: 'errored',
@@ -708,7 +713,11 @@ describe('GoalContinuationCoordinator settlement', () => {
   test('archive invalidates queued and in-flight outcomes before Goal replacement', async () => {
     const { manager, coordinator, deps, admitted } = setup();
     const evaluation = controlledCall<string>();
-    deps.evaluator.evaluate = evaluation.invoke;
+    let evaluationSignal: AbortSignal | undefined;
+    deps.evaluator.evaluate = (_prompt, _sessionId, signal) => {
+      evaluationSignal = signal;
+      return evaluation.invoke();
+    };
     manager.create(SESSION, 'old');
 
     const inFlight = settleExternal(coordinator, SESSION, {
@@ -722,6 +731,7 @@ describe('GoalContinuationCoordinator settlement', () => {
     });
 
     const archive = coordinator.beginSessionClose(SESSION, 'archive');
+    assert.equal(evaluationSignal?.aborted, true);
     assert.equal(manager.remove(SESSION), true);
     archive.commit();
     coordinator.unarchiveSession(SESSION);
@@ -744,6 +754,52 @@ describe('GoalContinuationCoordinator settlement', () => {
     assert.equal(admitted.length, 0);
   });
 
+  test('model pause and clear abort an older evaluator without revoking their own turn', async (t) => {
+    for (const action of ['pause', 'clear'] as const) {
+      await t.test(action, async () => {
+        const { manager, coordinator, deps, admitted } = setup();
+        const evaluation = controlledCall<string>();
+        let evaluationSignal: AbortSignal | undefined;
+        deps.evaluator.evaluate = (_prompt, _sessionId, signal) => {
+          evaluationSignal = signal;
+          return evaluation.invoke();
+        };
+        manager.create(SESSION, 'ship');
+        const priorSettlement = settleExternal(coordinator, SESSION, {
+          kind: 'completed',
+          turnId: 'turn-evaluating',
+        });
+        await evaluation.started;
+
+        const settleControl = registerObservedTurn(coordinator, SESSION, 'turn-control');
+        const tools = goalToolsFor(manager, coordinator);
+        const context = goalToolContext('turn-control');
+        const toolName = action === 'pause' ? GOAL_PAUSE_TOOL_NAME : GOAL_CLEAR_TOOL_NAME;
+        const tool = tools.find((candidate) => candidate.name === toolName);
+        assert.ok(tool);
+        assert.match(String(await tool.impl({}, context)), /Goal/);
+        assert.equal(evaluationSignal?.aborted, true);
+        await priorSettlement;
+
+        if (action === 'pause') {
+          const resume = tools.find((candidate) => candidate.name === GOAL_RESUME_TOOL_NAME);
+          assert.ok(resume);
+          assert.match(String(await resume.impl({}, context)), /Goal resumed/);
+          assert.match(String(await tool.impl({}, context)), /Goal paused/);
+        } else {
+          const set = tools.find((candidate) => candidate.name === GOAL_SET_TOOL_NAME);
+          assert.ok(set);
+          assert.match(String(await set.impl({ condition: 'replacement' }, context)), /Goal set/);
+          assert.match(String(await tool.impl({}, context)), /Goal cleared/);
+        }
+
+        await settleControl({ kind: 'completed', turnId: 'turn-control' });
+        assert.equal(manager.get(SESSION)?.status, action === 'pause' ? 'paused' : 'cleared');
+        assert.equal(admitted.length, 0);
+      });
+    }
+  });
+
   test('archive consumes an external turn that has not reached the FIFO', async () => {
     const { manager, coordinator, deps } = setup();
     let evaluations = 0;
@@ -752,7 +808,7 @@ describe('GoalContinuationCoordinator settlement', () => {
       return '{"met":true,"reason":"old turn must not evaluate"}';
     };
     manager.create(SESSION, 'old');
-    const settleOld = registerExternalTurn(coordinator, SESSION, 'turn-still-draining');
+    const settleOld = registerObservedTurn(coordinator, SESSION, 'turn-still-draining');
 
     const archive = coordinator.beginSessionClose(SESSION, 'archive');
     assert.equal(manager.remove(SESSION), true);
@@ -782,6 +838,34 @@ describe('GoalContinuationCoordinator settlement', () => {
       '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"late"}',
     );
 
+    await pending;
+    assert.equal(manager.get(SESSION)?.iterations, 0);
+    assert.equal(admitted.length, 0);
+  });
+
+  test('close waits for accepted evaluator resource cleanup', async () => {
+    const { manager, coordinator, deps, admitted } = setup();
+    const evaluation = controlledCall<string>();
+    deps.evaluator.evaluate = evaluation.invoke;
+    deps.evaluator.close = () => evaluation.settled;
+    manager.create(SESSION, 'ship');
+
+    const pending = settleExternal(coordinator, SESSION, {
+      kind: 'completed',
+      turnId: 'turn-1',
+    });
+    await evaluation.started;
+    let closeSettled = false;
+    const closing = coordinator.close().then(() => {
+      closeSettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(closeSettled, false);
+
+    evaluation.resolve(
+      '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"late"}',
+    );
+    await closing;
     await pending;
     assert.equal(manager.get(SESSION)?.iterations, 0);
     assert.equal(admitted.length, 0);

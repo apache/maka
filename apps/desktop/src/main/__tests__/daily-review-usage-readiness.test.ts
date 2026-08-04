@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createTelemetryRepo } from '@maka/storage';
+import { createSqliteModelCallLedger, createSqliteTelemetryRepo } from '@maka/storage';
 import { createDailyReviewMainService } from '../daily-review-main.js';
 
 function deferred() {
@@ -16,8 +16,9 @@ function deferred() {
 
 test('Daily Review waits for shared usage readiness before reading telemetry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-daily-review-usage-ready-'));
-  const seeded = createTelemetryRepo(root);
-  const telemetryRepo = createTelemetryRepo(root, { createIfMissing: false });
+  const seeded = createSqliteTelemetryRepo(root);
+  const telemetryRepo = createSqliteTelemetryRepo(root, { createIfMissing: false });
+  const modelCallLedger = createSqliteModelCallLedger(root);
   const loadGate = deferred();
 
   try {
@@ -46,6 +47,7 @@ test('Daily Review waits for shared usage readiness before reading telemetry', a
 
     const service = createDailyReviewMainService({
       telemetryRepo,
+      modelCallLedger,
       ensureUsageReady: async () => {
         await loadGate.promise;
         await telemetryRepo.load();
@@ -64,7 +66,7 @@ test('Daily Review waits for shared usage readiness before reading telemetry', a
     const summary = await summaryPending;
     assert.equal(summary.totals.requestCount, 1);
   } finally {
-    await Promise.allSettled([seeded.close(), telemetryRepo.close()]);
+    await Promise.allSettled([seeded.close(), modelCallLedger.close(), telemetryRepo.close()]);
     await rm(root, { recursive: true, force: true });
   }
 });

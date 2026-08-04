@@ -15,11 +15,16 @@ import {
   type CapabilitySnapshotCollection,
   type OsPermissionId,
   type OsPermissionSnapshot,
-  type OsPermissionState,
   type PermissionSnapshot,
 } from '@maka/core';
+import type { CuBackendId } from '@maka/computer-use';
 import type { BotStatus } from '@maka/runtime';
 import type { computerUseServiceHealth } from './computer-use-host.js';
+import {
+  mapMediaAccessStatus,
+  mediaPermissionActions,
+  supportsMediaPermissionProbe,
+} from './os-permission-policy.js';
 
 const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'screen_recording', 'microphone', 'automation'];
 
@@ -42,7 +47,7 @@ export function buildCapabilitySnapshotCollection(input: {
   permissions: PermissionSnapshot;
   botStatuses: Record<BotProvider, BotStatus>;
   computerUse?: {
-    backendId: 'cua-driver' | 'none';
+    backendId: CuBackendId | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
   };
   now?: number;
@@ -92,24 +97,6 @@ export function buildCapabilitySnapshotCollection(input: {
       },
     }),
     staticCapability({
-      id: 'open_gateway',
-      label: 'Open Gateway',
-      now,
-      feature: {
-        state: input.settings.openGateway.enabled ? 'enabled' : 'disabled',
-        source: 'settings',
-        reason: input.settings.openGateway.enabled ? undefined : '本地 Gateway 已关闭',
-      },
-      requiredPermissions: [],
-      actionApproval: { state: 'required_per_action', source: 'capability_policy' },
-      memoryAcceptance: { state: 'not_applicable', source: 'not_applicable' },
-      runtimeProbe: {
-        state: input.settings.openGateway.enabled && input.settings.openGateway.token ? 'not_run' : 'not_available',
-        source: input.settings.openGateway.enabled ? 'runtime_probe' : 'not_applicable',
-        reason: input.settings.openGateway.enabled && !input.settings.openGateway.token ? '等待生成访问 token' : undefined,
-      },
-    }),
-    staticCapability({
       id: 'memory_write',
       label: 'Memory',
       now,
@@ -137,13 +124,16 @@ export function buildCapabilitySnapshotCollection(input: {
 
 function computerUseCapability(
   input: {
-    backendId: 'cua-driver' | 'none';
+    backendId: CuBackendId | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
   } | undefined,
   permissions: PermissionSnapshot['permissions'],
   now: number,
 ): CapabilitySnapshot {
-  const artifactAvailable = input?.backendId === 'cua-driver';
+  // Any selected executor is an executor. Naming one here made the capability
+  // read `not_available` for a machine that had a working backend, merely a
+  // different one.
+  const artifactAvailable = input !== undefined && input.backendId !== 'none';
   return staticCapability({
     id: 'computer_use',
     label: 'Computer Use',
@@ -166,23 +156,23 @@ function computerUseCapability(
       state: input?.health.state ?? 'not_available',
       source: 'runtime_probe',
       lastCheckedAt: now,
-      reason: input?.health.reason ?? 'cua-driver 后端当前不可用。',
+      reason: input?.health.reason ?? 'Computer Use 后端当前不可用。',
     },
   });
 }
 
 function computerUseCapabilityReason(
   input: {
-    backendId: 'cua-driver' | 'none';
+    backendId: CuBackendId | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
   } | undefined,
   permissions: PermissionSnapshot['permissions'],
 ): string {
-  if (input?.backendId !== 'cua-driver') {
-    return '未找到通过完整性检查的 cua-driver artifact。';
+  if (input === undefined || input.backendId === 'none') {
+    return '未找到通过完整性检查的 Computer Use 执行器 artifact。';
   }
 
-  const reasons = ['cua-driver artifact 已通过本地完整性检查。'];
+  const reasons = [`${input.backendId} artifact 已通过本地完整性检查。`];
   const missingPermissions = [
     ['辅助功能', permissions.accessibility.status],
     ['屏幕录制', permissions.screen_recording.status],
@@ -192,10 +182,10 @@ function computerUseCapabilityReason(
   }
   switch (input.health.state) {
     case 'not_available':
-      reasons.push('cua-driver service 启动失败、已退出或已停止。');
+      reasons.push(`${input.backendId} service 启动失败、已退出或已停止。`);
       break;
     case 'degraded':
-      reasons.push('cua-driver service 正在启动或恢复。');
+      reasons.push(`${input.backendId} service 正在启动或恢复。`);
       break;
     case 'healthy':
       reasons.push('操作与截图 service 已就绪；按目标与动作类别授权后可操作本机应用。');
@@ -310,18 +300,24 @@ function mediaPermissionSnapshot(
   now: number,
   platform: NodeJS.Platform,
 ): OsPermissionSnapshot {
-  if (platform !== 'darwin' && id === 'screen_recording') {
-    return unsupportedPermission(id, now, '仅 macOS TCC 权限适用');
+  if (!supportsMediaPermissionProbe(id, platform)) {
+    return unsupportedPermission(
+      id,
+      now,
+      id === 'screen_recording'
+        ? '屏幕录制权限状态仅能在 macOS 上读取'
+        : '当前平台无法读取麦克风系统权限状态',
+    );
   }
   try {
     const status = mapMediaAccessStatus(systemPreferences.getMediaAccessStatus(mediaType));
+    const actions = mediaPermissionActions({ id, platform, status });
     return {
       id,
       status,
       source: 'electron',
       checkedAt: now,
-      canOpenSettings: platform === 'darwin',
-      canRequest: id === 'microphone' && status === 'not_determined',
+      ...actions,
     };
   } catch (error) {
     return unknownPermission(id, now, generalizedReason(error), platform === 'darwin');
@@ -329,14 +325,22 @@ function mediaPermissionSnapshot(
 }
 
 function notificationSnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {
+  const supported = Notification.isSupported();
   return {
     id: 'notifications',
-    status: Notification.isSupported() ? 'unknown' : 'unsupported',
+    status: supported ? 'unknown' : 'unsupported',
     source: 'electron',
     checkedAt: now,
-    reason: Notification.isSupported() ? '主进程暂时无法读取通知授权状态' : 'Electron 通知能力不可用',
+    reason: supported
+      ? platform === 'darwin'
+        ? 'Electron 无法可靠读取 macOS 通知授权状态，请在系统设置中确认'
+        : 'Electron 无法可靠读取当前系统的通知授权状态'
+      : 'Electron 通知能力不可用',
     canOpenSettings: platform === 'darwin',
-    canRequest: Notification.isSupported(),
+    // Showing a Notification is not an authorization API and does not report
+    // whether macOS delivered or suppressed it. Never present that probe as a
+    // successful permission request.
+    canRequest: false,
   };
 }
 
@@ -380,20 +384,6 @@ function unknownPermission(
     canOpenSettings,
     canRequest: false,
   };
-}
-
-function mapMediaAccessStatus(status: string): OsPermissionState {
-  switch (status) {
-    case 'granted':
-      return 'granted';
-    case 'denied':
-    case 'restricted':
-      return 'denied';
-    case 'not-determined':
-      return 'not_determined';
-    default:
-      return 'unknown';
-  }
 }
 
 function generalizedReason(error: unknown): string {

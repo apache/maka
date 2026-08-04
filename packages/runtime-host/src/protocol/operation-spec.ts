@@ -9,6 +9,7 @@ export type HostOperationErrorCode =
   | 'session_archived'
   | 'session_busy'
   | 'operation_conflict'
+  | 'capability_unavailable'
   | 'invalid_request'
   | 'persistence_failed'
   | 'commit_outcome_unknown'
@@ -32,12 +33,29 @@ export interface OperationSpec<Input, Output, ErrorCode extends HostOperationErr
 
 type AnyOperationSpec = OperationSpec<unknown, unknown, HostOperationErrorCode>;
 export type OperationSpecMap = Readonly<Record<string, AnyOperationSpec>>;
-type DuplicateOperationKeys<Left, Right> = Extract<keyof Left, keyof Right>;
-type RequireDisjointOperationKeys<Left, Right> = [DuplicateOperationKeys<Left, Right>] extends [
-  never,
+type OperationSpecMaps = readonly [OperationSpecMap, ...OperationSpecMap[]];
+type OperationSpecMapIntersection<Maps extends OperationSpecMaps> = UnionToIntersection<
+  Maps[number]
+>;
+type DuplicateOperationKeys<
+  Maps extends readonly OperationSpecMap[],
+  Seen = never,
+> = Maps extends readonly [
+  infer Head extends OperationSpecMap,
+  ...infer Tail extends OperationSpecMap[],
 ]
+  ? Extract<keyof Head, Seen> | DuplicateOperationKeys<Tail, Seen | keyof Head>
+  : never;
+type RequireDisjointOperationKeys<Maps extends OperationSpecMaps> = [
+  DuplicateOperationKeys<Maps>,
+] extends [never]
   ? unknown
-  : { readonly duplicateOperationKeys: DuplicateOperationKeys<Left, Right> };
+  : { readonly duplicateOperationKeys: DuplicateOperationKeys<Maps> };
+type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
+  value: infer Intersection,
+) => void
+  ? Intersection
+  : never;
 
 export function defineOperation<Input, Output, ErrorCode extends HostOperationErrorCode>(
   spec: OperationSpec<Input, Output, ErrorCode>,
@@ -48,16 +66,17 @@ export function defineOperation<Input, Output, ErrorCode extends HostOperationEr
   return spec;
 }
 
-export function composeOperationSpecMaps<
-  const Left extends OperationSpecMap,
-  const Right extends OperationSpecMap,
->(left: Left, right: Right & RequireDisjointOperationKeys<Left, Right>): Left & Right {
-  const combined: Record<string, AnyOperationSpec> = { ...left };
-  for (const [key, spec] of Object.entries(right)) {
-    if (Object.hasOwn(combined, key)) {
-      throw new Error(`Duplicate Runtime Host operation key: ${key}`);
+export function composeOperationSpecMaps<const Maps extends OperationSpecMaps>(
+  ...maps: Maps & RequireDisjointOperationKeys<Maps>
+): OperationSpecMapIntersection<Maps> {
+  const combined: Record<string, AnyOperationSpec> = {};
+  for (const map of maps) {
+    for (const [key, spec] of Object.entries(map)) {
+      if (Object.hasOwn(combined, key)) {
+        throw new Error(`Duplicate Runtime Host operation key: ${key}`);
+      }
+      combined[key] = spec;
     }
-    combined[key] = spec;
   }
-  return combined as Left & Right;
+  return combined as OperationSpecMapIntersection<Maps>;
 }

@@ -4,21 +4,30 @@ import { createServer } from 'node:http';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const PRODUCT_VIEWPORTS = Object.freeze({
+const PRODUCT_VIEWPORTS = Object.freeze({
   wide: Object.freeze({ width: 1280, height: 900 }),
   compact: Object.freeze({ width: 820, height: 900 }),
   floor: Object.freeze({ width: 480, height: 900 }),
 });
 
-export const REQUIRED_PRODUCT_SURFACES = Object.freeze([
+// A surface listed here cannot be switched off by deleting its manifest entry:
+// the validator fails instead. Without that, a guard is only as durable as the
+// line that opts into it.
+const REQUIRED_PRODUCT_SURFACES = Object.freeze([
   'settings',
   'skills',
   'mcp',
   'planReminders',
   'dailyReview',
+  'sessionContext',
+  'composer',
 ]);
 
-const PRODUCT_CHECKS = new Set(['plan-reminder-row']);
+const PRODUCT_CHECKS = new Set([
+  'composer-focus-ownership',
+  'plan-reminder-row',
+  'session-context-layer',
+]);
 
 function fail(message) {
   throw new Error(`Product Storybook manifest: ${message}`);
@@ -28,7 +37,7 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function validateCoverageManifest(manifest, storyIndex) {
+function validateCoverageManifest(manifest, storyIndex) {
   if (!isRecord(manifest) || manifest.version !== 1) fail('version must be 1');
   if (!isRecord(manifest.viewports)) fail('viewports must be an object');
   if (!isRecord(manifest.surfaces)) fail('surfaces must be an object');
@@ -118,7 +127,7 @@ function describeBrowserValue(value) {
   return String(value);
 }
 
-export function installStorybookSmokeProbe({ storyId }) {
+function installStorybookSmokeProbe({ storyId }) {
   const smoke = {
     finished: false,
     failures: [],
@@ -176,7 +185,7 @@ export function installStorybookSmokeProbe({ storyId }) {
   connect();
 }
 
-export async function smokeStory(page, baseUrl, job, options = {}) {
+async function smokeStory(page, baseUrl, job, options = {}) {
   const prefix = `[${job.storyId} @ ${job.viewport}]`;
   const browserFailures = [];
   const onConsole = (message) => {
@@ -234,6 +243,137 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
         ) {
           failures.push('dark color scheme was not applied to the production root');
         }
+        // The context layer is built from the production derive helpers, which
+        // return undefined unless the story's session list really establishes
+        // the lineage. Without this the surface would still pass while showing
+        // no banner and no revision counter at all — the story would be a lie
+        // that renders. The layer must also survive the narrow viewports, which
+        // is the reason it is smoked at three of them.
+        if (checks.includes('session-context-layer')) {
+          const layer = document.querySelector('.maka-session-context');
+          if (!layer) {
+            failures.push('session context layer is missing');
+          } else {
+            const isVisible = (element) => {
+              if (!element) return false;
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              return (
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.display !== 'none' &&
+                style.visibility !== 'hidden'
+              );
+            };
+            // OverflowList keeps a hidden measurement copy of every item, so
+            // ask whether ANY copy is visible — querySelector alone would read
+            // the measurement clone and report a rendered item as missing.
+            const anyVisible = (selector) => [...layer.querySelectorAll(selector)].some(isVisible);
+
+            if (!anyVisible('.maka-session-context__breadcrumbs')) {
+              failures.push('branch breadcrumbs are missing — deriveBranchBanner returned nothing');
+            }
+            // Goal, memory and the revision counter share that OverflowList, so
+            // a narrow viewport is allowed to move them into the MoreMenu — but
+            // not to drop them. Absent from both places means the state the
+            // manifest names is not on screen at all.
+            const inOverflowMenu = anyVisible(
+              '[data-slot="more-menu"], .astryx-more-menu, button[aria-haspopup="menu"]',
+            );
+            for (const [selector, label] of [
+              ['.maka-session-context__revision', 'revision navigation'],
+              ['.maka-session-context__goal', 'goal indicator'],
+            ]) {
+              if (!anyVisible(selector) && !inOverflowMenu) {
+                failures.push(`${label} is neither visible nor collapsed into the overflow menu`);
+              }
+            }
+            if (!anyVisible('.maka-session-context__cluster')) {
+              failures.push('session context cluster rendered no items');
+            }
+            if (layer.scrollWidth > layer.clientWidth + 1) {
+              failures.push(
+                `session context layer overflows horizontally (${layer.scrollWidth} > ${layer.clientWidth})`,
+              );
+            }
+          }
+        }
+        if (checks.includes('composer-focus-ownership')) {
+          const editor = document.querySelector('.maka-composer-editor > [contenteditable="true"]');
+          const composer = editor?.closest('[data-maka-contract="composer-inner"]');
+          if (!(editor instanceof HTMLElement) || !(composer instanceof HTMLElement)) {
+            failures.push('composer editor or Astryx focus surface is missing');
+          } else {
+            const focusAncestors = [];
+            for (let element = editor.parentElement; element; element = element.parentElement) {
+              focusAncestors.push(element);
+              if (element === composer) break;
+            }
+            const visibleFocusChrome = (element) => {
+              const style = getComputedStyle(element);
+              const border = ['Top', 'Right', 'Bottom', 'Left'].flatMap((side) => {
+                const width = Number.parseFloat(style[`border${side}Width`]);
+                return width > 0
+                  ? [
+                      `${side}:${style[`border${side}Style`]} ${width}px ${style[`border${side}Color`]}`,
+                    ]
+                  : [];
+              });
+              return {
+                border,
+                boxShadow: style.boxShadow === 'none' ? null : style.boxShadow,
+                outline:
+                  style.outlineStyle === 'none' || Number.parseFloat(style.outlineWidth) === 0
+                    ? null
+                    : `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
+              };
+            };
+            const restingChrome = focusAncestors.map(visibleFocusChrome);
+            editor.focus();
+            // Resolve Astryx's focus transition to its final state before
+            // comparing computed presentation. The contract is the visible
+            // owner, not an intermediate animation frame.
+            for (const element of focusAncestors) {
+              void getComputedStyle(element).boxShadow;
+              for (const animation of element.getAnimations()) animation.finish();
+            }
+            const focusedChrome = focusAncestors.map(visibleFocusChrome);
+            const style = getComputedStyle(editor);
+            const actual = {
+              backgroundColor: style.backgroundColor,
+              borderWidth: style.borderWidth,
+              boxShadow: style.boxShadow,
+              outlineStyle: style.outlineStyle,
+            };
+            const expected = {
+              backgroundColor: 'rgba(0, 0, 0, 0)',
+              borderWidth: '0px',
+              boxShadow: 'none',
+              outlineStyle: 'none',
+            };
+            for (const [property, expectedValue] of Object.entries(expected)) {
+              if (actual[property] !== expectedValue) {
+                failures.push(
+                  `composer editor ${property} must be ${expectedValue}, got ${actual[property]}`,
+                );
+              }
+            }
+            if (document.activeElement !== editor) {
+              failures.push('composer editor did not retain focus');
+            }
+            const visibleOwner = focusedChrome.some((focused, index) => {
+              const changed = JSON.stringify(focused) !== JSON.stringify(restingChrome[index]);
+              const visible =
+                focused.border.length > 0 || focused.boxShadow !== null || focused.outline !== null;
+              return changed && visible;
+            });
+            if (!visibleOwner) {
+              failures.push(
+                'no Astryx composer ancestor produced visible border, shadow, or outline focus feedback',
+              );
+            }
+          }
+        }
         if (checks.includes('plan-reminder-row')) {
           if (document.documentElement.scrollWidth > document.documentElement.clientWidth) {
             failures.push('document has horizontal overflow');
@@ -289,6 +429,18 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
               }
             }
           }
+          // The margin loop above runs zero times if countdowns stop rendering,
+          // which would make the spacing contract pass by vacancy. Rows with a
+          // scheduled next run are exactly the ones that must show one.
+          const scheduledRows = rows.filter((row) => row.querySelector('.maka-plan-card-schedule'));
+          if (
+            scheduledRows.length > 0 &&
+            !rows.some((row) => row.querySelector('.maka-plan-card-countdown'))
+          ) {
+            failures.push(
+              'no plan reminder row rendered a countdown, so its spacing went unchecked',
+            );
+          }
           if (document.documentElement.clientWidth >= 1100 && rows[0]) {
             const columns = getComputedStyle(rows[0])
               .gridTemplateColumns.split(' ')
@@ -317,10 +469,8 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
       },
       { checks: job.checks ?? [], colorScheme: job.colorScheme ?? 'light' },
     );
-    if (result !== true) {
-      browserFailures.push(...result.failures);
-      if (!result.hasContent) browserFailures.push('story root rendered empty content');
-    }
+    browserFailures.push(...result.failures);
+    if (!result.hasContent) browserFailures.push('story root rendered empty content');
     if (browserFailures.length > 0) {
       throw new Error(`${prefix} ${browserFailures.join('; ')}`);
     }
@@ -328,6 +478,57 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
     page.off?.('console', onConsole);
     page.off?.('pageerror', onPageError);
   }
+}
+
+/**
+ * Every story the manifest does NOT name, rendered once at wide/light.
+ *
+ * The manifest is a curated list — a dozen surfaces across viewports and colour
+ * schemes, because those checks are expensive and only worth paying for where
+ * layout actually varies. But that left every other story verified by nothing:
+ * `build-storybook` bundles a story without mounting it, so a render that
+ * throws, a play function that rejects, or a console error ships green.
+ *
+ * This pass is deliberately shallow. It answers one question — does the story
+ * still mount and finish its play function without errors — and leaves
+ * viewport, colour-scheme and surface-specific assertions to the manifest.
+ */
+function catalogJobs(storyIndex, manifestJobs) {
+  const covered = new Set(manifestJobs.map((job) => job.storyId));
+  return Object.values(storyIndex.entries)
+    .filter((entry) => entry.type === 'story' && !covered.has(entry.id))
+    .map((entry) => ({
+      storyId: entry.id,
+      viewport: 'catalog',
+      size: PRODUCT_VIEWPORTS.wide,
+      colorScheme: 'light',
+    }));
+}
+
+/**
+ * Every job is attempted and every story failure is collected, so one broken
+ * story cannot hide the rest behind it. Only an infrastructure failure — a page
+ * that cannot be opened or closed — is allowed to reject and abort the run.
+ */
+async function runJobs(browser, baseUrl, jobs, concurrency) {
+  const queue = [...jobs];
+  const failures = [];
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    for (let job = queue.shift(); job; job = queue.shift()) {
+      const page = await browser.newPage();
+      try {
+        await smokeStory(page, baseUrl, job);
+        process.stdout.write(`✓ ${job.storyId} @ ${job.viewport}\n`);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+        process.stdout.write(`✗ ${job.storyId} @ ${job.viewport}\n`);
+      } finally {
+        await page.close();
+      }
+    }
+  });
+  await Promise.all(workers);
+  return failures;
 }
 
 const MIME_TYPES = {
@@ -391,24 +592,27 @@ async function runCli() {
     readFile(join(staticDir, 'index.json'), 'utf8').then(JSON.parse),
   ]);
   const jobs = validateCoverageManifest(manifest, storyIndex);
+  const catalog = catalogJobs(storyIndex, jobs);
   const { chromium } = await import('@playwright/test');
   const browser = await chromium.launch({ headless: true });
   const server = await startStaticServer(staticDir);
+  const problems = [];
   try {
-    for (const job of jobs) {
-      const page = await browser.newPage();
-      try {
-        await smokeStory(page, server.baseUrl, job);
-        process.stdout.write(`✓ ${job.storyId} @ ${job.viewport}\n`);
-      } finally {
-        await page.close();
-      }
-    }
+    // The manifest jobs run first and serially: they assert on layout geometry,
+    // which is why they pin a viewport in the first place.
+    problems.push(...(await runJobs(browser, server.baseUrl, jobs, 1)));
+    problems.push(...(await runJobs(browser, server.baseUrl, catalog, 4)));
   } finally {
     await server.close();
     await browser.close();
   }
-  process.stdout.write(`Product Storybook smoke passed (${jobs.length} render/play checks).\n`);
+  if (problems.length > 0) {
+    throw new Error(`${problems.length} story check(s) failed:\n${problems.join('\n')}`);
+  }
+  process.stdout.write(
+    `Product Storybook smoke passed (${jobs.length} manifest check(s), ` +
+      `${catalog.length} catalog render(s)).\n`,
+  );
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

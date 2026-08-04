@@ -57,15 +57,21 @@ import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { EphemeralVoiceAudio } from '@maka/core/voice';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
 import type { PlanToolResult } from './plan-tools.js';
+import {
+  YIELD_AGENT_GRAPH_TOOL_NAME,
+  type YieldAgentGraphToolResult,
+} from './stream-graph-supervisor-tools.js';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import {
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
+  stripUndefinedDeep,
 } from '@maka/core';
 import type {
   LlmCallRecord,
@@ -74,6 +80,7 @@ import type {
 } from '@maka/core/usage-stats/types';
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
 import type {
+  AudioPart,
   JSONValue,
   ModelFinishReason,
   ModelMessage,
@@ -86,7 +93,6 @@ import type {
   UserContent,
 } from './model-protocol.js';
 import { z } from 'zod';
-import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
 
 import { AsyncEventQueue } from './async-queue.js';
 import { StreamWatchdog, formatStreamWatchdogError } from './stream-watchdog.js';
@@ -98,7 +104,6 @@ import {
   formatSyntheticToolErrorText,
   type MakaTool,
   type MakaToolContext,
-  type AgentTeamExecutionContext,
   type ToolRuntimeInput,
 } from './tool-runtime.js';
 import type { RuntimeCommitSink } from './runtime-commit-sink.js';
@@ -155,10 +160,14 @@ import {
   toolSchemaCharsForDiagnostics,
   type RequestShapeDiagnostic,
 } from './request-shape.js';
+import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
 import {
   ProviderRequestTracker,
+  type ModelCallAccountingInput,
   type ProviderRequestAttemptRecord,
   type ProviderRequestCaptureRecord,
+  type ProviderRequestUsage,
+  type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
 import { ToolAvailabilityRuntime, type ToolAvailabilityConfig } from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
@@ -207,6 +216,14 @@ export { normalizeAiSdkUsage } from './model-adapter.js';
 export type { ModelFactory, ModelFactoryInput, RepairableAiSdkToolCall } from './model-adapter.js';
 export type { RunTraceEvent, RunTraceRecorder } from './run-trace.js';
 
+const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
+  '<step_budget_finalization>',
+  'This is the final budgeted step for this child-agent turn.',
+  'Do not call tools. Return the best concise final answer now using evidence already gathered.',
+  'Clearly separate verified findings from inference and explicitly name any remaining gaps.',
+  '</step_budget_finalization>',
+].join('\n');
+
 // ============================================================================
 // AgentBackend interface — port contract now lives in @maka/core/backend-types;
 // re-exported here for backward compatibility with existing import sites.
@@ -250,7 +267,6 @@ export type {
   HistoryCompactWriter,
   HistoryCompactWriteInput,
   HistoryCompactWriteResult,
-  LlmTelemetryRecorder,
   SemanticCompactBlockRecorder,
   SynthesisCacheLoader,
   SynthesisCacheLoadInput,
@@ -286,8 +302,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     proposalId?: string;
     executionId?: string;
   };
-  /** Trusted identity for expert-team lead/member collaboration tools. */
-  agentTeam?: AgentTeamExecutionContext;
   /**
    * Optional unified tool-availability config (issue #37). With `economy: true`,
    * only core + ungrouped tools are advertised each turn; each group's tools are
@@ -376,6 +390,18 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   ) => Promise<{ artifactId: string }>;
   /** Best-effort durable row for one physical provider request attempt. */
   recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
+  /**
+   * Canonical metering sink. Separate from `recordProviderRequestAttempt`, which
+   * stays a diagnostic trace: this one carries the accounting record.
+   */
+  recordModelCallAttempt?: (attempt: ModelCallAttempt) => void | Promise<void>;
+  /**
+   * Pre-dispatch accounting gate, paired with `recordModelCallAttempt` and read
+   * only when it is present. Throws when the canonical record could not be
+   * written for this dispatch, which fails the send before the provider is
+   * called rather than producing spend nothing recorded.
+   */
+  assertModelCallAccountingReady?: () => void;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
    * from structured tool results / explicit redirects; desktop main owns
@@ -500,7 +526,7 @@ export class AiSdkBackend implements AgentBackend {
   private abortController: AbortController | null = null;
   private currentTurnId: string | null = null;
   private loopStopRequested = false;
-  private handoffStopReason: CompleteEvent['stopReason'] | undefined;
+  private loopStopReason: CompleteEvent['stopReason'] | undefined;
   private currentInvocationId: string | null = null;
   /**
    * User messages steered into the running turn, drained from the caller's
@@ -547,7 +573,8 @@ export class AiSdkBackend implements AgentBackend {
       sessionId: this.sessionId,
       now: this.now,
       modelAdapter: this.modelAdapter,
-      computeCostUsd: (usage) => this.computeTokenUsageCostUsd(usage),
+      createProviderRequestTracker: (trackerInput) =>
+        this.createProviderRequestTracker(trackerInput),
       materializeRuntimeReplayPlan: (plan) => this.materializeRuntimeReplayPlan(plan),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
       appendTurnTailPrompt: (content, turnTailPrompt) =>
@@ -572,7 +599,6 @@ export class AiSdkBackend implements AgentBackend {
       getPermissionPauseTarget: () => this.currentWatchdog,
       getCurrentInvocationId: () => this.currentInvocationId ?? undefined,
       getCurrentRunId: () => this.currentRunId ?? undefined,
-      agentTeam: input.agentTeam,
       materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
         this.materializeToolResultOutput(output, false, toolCallId),
       getCurrentOrchestration: () => this.currentOrchestration,
@@ -694,6 +720,12 @@ export class AiSdkBackend implements AgentBackend {
             messageId: stepId,
             text: part.text,
             ...(part.signature !== undefined ? { signature: part.signature } : {}),
+            // No sanitiser here, unlike the tool call below: these options are
+            // not the provider's object. `translateChunk` rebuilds reasoning
+            // metadata from two named string fields, so an omitted provider
+            // field cannot arrive as an explicit `undefined` and break the
+            // canonical encoding. Passing the provider's object through
+            // instead would need the same `stripUndefinedDeep` a tool call has.
             ...(part.providerOptions !== undefined
               ? { providerOptions: part.providerOptions }
               : {}),
@@ -772,22 +804,12 @@ export class AiSdkBackend implements AgentBackend {
         toSandboxRunTraceProjection(this.input.sandboxDiagnosticsSnapshot),
       );
     }
-    const recordProviderRequestCapture = this.input.recordProviderRequestCapture;
-    const providerRequestTraceId = recordProviderRequestCapture ? this.newId() : undefined;
-    const providerRequestTracker = providerRequestTraceId
-      ? new ProviderRequestTracker({
-          traceId: providerRequestTraceId,
-          turnId,
-          contextWindow: resolveSelectedModelContextWindow(
-            this.input.connection,
-            this.input.modelId,
-          ),
-          now: this.now,
-          newId: this.newId,
-          persistCapture: recordProviderRequestCapture!,
-          recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
-        })
-      : undefined;
+    const providerRequestTracker = this.createProviderRequestTracker({
+      turnId,
+      callKind: 'main',
+      modelId: this.input.modelId,
+    });
+    const providerRequestTraceId = providerRequestTracker?.traceId;
 
     // --- Resolve model (API key already attached at construct time) ---
     let model: unknown;
@@ -820,7 +842,7 @@ export class AiSdkBackend implements AgentBackend {
       this.currentOrchestration.mode === 'swarm'
         ? new Set(['agent_swarm'])
         : this.currentOrchestration.mode === 'graph'
-          ? new Set(['view_agent_graph', 'update_agent_graph', 'agent_output'])
+          ? new Set(['view_agent_graph', 'update_agent_graph', 'yield_agent_graph', 'agent_output'])
           : new Set<string>();
     const plan = this.toolAvailabilityRuntime.prepare(
       (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
@@ -918,6 +940,7 @@ export class AiSdkBackend implements AgentBackend {
           ? undefined
           : await this.buildCurrentUserContent(
               input.text,
+              input.voiceAudio,
               input.attachments,
               input.quotes,
               input.headAnchorRuntimeEvent?.id,
@@ -957,26 +980,35 @@ export class AiSdkBackend implements AgentBackend {
           }
           const anchorEventId = input.headAnchorRuntimeEvent?.id;
           let decoratedCurrentUser = false;
+          let currentUserOrdinal = -1;
+          let userOrdinal = 0;
           const replayItems = replayPlan.items.map((item) => {
+            if (item.kind !== 'text' || item.role !== 'user') {
+              return item;
+            }
+            const ordinal = userOrdinal++;
             if (
-              item.kind !== 'text' ||
-              item.role !== 'user' ||
-              (anchorEventId !== undefined ? item.eventId !== anchorEventId : decoratedCurrentUser)
+              anchorEventId !== undefined ? item.eventId !== anchorEventId : decoratedCurrentUser
             ) {
               return item;
             }
             decoratedCurrentUser = true;
+            currentUserOrdinal = ordinal;
             return {
               ...item,
               content: this.appendTurnTailPrompt(item.content, turnTailPrompt) as string,
             };
           });
+          const currentTurnMessages = await this.materializeRuntimeReplayPlan(
+            { ...replayPlan, items: replayItems },
+            settledModelOutputs,
+          );
+          const operationAudio = input.voiceAudio ? voiceAudioPart(input.voiceAudio) : undefined;
           return [
             ...priorReplay.messages,
-            ...(await this.materializeRuntimeReplayPlan(
-              { ...replayPlan, items: replayItems },
-              settledModelOutputs,
-            )),
+            ...(operationAudio && currentUserOrdinal >= 0
+              ? attachAudioToUserOrdinal(currentTurnMessages, currentUserOrdinal, operationAudio)
+              : currentTurnMessages),
           ];
         };
         const activeCompactionHeadAnchor =
@@ -1223,7 +1255,18 @@ export class AiSdkBackend implements AgentBackend {
               })
             : undefined;
           const projectedMessages = shaped?.messages ?? requestMessages;
-          const activeToolsForRequest = shaped?.activeTools ?? currentRepairToolNames();
+          const finalChildSummaryStep =
+            this.input.header.collaborationMode === 'agent' &&
+            this.maxSteps !== undefined &&
+            this.maxSteps > 1 &&
+            runtimeSteps === this.maxSteps - 1 &&
+            completedProviderSteps.length > 0;
+          const activeToolsForRequest = finalChildSummaryStep
+            ? []
+            : (shaped?.activeTools ?? currentRepairToolNames());
+          const requestSystemPrompt = finalChildSummaryStep
+            ? joinPromptFragments([systemPrompt, CHILD_STEP_BUDGET_FINALIZATION_PROMPT])
+            : systemPrompt;
           providerRequestTracker?.setStep(runtimeSteps);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
@@ -1254,7 +1297,7 @@ export class AiSdkBackend implements AgentBackend {
                   error,
                 });
               },
-              system: systemPrompt,
+              system: requestSystemPrompt,
               abortSignal: turnAbortController.signal,
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
             });
@@ -1525,8 +1568,14 @@ export class AiSdkBackend implements AgentBackend {
                   turnId,
                   stepId: providerStepId,
                   toolCallId: toolCall.toolCallId,
+                  // Provider metadata is persisted verbatim into an immutable
+                  // RuntimeEvent, and a field the response did not carry
+                  // arrives as an explicit `undefined` — which JSON drops, so
+                  // the event no longer reads back as it was written and the
+                  // store refuses it. One refusal took every tool-calling turn
+                  // with it.
                   ...(toolCall.providerOptions !== undefined
-                    ? { providerOptions: toolCall.providerOptions }
+                    ? { providerOptions: stripUndefinedDeep(toolCall.providerOptions) }
                     : {}),
                   input:
                     requestedTool !== undefined
@@ -1544,12 +1593,24 @@ export class AiSdkBackend implements AgentBackend {
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
             );
             if (rejectedSettlement) throw rejectedSettlement.reason;
-            const settlements = settlementOutcomes.flatMap((outcome) =>
-              outcome.status === 'fulfilled' ? [outcome.value] : [],
-            );
-            for (const settlement of settlements) {
+            const settlements = settlementOutcomes.map((outcome) => {
+              // A rejected settlement was handled above, so preserving the
+              // original array shape also preserves tool-call identity by index.
+              if (outcome.status === 'rejected') throw outcome.reason;
+              return outcome.value;
+            });
+            for (let index = 0; index < settlements.length; index += 1) {
+              const settlement = settlements[index]!;
+              const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, turnId, queue);
+              }
+              if (
+                returnedToolCalls.length === 1 &&
+                toolCall?.toolName === YIELD_AGENT_GRAPH_TOOL_NAME &&
+                isAgentGraphYieldToolResult(settlement.result)
+              ) {
+                this.handleAgentGraphYieldToolResult(settlement.result);
               }
             }
             await queue.waitUntilConsumedThroughCurrent();
@@ -1601,21 +1662,6 @@ export class AiSdkBackend implements AgentBackend {
           if (tokenUsage) {
             const systemPromptHash = turnDiagnostics.requestShape.componentHashes.systemPromptHash;
             tokenUsageCostUsd = this.computeTokenUsageCostUsd(tokenUsage);
-            trace.usageRecorded({
-              ...tokenUsage,
-              ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-              systemPromptHash,
-              prefixHash: turnDiagnostics.requestShape.prefixHash,
-              prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-              requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-              requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-              ...(turnDiagnostics.requestShape.toolSchemaChangeReason !== undefined
-                ? { toolSchemaChangeReason: turnDiagnostics.requestShape.toolSchemaChangeReason }
-                : {}),
-              ...(turnDiagnostics.requestShape.toolAvailability !== undefined
-                ? { toolAvailability: turnDiagnostics.requestShape.toolAvailability }
-                : {}),
-            });
             const contextBudgetForUsage = contextBudgetWithActiveProjectionDiagnostics(
               contextBudgetForTelemetry,
               activeToolResultPruneDiagnosticPatch,
@@ -1738,7 +1784,7 @@ export class AiSdkBackend implements AgentBackend {
         // win even when it arrives during post-stream usage persistence.
         if (this.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         const stopReason =
-          this.handoffStopReason ??
+          this.loopStopReason ??
           (this.maxSteps !== undefined && finishReason === 'tool-calls'
             ? 'step_limit'
             : this.mapFinishReason(finishReason));
@@ -1808,55 +1854,59 @@ export class AiSdkBackend implements AgentBackend {
           activeToolResultPruneDiagnosticPatch,
           activeCompactDiagnosticPatch,
         );
-        // The terminal record is fail-closed on usage evidence: no evidence,
-        // no record. An aborted send may have no final `usage`, but when EVERY
-        // completed step produced a usable sample their accumulated usage IS
-        // the complete evidence — record it, carrying the real cost of the
-        // steps that ran plus the diagnostics riding this record. Otherwise
-        // (no finish-step at all, or any unusable sample) the record is
-        // skipped: a partial sum posed as the whole call would violate the
-        // #972 no-fabrication invariant. The terminal outcome itself does not
-        // depend on this record — stopReason and the exhausted detail are
-        // durable on the CompleteEvent either way.
+        // `tokenUsage` still backfills from the completed steps when the send
+        // ended without a final `usage`: the terminal outcome and the
+        // `token_usage` SessionEvent below both read it. An unusable sample in
+        // any step fails it closed rather than posing a partial sum as the
+        // whole call (#972).
+        //
+        // The send-level `recordLlmCall` that used to sit here is gone (#1679).
+        // It measured the same provider requests the canonical seam now settles
+        // into `ModelCallAttempt`, one record per physical request instead of
+        // one aggregate per send, and keeping both would have been two
+        // independent meters free to disagree.
+        //
+        // What does NOT follow it out is the diagnostics that rode on it. The
+        // exhausted and aborted paths emit no `token_usage` SessionEvent, so
+        // their compaction decisions and the accumulated usage of the steps that
+        // did complete had that record as their only durable home. They move to
+        // the run trace, which carries no cost and meters nothing.
         if (!tokenUsage && completedStepUsage && !sawUnusableStepUsage) {
           tokenUsage = completedStepUsage;
           tokenUsageCostUsd = this.computeTokenUsageCostUsd(tokenUsage);
         }
-        if (tokenUsage)
-          this.input.recordLlmCall?.({
-            sessionId: this.sessionId,
-            turnId,
-            connectionSlug: this.input.connection.slug,
-            providerId: this.input.connection.providerType,
-            modelId: this.input.modelId,
-            ...llmCallUsageFields(tokenUsage),
-            latencyMs: Math.max(0, this.now() - startedAt),
-            status: streamStatus,
-            ...(streamErrorClass ? { errorClass: streamErrorClass } : {}),
-            startedAt,
-            ...(requestShapeForTelemetry !== undefined
-              ? {
-                  systemPromptHash: requestShapeForTelemetry.componentHashes.systemPromptHash,
-                  prefixHash: requestShapeForTelemetry.prefixHash,
-                  prefixChangeReason: requestShapeForTelemetry.prefixChangeReason,
-                  requestShapeHash: requestShapeForTelemetry.requestShapeHash,
-                  requestShapeChangeReason: requestShapeForTelemetry.requestShapeChangeReason,
-                  ...(requestShapeForTelemetry.toolSchemaChangeReason !== undefined
-                    ? { toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason }
-                    : {}),
-                  ...(requestShapeForTelemetry.toolAvailability !== undefined
-                    ? { toolAvailability: requestShapeForTelemetry.toolAvailability }
-                    : {}),
-                }
-              : {}),
-            ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-            ...(promptSegmentsForTelemetry.length > 0
-              ? { promptSegments: promptSegmentsForTelemetry }
-              : {}),
-            ...(contextBudgetForTelemetry !== undefined
-              ? { contextBudget: contextBudgetForTelemetry }
-              : {}),
-          });
+        trace.sendDiagnostics({
+          status: streamStatus,
+          ...(streamErrorClass ? { errorClass: streamErrorClass } : {}),
+          ...(tokenUsage
+            ? {
+                inputTokens: tokenUsage.inputTokens,
+                outputTokens: tokenUsage.outputTokens,
+                totalTokens: tokenUsage.totalTokens,
+              }
+            : {}),
+          ...(contextBudgetForTelemetry !== undefined
+            ? { contextBudget: contextBudgetForTelemetry }
+            : {}),
+          ...(promptSegmentsForTelemetry.length > 0
+            ? { promptSegments: promptSegmentsForTelemetry }
+            : {}),
+          ...(requestShapeForTelemetry !== undefined
+            ? {
+                systemPromptHash: requestShapeForTelemetry.componentHashes.systemPromptHash,
+                prefixHash: requestShapeForTelemetry.prefixHash,
+                prefixChangeReason: requestShapeForTelemetry.prefixChangeReason,
+                requestShapeHash: requestShapeForTelemetry.requestShapeHash,
+                requestShapeChangeReason: requestShapeForTelemetry.requestShapeChangeReason,
+                ...(requestShapeForTelemetry.toolSchemaChangeReason !== undefined
+                  ? { toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason }
+                  : {}),
+                ...(requestShapeForTelemetry.toolAvailability !== undefined
+                  ? { toolAvailability: requestShapeForTelemetry.toolAvailability }
+                  : {}),
+              }
+            : {}),
+        });
         queue.close();
       }
     })();
@@ -1900,7 +1950,7 @@ export class AiSdkBackend implements AgentBackend {
         revision: proposal.revision,
         storeVersion: result.storeVersion,
       });
-      this.handoffStopReason = 'plan_handoff';
+      this.loopStopReason = 'plan_handoff';
       this.loopStopRequested = true;
       return;
     }
@@ -1915,6 +1965,21 @@ export class AiSdkBackend implements AgentBackend {
     if (result.kind === 'plan_execution_completed' || result.kind === 'plan_execution_cancelled') {
       this.loopStopRequested = true;
     }
+  }
+
+  private handleAgentGraphYieldToolResult(result: YieldAgentGraphToolResult): void {
+    this.currentRunTrace?.emit(
+      'agent_graph',
+      'graph_supervisor_yielded',
+      'Graph supervisor yielded',
+      {
+        pendingWorkCount: result.pendingWorkCount,
+        liveOperatorCount: result.liveOperatorCount,
+        reason: result.reason,
+      },
+    );
+    this.loopStopReason = 'graph_yield';
+    this.loopStopRequested = true;
   }
 
   // --------------------------------------------------------------------------
@@ -1980,6 +2045,125 @@ export class AiSdkBackend implements AgentBackend {
         },
         pricing,
       ).totalCost;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * One tracker for one physical provider call kind (#1679).
+   *
+   * Auxiliary calls get the same capture, attempt, and accounting plumbing the
+   * main send uses, built here because the sinks and the current run live on
+   * this backend. Callers receive a ready tracker rather than the ingredients:
+   * a half-wired tracker is what produces records nothing can attribute.
+   *
+   * Absent only when there is nothing to feed: no capture sink *and* no
+   * canonical sink. Metering deliberately does not depend on capture — capture
+   * is a diagnostic, and a deployment that turns it off must still be billed.
+   */
+  private createProviderRequestTracker(input: {
+    turnId: string;
+    callKind: ModelCallKind;
+    modelId: string;
+    runId?: string;
+  }): ProviderRequestTracker | undefined {
+    const persistCapture = this.input.recordProviderRequestCapture;
+    const accounting = this.modelCallAccounting(input.callKind, {
+      modelId: input.modelId,
+      ...(input.runId ? { runId: input.runId } : {}),
+    });
+    if (!persistCapture && !accounting) return undefined;
+    return new ProviderRequestTracker({
+      traceId: this.newId(),
+      turnId: input.turnId,
+      contextWindow: resolveSelectedModelContextWindow(this.input.connection, input.modelId),
+      now: this.now,
+      newId: this.newId,
+      ...(persistCapture ? { persistCapture } : {}),
+      recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+      ...(accounting ? { accounting } : {}),
+    });
+  }
+
+  /**
+   * Accounting identity for one call kind (#1679).
+   *
+   * Owned here rather than by the host that wires the summarizers, because the
+   * only field a host cannot supply is the one that changes per turn: `runId`
+   * lives on this backend. A host configures the capture and attempt plumbing
+   * once; the run a record belongs to is resolved at the moment the call is
+   * actually made.
+   *
+   * Absent when there is no canonical sink, which leaves the corresponding
+   * tracker purely diagnostic.
+   */
+  modelCallAccounting(
+    callKind: ModelCallKind,
+    identity?: {
+      /**
+       * States the run explicitly for a call made outside `send()`, where there
+       * is no live turn to resolve it from — a manual history compaction is one.
+       */
+      runId?: string;
+      /** The model this call actually runs against; priced as that model. */
+      modelId?: string;
+    },
+  ): ModelCallAccountingInput | undefined {
+    const record = this.input.recordModelCallAttempt;
+    if (!record) return undefined;
+    const modelId = identity?.modelId ?? this.input.modelId;
+    return {
+      sessionId: this.sessionId,
+      resolveRunId: () => identity?.runId ?? this.currentRunId ?? undefined,
+      connectionSlug: this.input.connection.slug,
+      providerId: this.input.connection.providerType,
+      callKind,
+      record,
+      resolveCost: (usage: ProviderRequestUsage) => this.resolveModelCallCost(usage, modelId),
+      ...(this.input.assertModelCallAccountingReady
+        ? { assertReady: this.input.assertModelCallAccountingReady }
+        : {}),
+    };
+  }
+
+  /**
+   * Resolves cost for a canonical accounting record at settlement time, together
+   * with the rates it was computed against.
+   *
+   * The basis travels with the amount because a figure recomputed later from
+   * whatever pricing is current would silently drift from what the call actually
+   * cost. An unresolvable price returns `undefined` rather than zero — the
+   * record then carries `costBasis: 'unpriced'`, which is not the same claim as
+   * a call that was free.
+   *
+   * Priced against the model that actually served the request, which is not
+   * always the session's model: a configured semantic-compact summarizer runs
+   * on its own. Recording one model's id beside another model's rates would
+   * make the stored amount unauditable in exactly the way `pricingRates` exists
+   * to prevent.
+   */
+  private resolveModelCallCost(
+    usage: ProviderRequestUsage,
+    modelId: string,
+  ): ResolvedModelCallCost | undefined {
+    try {
+      const pricing = (this.input.lookupPricing ?? getBuiltinPricing)(
+        `${this.input.connection.providerType}:${modelId}`,
+      );
+      if (pricing === null) return undefined;
+      const costUsd = computeCost(
+        {
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          cacheHitInputTokens: usage.cacheReadInputTokens ?? 0,
+          cacheMissInputTokens: usage.cacheMissInputTokens ?? 0,
+          cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
+        },
+        pricing,
+      ).totalCost;
+      if (costUsd === undefined || !Number.isFinite(costUsd)) return undefined;
+      return { costUsd, pricingRates: pricing };
     } catch {
       return undefined;
     }
@@ -2775,11 +2959,12 @@ export class AiSdkBackend implements AgentBackend {
 
   private async buildCurrentUserContent(
     text: string,
+    voiceAudio?: EphemeralVoiceAudio,
     attachments?: AttachmentRef[],
     quotes?: QuoteRef[],
     runtimeEventId?: string,
   ): Promise<UserContent> {
-    return this.appendImageParts(
+    const content = await this.appendImageParts(
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),
         ...(quotes !== undefined ? { quotes } : {}),
@@ -2787,6 +2972,11 @@ export class AiSdkBackend implements AgentBackend {
       attachments,
       runtimeEventId === undefined ? undefined : `runtime-event:${runtimeEventId}`,
     );
+    if (!voiceAudio) return content;
+    const parts: Exclude<UserContent, string> =
+      typeof content === 'string' ? [{ type: 'text', text: content }] : [...content];
+    parts.push(voiceAudioPart(voiceAudio));
+    return parts;
   }
 
   private async resolveSystemPrompt(turnId: string): Promise<string | undefined> {
@@ -2848,7 +3038,7 @@ export class AiSdkBackend implements AgentBackend {
     this.currentRunTrace = null;
     this.currentUserIntent = undefined;
     this.loopStopRequested = false;
-    this.handoffStopReason = undefined;
+    this.loopStopReason = undefined;
     this.injectedSteeringMessages = [];
     try {
       await this.toolRuntime.endTurn(turnId, this.aborted ? 'aborted' : 'completed');
@@ -2980,6 +3170,25 @@ function isPlanToolResult(output: unknown): output is PlanToolResult {
   ].includes(String((output as { kind?: unknown }).kind));
 }
 
+function isAgentGraphYieldToolResult(output: unknown): output is YieldAgentGraphToolResult {
+  if (output === null || typeof output !== 'object' || Array.isArray(output)) return false;
+  const result = output as Record<string, unknown>;
+  return (
+    Object.keys(result).length === 4 &&
+    result.kind === 'agent_graph_yielded' &&
+    typeof result.pendingWorkCount === 'number' &&
+    Number.isSafeInteger(result.pendingWorkCount) &&
+    result.pendingWorkCount > 0 &&
+    typeof result.liveOperatorCount === 'number' &&
+    Number.isSafeInteger(result.liveOperatorCount) &&
+    result.liveOperatorCount >= 0 &&
+    typeof result.reason === 'string' &&
+    result.reason.length > 0 &&
+    result.reason.length <= 4_000 &&
+    result.reason.trim() === result.reason
+  );
+}
+
 export function repairMakaToolCall(input: {
   toolCall: RepairableAiSdkToolCall;
   availableToolNames: readonly string[];
@@ -3088,6 +3297,36 @@ function sumOptionalCounts<K extends keyof ActiveToolResultPruneDiagnosticPatch>
 ): Pick<ActiveToolResultPruneDiagnosticPatch, K> | Record<string, never> {
   const total = (left[key] ?? 0) + (right[key] ?? 0);
   return total > 0 ? ({ [key]: total } as Pick<ActiveToolResultPruneDiagnosticPatch, K>) : {};
+}
+
+function voiceAudioPart(voiceAudio: EphemeralVoiceAudio): AudioPart {
+  return {
+    type: 'audio',
+    data: voiceAudio.bytes,
+    mediaType: voiceAudio.mediaType,
+    format: voiceAudio.format,
+    durationMs: voiceAudio.durationMs,
+    ...(voiceAudio.transcript ? { transcript: voiceAudio.transcript } : {}),
+    retention: 'operation_memory',
+  };
+}
+
+function attachAudioToUserOrdinal(
+  messages: readonly ModelMessage[],
+  targetOrdinal: number,
+  audio: AudioPart,
+): ModelMessage[] {
+  let userOrdinal = 0;
+  return messages.map((message) => {
+    if (message.role !== 'user') return message;
+    const ordinal = userOrdinal++;
+    if (ordinal !== targetOrdinal) return message;
+    const content =
+      typeof message.content === 'string'
+        ? [{ type: 'text' as const, text: message.content }, audio]
+        : [...message.content.filter((part) => part.type !== 'audio'), audio];
+    return { ...message, content };
+  });
 }
 
 function contextBudgetWithActiveProjectionDiagnostics(

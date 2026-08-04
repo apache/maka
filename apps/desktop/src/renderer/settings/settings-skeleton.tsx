@@ -1,3 +1,7 @@
+import { Skeleton } from '@astryxdesign/core';
+import { useUiLocale } from '@maka/ui';
+import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+
 type SkeletonLine = { width: string; size?: 'lg' | 'sm' };
 
 // 权限/健康快照页共用的骨架行预设：首行大号标题条，其余模拟段落行宽。
@@ -17,13 +21,14 @@ export function SettingsSkeletonStack({
   lines?: ReadonlyArray<SkeletonLine>;
 }) {
   return (
-    <div className="maka-skeleton-stack" aria-busy="true" aria-label={label}>
+    <div className="settingsSkeletonStack" aria-busy="true" aria-label={label}>
       {lines.map((line, index) => (
-        <div
+        <Skeleton
           key={index}
-          className="maka-skeleton maka-skeleton-line"
-          data-size={line.size}
-          style={{ width: line.width }}
+          width={line.width}
+          height={line.size === 'lg' ? 16 : line.size === 'sm' ? 9 : 12}
+          radius="rounded"
+          index={index}
         />
       ))}
     </div>
@@ -34,16 +39,14 @@ export function SettingsSkeleton() {
   const copy = getSettingsSharedCopy(useUiLocale());
   return (
     <div className="settingsLoadingSkeleton" aria-busy="true" aria-label={copy.loading}>
-      <div className="maka-skeleton-stack">
-        <div className="maka-skeleton maka-skeleton-line" data-size="lg" style={{ width: '38%' }} />
-        <div className="maka-skeleton maka-skeleton-card" />
-        <div className="maka-skeleton maka-skeleton-line" data-size="sm" style={{ width: '60%' }} />
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '85%' }} />
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '72%' }} />
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '48%' }} />
+      <div className="settingsSkeletonStack">
+        <Skeleton width="38%" height={16} radius="rounded" index={0} />
+        <Skeleton height={92} radius={3} index={1} />
+        <Skeleton width="60%" height={9} radius="rounded" index={2} />
+        <Skeleton width="85%" height={12} radius="rounded" index={3} />
+        <Skeleton width="72%" height={12} radius="rounded" index={4} />
+        <Skeleton width="48%" height={12} radius="rounded" index={5} />
       </div>
     </div>
   );
 }
-import { useUiLocale } from '@maka/ui';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';

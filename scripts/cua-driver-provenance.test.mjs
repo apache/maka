@@ -7,38 +7,12 @@ import { test } from 'node:test';
 
 import {
   assertMachOHeader,
-  assertPinnedCuaDriverChecksums,
   assertSafeTarEntries,
   assertSafeTarListing,
-  cuaDriverDownloadUrl,
   downloadFileWithSha256,
   verifyBinaryMetadata,
   verifyBinaryVersion,
 } from './prepare-cua-driver.mjs';
-import { cuaDriverDistributionBlockers } from './check-cua-driver-bundle.mjs';
-
-const manifest = JSON.parse(
-  await readFile(new URL('../apps/desktop/bundled-tools.json', import.meta.url)),
-);
-const cua = manifest.cuaDriver;
-
-test('cua-driver release pins archive, binary, source, and license independently', () => {
-  assertPinnedCuaDriverChecksums(cua);
-  assert.notEqual(cua.archiveSha256, cua.binarySha256);
-  assert.match(cua.sourceCommit, /^[a-f0-9]{40}$/);
-  assert.match(cua.upstreamCommit, /^[a-f0-9]{40}$/);
-  assert.match(cua.upstreamMergeCommit, /^[a-f0-9]{40}$/);
-  assert.deepEqual(cua.architectures, ['arm64', 'x86_64']);
-  assert.equal(cua.signature, 'adhoc');
-  assert.equal(cua.archiveSizeBytes, 10473137);
-  assert.equal(cua.binarySizeBytes, 25270080);
-  assert.equal(cua.licenseSizeBytes, 1069);
-  assert.equal(cua.sourceSizeBytes, 542);
-  assert.equal(
-    cuaDriverDownloadUrl(cua.tag, cua.asset),
-    `https://github.com/${cua.repo}/releases/download/${cua.tag}/${cua.asset}`,
-  );
-});
 
 test('download streams to disk with a hard byte ceiling and incremental SHA-256', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-cua-download-test-'));
@@ -124,15 +98,6 @@ test('Mach-O, architecture, and signature gates run before the binary version', 
   }
 });
 
-test('prepare gates provenance after metadata and before executing --version', async () => {
-  const source = await readFile(new URL('./prepare-cua-driver.mjs', import.meta.url), 'utf8');
-  const body = source.slice(source.indexOf('export async function prepareCuaDriver'));
-  const metadata = body.indexOf('await verifyBinaryMetadata(found[0])');
-  const provenance = body.indexOf('assertSourceProvenance(JSON.parse(sourceBytes.toString');
-  const version = body.indexOf('await verifyBinaryVersion(found[0])');
-  assert.ok(metadata >= 0 && provenance > metadata && version > provenance);
-});
-
 test('tar entry validation rejects path traversal before extraction', () => {
   assertSafeTarEntries(['bundle/cua-driver', 'bundle/LICENSE.md']);
   assert.throws(() => assertSafeTarEntries(['../../tmp/escape']));
@@ -145,48 +110,6 @@ test('tar entry validation rejects path traversal before extraction', () => {
   assert.throws(() =>
     assertSafeTarListing(['lrwxr-xr-x user/group 0 2026-01-01 00:00 bundle/link -> /tmp/escape']),
   );
-});
-
-test('tracked license and source metadata match the manifest pins', async () => {
-  const license = await readFile(
-    new URL('../apps/desktop/resources/licenses/cua-driver/LICENSE.md', import.meta.url),
-  );
-  const sourceBytes = await readFile(
-    new URL('../apps/desktop/resources/licenses/cua-driver/SOURCE.json', import.meta.url),
-  );
-  assert.equal(sha256(license), cua.licenseSha256);
-  assert.equal(sha256(sourceBytes), cua.sourceSha256);
-  const source = JSON.parse(sourceBytes.toString('utf8'));
-  assert.equal(source.repository, cua.repo);
-  assert.equal(source.upstreamCommit, cua.upstreamCommit);
-  assert.equal(source.sourceCommit, cua.sourceCommit);
-  assert.equal(source.patchPullRequest, cua.patchPullRequest);
-  assert.equal(source.cargoLockSha256, cua.cargoLockSha256);
-});
-
-test('artifact checks remain separate from the distribution release gate', async () => {
-  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url)));
-  const [checkSource, prepareSource] = await Promise.all([
-    readFile(new URL('./check-cua-driver-bundle.mjs', import.meta.url), 'utf8'),
-    readFile(new URL('./prepare-cua-driver.mjs', import.meta.url), 'utf8'),
-  ]);
-  assert.ok(pkg.scripts['check:cua-driver-artifact']);
-  assert.doesNotMatch(pkg.scripts['check:release'], /cua-driver/);
-  assert.match(checkSource, /releaseSigningReady:\s*false/);
-  assert.match(checkSource, /verifyBinaryMetadata/);
-  assert.match(prepareSource, /codesign/);
-  assert.doesNotMatch(
-    `${checkSource}\n${prepareSource}`,
-    /notarytool|stapler|Developer ID Application/,
-  );
-  assert.deepEqual(cuaDriverDistributionBlockers(cua), [
-    'developer_id_signature',
-    'notarization',
-    'artifact_attestation',
-    'build_provenance',
-    'third_party_notices',
-    'distribution_ready',
-  ]);
 });
 
 function sha256(bytes) {

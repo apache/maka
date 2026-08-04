@@ -22,7 +22,6 @@ function settingsWithSecrets(): AppSettings {
     theme: 'dark',
     network: { proxy: { host: '127.0.0.1', password: 'proxy-secret' } },
     botChat: { channels: { telegram: { chatId: '42', token: 'bot-secret', appSecret: 'app-secret' } } },
-    openGateway: { port: 8848, token: 'gw-secret' },
     webSearch: { providers: { tavily: { apiKey: 'tavily-secret' } } },
   } as unknown as AppSettings;
 }
@@ -89,13 +88,11 @@ describe('config-transfer-service', () => {
     assert.equal('password' in s.network.proxy, false, 'proxy password key omitted');
     assert.equal('token' in s.botChat.channels.telegram, false, 'bot token key omitted');
     assert.equal('appSecret' in s.botChat.channels.telegram, false, 'bot appSecret key omitted');
-    assert.equal('token' in s.openGateway, false, 'gateway token key omitted');
     assert.equal('apiKey' in s.webSearch.providers.tavily, false, 'tavily apiKey key omitted');
     // Non-secret fields at every level pass through untouched.
     assert.equal(s.theme, 'dark');
     assert.equal(s.network.proxy.host, '127.0.0.1');
     assert.equal(s.botChat.channels.telegram.chatId, '42');
-    assert.equal(s.openGateway.port, 8848);
   });
 
   it('keeps settings secrets and enumerates credentials when credentials ARE included', async () => {
@@ -131,6 +128,30 @@ describe('config-transfer-service', () => {
     assert.deepEqual(setCreds, [{ slug: 'brand-new', kind: 'api_key', value: 'sk-imported' }]);
     assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
     assert.deepEqual(writtenMemory, ['# imported memory']);
+  });
+
+  it('restores the selection a backup states instead of re-enabling its default', async () => {
+    // A backup can hold a connection whose default model the user had disabled.
+    // `save()` cannot tell a stated selection from one a sync echoed back, so it
+    // applies the read-time shim and merges the default in — the import would
+    // otherwise quietly re-enable a model the backup had turned off.
+    const { deps, saved } = makeDeps();
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections'] as const,
+      data: {
+        connections: [
+          { ...conn('brand-new'), defaultModel: 'disabled-by-user', enabledModelIds: ['kept'] },
+        ],
+      },
+    };
+
+    await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(saved[0]?.enabledModelIds, ['kept']);
+    assert.equal(saved[0]?.defaultModel, '');
   });
 
   it('does NOT write credentials for a connection the user skipped', async () => {

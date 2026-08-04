@@ -34,16 +34,13 @@
 }
 
 .maka-mcp-hero strong {
+  font: var(--maka-text-heading-3);
   color: var(--foreground);
-  font-size: 1.2em;
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-tight);
 }
 
 .maka-mcp-hero span {
+  font: var(--maka-text-body);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .maka-mcp-hero-signal {
@@ -75,10 +72,8 @@
 }
 
 .maka-mcp-hero-signal small {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-tight);
 }
 
 /* Tab row rhythm mirrors the skills page (.maka-skill-tabs-bar): an
@@ -89,48 +84,10 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  border-bottom: var(--border-width-hairline) solid var(--border);
-}
-
-.maka-mcp-tabs {
-  display: flex;
-  gap: var(--space-4);
-  border-bottom: 0;
-}
-
-.maka-mcp-tab {
-  position: relative;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 1px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.maka-mcp-tab span {
-  min-width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding-inline: var(--space-1);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.06);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  font-variant-numeric: tabular-nums;
 }
 
 .maka-mcp-search {
   width: min(300px, 38vw);
-  height: var(--h-control-sm);
   margin-bottom: var(--space-2);
   flex: 0 0 auto;
 }
@@ -179,8 +136,7 @@
 }
 
 .maka-mcp-market-icon span {
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-bold);
+  font: var(--maka-text-heading-3);
   letter-spacing: var(--tracking-normal);
 }
 
@@ -220,31 +176,38 @@
 }
 
 .maka-mcp-market-copy strong {
+  font: var(--maka-text-heading-3);
   color: var(--foreground);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-mcp-market-copy small {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .maka-mcp-market-copy p {
+  font: var(--maka-text-body);
   display: -webkit-box;
   margin: 0;
   overflow: hidden;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
+/* #1879: was a bare 34px square — one of the off-ruler literals
+   (22/26/30/34/38) the control ruler exists to end, named as such in
+   maka-tokens.css. It is the install branch of a slot whose other branch
+   renders `<Button size="sm">` (mcp-page.tsx), i.e. an Astryx control at
+   `--size-element-sm` = 28px, so the row changed height depending on whether
+   a server was installed. `--h-control-md` resolves to that same
+   `--size-element-sm`: the two branches now agree by deriving from one token
+   rather than by two rules happening to match. Square icon control, so width
+   and height take the same tier. */
 .maka-mcp-install-button {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: var(--h-control-md);
+  height: var(--h-control-md);
   display: grid;
   flex: 0 0 auto;
   place-items: center;
@@ -275,6 +238,8 @@
   width: 19px;
   height: 19px;
 }
+
+.maka-mcp-install-spinner { animation: maka-spin 1s linear infinite; }
 
 .maka-mcp-install-cancel {
   opacity: 0;
@@ -319,7 +284,7 @@
 
 .maka-mcp-server-row {
   min-width: 0;
-  padding: var(--space-4) var(--space-5);
+  list-style: none;
   border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
@@ -327,67 +292,37 @@
   border-bottom: 0;
 }
 
-.maka-mcp-server-summary {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.maka-mcp-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted-foreground);
-}
-
-/* Status-color restraint (#651): the dot stays neutral for every expected
-   state; only a genuine failure (data-tone="destructive") raises color. */
-.maka-mcp-status-dot[data-tone="destructive"] { background: var(--destructive); }
-
-.maka-mcp-server-state {
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-variant-numeric: tabular-nums;
-}
-
-.maka-mcp-server-identity {
-  min-width: 0;
-  display: grid;
-  gap: var(--space-1);
-}
-
-.maka-mcp-server-identity > div {
+.maka-mcp-server-heading,
+.maka-mcp-server-controls {
   display: flex;
   align-items: center;
   gap: var(--space-2);
 }
 
-.maka-mcp-server-identity strong {
+.maka-mcp-server-heading > span:first-child {
   min-width: 0;
   overflow: hidden;
-  color: var(--foreground);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.maka-mcp-server-identity > span {
+.maka-mcp-server-description {
   min-width: 0;
   overflow: hidden;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.maka-mcp-server-identity code,
+/* Two inherited sizes hid under one family-only rule: the tool chips and the
+   error <pre> sit in 14px card body, the description code sits in the 12px
+   description. Naming a role forces that split into the open. */
 .maka-mcp-tool-list code,
-.maka-mcp-server-details pre,
-.maka-mcp-json-form textarea {
-  font-family: var(--font-mono);
+.maka-mcp-server-details pre {
+  font: var(--maka-text-code);
+}
+
+.maka-mcp-server-description code {
+  font: var(--maka-text-supporting);
 }
 
 .maka-mcp-server-actions {
@@ -397,22 +332,15 @@
 }
 
 .maka-mcp-server-error {
-  margin: var(--space-3) 0 0 var(--space-5);
+  font: var(--maka-text-body);
+  margin: 0 var(--space-3) var(--space-3);
   color: var(--destructive-text);
-  font-size: var(--font-size-ui);
 }
 
 .maka-mcp-server-details {
-  margin: var(--space-3) 0 0 var(--space-5);
+  font: var(--maka-text-supporting);
+  margin: 0 var(--space-3) var(--space-3);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-}
-
-.maka-mcp-server-details summary,
-.maka-mcp-advanced summary {
-  width: max-content;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
 }
 
 .maka-mcp-tool-list {
@@ -440,8 +368,7 @@
   white-space: pre-wrap;
 }
 
-/* The empty / no-results panels ride the shared EmptyState primitive; this
-   class is only a light layout override on top of `.maka-empty-state`. */
+/* Product layout around the Astryx EmptyState. */
 .maka-mcp-empty {
   align-self: start;
 }
@@ -456,45 +383,8 @@
   text-align: center;
 }
 
-.maka-mcp-editor-dialog {
-  width: min(92vw, var(--maka-chat-measure));
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
-.maka-mcp-editor-mode {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4) 0;
-}
-
-.maka-mcp-editor-mode button,
-.maka-mcp-kind-picker button {
-  min-height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground-secondary);
-  font: inherit;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.maka-mcp-editor-mode button[data-active="true"],
-.maka-mcp-kind-picker button[data-active="true"] {
-  border-color: var(--border-strong);
-  background: var(--state-selected-bg);
-  color: var(--foreground);
-}
-
-.maka-mcp-editor-mode svg,
-.maka-mcp-kind-picker svg {
-  width: 16px;
-  height: 16px;
+.maka-mcp-editor-choice {
+  padding-inline: var(--space-4);
 }
 
 .maka-mcp-manual-form,
@@ -507,13 +397,6 @@
   padding-top: var(--space-4);
 }
 
-.maka-mcp-kind-picker {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
-  padding-inline: var(--space-4);
-}
-
 .maka-mcp-form-fields {
   min-height: 0;
   display: grid;
@@ -523,58 +406,26 @@
   padding: 0 var(--space-4) var(--space-1);
 }
 
-.maka-mcp-form-fields textarea {
-  min-height: 96px;
-  font-family: var(--font-mono);
-}
-
 .maka-mcp-advanced {
   border-top: var(--border-width-hairline) solid var(--border);
   padding-top: var(--space-3);
 }
 
-.maka-mcp-advanced > div {
+.maka-mcp-advanced-fields {
   display: grid;
   gap: var(--space-4);
-  padding-top: var(--space-4);
 }
 
-.maka-mcp-advanced select {
-  width: 100%;
-  min-height: var(--h-control-md);
-  padding-inline: var(--space-3);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground);
-}
-
-.maka-mcp-json-form > label {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(260px, 1fr);
-  gap: var(--space-2);
+.maka-mcp-json-field {
+  overflow: auto;
   padding-inline: var(--space-4);
-}
-
-.maka-mcp-json-form > label > span {
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.maka-mcp-json-form textarea {
-  min-height: 260px;
-  resize: none;
-  line-height: var(--leading-normal);
 }
 
 .maka-mcp-json-form > p {
+  font: var(--maka-text-supporting);
   margin: 0;
   padding-inline: var(--space-4);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .maka-mcp-editor-footer {
@@ -600,12 +451,12 @@
     width: 100%;
   }
 
-  .maka-mcp-server-summary {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+  .maka-mcp-server-controls {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .maka-mcp-server-actions {
-    grid-column: 2 / -1;
     justify-content: flex-end;
   }
 }

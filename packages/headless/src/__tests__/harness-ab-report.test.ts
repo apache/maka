@@ -5,6 +5,9 @@ import type { FixedPromptTaskInfraFailedEvent } from '../fixed-prompt-controller
 import {
   assertHarnessAbReportCompleted,
   buildHarnessAbReport,
+  buildHarnessCohortReport,
+  renderHarnessCohortReportCsv,
+  renderHarnessCohortReportMarkdown,
   renderHarnessAbReportCsv,
   renderHarnessAbReportMarkdown,
 } from '../harness-ab-report.js';
@@ -56,8 +59,138 @@ describe('harness A/B report', () => {
     } as Pick<HarnessAbRunManifest, 'arms'>;
     assert.throws(
       () => buildHarnessAbReport(summary, undefined, 'metered', partialManifest),
-      /execution placement must be declared for both arms/,
+      /execution placement must be declared for every arm/,
     );
+  });
+
+  test('renders a three-arm common cohort with native protocol disclosure', () => {
+    const events = {
+      maka: [usage('a', true, 100, 20, 25, 0.001)],
+      codex: [usage('a', false, 120, 30, 30, 0.002)],
+      'claude-code': [usage('a', true, 110, 10, 28, 0.0015)],
+    };
+    const comparison = (baselineArmId: keyof typeof events, candidateArmId: keyof typeof events) =>
+      summarizeAbComparison({
+        runId: 'deepseek-three-way',
+        roundId: `${baselineArmId}-vs-${candidateArmId}`,
+        baselineArmId,
+        candidateArmId,
+        evaluationTaskIds: ['a'],
+        baselineRuns: [events[baselineArmId]],
+        candidateRuns: [events[candidateArmId]],
+      });
+    const report = buildHarnessCohortReport(
+      {
+        runId: 'deepseek-three-way',
+        armIds: ['maka', 'codex', 'claude-code'],
+        taskCount: 1,
+        commonCohort: { groups: 1, comparableGroups: 1, excludedGroupIds: [] },
+        pairwise: [
+          comparison('maka', 'codex'),
+          comparison('maka', 'claude-code'),
+          comparison('codex', 'claude-code'),
+        ],
+      },
+      {
+        snapshotFingerprint: `sha256:${'a'.repeat(64)}`,
+        annotations: [{ taskId: 'a', state: 'passed' }],
+        warnings: ['frozen Oracle warning'],
+      },
+      'metered',
+      {
+        arms: [
+          harnessManifestArm('maka', 'anthropic-messages'),
+          harnessManifestArm('codex', 'openai-chat'),
+          harnessManifestArm('claude-code', 'openai-responses'),
+        ],
+      },
+    );
+
+    assert.equal(report.arms.length, 3);
+    assert.deepEqual(
+      report.arms.map(({ armId, passed, evaluated, passRate, inputTokens, infraFailed }) => ({
+        armId,
+        passed,
+        evaluated,
+        passRate,
+        inputTokens,
+        infraFailed,
+      })),
+      [
+        { armId: 'maka', passed: 1, evaluated: 1, passRate: 1, inputTokens: 100, infraFailed: 0 },
+        { armId: 'codex', passed: 0, evaluated: 1, passRate: 0, inputTokens: 120, infraFailed: 0 },
+        {
+          armId: 'claude-code',
+          passed: 1,
+          evaluated: 1,
+          passRate: 1,
+          inputTokens: 110,
+          infraFailed: 0,
+        },
+      ],
+    );
+    assert.deepEqual(report.measurement.protocolByArm, {
+      maka: 'anthropic-messages',
+      codex: 'openai-chat',
+      'claude-code': 'openai-responses',
+    });
+    const escapedCsv = renderHarnessCohortReportCsv({
+      ...report,
+      tasks: [{ ...report.tasks[0]!, taskId: 'task,"quoted"' }],
+    });
+    assert.match(escapedCsv, /^"task,""quoted""",maka,/m);
+    assert.deepEqual(report.tasks[0]?.arms, [
+      {
+        armId: 'maka',
+        observed: 1,
+        valid: 1,
+        passed: 1,
+        passRate: 1,
+        completed: 1,
+        budgetExhausted: 0,
+        infraFailed: 0,
+        plumbingFailed: 0,
+        attestationWarnings: 0,
+        missing: 0,
+      },
+      {
+        armId: 'codex',
+        observed: 1,
+        valid: 1,
+        passed: 0,
+        passRate: 0,
+        completed: 1,
+        budgetExhausted: 0,
+        infraFailed: 0,
+        plumbingFailed: 0,
+        attestationWarnings: 0,
+        missing: 0,
+      },
+      {
+        armId: 'claude-code',
+        observed: 1,
+        valid: 1,
+        passed: 1,
+        passRate: 1,
+        completed: 1,
+        budgetExhausted: 0,
+        infraFailed: 0,
+        plumbingFailed: 0,
+        attestationWarnings: 0,
+        missing: 0,
+      },
+    ]);
+    assert.match(renderHarnessCohortReportMarkdown(report), /Common cohort: 1\/1/);
+    assert.match(
+      renderHarnessCohortReportCsv(report),
+      /^task_id,arm_id,observed,valid,passed,pass_rate,completed,budget_exhausted,infra_failed,plumbing_failed,attestation_warnings,missing\n/,
+    );
+    assert.match(renderHarnessCohortReportCsv(report), /a,claude-code,1,1,1,1,1,0,0,0,0,0/);
+    assert.deepEqual(report.oracleEvidence?.stateCounts, { passed: 1 });
+    assert.ok(report.pairwise.every((pair) => pair.oracleEvidence?.stateCounts.passed === 1));
+    assert.ok(report.pairwise.every((pair) => pair.execution?.arms.length === 2));
+    assert.match(renderHarnessCohortReportMarkdown(report), /Oracle evidence: passed 1\./);
+    assert.match(renderHarnessCohortReportMarkdown(report), /Warning: frozen Oracle warning/);
   });
 
   test('keeps effectiveness and economy as separate reproducible axes', () => {
@@ -77,16 +210,29 @@ describe('harness A/B report', () => {
 
     const report = buildHarnessAbReport(summary);
 
-    assert.equal(report.schemaVersion, 'maka.harness_ab.report.v3');
+    assert.equal(report.schemaVersion, 'maka.harness_ab.report.v4');
     assert.deepEqual(report.effectiveness, {
-      metric: 'pass@1',
+      metric: 'end-to-end-pass@1',
       pairedEvaluated: 2,
       baseline: { armId: 'maka', passed: 2, evaluated: 2, passRate: 1 },
       candidate: { armId: 'opencode', passed: 1, evaluated: 2, passRate: 0.5 },
       candidateMinusBaseline: -0.5,
+      pairedCandidateMinusBaseline: -0.5,
       candidateWins: 0,
       baselineWins: 1,
       ties: 1,
+      nonBudgetConditional: {
+        pairedEvaluated: 2,
+        excludedBudgetPairs: 0,
+        baseline: { armId: 'maka', passed: 2, evaluated: 2, passRate: 1 },
+        candidate: { armId: 'opencode', passed: 1, evaluated: 2, passRate: 0.5 },
+        candidateMinusBaseline: -0.5,
+      },
+      budgetExhaustion: {
+        baseline: { armId: 'maka', exhausted: 0, evaluated: 2, rate: 0 },
+        candidate: { armId: 'opencode', exhausted: 0, evaluated: 2, rate: 0 },
+        candidateMinusBaseline: 0,
+      },
     });
     assert.equal(report.economy.baseline.totalTokens, 240);
     assert.equal(report.economy.candidate.totalTokens, 360);
@@ -99,15 +245,15 @@ describe('harness A/B report', () => {
     const csv = renderHarnessAbReportCsv(report);
     assert.match(
       csv,
-      /^run_status,stop_reason,billing_mode,economy_basis,scheduled_cells,attempted_cells,model_scored_cells,infra_failed_cells,unscored_cells,missing_final_usage_cells,paired_evaluated,paired_metered,missing_usage_pairs,axis,metric,baseline_arm,baseline_value,candidate_arm,candidate_value,candidate_minus_baseline\n/,
+      /^run_status,stop_reason,billing_mode,economy_basis,scheduled_cells,attempted_cells,model_scored_cells,infra_failed_cells,unscored_cells,missing_final_usage_cells,paired_evaluated,paired_non_budget_evaluated,budget_excluded_pairs,paired_metered,missing_usage_pairs,axis,metric,baseline_arm,baseline_value,candidate_arm,candidate_value,candidate_minus_baseline\n/,
     );
     assert.match(
       csv,
-      /completed,,metered,cache-aware-api-equivalent-usd,4,4,4,0,0,0,2,2,0,effectiveness,pass_rate,maka,1,opencode,0.5,-0.5/,
+      /completed,,metered,cache-aware-api-equivalent-usd,4,4,4,0,0,0,2,2,0,2,0,effectiveness,end_to_end_pass_at_1,maka,1,opencode,0.5,-0.5/,
     );
     assert.match(
       csv,
-      /completed,,metered,cache-aware-api-equivalent-usd,4,4,4,0,0,0,2,2,0,economy,total_tokens,maka,240,opencode,360,120/,
+      /completed,,metered,cache-aware-api-equivalent-usd,4,4,4,0,0,0,2,2,0,2,0,economy,total_tokens,maka,240,opencode,360,120/,
     );
 
     const markdown = renderHarnessAbReportMarkdown(report);
@@ -119,6 +265,65 @@ describe('harness A/B report', () => {
       /Cell coverage: 4\/4 attempted; 4 model-scored; 0 unscored \(including 0 infra-failed\); 0 missing final usage\./,
     );
     assert.match(markdown, /No composite score/);
+  });
+
+  test('reports end-to-end, paired non-budget conditional, and budget exhaustion rates', () => {
+    const baselineBudget = {
+      ...completed('baseline-budget', false),
+      status: 'failed' as const,
+      errorClass: 'budget_exhausted',
+    };
+    const candidateBudget = {
+      ...completed('candidate-budget', false),
+      status: 'failed' as const,
+      errorClass: 'budget_exhausted',
+    };
+    const summary = summarizeAbComparison({
+      runId: 'deepseek-full-v7',
+      roundId: 'ab-summary',
+      baselineArmId: 'maka',
+      candidateArmId: 'opencode',
+      evaluationTaskIds: ['quality', 'baseline-budget', 'candidate-budget'],
+      baselineRuns: [
+        [completed('quality', true), baselineBudget, completed('candidate-budget', false)],
+      ],
+      candidateRuns: [
+        [completed('quality', false), completed('baseline-budget', true), candidateBudget],
+      ],
+    });
+
+    const report = buildHarnessAbReport(summary);
+
+    assert.deepEqual(report.effectiveness.baseline, {
+      armId: 'maka',
+      passed: 1,
+      evaluated: 3,
+      passRate: 1 / 3,
+    });
+    assert.deepEqual(report.effectiveness.candidate, {
+      armId: 'opencode',
+      passed: 1,
+      evaluated: 3,
+      passRate: 1 / 3,
+    });
+    assert.deepEqual(report.effectiveness.nonBudgetConditional, {
+      pairedEvaluated: 1,
+      excludedBudgetPairs: 2,
+      baseline: { armId: 'maka', passed: 1, evaluated: 1, passRate: 1 },
+      candidate: { armId: 'opencode', passed: 0, evaluated: 1, passRate: 0 },
+      candidateMinusBaseline: -1,
+    });
+    assert.deepEqual(report.effectiveness.budgetExhaustion, {
+      baseline: { armId: 'maka', exhausted: 1, evaluated: 3, rate: 1 / 3 },
+      candidate: { armId: 'opencode', exhausted: 1, evaluated: 3, rate: 1 / 3 },
+      candidateMinusBaseline: 0,
+    });
+
+    const markdown = renderHarnessAbReportMarkdown(report);
+    assert.match(markdown, /End-to-end Pass@1/);
+    assert.match(markdown, /Non-budget Conditional Pass Rate/);
+    assert.match(markdown, /Budget Exhaustion Rate/);
+    assert.match(markdown, /excludes the entire pair when either arm is budget-exhausted/);
   });
 
   test('labels account-plan cost without presenting it as public API pricing', () => {
@@ -155,7 +360,7 @@ describe('harness A/B report', () => {
 
     const report = buildHarnessAbReport(summary);
 
-    assert.equal(report.schemaVersion, 'maka.harness_ab.report.v3');
+    assert.equal(report.schemaVersion, 'maka.harness_ab.report.v4');
     assert.equal(report.runStatus, 'completed_with_gaps');
     assert.deepEqual(report.coverage, {
       scheduledCells: 4,
@@ -168,13 +373,13 @@ describe('harness A/B report', () => {
     assert.throws(() => assertHarnessAbReportCompleted(report), /completed with gaps/);
     assert.match(
       renderHarnessAbReportCsv(report),
-      /completed_with_gaps,,metered,cache-aware-api-equivalent-usd,4,4,3,1,1,0,1,1,0,effectiveness,pass_rate/,
+      /completed_with_gaps,,metered,cache-aware-api-equivalent-usd,4,4,3,1,1,0,1,1,0,1,0,effectiveness,end_to_end_pass_at_1/,
     );
     assert.match(renderHarnessAbReportMarkdown(report), /Status: completed_with_gaps\./);
     assert.deepEqual(report.effectiveness.baseline, {
       armId: 'maka',
-      passed: 1,
-      evaluated: 1,
+      passed: 2,
+      evaluated: 2,
       passRate: 1,
     });
     assert.deepEqual(report.effectiveness.candidate, {
@@ -186,7 +391,7 @@ describe('harness A/B report', () => {
     assert.equal(report.effectiveness.candidateMinusBaseline, -1);
   });
 
-  test('reports a budget-exhausted cell with final usage as unscored', () => {
+  test('reports a budget-exhausted cell with final usage as scored', () => {
     const meteredTimeout = {
       ...budgetExhausted('a'),
       tokenSummary: usage('a', false, 100, 40, 20, 0.00018).tokenSummary,
@@ -204,15 +409,17 @@ describe('harness A/B report', () => {
 
     const report = buildHarnessAbReport(summary);
 
-    assert.equal(report.runStatus, 'completed_with_gaps');
+    assert.equal(report.runStatus, 'completed');
     assert.deepEqual(report.coverage, {
       scheduledCells: 2,
       attemptedCells: 2,
-      modelScoredCells: 1,
+      modelScoredCells: 2,
       infraFailedCells: 0,
-      unscoredCells: 1,
+      unscoredCells: 0,
       missingFinalUsageCells: 0,
     });
+    assert.equal(report.effectiveness.budgetExhaustion.baseline.rate, 1);
+    assert.equal(report.effectiveness.nonBudgetConditional.pairedEvaluated, 0);
   });
 
   test('stays incomplete when scheduled cells were never attempted', () => {
@@ -333,11 +540,11 @@ describe('harness A/B report', () => {
     assert.equal(report.stopReason, 'systemic_provider_failure');
     assert.match(
       renderHarnessAbReportCsv(report),
-      /^run_status,stop_reason,billing_mode,economy_basis,scheduled_cells,attempted_cells,model_scored_cells,infra_failed_cells,unscored_cells,missing_final_usage_cells,paired_evaluated,paired_metered,missing_usage_pairs,axis,metric,/,
+      /^run_status,stop_reason,billing_mode,economy_basis,scheduled_cells,attempted_cells,model_scored_cells,infra_failed_cells,unscored_cells,missing_final_usage_cells,paired_evaluated,paired_non_budget_evaluated,budget_excluded_pairs,paired_metered,missing_usage_pairs,axis,metric,/,
     );
     assert.match(
       renderHarnessAbReportCsv(report),
-      /stopped,systemic_provider_failure,metered,cache-aware-api-equivalent-usd,2,2,1,1,1,0,0,0,0,effectiveness,pass_rate/,
+      /stopped,systemic_provider_failure,metered,cache-aware-api-equivalent-usd,2,2,1,1,1,0,0,0,0,0,0,effectiveness,end_to_end_pass_at_1/,
     );
     assert.match(
       renderHarnessAbReportMarkdown(report),
@@ -384,6 +591,20 @@ describe('harness A/B report', () => {
     );
   });
 });
+
+function harnessManifestArm(
+  id: 'maka' | 'codex' | 'claude-code',
+  transport: 'openai-chat' | 'openai-responses' | 'anthropic-messages',
+) {
+  return {
+    id,
+    kind: 'harness' as const,
+    fingerprint: `${id}-fingerprint`,
+    metadata: {
+      config: { transport, execution: { placement: 'task-container' } },
+    },
+  };
+}
 
 function usage(
   taskId: string,

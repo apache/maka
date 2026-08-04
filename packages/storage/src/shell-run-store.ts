@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -6,6 +6,7 @@ import {
   isValidLegacyShellRunState,
   isShellOutput,
   isShellRunId,
+  isShellRunSourceToolCallId,
   isShellRunStatus,
   isTerminalShellRunStatus,
   isValidShellRunState,
@@ -16,6 +17,12 @@ import {
 } from '@maka/core';
 import { syncDirectoryChain, syncFile } from './stable-storage.js';
 import { chainWrite } from './write-queue.js';
+import {
+  acquireOperationalStateDatabase,
+  completeOperationalStoreCutover,
+  type OperationalStateDatabaseLease,
+  type OperationalStoreCutoverFailpoint,
+} from './operational-state-store.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const SHELL_RUN_PATCH_KEYS = new Set([
@@ -75,6 +82,135 @@ const LEGACY_SHELL_RUN_RECORD_KEYS = new Set([
 
 export function createShellRunStore(workspaceRoot: string): ShellRunStore {
   return new FileShellRunStore(workspaceRoot);
+}
+
+export interface SqliteShellRunStoreOptions {
+  readonly failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
+}
+
+export interface ClosableShellRunStore extends ShellRunStore {
+  ready(): Promise<void>;
+  close(): void;
+}
+
+export function createSqliteShellRunStore(
+  workspaceRoot: string,
+  options: SqliteShellRunStoreOptions = {},
+): ClosableShellRunStore {
+  return new SqliteShellRunStore(workspaceRoot, options);
+}
+
+class SqliteShellRunStore implements ClosableShellRunStore {
+  readonly #root: string;
+  readonly #lease: OperationalStateDatabaseLease;
+  readonly #ready: Promise<void>;
+
+  constructor(workspaceRoot: string, options: SqliteShellRunStoreOptions) {
+    this.#root = workspaceRoot;
+    this.#lease = acquireOperationalStateDatabase(workspaceRoot);
+    this.#ready = importLegacyShellRuns(workspaceRoot, this.#lease, options);
+  }
+
+  ready(): Promise<void> {
+    return this.#ready;
+  }
+
+  async createShellRun(record: ShellRunRecord): Promise<ShellRunRecord> {
+    assertSessionId(record.sessionId);
+    assertShellRunId(record.shellRunId);
+    const normalized = normalizeShellRunRecord(record, record.sessionId, record.shellRunId);
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      const result = this.#lease.database
+        .prepare(`
+          INSERT OR IGNORE INTO core_shell_runs(
+            session_id, shell_run_id, started_at, record_json
+          ) VALUES (?, ?, ?, ?)
+        `)
+        .run(
+          normalized.sessionId,
+          normalized.shellRunId,
+          normalized.startedAt,
+          JSON.stringify(normalized, sanitizeJson),
+        );
+      if (result.changes !== 1) {
+        throw new Error(`ShellRun already exists: ${normalized.shellRunId}`);
+      }
+    });
+    return normalized;
+  }
+
+  async updateShellRun(
+    sessionId: string,
+    shellRunId: string,
+    patch: ShellRunPatch,
+  ): Promise<ShellRunRecord> {
+    assertSessionId(sessionId);
+    assertShellRunId(shellRunId);
+    assertShellRunPatch(patch);
+    await this.#ready;
+    return this.#lease.transaction('write', () => {
+      const current = readSqliteShellRun(this.#lease.database, sessionId, shellRunId);
+      if (patch.output && patch.output.mode !== current.output.mode) {
+        throw new Error(`ShellRun output mode is immutable: ${current.output.mode}`);
+      }
+      const effectivePatch =
+        current.observedAt !== undefined && Object.hasOwn(patch, 'observedAt')
+          ? { ...patch, observedAt: current.observedAt }
+          : patch;
+      const candidate = normalizeShellRunRecord(
+        { ...current, ...effectivePatch, sessionId, shellRunId, revision: current.revision },
+        sessionId,
+        shellRunId,
+      );
+      assertShellRunTransition(current, candidate);
+      if (isDeepStrictEqual(candidate, current)) return current;
+      const next = normalizeShellRunRecord(
+        { ...candidate, revision: current.revision + 1 },
+        sessionId,
+        shellRunId,
+      );
+      const result = this.#lease.database
+        .prepare(`
+          UPDATE core_shell_runs
+          SET started_at = ?, record_json = ?
+          WHERE session_id = ? AND shell_run_id = ?
+        `)
+        .run(next.startedAt, JSON.stringify(next, sanitizeJson), sessionId, shellRunId);
+      if (result.changes !== 1) throw new Error(`Failed to update shell run ${shellRunId}`);
+      return next;
+    });
+  }
+
+  async readShellRun(sessionId: string, shellRunId: string): Promise<ShellRunRecord> {
+    assertSessionId(sessionId);
+    assertShellRunId(shellRunId);
+    await this.#ready;
+    return readSqliteShellRun(this.#lease.database, sessionId, shellRunId);
+  }
+
+  async listSessionShellRuns(sessionId: string): Promise<ShellRunRecord[]> {
+    assertSessionId(sessionId);
+    await this.#ready;
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT shell_run_id, record_json
+        FROM core_shell_runs
+        WHERE session_id = ?
+        ORDER BY started_at, shell_run_id
+      `)
+      .all(sessionId) as Array<{ shell_run_id?: unknown; record_json?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.shell_run_id !== 'string' || typeof row.record_json !== 'string') {
+        throw new Error('Invalid SQLite ShellRun row');
+      }
+      return normalizeShellRunRecord(JSON.parse(row.record_json), sessionId, row.shell_run_id);
+    });
+  }
+
+  close(): void {
+    this.#lease.close();
+  }
 }
 
 class FileShellRunStore implements ShellRunStore {
@@ -220,6 +356,92 @@ class FileShellRunStore implements ShellRunStore {
   }
 }
 
+async function importLegacyShellRuns(
+  root: string,
+  lease: OperationalStateDatabaseLease,
+  options: SqliteShellRunStoreOptions,
+): Promise<void> {
+  const records = await readLegacyShellRuns(root);
+  const fingerprint = createHash('sha256').update(JSON.stringify(records)).digest('hex');
+  completeOperationalStoreCutover(lease, {
+    storeName: 'shell_runs',
+    sourcePath: join(root, 'sessions'),
+    sourceFingerprint: `sha256:${fingerprint}`,
+    failpoint: options.failpoint,
+    importAndValidate: (db) => {
+      for (const record of records) insertOrValidateShellRun(db, record);
+      return { shell_runs: records.length };
+    },
+  });
+}
+
+async function readLegacyShellRuns(root: string): Promise<ShellRunRecord[]> {
+  const sessionsRoot = join(root, 'sessions');
+  let sessions;
+  try {
+    sessions = await readdir(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const legacy = new FileShellRunStore(root);
+  const records: ShellRunRecord[] = [];
+  for (const session of sessions.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!session.isDirectory() || !SESSION_ID_PATTERN.test(session.name)) continue;
+    const shellRunsRoot = join(sessionsRoot, session.name, 'shell-runs');
+    let entries;
+    try {
+      entries = await readdir(shellRunsRoot, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || !isShellRunId(entry.name)) {
+        throw new Error(`Invalid ShellRun entry for session ${session.name}: ${entry.name}`);
+      }
+      records.push(await legacy.readShellRun(session.name, entry.name));
+    }
+  }
+  return records;
+}
+
+function insertOrValidateShellRun(
+  db: import('node:sqlite').DatabaseSync,
+  record: ShellRunRecord,
+): void {
+  const encoded = JSON.stringify(record, sanitizeJson);
+  const result = db
+    .prepare(`
+      INSERT OR IGNORE INTO core_shell_runs(
+        session_id, shell_run_id, started_at, record_json
+      ) VALUES (?, ?, ?, ?)
+    `)
+    .run(record.sessionId, record.shellRunId, record.startedAt, encoded);
+  if (result.changes !== 0) return;
+  const existing = readSqliteShellRun(db, record.sessionId, record.shellRunId);
+  if (!isDeepStrictEqual(existing, record)) {
+    throw new Error(`ShellRun cutover conflict: ${record.shellRunId}`);
+  }
+}
+
+function readSqliteShellRun(
+  db: import('node:sqlite').DatabaseSync,
+  sessionId: string,
+  shellRunId: string,
+): ShellRunRecord {
+  const row = db
+    .prepare(`
+      SELECT record_json
+      FROM core_shell_runs
+      WHERE session_id = ? AND shell_run_id = ?
+    `)
+    .get(sessionId, shellRunId) as { record_json?: unknown } | undefined;
+  if (!row) throw new Error(`ShellRun does not exist: ${shellRunId}`);
+  if (typeof row.record_json !== 'string') throw new Error('Invalid SQLite ShellRun row');
+  return normalizeShellRunRecord(JSON.parse(row.record_json), sessionId, shellRunId);
+}
+
 async function writeAtomic(
   path: string,
   content: string,
@@ -271,6 +493,7 @@ function normalizeShellRunRecord(
   const valid =
     hasOnlyKeys(record, SHELL_RUN_RECORD_KEYS) &&
     requiredStrings.every((item) => typeof item === 'string') &&
+    isShellRunSourceToolCallId(record.sourceToolCallId) &&
     record.sessionId === sessionId &&
     record.shellRunId === shellRunId &&
     isShellRunStatus(record.status) &&
@@ -307,7 +530,7 @@ function normalizeLegacyShellRunRecord(
     record.shellRunId !== shellRunId ||
     record.sessionId !== sessionId ||
     typeof record.sourceTurnId !== 'string' ||
-    typeof record.sourceToolCallId !== 'string' ||
+    !isShellRunSourceToolCallId(record.sourceToolCallId) ||
     typeof record.cwd !== 'string' ||
     typeof record.command !== 'string' ||
     !isShellRunStatus(record.status) ||

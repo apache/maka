@@ -1,10 +1,58 @@
-export * from './session-store.js';
+export {
+  SQLITE_SESSION_METADATA_DATABASE_NAME,
+  SessionNotFoundError,
+  SessionReadMarkerMessageNotFoundError,
+  assertSafeSessionId,
+  createSessionStore,
+  createUserMessage,
+  decodeSessionHeader,
+  isSafeSessionId,
+  isSessionNotFoundError,
+  normalizeSessionHeader,
+} from './session-store.js';
+export type {
+  CreateStableSessionRequest,
+  CreateStableSessionResult,
+  ProbeStableSessionCreateResult,
+  SessionAuthorityStore,
+  SessionCatalogPageCursor,
+  SessionCatalogPageResult,
+  SessionCatalogRecord,
+  SessionHeaderSnapshot,
+  SessionStore,
+  StableSessionCreateInput,
+  UpdateSessionConfigurationRequest,
+} from './session-store.js';
 export * from './session-transcript.js';
 export * from './sqlite-session-metadata-store.js';
 export * from './session-metadata-transfer.js';
 export * from './session-metadata-maintenance.js';
-export * from './agent-run-store.js';
-export * from './shell-run-store.js';
+export {
+  ROOT_TURN_ADMISSION_MAX_CONTENT_BYTES,
+  ROOT_TURN_ADMISSION_MAX_RECORD_BYTES,
+  ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES,
+  ROOT_TURN_ADMISSION_SCHEMA_VERSION,
+  createSqliteAgentRunStore,
+  normalizeRootTurnAdmissionPayload,
+} from './agent-run-store.js';
+export type {
+  AdmitRootTurnInput,
+  AdmitRootTurnResult,
+  ConversationCopyRuntimeEventBatch,
+  DurableAgentRunStore,
+  DurableRuntimeEventStore,
+  ImmutableSteeringMessageProof,
+  RootTurnAdmission,
+  RootTurnAdmissionStore,
+  RootTurnSourceMessage,
+  RootTurnSourceMessageReceipt,
+  SqliteAgentRunStoreOptions,
+} from './agent-run-store.js';
+export { createSqliteShellRunStore } from './shell-run-store.js';
+export type {
+  ClosableShellRunStore,
+  SqliteShellRunStoreOptions,
+} from './shell-run-store.js';
 export * from './connection-store.js';
 // Narrow public surface: only the typed store + the one-time migration. The
 // file lock and atomic writer stay internal so callers can't bypass the
@@ -21,12 +69,27 @@ export type {
   LegacyCredentialDecryptor,
 } from './credential-store.js';
 export * from './settings-store.js';
-export * from './telemetry-repo.js';
+export {
+  TelemetryQueryValidationError,
+  TelemetryRepoClosedError,
+  TelemetryRepoNotLoadedError,
+  TelemetryRepoPublicationError,
+  resolveRange,
+} from './telemetry-repo.js';
+export type {
+  CreateTelemetryRepoOptions,
+  PersistedLlmCallRecord,
+  PersistedToolInvocationRecord,
+  TelemetryRepo,
+  ToolUsageQuery,
+} from './telemetry-repo.js';
+export * from './sqlite-usage-store.js';
+export * from './model-call-ledger.js';
 export * from './usage-stores.js';
 export {
   ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
-  createArtifactStore,
+  createSqliteArtifactStore,
   isSafeRelativeArtifactPath,
   resolveArtifactPath,
   sanitizeArtifactName,
@@ -40,20 +103,50 @@ export type {
 } from './artifact-store.js';
 export * from './artifact-attachments.js';
 export * from './provider-request-capture-artifact.js';
-export * from './plan-reminder-store.js';
-export * from './plan-store.js';
-export * from './task-ledger-store.js';
+export { createSqlitePlanReminderStore } from './plan-reminder-store.js';
+export type {
+  CreateSqlitePlanReminderStoreOptions,
+  PlanReminderStore,
+  SqlitePlanReminderStore,
+} from './plan-reminder-store.js';
+export { applyPlanEvent, createSqlitePlanStore } from './plan-store.js';
+export type {
+  CreatePlanStoreOptions,
+  CreateSqlitePlanStoreOptions,
+  SqlitePlanStore,
+} from './plan-store.js';
+export { createSqliteTaskLedgerStore } from './task-ledger-store.js';
+export type {
+  ConversationTaskLedgerCopyInput,
+  CreateSqliteTaskLedgerStoreOptions,
+  SqliteTaskLedgerStore,
+  TaskLedgerAuthorityStore,
+  TaskLedgerStore,
+} from './task-ledger-store.js';
 export * from './foreign-session-store.js';
-export * from './deep-research-store.js';
-export * from './agent-mailbox-store.js';
+export { createSqliteDeepResearchStore } from './deep-research-store.js';
+export type {
+  CreateDeepResearchStoreOptions,
+  CreateSqliteDeepResearchStoreOptions,
+  DeepResearchStore,
+  SqliteDeepResearchStore,
+} from './deep-research-store.js';
 export * from './config-transfer.js';
 export * from './automation-store.js';
+export * from './automation-authority.js';
 export * from './sqlite-runtime-store.js';
 export * from './runtime-event-transfer.js';
+export * from './operational-state-store.js';
+export * from './operational-state-backup.js';
 export * from './mcp-config-store.js';
 export * from './workspace-identity.js';
 export * from './memory-bundle-store.js';
+export * from './long-term-memory-store.js';
 export * from './project-catalog.js';
 export * from './git-worktree-child-executor.js';
+export * from './git-workspace-service.js';
 export * from './project-session-migration.js';
 export * from './session-bundle-policy.js';
+export * from './session-bundle-contract.js';
+export * from './session-bundle-manifest.js';
+export * from './session-bundle-canonical-tree.js';

@@ -6,8 +6,17 @@ import {
   healthSignalFromConnectionRuntime,
 } from '@maka/core';
 import type { BotRegistry } from '@maka/runtime';
-import type { ConnectionStore, SettingsStore } from '@maka/storage';
-import type { createTelemetryRepo } from '@maka/storage';
+import {
+  projectModelCallUsageLogs,
+  resolveUsageRange,
+} from '@maka/core/model-call-usage-projection';
+import type { UsageLogRow } from '@maka/core/usage-stats/types';
+import type {
+  ConnectionStore,
+  createSqliteModelCallLedger,
+  SettingsStore,
+  TelemetryRepo,
+} from '@maka/storage';
 import { buildCapabilitySnapshotCollection, buildPermissionSnapshot } from './capability-snapshot.js';
 import { openSystemPermissionPane, requestPermissionAccess } from './permissions-actions.js';
 import { permissionSnapshotE2eFixture } from './permission-snapshot-e2e-fixture.js';
@@ -22,7 +31,7 @@ function resolvePermissionSnapshot(now = Date.now()) {
   return permissionSnapshotE2eFixture(now) ?? buildPermissionSnapshot(now);
 }
 
-type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
+type ModelCallLedger = ReturnType<typeof createSqliteModelCallLedger>;
 type ComputerUseCapabilityInput = NonNullable<
   Parameters<typeof buildCapabilitySnapshotCollection>[0]['computerUse']
 >;
@@ -31,6 +40,7 @@ export interface PermissionsIpcDeps {
   settingsStore: SettingsStore;
   connectionStore: ConnectionStore;
   telemetryRepo: TelemetryRepo;
+  modelCallLedger: ModelCallLedger;
   ensureUsageReady: () => Promise<void>;
   botRegistry: BotRegistry;
   getComputerUseCapabilityInput: () => ComputerUseCapabilityInput;
@@ -41,10 +51,35 @@ export function registerPermissionsIpc(deps: PermissionsIpcDeps): void {
     settingsStore,
     connectionStore,
     telemetryRepo,
+    modelCallLedger,
     ensureUsageReady,
     botRegistry,
     getComputerUseCapabilityInput,
   } = deps;
+
+  /**
+   * Newest real call for a connection, across both metering sources (#1679).
+   * Main sends settle only into the canonical ledger now, so the frozen table
+   * alone would report a connection as silent while it is actively in use.
+   */
+  const latestRuntimeProbe = (
+    connectionSlug: string,
+    modelId?: string,
+  ): UsageLogRow | undefined => {
+    const query = { range: 'all' as const, connectionSlug, ...(modelId ? { modelId } : {}) };
+    const now = Date.now();
+    const legacy = telemetryRepo.latestLlmRuntimeProbe(connectionSlug, modelId);
+    const canonical = projectModelCallUsageLogs(
+      modelCallLedger.read(resolveUsageRange(query.range, now)).attempts,
+      query,
+      now,
+      0,
+      1,
+    ).rows[0];
+    if (!legacy) return canonical;
+    if (!canonical) return legacy;
+    return canonical.ts >= legacy.ts ? canonical : legacy;
+  };
 
   ipcMain.handle('permissions:getSnapshot', () => resolvePermissionSnapshot());
   ipcMain.handle('permissions:openSystemSettings', async (_event, permId: unknown) => {
@@ -81,7 +116,7 @@ export function registerPermissionsIpc(deps: PermissionsIpcDeps): void {
       healthSignalFromConnection(connection, now),
       healthSignalFromConnectionRuntime(
         connection,
-        telemetryRepo.latestLlmRuntimeProbe(connection.slug, connection.defaultModel),
+        latestRuntimeProbe(connection.slug, connection.defaultModel),
         now,
       ),
     ].filter((signal): signal is NonNullable<typeof signal> => Boolean(signal)));

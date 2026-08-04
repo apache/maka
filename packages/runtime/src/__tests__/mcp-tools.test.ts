@@ -102,6 +102,46 @@ test('MCP annotations cannot lower permissions and model output has aggregate bo
   assert.doesNotMatch(text, /secretBlob/u);
 });
 
+test('a trusted composition can apply the Client Capability permission floor and context', async () => {
+  let invocationContext:
+    | {
+        sessionId: string;
+        turnId: string;
+        toolCallId: string;
+        cwd: string;
+      }
+    | undefined;
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [descriptor('client', 'inspect', true)],
+      async (_server, _tool, _args, options) => {
+        invocationContext = options?.context;
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    ),
+    { categoryHint: 'client_capability', recoveryMode: 'outcome_unknown' },
+  );
+  assert.equal(tool?.categoryHint, 'client_capability');
+  assert.equal(tool?.recoveryMode, 'outcome_unknown');
+  await tool?.impl(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'tool-call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+    },
+  );
+  assert.deepEqual(invocationContext, {
+    sessionId: 'session',
+    turnId: 'turn',
+    cwd: '/workspace',
+    toolCallId: 'tool-call',
+  });
+});
+
 test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () => {
   const first = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));
   const second = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));

@@ -3,8 +3,6 @@
 .settingsSurface {
   min-height: 0;
   height: 100%;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: var(--background);
 }
@@ -54,43 +52,6 @@
 .settingsSurface[data-modal="true"] {
   position: relative;
   background: transparent;
-  grid-template-columns: 240px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: 0;
-}
-
-/* Shared settings form controls. */
-.settingsField input,
-.settingsField textarea,
-.settingsFormGrid input,
-.settingsFormGrid select,
-.settingsUsageFilters input,
-.settingsUsageFilters select {
-  min-width: 0;
-  min-height: 34px;
-  border: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.12);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground);
-  padding: var(--space-1-5) var(--space-2-5);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
-  outline: none;
-  transition: border-color var(--duration-base) var(--ease-out-strong), box-shadow var(--duration-base) var(--ease-out-strong);
-}
-
-.settingsField textarea {
-  border-radius: var(--radius-control);
-  padding: var(--space-2) var(--space-2-5);
-  line-height: var(--leading-normal);
-  font-family: inherit;
-  font-size: var(--font-size-ui);
-}
-
-.settingsFormGrid select:focus,
-.settingsUsageFilters select:focus {
-  border-color: oklch(from var(--focus-ring) l c h / 0.42);
-  box-shadow: 0 0 0 var(--focus-glow-width) oklch(from var(--focus-ring) l c h / 0.12);
 }
 
 .settingsActionRow {
@@ -100,48 +61,32 @@
   gap: var(--space-2-5);
 }
 
-.settingsPasswordField {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
+.settingsActionWidthXs { min-width: 46px; }
 
-.settingsPasswordField input {
-  width: 100%;
-  /* #1364: `width: 100%` alone cannot shrink an input below its intrinsic
-     `size` width (~180px), so at the 480px window floor the key field
-     overflowed its row by ~90px. */
-  min-width: 0;
-  padding-right: var(--space-16);
-}
+/* Astryx convergence (task #136): `.settingsSubheading` (uppercase eyebrow)
+   retired with the Claude subscription card's move onto SectionHeader. */
 
-.settingsPasswordActions {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: var(--space-0-5);
-}
-
-.settingsFieldHint {
-  font-style: normal;
-  font-weight: var(--font-weight-normal);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  margin-left: var(--space-1-5);
-}
-
-.settingsSubheading {
+/* Quiet informational voice — replaces the info Banner where content is
+   guidance, not an alert (Signal-Not-Texture: blue never becomes ambient
+   explanatory wash). */
+.settingsQuietStatus {
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-bold);
-  letter-spacing: var(--tracking-wider);
-  text-transform: uppercase;
+  font: var(--maka-text-body);
 }
 
-.settingsSubheading + .settingsThemeOptions {
-  margin-top: calc(var(--space-1-5) * -1);
+.settingsQuietCallout {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.settingsQuietCallout strong {
+  color: var(--foreground);
+  font: var(--maka-text-label);
+}
+
+.settingsQuietCallout p {
+  margin: 0;
+  color: var(--foreground-secondary);
+  font: var(--maka-text-body);
 }

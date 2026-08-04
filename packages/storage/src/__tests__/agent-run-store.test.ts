@@ -12,6 +12,8 @@ import {
   type RuntimeEvent,
 } from '@maka/core';
 
+const PARTIAL_STREAM_CHUNK_COUNT = process.env.MAKA_STORAGE_STRESS === '1' ? 10_000 : 100;
+
 describe('AgentRunStore', () => {
   it('creates, reads, updates, and lists runs under a session', async () => {
     await withStore(async (store, root) => {
@@ -55,6 +57,66 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('finds a duplicate run identity across sessions with a bounded result', async () => {
+    await withStore(async (store) => {
+      await store.createRun(makeHeader({ sessionId: 'session-c', runId: 'shared-run' }));
+      await store.createRun(makeHeader({ sessionId: 'session-a', runId: 'shared-run' }));
+      await store.createRun(makeHeader({ sessionId: 'session-b', runId: 'shared-run' }));
+      await store.createRun(makeHeader({ sessionId: 'session-a', runId: 'other-run' }));
+
+      const bounded = await store.findRunsById('shared-run', 2);
+      assert.equal(bounded.truncated, true);
+      assert.deepEqual(
+        bounded.runs.map((run) => run.sessionId),
+        ['session-a', 'session-b'],
+      );
+      assert.deepEqual(await store.findRunsById('missing-run', 2), {
+        runs: [],
+        truncated: false,
+      });
+      await assert.rejects(() => store.findRunsById('shared-run', 0), RangeError);
+    });
+  });
+
+  it('bounds Session headers and evidence before returning records', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader({ runId: 'run-2', createdAt: 2 }));
+      await runStore.createRun(makeHeader({ runId: 'run-1', createdAt: 1 }));
+      assert.deepEqual(await runStore.listSessionRunsBounded('session-1', 1), {
+        runs: [makeHeader({ runId: 'run-1', createdAt: 1 })],
+        truncated: true,
+      });
+
+      await runStore.appendEvent('session-1', 'run-1', makeEvent({ id: 'event-1' }));
+      await runStore.appendEvent('session-1', 'run-1', makeEvent({ id: 'event-2', ts: 2 }));
+      assert.deepEqual(
+        await runStore.readEventsBounded('session-1', 'run-1', {
+          maxRecords: 1,
+          maxBytes: 1024,
+        }),
+        { status: 'limit_exceeded' },
+      );
+
+      await runtimeEventStore.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        makeRuntimeEvent({ id: 'runtime-1' }),
+      );
+      const runtimeResult = await runtimeEventStore.readRuntimeEventsBounded('session-1', 'run-1', {
+        maxRecords: 2,
+        maxBytes: 1024,
+      });
+      assert.equal(runtimeResult.status, 'complete');
+      if (runtimeResult.status !== 'complete') return;
+      assert.deepEqual(
+        runtimeResult.records.map((event) => event.id),
+        ['runtime-1'],
+      );
+      assert.equal(runtimeResult.sourceRecordCount, 1);
+      assert.ok(runtimeResult.storedBytes > 0);
+    });
+  });
+
   it('rejects duplicate run creation without replacing the existing header', async () => {
     await withStore(async (store) => {
       const original = makeHeader({ invocationId: 'invocation-original' });
@@ -65,6 +127,30 @@ describe('AgentRunStore', () => {
         /already exists/i,
       );
 
+      assert.deepEqual(await store.readRun('session-1', 'run-1'), original);
+    });
+  });
+
+  it('rejects updates to immutable admission and continuation identity', async () => {
+    await withStore(async (store) => {
+      const original = makeHeader({
+        continuationSource: {
+          sourceInvocationId: 'source-invocation',
+          sourceRunId: 'source-run',
+          sourceTurnId: 'source-turn',
+          sourceRuntimeEventHighWater: 1,
+        },
+      });
+      await store.createRun(original);
+
+      await assert.rejects(
+        store.updateRun('session-1', 'run-1', { modelId: 'different-model' }),
+        /admission identity is immutable: modelId/,
+      );
+      await assert.rejects(
+        store.updateRun('session-1', 'run-1', { continuationSource: undefined }),
+        /admission identity is immutable: continuationSource/,
+      );
       assert.deepEqual(await store.readRun('session-1', 'run-1'), original);
     });
   });
@@ -701,6 +787,50 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('keeps continuation-start authority facts out of the JSONL generic writer', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader());
+      const continuationStart = makeRuntimeEvent({
+        id: 'continuation-start-reserved',
+        role: 'system',
+        author: 'system',
+        content: undefined,
+        actions: {
+          continuationStart: {
+            protocol: 'continuation_start_v2',
+            provenance: 'runtime_admission',
+            claimId: 'claim-1',
+            boundaryDigest:
+              'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            immediateSource: {
+              sessionId: 'session-1',
+              invocationId: 'source-invocation',
+              runId: 'source-run',
+              turnId: 'source-turn',
+              highWater: 1,
+              prefixDigest:
+                'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            },
+            replayManifestDigest:
+              'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            providerProjectionVersion: 1,
+            providerReplayDigest:
+              'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          },
+        },
+      });
+
+      await assert.rejects(
+        runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', continuationStart),
+        /continuation authority/i,
+      );
+      assert.deepEqual(
+        await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1'),
+        [],
+      );
+    });
+  });
+
   it('keeps an exact ordinary RuntimeEvent retry idempotent in JSONL', async () => {
     await withStores(async (runStore, runtimeEventStore) => {
       await runStore.createRun(makeHeader());
@@ -950,10 +1080,10 @@ describe('AgentRunStore', () => {
     });
   });
 
-  it('keeps a 10K-chunk text stream bounded to one durable partial snapshot', async () => {
+  it('keeps a long text stream bounded to one durable partial snapshot', async () => {
     await withStores(async (runStore, runtimeEventStore, root) => {
       await runStore.createRun(makeHeader());
-      for (let index = 0; index < 10_000; index += 1) {
+      for (let index = 0; index < PARTIAL_STREAM_CHUNK_COUNT; index += 1) {
         await runtimeEventStore.appendRuntimeEvent(
           'session-1',
           'run-1',
@@ -974,7 +1104,10 @@ describe('AgentRunStore', () => {
       );
 
       assert.equal(events.length, 1);
-      assert.equal(events[0]?.content?.kind === 'text' && events[0].content.text.length, 10_000);
+      assert.equal(
+        events[0]?.content?.kind === 'text' && events[0].content.text.length,
+        PARTIAL_STREAM_CHUNK_COUNT,
+      );
       assert.equal(partialFiles.filter((name) => name.endsWith('.partial')).length, 1);
       assert.equal(partialFiles.length, 1);
       const immutableLedger = await readFile(

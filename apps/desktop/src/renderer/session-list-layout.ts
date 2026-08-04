@@ -1,8 +1,8 @@
 import { safeLocalStorageGet } from './browser-storage.js';
 
-export const SESSION_LIST_EXPANDED_DEFAULT_WIDTH = 210;
-export const SESSION_LIST_EXPANDED_MIN_WIDTH = 210;
-export const SESSION_LIST_EXPANDED_MAX_WIDTH = 280;
+export const SESSION_LIST_EXPANDED_DEFAULT_WIDTH = 260;
+export const SESSION_LIST_EXPANDED_MIN_WIDTH = 180;
+export const SESSION_LIST_EXPANDED_MAX_WIDTH = 480;
 
 export function readSessionListWidth(): number {
   const stored = Number(safeLocalStorageGet('maka-chat-list-width-v1'));

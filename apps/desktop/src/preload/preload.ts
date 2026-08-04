@@ -1,8 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import type {
-  ExpertTeamStartResult,
-  ExpertTeamSummary,
   MakaBridge,
   OnboardingSnapshot,
   PermissionActionResult,
@@ -61,7 +59,6 @@ import type {
   ReviseBeforeTurnInput,
   TurnRecord,
   PermissionSnapshot,
-  OpenGatewayRuntimeStatus,
   LocalMemoryEntryPreview,
   LocalMemoryState,
   AuthorizationUrlPayload,
@@ -73,8 +70,15 @@ import type {
   PlanReminderRecurrence,
   DailyReviewArchive,
   DailyReviewArchiveSummary,
+  QueueEnqueueOutcome,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceCoordinatorToolCall,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
   DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
   WebSearchProvider,
   WebSearchResponse,
@@ -116,6 +120,7 @@ import type {
 } from '@maka/core/mcp';
 import type {
   AttachmentRef,
+  InlineReference,
   OnboardingMilestoneId,
   QuoteRef,
 } from '@maka/core';
@@ -197,16 +202,20 @@ const makaBridge = {
             type: 'send';
             turnId: string;
             text: string;
+            displayText?: string;
+            voiceOperationId?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
+            workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
           },
     ): Promise<
       | {
           ok: true;
           turnId: string;
           attachments: AttachmentRef[];
+          inlineReferences: InlineReference[];
           skillInvocation: import('@maka/runtime').SkillInvocationResult;
         }
       | {
@@ -232,6 +241,9 @@ const makaBridge = {
     },
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
       return ipcRenderer.invoke('sessions:stop', sessionId, input);
+    },
+    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
+      return ipcRenderer.invoke('sessions:steer', sessionId, text);
     },
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);
@@ -487,14 +499,6 @@ const makaBridge = {
       return ipcRenderer.invoke('onboarding:clearMilestone', id);
     },
   },
-  expertTeam: {
-    list(): Promise<{ teams: ExpertTeamSummary[] }> {
-      return ipcRenderer.invoke('expertTeam:list');
-    },
-    start(input: { teamId: string; prompt?: string; projectId?: string | null }): Promise<ExpertTeamStartResult> {
-      return ipcRenderer.invoke('expertTeam:start', input);
-    },
-  },
   permissions: {
     getSnapshot(): Promise<PermissionSnapshot> {
       return ipcRenderer.invoke('permissions:getSnapshot');
@@ -605,16 +609,6 @@ const makaBridge = {
     // into telemetry.
     thread(request: SearchRequest): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
       return ipcRenderer.invoke('search:thread', request);
-    },
-  },
-  gateway: {
-    status(): Promise<OpenGatewayRuntimeStatus> {
-      return ipcRenderer.invoke('gateway:status');
-    },
-    subscribeStatusChanges(handler: (status: OpenGatewayRuntimeStatus) => void): () => void {
-      const listener = (_event: Electron.IpcRendererEvent, payload: OpenGatewayRuntimeStatus) => handler(payload);
-      ipcRenderer.on('gateway:statusChanged', listener);
-      return () => ipcRenderer.off('gateway:statusChanged', listener);
     },
   },
   // PR-OAUTH-SUBSCRIPTION-0: Claude subscription OAuth bridge.
@@ -901,6 +895,29 @@ const makaBridge = {
       },
     },
   },
+  voice: {
+    begin(input: VoiceBeginRequest): Promise<VoiceBeginResult> {
+      return ipcRenderer.invoke('voice:begin', input);
+    },
+    finishCapture(
+      operationId: string,
+      audio: VoiceCapturedAudio,
+    ): Promise<VoiceFinishCaptureResult> {
+      return ipcRenderer.invoke('voice:finishCapture', operationId, audio);
+    },
+    cancel(operationId: string): Promise<void> {
+      return ipcRenderer.invoke('voice:cancel', operationId);
+    },
+    createRealtimeSession(offerSdp: string): Promise<VoiceRealtimeClientSession> {
+      return ipcRenderer.invoke('voice:createRealtimeSession', offerSdp);
+    },
+    closeRealtimeSession(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('voice:closeRealtimeSession', sessionId);
+    },
+    validateCoordinatorToolCall(input: unknown): Promise<VoiceCoordinatorToolCall> {
+      return ipcRenderer.invoke('voice:validateCoordinatorToolCall', input);
+    },
+  },
   notifications: {
     // Fire-and-forget signal that an agent turn reached a terminal
     // state. `title` is the session name, `body` the start of the reply
@@ -945,7 +962,7 @@ const makaBridge = {
     setConfig(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig> {
       return ipcRenderer.invoke('daily-review:setConfig', patch);
     },
-    runOnce(input: { mode: DailyReviewMode; day?: number; modelKey?: string }): Promise<{ archiveId: string }> {
+    runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
       return ipcRenderer.invoke('daily-review:runOnce', input);
     },
     list(): Promise<DailyReviewArchiveSummary[]> {

@@ -21,14 +21,15 @@ import type {
   StoredMessage,
   ThinkingLevel,
   EditingProtocol,
+  EphemeralVoiceAudio,
 } from '@maka/core';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import type { PreparedSkillInvocationMessage, SessionManager } from '@maka/runtime';
-import type { createArtifactStore, createSessionStore } from '@maka/storage';
+import type { ArtifactStore, createSessionStore } from '@maka/storage';
 import type { ConnectionStore, SettingsStore } from '@maka/storage';
 import { runThreadSearch } from './search/thread-search.js';
-import { resolveSessionSend } from './session-send-resolve.js';
+import { createRunStartedHook, resolveSessionSend, stoppedTurnBroadcasts } from './session-send-resolve.js';
 import { resizeImageForAttachment } from './attachment-resize-native.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
@@ -56,9 +57,9 @@ import { prepareSessionSendSkillPlan } from './session-send-skill-plan.js';
 import type { DesktopCreateSessionInput } from './new-session-project.js';
 import { registerSessionExecutionIpc } from './session-execution-ipc-main.js';
 import { createQuoteCompanionCleanupAuthority } from './quote-companion-cleanup.js';
+import { mergeSentInlineReferences } from './session-send-inline-references.js';
 
 type SessionStore = ReturnType<typeof createSessionStore>;
-type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 type E2eFixture = ReturnType<typeof resolveE2eFixture>;
 
@@ -89,7 +90,7 @@ export interface SessionsIpcDeps {
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId'>,
+    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
   ) => void;
   ensureSessionCanSend: (sessionId: string) => Promise<void>;
   prepareSkillInvocation?: (
@@ -119,6 +120,11 @@ export interface SessionsIpcDeps {
   canCreateFakeSession: () => boolean;
   /** Default captured for new sessions; an IPC request may override it per session. */
   defaultEditingProtocol?: EditingProtocol;
+  consumeNativeAudioOperation?: (input: {
+    operationId: string;
+    connectionSlug: string;
+    model: string;
+  }) => EphemeralVoiceAudio;
 }
 
 function latestStoredMessageTs(messages: readonly StoredMessage[]): number | undefined {
@@ -214,6 +220,7 @@ export function registerSessionsIpc(
     getWorkspacePrivacyContext,
     canCreateFakeSession,
     defaultEditingProtocol,
+    consumeNativeAudioOperation,
   } = deps;
   registerSessionExecutionIpc({
     ipcMain,
@@ -370,11 +377,21 @@ export function registerSessionsIpc(
     computerUseOverlay.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await stopAgentGraph?.(sessionId);
+    // Read before stopping, while the runs are still registered: ending a turn
+    // is a change about that turn, and this is the one end a client can be
+    // waiting on without having seen the turn start — Stop pressed during the
+    // send→run-start window. Unnamed, it would leave that client's claim with
+    // nothing to release it, making Stop the one control unable to undo Stop.
+    const stoppedTurnIds = runtime.runningTurnIds(sessionId);
     await runtime.stopSession(sessionId, normalizeStopSessionInput(input));
     await runtime.interruptActivePlanExecution(sessionId, 'user_stopped_execution').catch(() => null);
-    emitSessionsChanged('status-change', sessionId);
-    emitSessionsChanged('turn-status-change', sessionId);
-    emitSessionsChanged('message-appended', sessionId);
+    for (const broadcast of stoppedTurnBroadcasts(stoppedTurnIds)) {
+      emitSessionsChanged(
+        broadcast.reason,
+        sessionId,
+        ...(broadcast.turnId ? [{ turnId: broadcast.turnId }] : []),
+      );
+    }
   });
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
@@ -445,29 +462,54 @@ export function registerSessionsIpc(
     const skillInvocation = sendPlan.preparation;
     const { turnId, attachments } = sendPlan.resolved;
     const displayText =
-      sendCommand.text.trim().length > 0
+      sendCommand.displayText ??
+      (sendCommand.text.trim().length > 0
         ? sendCommand.text
         : skillInvocation.skillInvocation.loaded
             .map((skill) => `/skill:${skill.id}`)
-            .join(' ');
+            .join(' '));
+    const inlineReferences = mergeSentInlineReferences({
+      displayText,
+      workspaceFileReferences: sendCommand.workspaceFileReferences,
+      receipts: skillInvocation.skillInvocation.receipts,
+    });
+    const voiceTargetHeader = sendCommand.voiceOperationId
+      ? await store.readHeader(sessionId)
+      : undefined;
+    const voiceAudio =
+      sendCommand.voiceOperationId && voiceTargetHeader
+        ? consumeNativeAudioOperation?.({
+            operationId: sendCommand.voiceOperationId,
+            connectionSlug: voiceTargetHeader.llmConnectionSlug,
+            model: voiceTargetHeader.model,
+          })
+        : undefined;
+    if (sendCommand.voiceOperationId && !voiceAudio) {
+      throw new Error('voice_operation_unavailable');
+    }
     const iterator = runtime.sendMessage(
       sessionId,
       {
         turnId,
         text: skillInvocation.sendText,
-        ...(skillInvocation.disposition === 'ready' ? { displayText } : {}),
+        ...(voiceAudio ? { voiceAudio } : {}),
+        ...(skillInvocation.disposition === 'ready' || sendCommand.displayText !== undefined
+          ? { displayText }
+          : {}),
         ...(sendCommand.turnOrchestration
           ? { turnOrchestration: sendCommand.turnOrchestration }
           : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(sendCommand.quotes ? { quotes: sendCommand.quotes } : {}),
+        inlineReferences,
       },
       {
-        onRunStarted: async (_runId, header) => {
-          if (header.revisionState === 'preparing') {
-            await runtime.commitRevisionVersion(sessionId);
-          }
-        },
+        onRunStarted: createRunStartedHook({
+          sessionId,
+          turnId,
+          emitSessionsChanged: (id, turn) => emitSessionsChanged('status-change', id, { turnId: turn }),
+          commitRevisionVersion: (id) => runtime.commitRevisionVersion(id),
+        }),
       },
     );
     void streamEvents(sessionId, iterator, { turnId, goalBoundary: 'external' });
@@ -475,8 +517,16 @@ export function registerSessionsIpc(
       ok: true as const,
       turnId,
       attachments,
+      inlineReferences,
       skillInvocation: skillInvocation.skillInvocation,
     };
+  });
+  ipcMain.handle('sessions:steer', async (_event, sessionId: string, text: unknown) => {
+    if (typeof text !== 'string' || text.trim().length === 0 || text.length > 128_000) {
+      throw new Error('Invalid steering text');
+    }
+    await store.readHeader(sessionId);
+    return runtime.steer(sessionId, text.trim());
   });
   ipcMain.handle(
     'attachments:pickFiles',

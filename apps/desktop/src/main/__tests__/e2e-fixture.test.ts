@@ -11,7 +11,6 @@ import {
   retireE2eFixtureSandboxBoundaryRequest,
   seedE2eFixture,
 } from '../e2e-fixture.js';
-import { readE2eFixtureCombinedSource } from './e2e-fixture-source-helpers.js';
 
 describe('e2e-fixture mode', () => {
   it('stays fully disabled when MAKA_E2E_FIXTURE is unset', () => {
@@ -303,7 +302,7 @@ describe('e2e-fixture mode', () => {
     assert.equal(liveTurns?.['e2e-fixture-streaming']?.turnId, 'turn-streaming');
     assert.equal(liveTurns?.['e2e-fixture-streaming']?.steps[0]?.tools[0]?.status, 'running');
     assert.equal(liveTurns?.['e2e-fixture-permission']?.turnId, 'turn-sandbox-boundary');
-    assert.equal(liveTurns?.['e2e-fixture-permission']?.steps[0]?.tools[0]?.status, 'waiting_permission');
+    assert.equal(liveTurns?.['e2e-fixture-permission']?.steps[0]?.tools[0]?.status, 'running');
     const request = state?.sandboxBoundaryBySession?.['e2e-fixture-permission'];
     assert.ok(request);
     assert.deepEqual(request.expansion.filesystem?.entries, [
@@ -395,14 +394,6 @@ describe('e2e-fixture mode', () => {
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
-  });
-
-  it('fixture source does not seed visible placeholder chat copy', async () => {
-    // arch Round 3: the fixture split into a registry barrel + per-domain
-    // seeder modules, so this hygiene scan aggregates every fixture source
-    // file rather than the single monolith it used to read.
-    const src = await readE2eFixtureCombinedSource();
-    assert.doesNotMatch(src, /占位用户消息|占位回复/, 'e2e-fixture screenshots must use product-like chat copy, not placeholder text');
   });
 
   it('first-run seed keeps the fixture workspace connection-free', async () => {
@@ -715,8 +706,9 @@ describe('e2e-fixture mode', () => {
       assert.ok(fixture);
       const state = getE2eFixtureState(fixture);
       assert.equal(state?.activeSessionId, 'e2e-fixture-turn');
-      assert.equal(state?.composerText, '请整理这次会议的行动项');
-      assert.deepEqual(state?.composerSkills, [{ id: 'meeting-followup', name: '会议跟进' }]);
+      // The staged Skill lives in the draft text now, as the same
+      // `/skill:<id>` token a user can type — there is no second channel.
+      assert.equal(state?.composerText, '/skill:meeting-followup 请整理这次会议的行动项');
       await seedE2eFixture({
         workspaceRoot,
         fixture,
@@ -810,7 +802,7 @@ describe('e2e-fixture mode', () => {
     // `E2eFixtureState.focusActiveRow=true`, which the renderer
     // reads to focus the active row's button after mount. That
     // triggers `:focus-within` and reveals the
-    // `.maka-list-row-menu-trigger` — the fixture then proves
+    // official session item action — the fixture then proves
     // the time meta / unread dot are correctly hidden underneath.
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-row-actions-'));
     try {

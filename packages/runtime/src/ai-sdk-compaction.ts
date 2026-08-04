@@ -15,7 +15,7 @@ import type {
   BackendCompactHistoryResult,
   BackendSendInput,
 } from '@maka/core/backend-types';
-import type { ContextBudgetDiagnostic, LlmCallRecord } from '@maka/core/usage-stats/types';
+import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import {
@@ -49,12 +49,7 @@ import {
 
 import { createHash } from 'node:crypto';
 import type { ModelMessage } from './model-protocol.js';
-import {
-  normalizeAiSdkUsage,
-  type ModelAdapter,
-  type NormalizedAiSdkUsage,
-} from './model-adapter.js';
-import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
+import type { ModelAdapter } from './model-adapter.js';
 import type {
   RequestProjection,
   RequestProjectionContext,
@@ -87,6 +82,8 @@ import {
   type RuntimeEventModelReplayPlan,
 } from './model-history.js';
 import { toolSchemaCharsForDiagnostics } from './request-shape.js';
+import type { ModelCallKind } from '@maka/core/model-call-attempt';
+import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import {
   estimateNextRequestTokens,
   exceedsHighWater,
@@ -100,7 +97,17 @@ export interface AiSdkCompactionDeps {
   sessionId: string;
   now: () => number;
   modelAdapter: ModelAdapter;
-  computeCostUsd: (usage: NormalizedAiSdkUsage) => number | undefined;
+  /**
+   * A ready tracker for a compaction call that has none of its own. The backend
+   * hands over the built tracker rather than the capture, attempt, and id sinks
+   * it is made of: compaction has no business assembling metering identity.
+   */
+  createProviderRequestTracker: (input: {
+    turnId: string;
+    callKind: ModelCallKind;
+    modelId: string;
+    runId?: string;
+  }) => ProviderRequestTracker | undefined;
   materializeRuntimeReplayPlan: (plan: RuntimeEventModelReplayPlan) => Promise<ModelMessage[]>;
   canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
   appendTurnTailPrompt: (
@@ -114,7 +121,12 @@ export class AiSdkCompaction {
   private readonly sessionId: string;
   private readonly now: () => number;
   private readonly modelAdapter: ModelAdapter;
-  private readonly computeCostUsd: (usage: NormalizedAiSdkUsage) => number | undefined;
+  private readonly createProviderRequestTracker: (input: {
+    turnId: string;
+    callKind: ModelCallKind;
+    modelId: string;
+    runId?: string;
+  }) => ProviderRequestTracker | undefined;
   private readonly materializeRuntimeReplayPlan: (
     plan: RuntimeEventModelReplayPlan,
   ) => Promise<ModelMessage[]>;
@@ -130,7 +142,7 @@ export class AiSdkCompaction {
     this.sessionId = deps.sessionId;
     this.now = deps.now;
     this.modelAdapter = deps.modelAdapter;
-    this.computeCostUsd = deps.computeCostUsd;
+    this.createProviderRequestTracker = deps.createProviderRequestTracker;
     this.materializeRuntimeReplayPlan = deps.materializeRuntimeReplayPlan;
     this.canReplayProviderNative = deps.canReplayProviderNative;
     this.appendTurnTailPrompt = deps.appendTurnTailPrompt;
@@ -374,6 +386,11 @@ export class AiSdkCompaction {
   public async writeHistoryCompactCheckpoint(input: {
     requestShapeHashBefore?: string;
     turnId: string;
+    /**
+     * Present for a manual compaction, which runs outside `send()` and so has
+     * no live run for the backend to resolve. Absent mid-send, where it does.
+     */
+    runId?: string;
     contextBudget: ContextBudgetPolicy;
     priorRuntimeContext: readonly RuntimeEvent[];
     draftBlock: HistoryCompactBlock;
@@ -386,6 +403,13 @@ export class AiSdkCompaction {
     const summarizer = this.input.summarizeHistoryCompact;
     const recorder = this.input.recordHistoryCompactCheckpoint;
     if (!summarizer || !recorder) return { diagnosticPatch: {} };
+    // One tracker for this summarization, built where every input lives.
+    const historyCompactTracker = this.createProviderRequestTracker({
+      turnId: input.turnId,
+      callKind: 'history_compact',
+      modelId: this.input.modelId,
+      ...(input.runId ? { runId: input.runId } : {}),
+    });
     const foldedIds = new Set(input.draftBlock.coverage.runtimeEventIds);
     const foldedRuntimeEvents = input.priorRuntimeContext.filter((event) =>
       foldedIds.has(event.id),
@@ -461,6 +485,7 @@ export class AiSdkCompaction {
           newlyFoldedRuntimeEvents,
           requestShapeHashBefore: input.requestShapeHashBefore,
           abortSignal: input.abortSignal,
+          ...(historyCompactTracker ? { providerRequestTracker: historyCompactTracker } : {}),
         }),
       );
       if (!summary?.trim()) {
@@ -758,6 +783,8 @@ export class AiSdkCompaction {
             }
             const writePatch = await this.writeHistoryCompactCheckpoint({
               turnId: input.turnId,
+              // A manual compaction names its own run: nothing else can (#1679).
+              runId: input.runId,
               contextBudget: writeContextBudget,
               priorRuntimeContext: runtimeContext,
               draftBlock: draftBlocks[0]!,
@@ -987,6 +1014,24 @@ export class AiSdkCompaction {
       compactCallTotalTokens: 0,
       acceptedEstimatedTokensSaved: 0,
     };
+    // One auxiliary trace per turn rather than per call: a step that summarizes
+    // is a step of that trace, so a retried summarization is another attempt of
+    // the same logical call. Built on first use — most turns never summarize,
+    // and an unused trace id is a trace that never happened.
+    const summarizerModelId = policy.summarizerModel ?? this.input.modelId;
+    let summaryTracker: ProviderRequestTracker | undefined;
+    let summaryTrackerBuilt = false;
+    const resolveSummaryTracker = (): ProviderRequestTracker | undefined => {
+      if (!summaryTrackerBuilt) {
+        summaryTrackerBuilt = true;
+        summaryTracker = this.createProviderRequestTracker({
+          turnId,
+          callKind: 'semantic_compact',
+          modelId: summarizerModelId,
+        });
+      }
+      return summaryTracker;
+    };
     return async (options) => {
       const activeToolsForStep = options.activeTools;
       const dryRun = policy.mode === 'validate_only' || policy.mode === 'prepare_step_dry_run';
@@ -1002,7 +1047,6 @@ export class AiSdkCompaction {
             modelId: policy.summarizerModel,
           })
         : model;
-      const summarizerModelId = policy.summarizerModel ?? this.input.modelId;
       const rewritten = await rewriteSemanticCompactInMessages({
         sessionId: this.sessionId,
         turnId,
@@ -1021,38 +1065,19 @@ export class AiSdkCompaction {
           : {}),
         abortSignal: abortSignal,
         summarizer: async (request) => {
-          const startedAt = this.now();
-          const callId = `semantic_compact_${turnId}_${options.stepNumber}_${startedAt}`;
-          try {
-            const result = await this.modelAdapter.generateCompactSummary({
-              model: summarizerModel,
-              system: request.system,
-              messages: request.messages,
-              maxOutputTokens: request.maxOutputTokens,
-              abortSignal: request.abortSignal,
-            });
-            this.recordSemanticCompactSummaryCall({
-              callId,
-              turnId,
-              modelId: summarizerModelId,
-              startedAt,
-              latencyMs: Math.max(0, this.now() - startedAt),
-              usage: result.usage,
-              status: 'success',
-            });
-            return result;
-          } catch (error) {
-            this.recordSemanticCompactSummaryCall({
-              callId,
-              turnId,
-              modelId: summarizerModelId,
-              startedAt,
-              latencyMs: Math.max(0, this.now() - startedAt),
-              status: request.abortSignal?.aborted ? 'aborted' : 'error',
-              errorClass: this.modelAdapter.classifyError(error),
-            });
-            throw error;
-          }
+          // The tracker settles this call itself, on the success, failure, and
+          // abort paths alike, so the summarization is metered as the physical
+          // provider request it is instead of a hand-built row (#1679).
+          const tracker = resolveSummaryTracker();
+          tracker?.setStep(options.stepNumber);
+          return await this.modelAdapter.generateCompactSummary({
+            model: summarizerModel,
+            system: request.system,
+            messages: request.messages,
+            maxOutputTokens: request.maxOutputTokens,
+            abortSignal: request.abortSignal,
+            ...(tracker ? { providerRequestTracker: tracker } : {}),
+          });
         },
       });
       onDiagnosticPatch?.({
@@ -1132,35 +1157,6 @@ export class AiSdkCompaction {
       }
       return !dryRun && projectedMessages ? { messages: projectedMessages } : undefined;
     };
-  }
-
-  private recordSemanticCompactSummaryCall(input: {
-    callId: string;
-    turnId: string;
-    modelId: string;
-    startedAt: number;
-    latencyMs: number;
-    usage?: NormalizedAiSdkUsage;
-    status: LlmCallRecord['status'];
-    errorClass?: string;
-  }): void {
-    if (!input.usage) return;
-    const costUsd = this.computeCostUsd(input.usage);
-    this.input.recordLlmCall?.({
-      sessionId: this.sessionId,
-      turnId: input.turnId,
-      callKind: 'semantic_compact',
-      callId: input.callId,
-      connectionSlug: this.input.connection.slug,
-      providerId: this.input.connection.providerType,
-      modelId: input.modelId,
-      ...llmCallUsageFields(input.usage),
-      latencyMs: input.latencyMs,
-      status: input.status,
-      ...(input.errorClass ? { errorClass: input.errorClass } : {}),
-      startedAt: input.startedAt,
-      ...(costUsd !== undefined ? { costUsd } : {}),
-    });
   }
 
   private recordSemanticCompactBlock(block: SemanticCompactBlock): void {
@@ -1466,6 +1462,11 @@ export class AiSdkCompaction {
       abortSignal,
     } = input;
     const summarizer = this.input.summarizeHistoryCompact!;
+    const midTurnTracker = this.createProviderRequestTracker({
+      turnId,
+      callKind: 'history_compact',
+      modelId: this.input.modelId,
+    });
     const recorder = this.input.recordHistoryCompactCheckpoint!;
     const loadTurnRuntimeEvents = this.input.loadTurnRuntimeEvents!;
     const policy = this.input.contextBudget!;
@@ -1563,6 +1564,7 @@ export class AiSdkCompaction {
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
             ...(abortSignal ? { abortSignal } : {}),
+            ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
           }),
         );
       },

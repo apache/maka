@@ -1,15 +1,18 @@
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import {
   DEFAULT_DAILY_REVIEW_CONFIG,
   dailyReviewArchiveToSummary,
+  normalizeDailyReviewArchive,
   normalizeDailyReviewConfig,
   type DailyReviewArchive,
   type DailyReviewArchiveSummary,
   type DailyReviewConfig,
 } from '@maka/core';
 
-const ARCHIVE_ID_PATTERN = /^\d{4}-\d{2}-\d{2}-(daily|deep)$/;
+const ARCHIVE_ID_PATTERN = /^\d{4}-\d{2}-\d{2}-(1d|7d|30d)$/;
+const READABLE_ARCHIVE_ID_PATTERN = /^\d{4}-\d{2}-\d{2}-(1d|7d|30d|daily|deep)$/;
 
 export interface DailyReviewArchiveStore {
   getConfig(): Promise<DailyReviewConfig>;
@@ -54,11 +57,9 @@ class FileDailyReviewArchiveStore implements DailyReviewArchiveStore {
       next = normalizeDailyReviewConfig({
         ...current,
         ...patch,
-        sections: { ...current.sections, ...patch.sections },
-        externalNotify: { ...current.externalNotify, ...patch.externalNotify },
       });
       await mkdir(this.root, { recursive: true, mode: 0o700 });
-      await writeFile(this.configPath, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+      await writeJsonAtomically(this.configPath, next);
     });
     return next;
   }
@@ -67,10 +68,7 @@ class FileDailyReviewArchiveStore implements DailyReviewArchiveStore {
     assertArchiveId(archive.id);
     await this.withQueue(async () => {
       await mkdir(this.archiveRoot, { recursive: true, mode: 0o700 });
-      await writeFile(this.archivePath(archive.id), JSON.stringify(archive, null, 2) + '\n', {
-        encoding: 'utf8',
-        mode: 0o600,
-      });
+      await writeJsonAtomically(this.archivePath(archive.id), archive);
     });
     return archive;
   }
@@ -86,20 +84,25 @@ class FileDailyReviewArchiveStore implements DailyReviewArchiveStore {
   }
 
   async getArchive(id: string): Promise<DailyReviewArchive | null> {
-    assertArchiveId(id);
+    assertReadableArchiveId(id);
+    let raw: string;
     try {
-      const raw = await readFile(this.archivePath(id), 'utf8');
-      const parsed = JSON.parse(raw) as DailyReviewArchive;
-      if (parsed.id !== id) throw new Error(`Daily Review archive id mismatch: ${id}`);
-      return parsed;
+      raw = await readFile(this.archivePath(id), 'utf8');
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;
     }
+    try {
+      const archive = normalizeDailyReviewArchive(JSON.parse(raw));
+      if (archive.id !== id) throw new Error(`Daily Review archive id mismatch: ${id}`);
+      return archive;
+    } catch {
+      return null;
+    }
   }
 
   async deleteArchive(id: string): Promise<void> {
-    assertArchiveId(id);
+    assertReadableArchiveId(id);
     await rm(this.archivePath(id), { force: true });
   }
 
@@ -118,7 +121,7 @@ class FileDailyReviewArchiveStore implements DailyReviewArchiveStore {
       return entries
         .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
         .map((entry) => entry.name.slice(0, -'.json'.length))
-        .filter((id) => ARCHIVE_ID_PATTERN.test(id));
+        .filter((id) => READABLE_ARCHIVE_ID_PATTERN.test(id));
     } catch (error) {
       if (isNotFound(error)) return [];
       throw error;
@@ -126,7 +129,7 @@ class FileDailyReviewArchiveStore implements DailyReviewArchiveStore {
   }
 
   private archivePath(id: string): string {
-    assertArchiveId(id);
+    assertReadableArchiveId(id);
     return join(this.archiveRoot, `${id}.json`);
   }
 
@@ -142,6 +145,36 @@ class FileDailyReviewArchiveStore implements DailyReviewArchiveStore {
     } finally {
       release();
     }
+  }
+}
+
+async function writeJsonAtomically(path: string, value: unknown): Promise<void> {
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    file = await open(temporaryPath, 'wx', 0o600);
+    await file.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await file.sync();
+    await file.close();
+    file = undefined;
+    await rename(temporaryPath, path);
+    if (process.platform !== 'win32') {
+      const directory = await open(dirname(path), 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
+  } finally {
+    await file?.close().catch(() => undefined);
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+function assertReadableArchiveId(id: string): void {
+  if (!READABLE_ARCHIVE_ID_PATTERN.test(id)) {
+    throw new Error(`Invalid Daily Review archive id: ${id}`);
   }
 }
 

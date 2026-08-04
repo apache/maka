@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -9,6 +9,7 @@ import {
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import type { StoredInteractionRequest } from '@maka/storage/interaction-store';
+import { acquireOperationalStateDatabase } from '@maka/storage';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { type SessionMessageQueueProjection } from '../protocol/index.js';
 import {
@@ -17,6 +18,7 @@ import {
   createSessionContinuitySnapshot,
 } from '../server/canonical-session-projection.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
+import { worstCaseGoalProjection } from '../server/goal-projection.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
@@ -35,12 +37,14 @@ test('projects the canonical root lifecycle and the attachment queue from real S
     assert.deepEqual(await reader.read(session.id), {
       session: {
         sessionId: session.id,
+        metadataRevision: 1,
         status: session.status,
         createdAt: session.createdAt,
         lastUsedAt: session.lastUsedAt,
         isArchived: false,
       },
       rootTurn: null,
+      goal: null,
       queue: { hostEpoch: 'epoch-1', queueRevision: 0, steering: [], followup: [] },
       interactions: { pending: [] },
     });
@@ -208,22 +212,29 @@ test('preflights queued steering at the exact in-flight snapshot boundary', asyn
     });
     const canonical = await reader.read(session.id);
     assert.ok(canonical);
+    const capacityCanonical = {
+      ...canonical,
+      goal: worstCaseGoalProjection(session.id),
+    };
 
-    const inFlightBoundary = largestFittingInFlightSteeringText(canonical);
+    const inFlightBoundary = largestFittingInFlightSteeringText(capacityCanonical);
     const rejectedQueued = {
       ...steeringQueue(inFlightBoundary + 1, 'queued'),
       queueRevision: 1,
     };
     assert.deepEqual(
       createSessionContinuitySnapshot(
-        { ...canonical, queue: rejectedQueued },
+        { ...capacityCanonical, queue: rejectedQueued },
         Number.MAX_SAFE_INTEGER,
       ).queue,
       rejectedQueued,
     );
     assert.throws(() =>
       createSessionContinuitySnapshot(
-        { ...canonical, queue: steeringQueue(inFlightBoundary + 1, 'in_flight') },
+        {
+          ...capacityCanonical,
+          queue: steeringQueue(inFlightBoundary + 1, 'in_flight'),
+        },
         Number.MAX_SAFE_INTEGER,
       ),
     );
@@ -245,7 +256,7 @@ test('preflights queued steering at the exact in-flight snapshot boundary', asyn
     const allowedInFlight = steeringQueue(inFlightBoundary, 'in_flight');
     assert.deepEqual(
       createSessionContinuitySnapshot(
-        { ...canonical, queue: allowedInFlight },
+        { ...capacityCanonical, queue: allowedInFlight },
         Number.MAX_SAFE_INTEGER,
       ).queue,
       allowedInFlight,
@@ -310,11 +321,26 @@ test('fails closed when the owned tip durable identity changes', async () => {
       sourceMessages: [],
       admittedAt: 10,
     });
-    const admissionPath = join(root, 'sessions', session.id, 'turn-admissions', 'turn-1.json');
-    const original = await readFile(admissionPath, 'utf8');
-    const durable = JSON.parse(original) as Record<string, unknown>;
+    const database = acquireOperationalStateDatabase(root);
+    const row = database.database
+      .prepare(`
+        SELECT admitted_at, record_json
+        FROM core_root_turn_admissions
+        WHERE session_id = ? AND turn_id = 'turn-1'
+      `)
+      .get(session.id) as { admitted_at?: unknown; record_json?: unknown } | undefined;
+    assert.equal(typeof row?.admitted_at, 'number');
+    assert.equal(typeof row?.record_json, 'string');
+    const durable = JSON.parse(row!.record_json as string) as Record<string, unknown>;
 
-    await rm(admissionPath);
+    database.transaction('write', () => {
+      database.database
+        .prepare(`
+          DELETE FROM core_root_turn_admissions
+          WHERE session_id = ? AND turn_id = 'turn-1'
+        `)
+        .run(session.id);
+    });
     const missingReader = new CanonicalSessionProjectionReader({
       stores,
       rootAdmissions,
@@ -322,7 +348,20 @@ test('fails closed when the owned tip durable identity changes', async () => {
     });
     await assert.rejects(() => missingReader.read(session.id), /missing from durable storage/);
 
-    await writeFile(admissionPath, `${JSON.stringify({ ...durable, runId: 'run-drifted' })}\n`);
+    database.transaction('write', () => {
+      database.database
+        .prepare(`
+          INSERT INTO core_root_turn_admissions(
+            session_id, turn_id, admitted_at, record_json
+          ) VALUES (?, 'turn-1', ?, ?)
+        `)
+        .run(
+          session.id,
+          row!.admitted_at as number,
+          JSON.stringify({ ...durable, runId: 'run-drifted' }),
+        );
+    });
+    database.close();
 
     const reader = new CanonicalSessionProjectionReader({
       stores,

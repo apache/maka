@@ -5,12 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  agentGraphIdForRootSession,
   BackendRegistry,
   classifyTerminalRuntimeLedger,
   FakeBackend,
   FAKE_ASK_USER_QUESTION_PROMPT,
+  IMPLEMENTATION_AGENT_DEFINITION,
   LOCAL_READ_AGENT_PROFILE,
   RuntimeHostedRootConflictError,
+  RuntimeHostedRootUnavailableError,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeMessageAuthorityInvariantError,
   SessionManager,
@@ -19,30 +22,802 @@ import {
   type RuntimeInteractionRunClosureReason,
   type RuntimeMessageAuthority,
 } from '@maka/runtime';
-import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
+import type {
+  AgentBackend,
+  BackendCompactHistoryInput,
+  BackendSendInput,
+} from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime';
 import {
   openInteractiveExecutionStoresForWrite,
+  type RootTurnAdmission,
   type RootTurnAdmissionStore,
 } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { SubscriptionFrame } from '../protocol/index.js';
 import { HostCanonicalPermissionOutcomeReader } from '../server/canonical-permission-outcome-reader.js';
 import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
+import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { RuntimeHostResidency } from '../server/host-kernel.js';
 import { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
-import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
+import {
+  type HostGoalRootAuthority,
+  RootTurnCoordinator,
+} from '../server/root-turn-coordinator.js';
 import {
   SessionAdmissionGate,
   type SessionAdmissionLease,
 } from '../server/session-admission-gate.js';
 import { SessionContinuityCoordinator } from '../server/session-continuity-coordinator.js';
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
+import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
+const HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT = 'hold follow-up before context recovery';
+const NO_GOAL_ROOT_AUTHORITY: HostGoalRootAuthority = {
+  beginObservedTurn: () => ({
+    kind: 'unavailable',
+    reason: 'Goal authority is not composed.',
+  }),
+  matchesActive: () => false,
+};
+
+test('turn.start durably applies one exact per-Turn orchestration override', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const input = {
+    sessionId: fixture.sessionId,
+    turnId: 'turn-hosted-swarm-override',
+    content: { text: 'Use the hosted swarm override.' },
+    turnOrchestration: { mode: 'swarm' as const, source: 'host_api' as const },
+  };
+  try {
+    const started = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, started.result.runId);
+    assert.equal(run.orchestrationMode, 'swarm');
+    assert.equal(run.orchestrationSource, 'turn_override');
+    assert.equal(run.agentSwarmAuthorization, 'turn_override');
+    assert.deepEqual(
+      (await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, input.turnId))
+        ?.turnOrchestration,
+      input.turnOrchestration,
+    );
+
+    const exactRetry = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(exactRetry.ok, true);
+
+    const conflict = await fixture.coordinator.handlers['turn.start'](
+      {
+        ...input,
+        turnOrchestration: { mode: 'default', source: 'host_api' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(conflict.ok, false);
+    if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('worktree child Sessions reject roots outside managed child execution', async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  let recoveryCoordinator: RootTurnCoordinator | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      }),
+    childTools: IMPLEMENTATION_AGENT_DEFINITION.tools.map(testTool),
+  });
+  const binding = {
+    schemaVersion: 1 as const,
+    kind: 'git_worktree' as const,
+    leaseId: `subagent_worktree_${'a'.repeat(32)}`,
+    gitCommonDir: '/tmp/project/.git',
+    worktreePath: '/tmp/worktrees/managed-child',
+    branch: `maka/subagent/${'a'.repeat(32)}`,
+    baseCommit: 'b'.repeat(40),
+  };
+  try {
+    const { header: child } = await fixture.stores.sessionStore.createSubagent({
+      cwd: binding.worktreePath,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'execute',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: fixture.sessionId,
+        spawnedBy: {
+          parentRunId: 'parent-run',
+          parentTurnId: 'parent-turn',
+          toolCallId: 'implementation-spawn',
+        },
+        lifecycle: 'foreground',
+      },
+      subagentRuntime: {
+        schemaVersion: 1,
+        definitionVersion: IMPLEMENTATION_AGENT_DEFINITION.definitionVersion,
+        agentId: IMPLEMENTATION_AGENT_DEFINITION.id,
+        agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+        profile: 'implementation',
+        systemPrompt: IMPLEMENTATION_AGENT_DEFINITION.systemPrompt,
+        toolNames: [...IMPLEMENTATION_AGENT_DEFINITION.tools],
+        categoryPolicy: {},
+      },
+      subagentSpawn: {
+        schemaVersion: 1,
+        requestFingerprint: 'c'.repeat(64),
+        initialTurnId: 'managed-child-turn',
+        initialRunId: 'managed-child-run',
+      },
+      subagentWorkspace: binding,
+    });
+    const unavailableMessage =
+      'Worktree child Sessions must be continued through their parent agent.';
+
+    assert.deepEqual(
+      await fixture.coordinator.handlers['turn.start'](
+        {
+          sessionId: child.id,
+          turnId: 'external-child-turn',
+          content: { text: 'Modify the child directly.' },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      ),
+      {
+        ok: false,
+        error: { code: 'operation_unavailable', message: unavailableMessage },
+      },
+    );
+    assert.equal(
+      (await fixture.coordinator.readSessionHeader(child.id))?.unavailableReason,
+      unavailableMessage,
+    );
+    await assert.rejects(
+      () =>
+        fixture.coordinator.executeRoot({
+          sessionId: child.id,
+          turnId: 'automation-child-turn',
+          runId: 'automation-child-run',
+          userMessageId: 'automation-child-message',
+          execution: { kind: 'automation', automationId: 'automation-child' },
+          content: { text: 'Modify the child from Automation.' },
+          start: async function* () {},
+        }),
+      RuntimeHostedRootUnavailableError,
+    );
+
+    const managed = fixture.coordinator.executeRoot({
+      sessionId: child.id,
+      turnId: 'managed-child-turn',
+      runId: 'managed-child-run',
+      userMessageId: 'managed-child-message',
+      execution: {
+        kind: 'linked_child_initial',
+        agentId: IMPLEMENTATION_AGENT_DEFINITION.id,
+        agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+      },
+      content: { text: HOLD_EXTERNAL_PROMPT },
+      start: ({ runId, userMessageId, onRunStarted }) =>
+        fixture.manager.sendMessage(
+          child.id,
+          {
+            turnId: 'managed-child-turn',
+            text: HOLD_EXTERNAL_PROMPT,
+            agentId: IMPLEMENTATION_AGENT_DEFINITION.id,
+            agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+          },
+          {
+            runId,
+            userMessageId: userMessageId ?? undefined,
+            durability: 'required',
+            onRunStarted,
+          },
+        ),
+    });
+    await waitUntil(() => backend !== undefined);
+    await backend?.externalHoldStarted.promise;
+
+    for (const placement of ['current_turn', 'next_turn'] as const) {
+      assert.deepEqual(
+        await fixture.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: fixture.hostEpoch,
+            sessionId: child.id,
+            messageId: randomUUID(),
+            content: { text: `External ${placement} mutation.` },
+            placement,
+          },
+          operationContext(fixture.hostEpoch, fixture.acquireResidency),
+        ),
+        {
+          ok: false,
+          error: { code: 'operation_unavailable', message: unavailableMessage },
+        },
+      );
+    }
+    assert.deepEqual(fixture.messages.projection(child.id).steering, []);
+    assert.deepEqual(fixture.messages.projection(child.id).followup, []);
+    assert.equal(
+      (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(child.id)).length,
+      1,
+    );
+    assert.equal((await fixture.stores.agentRunStore.listSessionRuns(child.id)).length, 1);
+
+    backend?.release();
+    await managed;
+    assert.deepEqual(fixture.coordinator.readRootState(child.id), {
+      kind: 'idle',
+    });
+
+    await fixture.coordinator.close();
+    await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: child.id,
+      turnId: 'legacy-external-child-turn',
+      proposedRunId: 'legacy-external-child-run',
+      proposedUserMessageId: 'legacy-external-child-message',
+      execution: { kind: 'external_message' },
+      normalizedInput: { text: 'Recover an unmanaged child Turn.' },
+      sourceMessages: [],
+      admittedAt: Date.now(),
+      previousRootTurnId: 'managed-child-turn',
+    });
+    const recovery = fixture.createRecoveryCoordinator();
+    recoveryCoordinator = recovery;
+    await recovery.prepareRecovery();
+    await assert.rejects(
+      () => recovery.recover(),
+      /Unable to recover admitted Turn legacy-external-child-turn: operation_unavailable/,
+    );
+    assert.equal((await fixture.stores.agentRunStore.listSessionRuns(child.id)).length, 1);
+  } finally {
+    backend?.release();
+    await recoveryCoordinator?.close();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('hosted Automation roots preserve one admission, UserMessage, and AgentRun identity', async () => {
+  let recoveryValidationCount = 0;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const automationId = 'automation-root-fixture';
+  const turnId = 'turn-automation-root';
+  const runId = 'run-automation-root';
+  const userMessageId = 'message-automation-root';
+  const prompt = '[Automation: check build]\n\nCheck the build.';
+  try {
+    await fixture.coordinator.executeRoot({
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+      userMessageId,
+      execution: { kind: 'automation', automationId },
+      content: { text: prompt },
+      start: ({ runId: admittedRunId, userMessageId: admittedMessageId, onRunStarted }) =>
+        fixture.manager.sendMessage(
+          fixture.sessionId,
+          {
+            turnId,
+            text: prompt,
+            origin: { kind: 'automation', automationId },
+          },
+          {
+            runId: admittedRunId,
+            userMessageId: admittedMessageId ?? undefined,
+            durability: 'required',
+            onRunStarted,
+          },
+        ),
+    });
+
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      turnId,
+    );
+    assert.ok(admission);
+    assert.deepEqual(admission?.execution, {
+      kind: 'automation',
+      automationId,
+    });
+    assert.equal(admission?.runId, runId);
+    assert.equal(admission?.userMessageId, userMessageId);
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
+    assert.equal(run.status, 'completed');
+    assert.equal(run.automationId, automationId);
+    const messages = await fixture.stores.sessionStore.readMessagesSnapshot(fixture.sessionId);
+    const user = messages.find((message) => message.id === userMessageId);
+    assert.ok(user?.type === 'user');
+    if (user?.type === 'user') {
+      assert.deepEqual(user.origin, { kind: 'automation', automationId });
+      assert.equal(user.text, prompt);
+    }
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    const recoveryCoordinator = fixture.createRecoveryCoordinator(() => {
+      recoveryValidationCount += 1;
+    });
+    await recoveryCoordinator.prepareRecovery();
+    assert.equal(recoveryValidationCount, 0);
+
+    await recoveryCoordinator.close();
+    await fixture.messages.close();
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph supervisor wake waits for root idle and binds one durable execution identity', async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const externalTurnId = 'turn-before-graph-wake';
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  const wakeId = `${graphId}:snapshot-1`;
+  const attemptId = 'graph-wake-attempt-1';
+  const graphTurnId = 'turn-graph-supervisor-wake';
+  try {
+    const external = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: externalTurnId,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(external.ok, true);
+    await waitUntil(() => backend !== undefined);
+    await backend?.externalHoldStarted.promise;
+
+    const wake = fixture.coordinator.runAgentGraphSupervisorTurn(
+      fixture.sessionId,
+      {
+        turnId: graphTurnId,
+        text: 'Inspect the durable graph.',
+        displayText: 'Agent graph reached a supervisor checkpoint.',
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
+        origin: { kind: 'agent_graph', graphId, wakeId, attemptId },
+      },
+      new AbortController().signal,
+      async () => true,
+    );
+
+    assert.equal(
+      (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(fixture.sessionId))
+        .length,
+      1,
+    );
+    backend?.release();
+    assert.deepEqual(await wake, { kind: 'completed', turnId: graphTurnId });
+
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    assert.equal(admissions.length, 2);
+    const graphAdmission = admissions.find((admission) => admission.turnId === graphTurnId);
+    assert.ok(graphAdmission);
+    assert.deepEqual(graphAdmission?.execution, {
+      kind: 'agent_graph_supervisor_wake',
+      graphId,
+      wakeId,
+      attemptId,
+    });
+    assert.deepEqual(graphAdmission?.turnOrchestration, {
+      mode: 'graph',
+      source: 'host_api',
+    });
+
+    const graphRun = await fixture.stores.agentRunStore.readRun(
+      fixture.sessionId,
+      graphAdmission!.runId,
+    );
+    assert.equal(graphRun.agentGraphWakeId, wakeId);
+    assert.equal(graphRun.agentGraphWakeAttemptId, attemptId);
+    assert.equal(graphRun.orchestrationMode, 'graph');
+    assert.equal(graphRun.orchestrationSource, 'turn_override');
+    const userMessage = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.id === graphAdmission?.userMessageId,
+    );
+    assert.ok(userMessage?.type === 'user');
+    if (userMessage?.type === 'user') {
+      assert.deepEqual(userMessage.origin, {
+        kind: 'agent_graph',
+        graphId,
+        wakeId,
+        attemptId,
+      });
+      assert.equal(userMessage.displayText, 'Agent graph reached a supervisor checkpoint.');
+    }
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph supervisor wake preserves structured context-overflow outcomes', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => new ContextFailureBackend(context.sessionId)),
+  });
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  try {
+    for (const [index, text] of [
+      'provider context overflow',
+      'local context budget exhausted',
+    ].entries()) {
+      const turnId = `turn-graph-context-${index}`;
+      const outcome = await fixture.coordinator.runAgentGraphSupervisorTurn(
+        fixture.sessionId,
+        {
+          turnId,
+          text,
+          turnOrchestration: { mode: 'graph', source: 'host_api' },
+          origin: {
+            kind: 'agent_graph',
+            graphId,
+            wakeId: `${graphId}:context-${index}`,
+            attemptId: `context-attempt-${index}`,
+          },
+        },
+        new AbortController().signal,
+        async () => true,
+      );
+
+      assert.deepEqual(outcome, {
+        kind: 'context_overflow',
+        turnId,
+        reason: index === 0 ? 'context_overflow' : 'context_budget_exhausted',
+      });
+    }
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph context recovery fences competing root turns while compaction runs', async () => {
+  let backend: BlockingContextRecoveryBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new BlockingContextRecoveryBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const compactTurnId = 'turn-graph-context-recovery';
+  try {
+    const recovery = fixture.coordinator.recoverAgentGraphSupervisorContextOverflow(
+      fixture.sessionId,
+      compactTurnId,
+      new AbortController().signal,
+    );
+    await waitUntil(() => backend !== undefined);
+    await backend?.compactStarted.promise;
+
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'reserved',
+    });
+    const competing = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-racing-context-recovery',
+        content: { text: 'Do not overlap the recovery compaction.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(competing.ok, false);
+    if (!competing.ok) assert.equal(competing.error.code, 'session_busy');
+
+    backend?.releaseCompact();
+    assert.equal(await recovery, undefined);
+    assert.equal(backend?.compactInput?.turnId, compactTurnId);
+    assert.equal(backend?.compactInput?.minRecentTurns, 0);
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'idle',
+    });
+
+    const following = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-after-context-recovery',
+        content: { text: 'Continue after recovery.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(following.ok, true);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    backend?.releaseCompact();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph context recovery abort stops compaction and releases Host close', async () => {
+  let backend: BlockingContextRecoveryBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new BlockingContextRecoveryBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const abortController = new AbortController();
+  try {
+    const recovery = fixture.coordinator.recoverAgentGraphSupervisorContextOverflow(
+      fixture.sessionId,
+      'turn-aborted-graph-context-recovery',
+      abortController.signal,
+    );
+    await waitUntil(() => backend !== undefined);
+    await backend?.compactStarted.promise;
+
+    const closed = fixture.coordinator.close();
+    abortController.abort();
+    await assert.rejects(recovery, (error) => {
+      assert.ok(error instanceof DOMException);
+      assert.equal(error.name, 'AbortError');
+      return true;
+    });
+    await closed;
+    assert.equal(backend?.stopCount, 1);
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), { kind: 'idle' });
+  } finally {
+    abortController.abort();
+    backend?.releaseCompact();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph context recovery waits for a confirmed follow-up root', async () => {
+  let backend: GraphFollowupRecoveryBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new GraphFollowupRecoveryBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  const graphTurnId = 'turn-graph-context-before-follow-up';
+  try {
+    const graphTurn = fixture.coordinator.runAgentGraphSupervisorTurn(
+      fixture.sessionId,
+      {
+        turnId: graphTurnId,
+        text: 'Overflow after a follow-up is confirmed.',
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
+        origin: {
+          kind: 'agent_graph',
+          graphId,
+          wakeId: `${graphId}:context-follow-up`,
+          attemptId: 'context-follow-up-attempt',
+        },
+      },
+      new AbortController().signal,
+      async () => true,
+    );
+    await waitUntil(() => backend !== undefined);
+    await backend?.graphTurnStarted.promise;
+
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'message-before-context-recovery',
+        content: { text: HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(queued.ok && queued.result.disposition, 'followup');
+    backend?.releaseGraphTurn();
+    assert.deepEqual(await graphTurn, {
+      kind: 'context_overflow',
+      turnId: graphTurnId,
+      reason: 'context_overflow',
+    });
+
+    const recovery = fixture.coordinator.recoverAgentGraphSupervisorContextOverflow(
+      fixture.sessionId,
+      'turn-context-recovery-after-follow-up',
+      new AbortController().signal,
+    );
+    await backend?.followupStarted.promise;
+    assert.equal(backend?.compactStartedCount, 0);
+
+    backend?.releaseFollowup();
+    await backend?.compactStarted.promise;
+    assert.equal(backend?.compactStartedCount, 1);
+    backend?.releaseCompact();
+    assert.equal(await recovery, undefined);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    backend?.releaseGraphTurn();
+    backend?.releaseFollowup();
+    backend?.releaseCompact();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph supervisor wake revalidates freshness before durable root admission', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  const turnId = 'turn-stale-graph-supervisor-wake';
+  try {
+    const outcome = await fixture.coordinator.runAgentGraphSupervisorTurn(
+      fixture.sessionId,
+      {
+        turnId,
+        text: 'Inspect a stale graph checkpoint.',
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
+        origin: {
+          kind: 'agent_graph',
+          graphId,
+          wakeId: `${graphId}:stale-snapshot`,
+          attemptId: 'stale-attempt',
+        },
+      },
+      new AbortController().signal,
+      async () => false,
+    );
+
+    assert.deepEqual(outcome, {
+      kind: 'superseded',
+      turnId,
+      reason: 'Agent graph supervisor checkpoint was superseded before root admission.',
+    });
+    assert.deepEqual(
+      await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(fixture.sessionId),
+      [],
+    );
+    assert.deepEqual(await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId), []);
+    assert.deepEqual(await fixture.stores.sessionStore.readMessages(fixture.sessionId), []);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph supervisor recovery closes a durable admission that has no Run', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  const wakeId = `${graphId}:snapshot-recovery`;
+  const attemptId = 'graph-wake-recovery-attempt';
+  const turnId = 'turn-graph-wake-recovery';
+  const runId = 'run-graph-wake-recovery';
+  const userMessageId = 'message-graph-wake-recovery';
+  let recovery: RootTurnCoordinator | undefined;
+  try {
+    await fixture.coordinator.close();
+    await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: userMessageId,
+      execution: {
+        kind: 'agent_graph_supervisor_wake',
+        graphId,
+        wakeId,
+        attemptId,
+      },
+      normalizedInput: {
+        text: 'Inspect the durable graph after restart.',
+        displayText: 'Agent graph reached a supervisor checkpoint.',
+      },
+      turnOrchestration: { mode: 'graph', source: 'host_api' },
+      sourceMessages: [],
+      admittedAt: Date.now(),
+      previousRootTurnId: null,
+    });
+
+    recovery = fixture.createRecoveryCoordinator();
+    await recovery.prepareRecovery();
+    await recovery.recover();
+
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
+    assert.equal(run.status, 'failed');
+    assert.equal(run.failureClass, 'app_restarted');
+    assert.equal(run.agentGraphWakeId, wakeId);
+    assert.equal(run.agentGraphWakeAttemptId, attemptId);
+    assert.equal(run.orchestrationMode, 'graph');
+    assert.equal(run.orchestrationSource, 'turn_override');
+    const message = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (candidate) => candidate.id === userMessageId,
+    );
+    assert.ok(message?.type === 'user');
+    if (message?.type === 'user') {
+      assert.deepEqual(message.origin, {
+        kind: 'agent_graph',
+        graphId,
+        wakeId,
+        attemptId,
+      });
+      assert.equal(message.text, 'Inspect the durable graph after restart.');
+      assert.equal(message.displayText, 'Agent graph reached a supervisor checkpoint.');
+    }
+    assert.deepEqual(recovery.readRootState(fixture.sessionId), {
+      kind: 'idle',
+    });
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await recovery?.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('hosted root target unavailability is retryable without poisoning the Host', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  try {
+    await assert.rejects(
+      () =>
+        fixture.coordinator.executeRoot({
+          sessionId: 'missing-session',
+          turnId: 'turn-missing-root',
+          runId: 'run-missing-root',
+          userMessageId: 'message-missing-root',
+          execution: {
+            kind: 'automation',
+            automationId: 'automation-missing-root',
+          },
+          content: { text: 'Retry later.' },
+          start: async function* () {},
+        }),
+      RuntimeHostedRootUnavailableError,
+    );
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
 
 test('hosted linked child roots share admission, message, terminal, and stop authority', {
   timeout: 20_000,
@@ -123,7 +898,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     );
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
+      sandboxBoundaries: stores.sessionStore,
       sessionAdmission,
+      sessions: stores.sessionStore,
       preflightSessionSnapshot: (sessionId, interactionProjection) =>
         canonicalProjectionReader.fitsCandidate(sessionId, {
           interactions: interactionProjection,
@@ -133,6 +910,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       onPoison: () => {
         drainRequested = true;
       },
+      onSandboxBoundarySettled: async () => {},
     });
     const interactionAuthority: RuntimeInteractionAuthority = {
       bindRun: (identity) => {
@@ -189,6 +967,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       () => {
         drainRequested = true;
       },
+      undefined,
+      () => NO_GOAL_ROOT_AUTHORITY,
     );
 
     const parentSink = new RecordingContinuitySink();
@@ -413,7 +1193,20 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       (message) => 'turnId' in message && message.turnId === retried.turnId,
     );
     assert.deepEqual(retryMessages, []);
-    assert.deepEqual(coordinator.readRootState(child.childSessionId), { kind: 'idle' });
+    const legacyRetryRun = await stores.agentRunStore.readRun(child.childSessionId, retried.runId!);
+    assert.equal(legacyRetryRun.continuationSource, undefined);
+    assert.equal(
+      (
+        await stores.runtimeEventStore.readImmutableRuntimeEvents(
+          child.childSessionId,
+          retried.runId!,
+        )
+      ).some((event) => event.actions?.continuationStart !== undefined),
+      false,
+    );
+    assert.deepEqual(coordinator.readRootState(child.childSessionId), {
+      kind: 'idle',
+    });
 
     const callbackAbortController = new AbortController();
     const stopClosureObserved = deferred<void>();
@@ -446,7 +1239,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     assert.ok(stoppedReady);
     assert.equal(callbackStopped.status, 'cancelled');
     assert.equal(callbackStopped.runId, stoppedReady.runId);
-    assert.deepEqual(coordinator.readRootState(stoppedReady.childSessionId), { kind: 'idle' });
+    assert.deepEqual(coordinator.readRootState(stoppedReady.childSessionId), {
+      kind: 'idle',
+    });
     assert.equal(interactions.isPoisoned(), false);
     assert.equal(drainRequested, false);
 
@@ -499,7 +1294,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     );
     assert.equal(drainRequested, false);
     await coordinator.stopRoot(followupState);
-    assert.deepEqual(coordinator.readRootState(child.childSessionId), { kind: 'idle' });
+    assert.deepEqual(coordinator.readRootState(child.childSessionId), {
+      kind: 'idle',
+    });
 
     const failedResume = await manager.resumeChildAgent(parent.id, {
       parentRunId: parentStarted.result.runId,
@@ -574,11 +1371,14 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     if (interruptedTerminal.kind === 'fact') {
       assert.equal(interruptedTerminal.fact.runStatus, 'cancelled');
     }
-    assert.deepEqual(coordinator.readRootState(interrupted.childSessionId), { kind: 'idle' });
+    assert.deepEqual(coordinator.readRootState(interrupted.childSessionId), {
+      kind: 'idle',
+    });
     assert.equal(drainRequested, false);
 
     const answered = await interactions.handlers['interaction.answer'](
       {
+        sessionId: pendingQuestion.sessionId,
         interactionId: pendingQuestion.interactionId,
         answer: { kind: 'question', answers: ['Yes'] },
       },
@@ -704,7 +1504,9 @@ test('pre-bind startup failure fail-stops without orphaning an admitted queued M
       return true;
     });
     await fixture.messages.close();
-    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), { kind: 'idle' });
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'idle',
+    });
     assert.equal(fixture.liveResidencies(), 0);
   } finally {
     await fixture.dispose();
@@ -717,8 +1519,8 @@ test('successor admission failure retains the terminal transition and its confir
   let backend: LinkedChildAuthorityBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) => {
-      backends.register('fake', () => {
-        backend = new LinkedChildAuthorityBackend('terminal-admission-failure');
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       });
     },
@@ -820,182 +1622,670 @@ test('successor admission failure retains the terminal transition and its confir
   }
 });
 
-test('shutdown re-scans a successor created by an in-flight terminal handoff', {
+test('shutdown contains a successor backend start rejected by Interaction drain', {
   timeout: 20_000,
 }, async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-close-'));
-  const capability = await resolveStorageRoot({
-    path: join(base, 'root'),
-    kind: 'interactive',
-  });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
-  assert.ok(owner);
-  if (!owner) throw new Error('Unable to acquire test root');
-
-  try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const session = await stores.sessionStore.create({
-      cwd: capability.canonicalPath,
-      backend: 'fake',
-      llmConnectionSlug: 'fake',
-      model: 'fake-model',
-      permissionMode: 'ask',
-    });
-    const followupAdmissionStarted = deferred<void>();
-    const releaseFollowupAdmission = deferred<void>();
-    const admissionStore: RootTurnAdmissionStore = {
+  const followupAdmissionStarted = deferred<void>();
+  const releaseFollowupAdmission = deferred<void>();
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    wrapAdmissionStore: (store) => ({
       admitRootTurn: async (input) => {
         if (input.previousRootTurnId !== null) {
           followupAdmissionStarted.resolve();
           await releaseFollowupAdmission.promise;
         }
-        return stores.agentRunStore.admitRootTurn(input);
+        return store.admitRootTurn(input);
       },
-      readRootTurnAdmission: (sessionId, turnId) =>
-        stores.agentRunStore.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
-        stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
+        store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
-        stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId),
-    };
-    const rootAdmissionOwner = new RootAdmissionOwner(admissionStore);
-    await rootAdmissionOwner.recoverSession(session.id);
+        store.listRootTurnAdmissionsForRecovery(sessionId),
+    }),
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  let closed = false;
 
-    let liveResidencies = 0;
-    const acquireResidency = (): RuntimeHostResidency => {
-      liveResidencies += 1;
-      let released = false;
-      return {
-        release: () => {
-          assert.equal(released, false);
-          released = true;
-          liveResidencies -= 1;
-        },
-      };
-    };
-    const sessionAdmission = new SessionAdmissionGate();
-    let coordinator: RootTurnCoordinator | undefined;
-    let continuity: SessionContinuityCoordinator | undefined;
-    let canonicalProjection: CanonicalSessionProjectionReader | undefined;
-    const rootPort: HostMessageRootPort = {
-      readSessionHeader: (sessionId) =>
-        requireCoordinator(coordinator).readSessionHeader(sessionId),
-      readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
-      claimStopFence: (input, commitQueueFence, admission) =>
-        requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
-      startFromMessage: (input, admission) =>
-        requireCoordinator(coordinator).startFromMessage(input, admission),
-      claimStop: (input, commitQueueFence, admission) =>
-        requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
-    };
-    const hostEpoch = 'epoch-close-handoff';
-    await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
-    const messages = new HostMessageCoordinator({
-      hostEpoch,
-      root: rootPort,
-      durableProof: {
-        readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
-          stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
-        readImmutableSteeringMessageProof: (sessionId, messageId) =>
-          stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
-      },
-      receipts: stores.messageReceiptStore,
-      sessionAdmission,
-      acquireResidency,
-      preflightSessionSnapshot: (sessionId, candidate) =>
-        requireCanonicalProjection(canonicalProjection).fitsCandidate(sessionId, candidate),
-      onProjectionChanged: (sessionId) =>
-        requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
-    });
-    const canonicalProjectionReader = new CanonicalSessionProjectionReader({
-      stores,
-      rootAdmissions: rootAdmissionOwner,
-      messages,
-    });
-    canonicalProjection = canonicalProjectionReader;
-    continuity = new SessionContinuityCoordinator(
-      hostEpoch,
-      (sessionId) => canonicalProjectionReader.read(sessionId),
-      sessionAdmission,
-    );
-    const backends = new BackendRegistry();
-    backends.register('fake', (context) => new FakeBackend(context));
-    const manager = new SessionManager({
-      store: stores.sessionStore,
-      runStore: stores.agentRunStore,
-      runtimeEventStore: stores.runtimeEventStore,
-      backends,
-      newId: randomUUID,
-      now: Date.now,
-      messageAuthority: messages,
-    });
-    let drainRequested = false;
-    coordinator = new RootTurnCoordinator(
-      manager,
-      stores,
-      sessionAdmission,
-      rootAdmissionOwner,
-      {
-        assertTerminalFence: async () => undefined,
-        claimRunClosure: async () => undefined,
-      },
-      messages,
-      continuity,
-      acquireResidency,
-      () => {
-        drainRequested = true;
-      },
-    );
-
+  try {
     const firstTurnId = 'turn-close-first';
-    const started = await coordinator.handlers['turn.start'](
+    const started = await fixture.coordinator.handlers['turn.start'](
       {
-        sessionId: session.id,
+        sessionId: fixture.sessionId,
         turnId: firstTurnId,
-        content: { text: `long-running root ${'x'.repeat(540)}` },
+        content: { text: HOLD_EXTERNAL_PROMPT },
       },
-      operationContext(hostEpoch, acquireResidency),
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
     assert.equal(started.ok, true);
-    const followup = await messages.handlers['turn.message.submit'](
+    assert.ok(backend);
+    assert.ok(fixture.interactions);
+    await completesWithin(backend.externalHoldStarted.promise, 2_000, 'held root start');
+
+    const followup = await fixture.messages.handlers['turn.message.submit'](
       {
-        originHostEpoch: hostEpoch,
-        sessionId: session.id,
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
         messageId: 'message-close-followup',
-        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+        content: {
+          text: 'start successor while shutdown drains Interaction authority',
+        },
         placement: 'next_turn',
       },
-      operationContext(hostEpoch, acquireResidency),
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
     assert.equal(followup.ok && followup.result.disposition, 'followup');
 
-    await followupAdmissionStarted.promise;
-    messages.beginDrain();
-    const closing = coordinator.close();
-    assert.equal(await settlesWithin(closing, 25), false);
+    backend.release();
+    await completesWithin(followupAdmissionStarted.promise, 2_000, 'successor root admission');
+    fixture.messages.beginDrain();
+    fixture.interactions.beginDrain();
+    const closing = fixture.coordinator.close();
     releaseFollowupAdmission.resolve();
-    await closing;
-    await messages.close();
-    continuity.close();
+    await completesWithin(closing, 2_000, 'root close after successor admission');
+    await fixture.messages.close();
+    await fixture.interactions.close();
+    closed = true;
 
-    assert.deepEqual(coordinator.readRootState(session.id), { kind: 'idle' });
-    assert.equal(liveResidencies, 0);
-    assert.equal(drainRequested, false);
-    const admissions = await stores.agentRunStore.listRootTurnAdmissionsForRecovery(session.id);
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'idle',
+    });
+    assert.equal(fixture.liveResidencies(), 0);
+    assert.equal(fixture.drainRequested(), false);
+    assert.equal(fixture.interactions.isPoisoned(), false);
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
     assert.equal(admissions.length, 2);
     const successor = admissions[1];
     assert.ok(successor);
-    const run = await stores.agentRunStore.readRun(session.id, successor.runId);
-    const runtimeEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(
-      session.id,
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, successor.runId);
+    const runtimeEvents = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
+      fixture.sessionId,
       successor.runId,
     );
     const terminal = classifyTerminalRuntimeLedger(run, runtimeEvents);
     assert.equal(terminal.kind, 'fact');
     if (terminal.kind === 'fact') assert.equal(terminal.fact.runStatus, 'cancelled');
   } finally {
-    await owner.close();
-    await rm(base, { recursive: true, force: true });
+    releaseFollowupAdmission.resolve();
+    backend?.release();
+    if (!closed) {
+      await Promise.allSettled([
+        fixture.coordinator.close(),
+        fixture.messages.close(),
+        fixture.interactions?.close(),
+      ]);
+    }
+    await fixture.dispose();
+  }
+});
+
+test('Client Capability ambiguity fails before durable root admission', async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => new FakeBackend(context));
+    },
+  });
+  const first = clientCapabilities.attachConnection('provider-a', {
+    send: async () => {},
+  });
+  const second = clientCapabilities.attachConnection('provider-b', {
+    send: async () => {},
+  });
+
+  try {
+    for (const [connectionId, registrationId] of [
+      ['provider-a', 'registration-a'],
+      ['provider-b', 'registration-b'],
+    ] as const) {
+      const replaced = await clientCapabilities.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'opaque',
+              version: '0',
+              affinity: 'session',
+              label: 'Opaque',
+              tools: [
+                {
+                  serverId: 'opaque',
+                  name: 'inspect',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+      );
+      assert.equal(replaced.ok, true);
+    }
+
+    const turnId = 'turn-client-capability-ambiguity';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'must not be admitted' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
+    );
+    assert.equal(started.ok, false);
+    if (!started.ok) assert.equal(started.error.code, 'operation_conflict');
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
+      undefined,
+    );
+  } finally {
+    first.close();
+    second.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('an exact active retry preserves the Client Capability admission binding', {
+  timeout: 20_000,
+}, async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const first = clientCapabilities.attachConnection('provider-a', {
+    send: async () => {},
+  });
+  const second = clientCapabilities.attachConnection('provider-b', {
+    send: async () => {},
+  });
+
+  try {
+    for (const [connectionId, registrationId] of [
+      ['provider-a', 'registration-a'],
+      ['provider-b', 'registration-b'],
+    ] as const) {
+      const replaced = await clientCapabilities.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'browser',
+              version: '0',
+              affinity: 'turn',
+              label: 'Browser',
+              tools: [
+                {
+                  serverId: 'browser',
+                  name: 'navigate',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+      );
+      assert.equal(replaced.ok, true);
+    }
+
+    const input = {
+      sessionId: fixture.sessionId,
+      turnId: 'turn-client-capability-exact-retry',
+      content: { text: HOLD_EXTERNAL_PROMPT },
+    } as const;
+    const started = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(started.ok, true);
+    const retried = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-b'),
+    );
+    assert.equal(retried.ok, true);
+
+    const snapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(snapshot?.registrationIds, ['registration-a']);
+    snapshot?.release();
+
+    if (started.ok) {
+      await fixture.coordinator.stopRoot({
+        sessionId: fixture.sessionId,
+        turnId: input.turnId,
+        runId: started.result.runId,
+      });
+    }
+  } finally {
+    backend?.release();
+    first.close();
+    second.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('mixed-Client queued follow-ups preserve each submitting connection through root handoff', {
+  timeout: 20_000,
+}, async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const first = clientCapabilities.attachConnection('provider-a', {
+    send: async () => {},
+  });
+  const second = clientCapabilities.attachConnection('provider-b', {
+    send: async () => {},
+  });
+
+  try {
+    for (const [connectionId, registrationId] of [
+      ['provider-a', 'registration-a'],
+      ['provider-b', 'registration-b'],
+    ] as const) {
+      const replaced = await clientCapabilities.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'browser',
+              version: '0',
+              affinity: 'turn',
+              label: 'Browser',
+              tools: [
+                {
+                  serverId: 'browser',
+                  name: 'navigate',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+      );
+      assert.equal(replaced.ok, true);
+    }
+
+    const firstTurnId = 'turn-client-a';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: firstTurnId,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(started.ok, true);
+    const firstSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(firstSnapshot?.registrationIds, ['registration-a']);
+    firstSnapshot?.release();
+
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'followup-from-provider-b',
+        content: { text: HOLD_EXTERNAL_PROMPT },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-b'),
+    );
+    assert.equal(queued.ok && queued.result.disposition, 'followup');
+    const queuedAfter = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'followup-from-provider-a',
+        content: { text: HOLD_EXTERNAL_PROMPT },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(queuedAfter.ok && queuedAfter.result.disposition, 'followup');
+
+    backend?.release();
+    await waitUntil(() => {
+      const state = fixture.coordinator.readRootState(fixture.sessionId);
+      return state.kind === 'active' && state.turnId !== firstTurnId;
+    });
+    const firstFollowup = fixture.coordinator.readRootState(fixture.sessionId);
+    assert.equal(firstFollowup.kind, 'active');
+    if (firstFollowup.kind !== 'active') return;
+    const firstFollowupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(firstFollowupSnapshot?.registrationIds, ['registration-b']);
+    firstFollowupSnapshot?.release();
+
+    await waitUntil(() => backend?.sendCount === 2);
+    backend?.release();
+    await waitUntil(() => {
+      const state = fixture.coordinator.readRootState(fixture.sessionId);
+      return state.kind === 'active' && state.turnId !== firstFollowup.turnId;
+    });
+    const secondFollowupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(secondFollowupSnapshot?.registrationIds, ['registration-a']);
+    secondFollowupSnapshot?.release();
+
+    await waitUntil(() => backend?.sendCount === 3);
+    backend?.release();
+    await waitUntil(
+      () => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle',
+      5_000,
+    );
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    assert.deepEqual(
+      admissions.map((admission) => admission.sourceMessages.map((source) => source.messageId)),
+      [[], ['followup-from-provider-b'], ['followup-from-provider-a']],
+    );
+  } finally {
+    first.close();
+    second.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('queued follow-up degrades lost Session tools and rebinds ephemeral tools to its Client', {
+  timeout: 20_000,
+}, async () => {
+  await assertFollowupCapabilityRebinding('call');
+  await assertFollowupCapabilityRebinding('turn');
+});
+
+async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Promise<void> {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const sessionProvider = clientCapabilities.attachConnection('provider-session', {
+    send: async () => {},
+  });
+  const calls: string[] = [];
+  let previousProvider!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
+  previousProvider = clientCapabilities.attachConnection('provider-previous', {
+    send: async (frame) => {
+      if (frame.kind !== 'client.capability.call') return;
+      calls.push('provider-previous');
+      previousProvider.accept({
+        kind: 'client.capability.accepted',
+        invocationId: frame.invocationId,
+      });
+      previousProvider.accept({
+        kind: 'client.capability.result',
+        invocationId: frame.invocationId,
+        result: { content: [{ type: 'text', text: 'previous' }] },
+      });
+    },
+  });
+  let followupProvider!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
+  followupProvider = clientCapabilities.attachConnection('provider-followup', {
+    send: async (frame) => {
+      if (frame.kind !== 'client.capability.call') return;
+      calls.push('provider-followup');
+      followupProvider.accept({
+        kind: 'client.capability.accepted',
+        invocationId: frame.invocationId,
+      });
+      followupProvider.accept({
+        kind: 'client.capability.result',
+        invocationId: frame.invocationId,
+        result: { content: [{ type: 'text', text: 'followup' }] },
+      });
+    },
+  });
+
+  try {
+    const sessionReplaced = await clientCapabilities.handlers['client.capability.replace'](
+      {
+        registrationId: 'registration-session',
+        offers: [
+          {
+            offerId: 'session-browser',
+            version: '0',
+            affinity: 'session',
+            label: 'Session browser',
+            tools: [
+              {
+                serverId: 'session_browser',
+                name: 'navigate_session',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-session'),
+    );
+    assert.equal(sessionReplaced.ok, true);
+    for (const [connectionId, registrationId] of [
+      ['provider-previous', 'registration-previous'],
+      ['provider-followup', 'registration-followup'],
+    ] as const) {
+      const replaced = await clientCapabilities.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'ephemeral-browser',
+              version: '0',
+              affinity,
+              label: 'Ephemeral browser',
+              tools: [
+                {
+                  serverId: 'ephemeral_browser',
+                  name: 'navigate_ephemeral',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+      );
+      assert.equal(replaced.ok, true);
+    }
+
+    const firstTurnId = `turn-client-capability-loss-${affinity}`;
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: firstTurnId,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-previous'),
+    );
+    assert.equal(started.ok, true);
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: `followup-after-provider-loss-${affinity}`,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-followup'),
+    );
+    assert.equal(queued.ok && queued.result.disposition, 'followup');
+
+    sessionProvider.close();
+    backend?.release();
+    await waitUntil(() => {
+      const state = fixture.coordinator.readRootState(fixture.sessionId);
+      return state.kind === 'active' && state.turnId !== firstTurnId;
+    });
+    const snapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.ok(snapshot);
+    assert.equal(
+      snapshot.tools.some((tool) => tool.name.endsWith('navigate_session')),
+      false,
+    );
+    const ephemeral = snapshot.tools.find((tool) => tool.name.endsWith('navigate_ephemeral'));
+    assert.ok(ephemeral);
+    await ephemeral.impl(
+      {},
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'followup-turn',
+        cwd: '/tmp',
+        toolCallId: `followup-${affinity}`,
+        abortSignal: new AbortController().signal,
+        emitOutput: () => undefined,
+      },
+    );
+    assert.deepEqual(calls, ['provider-followup']);
+    snapshot.release();
+
+    await waitUntil(() => backend?.sendCount === 2);
+    backend?.release();
+    await waitUntil(
+      () => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle',
+      5_000,
+    );
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    assert.equal(admissions.length, 2);
+    const followup = admissions[1];
+    assert.ok(followup);
+    assert.equal(
+      (await fixture.stores.agentRunStore.readRun(fixture.sessionId, followup.runId)).status,
+      'completed',
+    );
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    sessionProvider.close();
+    previousProvider.close();
+    followupProvider.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+}
+
+test('an exact terminal retry does not require a live Client Capability binding', {
+  timeout: 20_000,
+}, async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => new FakeBackend(context));
+    },
+  });
+  const provider = clientCapabilities.attachConnection('provider-a', {
+    send: async () => {},
+  });
+
+  try {
+    const replaced = await clientCapabilities.handlers['client.capability.replace'](
+      {
+        registrationId: 'registration-a',
+        offers: [
+          {
+            offerId: 'opaque',
+            version: '0',
+            affinity: 'session',
+            label: 'Opaque',
+            tools: [
+              {
+                serverId: 'opaque',
+                name: 'inspect',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(replaced.ok, true);
+    const input = {
+      sessionId: fixture.sessionId,
+      turnId: 'turn-client-capability-terminal-retry',
+      content: { text: 'complete before the provider disconnects' },
+    } as const;
+    const started = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    let terminal = started.result;
+    for (
+      let attempt = 0;
+      attempt < 200 &&
+      terminal.status !== 'completed' &&
+      terminal.status !== 'failed' &&
+      terminal.status !== 'cancelled';
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const queried = await fixture.coordinator.handlers['turn.query'](
+        { sessionId: input.sessionId, turnId: input.turnId },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
+      );
+      assert.equal(queried.ok, true);
+      if (!queried.ok) return;
+      terminal = queried.result;
+    }
+    assert.equal(terminal.status, 'completed');
+
+    provider.close();
+    const retried = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
+    );
+    assert.deepEqual(retried, { ok: true, result: terminal });
+  } finally {
+    provider.close();
+    clientCapabilities.close();
+    await fixture.dispose();
   }
 });
 
@@ -1142,7 +2432,10 @@ test('public turn.interrupt releases the Session lane while a queried Run is sti
             reject(context.abortSignal?.reason ?? new Error('backend factory aborted'));
           };
           if (context.abortSignal?.aborted) abort();
-          else context.abortSignal?.addEventListener('abort', abort, { once: true });
+          else
+            context.abortSignal?.addEventListener('abort', abort, {
+              once: true,
+            });
         });
       });
     },
@@ -1242,7 +2535,7 @@ test('Runtime stop lets a running admission publish before its exact-Run closure
     const stopping = fixture.manager.stopSession(fixture.sessionId, {
       source: 'stop_button',
     });
-    assert.equal(await settlesWithin(stopping, 25), false);
+    await completesWithin(backend.stopRequested.promise, 2_000, 'Runtime stop request');
     releasePreflight.resolve();
 
     await completesWithin(backend.admitted.promise, 2_000, 'running admission completion');
@@ -1645,6 +2938,7 @@ test('public turn.stop wins the Session lane before a wire answer for the same R
     await stopQueued;
     const answered = fixture.interactions.handlers['interaction.answer'](
       {
+        sessionId: fixture.sessionId,
         interactionId: requestId,
         answer: { kind: 'question', answers: ['Yes'] },
       },
@@ -1807,10 +3101,12 @@ function executeClaimedGraphRoot(
 
 async function createFailureFixture(options: {
   registerBackend(backends: BackendRegistry): void;
+  childTools?: MakaTool[];
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
   wrapMessageAuthority?(authority: RuntimeMessageAuthority): RuntimeMessageAuthority;
   withInteractions?: boolean;
   beforeInteractionPreflight?(): Promise<void>;
+  clientCapabilities?: HostClientCapabilityCoordinator;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -1901,7 +3197,9 @@ async function createFailureFixture(options: {
   interactions = options.withInteractions
     ? new HostInteractionCoordinator({
         store: stores.interactionStore,
+        sandboxBoundaries: stores.sessionStore,
         sessionAdmission,
+        sessions: stores.sessionStore,
         preflightSessionSnapshot: async (sessionId, interactionProjection) => {
           await options.beforeInteractionPreflight?.();
           return canonicalProjectionReader.fitsCandidate(sessionId, {
@@ -1911,6 +3209,7 @@ async function createFailureFixture(options: {
         refreshCanonicalContinuity: (sessionId, admission) =>
           requireContinuity(continuity).refreshCanonical(sessionId, admission),
         onPoison: requestDrain,
+        onSandboxBoundarySettled: async () => {},
       })
     : undefined;
   const backends = new BackendRegistry();
@@ -1920,6 +3219,7 @@ async function createFailureFixture(options: {
     runStore: stores.agentRunStore,
     runtimeEventStore: stores.runtimeEventStore,
     backends,
+    ...(options.childTools ? { childTools: options.childTools } : {}),
     newId: randomUUID,
     now: Date.now,
     messageAuthority: options.wrapMessageAuthority?.(messages) ?? messages,
@@ -1933,20 +3233,28 @@ async function createFailureFixture(options: {
         }),
       })
     : new SessionManager(managerDeps);
-  coordinator = new RootTurnCoordinator(
-    manager,
-    stores,
-    sessionAdmission,
-    rootAdmissionOwner,
-    interactions ?? {
-      assertTerminalFence: async () => undefined,
-      claimRunClosure: async () => undefined,
-    },
-    messages,
-    continuity,
-    acquireResidency,
-    requestDrain,
-  );
+  const createCoordinator = (
+    admissionOwner: RootAdmissionOwner,
+    assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+  ) =>
+    new RootTurnCoordinator(
+      manager,
+      stores,
+      sessionAdmission,
+      admissionOwner,
+      interactions ?? {
+        assertTerminalFence: async () => undefined,
+        claimRunClosure: async () => undefined,
+      },
+      messages,
+      continuity,
+      acquireResidency,
+      requestDrain,
+      options.clientCapabilities,
+      () => NO_GOAL_ROOT_AUTHORITY,
+      assertAutomationRecoveryAdmission,
+    );
+  coordinator = createCoordinator(rootAdmissionOwner);
 
   return {
     stores,
@@ -1959,6 +3267,15 @@ async function createFailureFixture(options: {
     interactions,
     sessionAdmission,
     acquireResidency,
+    createRecoveryCoordinator: (
+      assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+    ) => {
+      coordinator = createCoordinator(
+        new RootAdmissionOwner(stores.agentRunStore),
+        assertAutomationRecoveryAdmission,
+      );
+      return coordinator;
+    },
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
     dispose: async () => {
@@ -2034,16 +3351,6 @@ class ObservableSessionAdmissionGate extends SessionAdmissionGate {
   }
 }
 
-async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  return Promise.race([
-    promise.then(
-      () => true,
-      () => true,
-    ),
-    new Promise<false>((resolve) => setTimeout(resolve, timeoutMs, false)),
-  ]);
-}
-
 async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -2054,6 +3361,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 
 class LinkedChildAuthorityBackend implements AgentBackend {
   readonly kind = 'fake' as const;
+  readonly externalHoldStarted = deferred<void>();
   sendCount = 0;
   stopCount = 0;
   private stopped = false;
@@ -2067,6 +3375,7 @@ class LinkedChildAuthorityBackend implements AgentBackend {
     if (input.text === HOLD_EXTERNAL_PROMPT) {
       await new Promise<void>((resolve) => {
         this.releaseWait = resolve;
+        this.externalHoldStarted.resolve();
       });
     }
     if (input.text === FAKE_ASK_USER_QUESTION_PROMPT) {
@@ -2140,6 +3449,164 @@ class LinkedChildAuthorityBackend implements AgentBackend {
 
   async dispose(): Promise<void> {
     this.releaseWait?.();
+  }
+}
+
+class ContextFailureBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (input.text === 'provider context overflow') {
+      yield {
+        type: 'error',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        recoverable: false,
+        reason: 'context_overflow',
+        message: 'Context window exceeded',
+      };
+      yield {
+        type: 'complete',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        stopReason: 'error',
+      };
+      return;
+    }
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'context_budget_exhausted',
+      contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
+    };
+  }
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+class BlockingContextRecoveryBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly compactStarted = deferred<void>();
+  readonly #compactReleased = deferred<void>();
+  compactInput: BackendCompactHistoryInput | undefined;
+  stopCount = 0;
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'end_turn',
+    };
+  }
+
+  async compactHistory(input: BackendCompactHistoryInput) {
+    this.compactInput = input;
+    this.compactStarted.resolve();
+    await this.#compactReleased.promise;
+    return {};
+  }
+
+  releaseCompact(): void {
+    this.#compactReleased.resolve();
+  }
+
+  async stop(): Promise<void> {
+    this.stopCount += 1;
+    this.releaseCompact();
+  }
+  async respondToSandboxBoundary(): Promise<void> {}
+  async dispose(): Promise<void> {
+    this.releaseCompact();
+  }
+}
+
+class GraphFollowupRecoveryBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly graphTurnStarted = deferred<void>();
+  readonly followupStarted = deferred<void>();
+  readonly compactStarted = deferred<void>();
+  readonly #graphTurnReleased = deferred<void>();
+  readonly #followupReleased = deferred<void>();
+  readonly #compactReleased = deferred<void>();
+  compactStartedCount = 0;
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (input.text === HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT) {
+      this.followupStarted.resolve();
+      await this.#followupReleased.promise;
+      yield {
+        type: 'complete',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        stopReason: 'end_turn',
+      };
+      return;
+    }
+
+    this.graphTurnStarted.resolve();
+    await this.#graphTurnReleased.promise;
+    yield {
+      type: 'error',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      recoverable: false,
+      reason: 'context_overflow',
+      message: 'Context window exceeded',
+    };
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'error',
+    };
+  }
+
+  async compactHistory(_input: BackendCompactHistoryInput) {
+    this.compactStartedCount += 1;
+    this.compactStarted.resolve();
+    await this.#compactReleased.promise;
+    return {};
+  }
+
+  releaseGraphTurn(): void {
+    this.#graphTurnReleased.resolve();
+  }
+
+  releaseFollowup(): void {
+    this.#followupReleased.resolve();
+  }
+
+  releaseCompact(): void {
+    this.#compactReleased.resolve();
+  }
+
+  async stop(): Promise<void> {
+    this.releaseGraphTurn();
+    this.releaseFollowup();
+  }
+
+  async respondToSandboxBoundary(): Promise<void> {}
+  async dispose(): Promise<void> {
+    this.releaseGraphTurn();
+    this.releaseFollowup();
+    this.releaseCompact();
   }
 }
 
@@ -2283,6 +3750,7 @@ class StopReleasedAdmissionBackend implements AgentBackend {
 class RunningAdmissionBackend implements AgentBackend {
   readonly kind = 'fake' as const;
   readonly admitted = deferred<void>();
+  readonly stopRequested = deferred<void>();
   readonly closureReasons: string[] = [];
   private readonly settled = deferred<void>();
 
@@ -2341,7 +3809,9 @@ class RunningAdmissionBackend implements AgentBackend {
     };
   }
 
-  async stop(): Promise<void> {}
+  async stop(): Promise<void> {
+    this.stopRequested.resolve();
+  }
 
   async respondToSandboxBoundary(): Promise<void> {}
 

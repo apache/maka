@@ -6,12 +6,13 @@
  * 8k-line `components.tsx`. They are consumed only by the Composer and share
  * the grouped model-choice helpers, so they form a clean seam. `index.ts` does
  * not re-export them (they are internal to the `@maka/ui` Composer surface).
+ *
+ * Thinking level is a separate Selector (not nested in the model menu). The
+ * Composer places it immediately after the model control in the left footer.
  */
 
-import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { useMountedRef } from './use-mounted-ref.js';
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from './primitives/menu.js';
-import { Button as UiButton } from './ui.js';
+import { type ReactNode, useMemo } from 'react';
+import { Button as UiButton, Selector } from '@astryxdesign/core';
 import { ModelPicker } from './model-picker.js';
 import { Settings } from './icons.js';
 import {
@@ -24,88 +25,51 @@ import { type ProviderType, type SessionSummary, type ThinkingLevel } from '@mak
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
+const DEFAULT_THINKING_LEVEL = '__default__';
+
 /**
- * Static footer row for per-model thinking levels. The flyout uses the shared
- * Base UI Menu primitive; ModelPicker keeps the host popup open while pointer
- * events land inside the portaled flyout via `data-model-picker-nested-popup`.
+ * Standalone thinking-level picker. Hidden when the active model has no
+ * variants — the control does not appear as a disabled husk or change the
+ * model menu's shape.
  */
-function ThinkingLevelSection(props: {
+export function ThinkingLevelSelector(props: {
   levels: readonly ThinkingLevel[];
   current?: ThinkingLevel;
-  parentOpen: boolean;
-  onCommit?(): void;
   onChange?(level: ThinkingLevel | undefined): void | Promise<void>;
+  disabled?: boolean;
+  loading?: boolean;
 }) {
   const copy = getConversationCopy(useUiLocale()).model;
-  const [open, setOpen] = useState(false);
   const hasVariants = props.levels.length > 0 && Boolean(props.onChange);
-  const currentLabel = props.current ? copy.level[props.current] : copy.defaultLevel;
+  const options = useMemo(
+    () => [
+      { value: DEFAULT_THINKING_LEVEL, label: copy.defaultLevel },
+      ...props.levels.map((level) => ({ value: level, label: copy.level[level] })),
+    ],
+    [copy.defaultLevel, copy.level, props.levels],
+  );
 
-  useEffect(() => {
-    if (!props.parentOpen) setOpen(false);
-  }, [props.parentOpen]);
-
-  const choose = (level: ThinkingLevel | undefined) => {
-    props.onCommit?.();
-    void props.onChange?.(level);
-  };
+  if (!hasVariants) return null;
 
   return (
-    <div className="maka-thinking-section">
-      <Menu open={open} onOpenChange={setOpen}>
-        <MenuTrigger
-          nativeButton={false}
-          disabled={!hasVariants}
-          render={(triggerProps) => (
-            <div
-              {...triggerProps}
-              role="button"
-              tabIndex={hasVariants ? 0 : -1}
-              aria-disabled={!hasVariants || undefined}
-              aria-haspopup={hasVariants ? 'menu' : undefined}
-              className="maka-thinking-section-row"
-              data-disabled={!hasVariants || undefined}
-              title={hasVariants ? copy.changeThinkingLevel : copy.thinkingUnsupported}
-            >
-              <span className="maka-thinking-section-label">{copy.thinkingLevel}</span>
-              <span className="maka-thinking-section-value">
-                {currentLabel}
-                {hasVariants && <span className="maka-thinking-section-chev" aria-hidden="true">▸</span>}
-              </span>
-            </div>
-          )}
-        />
-        {hasVariants && (
-          <MenuPopup
-            className="maka-thinking-flyout"
-            align="start"
-            side="inline-end"
-            sideOffset={8}
-            data-model-picker-nested-popup=""
-          >
-            <MenuItem
-              onClick={() => choose(undefined)}
-              className="maka-thinking-flyout-item"
-              data-selected={!props.current || undefined}
-            >
-              <span>{copy.defaultLevel}</span>
-              {!props.current && <span className="maka-thinking-flyout-check" aria-hidden="true">✓</span>}
-            </MenuItem>
-            {props.levels.map((level) => (
-              <MenuItem
-                key={level}
-                onClick={() => choose(level)}
-                className="maka-thinking-flyout-item"
-                data-selected={props.current === level || undefined}
-              >
-                <span>{copy.level[level]}</span>
-                {props.current === level && <span className="maka-thinking-flyout-check" aria-hidden="true">✓</span>}
-              </MenuItem>
-            ))}
-          </MenuPopup>
-        )}
-      </Menu>
-    </div>
+    <Selector
+      label={copy.thinkingLevel}
+      isLabelHidden
+      options={options}
+      value={props.current ?? DEFAULT_THINKING_LEVEL}
+      size="sm"
+      placement="above"
+      // Content-sized: short zh labels (关/中/高) must not sit in a fixed field.
+      width="max-content"
+      className="maka-thinking-level-selector"
+      isDisabled={props.disabled}
+      isLoading={props.loading}
+      changeAction={(value) =>
+        props.onChange?.(
+          value === DEFAULT_THINKING_LEVEL ? undefined : value as ThinkingLevel,
+        )
+      }
+    />
   );
 }
 
@@ -120,20 +84,12 @@ export function ChatModelSwitcher(props: {
   disabledReason?: string;
   renderProviderMark?(type: ProviderType): ReactNode;
   onChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
-  thinkingLevels?: readonly ThinkingLevel[];
-  thinkingLevel?: ThinkingLevel;
-  onThinkingLevelChange?(level: ThinkingLevel | undefined): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
-  const [localPending, setLocalPending] = useState(false);
-  const pendingRef = useRef(false);
-  const modelSwitcherMountedRef = useMountedRef();
-  const pendingModelChangeRef = useRef<{ sessionId: string; token: number } | null>(null);
-  const pendingModelChangeTokenRef = useRef(0);
   const currentModel = props.activeModel ?? props.activeSession.model;
   const currentValue = modelChoiceValue(props.activeSession.llmConnectionSlug, currentModel);
-  const pending = props.pending || localPending;
+  const pending = Boolean(props.pending);
   const disabled = pending || Boolean(props.disabledReason) || !props.onChange || props.choices.length === 0;
   const grouped = modelMenuGroups(props.choices, locale);
   const currentKnownChoice = props.choices.some((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue);
@@ -145,22 +101,6 @@ export function ChatModelSwitcher(props: {
     ? `${copy.switching}…`
     : props.disabledReason ?? copy.switchTitle(currentSessionModelTitle);
 
-  useEffect(() => {
-    return () => {
-      pendingModelChangeRef.current = null;
-      pendingModelChangeTokenRef.current += 1;
-      pendingRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (pendingModelChangeRef.current?.sessionId === props.activeSession.id) return;
-    pendingModelChangeRef.current = null;
-    pendingModelChangeTokenRef.current += 1;
-    pendingRef.current = false;
-    setLocalPending(false);
-  }, [props.activeSession.id]);
-
   return (
     <div
       className="maka-model-switcher"
@@ -170,67 +110,32 @@ export function ChatModelSwitcher(props: {
       aria-busy={pending ? 'true' : undefined}
     >
       <ModelPicker
-        triggerAppearance="quiet"
         groups={grouped}
         value={currentValue}
         disabled={disabled}
+        loading={pending}
         renderProviderMark={props.renderProviderMark}
         ariaLabel={copy.switchAriaLabel}
-        title={title}
         triggerClassName="maka-model-switcher-trigger"
-        pinnedItem={!currentKnownChoice ? { value: currentValue, label: currentModel } : undefined}
-        onValueChange={(value) => {
-          if (pendingRef.current || props.pending) return;
+        leadingOption={!currentKnownChoice ? {
+          value: currentValue,
+          label: displayLabel,
+          providerType: props.currentProviderType,
+        } : undefined}
+        onValueChange={async (value) => {
           const next = parseModelChoiceValue(value);
           if (!next) return;
           if (
             next.llmConnectionSlug === props.activeSession.llmConnectionSlug &&
             next.model === currentModel
-          ) {
-            return;
+          ) return;
+          try {
+            await props.onChange?.(next);
+          } catch {
+            // The AppShell action owner reports the visible model-switch failure.
           }
-          const sessionId = props.activeSession.id;
-          const token = pendingModelChangeTokenRef.current + 1;
-          pendingModelChangeTokenRef.current = token;
-          pendingModelChangeRef.current = { sessionId, token };
-          pendingRef.current = true;
-          setLocalPending(true);
-          void (async () => {
-            try {
-              await props.onChange?.(next);
-            } catch {
-              // The AppShell action owner reports the visible model-switch failure.
-            } finally {
-              const owner = pendingModelChangeRef.current;
-              if (modelSwitcherMountedRef.current && owner?.sessionId === sessionId && owner.token === token) {
-                pendingModelChangeRef.current = null;
-                pendingRef.current = false;
-                setLocalPending(false);
-              }
-            }
-          })();
         }}
-        footer={({ open, close }) => (
-          <ThinkingLevelSection
-            levels={props.thinkingLevels ?? []}
-            current={props.thinkingLevel}
-            parentOpen={open}
-            onCommit={close}
-            onChange={props.onThinkingLevelChange}
-          />
-        )}
-      >
-        {props.currentProviderType && props.renderProviderMark && (
-          <span className="maka-composer-provider-mark" data-provider={props.currentProviderType} aria-hidden="true">
-            {props.renderProviderMark(props.currentProviderType)}
-          </span>
-        )}
-        <span className="maka-model-switcher-label">{pending ? copy.switching : copy.model}</span>
-        <span className="maka-model-switcher-value">
-          {displayLabel}
-          {props.thinkingLevel && <span className="maka-thinking-level-tag">{copy.level[props.thinkingLevel]}</span>}
-        </span>
-      </ModelPicker>
+      />
     </div>
   );
 }
@@ -240,10 +145,8 @@ export function ChatModelSwitcher(props: {
  * `ChatModelSwitcher` — which is bound to a live session and switches THAT
  * session's model — this one just records which model the next new chat should
  * start with. Reuses the model chip's look so the only visible change is that
- * the chevron now actually opens a menu. The thinking level chosen here is
- * passed to `createSession` on the first message (so reasoning models start at
- * the right depth without a mid-session change that would invalidate the
- * provider prompt cache).
+ * the chevron now actually opens a menu. The thinking level for new chats is a
+ * separate right-footer control owned by the Composer.
  */
 export function NewChatModelPicker(props: {
   label: string;
@@ -252,45 +155,31 @@ export function NewChatModelPicker(props: {
   currentProviderType?: ProviderType;
   renderProviderMark?(type: ProviderType): ReactNode;
   onPick(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
-  thinkingLevels?: readonly ThinkingLevel[];
-  thinkingLevel?: ThinkingLevel;
-  onThinkingLevelChange?(level: ThinkingLevel | undefined): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
   const grouped = modelMenuGroups(props.choices, locale);
+  const currentValue = props.currentValue ?? '';
+  const currentKnownChoice = props.choices.some(
+    (choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue,
+  );
   return (
     <ModelPicker
-      triggerAppearance="quiet"
       groups={grouped}
-      value={props.currentValue ?? ''}
+      value={currentValue}
       renderProviderMark={props.renderProviderMark}
       ariaLabel={copy.newChatAriaLabel(props.label)}
-      title={copy.newChatTitle(props.label)}
-      triggerClassName="maka-composer-model-chip"
-      onValueChange={(value) => {
+      triggerClassName="maka-new-chat-model-selector"
+      leadingOption={!currentKnownChoice ? {
+        value: currentValue,
+        label: props.label,
+        providerType: props.currentProviderType,
+      } : undefined}
+      onValueChange={async (value) => {
         const next = parseModelChoiceValue(value);
-        if (next) void props.onPick(next);
+        if (next) await props.onPick(next);
       }}
-      footer={({ open, close }) => (
-        <ThinkingLevelSection
-          levels={props.thinkingLevels ?? []}
-          current={props.thinkingLevel}
-          parentOpen={open}
-          onCommit={close}
-          onChange={props.onThinkingLevelChange}
-        />
-      )}
-    >
-      {props.currentProviderType && props.renderProviderMark && (
-        <span className="maka-composer-provider-mark" data-provider={props.currentProviderType} aria-hidden="true">
-          {props.renderProviderMark(props.currentProviderType)}
-        </span>
-      )}
-      <span className="maka-composer-model-chip-text">{props.label}</span>
-      {props.thinkingLevel && <span className="maka-thinking-level-tag">{copy.level[props.thinkingLevel]}</span>}
-      {/* ModelPicker's trigger already renders a chevron — no manual one. */}
-    </ModelPicker>
+    />
   );
 }
 
@@ -307,16 +196,14 @@ export function ModelChipStatic(props: { label: string; onOpenSettings?: () => v
   if (props.onOpenSettings) {
     return (
       <UiButton
-        type="button"
-        variant="quiet"
+        variant="ghost"
         size="sm"
         onClick={props.onOpenSettings}
         aria-label={copy.configureAriaLabel(props.label)}
-        title={copy.configureTitle}
-      >
-        <Settings size={12} aria-hidden="true" />
-        <span className="maka-composer-model-chip-text">{props.label}</span>
-      </UiButton>
+        tooltip={copy.configureTitle}
+        icon={<Settings size={12} aria-hidden="true" />}
+        label={props.label}
+      />
     );
   }
   return (

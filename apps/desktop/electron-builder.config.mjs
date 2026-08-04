@@ -93,7 +93,11 @@ export default {
     },
   },
   dmg: {
-    writeUpdateInfo: true,
+    sign: true,
+    // Stapling the notarization ticket after electron-builder exits changes the
+    // DMG bytes. macOS updates use the ZIP, so do not publish a stale DMG hash
+    // in latest-mac.yml.
+    writeUpdateInfo: false,
   },
   publish: [
     {

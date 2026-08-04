@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
+import { createSecureServer as http2CreateSecureServer } from 'node:http2';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  createProviderUpstreamDispatcher,
   listenProviderAuthProxyServer,
   startProviderAuthProxy,
   startProviderAuthProxyHub,
@@ -425,7 +427,8 @@ test('provider auth proxy supports Anthropic x-api-key without replacing the cli
     upstreamBaseUrl: `http://127.0.0.1:${address.port}/coding/v1`,
     apiKeyFile: keyFile,
     advertisedHost: '127.0.0.1',
-    authMode: 'x-api-key',
+    clientAuthMode: 'x-api-key',
+    upstreamAuthMode: 'x-api-key',
   });
 
   try {
@@ -443,6 +446,47 @@ test('provider auth proxy supports Anthropic x-api-key without replacing the cli
     assert.equal(upstreamUserAgent, 'opencode/1.17.18 ai-sdk/6');
     assert.equal(upstreamPath, '/coding/v1/messages');
     assert.equal(proxy.telemetry()[0]?.path, '/coding/v1/messages');
+  } finally {
+    await proxy.close();
+    await new Promise<void>((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('provider auth proxy accepts a client x-api-key while authenticating upstream with bearer', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-split-auth-'));
+  const providerKey = 'provider-secret-key';
+  let upstreamApiKey = '';
+  let upstreamAuthorization = '';
+  const upstream = createServer((request, response) => {
+    upstreamApiKey = String(request.headers['x-api-key'] ?? '');
+    upstreamAuthorization = request.headers.authorization ?? '';
+    response.writeHead(200).end('ok');
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address !== 'string');
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, `${providerKey}\n`, 'utf8');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `http://127.0.0.1:${address.port}`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    clientAuthMode: 'x-api-key',
+    upstreamAuthMode: 'bearer',
+  });
+
+  try {
+    const response = await fetch(`${proxy.baseUrl}/anthropic/v1/messages`, {
+      method: 'POST',
+      headers: { 'x-api-key': proxy.token },
+      body: '{}',
+    });
+    assert.equal(response.status, 200);
+    assert.equal(upstreamApiKey, '');
+    assert.equal(upstreamAuthorization, `Bearer ${providerKey}`);
   } finally {
     await proxy.close();
     await new Promise<void>((resolve, reject) =>
@@ -540,6 +584,60 @@ test('provider auth proxy totals OpenAI chat streaming usage without changing th
       output: 25,
       reasoning: 15,
     });
+  } finally {
+    await proxy.close();
+    await new Promise<void>((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('provider auth proxy totals Responses streaming usage at response.completed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-responses-usage-'));
+  const stream = [
+    'event: response.reasoning_summary_text.delta',
+    'data: {"type":"response.reasoning_summary_text.delta","delta":"think"}',
+    '',
+    'event: response.output_text.delta',
+    'data: {"type":"response.output_text.delta","delta":"answer"}',
+    '',
+    'event: response.completed',
+    'data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":25,"input_tokens_details":{"cached_tokens":20},"output_tokens_details":{"reasoning_tokens":15}}}}',
+    '',
+  ].join('\n');
+  const upstream = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write(stream.slice(0, 117));
+    response.end(stream.slice(117));
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address !== 'string');
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `http://127.0.0.1:${address.port}`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    usageProtocol: 'openai-responses-sse',
+  });
+
+  try {
+    const response = await fetch(`${proxy.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${proxy.token}` },
+      body: '{}',
+    });
+    assert.equal(await response.text(), stream);
+    assert.deepEqual(proxy.usage(), {
+      input: 100,
+      cacheRead: 20,
+      cacheWrite: 0,
+      output: 25,
+      reasoning: 15,
+    });
+    assert.equal(proxy.telemetry()[0]?.outcome, 'completed');
   } finally {
     await proxy.close();
     await new Promise<void>((resolve, reject) =>
@@ -1068,5 +1166,183 @@ test('proxy listen removes its bind-error listener so later socket errors stay l
     assert.equal(server.listenerCount('error'), 0);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+// Throwaway self-signed localhost keypair for the ALPN test upstream below.
+// Generated for this test only; it protects nothing and is not a secret.
+const TEST_TLS_KEY = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgY/Gn4UXA4CkakyTU
+KH7HnQuoCm+oijhMxnJbUn3HfPOhRANCAARcPHil4Wicklox28LLlCyOwgbCnPMT
+0MCUE+IIO1FQ0R2Kf9jNkrLDap94ZVfX+rqL/IS9YwlK3D71yoRuc5Dt
+-----END PRIVATE KEY-----
+`;
+const TEST_TLS_CERT = `-----BEGIN CERTIFICATE-----
+MIIBmzCCAUGgAwIBAgIURwBeV0GMeaqMHreWbCO4eKNJyHkwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MDczMDExNDAwNFoYDzIxMjYwNzA2
+MTE0MDA0WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAARcPHil4Wicklox28LLlCyOwgbCnPMT0MCUE+IIO1FQ0R2Kf9jNkrLD
+ap94ZVfX+rqL/IS9YwlK3D71yoRuc5Dto28wbTAdBgNVHQ4EFgQUtk79/6lCuMrN
+XPtVzMqcpPRz34QwHwYDVR0jBBgwFoAUtk79/6lCuMrNXPtVzMqcpPRz34QwDwYD
+VR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZI
+zj0EAwIDSAAwRQIhALT3Bbd5MAAF9FiqGe01guMcQeYKTnTuT3PSGxHUyoz8AiBp
+5VIucZiXGvcT4yv/bEddde8Ql2N7bI+YerEXJR3dsg==
+-----END CERTIFICATE-----
+`;
+
+test('proxy keeps upstream on HTTP/1.1 and forwards concurrent streams in parallel', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-'));
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
+  // An upstream that offers h2 via ALPN, like real provider gateways. The
+  // httpVersion assertion is the regression lock: an h2-negotiating
+  // dispatcher reports 2.0 regardless of timing. The held-open streams
+  // additionally deadlock the staggered-dispatch path of undici <= 8.7,
+  // which refuses to multiplex non-empty fetch bodies on a busy h2 session.
+  const seenHttpVersions: string[] = [];
+  let releaseBoth: () => void = () => {};
+  const bothArrived = new Promise<void>((resolve) => {
+    releaseBoth = resolve;
+  });
+  const upstream = http2CreateSecureServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT, allowHTTP1: true },
+    (request, response) => {
+      seenHttpVersions.push(request.httpVersion);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"choices":[{"delta":{"content":"x"}}]}\n\n');
+      if (seenHttpVersions.length >= 2) releaseBoth();
+      // Hold every stream open until both requests have arrived, so a
+      // serialized upstream path deadlocks instead of passing by luck.
+      void bothArrived.then(() => response.end('data: [DONE]\n\n'));
+    },
+  );
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress !== 'string');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `https://127.0.0.1:${upstreamAddress.port}/api/v4/`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    upstreamDispatcher: createProviderUpstreamDispatcher({
+      connect: { ca: TEST_TLS_CERT },
+    }),
+  });
+  try {
+    const one = async () => {
+      const response = await fetch(`${proxy.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(10_000),
+      });
+      assert.equal(response.status, 200);
+      return response.text();
+    };
+    const [first, second] = await Promise.all([one(), one()]);
+    assert.match(first, /\[DONE\]/);
+    assert.match(second, /\[DONE\]/);
+    assert.deepEqual(seenHttpVersions, ['1.1', '1.1']);
+    const telemetry = proxy.telemetry();
+    assert.equal(telemetry.length, 2);
+    for (const request of telemetry) {
+      assert.ok(request.upstreamStartMs !== undefined);
+      assert.ok(request.responseHeadersMs !== undefined);
+      assert.ok(request.upstreamStartMs <= request.responseHeadersMs);
+    }
+  } finally {
+    await proxy.close();
+    upstream.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('proxy telemetry separates dispatcher queue time from upstream wait', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-'));
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
+  // The injected clock makes every recorded timestamp exact, so the
+  // assertions below are equalities, not wall-clock thresholds.
+  let clock = 0;
+  let releaseFirst: () => void = () => {};
+  let firstArrived: () => void = () => {};
+  const firstUpstream = new Promise<void>((resolve) => {
+    firstArrived = resolve;
+  });
+  const upstream = http2CreateSecureServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT, allowHTTP1: true },
+    (request, response) => {
+      if (request.url === '/api/v4/first') {
+        response.writeHead(200, { 'content-type': 'text/plain' });
+        response.write('held');
+        releaseFirst = () => response.end('done');
+        firstArrived();
+        return;
+      }
+      // The queued request reaches the wire only after the held one ends;
+      // advance the clock before answering so pure upstream wait shows up as
+      // responseHeadersMs minus upstreamStartMs.
+      clock = 7000;
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.end('ok');
+    },
+  );
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress !== 'string');
+  // A single upstream connection forces the second request to sit in the
+  // dispatcher queue until the first stream ends. The compose counter is the
+  // deterministic gate that it entered the pool before the clock advances.
+  let dispatches = 0;
+  let secondQueued: () => void = () => {};
+  const secondInPool = new Promise<void>((resolve) => {
+    secondQueued = resolve;
+  });
+  const upstreamDispatcher = createProviderUpstreamDispatcher({
+    connections: 1,
+    connect: { ca: TEST_TLS_CERT },
+  }).compose((dispatch) => (options, handler) => {
+    const dispatched = dispatch(options, handler);
+    dispatches += 1;
+    if (dispatches === 2) secondQueued();
+    return dispatched;
+  });
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `https://127.0.0.1:${upstreamAddress.port}/api/v4/`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    now: () => clock,
+    upstreamDispatcher,
+  });
+  try {
+    const request = (path: string) =>
+      fetch(`${proxy.baseUrl}/${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(10_000),
+      });
+    const first = request('first');
+    await firstUpstream;
+    clock = 1000;
+    const second = request('second');
+    await secondInPool;
+    clock = 6000;
+    releaseFirst();
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    assert.equal(firstResponse.status, 200);
+    assert.equal(secondResponse.status, 200);
+    await Promise.all([firstResponse.text(), secondResponse.text()]);
+    const byPath = new Map(proxy.telemetry().map((entry) => [entry.path, entry]));
+    assert.equal(byPath.get('/api/v4/first')?.upstreamStartMs, 0);
+    // Started at 1000, left the dispatcher queue at 6000 when the held
+    // connection freed, got upstream headers at 7000. A stamp taken before
+    // dispatch reads 0; one taken at response headers reads 6000; a dropped
+    // stamp reads undefined. Only queue-exit semantics yield 5000.
+    assert.equal(byPath.get('/api/v4/second')?.upstreamStartMs, 5000);
+    assert.equal(byPath.get('/api/v4/second')?.responseHeadersMs, 6000);
+  } finally {
+    await proxy.close();
+    upstream.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });

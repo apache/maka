@@ -21,6 +21,8 @@ export * from './agent-graph-client-projection.js';
 export * from './agent-graph-supervisor-wake.js';
 export * from './agent-graph-timeline.js';
 export * from './runtime-policy.js';
+export * from './goal.js';
+export * from './execution-inspect.js';
 export * from './interaction.js';
 export * from './project.js';
 export * from './subagent-workspace.js';
@@ -74,6 +76,7 @@ export type {
   StorageRef,
   AttachmentRef,
   QuoteRef,
+  InlineReference,
   MessageContent,
   AttachmentIngestItem,
   CompleteStopReason,
@@ -92,20 +95,30 @@ export {
   isAttachmentRef,
   isCanonicalAttachmentRef,
   isCanonicalStorageRef,
+  isInlineReference,
   isMessageContent,
   isStorageRef,
+  INLINE_REFERENCE_LABEL_MAX_LENGTH,
+  INLINE_REFERENCE_MAX_COUNT,
   messageContentsEqual,
   normalizeMessageContent,
+  ToolOutcomeUnknownError,
   TOOL_ACTIVITY_KINDS,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
   TOOL_OUTPUT_STREAMS,
 } from './events.js';
 
-// tool-result-status.ts — settled tool activity status from tool_result
-export type { SettledToolActivityStatus } from './tool-result-status.js';
+// tool-result-status.ts — tool activity status from a result, or from its absence
+export type {
+  InFlightToolActivityStatus,
+  SettledToolActivityStatus,
+  ToolActivityStatus,
+} from './tool-result-status.js';
 export {
   isCancelledToolResultContent,
+  isInFlightToolStatus,
   toolResultActivityStatus,
+  unfinishedToolActivityStatus,
 } from './tool-result-status.js';
 
 // agent-swarm.ts — bounded projection over the canonical settled tool result.
@@ -136,6 +149,7 @@ export type {
   RuntimeEventPermissionClosureAccepted,
   RuntimeEventUserQuestionAnswerAccepted,
   RuntimeEventProtocolMarker,
+  RuntimeEventContinuationStartV2,
   RuntimeEventToolDispatch,
   RuntimeEventActions,
   RuntimeEventRefs,
@@ -160,6 +174,42 @@ export {
   runtimeEventHasModelVisibleContent,
   createRuntimeEventId,
 } from './runtime-event.js';
+
+export type {
+  RuntimeEventWorkspaceFactEnvelope,
+  ScannedWorkspaceBaselineAuthority,
+  WorkspaceAuthorityIdentity,
+  WorkspaceAuthorityIssue,
+  WorkspaceAuthorityIssueCode,
+  WorkspaceAuthorityLedgerRow,
+  WorkspaceBaselineAuthorityEvents,
+  WorkspaceBaselineAuthorityInput,
+  WorkspaceBaselineAuthorityScanResult,
+  WorkspaceBaselineDescriptorV1,
+  WorkspaceBaselineAcceptedV1,
+  WorkspaceEpochDescriptorV1,
+  WorkspaceEpochOpenedV1,
+  WorkspaceEpochRecordV1,
+  WorkspaceFactEventLaneValidation,
+  WorkspaceGitObjectFormat,
+  WorkspaceHeadRecordV1,
+  WorkspaceBaselineCommitResult,
+  WorkspaceProjectionRebuildResult,
+  WorkspaceVersionRecordV1,
+} from './workspace-version-authority.js';
+export {
+  WORKSPACE_AUTHORITY_SESSION_ID,
+  WORKSPACE_EPOCH_OPENED_FACT_KIND,
+  WORKSPACE_FACT_VERSION,
+  WORKSPACE_MATERIALIZATION_SEMANTICS_V1,
+  WORKSPACE_BASELINE_ACCEPTED_FACT_KIND,
+  WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
+  buildWorkspaceBaselineAuthorityEvents,
+  isRuntimeEventWorkspaceFactEnvelope,
+  scanWorkspaceBaselineAuthority,
+  validateWorkspaceFactEventLane,
+  workspaceAuthorityIdentity,
+} from './workspace-version-authority.js';
 
 // execution-evidence.ts — shared cross-ledger identity and source coverage.
 // This contract references canonical facts; it does not create another fact
@@ -192,10 +242,17 @@ export {
 export type { RuntimeEventStore } from './runtime-event-store.js';
 export { DurableStoreWriteError } from './runtime-event-store.js';
 export type {
+  ContinuationClaimResult,
+  ContinuationClaimStateV1,
+  RuntimeContinuationAuthorityStore,
   RuntimeRecoveryBundleCommit,
   RuntimeRecoveryBundleStore,
+  RuntimeWorkspaceVersionAuthorityStore,
 } from './runtime-event-store.js';
-export { TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 } from './runtime-event-store.js';
+export {
+  RUNTIME_CONTINUATION_AUTHORITY_V1,
+  TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
+} from './runtime-event-store.js';
 export type {
   ToolLedgerIssue,
   ToolLedgerIssueCode,
@@ -243,11 +300,35 @@ export {
   interpretScannedToolRecovery,
   validateToolRecoveryEventBundle,
 } from './tool-recovery-bundle.js';
-export { canonicalToolArgsHash, stableJsonStringify } from './tool-args-identity.js';
+export {
+  canonicalToolArgsHash,
+  stableJsonStringify,
+  stripUndefinedDeep,
+} from './tool-args-identity.js';
 export {
   encodeCanonicalRuntimeEvent,
   type CanonicalRuntimeEventEncoding,
 } from './canonical-runtime-event.js';
+export type {
+  ContinuationClaimV1,
+  ImmutableRuntimePrefixV1,
+  RuntimeBoundaryCursorV1,
+  RuntimePrefixIdentityV1,
+  RuntimePrefixPositionV1,
+  RuntimePrefixRowV1,
+  RuntimePrefixSegmentV1,
+  RuntimeBoundaryDigest,
+} from './runtime-boundary.js';
+export {
+  buildImmutableRuntimePrefix,
+  createRuntimeBoundaryCursor,
+  decodeContinuationClaim,
+  decodeRuntimeBoundaryCursor,
+  decodeRuntimePrefixSegment,
+  digestRuntimeBoundaryManifest,
+  digestRuntimePrefix,
+  runtimePrefixSegment,
+} from './runtime-boundary.js';
 
 // session.ts
 export type {
@@ -264,6 +345,7 @@ export type {
   SubagentSessionRuntime,
   SubagentSessionRuntimeSummary,
   SubagentSessionSpawn,
+  SessionConversationCopy,
   TurnRecord,
   TurnStateMessage,
   TurnStatus,
@@ -295,6 +377,7 @@ export {
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
+  isSessionConversationCopy,
   subagentSessionRuntimeSummary,
   isTurnStatus,
   decodeStoredMessageForRead,
@@ -330,6 +413,33 @@ export {
   decodeAgentRunHeader,
   isSessionInlineRun,
 } from './agent-run.js';
+
+// model-call-attempt.ts
+export type {
+  ModelCallAttempt,
+  ModelCallAttemptStatus,
+  ModelCallCostBasis,
+  ModelCallCoverage,
+  ModelCallGroup,
+  ModelCallKind,
+  ModelCallUsageBasis,
+} from './model-call-attempt.js';
+export {
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  MODEL_CALL_ATTEMPT_STATUSES,
+  MODEL_CALL_COST_BASES,
+  MODEL_CALL_KINDS,
+  MODEL_CALL_USAGE_BASES,
+  decodeModelCallAttempt,
+  dedupeModelCallAttempts,
+  modelCallAttemptsFromRunEvents,
+  groupModelCallAttempts,
+  isModelCallAttempt,
+  settledAttempt,
+  sumModelCallCostUsd,
+  summarizeModelCallCoverage,
+} from './model-call-attempt.js';
 
 // shell-run.ts
 export type {
@@ -394,12 +504,14 @@ export {
 export { redactSecrets as displayRedactSecrets } from './display-redaction.js';
 export {
   SHELL_RUN_ID_MAX_CHARS,
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
   SHELL_RUN_ACTIVE_STATUSES,
   SHELL_RUN_STATUSES,
   SHELL_RUN_TERMINAL_STATUSES,
   isShellOutput,
   isActiveShellRunStatus,
   isShellRunId,
+  isShellRunSourceToolCallId,
   isShellRunStatus,
   isValidShellRunState,
   isValidShellRunStatusTransition,
@@ -554,6 +666,7 @@ export type {
   SandboxBoundaryExpansionValidationResult,
   SandboxBoundaryFilesystemEntry,
   SandboxBoundaryDecision,
+  SandboxBoundaryClosureReason,
   SandboxBoundaryResponse,
   SandboxBoundaryRequest,
   SandboxBoundaryRequestStatus,
@@ -568,6 +681,7 @@ export {
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
   MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES,
   SANDBOX_BOUNDARY_ACCESS_MODES,
+  SANDBOX_BOUNDARY_CLOSURE_REASONS,
   SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
   SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
@@ -833,6 +947,22 @@ export {
   validateWorkspacePrivacyContext,
 } from './incognito.js';
 
+// cron-expression.ts — shared five-field cron grammar and occurrence authority.
+export type {
+  CompiledCronExpression,
+  CompileCronExpressionResult,
+  CronCompatibilityProfile,
+  CronCompileError,
+  CronCompileErrorCode,
+  CronFieldName,
+  CronSearchBounds,
+} from './cron-expression.js';
+export {
+  CRON_COMPATIBILITY_PROFILES,
+  compileCronExpression,
+  matchesCronField,
+} from './cron-expression.js';
+
 // plan-reminders.ts (PR-PLAN-REMINDER-MVP-0)
 export type {
   CreatePlanReminderInput,
@@ -878,28 +1008,6 @@ export {
   normalizePlanReminderTitle,
   normalizeUpdatePlanReminderInput,
 } from './plan-reminders.js';
-// agent-mailbox.ts (durable expert-team communication)
-export type {
-  AgentMailboxListOptions,
-  AgentMailboxMessage,
-  AgentMailboxMessageKind,
-  AgentMailboxNormalizeResult,
-  AgentMailboxParticipantRef,
-  AgentMailboxRole,
-  AgentMailboxSendInput,
-  AgentMailboxStore,
-} from './agent-mailbox.js';
-export {
-  AGENT_MAILBOX_CONTENT_MAX_CHARS,
-  AGENT_MAILBOX_LIST_MAX,
-  AGENT_MAILBOX_MAX_MESSAGES_PER_TEAM_RUN,
-  AGENT_MAILBOX_SCHEMA_VERSION,
-  isAgentMailboxMessage,
-  isAgentMailboxParticipantRef,
-  isAgentTeamId,
-  isSafeAgentMailboxToken,
-  normalizeAgentMailboxContent,
-} from './agent-mailbox.js';
 // foreign-session.ts (#1057) — untrusted Claude Code / Codex session
 // contracts + defensive parsing. Subpath @maka/core/foreign-session preferred.
 export type {
@@ -1127,6 +1235,9 @@ export {
   validateMemoryWriteRequest,
 } from './memory.js';
 
+// long-term-memory.ts — atomic SQLite-backed memory contracts; no storage/runtime/UI.
+export * from './long-term-memory.js';
+
 // local-memory.ts — transparent user-visible MEMORY.md MVP.
 export type {
   LocalMemoryEntryStatus,
@@ -1193,6 +1304,22 @@ export type {
   VoiceTtsPolicy,
   VoiceTtsProvider,
   VoiceTtsRequest,
+  VoiceIntent,
+  VoiceAudioFormat,
+  EphemeralVoiceAudio,
+  VoiceModelRouteCapability,
+  VoiceRecognitionConfig,
+  VoiceRealtimeConfig,
+  VoiceSettings,
+  VoiceRoutePlan,
+  ResolveVoiceRouteInput,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
+  VoiceCoordinatorToolName,
+  VoiceCoordinatorToolCall,
 } from './voice.js';
 export {
   VOICE_MAX_AUDIO_BYTES,
@@ -1204,6 +1331,10 @@ export {
   defaultVoiceCapabilitySnapshot,
   defaultVoiceCaptureCaps,
   defaultVoicePrivacyFlags,
+  defaultVoiceSettings,
+  normalizeVoiceSettings,
+  resolveVoiceRoute,
+  normalizeVoiceCoordinatorToolCall,
   normalizeVoiceInputMode,
   normalizeVoiceTranscriptText,
   normalizeVoiceTtsPolicy,
@@ -1249,7 +1380,9 @@ export {
   READY_PROVIDER_TYPES,
   backendKindOf,
   connectionEnabledModelIds,
+  deriveConnectionSlug,
   isWiredOAuthProvider,
+  reconcileConnectionAfterEnabledModelsChange,
   reconcileConnectionAfterModelFetch,
   effectiveBaseUrl,
   migrateConnectionV1ToV2,
@@ -1362,6 +1495,13 @@ export {
   sanitizeOnboardingMilestones,
 } from './onboarding.js';
 
+// bootstrap-connections.ts
+export type {
+  BootstrapConnectionSeed,
+  BootstrapEnv,
+} from './bootstrap-connections.js';
+export { resolveBootstrapConnections } from './bootstrap-connections.js';
+
 // model-catalog.ts
 export type {
   BuildModelCatalogInput,
@@ -1385,7 +1525,7 @@ export {
 } from './model-catalog.js';
 
 // model-metadata.ts
-export { resolveModelVisionSupport } from './model-metadata.js';
+export { resolveModelVisionSupport, resolveModelVoiceMetadata } from './model-metadata.js';
 
 // settings.ts
 export type {
@@ -1397,8 +1537,6 @@ export type {
   NetworkProxySettings,
   NetworkSettings,
   NotificationSettings,
-  OpenGatewaySettings,
-  OpenGatewayRuntimeStatus,
   PrivacySettings,
   ProxyProtocol,
   SettingsSection,
@@ -1418,6 +1556,16 @@ export type {
   UsageSummary,
   UsageTab,
 } from './settings.js';
+
+export type { SubagentPreset, SubagentProfile, SubagentSettings } from './subagent-settings.js';
+export {
+  MAX_SUBAGENT_PRESETS,
+  SUBAGENT_PRESET_ID_MAX_CHARS,
+  SUBAGENT_PROFILES,
+  isSafeSubagentPresetId,
+  isSubagentProfile,
+  normalizeSubagentSettings,
+} from './subagent-settings.js';
 export {
   CHAT_DEFAULT_PERMISSION_MODES,
   DEFAULT_PROXY_BYPASS_DOMAINS,
@@ -1572,10 +1720,8 @@ export type {
   DailyReviewArchiveStatus,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
-  DailyReviewExternalNotify,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSectionKey,
-  DailyReviewSectionToggles,
   DailyReviewSessionRow,
   DailyReviewSummary,
   DailyReviewTopEntry,
@@ -1586,7 +1732,7 @@ export type {
 export {
   DAILY_REVIEW_ARCHIVE_STATUSES,
   DAILY_REVIEW_LIST_LIMIT,
-  DAILY_REVIEW_MODES,
+  DAILY_REVIEW_RANGES,
   DAILY_REVIEW_SECTION_KEYS,
   DEFAULT_DAILY_REVIEW_CONFIG,
   buildDailyReviewSummary,
@@ -1597,6 +1743,7 @@ export {
   localDayBoundsAt,
   localDayBoundsForInstant,
   normalizeDailyReviewConfig,
+  normalizeDailyReviewArchive,
   pickDailyReviewSessions,
   pickDailyReviewTopEntries,
 } from './daily-review.js';
@@ -1649,14 +1796,6 @@ export {
   isDeepResearchSession,
 } from './explore-agent.js';
 
-// expert-team.ts — expert-team session labels.
-export {
-  EXPERT_TEAM_LABEL_PREFIX,
-  expertTeamIdFromLabels,
-  expertTeamLabel,
-  isExpertTeamSession,
-} from './expert-team.js';
-
 // tool-catalog.ts — shared product tool vocabulary (#1099).
 export type {
   CatalogSurfaceDef,
@@ -1688,3 +1827,14 @@ export {
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
 } from './attachments.js';
 export type { AttachmentByteReader } from './attachments.js';
+
+export type {
+  AutomationAuthoritySnapshot,
+  AutomationDefinition,
+  AutomationExecutionTemplate,
+  AutomationKind,
+  AutomationPendingFire,
+  AutomationSchedule,
+  AutomationStatus,
+} from './automation.js';
+export { SKILL_INVOCATION_TOKEN_SOURCE } from './skill-invocation-token.js';

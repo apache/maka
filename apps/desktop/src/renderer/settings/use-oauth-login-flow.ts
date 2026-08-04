@@ -6,7 +6,8 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 export { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 
-// Shared OAuth (browser loopback / polling) login-flow controller.
+// Shared browser-assisted OAuth login-flow controller (device-code
+// polling / loopback PKCE depending on the provider).
 //
 // Extracted from the SubscriptionLoginModal `startLogin` flow so BOTH the
 // OAuth catalog login modals (codex / cursor / antigravity) AND the model
@@ -61,9 +62,9 @@ export type OAuthDirectActionResult =
   | { ok: false; reason?: string; message: string };
 
 /**
- * Direct-import account flow (GitHub Copilot): no browser loopback, so
+ * Direct-import account flow (GitHub Copilot): no browser handoff, so
  * "login" is a single bridge call. Direct mode keeps the service's original
- * UX instead of the loopback copy: no logout confirm, no success toasts
+ * UX instead of the browser-assisted copy: no logout confirm, no success toasts
  * (the refreshed snapshot IS the feedback), and every account-action
  * failure surfaces under one `<display.name> 账号操作失败` title.
  */
@@ -85,7 +86,7 @@ export interface OAuthLoginFlowController {
   logout(): Promise<void>;
   refresh(): Promise<boolean>;
   // Direct account flows only (GitHub Copilot 重新验证); undefined for the
-  // browser-loopback services so they cannot render a dead action.
+  // browser-assisted services so they cannot render a dead action.
   refreshTokens: (() => Promise<void>) | undefined;
 }
 
@@ -127,6 +128,7 @@ export function useOAuthLoginFlow(params: {
       const message = subscriptionActionErrorMessage(error, locale);
       toast.error(copy.refreshFailed, message);
       setErrorMessage(message);
+      return false;
     }
     return true;
   }
@@ -240,7 +242,7 @@ export function useOAuthLoginFlow(params: {
     if (!beginPendingAction('logout')) return;
     try {
       // Direct-import flows keep their original no-confirm, silent-success
-      // logout; only the browser-loopback services confirm the destructive
+      // logout; only the browser-assisted services confirm the destructive
       // action and toast on success.
       if (!direct) {
         const ok = await toast.confirm({

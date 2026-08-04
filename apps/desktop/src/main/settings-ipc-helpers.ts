@@ -52,14 +52,6 @@ export function preserveSensitivePlaceholders(
           },
         }
       : {}),
-    ...(patch.openGateway?.token === SENSITIVE_PLACEHOLDER
-      ? {
-          openGateway: {
-            ...patch.openGateway,
-            token: current.openGateway.token,
-          },
-        }
-      : {}),
   };
 }
 
@@ -92,12 +84,6 @@ export function maskAppSettings(settings: AppSettings, revealPatch: UpdateAppSet
         ]),
       ) as AppSettings['botChat']['channels'],
     },
-    openGateway: {
-      ...settings.openGateway,
-      token: shouldReveal(revealPatch.openGateway?.token)
-        ? settings.openGateway.token
-        : maskSensitive(settings.openGateway.token) ?? '',
-    },
     // PR-WEB-SEARCH-TAVILY-0: Tavily API key is masked at the IPC
     // store boundary. Renderer never sees the cleartext value;
     // re-submitting the masked sentinel is treated as "keep current"
@@ -120,8 +106,8 @@ export function maskAppSettings(settings: AppSettings, revealPatch: UpdateAppSet
  * export that does NOT include the `credentials` category. The keys are
  * removed (not blanked to '') on purpose: `mergeSettings` deep-merges to the
  * leaf, so an absent key preserves the target machine's existing value on
- * import, whereas a '' would overwrite and wipe a working proxy/bot/gateway/
- * search secret. Keep the field list in sync with `maskAppSettings`.
+ * import, whereas a '' would overwrite and wipe a working proxy/bot/search
+ * secret. Keep the field list in sync with `maskAppSettings`.
  */
 export function stripSettingsSecretsForExport(settings: AppSettings): Record<string, unknown> {
   const proxy = { ...settings.network.proxy } as Record<string, unknown>;
@@ -135,9 +121,6 @@ export function stripSettingsSecretsForExport(settings: AppSettings): Record<str
     channels[provider] = next;
   }
 
-  const openGateway = { ...settings.openGateway } as Record<string, unknown>;
-  delete openGateway.token;
-
   const tavily = { ...settings.webSearch.providers.tavily } as Record<string, unknown>;
   delete tavily.apiKey;
 
@@ -145,7 +128,6 @@ export function stripSettingsSecretsForExport(settings: AppSettings): Record<str
     ...settings,
     network: { ...settings.network, proxy },
     botChat: { ...settings.botChat, channels },
-    openGateway,
     webSearch: { ...settings.webSearch, providers: { ...settings.webSearch.providers, tavily } },
   };
 }

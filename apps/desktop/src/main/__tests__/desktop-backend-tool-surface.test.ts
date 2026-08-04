@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { LlmConnection, SessionHeader, TaskLedgerStore } from '@maka/core';
+import type { LlmConnection, SessionHeader } from '@maka/core';
 import { emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { McpClientManager } from '@maka/mcp';
 import {
@@ -155,34 +155,6 @@ describe('Desktop backend tool surface', () => {
     assert.equal(surface.selectedTools.some((tool) => tool.name === 'Edit'), false);
   });
 
-  it('keeps expert-team tools on the parent surface and scoped child tools isolated', async () => {
-    const deps = makeDeps({
-      agentTeamLeadTools: [tool('team_message', 'custom_tool')],
-    });
-    const parentInput = inputFor('claude-sonnet-4-5-20250929');
-    parentInput.header.labels = ['mode:expert-team:code-review'];
-    const parent = await resolveDesktopBackendToolSurface(deps, parentInput);
-    assert.equal(parent.skillHost.toolNames.has('expert_dispatch'), true);
-    assert.equal(parent.skillHost.toolNames.has('team_message'), true);
-
-    const child = await resolveDesktopBackendToolSurface(deps, {
-      ...parentInput,
-      tools: [readTool],
-      agentTeam: {
-        role: 'member',
-        teamId: 'code-review',
-        agentId: 'correctness-reviewer',
-        parentRunId: 'run-1',
-      },
-    });
-    assert.deepEqual([...child.skillHost.toolNames], ['Read']);
-    assert.deepEqual(
-      child.selectedTools.map((candidate) => candidate.name),
-      ['Read'],
-    );
-    assert.deepEqual(child.toolAvailability.groups, []);
-  });
-
   it('keeps scoped child tools ahead of root-only computer-use and Plan controls', async () => {
     const deps = makeDeps({ isComputerUseRealModelE2e: true });
     const input = inputFor('claude-sonnet-4-5-20250929', 'plan');
@@ -190,12 +162,6 @@ describe('Desktop backend tool surface', () => {
     const child = await resolveDesktopBackendToolSurface(deps, {
       ...input,
       tools: [readTool],
-      agentTeam: {
-        role: 'member',
-        teamId: 'plan-team',
-        agentId: 'researcher',
-        parentRunId: 'run-1',
-      },
     });
 
     assert.deepEqual([...child.skillHost.toolNames], ['Read']);
@@ -379,10 +345,8 @@ function makeDeps(
       model: model ?? 'claude-sonnet-4-5-20250929',
     }),
     mcpManager: { tools: () => [] } as unknown as McpClientManager,
-    taskLedgerStore: {} as TaskLedgerStore,
     deepResearchTools: [],
     computerUseTools: [computerTool],
-    agentTeamLeadTools: [],
     builtinTools: [readTool, writeTool, computerTool],
     toolEconomy: availability.economy,
     planStore,
@@ -467,7 +431,6 @@ function makeFactoryDeps(
     readArchivedToolResult: async () => undefined,
     runtimeCommitStore: undefined,
     safeSendToRenderer: () => {},
-    openGateway: {},
     emitSessionsChanged: () => {},
     getRuntime: () => runtime,
     getLookupPricing: () => () => null,

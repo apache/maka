@@ -3,20 +3,25 @@ import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, test } from 'node:test';
-import type {
-  CreateSessionInput,
-  SessionHeader,
-  StoredMessage,
-  SubagentSessionParent,
-  SubagentSessionRuntime,
-  SubagentSessionSpawn,
+import {
+  WORKSPACE_AUTHORITY_SESSION_ID,
+  type CreateSessionInput,
+  type SessionHeader,
+  type StoredMessage,
+  type SubagentSessionParent,
+  type SubagentSessionRuntime,
+  type SubagentSessionSpawn,
 } from '@maka/core';
 import {
+  assertSafeSessionId,
   createLegacyFileSessionStore as createSessionStore,
   createSessionStore as createSqliteSessionStore,
 } from '../session-store.js';
 
 describe('FileSessionStore CRUD', () => {
+  test('reserves the workspace authority control-plane session id', () => {
+    assert.throws(() => assertSafeSessionId(WORKSPACE_AUTHORITY_SESSION_ID), /Invalid session id/);
+  });
   test('list on a missing workspace is observational and does not create session storage', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-session-list-'));
     try {
@@ -107,6 +112,51 @@ describe('FileSessionStore CRUD', () => {
       assert.equal((await store.readHeaderSnapshot(header.id)).connectionLocked, false);
       assert.equal((await store.readHeaderSnapshot(header.id)).connectionLocked, false);
       assert.equal((await store.readHeader(header.id)).connectionLocked, true);
+    });
+  });
+
+  test('round-trips frozen inline references with the user message', async () => {
+    await withStore(async (store) => {
+      const header = await store.create(makeInput({ name: 'Inline references' }));
+      const inlineReferences = [
+        { kind: 'skill' as const, value: '/skill:writer', label: 'Writer', start: 4 },
+        {
+          kind: 'workspace_file' as const,
+          value: '@docs/my plan.md',
+          label: 'my plan.md',
+          start: 21,
+        },
+      ];
+      await store.appendMessage(header.id, {
+        type: 'user',
+        id: 'user-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: 'Use /skill:writer on @docs/my plan.md',
+        inlineReferences,
+      });
+
+      const message = (await store.readMessages(header.id))[0];
+      assert.deepEqual(
+        message?.type === 'user' ? message.inlineReferences : undefined,
+        inlineReferences,
+      );
+    });
+  });
+
+  test('round-trips an explicit empty inline-reference projection', async () => {
+    await withStore(async (store) => {
+      const header = await store.create(makeInput({ name: 'Plain current-format message' }));
+      await store.appendMessage(header.id, {
+        type: 'user',
+        id: 'user-empty',
+        turnId: 'turn-empty',
+        ts: 1,
+        text: 'plain',
+        inlineReferences: [],
+      });
+      const message = (await store.readMessages(header.id))[0];
+      assert.deepEqual(message?.type === 'user' ? message.inlineReferences : undefined, []);
     });
   });
 
@@ -203,17 +253,7 @@ describe('FileSessionStore CRUD', () => {
         () => store.list({ subagentParentSessionId: parent.id }),
         /require SQLite session metadata/,
       );
-      await assert.rejects(
-        () =>
-          store.createSubagent(
-            makeInput({
-              subagentParent: makeSubagentParent(parent.id),
-              subagentRuntime: makeSubagentRuntime(),
-              subagentSpawn: makeSubagentSpawn(),
-            }),
-          ),
-        /requires the SQLite metadata control plane/,
-      );
+      assert.equal('createSubagent' in store, false);
     });
   });
 
@@ -1429,6 +1469,7 @@ describe('FileSessionStore CRUD', () => {
         {
           turnId: 't1',
           status: 'aborted',
+          statusSource: 'recorded',
           retriedFromTurnId: 't0',
           abortedAt: 4,
           partialOutputRetained: true,

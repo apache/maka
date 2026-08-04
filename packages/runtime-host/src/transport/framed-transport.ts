@@ -107,7 +107,11 @@ export class FramedTransport {
   }
 
   write(frame: ClientFrame | HostFrame): Promise<void> {
-    return this.writeEncoded(encodeProtocolFrame(frame));
+    try {
+      return this.writeEncoded(encodeProtocolFrame(frame));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   writeEncoded(encoded: Uint8Array): Promise<void> {

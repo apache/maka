@@ -1,7 +1,7 @@
 ---
 name: Maka
 description: A companion command center for completing real work with agents.
-sourceOfTruth: apps/desktop/src/renderer/maka-tokens.css
+sourceOfTruth: apps/desktop/src/renderer/astryx-theme/makaTheme.ts
 colors:
   maka-blue: "oklch(0.70 0.135 250)"
   surface-light: "oklch(1.000 0 0)"
@@ -13,17 +13,18 @@ colors:
   warning: "oklch(0.66 0.18 55)"
   destructive: "oklch(0.58 0.24 28)"
 typography:
+  scale: { base: 14, ratio: 1.125 }
   stat: { fontSize: "20px", fontWeight: 600, lineHeight: 1.25 }
-  heading: { fontSize: "15px", fontWeight: 600, lineHeight: 1.25 }
-  body: { fontSize: "13px", fontWeight: 400, lineHeight: 1.5 }
-  caption: { fontSize: "11px", fontWeight: 400, lineHeight: 1.375 }
+  heading: { fontSize: "16px", fontWeight: 600, lineHeight: 1.25 }
+  body: { fontSize: "14px", fontWeight: 400, lineHeight: 1.5 }
+  caption: { fontSize: "12px", fontWeight: 400, lineHeight: 1.375 }
 rounded: { control: "6px", surface: "8px", modal: "12px", pill: "999px" }
 spacing: { base: "4px", sm: "8px", md: "12px", lg: "16px", xl: "24px", "2xl": "32px" }
 ---
 
 # Design System: Maka
 
-This is a small snapshot of the default theme. `maka-tokens.css` is the runtime source of truth; component source owns exact component values. Refresh this file from source when they diverge. `styles.css` is a Tailwind bridge, not a second authority.
+This is a small snapshot of the default theme. Type is owned by `astryx-theme/makaTheme.ts`, whose `typography.scale` generates the whole size ladder; `maka-tokens.css` owns the remaining runtime tokens and aliases the ladder for product use. Component source owns exact component values. Refresh this file from source when they diverge. The renderer and `@maka/ui` stylesheets compose those tokens into product-owned semantic classes; they are not a second token authority.
 
 ## 1. Overview
 

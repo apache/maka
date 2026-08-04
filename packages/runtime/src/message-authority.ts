@@ -87,3 +87,14 @@ export class RuntimeHostedRootConflictError extends Error {
     this.scope = { kind: 'session', sessionId };
   }
 }
+
+export class RuntimeHostedRootUnavailableError extends Error {
+  readonly name = 'RuntimeHostedRootUnavailableError';
+  readonly code = 'session_unavailable';
+  readonly scope: { readonly kind: 'session'; readonly sessionId: string };
+
+  constructor(sessionId: string, message: string, options: ErrorOptions = {}) {
+    super(message, options);
+    this.scope = { kind: 'session', sessionId };
+  }
+}

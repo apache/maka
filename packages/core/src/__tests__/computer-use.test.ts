@@ -15,17 +15,6 @@ describe('Computer Use foundation contract', () => {
     expect(ACTION_APPROVAL_STATES.includes('required_scoped_lease')).toBe(true);
   });
 
-  test('window identity can carry in-memory freshness facts without persistence policy', () => {
-    const identity = {
-      pid: 42,
-      windowId: 7,
-      title: 'Private title',
-      zIndex: 3,
-      contentFingerprint: 'sha256',
-    };
-    expect(identity.contentFingerprint).toBe('sha256');
-  });
-
   test('has no foreground dispatch tier', () => {
     expect(COMPUTER_USE_DISPATCH_TIERS).toEqual([
       'ax',

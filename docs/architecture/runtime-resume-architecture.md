@@ -498,18 +498,21 @@ The local safety inspector:
 
 A path move is diagnostic; marker identity mismatch is a hard gate. This proves the logical workspace identity, not its contents. Content continuity requires a Phase 4 checkpoint.
 
-## Phase 2: SQLite is a durable mode
+## Phase 2: SQLite is the durable RuntimeEvent store
 
 A JSONL host without `RuntimeCommitSink` cannot declare the T1 protocol. Only when the host wires the SQLite store as both `RuntimeEventStore` and `RuntimeCommitSink` may the AiSdk tool path declare `t1_after_preflight_v1` on the first Run event.
 
 ```text
-MAKA_RUNTIME_SQLITE_CANONICAL=1
-  → trigger workspace migration
+open a RuntimeEvent writer
+  → create or migrate runtime.sqlite
   → batch-idempotently import legacy RuntimeEvent JSONL
-  → make SQLite the only canonical RuntimeEvent writer
+  → write RuntimeEvents only to SQLite
 ```
 
-Once `runtime.sqlite` exists, the workspace stays on SQLite even if the environment variable is later removed. This is a sticky migration, not a reversible experiment toggle. JSONL remains for legacy import and explicit export.
+There is no backend-selection flag. Read-only inspection may read a legacy-only
+workspace without creating a database; the first writer performs the one-way
+import. Once `runtime.sqlite` exists, all readers use SQLite and never merge or
+fall back to stale JSONL. JSONL remains for legacy import and explicit export.
 
 ## Phase 3A: atomically commit recovery facts
 
@@ -796,10 +799,12 @@ Start with production-shaped red tests, then land core contract, storage constra
 
 | Flag | Purpose | Rollback meaning |
 |---|---|---|
-| `MAKA_RUNTIME_SQLITE_CANONICAL=1` | Trigger migration to SQLite canonical | Removing the flag cannot return a migrated workspace to JSONL |
 | `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Enable Desktop manual/auto resume and CLI `/resume` | May disable visible continuation; does not delete durable facts |
 
-Downgrading to a reader that does not understand the new schema requires explicit, verified export. Migration failure must preserve legacy JSONL. A newer database schema fails closed.
+RuntimeEvent migration is unconditional on the first write. Downgrading to a
+reader that does not understand the new schema requires explicit, verified
+export. Migration failure must preserve legacy JSONL. A newer database schema
+fails closed.
 
 Future recovery/checkpoint modes follow the same rule: select durable mode before T1 or accepted boundary. Never silently fall back to a weaker protocol mid-execution.
 

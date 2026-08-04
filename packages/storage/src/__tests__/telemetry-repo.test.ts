@@ -172,6 +172,57 @@ describe('FileTelemetryRepo', () => {
     });
   });
 
+  test('keeps a compaction that made the request bigger', async () => {
+    // `estimatedTokensSaved` is a signed difference, not a count: a compaction
+    // that grew the request saves a negative number of tokens, and that is the
+    // outcome most worth being able to see. The producer says so in the field's
+    // own name (`estimatedTokensSavedSigned`), and the shape validator reads it
+    // with `isOptionalFiniteNumber`.
+    //
+    // A blanket "no negative numbers anywhere under contextBudget" sweep
+    // contradicted both, and the contradiction was not cheap: decoding throws
+    // on the first record it cannot read, so eight such decisions made all 1297
+    // records in a real telemetry file unreadable.
+    await withRepo(async (repo, root) => {
+      await repo.load();
+      await repo.insertLlmCall(
+        llmRecord({
+          contextBudget: {
+            enabled: true,
+            estimatedTokensBefore: 10,
+            estimatedTokensAfter: 12,
+            keptTurns: 1,
+            droppedTurns: 0,
+            keptEvents: 2,
+            droppedEvents: 0,
+            compactionDecisions: [
+              {
+                stage: 'activeStep',
+                sourceKind: 'runtimeEvents',
+                decision: 'replaced',
+                estimatedTokensSaved: -396,
+              },
+            ],
+          },
+        }),
+      );
+      await repo.flush?.();
+
+      const reopened = createTelemetryRepo(root);
+      await reopened.load();
+      const rows = reopened.logs({ range: 'all' }).rows;
+      assert.equal(rows.length, 1, 'the file still decodes');
+      const decisions = rows[0]?.contextBudget?.compactionDecisions as
+        | Array<{ estimatedTokensSaved: number }>
+        | undefined;
+      assert.equal(
+        decisions?.[0]?.estimatedTokensSaved,
+        -396,
+        'and the negative saving survives the round trip',
+      );
+    });
+  });
+
   test('owns admitted records and returns detached frozen diagnostics', async () => {
     await withRepo(async (repo, root) => {
       await repo.load();
@@ -230,6 +281,57 @@ describe('FileTelemetryRepo', () => {
           ),
         /invalid contextBudget/,
       );
+      await assert.rejects(
+        () =>
+          repo.insertLlmCall(
+            llmRecord({
+              contextBudget: {
+                enabled: true,
+                estimatedTokensBefore: 10,
+                estimatedTokensAfter: 12,
+                keptTurns: 1,
+                droppedTurns: 0,
+                keptEvents: 2,
+                droppedEvents: 0,
+                compactionDecisions: [
+                  {
+                    stage: 'activeStep',
+                    sourceKind: 'runtimeEvents',
+                    decision: 'replaced',
+                    estimatedTokensSaved: -2,
+                    coveredTurns: -1,
+                  },
+                ],
+              },
+            }),
+          ),
+        /invalid contextBudget/,
+      );
+      await assert.rejects(
+        () =>
+          repo.insertLlmCall(
+            llmRecord({
+              contextBudget: {
+                enabled: true,
+                estimatedTokensBefore: 10,
+                estimatedTokensAfter: 12,
+                keptTurns: 1,
+                droppedTurns: 0,
+                keptEvents: 2,
+                droppedEvents: 0,
+                compactionDecisions: [
+                  {
+                    stage: 'activeStep',
+                    sourceKind: 'runtimeEvents',
+                    decision: 'failedOpen',
+                    validationReasonCounts: { malformed: -1 },
+                  },
+                ],
+              },
+            }),
+          ),
+        /invalid contextBudget/,
+      );
       assert.deepEqual(repo.logs({ range: 'all' }), { rows: [], total: 0 });
     });
   });
@@ -248,6 +350,14 @@ describe('FileTelemetryRepo', () => {
         ),
         repo.insertLlmCall(
           llmRecord({
+            id: 'usage_goal_evaluation_session_1_3',
+            callKind: 'goal_evaluation',
+            callId: 'goal_evaluation_session_1_3',
+            ts: 3,
+          }),
+        ),
+        repo.insertLlmCall(
+          llmRecord({
             id: 'usage_semantic_compact_turn_1_2_3',
             callKind: 'semantic_compact',
             callId: 'semantic_compact_turn_1_2_3',
@@ -260,6 +370,7 @@ describe('FileTelemetryRepo', () => {
       assert.deepEqual(
         rows.map((row) => [row.callKind, row.callId]),
         [
+          ['goal_evaluation', 'goal_evaluation_session_1_3'],
           ['semantic_compact', 'semantic_compact_turn_1_2_3'],
           ['history_compact', 'history_compact_turn_1_1_2'],
         ],

@@ -1,5 +1,6 @@
+import type { ToolActivityStatus } from './tool-result-status.js';
 import type { BotOnboardingProvider } from './bot-onboarding.js';
-import type { SandboxBoundaryRequestEvent, ToolResultContent } from './events.js';
+import type { SandboxBoundaryRequestEvent, ToolOutputStream, ToolResultContent } from './events.js';
 import type { SettingsSection } from './settings.js';
 import type { UiLocale } from './ui-locale.js';
 
@@ -21,6 +22,7 @@ export type E2eFixtureScenario =
   | 'artifact-pane'
   | 'artifact-errors'
   | 'streaming-sidebar'
+  | 'disclosure-output'
   // PR-STREAM-TURN-CENTER: streaming-sidebar only shows the SIDEBAR dot (its
   // active session is a committed one). This seeds an ACTIVE session whose
   // main panel renders the live answer bubble below a committed turn, so
@@ -37,9 +39,7 @@ export type E2eFixtureScenario =
   | 'settings-data'
   // PR-SETTINGS-IA-CONSOLIDATE-0 + PR-SETTINGS-REVIEW-0: memory and
   // daily-review split back apart; appearance stays merged; network
-  // folded into general. PR-VOICE-GATEWAY-SPLIT-0 (WAWQAQ msg
-  // `d3ea9a33` 2026-06-26) further split voice + open-gateway into
-  // their own nav items.
+  // folded into general.
   | 'settings-appearance'
   | 'settings-bots'
   // #1233 deferral: the bot QR-onboarding modal (bot-onboarding-modal.tsx)
@@ -55,8 +55,6 @@ export type E2eFixtureScenario =
   | 'settings-daily-review'
   | 'settings-permissions'
   | 'settings-voice'
-  | 'settings-gateway'
-  | 'settings-search'
   | 'settings-usage'
   | 'settings-health'
   | 'module-skills'
@@ -116,8 +114,7 @@ export type E2eFixtureScenario =
   | 'sidebar-search-modal-open'
   // PR-shared primitive-COMMAND-INPUT-0: reuse the long sidebar seed and
   // auto-open the command palette so the
-  // shared primitive InputGroup command input shell is exercised without requiring a key
-  // chord.
+  // Astryx CommandPalette is exercised without requiring a key chord.
   | 'command-palette-open'
   // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
   // kenji `b3d156e9`): seed the same 60-session sidebar and
@@ -151,10 +148,18 @@ export interface E2eFixtureLiveTool {
   stepId?: string;
   displayName?: string;
   intent?: string;
-  status: 'pending' | 'waiting_permission' | 'running' | 'completed' | 'errored' | 'interrupted';
+  status: ToolActivityStatus;
   args: unknown;
   result?: ToolResultContent;
   durationMs?: number;
+  outputChunks?: Array<{
+    seq: number;
+    stream: ToolOutputStream;
+    text: string;
+    redacted: boolean;
+    createdAt: number;
+  }>;
+  outputTruncated?: boolean;
 }
 
 export interface E2eFixtureLiveTurnStep {
@@ -197,8 +202,6 @@ export interface E2eFixtureState {
    * test-only component branch.
    */
   composerText?: string;
-  /** Fixture-only structured Skill Chips rendered through the real composer state. */
-  composerSkills?: Array<{ id: string; name: string }>;
   /**
    * When set, open Settings → 模型 with this connection's detail sheet
    * expanded (rather than just the section). Seeded by `oauth-relogin` so the

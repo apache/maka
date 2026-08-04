@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
+import {
+  Badge,
+  Button,
+  Card,
+  IconButton,
+  Layout,
+  LayoutContent,
+  LayoutHeader,
+  LayoutPanel,
+  SideNav,
+  SideNavItem,
+  SideNavSection,
+  useMediaQuery,
+} from '@astryxdesign/core';
 import { ArrowLeft } from '@maka/ui/icons';
-import { Button as BaseButton } from '@base-ui/react/button';
 import type {
   AppSettings,
   LlmConnection,
@@ -14,8 +27,9 @@ import type {
   UsageStats,
 } from '@maka/core';
 import { createDefaultSettings } from '@maka/core/settings';
-import { OverlayScrollArea, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './ProvidersPanel';
+import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
 import { AboutSettingsPage } from './about-settings-page';
 import { AppearanceSettingsPage } from './appearance-settings-page';
@@ -25,18 +39,20 @@ import { DataSettingsPage } from './data-settings-page';
 import { GeneralSettingsPage } from './general-settings-page';
 import { HealthCenterPage } from './health-center-page';
 import { MemorySettingsPage } from './memory-settings-page';
-import { OpenGatewaySettingsPage } from './open-gateway-settings-page';
 import { PermissionCenterPage } from './permission-center-page';
 import { SettingsSkeleton } from './settings-skeleton';
 import { SETTINGS_NAV, groupedNav, navLabel, readLastSettingsSection } from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
-import { SettingsRows, SettingRow } from './settings-rows';
+import { SettingRow } from './settings-rows';
+import { SettingsPage } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { UsageSettingsPage } from './usage-settings-page';
 import { VoiceModelsSettingsPage } from './voice-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+
+const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 
 export function SettingsSurface(props: {
   connections: LlmConnection[];
@@ -61,6 +77,7 @@ export function SettingsSurface(props: {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
+  const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
   const [section, setSection] = useState<SettingsSection>(() => props.requestedSection ?? readLastSettingsSection());
   const [providerCatalogRequested, setProviderCatalogRequested] = useState(props.openProviderCatalog === true);
   // One-shot landing intent, mirroring providerCatalogRequested above: the
@@ -228,100 +245,127 @@ export function SettingsSurface(props: {
   const headerCopy = getSettingsNavigationCopy(locale).sections[section];
 
   return (
-    <main className="settingsSurface agents-layout-body" data-modal="true" aria-label={copy.contentLabel}>
-      <aside className="settingsSidebar agents-sidebar" data-settings-nav-column aria-label={copy.sidebarLabel}>
-        <div className="settingsSidebarInner">
-          {/* PR-SETTINGS-NO-PANE-BORDER-0 (WAWQAQ msg `8effe691`):
-              reference sidebar has just `← 返回应用` then straight
-              into the nav — no big "设置" brand label. Match it. */}
-          <BaseButton
-            className="settingsBackButton"
-            type="button"
-            aria-label={copy.backToApp}
-            onClick={props.onClose}
+    <div className="settingsSurface" data-modal="true">
+      <Layout
+        height="fill"
+        padding={0}
+        start={(
+          <LayoutPanel
+            width={isNarrowSettings ? 48 : 260}
+            padding={0}
+            isScrollable={false}
           >
-            <ArrowLeft size={16} aria-hidden="true" />
-            <span>{copy.backToApp}</span>
-          </BaseButton>
-          <nav aria-label={copy.navigationLabel}>
-            {localizedNav.map(({ group, label, items }) => (
-              <div key={group} className="settingsNavGroup" role="group" aria-label={label}>
-                <div className="settingsNavGroupLabel">{label}</div>
-                {items.map((item) => (
-                  <BaseButton
-                    key={item.id}
-                    className="settingsNavItem"
-                    data-active={section === item.id}
-                    aria-current={section === item.id ? 'page' : undefined}
-                    type="button"
-                    ref={section === item.id ? props.initialFocusRef : undefined}
-                    disabled={!item.enabled}
-                    onClick={() => setSection(item.id)}
-                  >
-                    <span className="settingsNavGlyph" aria-hidden="true">
-                      <item.Icon size={16} />
-                    </span>
-                    <strong>{item.label}</strong>
-                    {item.badge && (
-                      <span className="settingsNavBadge" data-badge={item.badge}>
-                        {item.badge}
-                      </span>
-                    )}
-                  </BaseButton>
-                ))}
-              </div>
-            ))}
-          </nav>
-        </div>
-      </aside>
-
-      <section className="settingsMainPane agents-content-area" data-agents-view="settings">
-        <header className="settingsPageHeader">
-          <div className="settingsPageHeaderTitleStack">
-            <h2>{headerCopy.label}</h2>
-            {headerCopy.description && (
-              <p className="settingsPageHeaderDescription">{headerCopy.description}</p>
-            )}
-          </div>
-        </header>
-
-        <OverlayScrollArea
-          className="settingsPageContent"
-          viewportClassName="settingsPageContentViewport"
-          contentClassName="settingsPageContentInner"
-        >
-          {loading ? (
-            <SettingsSkeleton />
-          ) : (
-            <SettingsPage
-              section={section}
-              settings={settings}
-              usageStats={usageStats}
-              connections={props.connections}
-              defaultSlug={props.defaultSlug}
-              themePref={props.themePref}
-              themePalette={props.themePalette}
-              onRefreshConnections={props.onRefresh}
-              onUpdateSettings={updateSettings}
-              onReloadSettings={reloadSettings}
-              onReloadUsage={reloadUsage}
-              onThemeChange={props.onThemeChange}
-              onThemePaletteChange={props.onThemePaletteChange}
-              onOpenDailyReview={props.onOpenDailyReview}
-              onOpenSession={props.onOpenSession}
-              openProviderCatalog={providerCatalogRequested}
-              initialConnectionSlug={props.initialConnectionSlug}
-              initialCreateProviderType={createProviderRequest}
-              onInitialCreateProviderConsumed={() => setCreateProviderRequest(undefined)}
+            <SideNav
+              className="settingsSidebar"
+              collapsible={{ isCollapsed: isNarrowSettings, hasButton: false }}
+              data-maka-contract="settings-sidebar"
+              data-settings-nav-column
+              aria-label={copy.navigationLabel}
+              topContent={(
+                isNarrowSettings
+                  ? <IconButton
+                      variant="ghost"
+                      label={copy.backToApp}
+                      tooltip={copy.backToApp}
+                      icon={<ArrowLeft size={16} aria-hidden="true" />}
+                      onClick={props.onClose}
+                    />
+                  : <Button
+                      className="settingsBackButton"
+                      variant="ghost"
+                      width="100%"
+                      label={copy.backToApp}
+                      icon={<ArrowLeft size={16} aria-hidden="true" />}
+                      onClick={props.onClose}
+                    />
+              )}
+            >
+              {localizedNav.map(({ group, label, items }) => (
+                <SideNavSection key={group} title={label}>
+                  {items.map((item) => (
+                    <SideNavItem
+                      key={item.id}
+                      label={item.label}
+                      icon={<item.Icon size={16} aria-hidden="true" />}
+                      isSelected={section === item.id}
+                      isDisabled={!item.enabled}
+                      ref={section === item.id
+                        ? (element) => {
+                            props.initialFocusRef.current = element instanceof HTMLButtonElement
+                              ? element
+                              : null;
+                          }
+                        : undefined}
+                      endContent={item.badge ? <Badge variant="neutral" label={item.badge} /> : undefined}
+                      onClick={() => setSection(item.id)}
+                    />
+                  ))}
+                </SideNavSection>
+              ))}
+            </SideNav>
+          </LayoutPanel>
+        )}
+        content={(
+          <section
+            className="settingsMainPane"
+            data-agents-view="settings"
+            role="main"
+            aria-label={copy.contentLabel}
+          >
+            <Layout
+              height="fill"
+              padding={0}
+              contentWidth={section === 'usage' ? 920 : 640}
+              header={(
+                <LayoutHeader padding={6}>
+                  <div className="settingsPageHeader">
+                    <div className="settingsPageHeaderTitleStack">
+                      <h2>{headerCopy.label}</h2>
+                      {headerCopy.description && (
+                        <p className="settingsPageHeaderDescription">{headerCopy.description}</p>
+                      )}
+                    </div>
+                  </div>
+                </LayoutHeader>
+              )}
+              content={(
+                <LayoutContent padding={6}>
+                  {loading ? (
+                    <SettingsSkeleton />
+                  ) : (
+                    <SettingsPageBody
+                      section={section}
+                      settings={settings}
+                      usageStats={usageStats}
+                      connections={props.connections}
+                      defaultSlug={props.defaultSlug}
+                      themePref={props.themePref}
+                      themePalette={props.themePalette}
+                      onRefreshConnections={props.onRefresh}
+                      onUpdateSettings={updateSettings}
+                      onReloadSettings={reloadSettings}
+                      onReloadUsage={reloadUsage}
+                      onThemeChange={props.onThemeChange}
+                      onThemePaletteChange={props.onThemePaletteChange}
+                      onOpenDailyReview={props.onOpenDailyReview}
+                      onOpenSession={props.onOpenSession}
+                      openProviderCatalog={providerCatalogRequested}
+                      initialConnectionSlug={props.initialConnectionSlug}
+                      initialCreateProviderType={createProviderRequest}
+                      onInitialCreateProviderConsumed={() => setCreateProviderRequest(undefined)}
+                    />
+                  )}
+                </LayoutContent>
+              )}
             />
-          )}
-        </OverlayScrollArea>
-      </section>
-    </main>
+          </section>
+        )}
+      />
+    </div>
   );
 }
 
-function SettingsPage(props: {
+function SettingsPageBody(props: {
   section: SettingsSection;
   settings: AppSettings;
   usageStats: UsageStats | null;
@@ -353,7 +397,7 @@ function SettingsPage(props: {
     switch (props.section) {
     case 'models':
       return (
-        <div className="settingsStructuredPage settingsModelsPage">
+        <SettingsPage className="settingsModelsPage">
           <ProvidersPanel
             bridge={window.maka.connections}
             initialPage={props.openProviderCatalog ? 'catalog' : 'connections'}
@@ -361,7 +405,15 @@ function SettingsPage(props: {
             initialCreateProviderType={props.initialCreateProviderType}
             onInitialCreateProviderConsumed={props.onInitialCreateProviderConsumed}
           />
-        </div>
+        </SettingsPage>
+      );
+    case 'subagents':
+      return (
+        <SubagentSettingsPage
+          settings={props.settings}
+          connections={props.connections}
+          onUpdate={props.onUpdateSettings}
+        />
       );
     case 'usage':
       return (
@@ -390,6 +442,7 @@ function SettingsPage(props: {
           connections={props.connections}
           defaultSlug={props.defaultSlug}
           onUpdate={props.onUpdateSettings}
+          onReloadSettings={props.onReloadSettings}
           onRefreshConnections={props.onRefreshConnections}
         />
       );
@@ -421,15 +474,16 @@ function SettingsPage(props: {
         />
       );
     case 'daily-review':
-      return <DailyReviewSettingsPage connections={props.connections} onOpenDailyReview={props.onOpenDailyReview} />;
+      return <DailyReviewSettingsPage connections={props.connections} />;
     case 'voice':
-      // PR-VOICE-GATEWAY-SPLIT-0 (WAWQAQ msg `d3ea9a33` 2026-06-26):
-      // 语音 + 网关 是两套独立的功能（一个是本地麦克风/转写管线，
-      // 一个是远程 SSE/HTTP 网关），合在一页里读起来既挤又混。
-      // 拆成两个独立的 nav 项各自独立呈现。
-      return <VoiceModelsSettingsPage />;
-    case 'open-gateway':
-      return <OpenGatewaySettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
+      return (
+        <VoiceModelsSettingsPage
+          settings={props.settings}
+          connections={props.connections}
+          onUpdate={props.onUpdateSettings}
+          onRefreshConnections={props.onRefreshConnections}
+        />
+      );
     case 'search':
       return (
         <WebSearchSettingsPage
@@ -439,9 +493,9 @@ function SettingsPage(props: {
       );
     default:
       return (
-        <SettingsRows>
+        <div className="settingsRows">
           <SettingRow title={navLabel(props.section, locale)} detail={copy.unavailablePage} value={copy.ready} />
-        </SettingsRows>
+        </div>
       );
   }
 }

@@ -7,15 +7,20 @@ export const SESSION_WORKBAR_MAX_WIDTH = 600;
 // is active; it is never persisted as a default (see readSessionWorkbarTab).
 export type SessionWorkbarTab = 'tasks' | 'browser' | 'files' | 'quote';
 
-export function clampSessionWorkbarWidth(value: number): number {
-  return Math.round(Math.min(SESSION_WORKBAR_MAX_WIDTH, Math.max(SESSION_WORKBAR_MIN_WIDTH, value)));
-}
-
+/**
+ * Seeds `useResizable`'s `defaultSize`. Deliberately unclamped: the hook clamps
+ * whatever it is handed against `minSizePx`/`maxSizePx`, so a second clamp here
+ * would be a duplicate authority over the bounds.
+ *
+ * Rounding is a different job, and still ours. `clampSize` bounds without
+ * rounding, so a fractional stored value survives hydration and reaches the
+ * panel, storage and `aria-valuenow` unchanged until the next drag. Every other
+ * way a width enters the app is already integral; this is the one entry point
+ * reading a value the app cannot vouch for.
+ */
 export function readSessionWorkbarWidth(): number {
   const stored = Number(safeLocalStorageGet('maka-session-workbar-width-v1'));
-  return Number.isFinite(stored) && stored > 0
-    ? clampSessionWorkbarWidth(stored)
-    : SESSION_WORKBAR_DEFAULT_WIDTH;
+  return Number.isFinite(stored) && stored > 0 ? Math.round(stored) : SESSION_WORKBAR_DEFAULT_WIDTH;
 }
 
 export function readSessionWorkbarCollapsed(): boolean {

@@ -165,33 +165,21 @@ export function createAppShellE2eFixtureActions(options: {
       // of keyboard interaction instead of mounting a test-only popup.
       await nextVisualSmokeFrame();
       await nextVisualSmokeFrame();
+      // The input is controlled now, so `setText` alone commits the draft —
+      // no synthetic input event is needed to make the surface catch up.
       composerRef.current?.setText(state.composerText);
-      const textarea = document.querySelector<HTMLTextAreaElement>(
-        '.maka-composer textarea[name="text"]',
-      );
-      textarea?.dispatchEvent(new Event('input', { bubbles: true }));
       await nextVisualSmokeFrame();
     }
-    if (state.composerSkills !== undefined) {
-      composerRef.current?.setSkills(state.composerSkills);
-      await nextVisualSmokeFrame();
-    }
-    // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
-    // kenji `b3d156e9`): when the fixture sets `focusActiveRow`,
-    // focus the active row's button after the next paint so the
-    // row's `:focus-within` triggers and the `.maka-list-row-menu-trigger`
-    // becomes visible. The fixture then shows the overflow
-    // trigger against the slim row, proving the time meta
-    // + unread dot are hidden underneath (no overlap with the
-    // action icons — the bug WAWQAQ flagged). Two RAFs let React
-    // commit the active selection before we query the DOM.
+    // focusActiveRow: SideNavItem marks the selected control with
+    // aria-current="page" on the primary button itself (not a ListItem
+    // aria-current=true). Focus that control after paint.
     if (state.focusActiveRow) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const activeRowButton = document.querySelector<HTMLButtonElement>(
-            '.maka-list-row[data-active="true"] .maka-list-row-main',
+          const activeControl = document.querySelector<HTMLElement>(
+            '[data-maka-contract="session-row"] [aria-current="page"]',
           );
-          activeRowButton?.focus({ preventScroll: true });
+          activeControl?.focus({ preventScroll: true });
         });
       });
     }

@@ -6,28 +6,52 @@
     "floor": { "width": 480, "height": 900 }
   },
   "surfaces": {
+    "onboarding": {
+      "storyId": "product-onboarding--needs-connection",
+      "productionHost": "ChatView > OnboardingHero",
+      "state": "Fresh workspace choosing its first model provider",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
     "settings": {
-      "storyId": "product-settings-pages--permission-center-diagnostics-expanded",
+      "storyId": "product-settings-pages--general",
       "productionHost": "SettingsSurface",
-      "state": "Permission Center after expanding diagnostics through its play interaction",
-      "viewports": ["wide", "compact", "floor"]
+      "state": "Dense general preferences form",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
+    "usage": {
+      "storyId": "product-settings-pages--usage-requests-populated",
+      "productionHost": "SettingsSurface > UsageSettingsPage",
+      "state": "Populated usage metrics, filters, tabs, and request table",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
+    "providers": {
+      "storyId": "product-settings-providers--configured-providers",
+      "productionHost": "ProvidersPanel",
+      "state": "Configured provider rows, categories, OAuth status, and actions",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
     },
     "skills": {
       "storyId": "product-module-hubs--extensions-skills-installed",
       "productionHost": "AppShellDetailPanel > SkillsPage",
       "state": "Installed skills list",
-      "viewports": ["wide", "compact", "floor"]
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
     },
     "mcp": {
-      "storyId": "product-module-hubs--extensions-mcp",
+      "storyId": "product-module-hubs--extensions-mcp-configured",
       "productionHost": "AppShellDetailPanel > McpPage",
-      "state": "MCP marketplace before a server is installed",
-      "viewports": ["wide", "compact", "floor"]
+      "state": "Healthy and failed installed MCP servers",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
     },
     "planReminders": {
       "storyId": "product-module-hubs--scheduled-plan-reminders-configured",
       "productionHost": "AppShellDetailPanel > AutomationsPage",
-      "state": "Configured recurring and completed reminders",
+      "state": "Recurring, paused, completed and delivery-blocked reminders in one list",
       "viewports": ["wide", "compact", "floor"],
       "colorSchemes": ["light", "dark"],
       "checks": ["plan-reminder-row"]
@@ -36,27 +60,6 @@
       "storyId": "product-module-hubs--scheduled-plan-reminders",
       "productionHost": "AppShellDetailPanel > AutomationsPage",
       "state": "No reminders configured",
-      "viewports": ["wide"],
-      "viewportOptOuts": {
-        "compact": "The configured reference story covers compact layout behavior.",
-        "floor": "The long-content reference story covers the narrow production host."
-      }
-    },
-    "planRemindersAttention": {
-      "storyId": "product-module-hubs--scheduled-plan-reminders-attention",
-      "productionHost": "AppShellDetailPanel > AutomationsPage",
-      "state": "Latest delivery needs attention",
-      "viewports": ["wide"],
-      "colorSchemes": ["light", "dark"],
-      "viewportOptOuts": {
-        "compact": "The configured reference story covers compact layout behavior.",
-        "floor": "The long-content reference story covers the narrow production host."
-      }
-    },
-    "planRemindersKeepAwake": {
-      "storyId": "product-module-hubs--scheduled-plan-reminders-keep-awake",
-      "productionHost": "AppShellDetailPanel > AutomationsPage",
-      "state": "Keep system awake enabled in contextual page settings",
       "viewports": ["wide"],
       "viewportOptOuts": {
         "compact": "The configured reference story covers compact layout behavior.",
@@ -81,7 +84,56 @@
       "storyId": "product-module-hubs--scheduled-daily-review",
       "productionHost": "AppShellDetailPanel > DailyReviewPage",
       "state": "Loaded daily review summary",
-      "viewports": ["wide", "compact", "floor"]
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
+    "dailyReviewSettingsBounds": {
+      "storyId": "product-settings-pages--daily-review-model-selector-open-narrow",
+      "productionHost": "SettingsSurface > DailyReviewSettingsPage",
+      "state": "Time input and open analysis-model selector at the minimum window width",
+      "viewports": ["floor"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "wide": "The floor contract is the stricter horizontal-containment case.",
+        "compact": "The floor contract is the stricter horizontal-containment case."
+      }
+    },
+    "sessionContext": {
+      "storyId": "product-shell-official-appshell--session-context-layer",
+      "productionHost": "AppShell > ChatView",
+      "state": "Goal, branch, revision and memory metadata above the transcript",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"],
+      "checks": ["session-context-layer"]
+    },
+    "composer": {
+      "storyId": "product-shell-official-appshell--new-chat-composer",
+      "productionHost": "ChatView > Composer > Astryx ChatComposer",
+      "state": "Focused empty editor before the first message is sent",
+      "viewports": ["wide"],
+      "colorSchemes": ["light", "dark"],
+      "checks": ["composer-focus-ownership"],
+      "viewportOptOuts": {
+        "compact": "Focus ownership is independent of viewport geometry.",
+        "floor": "Focus ownership is independent of viewport geometry."
+      }
+    },
+    "askUserQuestion": {
+      "storyId": "product-ask-user-question--pending-decisions",
+      "productionHost": "UserQuestionPrompt (the ChatComposerRegion takeover is out of scope)",
+      "state": "First of three questions, at the composer's position",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light"]
+    },
+    "toastConfirmQueue": {
+      "storyId": "primitives-toast--confirm-queued",
+      "productionHost": "ToastProvider",
+      "state": "Two queued confirmations close and resolve in order",
+      "viewports": ["wide"],
+      "viewportOptOuts": {
+        "compact": "The queue contract is independent of viewport geometry.",
+        "floor": "The queue contract is independent of viewport geometry."
+      }
     }
   }
 }

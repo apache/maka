@@ -8,9 +8,8 @@
 // trademark of its owner and is used here only to identify the provider.
 //
 // Color marks keep their brand fill; monochrome marks use `currentColor`
-// so they inherit the plate's foreground color and stay legible in both
-// light and dark themes. Sizing is owned by `.providerLogo svg` in
-// styles.css; viewBox is the upstream 24×24.
+// so they inherit the containing product slot's foreground color and stay
+// legible in both light and dark themes; viewBox is the upstream 24×24.
 
 import type { ProviderType } from '@maka/core';
 import type { ReactElement } from 'react';
@@ -389,6 +388,7 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
       return <ProviderAssetMask src={vercelBrandMark} />;
     case 'opencode':
     case 'opencode-go':
+    case 'opencode-free':
       return <ProviderAssetMask src={opencodeBrandMark} />;
     case 'anthropic':
     case 'anthropic-compatible':

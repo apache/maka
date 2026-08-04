@@ -29,9 +29,10 @@ const QUERY_ERRORS = [
   'operation_unavailable',
   'internal_failure',
   'invalid_request',
+  'not_found',
   'persistence_failed',
 ] as const;
-const DELETE_ERRORS = [...QUERY_ERRORS, 'not_found', 'operation_conflict'] as const;
+const DELETE_ERRORS = [...QUERY_ERRORS, 'operation_conflict'] as const;
 const ARTIFACT_REQUIRED_FIELDS = [
   'id',
   'sessionId',

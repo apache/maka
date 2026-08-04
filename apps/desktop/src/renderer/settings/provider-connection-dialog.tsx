@@ -1,43 +1,52 @@
-import { useRef, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import type { ProviderType } from '@maka/core';
-import { DialogContent, DialogHeader, DialogRoot } from '@maka/ui';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { ProviderLogo } from './provider-display';
 
 export function ProviderConnectionDialog(props: {
   title: string;
   subtitle: string;
   providerType: ProviderType;
-  onClose(): void;
-  finalFocus?(): HTMLElement | null;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
+  /** Trailing header slot — the provider's category badge on the create path. */
+  headerEndContent?: ReactNode;
   children: ReactNode;
 }) {
-  const titleId = `provider-connection-dialog-${props.providerType}`;
-  const bodyRef = useRef<HTMLDivElement>(null);
   return (
-    <DialogRoot
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
+    <Dialog
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
+      className="providerConnectionDialog"
+      width={520}
+      maxHeight="calc(100dvh - 80px)"
+      purpose="form"
+      /* The dialog's own inset, not a header override: at the 16px default the
+       * provider mark and the close button sit one plate-height from the top
+       * edge and read as pinned to it. Astryx exposes this as a parameter, so
+       * the fix stays inside the primitive's vocabulary. */
+      padding={6}
     >
-      <DialogContent
-        className="maka-modal providerConnectionDialog"
-        aria-labelledby={titleId}
-        initialFocus={() => bodyRef.current?.querySelector<HTMLElement>(
-          'input:not([disabled]), button:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
-        ) ?? true}
-        finalFocus={props.finalFocus}
-        showClose={false}
-      >
-        <DialogHeader
-          icon={<ProviderLogo type={props.providerType} compact />}
-          title={props.title}
-          titleId={titleId}
-          subtitle={props.subtitle}
-          onClose={props.onClose}
-        />
-        <div ref={bodyRef} className="providerConnectionDialogBody">{props.children}</div>
-      </DialogContent>
-    </DialogRoot>
+      <Layout
+        header={
+          <DialogHeader
+            startContent={<ProviderLogo type={props.providerType} compact />}
+            title={props.title}
+            subtitle={props.subtitle}
+            endContent={props.headerEndContent}
+            onOpenChange={props.onOpenChange}
+          />
+        }
+        content={
+          <LayoutContent padding={6} isScrollable>
+            {props.children}
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }

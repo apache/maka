@@ -19,7 +19,16 @@ export type PermissionCenterCopy = {
   noData: string;
   readAgain: string;
   actionFailed: string;
-  actionFailures: Record<'invalid_id' | 'unsupported_platform' | 'unsupported_permission' | 'failed', string>;
+  actionFailures: Record<
+    | 'invalid_id'
+    | 'unsupported_platform'
+    | 'unsupported_permission'
+    | 'denied'
+    | 'already_open'
+    | 'open_settings_failed'
+    | 'failed',
+    string
+  >;
   title: string;
   subtitle: string;
   lastRead: string;
@@ -89,7 +98,15 @@ const PERMISSION_CENTER_COPY = {
     },
     loading: '正在加载权限快照', readFailed: '无法读取权限快照', noData: '权限服务未返回数据。', readAgain: '重新读取',
     actionFailed: '权限操作失败',
-    actionFailures: { invalid_id: '内部错误：权限 id 无法识别。', unsupported_platform: '当前操作系统不支持这个权限操作。', unsupported_permission: '当前平台没有提供这个权限的直接入口。', failed: '权限操作未成功，请稍后重试。' },
+    actionFailures: {
+      invalid_id: '内部错误：权限 id 无法识别。',
+      unsupported_platform: '当前操作系统不支持这个权限操作。',
+      unsupported_permission: '当前平台没有提供这个权限的直接入口。',
+      denied: '你没有授予这项权限；可以前往系统设置重新开启。',
+      already_open: '另一个权限引导仍在进行，请先完成或关闭它。',
+      open_settings_failed: '无法打开系统设置，请手动前往「隐私与安全性」。',
+      failed: '权限操作未成功，请稍后重试。',
+    },
     title: '权限与能力', subtitle: '查看 Maka 需要的系统权限和当前授权状态，直接从这里前往「系统设置 → 隐私与安全性」完成授权或撤销，不必自己翻菜单。',
     lastRead: '最近读取：', detectAgain: '重新检测', summaryAria: '权限概览', granted: '已授权', pending: '等待授权', denied: '已拒绝', other: '未知 / 不支持',
     osSection: '系统权限', osSectionHelp: 'Maka 读到的 OS 级权限状态。点击右侧按钮可以直接前往「系统设置 → 隐私与安全性」对应分区。', osListAria: '系统权限列表',
@@ -129,7 +146,15 @@ const PERMISSION_CENTER_COPY = {
     },
     loading: 'Loading permission snapshot', readFailed: 'Could not read permission snapshot', noData: 'The permission service returned no data.', readAgain: 'Read again',
     actionFailed: 'Permission action failed',
-    actionFailures: { invalid_id: 'Internal error: the permission ID was not recognized.', unsupported_platform: 'This operating system does not support the permission action.', unsupported_permission: 'This platform does not provide a direct entry point for the permission.', failed: 'The permission action did not succeed. Try again later.' },
+    actionFailures: {
+      invalid_id: 'Internal error: the permission ID was not recognized.',
+      unsupported_platform: 'This operating system does not support the permission action.',
+      unsupported_permission: 'This platform does not provide a direct entry point for the permission.',
+      denied: 'Permission was not granted. You can enable it in System Settings.',
+      already_open: 'Another permission guide is still open. Finish or close it first.',
+      open_settings_failed: 'Could not open System Settings. Open Privacy & Security manually.',
+      failed: 'The permission action did not succeed. Try again later.',
+    },
     title: 'Permissions and capabilities', subtitle: 'Review the system permissions Maka needs and their current state. Open the matching Privacy & Security section directly to grant or revoke access.',
     lastRead: 'Last read: ', detectAgain: 'Check again', summaryAria: 'Permission overview', granted: 'Granted', pending: 'Waiting', denied: 'Denied', other: 'Unknown / unsupported',
     osSection: 'System permissions', osSectionHelp: 'OS-level permission states reported to Maka. Use the action on the right to open the matching Privacy & Security section in System Settings.', osListAria: 'System permission list',

@@ -7,12 +7,12 @@ export interface SessionAdmissionLease {
 }
 
 interface SessionAdmissionContext {
-  readonly sessionId: string;
+  readonly sessionIds: ReadonlySet<string>;
   active: boolean;
 }
 
 interface SessionAdmissionLeaseState {
-  readonly sessionId: string;
+  readonly sessionIds: ReadonlySet<string>;
   readonly context: SessionAdmissionContext;
   readonly tasks: Promise<SessionAdmissionTaskResult>[];
   accepting: boolean;
@@ -38,14 +38,28 @@ export class SessionAdmissionGate {
         ),
       );
     }
-    return this.#runQueued(sessionId, operation);
+    return this.#runQueued([sessionId], operation);
+  }
+
+  runMany<T>(
+    sessionIds: readonly string[],
+    operation: (lease: SessionAdmissionLease) => Promise<T> | T,
+  ): Promise<T> {
+    if (this.#context.getStore()?.active) {
+      return Promise.reject(
+        new Error(
+          'Cannot enter Session admission from an active admission; reuse its lease instead',
+        ),
+      );
+    }
+    return this.#runQueued(sessionIds, operation);
   }
 
   enqueueDetached(
     sessionId: string,
     operation: (lease: SessionAdmissionLease) => Promise<void> | void,
   ): Promise<void> {
-    return this.#runQueued(sessionId, operation);
+    return this.#runQueued([sessionId], operation);
   }
 
   runAdmitted<T>(
@@ -58,8 +72,8 @@ export class SessionAdmissionGate {
       return Promise.reject(new Error('Session admission lease no longer accepts tasks'));
     }
     const inherited = this.#context.getStore();
-    if (inherited?.active && inherited.sessionId !== sessionId) {
-      return Promise.reject(new Error('Cannot nest Session admission across Sessions'));
+    if (inherited?.active && inherited !== state.context) {
+      return Promise.reject(new Error('Cannot reuse a Session admission lease from another task'));
     }
 
     let task: Promise<T>;
@@ -78,24 +92,38 @@ export class SessionAdmissionGate {
   }
 
   async #runQueued<T>(
-    sessionId: string,
+    requestedSessionIds: readonly string[],
     operation: (lease: SessionAdmissionLease) => Promise<T> | T,
   ): Promise<T> {
-    const previous = this.#tails.get(sessionId) ?? Promise.resolve();
+    const sessionIds = [...new Set(requestedSessionIds)].sort();
+    if (sessionIds.length === 0) {
+      throw new Error('Session admission requires at least one Session');
+    }
+    const previous = sessionIds.map((sessionId) => this.#tails.get(sessionId) ?? Promise.resolve());
     let release!: () => void;
     const current = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const tail = previous.then(() => current);
-    this.#tails.set(sessionId, tail);
-    await previous;
+    const tails = new Map(
+      sessionIds.map((sessionId, index) => {
+        const tail = previous[index]!.then(() => current);
+        this.#tails.set(sessionId, tail);
+        return [sessionId, tail] as const;
+      }),
+    );
+    if (previous.length === 1) {
+      await previous[0];
+    } else {
+      await Promise.all(previous);
+    }
 
-    const context: SessionAdmissionContext = { sessionId, active: true };
+    const ownedSessionIds = new Set(sessionIds);
+    const context: SessionAdmissionContext = { sessionIds: ownedSessionIds, active: true };
     const lease: SessionAdmissionLease = Object.freeze({
       [sessionAdmissionLeaseBrand]: true as const,
     });
     const state: SessionAdmissionLeaseState = {
-      sessionId,
+      sessionIds: ownedSessionIds,
       context,
       tasks: [],
       accepting: true,
@@ -132,14 +160,16 @@ export class SessionAdmissionGate {
       context.active = false;
       this.#leases.delete(lease);
       release();
-      if (this.#tails.get(sessionId) === tail) this.#tails.delete(sessionId);
+      for (const [sessionId, tail] of tails) {
+        if (this.#tails.get(sessionId) === tail) this.#tails.delete(sessionId);
+      }
     }
   }
 
   #requireLease(sessionId: string, lease: SessionAdmissionLease): SessionAdmissionLeaseState {
     const state = this.#leases.get(lease);
     if (!state) throw new Error('Session admission lease was not issued by this gate');
-    if (state.sessionId !== sessionId) {
+    if (!state.sessionIds.has(sessionId)) {
       throw new Error('Session admission lease does not match the Session');
     }
     return state;

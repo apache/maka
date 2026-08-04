@@ -110,6 +110,96 @@ test('harness A/B uses one safe execution default and accepts per-run overrides'
   );
 });
 
+test('harness A/B parses an explicit one-shot adjudicated infra retry', async () => {
+  const { resolveHarnessAdjudicatedInfraRetryRoundIds } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+
+  assert.deepEqual(resolveHarnessAdjudicatedInfraRetryRoundIds(undefined), []);
+  assert.deepEqual(
+    resolveHarnessAdjudicatedInfraRetryRoundIds(' ab-maka-r0-winning-avg-corewars '),
+    ['ab-maka-r0-winning-avg-corewars'],
+  );
+  assert.throws(() => resolveHarnessAdjudicatedInfraRetryRoundIds(' , '), /must not be empty/);
+  assert.throws(
+    () => resolveHarnessAdjudicatedInfraRetryRoundIds('ab-maka-r0-a,ab-maka-r0-a'),
+    /must not contain duplicates/,
+  );
+});
+
+test('harness A/B resumes an explicit infra retry from the frozen manifest identity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-frozen-resume-'));
+  try {
+    const { buildHarnessAbManifest, resolveHarnessAbManifestForRun, resolveHarnessComposition } =
+      await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+    const manifestPath = join(dir, 'harness-ab-manifest.json');
+    const composition = resolveHarnessComposition({
+      runtime: 'deepseek-v4-flash-max',
+      competitor: 'opencode',
+    });
+    const taskIds = ['winning-avg-corewars'];
+    const frozen = buildHarnessAbManifest({
+      subjectFingerprint: `sha256:${'1'.repeat(64)}`,
+      taskSourceFingerprint: `sha256:${'2'.repeat(64)}`,
+      toolchainFingerprint: `sha256:${'3'.repeat(64)}`,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'parallel',
+    });
+    await writeFile(manifestPath, `${JSON.stringify(frozen)}\n`, 'utf8');
+    const current = buildHarnessAbManifest({
+      subjectFingerprint: `sha256:${'4'.repeat(64)}`,
+      taskSourceFingerprint: frozen.taskSourceFingerprint,
+      toolchainFingerprint: `sha256:${'5'.repeat(64)}`,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'parallel',
+    });
+
+    assert.deepEqual(
+      await resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: current,
+        retryRoundIds: ['ab-maka-r0-winning-avg-corewars'],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      frozen,
+    );
+    await assert.rejects(
+      resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: current,
+        retryRoundIds: [],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      /requires an explicit adjudicated infra retry/,
+    );
+
+    const changedSchedule = buildHarnessAbManifest({
+      subjectFingerprint: current.subjectFingerprint,
+      taskSourceFingerprint: current.taskSourceFingerprint,
+      toolchainFingerprint: current.toolchainFingerprint,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'sequential',
+    });
+    await assert.rejects(
+      resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: changedSchedule,
+        retryRoundIds: ['ab-maka-r0-winning-avg-corewars'],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      /differs beyond the frozen subject and toolchain identity/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('harness A/B selects one named task only with an explicit run identity', async () => {
   const {
     buildHarnessAbManifest,
@@ -358,7 +448,6 @@ test('harness A/B defaults to pinned Kimi Code and keeps OpenCode selectable', a
       defaultConnectionSlug: 'codex-subscription',
     },
   });
-  assert.equal(codexProfile.config.adapter, 'codex_agent:MakaCodexAgent');
   assert.equal(codexProfile.config.permissions, 'container-full-access');
   assert.equal(codexProfile.config.transport, 'responses-http');
   assert.equal('armExecution' in codexProfile, false);
@@ -370,6 +459,7 @@ test('harness A/B defaults to pinned Kimi Code and keeps OpenCode selectable', a
     composition: codexComposition,
   });
   assert.deepEqual(codexManifest.metadata.execution, { armExecution: 'sequential' });
+  assert.equal(codexManifest.arms[1]?.metadata?.config.adapter, 'codex_agent:MakaCodexAgent');
   assert.equal(codexManifest.maxConcurrency, 1);
   assert.equal(codexManifest.maxConcurrentAttempts, 1);
   assert.throws(() => resolveHarnessCompetitorProfile('unknown'), /MAKA_HARNESS_AB_COMPETITOR/);
@@ -458,6 +548,65 @@ test('harness A/B resolves an explicit GLM 5.2 runtime independently from OpenCo
   assert.equal(resolveHarnessAbRunId(composition), 'glm-5.2-maka-vs-opencode-tbench-2.1-full-v1');
 });
 
+test('harness A/B resolves DeepSeek V4 Flash as a metered OpenCode comparison', async () => {
+  const {
+    buildHarnessAbManifest,
+    buildHarnessExecutionProfile,
+    resolveHarnessAbRunId,
+    resolveHarnessComposition,
+    resolveHarnessRuntimeCredentials,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const composition = resolveHarnessComposition({
+    runtime: 'deepseek-v4-flash-max',
+    competitor: 'opencode',
+  });
+
+  assert.deepEqual(buildHarnessExecutionProfile(composition.runtimeProfile), {
+    modelSpec: 'deepseek/deepseek-v4-flash',
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+    reasoningEffort: 'max',
+    baseUrl: 'https://api.deepseek.com',
+    billingMode: 'metered',
+    pricing: {
+      inputUsdPer1M: 0.145,
+      cacheReadUsdPer1M: 0.0029,
+      cacheWriteUsdPer1M: 0,
+      outputUsdPer1M: 0.29,
+      source: 'deepseek-v4-flash',
+    },
+  });
+  assert.deepEqual(
+    await resolveHarnessRuntimeCredentials({
+      composition,
+      env: { MAKA_HARNESS_AB_DEEPSEEK_KEY_FILE: '/secrets/deepseek.key' },
+    }),
+    { apiKeyFile: '/secrets/deepseek.key' },
+  );
+
+  const manifest = buildHarnessAbManifest({
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition,
+  });
+  assert.deepEqual(manifest.metadata.pricing, {
+    currency: 'USD',
+    unit: 'per_1m_tokens',
+    input: 0.145,
+    cachedInput: 0.0029,
+    cacheWrite: 0,
+    output: 0.29,
+    source: 'deepseek-v4-flash',
+  });
+  assert.equal(manifest.arms[1].id, 'opencode');
+  assert.equal(manifest.arms[1].metadata.config.billingMode, 'metered');
+  assert.equal(
+    resolveHarnessAbRunId(composition),
+    'deepseek-v4-flash-maka-vs-opencode-tbench-2.1-full-v1',
+  );
+});
+
 test('harness A/B composition defaults preserve existing routes and reject unsupported triples', async () => {
   const {
     buildHarnessAbManifest,
@@ -499,7 +648,7 @@ test('harness A/B composition defaults preserve existing routes and reject unsup
   );
   assert.throws(
     () => resolveHarnessComposition({ runtime: 'unknown' }),
-    /MAKA_HARNESS_AB_RUNTIME must be one of: kimi-coding-plan-k3-max, zai-coding-plan-glm-5\.2-max, openai-codex-gpt-5\.6-sol-xhigh/,
+    /MAKA_HARNESS_AB_RUNTIME must be one of: kimi-coding-plan-k3-max, zai-coding-plan-glm-5\.2-max, deepseek-v4-flash-max, openai-codex-gpt-5\.6-sol-xhigh/,
   );
 
   const glmComposition = resolveHarnessComposition({
@@ -530,6 +679,55 @@ test('harness A/B composition defaults preserve existing routes and reject unsup
       env: { MAKA_HARNESS_AB_KEY_FILE: '/secrets/zai.key' },
     }),
     /composition must come from resolveHarnessComposition/,
+  );
+});
+
+test('harness CLI freezes the synchronized DeepSeek three-way composition', async () => {
+  const {
+    buildHarnessAbManifest,
+    resolveHarnessAbRunId,
+    resolveHarnessComposition,
+    resolveHarnessCompetitorToolchain,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const composition = resolveHarnessComposition({ competitors: 'codex,claude-code' });
+  assert.equal(composition.runtimeProfile.id, 'deepseek-v4-flash-max');
+  assert.deepEqual(
+    composition.competitorProfiles.map((profile: { id: string }) => profile.id),
+    ['codex', 'claude-code'],
+  );
+  assert.equal(
+    resolveHarnessAbRunId(composition),
+    'deepseek-v4-flash-maka-vs-codex-vs-claude-code-tbench-2.1-full-v1',
+  );
+  const manifest = buildHarnessAbManifest({
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition,
+    taskIds: ['a', 'b', 'c', 'd', 'e'],
+    pairConcurrency: 2,
+    armExecution: 'parallel',
+  });
+  assert.deepEqual(
+    manifest.arms.map((arm: { id: string }) => arm.id),
+    ['maka', 'codex', 'claude-code'],
+  );
+  assert.equal(
+    manifest.arms[1]?.metadata?.config.modelCatalogFingerprint,
+    'sha256:faac5d862e0ce0bf5bcaccd515de04cf2dcd33cd38a53f0332fe2e8620ab7caa',
+  );
+  assert.deepEqual(
+    manifest.arms.map(
+      (arm: { metadata?: { config?: { transport?: string } } }) => arm.metadata?.config?.transport,
+    ),
+    ['openai-chat', 'openai-responses', 'anthropic-messages'],
+  );
+  assert.equal(manifest.maxConcurrentAttempts, 6);
+  assert.equal(
+    resolveHarnessCompetitorToolchain('/run', composition.competitorProfiles[1], {
+      MAKA_HARNESS_AB_CLAUDE_CODE_TOOLCHAIN: '/prepared/claude-code',
+    }).path,
+    '/prepared/claude-code',
   );
 });
 
@@ -580,13 +778,6 @@ test('harness composition preserves historical manifest fingerprints', async () 
     });
     assert.equal(manifest.fingerprint, expected.fingerprint, expected.name);
   }
-});
-
-test('harness A/B completion log preserves the report status', async () => {
-  const scriptPath = new URL('../../harbor/run-harness-ab.mjs', import.meta.url);
-  const source = await readFile(scriptPath, 'utf8');
-
-  assert.match(source, /console\.log\(\s*`\$\{report\.runStatus\}:/);
 });
 
 test('Codex comparison freezes the OpenAI model, pricing, and run identity', async () => {
@@ -1017,6 +1208,144 @@ test('harness A/B CLI rejects modified task contents before reading credentials'
         },
       }),
       /Terminal-Bench 2\.1 task tree fingerprint mismatch/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('harness A/B forwards an explicit host-proxy advertised host for native-Linux Pier runs', async () => {
+  const { resolveHarnessProviderProxyHubOptions } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  // Native Linux Docker injects no host.docker.internal; the VM operator
+  // names the docker-bridge-reachable host address explicitly.
+  assert.deepEqual(resolveHarnessProviderProxyHubOptions('172.17.0.1'), {
+    providerProxyAdvertisedHost: '172.17.0.1',
+  });
+  // Unset or blank keeps the hub default (host.docker.internal).
+  assert.deepEqual(resolveHarnessProviderProxyHubOptions(undefined), {});
+  assert.deepEqual(resolveHarnessProviderProxyHubOptions('   '), {});
+});
+
+test('harness A/B supports the DeepSeek-metered OpenCode composition on full DeepSWE', async () => {
+  const { resolveHarnessAbRunId, resolveHarnessComposition } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  const composition = resolveHarnessComposition({
+    benchmark: 'deep-swe-1.1-full',
+    runtime: 'deepseek-v4-flash-max',
+    competitor: 'opencode',
+  });
+  assert.equal(composition.benchmarkProfile.executor, 'pier');
+  assert.equal(composition.runtimeProfile.model, 'deepseek-v4-flash');
+  assert.equal(composition.runtimeProfile.billingMode, 'metered');
+  assert.equal(composition.competitorProfile.id, 'opencode');
+  assert.equal(
+    resolveHarnessAbRunId(composition),
+    'deepseek-v4-flash-maka-vs-opencode-deepswe-full-v1',
+  );
+});
+
+test('harness A/B resolves the full DeepSWE benchmark as a sibling profile', async () => {
+  const {
+    resolveHarnessAbRunId,
+    resolveHarnessAbTaskSelection,
+    resolveHarnessBenchmarkProfile,
+    resolveHarnessComposition,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const benchmarkProfile = resolveHarnessBenchmarkProfile('deep-swe-1.1-full');
+
+  // Same frozen task source and Pier executor as the subset profile; the
+  // frozen task list is the whole 113-task leaderboard set, not the 30-task
+  // discriminative subset.
+  assert.equal(benchmarkProfile.executor, 'pier');
+  assert.equal(benchmarkProfile.dataset, 'deep-swe');
+  assert.equal(benchmarkProfile.version, '1.1');
+  assert.equal(benchmarkProfile.taskIds.length, 113);
+
+  const selection = resolveHarnessAbTaskSelection(undefined, '113', undefined, benchmarkProfile);
+  assert.equal(selection.taskIds.length, 113);
+  assert.throws(
+    () => resolveHarnessAbTaskSelection(undefined, '30', undefined, benchmarkProfile),
+    /MAKA_HARNESS_AB_LIMIT must be 5 or 113/,
+  );
+  assert.throws(
+    () =>
+      resolveHarnessAbTaskSelection(
+        'extract-moves-from-video',
+        undefined,
+        undefined,
+        benchmarkProfile,
+      ),
+    /MAKA_HARNESS_AB_TASK_ID must name a DeepSWE full-113 task/,
+  );
+
+  assert.equal(
+    resolveHarnessAbRunId(resolveHarnessComposition({ benchmark: benchmarkProfile.id })),
+    'k3-maka-vs-kimi-code-deepswe-full-v1',
+  );
+  assert.equal(
+    resolveHarnessAbRunId(
+      resolveHarnessComposition({ benchmark: benchmarkProfile.id, competitor: 'codex' }),
+    ),
+    'gpt-5.6-sol-maka-vs-codex-oauth-deepswe-full-v1',
+  );
+  assert.throws(
+    () => resolveHarnessComposition({ benchmark: benchmarkProfile.id, competitor: 'opencode' }),
+    /unsupported harness composition: benchmark=deep-swe-1\.1-full/,
+  );
+
+  // The full profile freezes its own manifest identity: distinct order seed,
+  // auditable Pier executor metadata, the 113-task evaluation set, and a
+  // manifest fingerprint that cannot collide with the subset profile's.
+  const { buildHarnessAbManifest } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  const fullManifest = buildHarnessAbManifest({
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition: resolveHarnessComposition({ benchmark: benchmarkProfile.id, competitor: 'codex' }),
+    pierVersion: '0.3.0',
+  });
+  assert.equal(
+    fullManifest.metadata.order.seed,
+    'deep-swe-1.1-full:gpt-5.6-sol:harness-comparison:v1',
+  );
+  assert.deepEqual(fullManifest.metadata.benchmark.executor, { id: 'pier', version: '0.3.0' });
+  assert.equal(fullManifest.evaluationTaskIds.length, 113);
+  const subsetManifest = buildHarnessAbManifest({
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition: resolveHarnessComposition({ benchmark: 'deep-swe-1.1', competitor: 'codex' }),
+    pierVersion: '0.3.0',
+  });
+  assert.notEqual(fullManifest.fingerprint, subsetManifest.fingerprint);
+});
+
+test('harness A/B frozen task resolution dispatches full vs subset DeepSWE profiles', async () => {
+  const { resolveFrozenBenchmarkTasks, resolveHarnessBenchmarkProfile } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-deepswe-dispatch-'));
+  try {
+    const tasksRoot = join(dir, 'tasks');
+    await mkdir(join(tasksRoot, 'fixture-task'), { recursive: true });
+    await writeFile(join(tasksRoot, 'fixture-task', 'task.toml'), '[agent]\ntimeout_sec = 900\n');
+
+    // The full profile asserts the whole tree against the 113-task leaderboard
+    // set — a partial tree is a set mismatch, not a subset pick.
+    await assert.rejects(
+      resolveFrozenBenchmarkTasks(resolveHarnessBenchmarkProfile('deep-swe-1.1-full'), tasksRoot),
+      /DeepSWE full-113 task set mismatch/,
+    );
+    // The subset profile keeps picking its 30 ids out of the same tree and
+    // fails loudly when none of them are present.
+    await assert.rejects(
+      resolveFrozenBenchmarkTasks(resolveHarnessBenchmarkProfile('deep-swe-1.1'), tasksRoot),
+      /DeepSWE subset-30 contains unknown task id/,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

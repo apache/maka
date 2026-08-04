@@ -1,385 +1,41 @@
 .settingsSidebar {
   min-height: 0;
-  width: var(--sidebar-width, 240px);
-  display: grid;
-  padding: 0;
+  padding-top: var(--space-12);
   background: transparent;
 }
 
-.settingsSidebarInner {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  /* PR-SETTINGS-REVIEW-0 (2026-06-23, WAWQAQ msg `1b2d4e83`): traffic
-     light row sits at y=14–28 on macOS; 22px sidebar top padding put
-     the 设置 brand right against it. Bump to 52px so the brand label
-     starts well below the traffic lights, matching reference. */
-  padding: var(--space-12) var(--space-2-5) var(--space-3) var(--space-3);
-  background: transparent;
-}
+/* Astryx convergence: the orphaned voice hero vocabulary
+   (.settingsFeatureStatusPage / Hero / Icon / HeroHeading) is deleted — the
+   voice page moved onto the SettingsSection kit and nothing consumed it.
+   .settingsFeatureStatusList below is still used by the voice 边界 list. */
 
-/* PR-SETTINGS-REVIEW-0 (WAWQAQ msg `e1194266`): left-aligned `返回应用`
-   in place of the right-side X. Sits above the 设置 brand. */
 .settingsBackButton {
-  /* WAWQAQ msg `dd21e793` 2026-06-25: the "返回应用" link previously
-     used 4px 8px padding + 13px / weight 500 + 6px radius + 4px gap +
-     `align-self: flex-start` — none of which matched `.settingsNavItem`
-     below it (38px height, 12px h-pad, 7px radius, 14px / weight 500,
-     12px gap). Combined with `inline-flex` + no width, the back link
-     looked intrinsically sized and visually centered, while every nav
-     row below was full-width, left-aligned with the same glyph + label
-     rhythm. Match `.settingsNavItem` exactly so the row reads as part
-     of the same vertical list. */
-  width: calc(100% - 8px);
-  height: var(--h-control-lg);
-  min-height: var(--h-control-lg);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin: 0 var(--space-1) var(--space-1);
-  padding: var(--space-1-5) var(--space-3);
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  text-align: left;
-  justify-content: initial;
+  justify-content: flex-start;
   -webkit-app-region: no-drag;
-  transition: background-color var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong);
-}
-.settingsBackButton:hover {
-  background: var(--state-hover-bg);
-  color: var(--foreground);
-}
-.settingsBackButton:focus-visible {
-  /* PR-SETTINGS-NAV-FOCUS-0 (round 14/15, WAWQAQ msg `f7e9d166`): the
-     `← 返回应用` link is the only way to leave Settings without a
-     mouse; without a visible focus ring keyboard-only users couldn't
-     tell it was selected. Use the same 2px accent outline +
-     `:focus-visible` recipe as the settings rows. */
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-  color: var(--foreground);
 }
 
-.settingsSidebar header {
-  min-height: 36px;
-  display: flex;
-  align-items: center;
-  padding: 0 var(--space-2-5);
-}
-
-.settingsSidebar header span {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--foreground);
-  font-size: 1.2em;
-  font-weight: var(--font-weight-bold);
-}
-
-.settingsSidebar nav {
-  min-height: 0;
-  display: grid;
-  align-content: start;
-  gap: var(--space-2-5);
-  overflow: auto;
-  padding: var(--space-2) 0 0;
-}
-
-.settingsNavGroup {
-  display: grid;
-  gap: var(--space-0-5);
-}
-
-.settingsNavGroupLabel {
-  /* PR-SETTINGS-SIDEBAR-SPACIOUS-0 (WAWQAQ msg `f7e9d166` round 2/15):
-     reference group labels are softer + more spaced out. Larger
-     leading top padding so each group reads as its own visual zone
-     instead of jamming against the prior item. */
-  display: flex;
-  align-items: center;
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: var(--tracking-wider);
-  text-transform: none;
-  color: var(--muted-foreground);
-  padding: var(--space-4) var(--space-3) var(--space-1-5);
-}
-
-.settingsNavGroupLabel::after {
-  content: none;
-}
-
-.settingsNavItem {
-  /* PR-SETTINGS-CSS-ROOT-CLEANUP-0 (WAWQAQ msg `57de86ae`): the previous
-     `grid-template-columns: 24px minmax(0,1fr) auto` allocated a trailing
-     `auto` track for the Beta badge, but on the 11 rows without a
-     badge the empty auto track still consumed a 12px gap, so the label
-     ran 12px short. Switched to flex — glyph is fixed-width, label
-     fills, badge sits right-aligned naturally. No phantom gap.
-     Height sits on the lg control tier (32px) — same tier as the
-     session-list rows, so the two sidebars share one row rhythm. */
-  width: calc(100% - 8px);
-  height: var(--h-control-lg);
-  min-height: var(--h-control-lg);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  box-shadow: none;
-  color: var(--foreground-secondary);
-  margin-inline: var(--space-1);
-  padding: var(--space-1-5) var(--space-3);
-  text-align: left;
-  justify-content: initial;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  transition: background-color var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong);
-}
-
-.settingsNavItem > .settingsNavGlyph {
-  flex-shrink: 0;
-}
-
-.settingsNavItem > strong {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* Weight lives on the item so the active rule below can bump it;
-     an explicit weight here would shadow that state change (the old
-     always-semibold rule made the active bump a dead declaration). */
-  font-weight: inherit;
-}
-
-/* PR-SETTINGS-NAV-REGROUP-0 (WAWQAQ msg `a9ef0d5d`): small chip on nav
-   items that are still in beta — matches reference's pattern of
-   surfacing maturity inline rather than relegating to a separate
-   release notes view. */
-.settingsNavBadge {
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 var(--space-1-5);
-  border-radius: var(--radius-control);
-  background: oklch(from var(--nav-active) l c h / 0.12);
-  color: var(--nav-active);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--tracking-wider);
-  text-transform: none;
-}
-
-/* PR-SETTINGS-CSS-ROOT-CLEANUP-0 (WAWQAQ msg `57de86ae`): the previous
-   reset listed `[data-active="true"]` in its selector and used
-   `!important` to wipe shadow. The active rule then had to use its own
-   `!important` to put a 3-px accent bar back. Two `!important`s fighting
-   over the same property = specificity war. Drop the active selector
-   from the reset and remove the `!important` from both places. The
-   active rule below is the single source of truth for nav shadow. */
-.settingsSidebar .settingsNavItem,
-.settingsSidebar .settingsNavItem:hover {
-  border: 0;
-  box-shadow: none;
-}
-
-.settingsNavItem:hover {
-  background: var(--state-hover-bg);
-  color: var(--foreground);
-}
-
-.settingsNavItem[data-active="true"] {
-  /* Active state via the shared --state-selected-bg token + a weight
-     bump (medium → semibold, same recipe as `.maka-list-row-name` in
-     the session sidebar). Keep the selected row neutral (WAWQAQ msg
-     49bd00e1): a leading accent rail reads like a stray status marker
-     in the Settings nav. */
-  background: var(--state-selected-bg);
-  color: var(--foreground);
-  font-weight: var(--font-weight-semibold);
-  box-shadow: none;
-}
-
-.settingsNavItem:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-  background: oklch(from var(--focus-ring) l c h / 0.04);
-}
-
-.settingsNavItem[data-active="true"] .settingsNavGlyph {
-  color: var(--foreground);
-}
-
-.settingsNavItem:disabled {
-  cursor: default;
-  opacity: var(--opacity-disabled);
-}
-
-.settingsNavGlyph {
-  /* Track = icon footprint (16px, the size the TSX renders). The old
-     24px track + 17px svg override meant nav labels started 8px to the
-     right of the back button's label (its bare 16px ArrowLeft has no
-     track); now both rows share the same icon + gap rhythm. */
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  color: var(--foreground-secondary);
-}
-
-/* PR-UI-11 (@yuejing 2026-05-22): inactive glyph stays muted; active
- * glyph is overridden above to `--foreground` for selection visibility. */
-
-.settingsFeatureStatusPage {
-  display: grid;
-  align-content: start;
-  /* #1363: same explicit column as .settingsStructuredPage (#1362) — the
-     implicit `auto` track sizes to the widest child's max-content and lets
-     one wide child widen every card past the content column. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2-5);
-}
-
-/* Status banner at the top of feature settings pages. */
-.settingsFeatureStatusBanner {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: var(--border-width-hairline) solid oklch(from var(--info) l c h / 0.32);
-  border-radius: var(--radius-surface);
-  background: oklch(from var(--info) l c h / 0.06);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
-  width: fit-content;
-  max-width: 100%;
-}
-.settingsFeatureStatusBanner strong {
-  color: var(--info-text);
-  font-weight: var(--font-weight-bold);
-  letter-spacing: var(--tracking-wide);
-}
-.settingsFeatureStatusBannerDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--info);
-  flex: 0 0 auto;
-}
-
-.settingsFeatureStatusHero {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  align-items: start;
-  gap: var(--space-2-5);
-  padding: var(--space-2-5) var(--space-3);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-3);
-}
-
-.settingsFeatureStatusIcon {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  /* Square icon plate — ratio-governed, see --radius-plate. */
-  border-radius: var(--radius-plate);
-  background: oklch(from var(--link) l c h / 0.08);
-  color: var(--link);
-}
-
-.settingsFeatureStatusHero h3 {
-  margin: 0 0 var(--space-0-5);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
-.settingsFeatureStatusHero p {
-  margin: 0;
-  max-width: 56ch;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
-}
 
 .settingsFeatureStatusList {
+  font: var(--maka-text-supporting);
   margin: 0;
   padding: 0 0 0 var(--space-3);
   display: grid;
   gap: var(--space-1);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .settingsFeatureStatusList li::marker {
   color: var(--muted-foreground);
 }
 
-.settingsFeatureStatusHeroHeading {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: 0 0 var(--space-1-5);
-}
-
-.settingsFeatureStatusHeroHeading h3 {
-  margin: 0;
-}
-
-/* PR daily-review-bundled (WAWQAQ msg `afbe542d` 2026-06-25 +
-   @kenji audit finding #6): the Daily Review settings page used to
-   stack a banner + intro hero card + settings rows + "try it now"
-   hero card — too much promo chrome for a workbench settings
-   surface. The unified `.settingsPageFooterActions` is a single
-   right-aligned action row that the page renders below the rows
-   (open Daily Review · generate now · deep). Keep the action set
-   visible and uniform regardless of how many ops the page exposes. */
-.settingsPageFooterActions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-
-/* PR audit2-bundled (@kenji audit #5 msg `e4cfbfb0`): names for the
-   inline `style={{ marginTop: N }}` patches that were sprinkled around
-   settings surfaces. Keeps the spacing decision discoverable + locked
-   in the design token surface instead of buried in JSX. */
-.settingsSurfaceAlert {
-  margin-top: var(--space-3);
-}
 
 .settingsLoadingSkeleton {
   padding: var(--space-2) 0;
   max-width: 540px;
 }
 
-.providersLoading {
+.settingsSkeletonStack {
   display: grid;
-  align-content: start;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-1);
-}
-
-.providersLoadingStrip {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.providersLoadingGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(198px, 1fr));
   gap: var(--space-2-5);
 }
 
@@ -387,42 +43,32 @@
    pull the page header into the same centered max-w-3xl column as the
    content. Before this, the header sat in `.settingsMainPane` padding
    (~34px from pane edge), while the row cards lived in the centered
-   768px column (~152px from pane edge at 1280 viewport) — the title
+   640px column — the title
    and content were visibly misaligned. Drop the mainpane padding to
    thin top/bottom so the header + content can both share the centered
    column. */
-/* PR-SETTINGS-RESTORE-SURFACE-0 (WAWQAQ msg `32ed9490` correction):
-   previous PR over-corrected — I read "no seam" as "no plate", but
-   reference's content surface is still a lighter-bg plate vs the
-   sidebar. The seam-between rule is: no visible BORDER line between
-   sidebar and content, but the content does have its own background
-   plate + rounded corners + small floating margin. Restore the
-   surface; just no border. */
+/* The settings content column is the same rounded floating plate as the
+   chat shell's content column: flush to the settings sidebar, gap on the
+   other three sides. */
 .settingsMainPane {
   position: relative;
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  box-sizing: border-box;
+  width: calc(100% - var(--agents-content-area-gap));
+  height: calc(100% - 2 * var(--agents-content-area-gap));
   margin: var(--agents-content-area-gap) var(--agents-content-area-gap) var(--agents-content-area-gap) 0;
   border: 0;
   border-radius: var(--radius-modal);
   background: var(--agents-content-area-bg);
-  box-shadow: none;
   overflow: hidden;
-  /* Traffic-light-aligned top padding so the page title sits at the
-     same Y baseline as the sidebar brand. */
-  padding: var(--space-12) 0 0;
 }
 
-/* PR-SETTINGS-REVIEW-0 fix-2: max-width centering on a grid child
-   didn't actually align the H2 with the centered column underneath.
-   Use the same edge math the content column uses
-   (`calc((100% - 768px) / 2 + 24px)`) so the header content lines up
-   with row cards regardless of viewport width. */
 .settingsPageHeader {
   min-height: 36px;
-  padding: 0 max(var(--space-6), calc((100% - 768px) / 2 + var(--space-6)));
+  /* Astryx owns the header's inline geometry. This extra block inset is the
+     Electron traffic-light clearance shared with the settings navigation. */
+  padding-top: var(--space-6);
   display: flex;
   align-items: center;
   /* X close button moved to the sidebar `返回应用` — header hosts the
@@ -437,6 +83,7 @@
 }
 
 .settingsPageHeader h2 {
+  font: var(--maka-text-display-3);
   /* PR-SETTINGS-PAGE-HEADER-POLISH-0 (round 12/15): tighten the h2
      with negative tracking + slightly softer weight.
      PR-SETTINGS-MOTION-TYPO-TOKENS-0 (round 15/15): `text-wrap:
@@ -445,10 +92,7 @@
      line. */
   margin: 0;
   color: var(--foreground);
-  font-size: 1.7333em;
-  font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
-  line-height: var(--leading-tight);
   text-wrap: balance;
 }
 
@@ -456,41 +100,11 @@
    round 15/15 `text-wrap: pretty` so the last line isn't a single
    orphan word (per baseline-ui typography rule). */
 .settingsPageHeaderDescription {
+  font: var(--maka-text-body);
   margin: 0;
   max-width: 56ch;
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
   text-wrap: pretty;
-}
-
-.settingsPageContent {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.settingsPageContentViewport {
-  height: 100%;
-  overscroll-behavior: contain;
-}
-
-/* PR-SETTINGS-SHELL-OWNS-LAYOUT-0 (2026-06-23, WAWQAQ msg `70c224f4`):
-   the page chrome (max-width column + side padding + top/bottom gutter)
-   used to live on each sub-page's own wrapper (settingsStructuredPage,
-   settingsAboutPage, settingsPermissionPage, settingsHealthPage…),
-   forcing per-page CSS edits whenever the chrome shifts. The shell
-   now owns it via `.settingsPageContentInner` — the single
-   OverlayScrollArea inner div every page renders through. Sub-pages
-   only manage their own row stack.
-
-   WAWQAQ msg `eafc18a1` correction: reference rows DO have 1px borders
-   + small radius, not flat. Earlier flat-row recipe (PR-PAGE-BODY-0)
-   was wrong; this PR reinstates per-row borders with the reference
-   recipe — 1px subtle border, 8px radius, white-ish bg, 8px gap. */
-.settingsPageContentInner {
-  max-width: 768px;
-  margin: 0 auto;
-  padding: var(--space-10) var(--space-6) var(--space-16);
 }
 
 /* PR-SETTINGS-CSS-ROOT-CLEANUP-0 (WAWQAQ msg `57de86ae`): the renamed
@@ -502,13 +116,14 @@
    settings `:active` rule below uses it directly. */
 
 /* PR-SETTINGS-NO-PANE-BORDER-0 (WAWQAQ msg `d0e7dfb3`): nested
-   card-in-card was the previous problem — `.settingsStructuredPage`
-   was a card AND it contained `<SettingsRows>` cards AND orphan
+   card-in-card was the previous problem — the page container
+   was a card AND it contained grouped Astryx cards AND orphan
    `.settingsFormRow` direct children. Reference shows multiple
-   GROUPED cards stacked vertically. So `.settingsStructuredPage` is
+   GROUPED cards stacked vertically. So `.settingsPageStack` (owned by the
+   SettingsPage kit component in settings-section.tsx) is
    no longer a card — it's just the vertical container with gap, and
    `.settingsRows` is the ONLY card primitive. */
-.settingsStructuredPage {
+.settingsPageStack {
   display: grid;
   align-content: start;
   /* #1362: explicit column. The implicit `auto` track sizes to the widest
@@ -518,36 +133,41 @@
      minmax(0, 1fr) the track is the content column, and the .settingsRows
      query containers below actually see narrow widths. */
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
+  /* Sections carry titles now (see settings-section.tsx), so the between-group
+     gap has to out-measure the title-to-body gap inside a section or the two
+     rhythms read as one flat stack. The open row idiom (no card chrome) needs
+     the larger step: 32px outside / 8px inside — the Astryx settings-dialog
+     template's own section rhythm. */
+  gap: var(--space-8);
   background: transparent;
 }
 
-/* Nested `.settingsStructuredPage` (merged pages like 外观 stack two
-   sub-pages, each wrapping in their own `.settingsStructuredPage`):
+/* Nested `.settingsPageStack` (merged pages like 外观 stack two
+   sub-pages, each wrapping in their own SettingsPage):
    the inner one just passes through. */
-.settingsStructuredPage .settingsStructuredPage {
-  gap: var(--space-4);
+.settingsPageStack .settingsPageStack {
+  gap: var(--space-8);
 }
 
-/* PR-SETTINGS-SWEEP-0: section heading for merged pages. Mirrors
-   reference's small uppercase sub-section tag.
-   PR-SETTINGS-REVIEW-0 alignment fix: flush-left with the card stack
-   (cards carry their own L padding internally), and bump the heading
-   to 12/2px tracking so it reads as a real sub-section break rather
-   than a hairline. */
-.settingsBackButton:active,
-.settingsNavItem:active {
-  background: var(--state-selected-bg);
+/* ---- The section unit (settings-section.tsx) ---------------------------
+   One labeled group: header, then either the `.settingsRows` card or a bare
+   body. Every settings page is a flat list of these. */
+.settingsSection {
+  display: grid;
+  align-content: start;
+  /* Same explicit column as the page above, for the same reason: a wide row
+     (a long mono path, a scrollable pre) must not widen the section. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
 }
 
-/* PR-SETTINGS-A11Y-POLISH-0 — respect prefers-reduced-motion for the
-   nav chrome. The row/field primitives carry their own reduced-motion
-   block in rows.css. */
-@media (prefers-reduced-motion: reduce) {
-  .settingsNavItem {
-    transition: none !important;
-  }
-  .settingsModal [role="switch"] > span {
-    transition: none;
-  }
+.settingsSectionBodyHidden {
+  display: none;
+}
+
+.settingsSectionBody {
+  display: grid;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
 }

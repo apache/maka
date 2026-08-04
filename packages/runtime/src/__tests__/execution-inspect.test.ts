@@ -4,10 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { AgentRunEvent, AgentRunHeader, RuntimeEvent } from '@maka/core';
-import { createAgentRunStore, createRuntimeEventStore, createSessionStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage';
 import {
-  AGENT_RUN_INSPECT_DOCUMENT_VERSION,
-  SESSION_INSPECT_DOCUMENT_VERSION,
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
+import {
   inspectAgentRunDocument,
   inspectSessionDocument,
   renderAgentRunInspectTree,
@@ -18,8 +20,8 @@ describe('versioned execution inspect documents', () => {
   test('reports unknown tool outcomes without copying Runtime payloads', async () => {
     await withWorkspace(async (root) => {
       const sessionStore = createSessionStore(root);
-      const runStore = createAgentRunStore(root);
-      const runtimeStore = createRuntimeEventStore(root);
+      const runStore = createLegacyAgentRunStoreForTest(root);
+      const runtimeStore = createLegacyRuntimeEventStoreForTest(root);
       const session = await sessionStore.create({
         cwd: '/tmp/workspace',
         backend: 'fake',
@@ -60,7 +62,7 @@ describe('versioned execution inspect documents', () => {
         agentRunId: RUN_ID,
       });
 
-      assert.equal(document.schemaVersion, AGENT_RUN_INSPECT_DOCUMENT_VERSION);
+      assert.equal(document.schemaVersion, 'maka.agent_run_inspect.v1');
       assert.deepEqual(document.tools.callsWithoutResponse, [
         {
           toolCallId: 'tool-pending',
@@ -86,8 +88,8 @@ describe('versioned execution inspect documents', () => {
   test('projects a Session as bounded AgentRun documents without reading messages', async () => {
     await withWorkspace(async (root) => {
       const sessionStore = createSessionStore(root);
-      const runStore = createAgentRunStore(root);
-      const runtimeStore = createRuntimeEventStore(root);
+      const runStore = createLegacyAgentRunStoreForTest(root);
+      const runtimeStore = createLegacyRuntimeEventStoreForTest(root);
       const session = await sessionStore.create({
         cwd: '/tmp/workspace',
         name: 'Inspectable session',
@@ -122,7 +124,7 @@ describe('versioned execution inspect documents', () => {
         session.id,
       );
 
-      assert.equal(document.schemaVersion, SESSION_INSPECT_DOCUMENT_VERSION);
+      assert.equal(document.schemaVersion, 'maka.session_inspect.v1');
       assert.equal(document.session.name, 'Inspectable session');
       assert.equal(document.session.revisionRootSessionId, 'root-session');
       assert.equal(document.session.revisionParentSessionId, 'previous-version');

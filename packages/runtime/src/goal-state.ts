@@ -17,16 +17,19 @@
  *          → max_iterations (total turn ceiling)
  */
 
-export type GoalStatus =
-  | 'active'
-  | 'waiting'
-  | 'achieved'
-  | 'impossible'
-  | 'cleared'
-  | 'paused'
-  | 'stalled'
-  | 'budget_limited'
-  | 'max_iterations';
+import {
+  GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_REASON_TEXT_LIMIT,
+  type GoalStatus,
+  type GoalTextLimit,
+} from '@maka/core/goal';
+
+export {
+  GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_REASON_TEXT_LIMIT,
+  type GoalStatus,
+  type GoalTextLimit,
+} from '@maka/core/goal';
 
 /** Terminal statuses — a goal in one of these states will not continue. */
 export const TERMINAL_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set<GoalStatus>([
@@ -51,7 +54,10 @@ export interface GoalState {
   readonly consecutiveNoProgress: number;
   /** Force-stop after this many consecutive no-progress turns (CC's 8). */
   readonly blockCap: number;
-  /** Optional token budget; goal → budget_limited when exceeded. */
+  /**
+   * Optional working-turn token budget; goal → budget_limited when exceeded.
+   * Evaluator calls are usage-metered separately and do not spend this budget.
+   */
   readonly tokenBudget?: number;
   /** Token count observed when the goal was set (baseline for spend). */
   readonly tokensAtStart: number;
@@ -136,6 +142,31 @@ export interface GoalManagerDeps {
 export const DEFAULT_MAX_ITERATIONS = 50;
 export const DEFAULT_BLOCK_CAP = 8;
 
+export function isGoalTextWithinLimit(value: string, limit: GoalTextLimit): boolean {
+  return value.length <= limit.codeUnits && Buffer.byteLength(value, 'utf8') <= limit.utf8Bytes;
+}
+
+export function truncateGoalText(value: string, limit: GoalTextLimit): string {
+  if (isGoalTextWithinLimit(value, limit)) return value;
+  let result = '';
+  let codeUnits = 0;
+  let utf8Bytes = 0;
+  for (const character of value) {
+    const nextCodeUnits = character.length;
+    const nextUtf8Bytes = Buffer.byteLength(character, 'utf8');
+    if (
+      codeUnits + nextCodeUnits > limit.codeUnits ||
+      utf8Bytes + nextUtf8Bytes > limit.utf8Bytes
+    ) {
+      break;
+    }
+    result += character;
+    codeUnits += nextCodeUnits;
+    utf8Bytes += nextUtf8Bytes;
+  }
+  return result;
+}
+
 interface GoalRecord {
   state: GoalState;
   controlLease: GoalControlLease;
@@ -170,9 +201,13 @@ export class GoalManager {
     options?: { renewControlLease?: boolean },
   ): GoalState {
     const previous = record.state.status;
+    const boundedPatch =
+      patch.lastReason === undefined
+        ? patch
+        : { ...patch, lastReason: truncateGoalText(patch.lastReason, GOAL_REASON_TEXT_LIMIT) };
     const committed = Object.freeze({
       ...record.state,
-      ...patch,
+      ...boundedPatch,
       revision: record.state.revision + 1,
     });
     record.state = committed;
@@ -193,6 +228,9 @@ export class GoalManager {
       tokensAtStart?: number;
     },
   ): GoalCreateResult {
+    if (!condition.trim() || !isGoalTextWithinLimit(condition, GOAL_CONDITION_TEXT_LIMIT)) {
+      throw new RangeError('Goal condition exceeds its shared text limit');
+    }
     const existing = this.goals.get(sessionId)?.state;
     if (existing && !TERMINAL_GOAL_STATUSES.has(existing.status)) {
       return { kind: 'unfinished', goal: existing };
@@ -359,9 +397,10 @@ export class GoalManager {
     );
   }
 
-  resume(sessionId: string): GoalState | undefined {
+  resume(sessionId: string, checkpoint?: GoalCheckpoint): GoalState | undefined {
     const record = this.goals.get(sessionId);
     if (!record || record.state.status !== 'paused') return undefined;
+    if (checkpoint && !this.matches(sessionId, checkpoint)) return undefined;
     return this.commit(
       record,
       { status: 'active', pausedAt: undefined },

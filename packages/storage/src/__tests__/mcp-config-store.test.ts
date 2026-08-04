@@ -41,9 +41,18 @@ test('serializes concurrent updates without corrupting the file', async () => {
       store.upsert(`s-${index}`, { command: `cmd-${index}` }),
     ),
   );
-  assert.equal(Object.keys((await store.get()).mcpServers).length, 20);
+  const saved = await store.get();
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(saved.mcpServers).map(([id, server]) => [
+        id,
+        'command' in server ? server.command : undefined,
+      ]),
+    ),
+    Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`s-${index}`, `cmd-${index}`])),
+  );
   const text = await readFile(join(root, 'mcp.json'), 'utf8');
-  assert.doesNotThrow(() => JSON.parse(text));
+  assert.deepEqual(JSON.parse(text), saved);
 });
 
 test('rejects corrupt files and unsafe or invalid configs', async () => {

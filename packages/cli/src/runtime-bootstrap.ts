@@ -25,6 +25,7 @@ import {
   createProviderRequestCaptureRecorder,
   createFilesystemWorkerLaunchSpecProvider,
   createLocalContinuationSafetyInspector,
+  createConfiguredSubagentCatalog,
   drainGoalTurn,
   FilesystemWorkerClient,
   buildDefaultContextBudgetPolicy,
@@ -44,6 +45,7 @@ import {
   generateSessionTitle as generateRuntimeSessionTitle,
   loadHistoryCompactBlocksFromArtifacts,
   replayPlanItemsToModelMessages,
+  recoverAgentGraphSupervisorContextOverflow,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
   projectEffectiveProductToolSurface,
@@ -53,14 +55,15 @@ import {
   type HostCapabilitiesResolver,
   type MakaTool,
   type InvocationResult,
+  type InvocationSource,
   type ShellRunUpdate,
   type SkillSource,
   type ModelMessage,
 } from '@maka/runtime';
 import {
-  createAgentRunStore,
+  createSqliteAgentRunStore,
   createAttachmentByteReader,
-  createArtifactStore,
+  createSqliteArtifactStore,
   createAutomationStore,
   createConnectionStore,
   createFileCredentialStore,
@@ -69,8 +72,9 @@ import {
   createGitWorktreeChildExecutor,
   createReadImageSnapshotter,
   createSessionStore,
+  isSessionNotFoundError,
   createSettingsStore,
-  createShellRunStore,
+  createSqliteShellRunStore,
   assertSessionBundleRootLayout,
   type ForeignSessionStore,
   persistProviderRequestCaptureArtifact,
@@ -164,9 +168,10 @@ export interface SessionRecapGenerator {
 }
 
 export interface CreateMakaCliRuntimeContextInput {
-  surface: 'tui' | 'run';
+  surface: 'tui' | 'run' | 'activation';
   /** Explicit per-run editing surface override; defaults to Edit/Write. */
   editingProtocol?: EditingProtocol;
+
   /** Legacy root; both new roots default to this path. */
   workspaceRoot: string;
   /** Optional portable session-owned state root. */
@@ -182,6 +187,10 @@ export interface CreateMakaCliRuntimeContextInput {
   /** Canonical cwd used for one resumed session without rewriting its stored header. */
   sessionCwdOverride?: { sessionId: string; cwd: string };
   runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
+  /** Invocation provenance used by hosted activation callers. */
+  runtimeSource?: InvocationSource;
+  /** Enables authoritative safe-boundary continuation for hosted activation callers. */
+  safeBoundaryResumeEnabled?: boolean;
   onSessionTitleChanged?: (sessionId: string) => void;
   /**
    * Optional cron executor. When provided, the Automation tool advertises the
@@ -229,17 +238,20 @@ export async function createMakaCliRuntimeContext(
   }
   await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const store = createSessionStore(stateRoot);
-  const runStore = createAgentRunStore(stateRoot);
+  const runStore = createSqliteAgentRunStore(stateRoot);
   const runtimePersistence = await openRuntimeEventPersistence({
     workspaceRoot: stateRoot,
-    // Graph execution can dispatch durable tools from both the supervisor and
-    // child agents. Those tool facts must cross the SQLite atomic boundary;
-    // the legacy JSONL event store intentionally rejects them.
-    sqliteCanonical: agentGraphEnabled || process.env.MAKA_RUNTIME_SQLITE_CANONICAL === '1',
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
-  const shellRunStore = createShellRunStore(stateRoot);
-  const artifactStore = createArtifactStore(stateRoot);
+  const shellRunStore = createSqliteShellRunStore(stateRoot);
+  await Promise.all([runStore.ready?.(), shellRunStore.ready()]).catch(async (error) => {
+    await store.close?.().catch(() => {});
+    runtimePersistence.close();
+    runStore.close?.();
+    shellRunStore.close();
+    throw error;
+  });
+  const artifactStore = createSqliteArtifactStore(stateRoot);
   const agentGraphControlStore = agentGraphEnabled
     ? createAgentGraphControlStore(stateRoot)
     : undefined;
@@ -252,6 +264,10 @@ export async function createMakaCliRuntimeContext(
   const connectionStore = createConnectionStore(configRoot);
   const credentialStore = createFileCredentialStore(configRoot);
   const settingsStore = createSettingsStore(configRoot);
+  const subagentCatalog = createConfiguredSubagentCatalog({
+    getSettings: () => settingsStore.get(),
+    getConnection: (slug) => connectionStore.get(slug),
+  });
   // Read-only scanner over other agents' local session stores (~/.claude,
   // ~/.codex). Independent of the Maka workspace — takes no workspaceRoot.
   const foreignSessions = createForeignSessionStore();
@@ -704,6 +720,7 @@ export async function createMakaCliRuntimeContext(
                   toolCallId: childInput.toolCallId,
                 },
                 agentProfile: childInput.agentProfile,
+                ...(childInput.subagentId ? { subagentId: childInput.subagentId } : {}),
                 prompt: childInput.prompt,
                 ...(childInput.swarm ? { swarm: childInput.swarm } : {}),
                 abortSignal: childInput.abortSignal,
@@ -745,6 +762,10 @@ export async function createMakaCliRuntimeContext(
           }),
         providerOptions: buildProviderOptions(ready.connection, ready.model, header.thinkingLevel),
       }),
+      // The canonical metering sink (#1679). Without it this composition root
+      // produces diagnostics and no accounting at all — for `/compact` and for
+      // ordinary sends alike.
+      ...(ctx.recordModelCallAttempt ? { recordModelCallAttempt: ctx.recordModelCallAttempt } : {}),
       recordHistoryCompactCheckpoint: ctx.recordHistoryCompactCheckpoint,
       loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
       allowMidTurnHistoryCompaction: ctx.allowMidTurnHistoryCompaction,
@@ -811,9 +832,14 @@ export async function createMakaCliRuntimeContext(
       : {}),
     shellRuns,
     backends,
-    safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
+    subagentCatalog,
+    runtimeSource: input.runtimeSource ?? (input.surface === 'activation' ? 'gateway' : undefined),
+    safeBoundaryResumeEnabled:
+      input.safeBoundaryResumeEnabled ??
+      (input.surface === 'activation' || process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1'),
     onContinuationLifecycleEvent: (event) => {
-      console.info('[runtime-resume]', JSON.stringify(event));
+      const writeDiagnostic = input.surface === 'activation' ? console.error : console.info;
+      writeDiagnostic('[runtime-resume]', JSON.stringify(event));
     },
     inspectContinuationSafety: createLocalContinuationSafetyInspector({
       readSessionCwd: async (sessionId) => (await store.readHeader(sessionId)).cwd,
@@ -899,7 +925,14 @@ export async function createMakaCliRuntimeContext(
       activityRegistry: goalContinuation.activities,
       wakeStore: agentGraphControlStore,
       readSnapshot: (rootSessionId) => agentGraphCoordinator!.getSnapshot(rootSessionId),
-      startTurn: async (sessionId, message, activity, abortSignal) => {
+      startTurn: async (sessionId, message, activity, abortSignal, isCurrent) => {
+        if (!(await isCurrent())) {
+          return {
+            kind: 'superseded',
+            turnId: message.turnId,
+            reason: 'Agent graph supervisor checkpoint was superseded before execution.',
+          };
+        }
         let stopPromise: Promise<void> | undefined;
         const stop = (): void => {
           stopPromise ??= runtime.stopSession(sessionId, { source: 'graph_supervisor' });
@@ -917,6 +950,15 @@ export async function createMakaCliRuntimeContext(
           await stopPromise;
         }
       },
+      isSessionDeliverable: async (sessionId) => {
+        try {
+          const header = await store.readHeader(sessionId);
+          return !header.isArchived && header.status !== 'archived';
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return false;
+          throw error;
+        }
+      },
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {
         const runs = (await runStore.listSessionRuns(rootSessionId)).filter(
           (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
@@ -928,41 +970,13 @@ export async function createMakaCliRuntimeContext(
         }
         return runs[0]?.status ?? 'missing';
       },
-      recoverContextOverflow: async (rootSessionId, { abortSignal }) => {
-        abortSignal.throwIfAborted();
-        let recovery:
-          | {
-              estimatedTokensBefore?: number;
-              estimatedTokensAfter?: number;
-              droppedTurns?: number;
-              droppedEvents?: number;
-              historyCompactedEvents?: number;
-              historyCompactBlocksWritten?: number;
-            }
-          | undefined;
-        for await (const event of runtime.compactSession(rootSessionId, {
-          turnId: randomUUID(),
-          minRecentTurns: 0,
-        })) {
-          abortSignal.throwIfAborted();
-          if (event.type === 'token_usage' && event.contextBudget) {
-            const diagnostic = event.contextBudget;
-            recovery = {
-              estimatedTokensBefore: diagnostic.estimatedTokensBefore,
-              estimatedTokensAfter: diagnostic.estimatedTokensAfter,
-              droppedTurns: diagnostic.droppedTurns,
-              droppedEvents: diagnostic.droppedEvents,
-              ...(diagnostic.historyCompactedEvents !== undefined
-                ? { historyCompactedEvents: diagnostic.historyCompactedEvents }
-                : {}),
-              ...(diagnostic.historyCompactBlocksWritten !== undefined
-                ? { historyCompactBlocksWritten: diagnostic.historyCompactBlocksWritten }
-                : {}),
-            };
-          }
-        }
-        return recovery;
-      },
+      recoverContextOverflow: (rootSessionId, { abortSignal }) =>
+        recoverAgentGraphSupervisorContextOverflow({
+          rootSessionId,
+          compactTurnId: randomUUID(),
+          abortSignal,
+          compactSession: (sessionId, input) => runtime.compactSession(sessionId, input),
+        }),
       newId: randomUUID,
       onDiagnostic: (diagnostic) => {
         console.warn('[agent-graph-supervisor-wake]', JSON.stringify(diagnostic));
@@ -1119,6 +1133,9 @@ export async function createMakaCliRuntimeContext(
       shellRunListeners.clear();
       await store.close?.();
       runtimePersistence.close();
+      runStore.close?.();
+      shellRunStore.close();
+      artifactStore.close?.();
     },
   };
 }

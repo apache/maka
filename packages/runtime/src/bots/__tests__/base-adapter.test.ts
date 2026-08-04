@@ -71,7 +71,18 @@ describe('BaseBotAdapter', () => {
       receivedAt: 42,
     });
 
-    assert.equal(messages.length, 1);
+    assert.deepEqual(messages, [
+      {
+        platform: 'telegram',
+        userId: 'u1',
+        userName: 'Ada',
+        chatId: 'c1',
+        isGroup: false,
+        text: 'hello',
+        sourceMessageId: 'm1',
+        receivedAt: 42,
+      },
+    ]);
     assert.equal(adapter.getStatus().lastEventAt, 42);
   });
 

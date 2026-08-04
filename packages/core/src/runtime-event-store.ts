@@ -1,6 +1,19 @@
 import type { RuntimeEvent } from './runtime-event.js';
+import type {
+  ContinuationClaimV1,
+  ImmutableRuntimePrefixV1,
+  RuntimeBoundaryDigest,
+} from './runtime-boundary.js';
+import type {
+  WorkspaceEpochRecordV1,
+  WorkspaceHeadRecordV1,
+  WorkspaceProjectionRebuildResult,
+  WorkspaceVersionRecordV1,
+} from './workspace-version-authority.js';
+import { WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1 } from './workspace-version-authority.js';
 
 export const TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 = 'tool_recovery_bundle_v1' as const;
+export const RUNTIME_CONTINUATION_AUTHORITY_V1 = 'runtime_continuation_authority_v1' as const;
 
 export interface RuntimeRecoveryBundleCommit {
   operationId: string;
@@ -39,10 +52,68 @@ export interface RuntimeEventStore {
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   /** Physical append-log rows only; excludes mutable partial snapshots. */
   readImmutableRuntimeEvents?(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  /** Versioned physical prefix with event-seq high-water and canonical digest. */
+  readImmutableRuntimePrefix?(input: {
+    sessionId: string;
+    runId: string;
+    upToEventSeq?: number;
+  }): Promise<ImmutableRuntimePrefixV1>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
 }
 
 export interface RuntimeRecoveryBundleStore extends RuntimeEventStore {
   readonly recoveryBundleCapability: typeof TOOL_RECOVERY_BUNDLE_CAPABILITY_V1;
   commitToolRecoveryBundle(input: RuntimeRecoveryBundleCommit): Promise<void>;
+}
+
+export type ContinuationClaimResult =
+  | { kind: 'acquired'; claim: ContinuationClaimV1 }
+  | { kind: 'existing'; claim: ContinuationClaimV1 }
+  | { kind: 'conflict'; claim: ContinuationClaimV1 };
+
+export interface ContinuationClaimStateV1 {
+  claim: ContinuationClaimV1;
+  startEventId?: string;
+  /** Store-owned classification of the narrow command that committed event 1. */
+  startKind?: 'runtime_admission' | 'claim_repair';
+}
+
+export interface RuntimeContinuationAuthorityStore extends RuntimeEventStore {
+  readonly continuationAuthorityCapability: typeof RUNTIME_CONTINUATION_AUTHORITY_V1;
+  readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  readImmutableRuntimePrefix(input: {
+    sessionId: string;
+    runId: string;
+    upToEventSeq?: number;
+  }): Promise<ImmutableRuntimePrefixV1>;
+  claimContinuation(input: { claim: ContinuationClaimV1 }): Promise<ContinuationClaimResult>;
+  readContinuationClaimByBoundary(
+    boundaryDigest: RuntimeBoundaryDigest,
+  ): Promise<ContinuationClaimV1 | undefined>;
+  readContinuationClaimStateByBoundary(
+    boundaryDigest: RuntimeBoundaryDigest,
+  ): Promise<ContinuationClaimStateV1 | undefined>;
+  listContinuationClaimsForRecovery(sessionId: string): Promise<ContinuationClaimStateV1[]>;
+  commitContinuationStart(input: {
+    claim: ContinuationClaimV1;
+    event: RuntimeEvent;
+  }): Promise<{ created: boolean; runtimeEventSeq: number }>;
+  commitContinuationRepairStart(input: {
+    claim: ContinuationClaimV1;
+    event: RuntimeEvent;
+  }): Promise<{ created: boolean; runtimeEventSeq: number }>;
+}
+
+export interface RuntimeWorkspaceVersionAuthorityStore extends RuntimeEventStore {
+  readonly workspaceVersionAuthorityCapability: typeof WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
+  readWorkspaceEpoch(
+    workspaceId: string,
+    workspaceEpochId: string,
+  ): Promise<WorkspaceEpochRecordV1 | undefined>;
+  readWorkspaceVersion(workspaceVersionId: string): Promise<WorkspaceVersionRecordV1 | undefined>;
+  readWorkspaceHead(
+    workspaceId: string,
+    workspaceEpochId: string,
+  ): Promise<WorkspaceHeadRecordV1 | undefined>;
+  rebuildWorkspaceVersionProjections(): Promise<WorkspaceProjectionRebuildResult>;
 }

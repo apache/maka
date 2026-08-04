@@ -20,8 +20,10 @@ export const HARBOR_ORACLE_EXECUTION_POLICY = {
   },
   verifier: {
     importPath: 'maka_verifier:MakaVerifier',
-    maxAttempts: 2,
+    maxAttempts: 3,
     defaultAttemptTimeoutSec: 600,
+    totalAttemptBudgetMultiplier: 2,
+    retryBackoffSec: 2,
     retryGraceSec: 120,
     timeoutPolicy: 'candidate_timeout_without_replay',
   },

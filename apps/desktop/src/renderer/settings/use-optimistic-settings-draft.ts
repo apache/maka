@@ -9,8 +9,7 @@ import {
 /**
  * Shared optimistic last-write-wins draft for Settings pages.
  *
- * Three Settings pages (network proxy, open gateway, and usage)
- * had each hand-copied the same block: a local draft mirrored on a ref, a
+ * Several Settings pages need the same block: a local draft mirrored on a ref, a
  * `persistedRef`, a `pendingSaveCount`, a monotonic `saveTicket`, a
  * `commitDraft` helper, and a prop→state sync effect. This hook owns that
  * machinery once (via `createOptimisticDraftController`) so no page reinvents
@@ -31,6 +30,7 @@ export interface OptimisticSettingsDraft<T> {
   draftRef: { current: T };
   mountedRef: RefObject<boolean>;
   saving: boolean;
+  edit(patch: Partial<T>): void;
   update(patch: Partial<T>): Promise<boolean>;
 }
 
@@ -83,6 +83,7 @@ export function useOptimisticSettingsDraft<T>(
     draftRef: controller.draftRef,
     mountedRef,
     saving,
+    edit: controller.edit,
     update: controller.update,
   };
 }

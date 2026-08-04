@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createArtifactStore, type CreateArtifactInput } from '../../artifact-store.js';
+import {
+  createSqliteArtifactStore as createArtifactStore,
+  type CreateArtifactInput,
+} from '../../artifact-store.js';
 import {
   withArtifactWriterLock,
   withLeaseBoundArtifactWriterLock,
@@ -74,16 +77,20 @@ async function runAuthorityLockHolder(workspaceRoot: string, rootId: string): Pr
 
 async function runPublicWriter(workspaceRoot: string, sessionId: string): Promise<void> {
   const store = createArtifactStore(workspaceRoot);
-  await store.list(sessionId);
-  await send({ type: 'ready' });
-  const command = await waitForCreateCommand();
-  const mutation = store.create({
-    ...command.input,
-    content: repeatedPayload(command.payloadUnit, command.payloadBytes),
-  });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await send({ type: 'queued' });
-  await send({ type: 'created', record: await mutation });
+  try {
+    await store.list(sessionId);
+    await send({ type: 'ready' });
+    const command = await waitForCreateCommand();
+    const mutation = store.create({
+      ...command.input,
+      content: repeatedPayload(command.payloadUnit, command.payloadBytes),
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await send({ type: 'queued' });
+    await send({ type: 'created', record: await mutation });
+  } finally {
+    store.close?.();
+  }
 }
 
 function waitForRelease(): Promise<void> {

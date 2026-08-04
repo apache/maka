@@ -1,11 +1,14 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import tailwindcss from '@tailwindcss/vite';
 import type { StorybookConfig } from '@storybook/react-vite';
 import { mergeConfig, type UserConfig } from 'vite';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const UI_SRC = resolve(REPO_ROOT, 'packages/ui/src');
+const STORYBOOK_NODE_CRYPTO_BOUNDARY = resolve(
+  REPO_ROOT,
+  'apps/desktop/.storybook/node-crypto-boundary.ts',
+);
 
 const config: StorybookConfig = {
   stories: [
@@ -21,14 +24,18 @@ const config: StorybookConfig = {
   },
   async viteFinal(baseConfig) {
     return mergeConfig(baseConfig, {
-      plugins: [tailwindcss()],
       resolve: {
         alias: [
+          // @maka/core's public barrel also exports the Node-only runtime
+          // boundary. Product stories do not execute it, but ESM re-exports
+          // still evaluate that module in the preview. Keep Storybook's
+          // browser boundary explicit and fail closed if a story ever tries
+          // to hash runtime state.
+          { find: 'node:crypto', replacement: STORYBOOK_NODE_CRYPTO_BOUNDARY },
           { find: '@maka/ui/icons', replacement: resolve(UI_SRC, 'icons.tsx') },
           { find: '@maka/ui/artifact-preview-registry', replacement: resolve(UI_SRC, 'artifact-preview-registry.ts') },
           { find: '@maka/ui/assistant-stream', replacement: resolve(UI_SRC, 'assistant-stream.ts') },
           { find: '@maka/ui/maka-uri', replacement: resolve(UI_SRC, 'maka-uri.ts') },
-          { find: '@maka/ui/smooth-stream', replacement: resolve(UI_SRC, 'smooth-stream.ts') },
           { find: /^@maka\/ui$/, replacement: resolve(UI_SRC, 'index.ts') },
         ],
       },

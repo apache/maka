@@ -13,7 +13,6 @@ import {
   startActiveExecutionBoundaryRead,
 } from '../../renderer/use-active-execution-boundary.js';
 import { deriveDesktopExecutionBoundarySurface } from '../../renderer/desktop-execution-boundary-surface.js';
-import { readRendererShellSource } from './renderer-shell-source-helpers.js';
 
 const readOnly = {
   kind: 'managed',
@@ -158,24 +157,6 @@ describe('A boundary read that fails (#1629)', () => {
     );
   });
 
-  it('turns the unreadable state into something on screen, with a way back', async () => {
-    const shell = await readRendererShellSource('app-shell.tsx');
-    const composerRegion = await readRendererShellSource('chat-composer-region.tsx');
-
-    // Only once the read has given up - a read still in flight has nothing to
-    // report - and never over the onboarding surface, which owns the composer.
-    assert.match(
-      shell,
-      /activeId && activeExecutionBoundaryUnreadable && !onboardingComposerHidden/,
-    );
-    assert.match(shell, /onRetry: \(\) => reloadActiveExecutionBoundary\(activeId\)/);
-    assert.match(shell, /boundaryUnreadableNotice=\{boundaryUnreadableNotice\}/);
-    // The notice is the only thing standing between the user and a window with
-    // no input in it, so it must carry both the reason and the retry.
-    assert.match(composerRegion, /boundaryUnreadableNotice\.title/);
-    assert.match(composerRegion, /boundaryUnreadableNotice\.detail/);
-    assert.match(composerRegion, /onClick=\{boundaryUnreadableNotice\.onRetry\}/);
-  });
 });
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {

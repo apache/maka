@@ -2,47 +2,10 @@ import type { PlanReminder } from '@maka/core';
 import type { CSSProperties } from 'react';
 import { Blocks, Settings, SquarePen, Timer } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
-import { cn } from './ui.js';
-import { cva } from 'class-variance-authority';
-import { Button as BaseButton } from '@base-ui/react/button';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
-
-const navRowVariants = cva(
-  [
-    'min-h-[var(--h-control-lg)] gap-2 rounded-sm border-0 bg-transparent px-1.5 py-0.5',
-    'text-left text-sm font-medium text-[var(--foreground-secondary)]',
-    // Glyphs pin to the 80%-ink chrome tone (same as titlebar icon actions)
-    // instead of inheriting: the darwin glass override forces row TEXT to
-    // full foreground, and icons must not follow it.
-    '[&_.maka-nav-icon]:text-[var(--foreground-secondary)]',
-    'transition-[background-color,color] duration-[var(--duration-base)] ease-[var(--ease-out-strong)]',
-    'hover:bg-[var(--state-hover-bg)] hover:text-foreground',
-    'data-[active=true]:bg-[var(--state-selected-bg)] data-[active=true]:font-semibold data-[active=true]:text-foreground data-[active=true]:shadow-none',
-    'data-[active=true]:[&_.maka-nav-icon]:text-foreground',
-    '[&_.maka-nav-count]:bg-[var(--state-hover-bg)] [&_.maka-nav-count]:text-[var(--muted-foreground)]',
-    'data-[active=true]:[&_.maka-nav-count]:bg-[var(--state-selected-bg)] data-[active=true]:[&_.maka-nav-count]:text-foreground',
-    'aria-disabled:cursor-not-allowed aria-disabled:opacity-55 aria-disabled:hover:bg-transparent',
-    'data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-55 data-[disabled=true]:hover:bg-transparent',
-  ],
-  {
-    variants: {
-      tone: {
-        default: '',
-        newTask: 'text-foreground',
-      },
-    },
-    defaultVariants: {
-      tone: 'default',
-    },
-  },
-);
-
-const settingsButtonClass =
-  'w-full min-w-0 gap-2 rounded-sm border-0 bg-transparent px-1.5 py-1.5 ' +
-  'text-left text-sm font-medium text-[var(--foreground-secondary)] ' +
-  'transition-[background-color,color] duration-[var(--duration-base)] ease-[var(--ease-out-strong)] ' +
-  'hover:bg-[var(--state-hover-bg)] hover:text-foreground';
+import { Button } from '@astryxdesign/core/Button';
+import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 
 export function SessionSidebarNav(props: {
   selection: NavSelection;
@@ -60,48 +23,43 @@ export function SessionSidebarNav(props: {
     (reminder) => reminder.status !== 'completed',
   ).length;
 
+  // Always SideNavItem — expanded and collapsed. Astryx collapse context turns
+  // these into icon-only slots without remounting a different control recipe
+  // (which read as a squeeze when the rail previously swapped to IconButton).
+  //
+  // SideNavSection, like the footer below, rather than a bare fragment in a
+  // product div: the section is what owns the space BETWEEN nav rows
+  // (`items` → --spacing-0-5). Handed to `topContent` as a plain div these three
+  // were the only group on the rail outside that authority, so they stacked
+  // edge to edge — invisible expanded, where the label separates the rows, and
+  // plainly three-icons-as-one-slab at 48px. The header is hidden because the
+  // rail landmark already names the panel; the title stays for a11y.
   return (
-    <nav className="maka-sidebar-modules" aria-label={copy.mainLabel}>
-      <BaseButton
-        className={cn('maka-nav-row maka-nav-new-task', navRowVariants({ tone: 'newTask' }))}
-        aria-label={copy.newTask}
-        type="button"
+    <SideNavSection title={copy.mainLabel} isHeaderHidden className="maka-session-panel-top">
+      <SideNavItem
+        label={copy.newTask}
+        icon={SquarePen}
+        size="md"
         onClick={props.onNew}
-      >
-        <SquarePen className="maka-nav-icon" aria-hidden="true" />
-        <span>{copy.newTask}</span>
-        <kbd className="maka-nav-kbd" aria-hidden="true">
-          ⌘ N
-        </kbd>
-      </BaseButton>
-      <BaseButton
-        className={cn('maka-nav-row', navRowVariants())}
-        data-active={extensionsActive}
-        aria-current={extensionsActive ? 'page' : undefined}
-        aria-label={copy.extensions}
-        type="button"
+        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+      />
+      <SideNavItem
+        label={copy.extensions}
+        icon={Blocks}
+        size="md"
+        isSelected={extensionsActive}
         onClick={() => props.onSelect({ section: 'extensions', module: moduleMemory.extensions })}
-      >
-        <Blocks className="maka-nav-icon" aria-hidden="true" />
-        <span>{copy.extensions}</span>
-      </BaseButton>
-      <BaseButton
-        className={cn('maka-nav-row', navRowVariants())}
-        data-active={automationsActive}
-        aria-current={automationsActive ? 'page' : undefined}
-        type="button"
+      />
+      <SideNavItem
+        label={activePlanReminderCount > 0
+          ? copy.pendingReminders(activePlanReminderCount)
+          : copy.automations}
+        icon={Timer}
+        size="md"
+        isSelected={automationsActive}
         onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
-        aria-label={activePlanReminderCount > 0 ? copy.pendingReminders(activePlanReminderCount) : copy.automations}
-      >
-        <Timer className="maka-nav-icon" aria-hidden="true" />
-        <span>{copy.automations}</span>
-        {activePlanReminderCount > 0 && (
-          <small className="maka-nav-count" aria-hidden="true">
-            {activePlanReminderCount}
-          </small>
-        )}
-      </BaseButton>
-    </nav>
+      />
+    </SideNavSection>
   );
 }
 
@@ -131,33 +89,36 @@ export function SessionSidebarFooter(props: {
       : props.updateReminder
         ? copy.updateAvailable(props.updateReminder.latestVersion)
         : copy.update;
+  // shell-side-nav footer authority: SideNavSection + SideNavItem, not a
+  // product grid that re-lays out nav chrome beside the update chip.
   return (
-    <footer className="maka-session-panel-footer">
-      <BaseButton
-        className={cn('maka-sidebar-settings-button', settingsButtonClass)}
-        type="button"
+    <SideNavSection title={copy.settings} isHeaderHidden className="maka-session-panel-footer">
+      <SideNavItem
+        label={copy.settings}
+        icon={Settings}
+        size="md"
         onClick={props.onOpenSettings}
-        aria-label={copy.settings}
-        title={copy.settings}
-      >
-        <Settings className="maka-nav-icon" aria-hidden="true" />
-        <span>{copy.settings}</span>
-      </BaseButton>
+      />
       {props.updateReminder && props.onOpenUpdate && (
-        <BaseButton
+        <Button
           className="maka-sidebar-update-button"
           data-update-state={props.updateReminder.state}
           style={{ '--maka-update-progress': String(Math.max(0, Math.min(100, props.updateReminder.progressPercent ?? 0)) / 100) } as CSSProperties}
-          type="button"
+          label={updateTitle}
+          // #1879: was `sm` with a 34px height forced from product CSS. Astryx
+          // sizes Button off --size-element-* (sm 28 / md 32), so `md` IS the
+          // 32px this button wants, and the CSS height is gone rather than
+          // fighting the component's own size token.
+          size="md"
+          variant="ghost"
+          width="100%"
           onClick={props.onOpenUpdate}
-          disabled={props.updateReminder.state === 'downloading'}
-          aria-label={updateTitle}
-          title={updateTitle}
+          isDisabled={props.updateReminder.state === 'downloading'}
         >
           {props.updateReminder.state === 'downloading' && <span className="maka-sidebar-update-progress" aria-hidden="true" />}
           <span>{updateLabel}</span>
-        </BaseButton>
+        </Button>
       )}
-    </footer>
+    </SideNavSection>
   );
 }

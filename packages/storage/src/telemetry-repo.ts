@@ -9,6 +9,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import { usageBucketKey } from '@maka/core/usage-stats/bucket-key';
 import { throwDeduplicatedFailures } from './failure-utils.js';
 import { createPricingStore, type PricingStore } from './pricing-store.js';
 import { syncDirectory } from './stable-storage.js';
@@ -239,7 +240,7 @@ class FileTelemetryRepo implements TelemetryRepo {
     }
     const groups = new Map<string, PersistedLlmCallRecord[]>();
     for (const row of this.filteredUsageRows(query, from, to)) {
-      const key = bucketKey(row, groupBy);
+      const key = usageBucketKey(row, groupBy);
       let group = groups.get(key);
       if (!group) {
         group = [];
@@ -486,21 +487,6 @@ export function resolveRange(range: UsageQuery['range']): { from: number; to: nu
       return { from: now - 30 * 24 * 60 * 60 * 1000, to: now };
     case 'all':
       return { from: 0, to: now };
-  }
-}
-
-function bucketKey(row: PersistedLlmCallRecord, groupBy: UsageGroupBy): string {
-  switch (groupBy) {
-    case 'provider':
-      return row.providerId;
-    case 'model':
-      return `${row.providerId}:${row.modelId}`;
-    case 'day':
-      return row.date;
-    case 'hour':
-      return String(Math.floor(row.ts / (60 * 60 * 1000)));
-    case 'tool':
-      return '';
   }
 }
 

@@ -137,6 +137,18 @@ function toMetadata(providerId, modelId, provider, model) {
       reasoning: model.reasoning === true,
       functionCalling: model.tool_call === true,
     },
+    ...(model.modalities
+      ? {
+          modalities: {
+            input: model.modalities.input.filter(
+              (value) => value === 'text' || value === 'image' || value === 'audio',
+            ),
+            output: (Array.isArray(model.modalities.output) ? model.modalities.output : []).filter(
+              (value) => value === 'text' || value === 'image' || value === 'audio',
+            ),
+          },
+        }
+      : {}),
   };
 }
 

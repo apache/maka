@@ -35,21 +35,29 @@
 }
 
 /* Module page titles use the display scale. Negative letter-spacing keeps
-   page-level headings compact at that size. */
+   page-level headings compact at that size.
+
+   A deliberate override of Astryx's own guidance, which reserves display for
+   hero, marketing and data-callout text and says not to use it for document
+   headings. Every heading role in the ladder is weight 600 and tops out at
+   20px, so matching this title on weight would drop it from 25px to 20px —
+   level with the section headings underneath it, collapsing the one size step
+   that makes a page title read as one. Display keeps the size and gives up the
+   weight, which is the trade the vendor's own reasoning endorses at this size
+   (large text needs less weight). Same call at .maka-plan-heading h2 and
+   .settingsPageHeader h2; nothing else in the renderer uses display outside a
+   real hero. */
 .maka-module-main-header h2 {
+  font: var(--maka-text-display-2);
   margin: 0;
   color: var(--foreground);
-  font-size: 2em;
-  font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
-  line-height: var(--leading-tight);
 }
 
 .maka-module-main-header p {
+  font: var(--maka-text-body);
   margin: var(--space-1) 0 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .maka-module-hub-heading {
@@ -59,50 +67,8 @@
 }
 
 .maka-module-hub-selector {
-  display: inline-flex;
   flex: none;
-  align-items: center;
-  gap: var(--space-2);
   white-space: nowrap;
-}
-
-.maka-module-hub-separator {
-  color: var(--border-strong);
-  font-size: 2em;
-  font-weight: var(--font-weight-normal);
-  line-height: var(--leading-tight);
-}
-
-.maka-module-hub-selector-trigger {
-  width: auto;
-  min-width: 0;
-  height: auto;
-  min-height: 0;
-  gap: var(--space-2);
-  padding: var(--space-1);
-  color: var(--foreground);
-  font-size: 2em;
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--tracking-normal);
-  line-height: var(--leading-tight);
-}
-
-.maka-module-hub-selector-trigger > svg {
-  flex: none;
-}
-
-.maka-module-hub-selector-chevron {
-  color: var(--foreground-secondary);
-}
-
-.maka-module-hub-selector-menu {
-  min-width: 180px;
-}
-
-.maka-module-hub-selector-option {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
 }
 
 .maka-module-main-actions {

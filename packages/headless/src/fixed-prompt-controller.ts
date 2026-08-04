@@ -152,6 +152,9 @@ export interface RunFixedPromptControllerInput {
   /** Refuse resume when a model attempt was durably admitted but no terminal
    * event exists, preserving single-sample benchmark semantics. */
   protectPassAtOne?: boolean;
+  /** Permit exactly one additional attempt for explicitly adjudicated terminal
+   * infra failures. The durable attempt WAL prevents a third attempt. */
+  retryAdjudicatedInfraTaskIdsOnce?: readonly string[];
   taskRunner: TaskRunner;
   now?: () => number;
   newId?: () => string;
@@ -203,6 +206,16 @@ export async function runFixedPromptController(
     input.resumeFingerprint,
     terminalInfraFailures,
   );
+  permitAdjudicatedInfraRetries({
+    taskIds: input.retryAdjudicatedInfraTaskIdsOnce ?? [],
+    tasks: input.tasks,
+    completed,
+    attemptEvents,
+    runId: input.runId,
+    roundId: input.roundId,
+    expectedPromptHash,
+    resumeFingerprint: input.resumeFingerprint,
+  });
   const orphanedAttempts = orphanedTaskAttempts(
     [...attemptEvents, ...events],
     input.runId,
@@ -324,6 +337,39 @@ export async function runFixedPromptController(
     ...(input.resultsTsvPath !== undefined ? { resultsTsvPath: input.resultsTsvPath } : {}),
     ...(stopReason ? { stopReason } : {}),
   };
+}
+
+function permitAdjudicatedInfraRetries(input: {
+  taskIds: readonly string[];
+  tasks: readonly FixedPromptTask[];
+  completed: Map<string, FixedPromptTaskWalEvent>;
+  attemptEvents: readonly FixedPromptWalEvent[];
+  runId: string;
+  roundId: string;
+  expectedPromptHash: string;
+  resumeFingerprint?: string;
+}): void {
+  assertUniqueTaskIds(input.taskIds);
+  const configuredTaskIds = new Set(input.tasks.map((task) => task.id));
+  for (const taskId of input.taskIds) {
+    if (!configuredTaskIds.has(taskId)) {
+      throw new Error(`adjudicated infra retry names unknown task ${taskId}`);
+    }
+    const terminal = input.completed.get(taskId);
+    if (terminal?.type !== 'task_infra_failed') {
+      throw new Error(`adjudicated infra retry requires a terminal infra failure for ${taskId}`);
+    }
+    const admittedAttempts = input.attemptEvents.filter(
+      (event) =>
+        event.type === 'task_attempt_started' &&
+        event.runId === input.runId &&
+        event.roundId === input.roundId &&
+        event.taskId === taskId &&
+        event.promptHash === input.expectedPromptHash &&
+        event.resumeFingerprint === input.resumeFingerprint,
+    ).length;
+    if (admittedAttempts === 1) input.completed.delete(taskId);
+  }
 }
 
 function assertUniqueTaskIds(taskIds: readonly string[]): void {
@@ -594,6 +640,16 @@ function taskEventFromOutput(input: {
       error: identityMismatch.error,
     });
   }
+  if (isPreExecutionAgentFailure(input.output) && verifierGrade !== 'passed') {
+    const errorClass = isProviderInfraFailure(input.output.cell.errorClass)
+      ? input.output.cell.errorClass
+      : 'infra_error';
+    return taskInfraFailedEvent({
+      ...input,
+      errorClass,
+      error: `Harbor cell failed with ${errorClass} before completing a model step or reporting token usage`,
+    });
+  }
   if (isProviderInfraFailure(input.output.cell.errorClass) && verifierGrade === undefined) {
     return taskInfraFailedEvent({
       ...input,
@@ -620,6 +676,19 @@ function taskEventFromOutput(input: {
   return taskCompletedEvent(input);
 }
 
+function isPreExecutionAgentFailure(output: TaskRunOutput): boolean {
+  if (output.cell.status !== 'failed') return false;
+  const completedProviderStep = output.cell.steps > 0 || output.cell.tokenSummary !== undefined;
+  const executedWorkspaceTool = output.cell.toolSummary.actualToolCalls > 0;
+  if (completedProviderStep || executedWorkspaceTool) return false;
+  return (
+    output.cell.deadlineSettlement?.source === 'benchmark.deadline' ||
+    output.cell.errorClass === 'runtime_error' ||
+    output.cell.errorClass === 'aborted' ||
+    isProviderInfraFailure(output.cell.errorClass)
+  );
+}
+
 function taskCompletedEvent(input: {
   output: TaskRunOutput;
   taskId: string;
@@ -630,26 +699,15 @@ function taskCompletedEvent(input: {
   ts: number;
 }): FixedPromptTaskCompletedEvent {
   const { output } = input;
-  const promptHash = output.cell.promptHash ?? output.cell.executionIdentity?.systemPromptHash;
-  const deadlineSettled = output.cell.deadlineSettlement?.source === 'benchmark.deadline';
+  const promptHash = attestedPromptHash(output.cell);
   const verifierGrade = structuredVerifierGrade(output.harbor);
-  const verifierGraded =
-    output.cell.status === 'completed' ||
-    deadlineSettled ||
-    verifierGrade !== undefined ||
-    ((output.cell.errorClass === 'max_tokens' ||
-      output.cell.errorClass === 'tool_step_cap_reached' ||
-      output.cell.errorClass === 'policy_denied') &&
-      output.harbor.verifier !== undefined);
-  const passed = verifierGraded && output.harbor.reward > 0;
-  const errorClass = passed
-    ? undefined
-    : deadlineSettled
-      ? 'budget_exhausted'
-      : (output.cell.errorClass ?? 'verification_failed');
-  const scored =
-    verifierGraded && (verifierGrade !== undefined || !isUnscoredCellFailure(errorClass));
-  const agentFailure = output.cell.status === 'failed' && errorClass === 'tool_step_cap_reached';
+  const scoring = taskCompletedScoringProjection({
+    status: output.cell.status,
+    reward: output.harbor.reward,
+    errorClass: output.cell.errorClass,
+    deadlineSettled: output.cell.deadlineSettlement?.source === 'benchmark.deadline',
+    verifierGrade,
+  });
   return {
     schemaVersion: FIXED_PROMPT_WAL_SCHEMA_VERSION,
     type: 'task_completed',
@@ -660,10 +718,7 @@ function taskCompletedEvent(input: {
     ...(input.resumeFingerprint ? { resumeFingerprint: input.resumeFingerprint } : {}),
     taskId: input.taskId,
     status: output.cell.status,
-    passed,
-    scored,
-    eligible: scored || agentFailure,
-    ...(errorClass ? { errorClass } : {}),
+    ...scoring,
     ...(promptHash ? { promptHash } : {}),
     ...(output.cell.executionIdentity ? { executionIdentity: output.cell.executionIdentity } : {}),
     runtimeRefs: output.cell.runtimeRefs,
@@ -695,6 +750,35 @@ function taskCompletedEvent(input: {
         : {}),
       ...(output.harbor.verifier ? { verifier: output.harbor.verifier } : {}),
     },
+  };
+}
+
+function taskCompletedScoringProjection(input: {
+  status: FixedPromptTaskCompletedEvent['status'];
+  reward: number;
+  errorClass: string | undefined;
+  deadlineSettled: boolean;
+  verifierGrade: 'passed' | 'failed' | undefined;
+}): Pick<FixedPromptTaskCompletedEvent, 'passed' | 'scored' | 'eligible' | 'errorClass'> {
+  const verifierGraded =
+    input.status === 'completed' || input.deadlineSettled || input.verifierGrade !== undefined;
+  const passed = verifierGraded && input.reward > 0;
+  const rawErrorClass = input.errorClass ?? 'verification_failed';
+  const errorClass = passed
+    ? undefined
+    : input.deadlineSettled
+      ? 'budget_exhausted'
+      : input.verifierGrade === 'failed' && isUnscoredCellFailure(rawErrorClass)
+        ? 'runtime_error'
+        : rawErrorClass;
+  const scored =
+    verifierGraded && (input.verifierGrade !== undefined || !isUnscoredCellFailure(errorClass));
+  const agentFailure = input.status === 'failed' && errorClass === 'tool_step_cap_reached';
+  return {
+    passed,
+    scored,
+    eligible: scored || agentFailure,
+    ...(errorClass ? { errorClass } : {}),
   };
 }
 
@@ -788,24 +872,20 @@ function classifyPlumbingFailure(
     expectedPricingProfile,
   );
   if (identityFailure) return identityFailure;
-  if (output.cell.status === 'completed' && output.cell.promptHash === undefined) {
+  const promptHash = attestedPromptHash(output.cell);
+  if (output.cell.status === 'completed' && promptHash === undefined) {
     return {
       errorClass: 'missing_prompt_hash',
       error: `Harbor cell did not report prompt hash ${expectedPromptHash}`,
     };
   }
-  if (output.cell.promptHash !== undefined && output.cell.promptHash !== expectedPromptHash) {
+  if (promptHash !== undefined && promptHash !== expectedPromptHash) {
     return {
       errorClass: 'prompt_hash_mismatch',
-      error: `Harbor cell prompt hash ${output.cell.promptHash} did not match ${expectedPromptHash}`,
+      error: `Harbor cell prompt hash ${promptHash} did not match ${expectedPromptHash}`,
     };
   }
-  if (
-    requireFinalUsage &&
-    (output.cell.status === 'completed' ||
-      output.cell.deadlineSettlement?.source === 'benchmark.deadline') &&
-    output.cell.tokenSummary === undefined
-  ) {
+  if (requireFinalUsage && output.cell.tokenSummary === undefined) {
     return {
       errorClass: 'missing_token_usage',
       error: 'Harbor cell did not report final token usage',
@@ -823,6 +903,10 @@ function classifyPlumbingFailure(
     };
   }
   return undefined;
+}
+
+function attestedPromptHash(cell: TaskRunOutput['cell']): string | undefined {
+  return cell.promptHash ?? cell.executionIdentity?.systemPromptHash;
 }
 
 function classifyExecutionIdentityFailure(
@@ -1105,21 +1189,42 @@ function projectLegacyTimeoutOutcome(event: FixedPromptWalEvent): FixedPromptWal
 function projectStructuredVerifierOutcome(event: FixedPromptWalEvent): FixedPromptWalEvent {
   if (event.type !== 'task_completed') return event;
   const verifierGrade = structuredVerifierGrade(event.harbor);
-  if (verifierGrade === undefined) return event;
-  if (verifierGrade === 'failed') {
-    return {
-      ...event,
-      passed: false,
-      scored: true,
-      eligible: true,
-    };
-  }
-  const { errorClass: _legacyFailureClass, ...rest } = event;
+  const legacyVerifierPresenceFallback =
+    event.passed === true ||
+    event.errorClass === 'max_tokens' ||
+    event.errorClass === 'tool_step_cap_reached' ||
+    event.errorClass === 'policy_denied';
+  const rejectedLegacyVerifierFallback =
+    verifierGrade === undefined &&
+    event.status === 'failed' &&
+    event.deadlineSettlement?.source !== 'benchmark.deadline' &&
+    isRecord(event.harbor) &&
+    event.harbor.verifier !== undefined &&
+    legacyVerifierPresenceFallback;
+  if (verifierGrade === undefined && !rejectedLegacyVerifierFallback) return event;
+
+  const scoring = taskCompletedScoringProjection({
+    status: event.status,
+    reward:
+      isRecord(event.harbor) &&
+      typeof event.harbor.reward === 'number' &&
+      Number.isFinite(event.harbor.reward)
+        ? event.harbor.reward
+        : 0,
+    errorClass: event.errorClass,
+    deadlineSettled: event.deadlineSettlement?.source === 'benchmark.deadline',
+    verifierGrade,
+  });
+  const {
+    passed: _legacyPassed,
+    scored: _legacyScored,
+    eligible: _legacyEligible,
+    errorClass: _legacyErrorClass,
+    ...stable
+  } = event;
   return {
-    ...rest,
-    passed: true,
-    scored: true,
-    eligible: true,
+    ...stable,
+    ...scoring,
   };
 }
 
@@ -1138,32 +1243,25 @@ function structuredVerifierGrade(harbor: unknown): 'passed' | 'failed' | undefin
     !isRecord(verifier) ||
     !Array.isArray(verifier.attempts) ||
     verifier.attempts.length < 1 ||
-    verifier.attempts.length > 2
+    verifier.attempts.length > 3
   )
     return undefined;
-  if (
-    verifier.attempts.some(
-      (attempt, index) =>
-        !isRecord(attempt) ||
-        attempt.attempt !== index + 1 ||
-        typeof attempt.durationMs !== 'number' ||
-        !Number.isFinite(attempt.durationMs) ||
-        attempt.durationMs < 0 ||
-        (attempt.reward !== undefined &&
-          (typeof attempt.reward !== 'number' || !Number.isFinite(attempt.reward))),
+  for (let index = 0; index < verifier.attempts.length; index += 1) {
+    const attempt = verifier.attempts[index];
+    if (
+      !isRecord(attempt) ||
+      attempt.attempt !== index + 1 ||
+      typeof attempt.durationMs !== 'number' ||
+      !Number.isFinite(attempt.durationMs) ||
+      attempt.durationMs < 0 ||
+      (attempt.reward !== undefined &&
+        (typeof attempt.reward !== 'number' || !Number.isFinite(attempt.reward))) ||
+      (index < verifier.attempts.length - 1 &&
+        attempt.classification !== 'infra_setup_failed' &&
+        attempt.classification !== 'infra_failed')
     )
-  )
-    return undefined;
-  if (
-    verifier.attempts
-      .slice(0, -1)
-      .some(
-        (attempt) =>
-          attempt.classification !== 'infra_setup_failed' &&
-          attempt.classification !== 'infra_failed',
-      )
-  )
-    return undefined;
+      return undefined;
+  }
 
   const finalAttempt = verifier.attempts.at(-1)!;
   if (!isRecord(finalAttempt)) return undefined;

@@ -1,183 +1,168 @@
 .maka-model-switcher {
   display: inline-flex;
   align-items: center;
-  margin: 0 var(--space-1) var(--space-0-5) 0;
+  margin: 0;
   min-width: 0;
-  max-width: min(320px, 28vw);
+  max-width: min(440px, 42vw);
   -webkit-app-region: no-drag;
 }
 
-.maka-model-switcher[data-disabled="true"] {
-  opacity: var(--opacity-disabled);
-}
+/* No disabled opacity here. The Astryx Selector inside already dims itself
+   when disabled, and this wrapper rule multiplied on top of it: two stacked
+   `opacity: 0.5` layers composite to 0.25, which took the model label from
+   17.9:1 down to roughly 1.4:1 — a control that reads as absent rather than
+   as disabled. State is Astryx's, per the layout-only note below. */
 
+/* Justified state-cursor exception: pending model change shows progress,
+   not the product default. native-cursor owns default/pointer/text only. */
 .maka-model-switcher[data-pending="true"] {
+  /* Pending has no Astryx counterpart (it is a Maka concept: a model change is
+     in flight), so this one does not stack. */
   opacity: var(--opacity-pending);
-  cursor: progress;
+  cursor: progress !important;
 }
 
-.maka-model-switcher-trigger {
-  width: 100%;
-  min-width: 120px;
-  max-width: min(320px, 28vw);
-  height: var(--h-control-sm);
+.maka-model-switcher[data-pending="true"] :where(button, [role="button"]) {
+  cursor: progress !important;
+}
+
+/* Model + thinking sit as one left-footer pair after permission. */
+.maka-model-selection-controls {
   display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-1-5);
-  padding: 1px var(--space-1-5) 1px var(--space-2);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--foreground-5);
-  color: var(--foreground);
-  font-size: var(--font-size-caption);
-  box-shadow: none;
-  /* PR-MODEL-SWITCHER-TACTILE-0 (WAWQAQ msg `ed67a267`, skills round
-     task #116): tactile press feedback so the switch-model flow
-     feels physical. Same convention as the other interactive
-     surfaces in this round (artifact-row, session-row,
-     onboarding-card, prompt-chip). */
-  transition: background var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-model-switcher-trigger:hover:not(:disabled):not([data-disabled]) {
-  background: var(--state-hover-bg);
-}
-
-.maka-model-switcher-trigger:active:not(:disabled):not([data-disabled]) {
-  background: var(--state-selected-bg);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .maka-model-switcher-trigger {
-    transition: background 0ms;
-  }
-}
-
-.maka-model-switcher-trigger[data-popup-open] {
-  background: var(--background);
-  box-shadow: var(--shadow-minimal-flat);
-}
-
-.maka-model-switcher-trigger:disabled,
-.maka-model-switcher-trigger[data-disabled] {
-  cursor: not-allowed;
-}
-
-.maka-model-switcher-label {
-  flex: 0 0 auto;
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  color: var(--muted-foreground);
-}
-
-.maka-model-switcher-value {
+  gap: var(--space-1);
   min-width: 0;
-  max-width: 180px;
+  max-width: 100%;
+
+  /* The Astryx neutral theme lives on the app Theme wrapper, closer to these
+     controls than Maka's palette tokens on <html>. Rebind the color tokens at
+     this product seam so both selector triggers and their popovers follow the
+     currently selected Maka palette instead of staying neutral white/gray. */
+  --color-background-surface: var(--background);
+  --color-background-popover: var(--background-elevated);
+  --color-text-primary: var(--foreground);
+  --color-text-secondary: var(--muted-foreground);
+  --color-text-disabled: var(--muted-foreground);
+  --color-icon-primary: var(--foreground);
+  --color-icon-secondary: var(--muted-foreground);
+  --color-border-emphasized: var(--border-strong);
+  --color-overlay-hover: var(--state-hover-bg);
+  --color-accent: var(--accent);
+  --color-accent-muted: oklch(from var(--accent) l c h / 0.12);
+}
+
+.maka-model-picker-root {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.maka-model-switcher-trigger,
+.maka-new-chat-model-selector {
+  min-width: 100px;
+  max-width: min(260px, 28vw);
+}
+
+/* Quiet ghost triggers (composer / new-chat). Astryx Selector's default is a
+   bordered field; product owns these classNames only on chat pickers — Settings
+   ModelPicker does not set them. Geometry mirrors .maka-composer-model-chip. */
+.maka-model-switcher-trigger.astryx-selector,
+.maka-new-chat-model-selector.astryx-selector,
+.maka-thinking-level-selector.astryx-selector {
+  font: var(--maka-text-label);
+  /* #1879: this rule used to force a height — 26px originally, then 24px on the
+     ruler. Both were wrong for the same reason the sidebar update button was:
+     these ARE Astryx Selectors (`size="sm"`), and Selector sizes off
+     `--size-element-sm` (28px). Forcing 24px pushed a component below its own
+     smallest tier and desynced it from `ModelChipStatic`, the inert state of
+     the same chip, which is a `Button size="sm"` at 28px — the pill changed
+     height when it became clickable. Declaring no height is what makes the two
+     states agree by derivation. */
+  padding-block: 0;
+  padding-inline: var(--space-2);
+  border-color: transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  box-shadow: none;
+  color: var(--foreground-secondary);
+  transition:
+    background-color var(--duration-base) var(--ease-out-strong),
+    color var(--duration-base) var(--ease-out-strong);
+}
+
+/* Thinking is a short single-token control (关 / 中 / 超高). Size to content;
+   Astryx popover min-width:anchor-size(width) then grows with the longest option. */
+.maka-thinking-level-selector,
+.maka-thinking-level-selector.astryx-selector {
+  width: max-content;
+  min-width: 0;
+  max-width: none;
+  flex: 0 0 auto;
+}
+
+.maka-model-switcher-trigger.astryx-selector:hover:not([aria-disabled="true"]),
+.maka-new-chat-model-selector.astryx-selector:hover:not([aria-disabled="true"]),
+.maka-thinking-level-selector.astryx-selector:hover:not([aria-disabled="true"]) {
+  background: var(--state-hover-bg);
+  color: var(--foreground);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.maka-model-switcher-trigger.astryx-selector:focus-within,
+.maka-new-chat-model-selector.astryx-selector:focus-within,
+.maka-thinking-level-selector.astryx-selector:focus-within {
+  border-color: transparent;
+  background: var(--state-hover-bg);
+  box-shadow: none;
+  color: var(--foreground);
+}
+
+.maka-model-switcher-trigger.astryx-selector[aria-disabled="true"],
+.maka-new-chat-model-selector.astryx-selector[aria-disabled="true"],
+.maka-thinking-level-selector.astryx-selector[aria-disabled="true"] {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
+
+/* The one rem that stays, and the reason is the icon scale rather than the
+   root. Everywhere else in product CSS rem was a stale habit — a length
+   written in root-relative units that had to become absolute once the root
+   stopped being a density knob. This is an icon box, and Astryx authors its
+   icon sizes in rem against a 16px root (12/16/20/24, see Icon.tsx), so 1rem
+   IS the `sm` icon box next to body text. Under the old 13px root it rendered
+   13px, i.e. one step below Astryx's own smallest body-text icon; it now
+   renders the 16px it always meant. chat-shell-layout-contract.test.ts pins
+   the square so flex cannot squash it. */
+.modelPickerProviderMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 1rem;
+  color: var(--foreground);
+}
+
+.modelPickerProviderMark svg,
+.modelPickerProviderMark img,
+.modelPickerProviderMark .providerAssetMask {
+  width: 100%;
+  height: 100%;
+}
+
+.modelPickerOption {
+  min-width: 0;
+}
+
+.modelPickerOptionLabel {
+  display: block;
+  min-width: 0;
+  max-width: min(260px, 56vw);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
-/* The popup, group headings, and option rows now render through the shared
-   `.settingsSelectMenu*` recipe (see the settings-select family above); the
-   trigger chrome above stays bespoke to the composer pill. */
-
-/* Thinking-level variant row + flyout (二级菜单 at the bottom of a model
-   picker popup). The row mirrors an option row so it reads as part of the
-   menu; the flyout is a portaled popover listing the levels. */
-.maka-thinking-section {
-  flex: 0 0 auto;
-  padding: 0 var(--space-2) var(--space-2);
-  background: var(--background);
-}
-
-.maka-thinking-section-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  min-height: 32px;
-  border-radius: var(--radius-surface);
-  padding: var(--space-1-5) var(--space-3);
-  font-size: var(--font-size-ui);
-  color: var(--foreground);
-}
-.maka-thinking-section-row:hover:not([data-disabled]) {
-  background: var(--state-hover-bg);
-}
-.maka-thinking-section-row[data-disabled] {
-  cursor: not-allowed;
-  color: var(--muted-foreground);
-}
-.maka-thinking-section-label { font-weight: var(--font-weight-semibold); }
-.maka-thinking-section-value {
-  display: inline-flex; align-items: center; gap: var(--space-1-5);
-  color: var(--muted-foreground);
-}
-.maka-thinking-section-row:not([data-disabled]) .maka-thinking-section-value { color: var(--foreground); }
-.maka-thinking-section-chev { font-size: var(--font-size-caption); opacity: var(--opacity-muted); }
-
-.maka-thinking-flyout { width: max-content; min-width: 120px; padding: var(--space-1); }
-.maka-thinking-flyout-item {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
-  width: 100%; min-height: 32px; padding: var(--space-1-5) var(--space-3);
-  border: none; border-radius: var(--radius-surface); background: transparent;
-  color: var(--foreground); font-size: var(--font-size-ui); font-weight: var(--font-weight-medium); text-align: left;
-}
-.maka-thinking-flyout-item:hover { background: var(--state-hover-bg); }
-.maka-thinking-flyout-item[data-selected] { background: var(--state-selected-bg); }
-.maka-thinking-flyout-check { color: var(--foreground); font-size: var(--font-size-caption); opacity: var(--opacity-pending); }
-
-/* Inline level tag shown in the model chip when a non-default level is set. */
-.maka-thinking-level-tag {
-  margin-left: var(--space-1-5); padding: 0 var(--space-1-5); border-radius: var(--radius-pill);
-  background: var(--state-selected-bg); color: var(--foreground);
-  font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); line-height: var(--leading-snug); flex: 0 0 auto;
-}
-
-/* Model picker (ModelPicker combobox) — relocated from settings-select.css — issue #546 PR1. */
-/* Model picker (`ModelPicker` in `@maka/ui`): a Combobox-backed variant of
-   the grouped select above, with a search `<input>` pinned above the list so
-   long catalogs (dozens of models across many connections) stay findable.
-   Reuses every `.settingsSelectMenu*` row/heading/logo rule as-is — only the
-   search bar and empty state are new. */
-.modelPickerPopup {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  overflow: hidden;
-}
-
-.modelPickerSearchInput {
-  flex: 0 0 auto;
-  height: var(--h-control-md);
-  padding: 0 var(--space-3);
-  margin-bottom: var(--space-1);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background);
-}
-
-.modelPickerList {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: var(--space-1) 0;
-}
-
-.modelPickerSearchInput:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.modelPickerEmpty {
-  padding: var(--space-4) var(--space-3);
-  text-align: center;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
 }

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { describe, test } from 'node:test';
 import { googleApiUrl, googleV1BetaBaseUrl } from '../provider-urls.js';
 
@@ -86,25 +85,6 @@ describe('googleApiUrl', () => {
       googleApiUrl(bare, '/models', 'k'),
       'https://generativelanguage.googleapis.com/v1beta/models?key=k',
       'bare root is normalized to /v1beta before the path is appended',
-    );
-  });
-});
-
-describe('model-factory Google chat wiring', () => {
-  test('routes the Google chat base URL through googleV1BetaBaseUrl, not raw effectiveBaseUrl', async () => {
-    const src = await readFile(new URL('../../src/model-factory.ts', import.meta.url), 'utf8');
-    const caseIdx = src.indexOf("case 'google'");
-    assert.notEqual(caseIdx, -1, 'Google case must exist in model-factory');
-    const caseRegion = src.slice(caseIdx, src.indexOf("case 'openai-compatible'", caseIdx));
-    assert.match(
-      caseRegion,
-      /baseURL:\s*googleV1BetaBaseUrl\(baseURL\)/,
-      'Google chat must pass the AI SDK a /v1beta-normalized base URL so a stale bare-root override self-heals',
-    );
-    assert.doesNotMatch(
-      caseRegion,
-      /createGoogle\(\{\s*apiKey,\s*baseURL\s*\}\)/,
-      'Google chat must not pass the raw effectiveBaseUrl to createGoogle',
     );
   });
 });

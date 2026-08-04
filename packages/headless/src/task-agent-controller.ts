@@ -1132,6 +1132,8 @@ function createSingleRunActiveSession(
             },
             recordProviderRequestAttempt: (attempt) =>
               boundRun?.recordProviderRequestAttempt(attempt),
+            recordModelCallAttempt: (attempt) =>
+              boundRun?.recordModelCallAttempt(attempt) ?? Promise.resolve(),
             ...(runtimeEventStore
               ? {
                   loadTurnRuntimeEvents: (turnId: string) => {

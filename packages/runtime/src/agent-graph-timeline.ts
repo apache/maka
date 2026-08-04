@@ -126,7 +126,7 @@ export type AgentGraphTimelineEvent =
       wakeId: string;
       attemptId: string;
       turnId: string;
-      status: 'delivered' | 'retryable_failed';
+      status: 'delivered' | 'superseded' | 'retryable_failed';
     });
 
 export interface AgentGraphTimelineCurrentAdmission {
@@ -526,7 +526,9 @@ export function buildAgentGraphTimeline(
       });
       if (
         attempt.completedAt !== undefined &&
-        (attempt.status === 'delivered' || attempt.status === 'retryable_failed')
+        (attempt.status === 'delivered' ||
+          attempt.status === 'superseded' ||
+          attempt.status === 'retryable_failed')
       ) {
         push({
           ...eventBase(

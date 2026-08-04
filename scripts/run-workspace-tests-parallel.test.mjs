@@ -1,16 +1,10 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import {
-  SERIAL_WORKSPACE_DIRS,
-  loadWorkspaceDirs,
-  nameForDir,
-  partitionWorkspaces,
-  runWorkspaceTests,
-} from './run-workspace-tests-parallel.mjs';
+import { runWorkspaceTests } from './run-workspace-tests-parallel.mjs';
 
 function makeSpawn(plan) {
   const calls = [];
@@ -34,84 +28,6 @@ function makeSpawn(plan) {
   return { spawn, calls };
 }
 
-test('loadWorkspaceDirs reads root package.json workspaces', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'maka-ws-load-'));
-  writeFileSync(
-    join(dir, 'package.json'),
-    JSON.stringify({ workspaces: ['packages/core', 'packages/headless', 'apps/desktop'] }),
-  );
-  assert.deepEqual(loadWorkspaceDirs(dir), ['packages/core', 'packages/headless', 'apps/desktop']);
-});
-
-test('partitionWorkspaces keeps serial packages out of the parallel batch', () => {
-  const { parallel, serial } = partitionWorkspaces(
-    ['packages/core', 'packages/headless', 'apps/desktop', 'packages/ui'],
-    SERIAL_WORKSPACE_DIRS,
-  );
-  assert.deepEqual(parallel, ['packages/core', 'apps/desktop', 'packages/ui']);
-  assert.deepEqual(serial, ['packages/headless']);
-});
-
-test('nameForDir strips packages/ and apps/ prefixes', () => {
-  assert.equal(nameForDir('packages/headless'), 'headless');
-  assert.equal(nameForDir('apps/desktop'), 'desktop');
-});
-
-test('serial mode runs every workspace via package-owned npm run test:dist', async () => {
-  const repoRoot = '/repo';
-  const workspaceDirs = ['packages/core', 'packages/headless', 'apps/desktop'];
-  const { spawn, calls } = makeSpawn(workspaceDirs.map(() => ({ close: 0 })));
-
-  await runWorkspaceTests({
-    repoRoot,
-    workspaceDirs,
-    serial: true,
-    spawn,
-  });
-
-  assert.equal(calls.length, 3);
-  for (const call of calls) {
-    assert.equal(call.command, 'npm run test:dist');
-    assert.equal(call.shell, true);
-  }
-  assert.deepEqual(
-    calls.map((c) => c.cwd),
-    [
-      join(repoRoot, 'packages/core'),
-      join(repoRoot, 'packages/headless'),
-      join(repoRoot, 'apps/desktop'),
-    ],
-  );
-});
-
-test('parallel mode runs non-serial workspaces first, then serial ones', async () => {
-  const repoRoot = '/repo';
-  const workspaceDirs = ['packages/core', 'packages/headless', 'packages/ui'];
-  const order = [];
-  const { spawn, calls } = makeSpawn([{ close: 0 }, { close: 0 }, { close: 0 }]);
-  const trackingSpawn = (command, options) => {
-    order.push(options.cwd);
-    return spawn(command, options);
-  };
-
-  await runWorkspaceTests({
-    repoRoot,
-    workspaceDirs,
-    serial: false,
-    spawn: trackingSpawn,
-  });
-
-  assert.equal(calls.length, 3);
-  // headless must not be in the first concurrent wave's completion-before-serial
-  // guarantee: all parallel finish before serial starts. Order among parallel
-  // may interleave; serial headless is last among recorded close-driven starts
-  // only if we track start order — start order for parallel is simultaneous.
-  // Assert set membership instead of full order for the parallel wave.
-  const parallelCwds = new Set([join(repoRoot, 'packages/core'), join(repoRoot, 'packages/ui')]);
-  assert.equal(parallelCwds.has(order[0]) && parallelCwds.has(order[1]), true);
-  assert.equal(order[2], join(repoRoot, 'packages/headless'));
-});
-
 test('parallel mode aggregates every failed workspace name', async () => {
   const repoRoot = '/repo';
   const workspaceDirs = ['packages/core', 'packages/ui', 'packages/headless'];
@@ -133,18 +49,141 @@ test('parallel mode aggregates every failed workspace name', async () => {
   );
 });
 
-test('spawn errors are reported with the workspace name', async () => {
+test('bounded parallel mode never exceeds its configured concurrency', async () => {
   const repoRoot = '/repo';
-  const { spawn } = makeSpawn([{ error: new Error('ENOENT') }]);
+  const workspaceDirs = ['packages/core', 'packages/ui', 'apps/desktop'];
+  let active = 0;
+  let maxActive = 0;
+  const spawn = () => {
+    const child = new EventEmitter();
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    setImmediate(() => {
+      active -= 1;
+      child.emit('close', 0);
+    });
+    return child;
+  };
+
+  await runWorkspaceTests({ repoRoot, workspaceDirs, concurrency: 2, spawn });
+
+  assert.equal(maxActive, 2);
+});
+
+test('cancellation terminates active workspace process trees and starts no queued work', async () => {
+  const repoRoot = await mkdtemp(join(tmpdir(), 'maka-workspace-runner-'));
+  const workspace = join(repoRoot, 'packages', 'fixture');
+  const pidFile = join(workspace, 'pids.json');
+  let pids;
+  try {
+    await mkdir(workspace, { recursive: true });
+    await writeFile(
+      join(workspace, 'package.json'),
+      JSON.stringify({
+        private: true,
+        scripts: { 'test:dist': 'node fixture.mjs' },
+      }),
+    );
+    await writeFile(
+      join(workspace, 'fixture.mjs'),
+      [
+        "import { spawn } from 'node:child_process';",
+        "import { writeFileSync } from 'node:fs';",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "writeFileSync(new URL('./pids.json', import.meta.url), JSON.stringify({ parent: process.pid, child: child.pid }));",
+        'setInterval(() => {}, 1000);',
+      ].join('\n'),
+    );
+
+    const controller = new AbortController();
+    const running = runWorkspaceTests({
+      repoRoot,
+      workspaceDirs: ['packages/fixture', 'packages/never-started'],
+      concurrency: 1,
+      signal: controller.signal,
+    });
+    void running.catch(() => undefined);
+    pids = await waitForPidFile(pidFile);
+    controller.abort();
+
+    await assert.rejects(running, /Workspace test run cancelled/);
+    await Promise.all([waitForProcessExit(pids.parent), waitForProcessExit(pids.child)]);
+  } finally {
+    terminateProcess(pids?.parent);
+    terminateProcess(pids?.child);
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace timeout waits for process cleanup before reporting failure', async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.pid = 42;
+  let terminationStarted = false;
+  let terminationFinished = false;
+  const spawn = () => child;
+  const terminateWorkspace = async (target) => {
+    assert.equal(target, child);
+    terminationStarted = true;
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    terminationFinished = true;
+  };
 
   await assert.rejects(
     () =>
       runWorkspaceTests({
-        repoRoot,
+        repoRoot: '/repo',
         workspaceDirs: ['packages/core'],
-        serial: true,
+        workspaceTimeoutMs: 10,
         spawn,
+        terminateWorkspace,
       }),
-    /\[core\] spawn failed: ENOENT/,
+    /\[core\] timed out after 10ms/,
   );
+  assert.equal(terminationStarted, true);
+  assert.equal(terminationFinished, true);
 });
+
+async function waitForPidFile(path) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      const parsed = JSON.parse(await readFile(path, 'utf8'));
+      if (Number.isSafeInteger(parsed.parent) && Number.isSafeInteger(parsed.child)) return parsed;
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    }
+    await sleep(20);
+  }
+  throw new Error('workspace fixture did not publish its process ids');
+}
+
+async function waitForProcessExit(pid) {
+  const deadline = Date.now() + 2_000;
+  while (isProcessAlive(pid) && Date.now() < deadline) await sleep(20);
+  assert.equal(isProcessAlive(pid), false, `process ${pid} remained alive`);
+}
+
+function terminateProcess(pid) {
+  if (!pid || !isProcessAlive(pid)) return;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error;
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}

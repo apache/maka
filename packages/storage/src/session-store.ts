@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   decodeStoredMessageForRead,
@@ -11,8 +11,19 @@ import { classifyJsonRecord } from './json-prefix.js';
 import { importLegacySessionMetadataTree } from './session-metadata-transfer.js';
 import {
   createSqliteSessionMetadataStore,
+  type SessionConfigurationMetadataUpdate,
+  type SessionCatalogRevisionState,
+  type SessionMetadataRecord,
+  type SessionRemovalProbe,
+  SessionMetadataVersionConflictError,
   type SqliteSessionMetadataStore,
+  type StableSessionCreateProbe,
+  type VersionedSessionIdentity,
 } from './sqlite-session-metadata-store.js';
+import {
+  isDiscardableConversationCopy,
+  isValidConversationCopyTransition,
+} from './session-conversation-copy.js';
 import {
   createSessionTranscriptMarker,
   decodeSessionTranscriptMarker,
@@ -20,13 +31,19 @@ import {
 } from './session-transcript.js';
 import { chainWrite } from './write-queue.js';
 import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from './operational-state-store.js';
+import {
   DEFAULT_SESSION_NAME,
+  DurableStoreWriteError,
   deriveTurnRecords,
   isEditingProtocol,
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
   isSessionBlockedReason,
+  isSessionConversationCopy,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
@@ -34,7 +51,9 @@ import {
   isSessionStatus,
   normalizeUserSessionName,
   subagentSessionRuntimeSummary,
+  WORKSPACE_AUTHORITY_SESSION_ID,
 } from '@maka/core';
+import { syncDirectoryChain, syncFile } from './stable-storage.js';
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
@@ -44,6 +63,7 @@ import type {
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
   SessionHeader,
+  SessionConversationCopy,
   SessionListFilter,
   SessionSummary,
   StoredMessage,
@@ -53,7 +73,8 @@ import type {
 } from '@maka/core';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-export const SQLITE_SESSION_METADATA_DATABASE_NAME = 'sessions.sqlite';
+/** @deprecated Session metadata is canonical in the operational runtime.sqlite database. */
+export const SQLITE_SESSION_METADATA_DATABASE_NAME = OPERATIONAL_STATE_DATABASE_NAME;
 
 export class SessionNotFoundError extends Error {
   readonly name = 'SessionNotFoundError';
@@ -68,36 +89,81 @@ export function isSessionNotFoundError(error: unknown): error is SessionNotFound
   return error instanceof SessionNotFoundError;
 }
 
+export class SessionReadMarkerMessageNotFoundError extends Error {
+  readonly name = 'SessionReadMarkerMessageNotFoundError';
+  readonly code = 'session_read_marker_message_not_found';
+
+  constructor(
+    readonly sessionId: string,
+    readonly messageId: string,
+  ) {
+    super(`Session read marker message does not exist: ${messageId}`);
+  }
+}
+
+export interface SessionHeaderSnapshot {
+  readonly header: SessionHeader;
+  readonly revision: number;
+  readonly committedAt: number;
+}
+
+export type ProbeSessionRemovalResult =
+  | { readonly kind: 'present'; readonly record: SessionHeaderSnapshot }
+  | { readonly kind: 'removed' }
+  | { readonly kind: 'absent' };
+
+export interface SessionCatalogRecord extends SessionHeaderSnapshot {
+  readonly summary: SessionSummary;
+}
+
+export interface SessionCatalogPageCursor {
+  readonly activityAt: number;
+  readonly sessionId: string;
+}
+
+export type SessionCatalogPageResult =
+  | {
+      readonly kind: 'page';
+      readonly revision: `sha256:${string}`;
+      readonly records: readonly SessionCatalogRecord[];
+      readonly hasMore: boolean;
+    }
+  | {
+      readonly kind: 'revision_changed';
+      readonly expectedRevision: `sha256:${string}`;
+      readonly actualRevision: `sha256:${string}`;
+    };
+
+export interface CreateStableSessionRequest {
+  readonly sessionId: string;
+  readonly requestFingerprint: string;
+  readonly input: StableSessionCreateInput;
+}
+
+export type StableSessionCreateInput = CreateSessionInput & {
+  readonly conversationCopy?: SessionConversationCopy;
+};
+
+export type CreateStableSessionResult =
+  | { readonly kind: 'created'; readonly record: SessionHeaderSnapshot }
+  | { readonly kind: 'existing'; readonly record: SessionHeaderSnapshot }
+  | {
+      readonly kind: 'conflict';
+      readonly reason: 'identity_mismatch' | 'removed';
+    };
+
+export type ProbeStableSessionCreateResult =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'existing'; readonly record: SessionHeaderSnapshot }
+  | {
+      readonly kind: 'conflict';
+      readonly reason: 'identity_mismatch' | 'removed';
+    };
+
+export type UpdateSessionConfigurationRequest = SessionConfigurationMetadataUpdate;
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
-  createSubagent(
-    input: CreateSessionInput,
-    initialBoundary?: ExecutionBoundary,
-  ): Promise<{ header: SessionHeader; created: boolean }>;
-  createAgentGraphOperator(
-    input: CreateSessionInput,
-    request: AgentGraphOperatorProvisionRequest,
-    expectedRevision: number,
-    initialBoundary?: ExecutionBoundary,
-  ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult>;
-  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
-  createSandboxBoundaryRequest(
-    input: CreateSandboxBoundaryRequest,
-  ): Promise<SandboxBoundaryRequest>;
-  listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
-  /** Requests already closed against the user because the host restarted. */
-  listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
-  settleSandboxBoundaryRequest(
-    input: SettleSandboxBoundaryRequest,
-  ): Promise<SandboxBoundarySettlement>;
-  setExecutionBoundaryKind(
-    sessionId: string,
-    kind: 'managed' | 'bypass',
-    projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   /** Enumerate durable metadata without reading transcript bodies. */
   listHeaders(): Promise<SessionHeader[]>;
@@ -126,8 +192,95 @@ export interface SessionStore {
   close?(): Promise<void>;
 }
 
-export function createSessionStore(workspaceRoot: string): SessionStore {
-  return new SqliteSessionStore(workspaceRoot);
+export interface SessionAuthorityStore extends SessionStore {
+  createSubagent(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader; created: boolean }>;
+  createAgentGraphOperator(
+    input: CreateSessionInput,
+    request: AgentGraphOperatorProvisionRequest,
+    expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult>;
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
+  createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest>;
+  readSandboxBoundaryRequest(
+    sessionId: string,
+    requestId: string,
+  ): Promise<SandboxBoundaryRequest | undefined>;
+  listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  /** Requests already closed against the user because the host restarted. */
+  listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement>;
+  setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary>;
+  probeStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<ProbeStableSessionCreateResult>;
+  createStableSession(
+    request: CreateStableSessionRequest,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<CreateStableSessionResult>;
+  discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
+  listCatalogPage(
+    filter: SessionListFilter | undefined,
+    cursor: SessionCatalogPageCursor | undefined,
+    limit: number,
+    expectedRevision?: `sha256:${string}`,
+  ): Promise<SessionCatalogPageResult>;
+  readHeaderRecordSnapshot(sessionId: string): Promise<SessionHeaderSnapshot>;
+  readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord>;
+  updateHeaderVersioned(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+    expectedRevision: number,
+  ): Promise<SessionHeaderSnapshot>;
+  updateSessionConfiguration(
+    sessionId: string,
+    input: UpdateSessionConfigurationRequest,
+  ): Promise<SessionHeaderSnapshot>;
+  markSessionReadThroughMessage(
+    sessionId: string,
+    messageId: string,
+  ): Promise<SessionHeaderSnapshot>;
+  probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult>;
+  setSessionsLifecycleVersioned(
+    sessions: readonly VersionedSessionIdentity[],
+    state: 'active' | 'archived',
+  ): Promise<SessionHeaderSnapshot[]>;
+  removeSessionsVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]>;
+  reconcileOrphanedAgentGraphRetirements(): Promise<string[]>;
+  listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]>;
+  purgeRemovedSessionTranscript(sessionId: string): Promise<void>;
+  completeSessionRetirementCleanup(sessionId: string): Promise<void>;
+}
+
+interface SessionAuthorityStoreTestDependencies {
+  readonly beforeTranscriptRemoval?: (sessionId: string) => Promise<void>;
+}
+
+export function createSessionStore(workspaceRoot: string): SessionAuthorityStore {
+  return new SqliteSessionStore(workspaceRoot, {});
+}
+
+/** @internal Test-only dependency injection; not exported from the package root. */
+export function createSessionStoreWithTestDependencies(
+  workspaceRoot: string,
+  dependencies: SessionAuthorityStoreTestDependencies,
+): SessionAuthorityStore {
+  return new SqliteSessionStore(workspaceRoot, dependencies);
 }
 
 /** Legacy JSONL-header store retained only for migration and compatibility tests. */
@@ -135,21 +288,38 @@ export function createLegacyFileSessionStore(workspaceRoot: string): SessionStor
   return new FileSessionStore(workspaceRoot);
 }
 
-class SqliteSessionStore implements SessionStore {
+class SqliteSessionStore implements SessionAuthorityStore {
   private readonly files: FileSessionStore;
   private readonly metadata: SqliteSessionMetadataStore;
   private readonly ready: Promise<void>;
   private closePromise: Promise<void> | null = null;
+  private activeCatalogProjectionWrites = 0;
+  private catalogProjectionWritesIdle: Promise<void> = Promise.resolve();
+  private resolveCatalogProjectionWritesIdle: (() => void) | undefined;
+  private catalogProjectionRecovery: Promise<void> | null = null;
+  private catalogProjectionFailure: unknown;
+  private readonly removeTranscript: (sessionId: string) => Promise<void>;
 
-  constructor(workspaceRoot: string) {
-    this.files = new FileSessionStore(workspaceRoot);
+  constructor(workspaceRoot: string, dependencies: SessionAuthorityStoreTestDependencies) {
+    this.files = new FileSessionStore(workspaceRoot, true);
+    this.removeTranscript = async (sessionId) => {
+      await dependencies.beforeTranscriptRemoval?.(sessionId);
+      await this.files.remove(sessionId);
+    };
+    const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
     this.metadata = createSqliteSessionMetadataStore(
-      join(workspaceRoot, SQLITE_SESSION_METADATA_DATABASE_NAME),
+      join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+      { databaseLease },
     );
     this.ready = importLegacySessionMetadataTree({
       workspaceRoot,
       destination: this.metadata,
-    }).then(() => {});
+    }).then(async (report) => {
+      if (report.headersImported > 0) {
+        await this.metadata.requireCatalogProjectionRecovery();
+      }
+      await this.recoverCatalogProjections();
+    });
     void this.ready.catch(() => {});
   }
 
@@ -158,6 +328,7 @@ class SqliteSessionStore implements SessionStore {
     initialBoundary?: ExecutionBoundary,
   ): Promise<SessionHeader> {
     await this.ensureReady();
+    assertNoConversationCopyMetadata(input);
     if (input.subagentSpawn) {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
@@ -170,11 +341,81 @@ class SqliteSessionStore implements SessionStore {
     }
   }
 
+  async probeStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<ProbeStableSessionCreateResult> {
+    await this.ensureReady();
+    return projectStableSessionCreateProbe(
+      await this.metadata.probeStableSessionCreate(sessionId, requestFingerprint),
+    );
+  }
+
+  async createStableSession(
+    request: CreateStableSessionRequest,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<CreateStableSessionResult> {
+    await this.ensureReady();
+    if (
+      request.input.conversationCopy &&
+      request.input.conversationCopy.requestFingerprint !== request.requestFingerprint
+    ) {
+      throw new Error('Conversation copy fingerprint does not match the stable create request');
+    }
+    if (request.input.subagentSpawn) {
+      throw new Error('Subagent spawn metadata requires createSubagent()');
+    }
+    const probe = await this.metadata.claimStableSessionCreate(
+      request.sessionId,
+      request.requestFingerprint,
+    );
+    if (probe.kind === 'existing') {
+      return { kind: 'existing', record: projectHeaderSnapshot(probe.record) };
+    }
+    if (probe.kind === 'conflict') return probe;
+
+    const staged = await this.files.ensureStableTranscript(request.input, request.sessionId);
+    const result = await this.metadata.createStableSession(
+      staged,
+      request.requestFingerprint,
+      initialBoundary,
+    );
+    return result.kind === 'created' || result.kind === 'existing'
+      ? { kind: result.kind, record: projectHeaderSnapshot(result.record) }
+      : result;
+  }
+
+  async discardStableConversationCopy(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<boolean> {
+    await this.ensureReady();
+    if (!(await this.metadata.hasStableSessionCreateClaim(sessionId, requestFingerprint))) {
+      throw new Error('Session is not owned by the matching stable create request');
+    }
+    const probe = await this.metadata.probeStableSessionCreate(sessionId, requestFingerprint);
+    if (probe.kind === 'conflict') {
+      throw new Error('Stable Session identity belongs to a different request');
+    }
+    if (probe.kind === 'existing') {
+      const copy = probe.record.header.conversationCopy;
+      if (
+        copy?.requestFingerprint !== requestFingerprint ||
+        !isDiscardableConversationCopy(probe.record.header)
+      ) {
+        throw new Error('Only a matching incomplete conversation copy can be discarded');
+      }
+    }
+    await this.files.remove(sessionId);
+    return this.metadata.discardStableSessionCreate(sessionId, requestFingerprint);
+  }
+
   async createSubagent(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader; created: boolean }> {
     await this.ensureReady();
+    assertNoConversationCopyMetadata(input);
     const staged = await this.files.createTranscript(input);
     try {
       const result = await this.metadata.createSubagent(staged, initialBoundary);
@@ -193,6 +434,7 @@ class SqliteSessionStore implements SessionStore {
     initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
     await this.ensureReady();
+    assertNoConversationCopyMetadata(input);
     const staged = await this.files.createTranscript(input);
     try {
       const result = await this.metadata.createAgentGraphOperator(
@@ -223,6 +465,14 @@ class SqliteSessionStore implements SessionStore {
   ): Promise<SandboxBoundaryRequest> {
     await this.ensureReady();
     return this.metadata.createSandboxBoundaryRequest(input);
+  }
+
+  async readSandboxBoundaryRequest(
+    sessionId: string,
+    requestId: string,
+  ): Promise<SandboxBoundaryRequest | undefined> {
+    await this.ensureReady();
+    return this.metadata.readSandboxBoundaryRequest(sessionId, requestId);
   }
 
   async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
@@ -256,33 +506,36 @@ class SqliteSessionStore implements SessionStore {
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
-    const records = await this.metadata.list(filter);
+    const records = (await this.metadata.list(filter)).filter(
+      (record) => record.header.conversationCopy?.state !== 'preparing',
+    );
     const withPreviews: Array<{
-      header: SessionHeader;
+      record: SessionMetadataRecord;
       previewMessages: StoredMessage[];
     }> = [];
     for (const record of records) {
       const previewMessages = await this.files
         .readPreviewMessages(record.header.id)
         .catch(() => []);
-      withPreviews.push({ header: record.header, previewMessages });
+      withPreviews.push({ record, previewMessages });
     }
     withPreviews.sort((a, b) => {
       const aLastMessageAt = maxTimestamp(
-        a.header.lastMessageAt,
+        a.record.header.lastMessageAt,
         latestVisibleMessageAt(a.previewMessages),
       );
       const bLastMessageAt = maxTimestamp(
-        b.header.lastMessageAt,
+        b.record.header.lastMessageAt,
         latestVisibleMessageAt(b.previewMessages),
       );
       const tsDelta = (bLastMessageAt ?? 0) - (aLastMessageAt ?? 0);
-      return tsDelta !== 0 ? tsDelta : a.header.id.localeCompare(b.header.id);
+      return tsDelta !== 0 ? tsDelta : a.record.header.id.localeCompare(b.record.header.id);
     });
 
     const summaries: SessionSummary[] = [];
     for (let index = 0; index < withPreviews.length; index += 1) {
-      const { header, previewMessages } = withPreviews[index]!;
+      const { record, previewMessages } = withPreviews[index]!;
+      const { header } = record;
       let messages = previewMessages.slice(-10);
       if (index < 3) {
         messages = (
@@ -292,6 +545,34 @@ class SqliteSessionStore implements SessionStore {
       summaries.push(toSummary(header, messages));
     }
     return summaries;
+  }
+
+  async listCatalogPage(
+    filter: SessionListFilter | undefined,
+    cursor: SessionCatalogPageCursor | undefined,
+    limit: number,
+    expectedRevision?: `sha256:${string}`,
+  ): Promise<SessionCatalogPageResult> {
+    await this.ensureCatalogProjectionReadable();
+    const page = await this.metadata.listCatalogPage(filter ?? {}, cursor, limit);
+    const revision = projectCatalogRevision(page.revision);
+    if (expectedRevision !== undefined && expectedRevision !== revision) {
+      return {
+        kind: 'revision_changed',
+        expectedRevision,
+        actualRevision: revision,
+      };
+    }
+
+    return {
+      kind: 'page',
+      revision,
+      records: page.records.map((record) => ({
+        ...projectHeaderSnapshot(record),
+        summary: toCatalogSummary(record.header, record.lastMessagePreview),
+      })),
+      hasMore: page.hasMore,
+    };
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
@@ -310,8 +591,21 @@ class SqliteSessionStore implements SessionStore {
   }
 
   async readHeaderSnapshot(sessionId: string): Promise<SessionHeader> {
+    return (await this.readHeaderRecordSnapshot(sessionId)).header;
+  }
+
+  async readHeaderRecordSnapshot(sessionId: string): Promise<SessionHeaderSnapshot> {
     await this.ensureReady();
-    return (await this.metadata.read(sessionId)).header;
+    return projectHeaderSnapshot(await this.metadata.read(sessionId));
+  }
+
+  async readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord> {
+    await this.ensureCatalogProjectionReadable();
+    const record = await this.metadata.readCatalogRecord(sessionId);
+    return {
+      ...projectHeaderSnapshot(record),
+      summary: toCatalogSummary(record.header, record.lastMessagePreview),
+    };
   }
 
   async readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]> {
@@ -351,13 +645,136 @@ class SqliteSessionStore implements SessionStore {
   }
 
   async appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void> {
-    await this.ensureReady();
-    await this.files.appendMessages(sessionId, messages);
+    if (messages.length === 0) return;
+    const release = await this.acquireCatalogProjectionWrite();
+    try {
+      await this.metadata.beginCatalogProjectionWrite();
+      await this.files.appendMessages(sessionId, messages);
+      await this.metadata.commitCatalogProjectionWrite(
+        sessionId,
+        catalogMessageProjection(messages),
+      );
+    } catch (error) {
+      const recovery = this.scheduleCatalogProjectionRecovery();
+      release();
+      try {
+        await recovery;
+      } catch {
+        throw error;
+      }
+      throw error;
+    } finally {
+      release();
+    }
   }
 
   async updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader> {
     await this.ensureReady();
     return (await this.metadata.update(sessionId, patch)).header;
+  }
+
+  async updateHeaderVersioned(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+    expectedRevision: number,
+  ): Promise<SessionHeaderSnapshot> {
+    await this.ensureReady();
+    return projectHeaderSnapshot(
+      await this.metadata.update(sessionId, patch, {
+        expectedVersion: expectedRevision,
+        skipNoop: true,
+      }),
+    );
+  }
+
+  async updateSessionConfiguration(
+    sessionId: string,
+    input: UpdateSessionConfigurationRequest,
+  ): Promise<SessionHeaderSnapshot> {
+    await this.ensureReady();
+    return projectHeaderSnapshot(await this.metadata.updateSessionConfiguration(sessionId, input));
+  }
+
+  async markSessionReadThroughMessage(
+    sessionId: string,
+    messageId: string,
+  ): Promise<SessionHeaderSnapshot> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const record = await this.readHeaderRecordSnapshot(sessionId);
+      const messages = await this.readMessagesSnapshot(sessionId);
+      const visibleMessages = messages.filter(isVisibleSessionMessage);
+      const targetIndex = visibleMessages.findIndex((message) => message.id === messageId);
+      if (targetIndex < 0) {
+        throw new SessionReadMarkerMessageNotFoundError(sessionId, messageId);
+      }
+      const currentIndex =
+        record.header.lastReadMessageId === undefined
+          ? -1
+          : visibleMessages.findIndex((message) => message.id === record.header.lastReadMessageId);
+      if (targetIndex <= currentIndex) return record;
+      const hasUnread = targetIndex < visibleMessages.length - 1;
+      try {
+        return await this.updateHeaderVersioned(
+          sessionId,
+          { lastReadMessageId: messageId, hasUnread },
+          record.revision,
+        );
+      } catch (error) {
+        if (!(error instanceof SessionMetadataVersionConflictError) || attempt === 2) throw error;
+      }
+    }
+    throw new Error('Session read marker retry loop did not terminate');
+  }
+
+  async probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult> {
+    await this.ensureReady();
+    return projectRemovalProbe(await this.metadata.probeRemoval(sessionId));
+  }
+
+  async setSessionsLifecycleVersioned(
+    sessions: readonly VersionedSessionIdentity[],
+    state: 'active' | 'archived',
+  ): Promise<SessionHeaderSnapshot[]> {
+    await this.ensureReady();
+    return (await this.metadata.setLifecycleVersioned(sessions, state)).map(projectHeaderSnapshot);
+  }
+
+  async removeSessionsVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]> {
+    await this.ensureReady();
+    return this.metadata.removeVersioned(sessions);
+  }
+
+  async reconcileOrphanedAgentGraphRetirements(): Promise<string[]> {
+    await this.ensureReady();
+    return this.metadata.reconcileOrphanedAgentGraphRetirements();
+  }
+
+  async listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]> {
+    await this.ensureReady();
+    const [pending, existing] = await Promise.all([
+      this.metadata.listPendingSessionRetirementCleanupIds(sessionId),
+      this.files.listSessionDirectoryIds(),
+    ]);
+    const resurrected = await this.metadata.listTombstonedSessionIdsAmong(existing);
+    const relevantResurrected =
+      sessionId === undefined
+        ? resurrected
+        : resurrected.filter((candidate) => candidate === sessionId);
+    return [...new Set([...pending, ...relevantResurrected])].sort();
+  }
+
+  async purgeRemovedSessionTranscript(sessionId: string): Promise<void> {
+    await this.ensureReady();
+    const probe = await this.metadata.probeRemoval(sessionId);
+    if (probe.kind !== 'removed') {
+      throw new Error(`Cannot purge transcript for a Session that is ${probe.kind}`);
+    }
+    await this.removeTranscript(sessionId);
+  }
+
+  async completeSessionRetirementCleanup(sessionId: string): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.completeSessionRetirementCleanup(sessionId);
   }
 
   async markSessionReadThrough(sessionId: string, readThroughTs: number): Promise<SessionHeader> {
@@ -427,7 +844,7 @@ class SqliteSessionStore implements SessionStore {
   async remove(sessionId: string): Promise<void> {
     await this.ensureReady();
     await this.metadata.remove(sessionId);
-    await this.files.remove(sessionId);
+    await this.removeTranscript(sessionId);
   }
 
   close(): Promise<void> {
@@ -437,6 +854,7 @@ class SqliteSessionStore implements SessionStore {
 
   private async closeAfterReady(): Promise<void> {
     await this.ready.catch(() => {});
+    await this.catalogProjectionRecovery?.catch(() => {});
     this.metadata.close();
   }
 
@@ -451,8 +869,85 @@ class SqliteSessionStore implements SessionStore {
     return this.updateHeader(header.id, { connectionLocked: true });
   }
 
+  private async recoverCatalogProjections(): Promise<void> {
+    if (!(await this.metadata.hasPendingCatalogProjectionWrites())) return;
+    const projections = new Map<string, ReturnType<typeof catalogMessageProjection>>();
+    for (const record of await this.metadata.list()) {
+      try {
+        const messages = await this.files.readTranscriptMessagesForRecovery(
+          record.header.id,
+          record.header,
+        );
+        projections.set(record.header.id, catalogMessageProjection(messages));
+      } catch (error) {
+        if (!isDiscardableConversationCopy(record.header)) throw error;
+      }
+    }
+    await this.metadata.recoverCatalogProjections(projections);
+  }
+
   private async ensureReady(): Promise<void> {
     await this.ready;
+    if (this.catalogProjectionRecovery) await this.catalogProjectionRecovery;
+    if (this.catalogProjectionFailure) throw this.catalogProjectionFailure;
+  }
+
+  private async ensureCatalogProjectionReadable(): Promise<void> {
+    await this.ensureReady();
+    if (
+      this.activeCatalogProjectionWrites === 0 &&
+      (await this.metadata.hasPendingCatalogProjectionWrites())
+    ) {
+      await this.scheduleCatalogProjectionRecovery();
+    }
+  }
+
+  private async acquireCatalogProjectionWrite(): Promise<() => void> {
+    while (true) {
+      await this.ensureReady();
+      if (!this.catalogProjectionRecovery) break;
+    }
+    if (this.activeCatalogProjectionWrites === 0) {
+      this.catalogProjectionWritesIdle = new Promise<void>((resolve) => {
+        this.resolveCatalogProjectionWritesIdle = resolve;
+      });
+    }
+    this.activeCatalogProjectionWrites += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeCatalogProjectionWrites -= 1;
+      if (this.activeCatalogProjectionWrites === 0) {
+        this.resolveCatalogProjectionWritesIdle?.();
+        this.resolveCatalogProjectionWritesIdle = undefined;
+      }
+    };
+  }
+
+  private scheduleCatalogProjectionRecovery(): Promise<void> {
+    if (this.catalogProjectionRecovery) return this.catalogProjectionRecovery;
+    const recovery = (async () => {
+      await this.catalogProjectionWritesIdle;
+      if (await this.metadata.hasPendingCatalogProjectionWrites()) {
+        await this.recoverCatalogProjections();
+      }
+    })();
+    this.catalogProjectionRecovery = recovery;
+    void recovery.then(
+      () => {
+        if (this.catalogProjectionRecovery === recovery) {
+          this.catalogProjectionRecovery = null;
+        }
+      },
+      (error: unknown) => {
+        this.catalogProjectionFailure = error;
+        if (this.catalogProjectionRecovery === recovery) {
+          this.catalogProjectionRecovery = null;
+        }
+      },
+    );
+    return recovery;
   }
 }
 
@@ -463,73 +958,45 @@ class FileSessionStore implements SessionStore {
   private readonly sessionsRoot: string;
   private readonly writeQueues = new Map<string, Promise<void>>();
 
-  constructor(private readonly workspaceRoot: string) {
+  constructor(
+    private readonly workspaceRoot: string,
+    private readonly durableTranscripts = false,
+  ) {
     this.sessionsRoot = join(workspaceRoot, 'sessions');
   }
 
   async create(input: CreateSessionInput): Promise<SessionHeader> {
+    assertNoConversationCopyMetadata(input);
     if (input.subagentSpawn) {
       throw new Error('Child-session idempotency requires the SQLite metadata control plane');
     }
     return this.createWithInitialRecord(input, 'legacy-header');
   }
 
-  async createSubagent(
-    _input: CreateSessionInput,
-  ): Promise<{ header: SessionHeader; created: boolean }> {
-    throw new Error('Child-session idempotency requires the SQLite metadata control plane');
+  async createTranscript(input: CreateSessionInput, sessionId?: string): Promise<SessionHeader> {
+    assertNoConversationCopyMetadata(input);
+    return this.createWithInitialRecord(input, 'transcript-marker', sessionId);
   }
 
-  async createAgentGraphOperator(
-    _input: CreateSessionInput,
-    _request: AgentGraphOperatorProvisionRequest,
-    _expectedRevision: number,
-  ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
-    throw new Error('Graph operator provisioning requires the SQLite metadata control plane');
-  }
-
-  async readExecutionBoundary(_sessionId: string): Promise<ExecutionBoundary> {
-    throw new Error('Execution boundaries require the SQLite metadata control plane');
-  }
-
-  async createSandboxBoundaryRequest(
-    _input: CreateSandboxBoundaryRequest,
-  ): Promise<SandboxBoundaryRequest> {
-    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
-  }
-
-  async listPendingSandboxBoundaryRequests(_sessionId: string): Promise<SandboxBoundaryRequest[]> {
-    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
-  }
-
-  async listSandboxBoundaryRestartClosures(_sessionId: string): Promise<SandboxBoundaryRequest[]> {
-    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
-  }
-
-  async settleSandboxBoundaryRequest(
-    _input: SettleSandboxBoundaryRequest,
-  ): Promise<SandboxBoundarySettlement> {
-    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
-  }
-
-  async setExecutionBoundaryKind(
-    _sessionId: string,
-    _kind: 'managed' | 'bypass',
-    _projection?: {
-      permissionMode: SessionHeader['permissionMode'];
-      labels?: readonly string[];
-    },
-  ): Promise<ExecutionBoundary> {
-    throw new Error('Execution boundaries require the SQLite metadata control plane');
-  }
-
-  async createTranscript(input: CreateSessionInput): Promise<SessionHeader> {
-    return this.createWithInitialRecord(input, 'transcript-marker');
+  async ensureStableTranscript(
+    input: StableSessionCreateInput,
+    sessionId: string,
+  ): Promise<SessionHeader> {
+    return this.createWithInitialRecord(
+      input,
+      'transcript-marker',
+      sessionId,
+      true,
+      input.conversationCopy,
+    );
   }
 
   private async createWithInitialRecord(
     input: CreateSessionInput,
     initialRecord: 'legacy-header' | 'transcript-marker',
+    sessionId?: string,
+    reuseStableTranscript = false,
+    conversationCopy?: SessionConversationCopy,
   ): Promise<SessionHeader> {
     if (
       input.projectId !== undefined &&
@@ -539,7 +1006,8 @@ class FileSessionStore implements SessionStore {
       throw new Error('Invalid project id');
     }
     const now = Date.now();
-    const id = randomUUID();
+    const id = sessionId ?? randomUUID();
+    assertSafeSessionId(id);
     // PR-UI-IPC-2 (@kenji msg 0474c3fe + @xuan msg 88d96a87):
     // session name write contract. If caller passed undefined,
     // use the canonical default; otherwise normalize the
@@ -579,6 +1047,7 @@ class FileSessionStore implements SessionStore {
       ...(input.subagentRuntime ? { subagentRuntime: input.subagentRuntime } : {}),
       ...(input.subagentSpawn ? { subagentSpawn: input.subagentSpawn } : {}),
       ...(input.subagentWorkspace ? { subagentWorkspace: input.subagentWorkspace } : {}),
+      ...(conversationCopy ? { conversationCopy } : {}),
       ...(input.revisionRootSessionId
         ? { revisionRootSessionId: input.revisionRootSessionId }
         : {}),
@@ -604,13 +1073,76 @@ class FileSessionStore implements SessionStore {
     assertValidSessionLineage(header);
 
     await this.withQueue(id, async () => {
-      await mkdir(this.sessionDir(id), { recursive: true });
+      await mkdir(this.sessionsRoot, { recursive: true });
+      if (reuseStableTranscript) {
+        try {
+          await mkdir(this.sessionDir(id));
+        } catch (error) {
+          if (!hasErrorCode(error, 'EEXIST')) throw error;
+        }
+        await this.ensureMarkerOnlyTranscript(id);
+        return;
+      }
+      await mkdir(this.sessionDir(id));
       const firstRecord =
         initialRecord === 'legacy-header' ? header : createSessionTranscriptMarker(header.id);
-      await writeFile(this.sessionPath(id), JSON.stringify(firstRecord) + '\n', 'utf8');
+      try {
+        await writeNewTranscript(
+          this.sessionPath(id),
+          JSON.stringify(firstRecord) + '\n',
+          this.durableTranscripts ? this.workspaceRoot : undefined,
+        );
+      } catch (error) {
+        await rm(this.sessionDir(id), { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
     });
 
     return header;
+  }
+
+  private async ensureMarkerOnlyTranscript(sessionId: string): Promise<void> {
+    const path = this.sessionPath(sessionId);
+    const marker = JSON.stringify(createSessionTranscriptMarker(sessionId)) + '\n';
+    const entries = await readdir(this.sessionDir(sessionId));
+    if (entries.length === 0) {
+      try {
+        await writeNewTranscript(
+          path,
+          marker,
+          this.durableTranscripts ? this.workspaceRoot : undefined,
+        );
+        return;
+      } catch (error) {
+        if (!hasErrorCode(error, 'EEXIST')) throw error;
+      }
+    } else if (entries.length !== 1 || entries[0] !== 'session.jsonl') {
+      throw new Error(`Session ${sessionId}: stable transcript path is not recoverable`);
+    }
+
+    const text = await readFile(path, 'utf8');
+    if (text === marker) {
+      if (this.durableTranscripts) {
+        await stabilizeTranscript(path, this.workspaceRoot);
+      }
+      return;
+    }
+    if (marker.startsWith(text)) {
+      await this.writeAtomic(path, marker);
+      if (this.durableTranscripts) {
+        await stabilizeTranscript(path, this.workspaceRoot);
+      }
+      return;
+    }
+    const records = text.split('\n').filter((line) => line.trim().length > 0);
+    if (records.length !== 1 || !records[0]) {
+      throw new Error(`Session ${sessionId}: stable transcript is not marker-only`);
+    }
+    decodeSessionTranscriptMarker(JSON.parse(records[0]), sessionId);
+    await this.writeAtomic(path, marker);
+    if (this.durableTranscripts) {
+      await stabilizeTranscript(path, this.workspaceRoot);
+    }
   }
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
@@ -688,6 +1220,20 @@ class FileSessionStore implements SessionStore {
       summaries.push(toSummary(header, messages));
     }
     return summaries;
+  }
+
+  async listSessionDirectoryIds(): Promise<string[]> {
+    let entries;
+    try {
+      entries = await readdir(this.sessionsRoot, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    return entries
+      .filter((entry) => entry.isDirectory() && SESSION_ID_PATTERN.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
@@ -782,6 +1328,8 @@ class FileSessionStore implements SessionStore {
     await this.withQueue(sessionId, async () => {
       const payload = messages.map((message) => JSON.stringify(message)).join('\n') + '\n';
       await appendJsonl(this.sessionPath(sessionId), payload, {
+        durable: this.durableTranscripts,
+        ...(this.durableTranscripts ? { durabilityRoot: this.workspaceRoot } : {}),
         requireExistingRecord: true,
       });
     });
@@ -803,6 +1351,7 @@ class FileSessionStore implements SessionStore {
     let nextHeader: SessionHeader | undefined;
     await this.withQueue(sessionId, async () => {
       const { header, messages } = await this.readFilePartsUnlocked(sessionId);
+      assertConversationCopyTransition(header, patch);
       nextHeader = { ...header, ...patch };
       assertValidSessionLineage(nextHeader);
       const lines = [
@@ -1097,7 +1646,7 @@ class FileSessionStore implements SessionStore {
   private async writeAtomic(path: string, content: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
     const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-    await writeFile(tempPath, content, 'utf8');
+    await writeFile(tempPath, content, { encoding: 'utf8', mode: 0o600 });
     try {
       await replaceFileWithWindowsReaderRetry(tempPath, path);
     } finally {
@@ -1134,7 +1683,7 @@ export function assertSafeSessionId(sessionId: string): void {
 }
 
 export function isSafeSessionId(sessionId: string): boolean {
-  return SESSION_ID_PATTERN.test(sessionId);
+  return SESSION_ID_PATTERN.test(sessionId) && sessionId !== WORKSPACE_AUTHORITY_SESSION_ID;
 }
 
 type StoredSessionHeader = Omit<
@@ -1327,6 +1876,7 @@ export function normalizeSessionHeader(
     (header.statusUpdatedAt === undefined || isFiniteNumber(header.statusUpdatedAt)) &&
     (header.parentSessionId === undefined || typeof header.parentSessionId === 'string') &&
     (header.branchOfTurnId === undefined || typeof header.branchOfTurnId === 'string') &&
+    isValidConversationCopyLineage(header) &&
     isValidRevisionLineage(header) &&
     isValidSubagentSessionLineage(header) &&
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
@@ -1383,11 +1933,52 @@ function isValidRevisionLineage(header: SessionHeader): boolean {
 }
 
 function assertValidSessionLineage(header: SessionHeader): void {
+  if (!isValidConversationCopyLineage(header)) {
+    throw new Error('Invalid Session conversation-copy lineage');
+  }
   if (!isValidRevisionLineage(header)) {
     throw new Error('Invalid session revision lineage');
   }
   if (!isValidSubagentSessionLineage(header)) {
     throw new Error('Invalid subagent session lineage');
+  }
+}
+
+function isValidConversationCopyLineage(header: SessionHeader): boolean {
+  const copy = header.conversationCopy;
+  if (copy === undefined) return true;
+  if (
+    !isSessionConversationCopy(copy) ||
+    !isSafeSessionId(copy.sourceSessionId) ||
+    copy.sourceSessionId === header.id ||
+    header.subagentParent !== undefined
+  ) {
+    return false;
+  }
+  if (copy.kind === 'branch') {
+    return (
+      header.parentSessionId === copy.sourceSessionId &&
+      header.branchOfTurnId === copy.sourceTurnId &&
+      header.revisionRootSessionId === undefined &&
+      header.revisionParentSessionId === undefined &&
+      header.revisionOfTurnId === undefined &&
+      header.revisionIndex === undefined &&
+      header.revisionState === undefined
+    );
+  }
+  return (
+    header.revisionParentSessionId === copy.sourceSessionId &&
+    header.revisionOfTurnId === copy.sourceTurnId
+  );
+}
+
+function assertConversationCopyTransition(
+  current: SessionHeader,
+  patch: Partial<SessionHeader>,
+): void {
+  if (!Object.prototype.hasOwnProperty.call(patch, 'conversationCopy')) return;
+  if (!isValidConversationCopyTransition(current, patch.conversationCopy)) {
+    throw new Error('Session conversation-copy identity is immutable');
   }
 }
 
@@ -1431,8 +2022,46 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function hasErrorCode(error: unknown, code: string): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === code;
+}
+
+function assertNoConversationCopyMetadata(input: CreateSessionInput): void {
+  if (Object.prototype.hasOwnProperty.call(input, 'conversationCopy')) {
+    throw new Error('Conversation copy metadata requires createStableSession()');
+  }
+}
+
+function projectHeaderSnapshot(record: SessionMetadataRecord): SessionHeaderSnapshot {
+  return {
+    header: record.header,
+    revision: record.metadataVersion,
+    committedAt: record.committedAt,
+  };
+}
+
+function projectRemovalProbe(probe: SessionRemovalProbe): ProbeSessionRemovalResult {
+  return probe.kind === 'present'
+    ? { kind: 'present', record: projectHeaderSnapshot(probe.record) }
+    : probe;
+}
+
+function projectCatalogRevision(state: SessionCatalogRevisionState): `sha256:${string}` {
+  return `sha256:${createHash('sha256')
+    .update(`${state.epoch}:${state.generation}`)
+    .digest('hex')}`;
+}
+
+function projectStableSessionCreateProbe(
+  probe: StableSessionCreateProbe,
+): ProbeStableSessionCreateResult {
+  return probe.kind === 'existing'
+    ? { kind: 'existing', record: projectHeaderSnapshot(probe.record) }
+    : probe;
+}
+
 function toSummary(header: SessionHeader, messages: StoredMessage[] = []): SessionSummary {
-  const preview = lastMessagePreview(messages);
+  const preview = lastMessagePreviewForMessages(messages);
   const derivedLastMessageAt = latestVisibleMessageAt(messages);
   const lastMessageAt = maxTimestamp(header.lastMessageAt, derivedLastMessageAt);
   return {
@@ -1477,12 +2106,40 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
   };
 }
 
+function toCatalogSummary(
+  header: SessionHeader,
+  lastMessagePreview: string | undefined,
+): SessionSummary {
+  return {
+    ...toSummary(header),
+    ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+  };
+}
+
+function catalogMessageProjection(messages: StoredMessage[]): {
+  readonly lastMessageAt?: number;
+  readonly lastMessagePreview?: string;
+} {
+  const lastMessageAt = latestVisibleMessageAt(messages);
+  const lastMessagePreview = lastMessagePreviewForMessages(messages);
+  return {
+    ...(lastMessageAt === undefined ? {} : { lastMessageAt }),
+    ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+  };
+}
+
 function latestVisibleMessageAt(messages: StoredMessage[]): number | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
-    if (message.type === 'user' || message.type === 'assistant') return message.ts;
+    if (isVisibleSessionMessage(message)) return message.ts;
   }
   return undefined;
+}
+
+function isVisibleSessionMessage(
+  message: StoredMessage,
+): message is Extract<StoredMessage, { type: 'user' | 'assistant' }> {
+  return message.type === 'user' || message.type === 'assistant';
 }
 
 function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
@@ -1495,7 +2152,7 @@ function normalizeSessionName(name: string): string {
   return name === 'New Session' ? DEFAULT_SESSION_NAME : name;
 }
 
-function lastMessagePreview(messages: StoredMessage[]): string | undefined {
+function lastMessagePreviewForMessages(messages: StoredMessage[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
     if (message.type === 'user') {
@@ -1523,11 +2180,50 @@ function truncatePreview(text: string, maxLength = 96): string {
   return `${chars.slice(0, maxLength - 1).join('')}…`;
 }
 
+async function writeNewTranscript(
+  path: string,
+  payload: string,
+  durabilityRoot?: string,
+): Promise<void> {
+  try {
+    const handle = await open(path, 'wx', 0o600);
+    try {
+      await handle.writeFile(payload, 'utf8');
+      if (durabilityRoot) await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    if (durabilityRoot) {
+      await syncDirectoryChain(dirname(path), durabilityRoot);
+    }
+  } catch (error) {
+    if (!durabilityRoot || error instanceof DurableStoreWriteError) throw error;
+    throw new DurableStoreWriteError(
+      `Durable Session transcript did not reach stable storage: ${path}`,
+      error,
+    );
+  }
+}
+
+async function stabilizeTranscript(path: string, durabilityRoot: string): Promise<void> {
+  try {
+    await syncFile(path);
+    await syncDirectoryChain(dirname(path), durabilityRoot);
+  } catch (error) {
+    if (error instanceof DurableStoreWriteError) throw error;
+    throw new DurableStoreWriteError(
+      `Session transcript durability could not be re-established: ${path}`,
+      error,
+    );
+  }
+}
+
 export function createUserMessage(input: {
   turnId: string;
   text: string;
   displayText?: string;
   attachments?: UserMessage['attachments'];
+  inlineReferences?: UserMessage['inlineReferences'];
 }): UserMessage {
   return {
     type: 'user',
@@ -1537,5 +2233,6 @@ export function createUserMessage(input: {
     text: input.text,
     ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
     attachments: input.attachments,
+    ...(input.inlineReferences !== undefined ? { inlineReferences: input.inlineReferences } : {}),
   };
 }

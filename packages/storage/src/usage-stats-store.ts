@@ -2,7 +2,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { UsageRange, UsageStats } from '@maka/core';
 import type { SessionHeader } from '@maka/core/session';
-import { SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
+import { OPERATIONAL_STATE_DATABASE_NAME } from './operational-state-store.js';
 import { createSqliteSessionMetadataStore } from './sqlite-session-metadata-store.js';
 
 type UsageSessionHeader = Pick<SessionHeader, 'id' | 'llmConnectionSlug' | 'model'>;
@@ -162,7 +162,7 @@ async function readStoredSessions(
 async function readCanonicalUsageHeaders(
   workspaceRoot: string,
 ): Promise<Map<string, UsageSessionHeader> | null> {
-  const path = join(workspaceRoot, SQLITE_SESSION_METADATA_DATABASE_NAME);
+  const path = join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME);
   try {
     await stat(path);
   } catch (error) {

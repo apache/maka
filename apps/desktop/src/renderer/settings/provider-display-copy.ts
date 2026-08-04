@@ -220,6 +220,10 @@ export const PROVIDER_DISPLAY_COPY = {
     zh: { name: 'OpenCode Go', description: '低价订阅制的开源编码模型精选', badge: 'Plan' },
     en: { name: 'OpenCode Go', description: 'Low-cost subscription to curated open coding models.', badge: 'Plan' },
   },
+  'opencode-free': {
+    zh: { name: 'OpenCode Free', description: '免费匿名 OpenCode Zen 模型，无需密钥，按 IP 限速', badge: 'Free' },
+    en: { name: 'OpenCode Free', description: 'Free anonymous OpenCode Zen models — no API key, IP-limited.', badge: 'Free' },
+  },
   groq: {
     zh: { name: 'Groq', description: 'LPU 高速推理托管开源模型', badge: 'API' },
     en: { name: 'Groq', description: 'Ultra-fast LPU-hosted open models.', badge: 'API' },

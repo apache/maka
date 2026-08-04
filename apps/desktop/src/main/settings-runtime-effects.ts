@@ -7,7 +7,6 @@ import type { BotRegistry } from '@maka/runtime';
 import type { createSettingsStore } from '@maka/storage';
 import { preserveSensitivePlaceholders } from './settings-ipc-helpers.js';
 import { maskNetworkSettings, toContractNetworkSettings } from './network-settings-main.js';
-import type { OpenGatewayService } from './open-gateway.js';
 import type { KeepSystemAwakeController } from './keep-system-awake.js';
 
 type SettingsStore = ReturnType<typeof createSettingsStore>;
@@ -15,7 +14,6 @@ type SettingsStore = ReturnType<typeof createSettingsStore>;
 export interface SettingsRuntimeEffectsDeps {
   settingsStore: SettingsStore;
   botRegistry: BotRegistry;
-  openGateway: OpenGatewayService;
   keepSystemAwake: KeepSystemAwakeController;
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
 }
@@ -25,7 +23,7 @@ export interface SettingsRuntimeEffects {
    *  persisted values so the renderer never has to round-trip a real secret. */
   normalizeSettingsPatch(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsInput>;
   /** Apply the side effects a settings change implies on the live process:
-   *  proxy, bot bridges, open-gateway, and keep-awake. */
+   *  proxy, bot bridges, and keep-awake. */
   applySettingsRuntimeEffects(settings: AppSettings, patch: UpdateAppSettingsInput): Promise<void>;
   /** Re-apply the full set of runtime effects after an external (config-file)
    *  settings edit, then notify the renderer to re-read. */
@@ -46,7 +44,6 @@ export function createSettingsRuntimeEffects(
   const {
     settingsStore,
     botRegistry,
-    openGateway,
     keepSystemAwake,
     safeSendToRenderer,
   } = deps;
@@ -65,10 +62,6 @@ export function createSettingsRuntimeEffects(
     if (patch.botChat) {
       await botRegistry.applySettings(settings.botChat);
     }
-    if (patch.openGateway) {
-      const status = await openGateway.sync(settings.openGateway);
-      safeSendToRenderer('gateway:statusChanged', status);
-    }
     if (patch.system) {
       // Start/stop the power-save blocker the instant the toggle flips so the
       // capability reflects the user's choice without waiting for a relaunch.
@@ -82,7 +75,6 @@ export function createSettingsRuntimeEffects(
       const fullPatch: UpdateAppSettingsInput = {
         network: settings.network,
         botChat: settings.botChat,
-        openGateway: settings.openGateway,
         system: settings.system,
       };
       await applySettingsRuntimeEffects(settings, fullPatch);

@@ -28,6 +28,7 @@ import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core';
 import {
+  PROVIDER_CONTRACT_DIMENSIONS,
   PROVIDER_DEFAULTS,
   PROVIDER_CONTRACT_MATRIX_PLAN,
   listProviderContractCells,
@@ -75,6 +76,20 @@ const KNOWN_WIRES: ReadonlySet<ProviderContractWire> = new Set([
 
 describe('provider conformance matrix — gap report', () => {
   test('no contract gaps: every ready provider dimension is generated, overridden, or justified N/A', () => {
+    const expectedRows = Object.entries(PROVIDER_DEFAULTS)
+      .filter(
+        ([, definition]) =>
+          definition.status === 'ready' && definition.runtimeAdapter.kind !== 'unavailable',
+      )
+      .map(([providerType]) => providerType)
+      .sort();
+    assert.deepEqual(
+      plan.rows.map((row) => row.providerType).sort(),
+      expectedRows,
+      'every ready provider with a runtime adapter must have a conformance row',
+    );
+    assert.deepEqual(plan.dimensions, PROVIDER_CONTRACT_DIMENSIONS);
+
     const gaps: string[] = [];
     for (const { providerType, dimension, cell } of listProviderContractCells(plan)) {
       const where = `${providerType} · ${dimension}`;

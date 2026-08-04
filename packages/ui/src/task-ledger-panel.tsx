@@ -1,19 +1,17 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useMemo, type CSSProperties, type ReactNode } from 'react';
+import { Collapsible, IconButton } from '@astryxdesign/core';
 import type { Task, TaskStatus } from '@maka/core';
 import {
   AlertCircle,
   Ban,
   CheckCircle2,
-  ChevronDown,
   CircleGauge,
   Clock,
   RefreshCcw,
   X,
 } from './icons.js';
-import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from './primitives/collapsible.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy, type SharedUiCopy } from './shared-ui-copy.js';
-import { EmptyState } from './empty-state.js';
 
 const STATUS_ICONS = {
   pending: Clock,
@@ -54,7 +52,6 @@ export function deriveTaskLedgerPanelModel(tasks: readonly Task[]): TaskLedgerPa
 
 export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
   const copy = getSharedUiCopy(useUiLocale()).taskLedger;
-  const [terminalOpen, setTerminalOpen] = useState(false);
   const model = useMemo(() => deriveTaskLedgerPanelModel(props.tasks), [props.tasks]);
 
   return (
@@ -63,10 +60,15 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
         <div className="maka-task-ledger-message" role="alert">
           <span>{props.error}</span>
           {props.onRetry && (
-            <button type="button" className="maka-task-ledger-retry" onClick={props.onRetry} title={copy.retry}>
-              <RefreshCcw size={14} aria-hidden="true" />
-              <span className="sr-only">{copy.retry}</span>
-            </button>
+            <IconButton
+              variant="ghost"
+              size="sm"
+              className="maka-task-ledger-retry"
+              onClick={props.onRetry}
+              label={copy.retry}
+              tooltip={copy.retry}
+              icon={<RefreshCcw size={14} aria-hidden="true" />}
+            />
           )}
         </div>
       ) : props.loading && props.tasks.length === 0 ? (
@@ -75,22 +77,25 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
         <>
           {model.activeCount > 0 ? (
             <div className="maka-task-ledger-tree" role="tree" aria-label={copy.activeAriaLabel}>
-              {model.activeTree.map((task) => <TaskLedgerRow key={task.id} task={task} copy={copy} />)}
+              <TaskLedgerTree tasks={model.activeTree} copy={copy} />
             </div>
           ) : (
-            <EmptyState variant="inline" title={copy.empty} body="" />
+            <p className="maka-task-ledger-empty">{copy.empty}</p>
           )}
           {model.recentTerminalCount > 0 && (
-            <Collapsible className="maka-task-ledger-terminal" open={terminalOpen} onOpenChange={setTerminalOpen}>
-              <CollapsibleTrigger className="maka-task-ledger-terminal-trigger">
-                <span>{copy.recent}</span>
-                <span>{model.recentTerminalCount}<ChevronDown size={14} aria-hidden="true" data-open={terminalOpen ? 'true' : 'false'} /></span>
-              </CollapsibleTrigger>
-              <CollapsiblePanel>
-                <div className="maka-task-ledger-tree" role="tree" aria-label={copy.recentAriaLabel}>
-                  {model.recentTerminalTree.map((task) => <TaskLedgerRow key={task.id} task={task} copy={copy} />)}
-                </div>
-              </CollapsiblePanel>
+            <Collapsible
+              className="maka-task-ledger-terminal"
+              defaultIsOpen={false}
+              trigger={(
+                <span className="maka-task-ledger-terminal-trigger">
+                  <span>{copy.recent}</span>
+                  <span>{model.recentTerminalCount}</span>
+                </span>
+              )}
+            >
+              <div className="maka-task-ledger-tree" role="tree" aria-label={copy.recentAriaLabel}>
+                <TaskLedgerTree tasks={model.recentTerminalTree} copy={copy} />
+              </div>
             </Collapsible>
           )}
         </>
@@ -99,9 +104,47 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
   );
 }
 
-function TaskLedgerRow({ task, copy }: { task: Task; copy: SharedUiCopy['taskLedger'] }) {
+function TaskLedgerTree({ tasks, copy }: { tasks: readonly Task[]; copy: SharedUiCopy['taskLedger'] }) {
+  const included = new Set(tasks.map((task) => task.id));
+  const childrenByParent = new Map<string | undefined, Task[]>();
+  for (const task of tasks) {
+    const parent = task.parentId && included.has(task.parentId) ? task.parentId : undefined;
+    const siblings = childrenByParent.get(parent) ?? [];
+    siblings.push(task);
+    childrenByParent.set(parent, siblings);
+  }
+  const renderLevel = (parentId: string | undefined, level: number): ReactNode => {
+    const siblings = childrenByParent.get(parentId) ?? [];
+    return siblings.map((task, index) => (
+      <TaskLedgerRow
+        key={task.id}
+        task={task}
+        copy={copy}
+        level={level}
+        position={index + 1}
+        setSize={siblings.length}
+      >
+        {childrenByParent.has(task.id) ? (
+          <div role="group" className="maka-task-ledger-group">
+            {renderLevel(task.id, level + 1)}
+          </div>
+        ) : null}
+      </TaskLedgerRow>
+    ));
+  };
+  return renderLevel(undefined, 1);
+}
+
+function TaskLedgerRow({ task, copy, level, position, setSize, children }: {
+  task: Task;
+  copy: SharedUiCopy['taskLedger'];
+  level: number;
+  position: number;
+  setSize: number;
+  children?: ReactNode;
+}) {
   const StatusIcon = STATUS_ICONS[task.status];
-  const depth = Math.max(0, task.key.split('.').length - 1);
+  const depth = level - 1;
   const detail = task.blockedReason ?? task.failureReason ?? task.completionEvidence;
   const owner = task.owner?.actor === 'child_agent'
     ? copy.childAgent(task.owner.agentId)
@@ -110,18 +153,21 @@ function TaskLedgerRow({ task, copy }: { task: Task; copy: SharedUiCopy['taskLed
     <div
       className="maka-task-ledger-row"
       role="treeitem"
-      aria-level={depth + 1}
+      aria-level={level}
+      aria-posinset={position}
+      aria-setsize={setSize}
       data-status={task.status}
       style={{ '--task-depth': Math.min(depth, 6) } as CSSProperties}
     >
       <StatusIcon size={14} aria-hidden="true" />
-      <span className="maka-task-ledger-key">{task.key}</span>
+      <code className="maka-task-ledger-key">{task.key}</code>
       <span className="maka-task-ledger-subject" title={task.subject}>{task.subject}</span>
       <span className="maka-task-ledger-meta">
         <span>{copy.status[task.status]}</span>
         {owner && <span title={owner}>{owner}</span>}
       </span>
       {detail && <span className="maka-task-ledger-detail" title={detail}>{detail}</span>}
+      {children}
     </div>
   );
 }

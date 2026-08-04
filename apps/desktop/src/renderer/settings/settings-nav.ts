@@ -9,11 +9,11 @@ import {
   Database,
   Info,
   Mic,
-  Network,
   Palette,
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
+  Workflow,
   type LucideProps,
 } from '@maka/ui/icons';
 import type { SettingsSection, UiLocale } from '@maka/core';
@@ -49,22 +49,6 @@ type AccountSecretProbeResult =
   | { slug: string; status: boolean }
   | { slug: string; status: 'error'; message: string };
 
-// `focusRadioValue`, `onSettingsRadioGroupKeyDown`, `radioTabIndex` were
-// the manual roving-tabindex / arrow-key handlers for the Theme,
-// Palette, and Segmented radiogroups. Theme + Palette migrated to the
-// Base UI `RadioGroup`-backed `ChoiceCard` primitive in PR #263;
-// Segmented migrated to the Base UI `ToggleGroup`-backed
-// `Segmented` primitive in PR yuejing/settings-segmented-primitive.
-// Both primitives now provide the same keyboard contract for free, so
-// these helpers are gone. The provider detail dialog also dropped its
-// hand-rolled default-model radiogroup in favor of a native enabled-model list.
-
-// `SettingsSelect` moved to `packages/ui/src/primitives/settings-select.tsx`
-// in PR round-AB-shared-select (yuejing 2026-06-25). The Plan Reminder
-// platform select now uses the same primitive, so option shape,
-// selected-trigger icon rendering, and chrome contract are one source
-// of truth (kenji styles inventory task #128). Imported via `@maka/ui`.
-
 // `SettingsNavGroup` + `NAV_GROUP_ORDER` moved to `nav-group-summary.ts`
 // (PR-HEALTH-1) so the H1/H2 group-summary assertions can be pinned with
 // node:test without a DOM / React.
@@ -73,21 +57,17 @@ export type { SettingsNavGroup };
 // PR-SETTINGS-IA-CONSOLIDATE-0 + PR-SETTINGS-REVIEW-0: WAWQAQ msg
 // `886f6406` rolled back the 记忆+回顾 merge — the combined page was
 // too dense. 记忆 and 每日回顾 are separate nav items again.
-// PR-SETTINGS-NAV-REGROUP-0 (WAWQAQ msg `a9ef0d5d`): 5 narrow groups
-// → 3 wider groups. 基础→通用, AI+集成→「AI 与集成」, 数据+其他→系统.
-// Mirrors reference's tighter grouping (1 big group + a couple small
-// ones) instead of 5 categories with only 1-3 items each.
 export const SETTINGS_NAV: SettingsNavItem[] = [
-  { id: 'general', Icon: SettingsIcon, enabled: true, group: 'general' },
-  { id: 'appearance', Icon: Palette, enabled: true, group: 'general' },
-  { id: 'models', Icon: Cpu, enabled: true, group: 'ai-integrations' },
-  { id: 'usage', Icon: BarChart3, enabled: true, group: 'ai-integrations' },
-  { id: 'memory', Icon: Brain, enabled: true, group: 'ai-integrations' },
-  { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'ai-integrations' },
-  { id: 'voice', Icon: Mic, enabled: true, group: 'ai-integrations' },
-  { id: 'open-gateway', Icon: Network, enabled: true, group: 'ai-integrations' },
-  { id: 'bot-chat', Icon: Bot, enabled: true, group: 'ai-integrations' },
-  { id: 'search', Icon: Search, enabled: true, group: 'ai-integrations', badge: 'Beta' },
+  { id: 'general', Icon: SettingsIcon, enabled: true, group: 'preferences' },
+  { id: 'appearance', Icon: Palette, enabled: true, group: 'preferences' },
+  { id: 'models', Icon: Cpu, enabled: true, group: 'capabilities' },
+  { id: 'subagents', Icon: Workflow, enabled: true, group: 'capabilities' },
+  { id: 'memory', Icon: Brain, enabled: true, group: 'capabilities' },
+  { id: 'voice', Icon: Mic, enabled: true, group: 'capabilities' },
+  { id: 'bot-chat', Icon: Bot, enabled: true, group: 'capabilities' },
+  { id: 'search', Icon: Search, enabled: true, group: 'capabilities', badge: 'Beta' },
+  { id: 'usage', Icon: BarChart3, enabled: true, group: 'activity' },
+  { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'activity' },
   { id: 'data', Icon: Database, enabled: true, group: 'system' },
   { id: 'permissions', Icon: ShieldCheck, enabled: true, group: 'system' },
   { id: 'health', Icon: Activity, enabled: true, group: 'system' },
@@ -113,10 +93,8 @@ export function groupedNav(locale: UiLocale): Array<{ group: SettingsNavGroup; l
 export function readLastSettingsSection(): SettingsSection {
   const value = safeLocalStorageGet('maka-settings-section-v1');
   if (!value) return 'models';
-  // PR-VOICE-GATEWAY-SPLIT-0 (WAWQAQ msg `d3ea9a33` 2026-06-26):
-  // anyone whose last visit was the now-retired combined 语音与网关
-  // page lands on 语音 (the more user-frequent of the two split
-  // pages) instead of being silently bounced back to 模型.
+  // Anyone whose last visit was the retired combined voice page lands on
+  // Voice instead of being silently bounced back to Models.
   if (value === 'voice-gateway') return 'voice';
   if (value === 'mcp') return 'models';
   if (SETTINGS_NAV.some((item) => item.id === value)) {

@@ -12,6 +12,10 @@ export interface ModelMetadata {
   contextWindow?: number;
   maxOutputTokens?: number;
   capabilities?: ModelInfo['capabilities'];
+  modalities?: ModelInfo['modalities'];
+  endpointRoles?: ModelInfo['endpointRoles'];
+  transports?: ModelInfo['transports'];
+  transcriptOutput?: boolean;
   /**
    * Per-model reasoning controls, mirroring models.dev `reasoning_options`.
    * Omitted on models with no declarable thinking knob (miss → no menu).
@@ -27,17 +31,30 @@ const generatedModelProviderOverrides: Partial<
 
 export function lookupModelMetadata(providerType: ProviderType, modelId: string): ModelMetadata {
   const id = modelId.trim();
-  const metadataProviderType = providerType === 'xai-oauth' ? 'xai' : providerType;
+  const metadataProviderType =
+    providerType === 'xai-oauth'
+      ? 'xai'
+      : providerType === 'opencode-free'
+        ? 'opencode'
+        : providerType;
   const generated = generatedMetadata[metadataProviderType]?.[id];
   const override =
     STATIC_MODEL_METADATA[providerType]?.[id] ??
-    (providerType === 'xai-oauth' ? STATIC_MODEL_METADATA.xai?.[id] : undefined);
+    (providerType === 'xai-oauth'
+      ? STATIC_MODEL_METADATA.xai?.[id]
+      : providerType === 'opencode-free'
+        ? STATIC_MODEL_METADATA.opencode?.[id]
+        : undefined);
   if (!generated) return override ?? {};
   if (!override) return generated;
   return {
     ...generated,
     ...override,
     capabilities: { ...generated.capabilities, ...override.capabilities },
+    modalities: override.modalities ?? generated.modalities,
+    endpointRoles: override.endpointRoles ?? generated.endpointRoles,
+    transports: override.transports ?? generated.transports,
+    transcriptOutput: override.transcriptOutput ?? generated.transcriptOutput,
   };
 }
 
@@ -69,15 +86,72 @@ export function openAiAdapterApiProtocol(
 }
 
 /**
+ * Anthropic model families whose every member reads images.
+ *
+ * The generated table is a snapshot of models.dev, so a Claude released after
+ * that snapshot is simply absent from it — `lookupModelMetadata('anthropic',
+ * 'claude-opus-5')` returns `{}` today. Absent used to resolve to "no vision",
+ * which is the wrong default for this provider: every Claude in these families
+ * accepts image input, and the fail-closed rule was written for text-only
+ * models, not for models nobody has listed yet.
+ *
+ * The two mistakes are not symmetrical. Sending an image to a Claude that
+ * turned out not to read it costs one turn and produces a message. Withholding
+ * it silently drops the user's attachment and downgrades an image tool result
+ * to a sentence, with nothing on screen to explain why, until someone
+ * regenerates the table.
+ *
+ * Anthropic has used two id shapes, and both have to match. From Claude 4 on
+ * the family comes first (`claude-opus-5`); before that the version came first
+ * and the family sat behind it (`claude-3-5-sonnet-20241022`,
+ * `claude-3-opus-20240229`). The pre-4 ids are the ones most likely to be
+ * pinned by hand, none of them is in the generated table, and all of them read
+ * images — so `(?:[\d.]+-)*` skips any leading version segments before the
+ * family name.
+ *
+ * What must keep missing is the generation that genuinely cannot read images:
+ * `claude-2.1`, `claude-2.0` and `claude-instant-*` have no family segment at
+ * all, so they never reach the alternation.
+ *
+ * A connection that reports `vision` still wins over this, in both directions.
+ */
+const VISION_BY_DEFAULT = /^claude-(?:[\d.]+-)*(?:opus|sonnet|haiku|fable)\b/;
+
+/**
+ * The providers whose bare `claude-*` ids are Anthropic's own models.
+ *
+ * Both fetch over the Anthropic protocol and both store the bare `{ id }`
+ * entries that leave `vision` unknown, and `claude-subscription` is usually
+ * where a new Claude becomes usable first — it is the same table of models
+ * reached through a subscription instead of an API key.
+ *
+ * Deliberately narrower than "speaks the Anthropic protocol". `anthropic`
+ * and `claude-subscription` are the only two whose base URL is Anthropic's own;
+ * `anthropic-compatible`, `kimi-coding-plan` and `minimax-coding-plan` share
+ * the wire format while serving somebody else's models, and a `claude-`
+ * prefixed id there says nothing about what is behind it. The same goes for
+ * aggregators like OpenRouter, which do serve Claude but under ids the
+ * generated table already carries.
+ */
+const VISION_BY_DEFAULT_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
+  'anthropic',
+  'claude-subscription',
+]);
+
+/**
  * Resolve whether a model accepts image input for the send path.
  *
  * Stored `connection.models` win when they declare `vision` explicitly
  * (provider-fetched facts). But `model-fetcher` stores bare `{ id }` entries
  * for many providers, and older connections predate any enrichment — so when
  * `vision` is unknown we fall back to the generated models.dev snapshot and
- * access-path-specific in-repo overrides. Unknown (no stored value, no
- * metadata entry) resolves to false,
- * keeping the send path fail-closed for text-only models.
+ * access-path-specific in-repo overrides.
+ *
+ * Unknown then resolves to false — the send path stays fail-closed for
+ * text-only models — with one exception: an unlisted Claude on one of
+ * Anthropic's own providers resolves to true, because there absent means
+ * "newer than the snapshot" rather than "text-only". See
+ * {@link VISION_BY_DEFAULT}.
  */
 export function resolveModelVisionSupport(
   providerType: ProviderType,
@@ -88,7 +162,11 @@ export function resolveModelVisionSupport(
   if (stored?.capabilities?.vision !== undefined) {
     return stored.capabilities.vision === true;
   }
-  return lookupModelMetadata(providerType, modelId).capabilities?.vision === true;
+  const metadata = lookupModelMetadata(providerType, modelId);
+  if (metadata.capabilities?.vision !== undefined) {
+    return metadata.capabilities.vision === true;
+  }
+  return VISION_BY_DEFAULT_PROVIDERS.has(providerType) && VISION_BY_DEFAULT.test(modelId.trim());
 }
 
 export function curatedCatalogFallbackModelsForProvider(
@@ -144,7 +222,70 @@ const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
 const OPENAI_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
   'gpt-5.5': { thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] } },
   'gpt-5': { thinkingOptions: { efforts: ['minimal', 'low', 'medium', 'high'] } },
+  'gpt-audio': openAiAudioChatModel(),
+  'gpt-audio-mini': openAiAudioChatModel(),
+  'gpt-4o-audio-preview': openAiAudioChatModel(),
+  'gpt-4o-mini-audio-preview': openAiAudioChatModel(),
+  'gpt-4o-transcribe': openAiTranscriptionModel(),
+  'gpt-4o-mini-transcribe': openAiTranscriptionModel(),
+  'gpt-4o-mini-transcribe-2025-12-15': openAiTranscriptionModel(),
+  'whisper-1': openAiTranscriptionModel(),
+  'gpt-realtime': openAiRealtimeModel(),
+  'gpt-realtime-mini': openAiRealtimeModel(),
+  'gpt-realtime-1.5': openAiRealtimeModel(),
+  'gpt-realtime-2': openAiRealtimeModel(),
+  'gpt-realtime-2.1': openAiRealtimeModel(),
 };
+
+function openAiAudioChatModel(): ModelMetadata {
+  return {
+    modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
+    endpointRoles: ['agent_chat', 'audio_chat'],
+    transports: ['openai_chat_audio'],
+    transcriptOutput: true,
+  };
+}
+
+function openAiTranscriptionModel(): ModelMetadata {
+  return {
+    modalities: { input: ['audio'], output: ['text'] },
+    endpointRoles: ['transcription'],
+    transports: ['openai_audio_transcriptions'],
+    transcriptOutput: true,
+  };
+}
+
+function openAiRealtimeModel(): ModelMetadata {
+  return {
+    modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
+    endpointRoles: ['realtime_voice'],
+    transports: ['openai_realtime'],
+    transcriptOutput: true,
+  };
+}
+
+export function resolveModelVoiceMetadata(
+  providerType: ProviderType,
+  models: readonly ModelInfo[] | undefined,
+  modelId: string,
+): Pick<ModelInfo, 'modalities' | 'endpointRoles' | 'transports' | 'transcriptOutput'> {
+  const stored = models?.find((entry) => entry.id === modelId);
+  const metadata = lookupModelMetadata(providerType, modelId);
+  return {
+    ...((stored?.modalities ?? metadata.modalities)
+      ? { modalities: stored?.modalities ?? metadata.modalities }
+      : {}),
+    ...((stored?.endpointRoles ?? metadata.endpointRoles)
+      ? { endpointRoles: stored?.endpointRoles ?? metadata.endpointRoles }
+      : {}),
+    ...((stored?.transports ?? metadata.transports)
+      ? { transports: stored?.transports ?? metadata.transports }
+      : {}),
+    ...((stored?.transcriptOutput ?? metadata.transcriptOutput)
+      ? { transcriptOutput: stored?.transcriptOutput ?? metadata.transcriptOutput }
+      : {}),
+  };
+}
 
 const OPENAI_OAUTH_MODEL_METADATA: Record<string, ModelMetadata> = {
   'gpt-5.6-sol': {

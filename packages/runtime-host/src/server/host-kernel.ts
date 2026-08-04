@@ -33,6 +33,7 @@ import {
   type OperationHandlerMap,
 } from './operation-dispatcher.js';
 import type { SessionContinuityService } from './session-continuity-service.js';
+import type { ClientCapabilityService } from './client-capability-service.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -67,6 +68,7 @@ export interface RuntimeHostCompositionContext {
 export interface RuntimeHostComposition {
   readonly handlers: DomainOperationHandlerMap;
   readonly continuity?: SessionContinuityService;
+  readonly clientCapabilities?: ClientCapabilityService;
   releaseConnection?(connectionId: string): void;
   beginDrain(): void;
   recover(): Promise<void>;
@@ -280,6 +282,7 @@ export class RuntimeHostKernel {
         },
         resolveHandlers: () => this.#operationHandlers,
         resolveContinuity: () => this.#composition?.continuity,
+        resolveClientCapabilities: () => this.#composition?.clientCapabilities,
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseTransport,
       });
@@ -555,9 +558,13 @@ export class RuntimeHostKernel {
 
   async #closeResources(): Promise<void> {
     const errors: unknown[] = [];
+    // Stop new admissions before any asynchronous shutdown bookkeeping. The
+    // shutdown deadline may expire while publishing the draining registration;
+    // leaving the listener open in that case strands an unreachable, ref'ed
+    // server until the process is forcibly terminated.
+    const serverClosed = closeServer(this.#server).catch((error: unknown) => errors.push(error));
     await this.#publishRegistration().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
-    const serverClosed = closeServer(this.#server).catch((error: unknown) => errors.push(error));
     const accepted = [...this.#acceptedTransports];
     const handshaking = [...this.#handshakingTransports];
     const operationDrain = this.#waitForOperations();
@@ -589,11 +596,12 @@ export class RuntimeHostKernel {
     this.#assertShutdownCanContinue();
     await this.#options.owner.close().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
-    if (errors.length > 0)
+    if (errors.length > 0) {
       throw new AggregateError(
         errors,
         'Runtime Host shutdown did not cleanly close every resource',
       );
+    }
   }
 
   async #abortStartup(): Promise<void> {

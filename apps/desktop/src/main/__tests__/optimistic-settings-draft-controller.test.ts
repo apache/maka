@@ -6,8 +6,6 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   createOptimisticDraftController,
@@ -17,12 +15,6 @@ import {
 interface Draft {
   v: number;
 }
-
-const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
-const hookSource = readFileSync(
-  resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'settings', 'use-optimistic-settings-draft.ts'),
-  'utf8',
-);
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
@@ -61,6 +53,17 @@ function harness(initial: Draft) {
 }
 
 describe('createOptimisticDraftController last-write-wins', () => {
+  it('edits the local draft without persisting', () => {
+    const h = harness({ v: 0 });
+
+    h.controller.edit({ v: 4 });
+
+    assert.deepEqual(h.controller.draftRef.current, { v: 4 });
+    assert.deepEqual(h.drafts, [{ v: 4 }]);
+    assert.equal(h.pending.length, 0, 'editing alone must not start a save');
+    assert.deepEqual(h.savingChanges, [], 'editing alone must not enter the saving state');
+  });
+
   it('drops a stale save response so it cannot clobber a newer draft', async () => {
     const h = harness({ v: 0 });
 
@@ -238,21 +241,6 @@ describe('createOptimisticDraftController last-write-wins', () => {
       h.drafts.some((draft) => draft.v === 10),
       false,
       'reactivation must not revive responses owned by the previous lifecycle',
-    );
-  });
-});
-
-describe('useOptimisticSettingsDraft lifecycle wiring', () => {
-  it('reactivates the controller before syncing persisted state on every effect setup', () => {
-    const activateIndex = hookSource.indexOf('controller.activate();');
-    const syncIndex = hookSource.indexOf('controller.syncPersisted(persisted);');
-
-    assert.notEqual(activateIndex, -1, 'the effect setup must reactivate after a StrictMode cleanup replay');
-    assert.ok(activateIndex < syncIndex, 'reactivation must run before persisted-state sync');
-    assert.match(
-      hookSource,
-      /useEffect\(\(\) => \{\s*controller\.activate\(\);\s*return \(\) => \{\s*controller\.dispose\(\);\s*\};/,
-      'one effect must pair controller activation with cleanup disposal',
     );
   });
 });

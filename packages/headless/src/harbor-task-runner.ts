@@ -39,8 +39,16 @@ import {
   type ProviderRequestTelemetry,
   type ProviderTokenUsage,
   type ProviderUpstreamCredentialResolver,
-  type ProviderUsageProtocol,
 } from './provider-auth-proxy.js';
+import {
+  harnessAgentImportPath,
+  providerProxyClientAuthMode,
+  providerProxyClientBaseUrl,
+  providerProxyUpstreamAuthMode,
+  providerProxyUpstreamBaseUrl,
+  providerProxyUsageProtocol,
+  type HarnessAgentId,
+} from './harness-agent-registry.js';
 import {
   isSensitiveEnvName,
   providerBaseUrlFromEnv,
@@ -62,6 +70,11 @@ import {
   CODEX_TOOLCHAIN_FINGERPRINT,
   CODEX_TOOLCHAIN_SPEC,
 } from './codex-toolchain.js';
+import {
+  CLAUDE_CODE_TOOLCHAIN_CONTAINER_PATH,
+  CLAUDE_CODE_TOOLCHAIN_FINGERPRINT,
+  CLAUDE_CODE_TOOLCHAIN_SPEC,
+} from './claude-code-toolchain.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -82,6 +95,20 @@ const PROVIDER_REQUEST_TELEMETRY = 'provider-request-telemetry.json';
 /** A Harbor-side failure (build/docker/timeout/missing artifact) — NOT a benchmark
  * result. The controller turns a thrown error into an infra_failed event so it is
  * excluded from scoring instead of polluting the KEEP/DISCARD decision as reward 0. */
+/** Shared across runners: the last proxied provider request must have
+ * completed. A 200 stream without its protocol terminal event means the
+ * provider response is incomplete — the trial is an infra failure, never a
+ * graded model failure. Complete timed-out trials settle by deadline, so
+ * their truncated tail request is expected and exempt. */
+export function incompleteTerminalProviderRequest(
+  providerTelemetry: readonly ProviderRequestTelemetry[],
+  completeTimedOutTrial: boolean,
+): ProviderRequestTelemetry | undefined {
+  if (completeTimedOutTrial) return undefined;
+  const terminal = providerTelemetry.at(-1);
+  return terminal && terminal.outcome !== 'completed' ? terminal : undefined;
+}
+
 export class HarborInfraError extends Error {
   constructor(
     message: string,
@@ -127,7 +154,7 @@ export interface HarborTaskRunnerOptions {
   /** Host path to the maka repo, mounted read-only at /opt/maka-agent. */
   makaRepoPath: string;
   /** Harbor adapter under test (default: Maka). */
-  agent?: 'maka' | 'opencode' | 'kimi-code' | 'codex';
+  agent?: HarnessAgentId;
   /** Version passed to Harbor's installed-agent adapter. */
   agentVersion?: string;
   /** Prepared OpenCode toolchain mounted read-only into task containers. */
@@ -136,6 +163,8 @@ export interface HarborTaskRunnerOptions {
   kimiCodeToolchainPath?: string;
   /** Prepared Codex CLI toolchain mounted read-only into task containers. */
   codexToolchainPath?: string;
+  /** Prepared Claude Code native toolchain mounted read-only into task containers. */
+  claudeCodeToolchainPath?: string;
   /** Explicit Docker target platform shared by comparison arms. */
   dockerPlatform?: 'linux/amd64';
   /** Base directory under which each task gets an isolated per-task job dir. */
@@ -374,6 +403,28 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
           tail(result.stderr || result.stdout),
         );
       }
+      const terminalProviderRequest = incompleteTerminalProviderRequest(
+        providerTelemetry,
+        completeTimedOutTrial,
+      );
+      if (terminalProviderRequest) {
+        throw new HarborInfraError(
+          `terminal provider request did not complete for task ${input.task.id}`,
+          [
+            `outcome=${terminalProviderRequest.outcome}`,
+            terminalProviderRequest.status !== undefined
+              ? `status=${terminalProviderRequest.status}`
+              : undefined,
+            terminalProviderRequest.errorClass
+              ? `errorClass=${terminalProviderRequest.errorClass}`
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join(', '),
+          'infra_failed',
+          { providerTelemetryPath },
+        );
+      }
       const reward = await readReward(rewardPath, resultPath, input.task.id);
       const rawCell = await readCellOutput(cellOutputPath, input.task.id);
       const usageCheckpoint = await readOptionalTokenSummary(
@@ -384,13 +435,24 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
         selectedUsage && selectedUsage !== rawCell.tokenSummary
           ? { ...rawCell, tokenSummary: selectedUsage }
           : rawCell;
-      const cell =
+      const usageCell =
         checkpointedCell.tokenSummary || !providerUsage || !runnerOptions.pricing
           ? checkpointedCell
           : {
               ...checkpointedCell,
               tokenSummary: providerTokenSummary(providerUsage, runnerOptions.pricing),
             };
+      const cell = completeTimedOutTrial
+        ? {
+            ...usageCell,
+            status: 'failed' as const,
+            errorClass: 'budget_exhausted',
+            deadlineSettlement: {
+              source: 'benchmark.deadline' as const,
+              mode: 'immediate' as const,
+            },
+          }
+        : usageCell;
       const verifierStdout = await readOptionalText(join(trialDir, TRIAL_VERIFIER_STDOUT));
       const verifier = await readVerifierOutcome(
         join(trialDir, TRIAL_VERIFIER_OUTCOME),
@@ -771,7 +833,11 @@ async function readVerifierOutcome(
   if (outcome !== 'passed' && outcome !== 'failed' && outcome !== 'candidate_timeout') {
     throw new HarborInfraError(`verifier outcome is malformed for task ${taskId}`);
   }
-  if (!Array.isArray(value.attempts) || value.attempts.length < 1 || value.attempts.length > 2) {
+  if (
+    !Array.isArray(value.attempts) ||
+    value.attempts.length < 1 ||
+    value.attempts.length > HARBOR_ORACLE_MAX_ATTEMPTS
+  ) {
     throw new HarborInfraError(`verifier outcome attempts are malformed for task ${taskId}`);
   }
   const attempts = value.attempts.map((attempt, index) =>
@@ -927,6 +993,17 @@ export function buildHarborJobConfig(
       `Codex adapter version must match toolchain version ${CODEX_TOOLCHAIN_SPEC.codex.version}`,
     );
   }
+  if (adapter === 'claude-code' && !options.claudeCodeToolchainPath) {
+    throw new Error('claudeCodeToolchainPath is required for the Claude Code adapter');
+  }
+  if (
+    adapter === 'claude-code' &&
+    options.agentVersion !== CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version
+  ) {
+    throw new Error(
+      `Claude Code adapter version must match toolchain version ${CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version}`,
+    );
+  }
   const mounts: Array<Record<string, unknown>> = [
     { type: 'bind', source: options.makaRepoPath, target: CONTAINER_MAKA_REPO, read_only: true },
     ...(adapter === 'opencode'
@@ -956,7 +1033,16 @@ export function buildHarborJobConfig(
                 read_only: true,
               },
             ]
-          : []),
+          : adapter === 'claude-code'
+            ? [
+                {
+                  type: 'bind',
+                  source: options.claudeCodeToolchainPath!,
+                  target: CLAUDE_CODE_TOOLCHAIN_CONTAINER_PATH,
+                  read_only: true,
+                },
+              ]
+            : []),
   ];
 
   const agentEnv: Record<string, string> = {
@@ -983,6 +1069,9 @@ export function buildHarborJobConfig(
   }
   if (adapter === 'codex') {
     agentEnv.MAKA_CODEX_TOOLCHAIN_FINGERPRINT = CODEX_TOOLCHAIN_FINGERPRINT;
+  }
+  if (adapter === 'claude-code') {
+    agentEnv.MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT = CLAUDE_CODE_TOOLCHAIN_FINGERPRINT;
   }
 
   if (options.pricing) {
@@ -1045,14 +1134,7 @@ export function buildHarborJobConfig(
     agents: [
       {
         ...(adapter === 'maka' ? { name: adapter } : {}),
-        import_path:
-          adapter === 'opencode'
-            ? 'opencode_agent:MakaOpenCodeAgent'
-            : adapter === 'kimi-code'
-              ? 'kimi_code_agent:MakaKimiCodeAgent'
-              : adapter === 'codex'
-                ? 'codex_agent:MakaCodexAgent'
-                : 'maka_agent:MakaAgent',
+        import_path: harnessAgentImportPath(adapter),
         model_name: agentModel,
         kwargs:
           adapter === 'maka'
@@ -1060,7 +1142,7 @@ export function buildHarborJobConfig(
             : options.agentVersion
               ? {
                   version: options.agentVersion,
-                  ...(adapter === 'codex' && options.reasoningEffort
+                  ...((adapter === 'codex' || adapter === 'claude-code') && options.reasoningEffort
                     ? { reasoning_effort: options.reasoningEffort }
                     : {}),
                 }
@@ -1085,6 +1167,8 @@ function harborVerifierConfig(verifier: ReturnType<typeof verifierPolicy>) {
     kwargs: {
       attempt_timeout_sec: verifier.attemptTimeoutSec,
       max_attempts: HARBOR_ORACLE_MAX_ATTEMPTS,
+      retry_backoff_sec: HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryBackoffSec,
+      total_timeout_sec: verifier.totalTimeoutSec,
     },
     override_timeout_sec: verifier.outerTimeoutSec,
   };
@@ -1092,16 +1176,18 @@ function harborVerifierConfig(verifier: ReturnType<typeof verifierPolicy>) {
 
 function verifierPolicy(task: TaskRunInput['task']): {
   attemptTimeoutSec: number;
+  totalTimeoutSec: number;
   outerTimeoutSec: number;
 } {
   const attemptTimeoutSec =
     task.metadata?.verifierTimeoutSec ??
     HARBOR_ORACLE_EXECUTION_POLICY.verifier.defaultAttemptTimeoutSec;
+  const totalTimeoutSec =
+    attemptTimeoutSec * HARBOR_ORACLE_EXECUTION_POLICY.verifier.totalAttemptBudgetMultiplier;
   return {
     attemptTimeoutSec,
-    outerTimeoutSec:
-      attemptTimeoutSec * HARBOR_ORACLE_MAX_ATTEMPTS +
-      HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryGraceSec,
+    totalTimeoutSec,
+    outerTimeoutSec: totalTimeoutSec + HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryGraceSec,
   };
 }
 
@@ -1114,7 +1200,14 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
   const agent = options.agent ?? 'maka';
   const provider = options.provider ?? 'deepseek';
   if (usesHostProviderProxy(agent) && provider === 'github-copilot') {
-    const adapter = agent === 'kimi-code' ? 'Kimi Code' : agent === 'codex' ? 'Codex' : 'OpenCode';
+    const adapter =
+      agent === 'kimi-code'
+        ? 'Kimi Code'
+        : agent === 'codex'
+          ? 'Codex'
+          : agent === 'claude-code'
+            ? 'Claude Code'
+            : 'OpenCode';
     throw new Error(
       `GitHub Copilot Harbor runs use the Maka host agent; the ${adapter} Harbor adapter does not support this provider`,
     );
@@ -1159,7 +1252,8 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
       ...(resolveProviderCredential
         ? { resolveUpstreamCredential: resolveProviderCredential }
         : { apiKeyFile: apiKeyFile! }),
-      authMode: agent === 'kimi-code' ? 'bearer' : providerProxyAuthMode(provider, apiProtocol),
+      clientAuthMode: providerProxyClientAuthMode(agent, provider, apiProtocol),
+      upstreamAuthMode: providerProxyUpstreamAuthMode(agent, provider, apiProtocol),
       usageProtocol: providerProxyUsageProtocol(agent, provider, apiProtocol),
     });
     return {
@@ -1170,7 +1264,7 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
               MAKA_HOST_API_KEY: proxy.token,
             }
           : {
-              MAKA_PROVIDER_PROXY_URL: proxy.baseUrl,
+              MAKA_PROVIDER_PROXY_URL: providerProxyClientBaseUrl(proxy.baseUrl, agent, provider),
               MAKA_PROVIDER_PROXY_TOKEN: proxy.token,
             },
       usage: proxy.usage,
@@ -1194,7 +1288,7 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
 }
 
 function usesHostProviderProxy(agent: HarborTaskRunnerOptions['agent']): boolean {
-  return agent === 'opencode' || agent === 'kimi-code' || agent === 'codex';
+  return agent !== undefined && agent !== 'maka';
 }
 
 /** Shared cost math across runners: build the cell token summary from proxy-observed usage and per-1M pricing. */
@@ -1231,53 +1325,6 @@ export function providerProxyApiProtocol(
 ): string | undefined {
   if (agent !== 'maka') return undefined;
   return agentEnv?.MAKA_HOST_MODEL_API_PROTOCOL || agentEnv?.MAKA_MODEL_API_PROTOCOL || undefined;
-}
-
-/** OpenAI-compatible Kimi runtimes add /v1 to the advertised proxy base. */
-export function providerProxyUpstreamBaseUrl(
-  baseUrl: string,
-  provider: string,
-  apiProtocol?: string,
-): string {
-  if (provider !== 'kimi-coding-plan' || apiProtocol !== 'openai-chat') return baseUrl;
-  const upstream = new URL(baseUrl);
-  if (!/\/v1\/?$/i.test(upstream.pathname)) return baseUrl;
-  upstream.pathname = upstream.pathname.replace(/\/v1\/?$/i, '') || '/';
-  return upstream.toString();
-}
-
-/** Shared across runners: the selected Kimi protocol overrides its Anthropic registry default. */
-export function providerProxyAuthMode(
-  provider: string,
-  apiProtocol?: string,
-): 'bearer' | 'x-api-key' {
-  if (provider === 'kimi-coding-plan' && apiProtocol === 'openai-chat') return 'bearer';
-  if (provider === 'kimi-coding-plan' && apiProtocol === 'anthropic-messages') return 'x-api-key';
-  const definition = (
-    PROVIDER_DEFAULTS as Partial<Record<string, (typeof PROVIDER_DEFAULTS)[ProviderType]>>
-  )[provider];
-  return definition?.runtimeAdapter.kind === 'anthropic' &&
-    definition.runtimeAdapter.auth === 'api-key'
-    ? 'x-api-key'
-    : 'bearer';
-}
-
-/** Shared across runners: adapter/provider registry drives the proxy's SSE usage parser. */
-export function providerProxyUsageProtocol(
-  agent: HarborTaskRunnerOptions['agent'],
-  provider: string,
-  apiProtocol?: string,
-): ProviderUsageProtocol | undefined {
-  if (agent === 'kimi-code') return 'openai-chat-sse';
-  if (provider === 'kimi-coding-plan' && apiProtocol === 'openai-chat') return 'openai-chat-sse';
-  if (provider === 'kimi-coding-plan' && apiProtocol === 'anthropic-messages')
-    return 'anthropic-sse';
-  const definition = (
-    PROVIDER_DEFAULTS as Partial<Record<string, (typeof PROVIDER_DEFAULTS)[ProviderType]>>
-  )[provider];
-  if (definition?.runtimeAdapter.kind === 'anthropic') return 'anthropic-sse';
-  if (definition?.runtimeAdapter.kind === 'openai-compatible') return 'openai-chat-sse';
-  return undefined;
 }
 
 async function resolveGitHubCopilotHostCredential(
@@ -1593,7 +1640,7 @@ export function modelIdForProvider(model: string, provider: string): string {
   return model.startsWith(prefix) ? model.slice(prefix.length) : model;
 }
 
-function modelForOpenCode(model: string, provider: string): string {
+export function modelForOpenCode(model: string, provider: string): string {
   return model.includes('/') ? model : `${provider}/${model}`;
 }
 

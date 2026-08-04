@@ -8,6 +8,7 @@ import { AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION } from '@maka/core/agent-graph-
 import {
   AgentGraphIntentClaimConflictError,
   createSqliteSessionMetadataStore,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
 } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite agent graph intent claims', () => {
@@ -135,6 +136,10 @@ describe('SQLite agent graph intent claims', () => {
 
       const legacy = new DatabaseSync(path);
       legacy.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
+        DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
         DROP TABLE agent_graph_supervisor_wake_attempts;
         DROP TABLE agent_graph_supervisor_wakes;
@@ -186,7 +191,7 @@ describe('SQLite agent graph intent claims', () => {
 
       const migrated = createSqliteSessionMetadataStore(path);
       try {
-        assert.equal(migrated.schemaVersion(), 14);
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.deepEqual(
           await migrated.beginAgentGraphIntentExecutionAtScheduleRevision(
             'graph-1',

@@ -17,24 +17,40 @@ import {
 } from '../protocol/index.js';
 import { encodeArtifactProjection } from '../protocol/artifact.js';
 import type { ArtifactOperationHandlerMap } from './operation-dispatcher.js';
+import { SessionAdmissionGate } from './session-admission-gate.js';
+import type { SessionPresenceReader } from './session-presence.js';
 
 /** Session-scoped Host projection and deletion authority for Artifacts. */
 export class HostArtifactCoordinator {
   readonly handlers: ArtifactOperationHandlerMap = {
-    'artifact.query': (input) => this.#query(input),
-    'artifact.delete': (input) => this.#delete(input),
+    'artifact.query': (input) =>
+      this.#sessionAdmission.run(input.sessionId, () => this.#query(input)),
+    'artifact.delete': (input) =>
+      this.#sessionAdmission.run(input.sessionId, () => this.#delete(input)),
   };
 
   readonly #store: InteractiveArtifactStoreWriter;
   readonly #requestDrain: () => void;
+  readonly #sessionAdmission: SessionAdmissionGate;
+  readonly #sessions: SessionPresenceReader;
 
-  constructor(store: InteractiveArtifactStoreWriter, requestDrain: () => void) {
+  constructor(
+    store: InteractiveArtifactStoreWriter,
+    requestDrain: () => void,
+    sessionAdmission: SessionAdmissionGate,
+    sessions: SessionPresenceReader,
+  ) {
     this.#store = authenticateInteractiveArtifactStoreWriter(store);
     this.#requestDrain = requestDrain;
+    this.#sessionAdmission = sessionAdmission;
+    this.#sessions = sessions;
   }
 
   async #query(input: ArtifactQueryInput): Promise<OperationOutcome<'artifact.query'>> {
     try {
+      if ((await this.#sessions.probeSessionRemoval(input.sessionId)).kind !== 'present') {
+        return notFound('artifact.query', 'Session was not found');
+      }
       if (input.kind === 'read_text' || input.kind === 'read_binary') {
         if (input.kind === 'read_text') {
           const preview = await this.#store.readTextInSession(input.sessionId, input.artifactId, {
@@ -108,6 +124,9 @@ export class HostArtifactCoordinator {
     readonly artifactId: string;
   }): Promise<OperationOutcome<'artifact.delete'>> {
     try {
+      if ((await this.#sessions.probeSessionRemoval(input.sessionId)).kind !== 'present') {
+        return notFound('artifact.delete', 'Session was not found');
+      }
       const deleted = await this.#store.deleteUserArtifactInSession(
         input.sessionId,
         input.artifactId,
@@ -218,4 +237,11 @@ function persistenceFailure<K extends 'artifact.query' | 'artifact.delete'>(
   message: string,
 ): OperationOutcome<K> {
   return { ok: false, error: { code: 'persistence_failed', message } } as OperationOutcome<K>;
+}
+
+function notFound<K extends 'artifact.query' | 'artifact.delete'>(
+  _operation: K,
+  message: string,
+): OperationOutcome<K> {
+  return { ok: false, error: { code: 'not_found', message } } as OperationOutcome<K>;
 }

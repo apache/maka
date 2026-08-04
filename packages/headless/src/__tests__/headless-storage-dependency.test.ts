@@ -19,6 +19,7 @@ const rawStorageWriterFactories = [
   'createRuntimeEventStore',
   'createSessionStore',
   'openHeadlessArtifactStoreForWrite',
+  'openInteractiveLongTermMemoryStoreForWrite',
 ] as const;
 const compilerApi = new API({ cwd: process.cwd() });
 const projectConfig = join(process.cwd(), 'tsconfig.json');
@@ -87,6 +88,12 @@ function forbiddenWriterSymbols(importer: string, reference: ModuleReference): s
     if (reference.importedNames === null) return ['writer opener'];
     return reference.importedNames.filter((name) => /^open[A-Za-z0-9]*ForWrite$/.test(name));
   }
+  if (reference.specifier === '@maka/storage/long-term-memory-store') {
+    if (reference.importedNames === null) return ['openInteractiveLongTermMemoryStoreForWrite'];
+    return reference.importedNames.filter(
+      (name) => name === 'openInteractiveLongTermMemoryStoreForWrite',
+    );
+  }
   if (
     reference.specifier.startsWith('.') &&
     sourcePathForSpecifier(importer, reference.specifier) === taskRunStoreModule &&
@@ -97,6 +104,16 @@ function forbiddenWriterSymbols(importer: string, reference: ModuleReference): s
   }
   return [];
 }
+
+test('the boundary recognizes the Interactive long-term memory writer subpath', () => {
+  assert.deepEqual(
+    forbiddenWriterSymbols(storageCompositionModule, {
+      specifier: '@maka/storage/long-term-memory-store',
+      importedNames: ['openInteractiveLongTermMemoryStoreForWrite'],
+    }),
+    ['openInteractiveLongTermMemoryStoreForWrite'],
+  );
+});
 
 async function listProductionTypeScriptFiles(root: string): Promise<string[]> {
   const files: string[] = [];

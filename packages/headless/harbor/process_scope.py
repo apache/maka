@@ -39,16 +39,22 @@ async def cleanup_process_scope(
 def scoped_command(command: str, scope: str, command_id: str) -> str:
     scope_dir = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}")
     pgid_path = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.pgid")
+    wrapper_path = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.wrapper")
+    stdout_path = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.stdout")
+    stderr_path = shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.stderr")
     return (
-        f"mkdir -p -- {scope_dir}; set -m; "
+        f"mkdir -p -- {scope_dir}; printf '%s\\n' \"$$\" > {wrapper_path}; set -m; "
         f"env {COMMAND_SCOPE_ENV}={shlex.quote(scope)} "
         f"{COMMAND_ID_ENV}={shlex.quote(command_id)} "
-        f"bash -lc {shlex.quote(command)} & "
+        f"bash -lc {shlex.quote(command)} > {stdout_path} 2> {stderr_path} & "
         "command_pid=$!; "
         "set +m; "
         f"printf '%s\\n' \"$command_pid\" > {pgid_path}; "
         "wait \"$command_pid\" 2>/dev/null; command_status=$?; "
+        f"cat -- {stdout_path}; cat -- {stderr_path} >&2; "
+        f"rm -f -- {stdout_path} {stderr_path}; "
         f"kill -0 -- \"-$command_pid\" 2>/dev/null || rm -f -- {pgid_path}; "
+        f"rm -f -- {wrapper_path}; "
         "exit \"$command_status\""
     )
 
@@ -65,6 +71,8 @@ def scoped_process_cleanup_command(scope: str, signal: str) -> str:
         f"kill -{signal} -- \"-$pgid\" 2>/dev/null || true; "
         "done; "
         + _marked_process_cleanup_command(scope, signal)
+        + "; "
+        + _wrapper_cleanup_command(f"{scope_dir}/*.wrapper", signal)
         + (f"; rm -rf -- {scope_dir}" if signal == "KILL" else "")
     )
 
@@ -81,6 +89,15 @@ def scoped_command_cleanup_command(
     if not pgid_paths:
         return ":"
     paths = " ".join(pgid_paths)
+    wrapper_paths = " ".join(
+        shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.wrapper")
+        for command_id in command_ids
+    )
+    artifact_paths = " ".join(
+        shlex.quote(f"{COMMAND_SCOPE_ROOT}/{scope}/{command_id}.{suffix}")
+        for command_id in command_ids
+        for suffix in ("pgid", "wrapper", "stdout", "stderr")
+    )
     command = (
         f"for pgid_file in {paths}; do "
         "[ -r \"$pgid_file\" ] || continue; "
@@ -89,8 +106,21 @@ def scoped_command_cleanup_command(
         f"kill -{signal} -- \"-$pgid\" 2>/dev/null || true; "
         "done; "
         + _marked_process_cleanup_command(scope, signal, command_ids)
+        + "; "
+        + _wrapper_cleanup_command(wrapper_paths, signal)
     )
-    return command + (f"; rm -f -- {paths}" if signal == "KILL" else "")
+    return command + (f"; rm -f -- {artifact_paths}" if signal == "KILL" else "")
+
+
+def _wrapper_cleanup_command(wrapper_paths: str, signal: str) -> str:
+    return (
+        f"for wrapper_file in {wrapper_paths}; do "
+        "[ -r \"$wrapper_file\" ] || continue; "
+        "wrapper_pid=$(cat -- \"$wrapper_file\"); "
+        "case $wrapper_pid in ''|*[!0-9]*) continue;; esac; "
+        f"kill -{signal} \"$wrapper_pid\" 2>/dev/null || true; "
+        "done"
+    )
 
 
 def _marked_process_cleanup_command(

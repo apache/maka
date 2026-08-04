@@ -3,7 +3,11 @@ import { readdirSync } from 'node:fs';
 
 import type { PermissionProfile } from '@maka/core/permission-profile';
 
-import { detectLinuxSandboxCapability, type LinuxSandboxCapability } from './linux-capability.js';
+import {
+  detectLinuxSandboxCapability,
+  LINUX_BWRAP_REQUIRED_NAMESPACE_ARGS,
+  type LinuxSandboxCapability,
+} from './linux-capability.js';
 import type {
   SandboxBackend,
   SandboxCommand,
@@ -207,11 +211,7 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
     input.bwrapPath,
     '--die-with-parent',
     '--new-session',
-    '--unshare-user',
-    '--unshare-pid',
-    '--unshare-ipc',
-    '--unshare-uts',
-    '--unshare-cgroup',
+    ...LINUX_BWRAP_REQUIRED_NAMESPACE_ARGS,
     '--proc',
     '/proc',
     '--dev',

@@ -1,37 +1,40 @@
 import type { ReactNode } from 'react';
-import { Card } from '@maka/ui';
-
-export function SettingsRows({ className, children }: { className?: string; children: ReactNode }) {
-  return (
-    <Card className={className ? `settingsRows ${className}` : 'settingsRows'}>
-      {children}
-    </Card>
-  );
-}
+import { SettingsRow } from './settings-section';
 
 export function SettingRow(props: { title: string; detail: string; value: string; mono?: boolean; action?: ReactNode }) {
-  const value = (
-    <span data-mono={props.mono ? 'true' : undefined}>{props.value}</span>
-  );
+  // `mono` means the value is machine text — a path, an id, a key. That is a
+  // markup fact, and since the role table composes the code family for the
+  // code element group, saying it in the markup is also what makes it render
+  // monospaced. The layout rule (break-all, start) selects the same element,
+  // so there is no second name for it: `code.settingsReadOnlyValue`.
+  //
+  // Layout differs by kind: a short human value rides the row's end slot,
+  // but machine text (an absolute workspace path) squeezed into a
+  // right-anchored 320px box wrapped into a ragged four-line block — the
+  // audit's least readable row. Mono values render as a full-width line
+  // under the description instead, where break-all reads as intended.
+  if (props.mono) {
+    return (
+      <SettingsRow
+        label={props.title}
+        align="start"
+        description={(
+          <>
+            {props.detail ? <span>{props.detail}</span> : null}
+            <code className="settingsReadOnlyValue" data-mono="true">{props.value}</code>
+          </>
+        )}
+        end={props.action ?? undefined}
+      />
+    );
+  }
+  const value = <span className="settingsReadOnlyValue">{props.value}</span>;
   return (
-    <div className="settingsRow">
-      <div>
-        <strong>{props.title}</strong>
-        <small>{props.detail}</small>
-      </div>
-      {/* mono: filesystem paths / identifiers — right-aligned proportional
-          text wraps into a ragged multi-line block for long values.
-          action: an optional per-row control (e.g. copy-curl on gateway
-          endpoint rows) so row-scoped actions live ON the row instead of
-          piling into a page-level button wall. */}
-      {props.action ? (
-        <span className="settingsRowValueGroup">
-          {value}
-          {props.action}
-        </span>
-      ) : (
-        value
-      )}
-    </div>
+    <SettingsRow
+      label={props.title}
+      description={props.detail || undefined}
+      align="start"
+      end={props.action ? <>{value}{props.action}</> : value}
+    />
   );
 }

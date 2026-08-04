@@ -7,6 +7,22 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { Socket } from 'node:net';
+import { Agent, type Dispatcher, Headers, fetch as upstreamFetch } from 'undici';
+
+/** Upstream connections must stay on HTTP/1.1. Providers negotiate h2 via
+ * ALPN, and undici <= 8.7 (bundled in Node 26) refuses to multiplex
+ * stream/async-iterable request bodies on an h2 session with requests in
+ * flight, while its fetch wraps every non-empty body into an async iterable —
+ * so concurrent streaming completions from parallel cells serialized behind
+ * each other's full generation streams, recorded as provider first-token
+ * latency. undici 8.8 removed that gate, but forcing h1 keeps the proxy
+ * independent of which undici build serves the fetch: h1 pools sidestep the
+ * whole class by dialing parallel connections. */
+export function createProviderUpstreamDispatcher(options: Agent.Options = {}): Dispatcher {
+  return new Agent({ ...options, allowH2: false });
+}
+
+const defaultUpstreamDispatcher = createProviderUpstreamDispatcher();
 
 export interface ProviderAuthProxy {
   baseUrl: string;
@@ -38,6 +54,12 @@ export interface ProviderRequestTelemetry {
   protocol?: ProviderUsageProtocol;
   status?: number;
   outcome: 'completed' | 'interrupted' | 'failed' | 'aborted';
+  /** When the dispatcher started writing the request to an upstream
+   * connection. Time before this is credential resolution, request-body read,
+   * and the dispatcher's connection queue; `responseHeadersMs` minus this is
+   * pure upstream wait. The h2 serialization defect hid inside this interval
+   * while `responseHeadersMs` alone read as provider latency. */
+  upstreamStartMs?: number;
   responseHeadersMs?: number;
   firstBodyChunkMs?: number;
   firstOutputTokenMs?: number;
@@ -136,7 +158,7 @@ export function summarizeProviderTelemetry(
 }
 
 export type ProviderAuthProxyMode = 'bearer' | 'x-api-key';
-export type ProviderUsageProtocol = 'anthropic-sse' | 'openai-chat-sse';
+export type ProviderUsageProtocol = 'anthropic-sse' | 'openai-chat-sse' | 'openai-responses-sse';
 
 export interface ProviderUpstreamCredential {
   value: string;
@@ -149,10 +171,14 @@ export type ProviderUpstreamCredentialResolver = (
 
 type ProviderAuthProxyRouteConfig = {
   upstreamBaseUrl: string;
-  authMode?: ProviderAuthProxyMode;
+  clientAuthMode?: ProviderAuthProxyMode;
+  upstreamAuthMode?: ProviderAuthProxyMode;
   usageProtocol?: ProviderUsageProtocol;
   /** Injectable monotonic clock for deterministic tests. */
   now?: () => number;
+  /** Injectable upstream dispatcher for tests (e.g. to trust a test CA).
+   * Build it with createProviderUpstreamDispatcher to keep h2 disabled. */
+  upstreamDispatcher?: Dispatcher;
 } & (
   | { apiKeyFile: string; resolveUpstreamCredential?: never }
   | { apiKeyFile?: never; resolveUpstreamCredential: ProviderUpstreamCredentialResolver }
@@ -203,11 +229,13 @@ interface ProviderAuthProxyRoute {
   readonly upstreamBasePath: string;
   readonly resolveUpstreamCredential: ProviderUpstreamCredentialResolver;
   readonly token: string;
-  readonly authMode: ProviderAuthProxyMode;
+  readonly clientAuthMode: ProviderAuthProxyMode;
+  readonly upstreamAuthMode: ProviderAuthProxyMode;
   readonly usageProtocol?: ProviderUsageProtocol;
   readonly usage: ProviderUsageAccumulator;
   readonly telemetry: ProviderTelemetryAccumulator;
   readonly now: () => number;
+  readonly upstreamDispatcher: Dispatcher;
   readonly activeRequests: Set<AbortController>;
   readonly activeResponses: Set<ServerResponse>;
   readonly activeForwards: Set<Promise<void>>;
@@ -243,11 +271,13 @@ export async function startProviderAuthProxyHub(
       upstreamBasePath: route.upstreamBasePath,
       resolveUpstreamCredential: route.resolveUpstreamCredential,
       token: route.token,
-      authMode: route.authMode,
+      clientAuthMode: route.clientAuthMode,
+      upstreamAuthMode: route.upstreamAuthMode,
       usageProtocol: route.usageProtocol,
       usage: route.usage,
       telemetry: route.telemetry,
       now: route.now,
+      upstreamDispatcher: route.upstreamDispatcher,
       signal: controller.signal,
     }).finally(() => {
       request.off('aborted', abortOnRequest);
@@ -330,11 +360,13 @@ function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAut
     upstreamBasePath,
     resolveUpstreamCredential,
     token: randomBytes(32).toString('hex'),
-    authMode: input.authMode ?? 'bearer',
+    clientAuthMode: input.clientAuthMode ?? 'bearer',
+    upstreamAuthMode: input.upstreamAuthMode ?? 'bearer',
     ...(input.usageProtocol ? { usageProtocol: input.usageProtocol } : {}),
     usage: new ProviderUsageAccumulator(),
     telemetry: new ProviderTelemetryAccumulator(),
     now: input.now ?? performance.now.bind(performance),
+    upstreamDispatcher: input.upstreamDispatcher ?? defaultUpstreamDispatcher,
     activeRequests: new Set<AbortController>(),
     activeResponses: new Set<ServerResponse>(),
     activeForwards: new Set<Promise<void>>(),
@@ -343,8 +375,10 @@ function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAut
 
 function routeAuthorized(request: IncomingMessage, route: ProviderAuthProxyRoute): boolean {
   const presentedCredential =
-    route.authMode === 'x-api-key' ? request.headers['x-api-key'] : request.headers.authorization;
-  return authorized(presentedCredential, route.token, route.authMode);
+    route.clientAuthMode === 'x-api-key'
+      ? request.headers['x-api-key']
+      : request.headers.authorization;
+  return authorized(presentedCredential, route.token, route.clientAuthMode);
 }
 
 function closeProviderAuthProxyRoute(
@@ -368,20 +402,22 @@ async function forwardProviderRequest(input: {
   upstreamBasePath: string;
   resolveUpstreamCredential: ProviderUpstreamCredentialResolver;
   token: string;
-  authMode: ProviderAuthProxyMode;
+  clientAuthMode: ProviderAuthProxyMode;
+  upstreamAuthMode: ProviderAuthProxyMode;
   usageProtocol?: ProviderUsageProtocol;
   usage: ProviderUsageAccumulator;
   telemetry: ProviderTelemetryAccumulator;
   now: () => number;
+  upstreamDispatcher: Dispatcher;
   signal: AbortSignal;
 }): Promise<void> {
   let requestTelemetry: MutableProviderRequestTelemetry | null = null;
   try {
     const presentedCredential =
-      input.authMode === 'x-api-key'
+      input.clientAuthMode === 'x-api-key'
         ? input.request.headers['x-api-key']
         : input.request.headers.authorization;
-    if (!authorized(presentedCredential, input.token, input.authMode)) {
+    if (!authorized(presentedCredential, input.token, input.clientAuthMode)) {
       input.response.writeHead(401).end('unauthorized');
       return;
     }
@@ -414,7 +450,7 @@ async function forwardProviderRequest(input: {
       if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
       else headers.set(name, value);
     }
-    if (input.authMode === 'x-api-key') headers.set('x-api-key', upstreamCredential.value);
+    if (input.upstreamAuthMode === 'x-api-key') headers.set('x-api-key', upstreamCredential.value);
     else headers.set('authorization', `Bearer ${upstreamCredential.value}`);
     for (const [name, value] of Object.entries(upstreamCredential.headers ?? {})) {
       headers.set(name, value);
@@ -423,10 +459,16 @@ async function forwardProviderRequest(input: {
       input.request.method === 'GET' || input.request.method === 'HEAD'
         ? undefined
         : await readRequestBody(input.request);
-    const upstreamResponse = await fetch(upstreamUrl, {
+    const upstreamResponse = await upstreamFetch(upstreamUrl, {
       method: input.request.method,
       headers,
       signal: input.signal,
+      dispatcher: upstreamStartTimedDispatcher(
+        input.upstreamDispatcher,
+        requestTelemetry,
+        startedAt,
+        input.now,
+      ),
       ...(body ? { body: new Uint8Array(body) } : {}),
     });
     requestTelemetry.status = upstreamResponse.status;
@@ -499,6 +541,27 @@ async function forwardProviderRequest(input: {
     if (!input.response.headersSent) input.response.writeHead(502);
     input.response.end('provider proxy request failed');
   }
+}
+
+/** Stamp `upstreamStartMs` when the dispatcher begins writing the request to
+ * an upstream connection, so connection-queue time is separable from upstream
+ * wait in the recorded telemetry. */
+function upstreamStartTimedDispatcher(
+  dispatcher: Dispatcher,
+  requestTelemetry: MutableProviderRequestTelemetry,
+  startedAt: number,
+  now: () => number,
+): Dispatcher {
+  return dispatcher.compose((dispatch) => (options, handler) => {
+    const timed: Dispatcher.DispatchHandler = Object.create(handler);
+    timed.onRequestStart = function (controller, context) {
+      requestTelemetry.upstreamStartMs ??= elapsedMs(startedAt, now());
+      // Keep `this` = the wrapper for the delegated call too, so handler state
+      // written across callbacks always lands on one object.
+      return handler.onRequestStart?.call(this, controller, context);
+    };
+    return dispatch(options, timed);
+  });
 }
 
 async function resolveUpstreamCredentialUntilAborted(
@@ -636,11 +699,12 @@ class SseUsageParser {
       if (!isRecord(event)) continue;
       if (this.protocol === 'anthropic-sse' && event.type === 'message_stop')
         this.terminalEvent = true;
+      if (this.protocol === 'openai-responses-sse' && event.type === 'response.completed')
+        this.terminalEvent = true;
       const generated = generatedDelta(this.protocol, event);
       observation.output ||= generated.output;
       observation.reasoning ||= generated.reasoning;
-      const usage =
-        this.protocol === 'anthropic-sse' ? anthropicUsage(event) : openAiChatUsage(event);
+      const usage = usageFromEvent(this.protocol, event);
       if (!usage) continue;
       this.sawUsage = true;
       this.usage.input = Math.max(this.usage.input, usage.input);
@@ -678,6 +742,21 @@ function generatedDelta(
         delta.partial_json.length > 0);
     return { output, reasoning };
   }
+  if (protocol === 'openai-responses-sse') {
+    const reasoning =
+      (event.type === 'response.reasoning_summary_text.delta' ||
+        event.type === 'response.reasoning_text.delta') &&
+      typeof event.delta === 'string' &&
+      event.delta.length > 0;
+    const output =
+      reasoning ||
+      (typeof event.type === 'string' &&
+        event.type.startsWith('response.') &&
+        event.type.endsWith('.delta') &&
+        typeof event.delta === 'string' &&
+        event.delta.length > 0);
+    return { output, reasoning };
+  }
   const choices = Array.isArray(event.choices) ? event.choices : [];
   let output = false;
   let reasoning = false;
@@ -695,6 +774,15 @@ function generatedDelta(
       isRecord(delta.function_call);
   }
   return { output, reasoning };
+}
+
+function usageFromEvent(
+  protocol: ProviderUsageProtocol,
+  event: Record<string, unknown>,
+): ProviderTokenUsage | null {
+  if (protocol === 'anthropic-sse') return anthropicUsage(event);
+  if (protocol === 'openai-responses-sse') return openAiResponsesUsage(event);
+  return openAiChatUsage(event);
 }
 
 function anthropicUsage(event: Record<string, unknown>): ProviderTokenUsage | null {
@@ -739,6 +827,27 @@ function openAiChatUsage(event: Record<string, unknown>): ProviderTokenUsage | n
     output: nonNegativeNumber(event.usage.completion_tokens),
     ...(hasAnyNumber(completionDetails ?? {}, ['reasoning_tokens'])
       ? { reasoning: nonNegativeNumber(completionDetails?.reasoning_tokens) }
+      : {}),
+  };
+}
+
+function openAiResponsesUsage(event: Record<string, unknown>): ProviderTokenUsage | null {
+  const usage =
+    isRecord(event.response) && isRecord(event.response.usage)
+      ? event.response.usage
+      : isRecord(event.usage)
+        ? event.usage
+        : null;
+  if (!usage || !hasAnyNumber(usage, ['input_tokens', 'output_tokens'])) return null;
+  const inputDetails = isRecord(usage.input_tokens_details) ? usage.input_tokens_details : null;
+  const outputDetails = isRecord(usage.output_tokens_details) ? usage.output_tokens_details : null;
+  return {
+    input: nonNegativeNumber(usage.input_tokens),
+    cacheRead: nonNegativeNumber(inputDetails?.cached_tokens),
+    cacheWrite: 0,
+    output: nonNegativeNumber(usage.output_tokens),
+    ...(hasAnyNumber(outputDetails ?? {}, ['reasoning_tokens'])
+      ? { reasoning: nonNegativeNumber(outputDetails?.reasoning_tokens) }
       : {}),
   };
 }

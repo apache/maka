@@ -79,6 +79,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setSessionEventHealthBySession: sessionUi.setSessionEventHealthBySession,
     setPendingPermissionModeBySession: sessionUi.setPendingPermissionModeBySession,
     setPendingSessionModelBySession: sessionUi.setPendingSessionModelBySession,
+    confirmLiveTurn: sessionUi.confirmLiveTurn,
     clearTurnTransientState: sessionUi.clearTurnTransientState,
   };
 }

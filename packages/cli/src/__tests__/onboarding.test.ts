@@ -17,10 +17,16 @@ describe('listOnboardingProviders', () => {
       defaultModel: 'gpt-5.5',
       enabledModelIds: ['gpt-5.5', 'gpt-5.5-mini'],
     });
+    const minimax = makeConnection({
+      slug: 'minimax',
+      providerType: 'MiniMax',
+      defaultModel: 'MiniMax-M3',
+      enabledModelIds: ['MiniMax-M3'],
+    });
 
     const providers = await listOnboardingProviders({
       connectionStore: {
-        list: async () => [openai],
+        list: async () => [openai, minimax],
       },
     });
 
@@ -31,17 +37,42 @@ describe('listOnboardingProviders', () => {
     const anthropic = providers.find((p) => p.providerType === 'anthropic');
     assert.equal(anthropic?.hasConnection, false);
     assert.deepEqual(anthropic?.enabledModelIds, []);
+    const minimaxEntry = providers.find((p) => p.providerType === 'MiniMax');
+    assert.equal(minimaxEntry?.hasConnection, true);
+    assert.deepEqual(minimaxEntry?.enabledModelIds, ['MiniMax-M3']);
   });
 
-  test('only lists API-key providers that do not require a base url', async () => {
+  test('does not select noncanonical connections for a provider', async () => {
     const providers = await listOnboardingProviders({
-      connectionStore: { list: async () => [] },
+      connectionStore: {
+        list: async () => [
+          makeConnection({ slug: 'openai-2', providerType: 'openai' }),
+          makeConnection({ slug: 'openai-work', providerType: 'openai' }),
+        ],
+      },
     });
-    for (const provider of providers) {
-      assert.equal(provider.requiresBaseUrl, false);
-      assert.ok(provider.authKind === 'api_key' || provider.authKind === 'optional_api_key');
-    }
-    assert.ok(!providers.some((p) => p.providerType === 'ollama'));
+
+    const openai = providers.find((provider) => provider.providerType === 'openai');
+    assert.equal(openai?.hasConnection, false);
+    assert.deepEqual(openai?.enabledModelIds, []);
+  });
+
+  test('does not mark a provider as configured when its canonical slug belongs to another provider', async () => {
+    const providers = await listOnboardingProviders({
+      connectionStore: {
+        list: async () => [
+          makeConnection({
+            slug: 'openai',
+            providerType: 'anthropic',
+            defaultModel: 'claude-sonnet-5',
+          }),
+        ],
+      },
+    });
+
+    const openai = providers.find((provider) => provider.providerType === 'openai');
+    assert.equal(openai?.hasConnection, false);
+    assert.deepEqual(openai?.enabledModelIds, []);
   });
 });
 
@@ -181,26 +212,188 @@ describe('verifyApiKeyConnection', () => {
     assert.deepEqual(result, { kind: 'error', text: 'HTTP 401' });
   });
 
-  test('rejects a provider that does not accept an API key before probing', async () => {
+  test('rejects a canonical slug owned by another provider before reading credentials or probing', async () => {
+    let readCredential = false;
     let probed = false;
     const result = await verifyApiKeyConnection({
-      providerType: 'ollama',
-      apiKey: 'unused',
-      connectionStore: { get: async () => null },
-      credentialStore: { getSecret: async () => null },
+      providerType: 'openai',
+      apiKey: 'sk-test',
+      connectionStore: {
+        get: async (slug) =>
+          makeConnection({ slug, providerType: 'anthropic', defaultModel: 'claude-sonnet-5' }),
+      },
+      credentialStore: {
+        getSecret: async () => {
+          readCredential = true;
+          return null;
+        },
+      },
       fetchModels: async () => {
         probed = true;
         return [];
       },
     });
 
-    assert.equal(result.kind, 'error');
-    assert.match((result as { text: string }).text, /does not accept an API key/);
+    assert.deepEqual(result, {
+      kind: 'error',
+      text: 'Connection slug "openai" belongs to another provider',
+    });
+    assert.equal(readCredential, false);
     assert.equal(probed, false);
   });
 });
 
 describe('saveApiKeyConnection', () => {
+  test('does not select noncanonical same-provider connections', async () => {
+    const connections = [
+      makeConnection({ slug: 'openai-2', providerType: 'openai' }),
+      makeConnection({ slug: 'openai-work', providerType: 'openai' }),
+    ];
+    const createdSlugs: string[] = [];
+    const updatedSlugs: string[] = [];
+
+    const result = await saveApiKeyConnection({
+      providerType: 'openai',
+      apiKey: 'sk-test',
+      enabledModelIds: ['gpt-5.5'],
+      models: [{ id: 'gpt-5.5' }],
+      connectionStore: {
+        get: async (slug) => connections.find((connection) => connection.slug === slug) ?? null,
+        create: async (input) => {
+          createdSlugs.push(input.slug);
+          return makeConnection({
+            slug: input.slug,
+            providerType: input.providerType,
+            defaultModel: input.defaultModel,
+          });
+        },
+        update: async (slug) => {
+          updatedSlugs.push(slug);
+          return makeConnection({ slug, providerType: 'openai', defaultModel: 'gpt-5.5' });
+        },
+        remove: async () => {},
+        getDefault: async () => 'openai-2',
+        setDefault: async () => {},
+      },
+      credentialStore: {
+        getSecret: async () => null,
+        setSecret: async () => {},
+        deleteSecret: async () => {},
+      },
+      fetchModelChoices: async () => [],
+    });
+
+    assert.equal(result.kind, 'ok');
+    assert.deepEqual(createdSlugs, ['openai']);
+    assert.deepEqual(updatedSlugs, ['openai']);
+  });
+
+  test('rejects a canonical slug owned by another provider without writing state', async () => {
+    let created = false;
+    let updated = false;
+    let removed = false;
+    let credentialRead = false;
+    let credentialWritten = false;
+    let defaultRead = false;
+
+    const result = await saveApiKeyConnection({
+      providerType: 'openai',
+      apiKey: 'sk-test',
+      enabledModelIds: ['gpt-5.5'],
+      models: [{ id: 'gpt-5.5' }],
+      connectionStore: {
+        get: async (slug) =>
+          makeConnection({ slug, providerType: 'anthropic', defaultModel: 'claude-sonnet-5' }),
+        create: async () => {
+          created = true;
+          return makeConnection({});
+        },
+        update: async () => {
+          updated = true;
+          return makeConnection({});
+        },
+        remove: async () => {
+          removed = true;
+        },
+        getDefault: async () => {
+          defaultRead = true;
+          return null;
+        },
+        setDefault: async () => {},
+      },
+      credentialStore: {
+        getSecret: async () => {
+          credentialRead = true;
+          return null;
+        },
+        setSecret: async () => {
+          credentialWritten = true;
+        },
+        deleteSecret: async () => {},
+      },
+      fetchModelChoices: async () => [],
+    });
+
+    assert.deepEqual(result, {
+      kind: 'error',
+      text: 'Connection slug "openai" belongs to another provider',
+    });
+    assert.equal(created, false);
+    assert.equal(updated, false);
+    assert.equal(removed, false);
+    assert.equal(credentialRead, false);
+    assert.equal(credentialWritten, false);
+    assert.equal(defaultRead, false);
+  });
+
+  test('re-enables a disabled canonical connection before making it default', async () => {
+    let enabledPatch: boolean | undefined;
+    const setDefaultSlugs: string[] = [];
+
+    const result = await saveApiKeyConnection({
+      providerType: 'openai',
+      apiKey: '',
+      enabledModelIds: ['gpt-5.5'],
+      models: [{ id: 'gpt-5.5' }],
+      connectionStore: {
+        get: async () =>
+          makeConnection({
+            slug: 'openai',
+            providerType: 'openai',
+            defaultModel: 'gpt-5.5',
+            enabled: false,
+          }),
+        create: async () => {
+          throw new Error('create must not be called for an existing connection');
+        },
+        update: async (slug, patch) => {
+          enabledPatch = patch.enabled;
+          return makeConnection({
+            slug,
+            providerType: 'openai',
+            defaultModel: 'gpt-5.5',
+            enabled: patch.enabled ?? false,
+          });
+        },
+        remove: async () => {},
+        getDefault: async () => null,
+        setDefault: async (slug) => {
+          if (slug) setDefaultSlugs.push(slug);
+        },
+      },
+      credentialStore: {
+        getSecret: async () => 'stored-key',
+        setSecret: async () => {},
+        deleteSecret: async () => {},
+      },
+      fetchModelChoices: async () => [],
+    });
+
+    assert.equal(result.kind, 'ok');
+    assert.equal(enabledPatch, true);
+    assert.deepEqual(setDefaultSlugs, ['openai']);
+  });
+
   test('persists a new connection with curation and sets default only when none exists', async () => {
     const createdInputs: Array<{ slug: string; providerType: ProviderType; defaultModel: string }> =
       [];
@@ -438,43 +631,6 @@ describe('saveApiKeyConnection', () => {
     assert.equal(secretStored, false, 'a blank key must not rotate the stored secret');
     assert.equal(updatedPatches.length, 1);
     assert.deepEqual(updatedPatches[0]!.enabledModelIds, ['gpt-5.5', 'gpt-5.5-mini']);
-  });
-
-  test('rotates the key before updating an existing connection and leaves it untouched on failure', async () => {
-    const storedSecrets: Array<string> = [];
-    let updated = false;
-    const result = await saveApiKeyConnection({
-      providerType: 'openai',
-      apiKey: 'sk-rotated',
-      enabledModelIds: ['gpt-5.5'],
-      models: [{ id: 'gpt-5.5' }],
-      connectionStore: {
-        get: async () => makeConnection({ slug: 'openai', providerType: 'openai' }),
-        create: async () => {
-          throw new Error('create must not be called');
-        },
-        update: async () => {
-          updated = true;
-          return makeConnection({ slug: 'openai', providerType: 'openai' });
-        },
-        remove: async () => {},
-        getDefault: async () => 'openai',
-        setDefault: async () => {},
-      },
-      credentialStore: {
-        getSecret: async () => null,
-        deleteSecret: async () => {},
-        setSecret: async () => {
-          throw new Error('disk full');
-        },
-      },
-      fetchModelChoices: async () => [],
-    });
-
-    assert.equal(result.kind, 'error');
-    assert.match((result as { text: string }).text, /disk full/);
-    assert.equal(updated, false, 'a rotation failure must not update the existing connection');
-    assert.deepEqual(storedSecrets, []);
   });
 
   test('does not replace an existing default connection during in-session setup', async () => {

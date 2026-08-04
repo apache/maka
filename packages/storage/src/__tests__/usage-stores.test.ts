@@ -199,7 +199,8 @@ describe('InteractiveUsageStores', () => {
         toolInvocations: [toolRecord()],
         pricingOverrides: [pricing('openai:gpt-5')],
       };
-      await writeFile(join(root, 'telemetry.json'), JSON.stringify(legacy, null, 2) + '\n');
+      const legacyBytes = JSON.stringify(legacy, null, 2) + '\n';
+      await writeFile(join(root, 'telemetry.json'), legacyBytes);
 
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert(owner);
@@ -212,10 +213,11 @@ describe('InteractiveUsageStores', () => {
       await stores.close();
       await owner.close();
 
-      const firstTelemetry = await readFile(join(root, 'telemetry.json'), 'utf8');
-      const firstPricing = await readFile(join(root, 'pricing.json'), 'utf8');
-      assert.match(firstTelemetry, /"version": 1/);
-      assert.doesNotMatch(firstTelemetry, /pricingOverrides/);
+      assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), legacyBytes);
+      await assert.rejects(
+        () => readFile(join(root, 'pricing.json'), 'utf8'),
+        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
+      );
 
       const successor = await tryAcquireInteractiveRootOwner(capability);
       assert(successor);
@@ -227,8 +229,11 @@ describe('InteractiveUsageStores', () => {
       });
       await reopened.close();
       await successor.close();
-      assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), firstTelemetry);
-      assert.equal(await readFile(join(root, 'pricing.json'), 'utf8'), firstPricing);
+      assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), legacyBytes);
+      await assert.rejects(
+        () => readFile(join(root, 'pricing.json'), 'utf8'),
+        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
+      );
     });
   });
 
@@ -307,8 +312,17 @@ describe('InteractiveUsageStores', () => {
       );
       await Promise.all([accepted, drained]);
       await stores.close();
-      assert.match(await readFile(join(root, 'telemetry.json'), 'utf8'), /"usage_1"/);
+      await assert.rejects(
+        () => readFile(join(root, 'telemetry.json'), 'utf8'),
+        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
+      );
       await owner.close();
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert(successor);
+      const reopened = await openInteractiveUsageStoresForWrite(successor.lease);
+      assert.equal((await reopened.telemetry.logs({ range: 'all' })).rows[0]?.id, 'usage_1');
+      await reopened.close();
+      await successor.close();
     });
   });
 

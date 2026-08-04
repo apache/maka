@@ -1,8 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 5;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 7;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
+export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
+export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION = 1;
+export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY = 'runtime_workspace_version_authority';
+export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION = 1;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -112,6 +116,129 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     INSERT INTO runtime_capabilities(capability, version)
       VALUES ('runtime_recovery_authority', 1);
+  `,
+  ],
+  [
+    6,
+    `
+    CREATE TABLE runtime_continuation_claims (
+      claim_id TEXT PRIMARY KEY,
+      source_session_id TEXT NOT NULL,
+      source_invocation_id TEXT NOT NULL,
+      source_run_id TEXT NOT NULL,
+      source_turn_id TEXT NOT NULL,
+      source_event_high_water INTEGER NOT NULL CHECK (source_event_high_water > 0),
+      source_prefix_digest TEXT NOT NULL,
+      boundary_digest TEXT NOT NULL UNIQUE,
+      boundary_json TEXT NOT NULL,
+      provider_projection_version INTEGER NOT NULL CHECK (provider_projection_version = 1),
+      provider_replay_digest TEXT NOT NULL,
+      target_session_id TEXT NOT NULL,
+      target_invocation_id TEXT NOT NULL UNIQUE,
+      target_run_id TEXT NOT NULL UNIQUE,
+      target_turn_id TEXT NOT NULL,
+      target_run_header_json TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      start_event_id TEXT UNIQUE REFERENCES runtime_events(event_id),
+      start_kind TEXT CHECK (
+        start_kind IS NULL OR start_kind IN ('runtime_admission', 'claim_repair')
+      ),
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+      UNIQUE (
+        source_session_id,
+        source_run_id,
+        source_event_high_water,
+        source_prefix_digest
+      ),
+      UNIQUE (target_session_id, target_turn_id)
+    );
+
+    INSERT INTO runtime_capabilities(capability, version)
+      VALUES ('runtime_continuation_authority', 1);
+  `,
+  ],
+  [
+    7,
+    `
+    CREATE TABLE runtime_workspace_epochs (
+      workspace_id TEXT NOT NULL,
+      workspace_epoch_id TEXT NOT NULL UNIQUE,
+      repository_id TEXT NOT NULL,
+      workspace_instance_id TEXT NOT NULL UNIQUE,
+      mode TEXT NOT NULL CHECK (mode = 'managed_worktree'),
+      object_format TEXT NOT NULL CHECK (object_format IN ('sha1', 'sha256')),
+      source_commit_oid TEXT NOT NULL,
+      source_tree_oid TEXT NOT NULL,
+      initial_workspace_version_id TEXT NOT NULL UNIQUE,
+      materialization_profile_digest TEXT NOT NULL,
+      materialization_semantics TEXT NOT NULL
+        CHECK (materialization_semantics = 'git_tree_materialized_with_fixed_config_v1'),
+      policy_hash TEXT NOT NULL,
+      authority_session_id TEXT NOT NULL CHECK (authority_session_id = 'maka_workspace_authority'),
+      authority_invocation_id TEXT NOT NULL UNIQUE,
+      authority_run_id TEXT NOT NULL UNIQUE,
+      authority_turn_id TEXT NOT NULL UNIQUE,
+      epoch_opened_event_id TEXT NOT NULL UNIQUE REFERENCES runtime_events(event_id),
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+      committed_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, workspace_epoch_id)
+    );
+
+    CREATE TABLE runtime_workspace_versions (
+      workspace_version_id TEXT PRIMARY KEY,
+      repository_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      workspace_epoch_id TEXT NOT NULL,
+      object_format TEXT NOT NULL CHECK (object_format IN ('sha1', 'sha256')),
+      origin_kind TEXT NOT NULL CHECK (origin_kind = 'baseline'),
+      origin_event_id TEXT NOT NULL,
+      parents_json TEXT NOT NULL CHECK (parents_json = '[]'),
+      commit_oid TEXT NOT NULL,
+      tree_oid TEXT NOT NULL,
+      policy_hash TEXT NOT NULL,
+      tree_delta_digest TEXT NOT NULL,
+      changed_file_count INTEGER NOT NULL CHECK (changed_file_count >= 0),
+      deleted_file_count INTEGER NOT NULL CHECK (deleted_file_count = 0),
+      accepted_event_id TEXT NOT NULL UNIQUE REFERENCES runtime_events(event_id),
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+      committed_at INTEGER NOT NULL,
+      FOREIGN KEY (workspace_id, workspace_epoch_id)
+        REFERENCES runtime_workspace_epochs(workspace_id, workspace_epoch_id),
+      UNIQUE (
+        workspace_id,
+        workspace_epoch_id,
+        workspace_version_id,
+        accepted_event_id
+      )
+    );
+
+    CREATE TABLE runtime_workspace_heads (
+      workspace_id TEXT NOT NULL,
+      workspace_epoch_id TEXT NOT NULL,
+      repository_id TEXT NOT NULL,
+      workspace_version_id TEXT NOT NULL,
+      accepted_event_id TEXT NOT NULL,
+      commit_oid TEXT NOT NULL,
+      tree_oid TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      PRIMARY KEY (workspace_id, workspace_epoch_id),
+      FOREIGN KEY (workspace_id, workspace_epoch_id)
+        REFERENCES runtime_workspace_epochs(workspace_id, workspace_epoch_id),
+      FOREIGN KEY (
+        workspace_id,
+        workspace_epoch_id,
+        workspace_version_id,
+        accepted_event_id
+      ) REFERENCES runtime_workspace_versions(
+        workspace_id,
+        workspace_epoch_id,
+        workspace_version_id,
+        accepted_event_id
+      )
+    );
+
+    INSERT INTO runtime_capabilities(capability, version)
+      VALUES ('runtime_workspace_version_authority', 1);
   `,
   ],
 ]);

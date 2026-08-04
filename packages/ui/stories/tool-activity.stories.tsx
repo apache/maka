@@ -1,14 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { ToolActivity } from '../src/tool-activity.js';
+import { ToolCallDetail, ToolTrow } from '../src/tool-activity.js';
 import type { ToolActivityItem } from '../src/materialize.js';
 import {
   denseMixedResultItems,
   errorsAndPermissionDeniedItems,
-  fileDiffAndWebSearchItems,
-  statusOverviewItems,
-  subagentAndExploreItems,
-  terminalAndLiveOutputItems,
 } from './tool-activity.fixtures.js';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -16,32 +12,34 @@ import {
 
 const meta = {
   title: 'Product/Tool Activity',
-  component: ToolActivity,
+  component: ToolTrow,
   parameters: {
     layout: 'fullscreen',
   },
-} satisfies Meta<typeof ToolActivity>;
+} satisfies Meta<typeof ToolTrow>;
 
 export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-function ToolActivityBoard(props: {
-  items: ToolActivityItem[];
-  width?: number;
-  expandAll?: boolean;
-  autoCopyLabel?: string;
-}) {
-  const rootRef = useRef<HTMLDivElement>(null);
+/**
+ * One row per item. The product groups a contiguous run into a single
+ * `ToolTrow`, which collapses to its latest row; rendering one trow per item
+ * is how a state board shows every row at once.
+ */
+function ToolRowBoard(props: { items: ToolActivityItem[]; width?: number }) {
+  return (
+    <Board width={props.width}>
+      {props.items.map((item) => (
+        <ToolTrow key={item.toolUseId} items={[item]} />
+      ))}
+    </Board>
+  );
+}
 
-  useEffect(() => {
-    if (!props.expandAll) return;
-    const root = rootRef.current;
-    if (!root) return;
-    for (const item of root.querySelectorAll<HTMLDetailsElement>('details[data-slot="tool"]')) {
-      item.open = true;
-    }
-  }, [props.expandAll, props.items]);
+/** The expanded panels, which Astryx reveals per row on click. */
+function ToolDetailBoard(props: { items: ToolActivityItem[]; width?: number; autoCopyLabel?: string }) {
+  const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!props.autoCopyLabel) return;
@@ -88,8 +86,19 @@ function ToolActivityBoard(props: {
   }, [props.autoCopyLabel, props.items]);
 
   return (
+    <div ref={rootRef}>
+      <Board width={props.width}>
+        {props.items.map((item) => (
+          <ToolCallDetail key={item.toolUseId} item={item} />
+        ))}
+      </Board>
+    </div>
+  );
+}
+
+function Board(props: { children: React.ReactNode; width?: number }) {
+  return (
     <div
-      ref={rootRef}
       style={{
         display: 'grid',
         gap: 16,
@@ -98,54 +107,34 @@ function ToolActivityBoard(props: {
         width: '100%',
       }}
     >
-      <ToolActivity items={props.items} />
+      {props.children}
     </div>
   );
 }
-
-// Real path: any turn where the agent calls tools — this is the row's status set
-// (running / done / failed), collected side by side for review.
-export const StatusOverview: Story = {
-  args: { items: statusOverviewItems },
-  render: (args) => <ToolActivityBoard items={args.items} width={860} />,
-};
-
-// Real path: the agent runs a shell command → the terminal row streams its output live.
-export const TerminalAndLiveOutput: Story = {
-  args: { items: terminalAndLiveOutputItems },
-  render: (args) => <ToolActivityBoard items={args.items} expandAll />,
-};
-
-// Real path: the agent edits a file or searches the web → the diff and search-result
-// rows.
-export const FileDiffAndWebSearch: Story = {
-  args: { items: fileDiffAndWebSearchItems },
-  render: (args) => <ToolActivityBoard items={args.items} expandAll />,
-};
-
-// Real path: the agent dispatches a subagent or an explore task → the nested activity
-// rows.
-export const SubagentAndExplore: Story = {
-  args: { items: subagentAndExploreItems },
-  render: (args) => <ToolActivityBoard items={args.items} expandAll />,
-};
 
 // Real path: a tool call fails, or the user denies it in the permission prompt → the
 // failed and denied rows.
 export const ErrorsAndPermissionDenied: Story = {
   args: { items: errorsAndPermissionDeniedItems },
-  render: (args) => <ToolActivityBoard items={args.items} width={860} />,
-};
-
-// Real path: click copy on a tool row → the transient copied state.
-export const CopyFeedback: Story = {
-  args: { items: errorsAndPermissionDeniedItems },
-  render: (args) => <ToolActivityBoard items={args.items} width={860} autoCopyLabel="复制" />,
+  render: (args) => <ToolRowBoard items={args.items} width={860} />,
 };
 
 // Real path: a turn that mixes many tool kinds — the density case reviewers compare
 // spacing against.
 export const DenseMixedResults: Story = {
   args: { items: denseMixedResultItems },
-  render: (args) => <ToolActivityBoard items={args.items} expandAll />,
+  render: (args) => <ToolDetailBoard items={args.items} />,
+};
+
+// Real path: a contiguous run of tool calls in one turn — the grouped surface the
+// state boards above never show, since they render one row per trow. Astryx's
+// collapsed header projects the last call alone, so this is where to look at what a
+// mixed-outcome group costs in density.
+export const ContiguousGroup: Story = {
+  args: { items: errorsAndPermissionDeniedItems },
+  render: (args) => (
+    <Board width={860}>
+      <ToolTrow items={args.items} />
+    </Board>
+  ),
 };

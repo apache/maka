@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -7,6 +7,7 @@ import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-sto
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
@@ -34,13 +35,16 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       now: 1,
     });
 
-    const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-    await rm(metadataPath);
-    await mkdir(metadataPath);
+    store.close();
     let drainRequests = 0;
-    const coordinator = new HostArtifactCoordinator(store, () => {
-      drainRequests += 1;
-    });
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => {
+        drainRequests += 1;
+      },
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+    );
 
     assert.deepEqual(
       await coordinator.handlers['artifact.delete'](

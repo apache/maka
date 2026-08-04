@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { describe, it, beforeEach } from 'node:test';
+import { beforeEach, describe, it } from 'node:test';
 
 import {
   formatRelativeTimestamp,
@@ -7,87 +7,48 @@ import {
   resetRelativeTimeFormatters,
 } from '../relative-time.js';
 
-beforeEach(() => {
-  // Some test environments still have `navigator` from prior runs;
-  // reset the cache so each case independently resolves the locale.
-  resetRelativeTimeFormatters();
-});
+const NOW = Date.parse('2026-05-29T12:00:00Z');
 
-describe('formatRelativeTimestamp', () => {
-  const NOW = Date.parse('2026-05-29T12:00:00Z');
+beforeEach(resetRelativeTimeFormatters);
 
-  it('defaults to Chinese instead of the host navigator locale', () => {
-    const out = formatRelativeTimestamp(NOW - 8_000, NOW);
-    assert.match(out, /秒/);
-    assert.doesNotMatch(out, /seconds?\s+ago/i);
+describe('relative time', () => {
+  it('formats locale, bucket, horizon, and clock-skew boundaries', () => {
+    const cases: Array<{
+      timestamp: number;
+      locale?: 'zh' | 'en';
+      matches: RegExp;
+      excludes?: RegExp;
+    }> = [
+      { timestamp: NOW - 8_000, matches: /秒/, excludes: /seconds?\s+ago/i },
+      { timestamp: NOW - 100, matches: /1.*second|秒|now|刚刚/i },
+      { timestamp: NOW - 30_000, matches: /30.*second|秒/i },
+      { timestamp: NOW - 5 * 60_000, matches: /5.*minute|分钟/i },
+      { timestamp: NOW - 5 * 60_000, locale: 'en', matches: /5 minutes ago/i, excludes: /分钟/ },
+      { timestamp: NOW - 5 * 60_000, locale: 'zh', matches: /5.*分钟/, excludes: /minutes ago/i },
+      { timestamp: NOW - 3 * 60 * 60_000, matches: /3.*hour|小时/i },
+      { timestamp: NOW - 2 * 24 * 60 * 60_000, matches: /2.*day|天/i },
+      { timestamp: NOW - 30 * 24 * 60 * 60_000, matches: /2026|4月|Apr|April/ },
+      {
+        timestamp: NOW + 5 * 60_000,
+        matches: /second|秒|now|刚刚/i,
+        excludes: /in 5 minutes|5 分钟后/,
+      },
+    ];
+    for (const { timestamp, locale, matches, excludes } of cases) {
+      const output = formatRelativeTimestamp(timestamp, NOW, locale);
+      assert.match(output, matches);
+      if (excludes) assert.doesNotMatch(output, excludes);
+    }
   });
 
-  it('clamps sub-second ages to >=1s so we never see "0 seconds ago"', () => {
-    const out = formatRelativeTimestamp(NOW - 100, NOW);
-    assert.match(out, /1.*second|秒|now|刚刚/i);
-  });
-
-  it('formats a 30-second age in seconds', () => {
-    const out = formatRelativeTimestamp(NOW - 30_000, NOW);
-    assert.match(out, /30.*second|秒/i);
-  });
-
-  it('formats a 5-minute age in minutes', () => {
-    const out = formatRelativeTimestamp(NOW - 5 * 60_000, NOW);
-    assert.match(out, /5.*minute|分钟/i);
-  });
-
-  it('formats against the explicitly resolved English locale', () => {
-    const out = formatRelativeTimestamp(NOW - 5 * 60_000, NOW, 'en');
-    assert.match(out, /5 minutes ago/i);
-    assert.doesNotMatch(out, /分钟/);
-  });
-
-  it('formats against the explicitly resolved Chinese locale', () => {
-    const out = formatRelativeTimestamp(NOW - 5 * 60_000, NOW, 'zh');
-    assert.match(out, /5.*分钟/);
-    assert.doesNotMatch(out, /minutes ago/i);
-  });
-
-  it('formats a 3-hour age in hours', () => {
-    const out = formatRelativeTimestamp(NOW - 3 * 60 * 60_000, NOW);
-    assert.match(out, /3.*hour|小时/i);
-  });
-
-  it('formats a 2-day age in days', () => {
-    const out = formatRelativeTimestamp(NOW - 2 * 24 * 60 * 60_000, NOW);
-    assert.match(out, /2.*day|天/i);
-  });
-
-  it('falls back to absolute date past the 7-day horizon', () => {
-    const out = formatRelativeTimestamp(NOW - 30 * 24 * 60 * 60_000, NOW);
-    // Absolute format includes the year (medium dateStyle).
-    assert.match(out, /2026|4月|Apr|April/);
-  });
-
-  it('clamps future timestamps to "刚刚" instead of emitting "in N minutes"', () => {
-    const out = formatRelativeTimestamp(NOW + 5 * 60_000, NOW);
-    assert.doesNotMatch(out, /in 5 minutes|5 分钟后/);
-    assert.match(out, /second|秒|now|刚刚/i);
-  });
-});
-
-describe('nextRelativeRefreshDelay', () => {
-  const NOW = Date.parse('2026-05-29T12:00:00Z');
-
-  it('returns 1s when within the first minute', () => {
-    assert.equal(nextRelativeRefreshDelay(NOW - 5_000, NOW), 1_000);
-  });
-
-  it('returns 60s when within the first hour', () => {
-    assert.equal(nextRelativeRefreshDelay(NOW - 10 * 60_000, NOW), 60_000);
-  });
-
-  it('returns 10m when within the day window', () => {
-    assert.equal(nextRelativeRefreshDelay(NOW - 5 * 60 * 60_000, NOW), 10 * 60_000);
-  });
-
-  it('returns null past the horizon (no further ticks needed)', () => {
-    assert.equal(nextRelativeRefreshDelay(NOW - 30 * 24 * 60 * 60_000, NOW), null);
+  it('selects refresh cadence by age', () => {
+    for (const [timestamp, expected] of [
+      [NOW - 5_000, 1_000],
+      [NOW - 10 * 60_000, 60_000],
+      [NOW - 5 * 60 * 60_000, 10 * 60_000],
+      [NOW - 30 * 24 * 60 * 60_000, null],
+    ] as const) {
+      assert.equal(nextRelativeRefreshDelay(timestamp, NOW), expected);
+    }
   });
 });

@@ -21,6 +21,7 @@ import {
   encodeProtocolFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+  SESSION_CONTINUITY_SCHEMA_VERSION,
   type RequestFrame,
   type SubscriptionFrame,
 } from '../protocol/index.js';
@@ -95,7 +96,7 @@ test('isolates a sequence gap and continues requests on the same connection', as
 });
 
 test('rejects epoch and Session correlation changes per subscription', async () => {
-  for (const changed of ['epoch', 'session'] as const) {
+  for (const changed of ['epoch', 'session', 'graph'] as const) {
     await withProtocolPeer(
       async (transport, hostEpoch) => {
         const request = await acceptConnectionAndReadOpen(transport, hostEpoch);
@@ -106,14 +107,26 @@ test('rejects epoch and Session correlation changes per subscription', async () 
           ok: true,
           result: opened,
         });
-        await transport.write({
-          ...deltaFrame(
-            changed === 'epoch' ? 'different-epoch' : hostEpoch,
-            opened.subscriptionId,
-            1,
-          ),
-          ...(changed === 'session' ? { sessionId: 'session-2' } : {}),
-        });
+        await transport.write(
+          changed === 'graph'
+            ? {
+                kind: 'subscription.agent_graph_changed',
+                hostEpoch,
+                subscriptionId: opened.subscriptionId,
+                sequence: 1,
+                rootSessionId: 'session-2',
+                graphId: 'agent_graph_1',
+                reason: 'observation',
+              }
+            : {
+                ...deltaFrame(
+                  changed === 'epoch' ? 'different-epoch' : hostEpoch,
+                  opened.subscriptionId,
+                  1,
+                ),
+                ...(changed === 'session' ? { sessionId: 'session-2' } : {}),
+              },
+        );
         await answerClose(transport, opened.subscriptionId);
         await answerStatus(transport, hostEpoch);
       },
@@ -306,9 +319,10 @@ function openResult(hostEpoch: string, subscriptionId: string) {
     subscriptionId,
     nextSequence: 1,
     snapshot: {
-      schemaVersion: 1 as const,
+      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {
         sessionId: 'session-1',
+        metadataRevision: 1,
         status: 'running' as const,
         createdAt: 1,
         lastUsedAt: 2,
@@ -321,6 +335,7 @@ function openResult(hostEpoch: string, subscriptionId: string) {
         runId: 'run-1',
         status: 'running' as const,
       },
+      goal: null,
       queue: { hostEpoch, queueRevision: 1, steering: [], followup: [] },
       interactions: { pending: [] },
     },
