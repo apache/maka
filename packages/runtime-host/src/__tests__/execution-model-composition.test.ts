@@ -1462,7 +1462,7 @@ test('production Host publishes and retires an implementation child patch', asyn
   }
 });
 
-test('Host Goal evaluator meters provider usage and aborts its physical request', {
+test('Host auxiliary models meter provider usage and abort physical requests', {
   timeout: 10_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));

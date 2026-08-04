@@ -184,7 +184,7 @@ async function waitForScheduledArchive(
   while (Date.now() < deadline) {
     const page = await connection.queryDailyReview({
       kind: 'archives',
-      offset: 0,
+      beforeArchiveId: null,
       limit: 10,
     });
     if (page.kind === 'archives') {

@@ -277,6 +277,33 @@ export function dailyReviewArchiveId(day: DayRangeMs, range: DailyReviewRange): 
   return `${yyyy}-${mm}-${dd}-${range}d`;
 }
 
+export interface ParsedDailyReviewArchiveId {
+  readonly localDate: string;
+  readonly range: DailyReviewRange;
+}
+
+/** Parses the durable local-date label without reinterpreting it in the current timezone. */
+export function parseDailyReviewArchiveId(value: unknown): ParsedDailyReviewArchiveId | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})-(1|7|30)d$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return {
+    localDate: `${match[1]}-${match[2]}-${match[3]}`,
+    range: Number(match[4]) as DailyReviewRange,
+  };
+}
+
 /** Maps the retired daily/deep read format onto the one range contract. */
 export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive {
   if (!isRecord(input)) throw invalidDailyReviewArchive('record');
@@ -307,7 +334,12 @@ export function normalizeDailyReviewArchive(input: unknown): DailyReviewArchive 
     throw invalidDailyReviewArchive('day');
   }
   const day = { fromMs: input.day.fromMs, toMs: input.day.toMs };
-  if (!hasValidDailyReviewArchiveId(input.id, expectedIdSuffix)) {
+  const canonicalId = parseDailyReviewArchiveId(input.id);
+  if (
+    'range' in input
+      ? !canonicalId || canonicalId.range !== range
+      : !hasValidLegacyDailyReviewArchiveId(input.id, expectedIdSuffix)
+  ) {
     throw invalidDailyReviewArchive('id');
   }
   if (!DAILY_REVIEW_ARCHIVE_STATUSES.includes(input.status as DailyReviewArchiveStatus)) {
@@ -383,8 +415,8 @@ function isNonNegativeInteger(value: unknown): value is number {
   return isFiniteNumber(value) && Number.isInteger(value) && value >= 0;
 }
 
-function hasValidDailyReviewArchiveId(id: string, suffix: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})-(1d|7d|30d|daily|deep)$/.exec(id);
+function hasValidLegacyDailyReviewArchiveId(id: string, suffix: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})-(daily|deep)$/.exec(id);
   if (!match || match[4] !== suffix) return false;
   const year = Number(match[1]);
   const month = Number(match[2]);

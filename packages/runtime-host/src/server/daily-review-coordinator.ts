@@ -32,7 +32,11 @@ import {
 import type { DailyReviewOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostDailyReviewModel } from './execution-model-authority.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
-import { readCanonicalUsage, type RunEventReader } from './canonical-usage-reader.js';
+import {
+  CanonicalUsageProjectionIncompleteError,
+  readCompleteCanonicalUsage,
+  type RunEventReader,
+} from './canonical-usage-reader.js';
 
 const ARCHIVE_LIMIT = 180;
 const SCHEDULER_INTERVAL_MS = 60_000;
@@ -67,7 +71,14 @@ export class HostDailyReviewCoordinator {
   readonly #now: () => number;
   readonly #setInterval: (callback: () => void, delayMs: number) => unknown;
   readonly #clearInterval: (timer: unknown) => void;
-  readonly #inFlight = new Map<string, Promise<DailyReviewArchive>>();
+  readonly #inFlight = new Map<
+    string,
+    {
+      readonly modelKey: string;
+      readonly replaceExisting: boolean;
+      readonly promise: Promise<DailyReviewArchive>;
+    }
+  >();
   readonly #abortControllers = new Set<AbortController>();
 
   #prepared = false;
@@ -96,7 +107,12 @@ export class HostDailyReviewCoordinator {
     const snapshot = await this.#store.readConfig();
     this.#prepared = true;
     this.#reconcileScheduler(snapshot.config.enabled);
-    await this.#tickScheduler();
+    try {
+      await this.#tickScheduler();
+    } catch (error) {
+      if (isRetryableSchedulerError(error)) return;
+      throw error;
+    }
   }
 
   beginDrain(): void {
@@ -111,7 +127,7 @@ export class HostDailyReviewCoordinator {
   close(): Promise<void> {
     this.#closeTask ??= (async () => {
       this.beginDrain();
-      await Promise.allSettled(this.#inFlight.values());
+      await Promise.allSettled([...this.#inFlight.values()].map((entry) => entry.promise));
       this.#store.close();
     })();
     return this.#closeTask;
@@ -133,14 +149,17 @@ export class HostDailyReviewCoordinator {
           });
         case 'archives': {
           const archives = await this.#store.listArchives();
-          const page = archives.slice(input.offset, input.offset + input.limit);
-          const nextOffset = input.offset + page.length;
+          const beforeArchiveId = input.beforeArchiveId;
+          const eligible =
+            beforeArchiveId === null
+              ? archives
+              : archives.filter((archive) => archive.id < beforeArchiveId);
+          const page = eligible.slice(0, input.limit);
           return querySuccess({
             kind: 'archives',
             archives: page,
-            offset: input.offset,
-            total: archives.length,
-            nextOffset: nextOffset < archives.length ? nextOffset : null,
+            beforeArchiveId,
+            nextBeforeArchiveId: eligible.length > page.length ? (page.at(-1)?.id ?? null) : null,
           });
         }
         case 'archive':
@@ -164,7 +183,7 @@ export class HostDailyReviewCoordinator {
           return mutateSuccess(result);
         }
         this.#reconcileScheduler(result.snapshot.config.enabled);
-        void this.#tickScheduler().catch(() => this.#requestDrain());
+        void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
         return mutateSuccess({
           kind: result.kind === 'committed' ? 'config_committed' : 'config_unchanged',
           ...result.snapshot,
@@ -191,6 +210,15 @@ export class HostDailyReviewCoordinator {
       if (this.#draining || isAbort(error)) {
         return mutateFailure('host_draining', 'Runtime Host is draining');
       }
+      if (error instanceof CanonicalUsageProjectionIncompleteError) {
+        return mutateFailure(
+          'projection_incomplete',
+          'Daily Review is waiting for canonical Usage repair',
+        );
+      }
+      if (error instanceof DailyReviewRunConflictError) {
+        return mutateFailure('operation_conflict', error.message);
+      }
       this.#requestDrain();
       return mutateFailure('persistence_failed', 'Daily Review mutation failed');
     }
@@ -204,7 +232,12 @@ export class HostDailyReviewCoordinator {
     const startDay = localDayBoundsAt(endDay.fromMs, -(span - 1));
     const range = { fromMs: startDay.fromMs, toMs: endDay.toMs };
     const query = dailyUsageQuery(range);
-    const canonical = await readCanonicalUsage(this.#usage, query, now, this.#readRunEvents);
+    const canonical = await readCompleteCanonicalUsage(
+      this.#usage,
+      query,
+      now,
+      this.#readRunEvents,
+    );
     const [usageSummary, toolBuckets, modelBuckets, sessions] = await Promise.all([
       this.#usage.telemetry.summary(query),
       this.#usage.telemetry.buckets(query, 'tool'),
@@ -238,28 +271,34 @@ export class HostDailyReviewCoordinator {
     const archiveId = dailyReviewArchiveId(summary.day, input.range);
     const existing = await this.#store.getArchive(archiveId);
     if (existing && !input.replaceExisting) return existing;
+    const config = await this.#store.readConfig();
+    const modelKey = input.modelKeyOverride.trim() || config.config.modelKey;
     const inFlight = this.#inFlight.get(archiveId);
-    if (inFlight) return inFlight;
-    const pending = this.#generateArchive(archiveId, summary, input);
-    this.#inFlight.set(archiveId, pending);
+    if (inFlight) {
+      if (inFlight.modelKey === modelKey && inFlight.replaceExisting === input.replaceExisting) {
+        return inFlight.promise;
+      }
+      throw new DailyReviewRunConflictError(archiveId);
+    }
+    const pending = this.#generateArchive(archiveId, summary, modelKey, input);
+    const entry = { modelKey, replaceExisting: input.replaceExisting, promise: pending };
+    this.#inFlight.set(archiveId, entry);
     try {
       return await pending;
     } finally {
-      if (this.#inFlight.get(archiveId) === pending) this.#inFlight.delete(archiveId);
+      if (this.#inFlight.get(archiveId) === entry) this.#inFlight.delete(archiveId);
     }
   }
 
   async #generateArchive(
     archiveId: string,
     summary: DailyReviewSummary,
+    modelKey: string,
     input: {
       readonly range: DailyReviewRange;
-      readonly modelKeyOverride: string;
       readonly trigger: 'cron' | 'manual';
     },
   ): Promise<DailyReviewArchive> {
-    const config = await this.#store.readConfig();
-    const modelKey = input.modelKeyOverride.trim() || config.config.modelKey;
     const base = {
       id: archiveId,
       day: summary.day,
@@ -336,9 +375,7 @@ export class HostDailyReviewCoordinator {
     if (encodedBytes > DAILY_REVIEW_RESULT_MAX_BYTES) {
       throw new Error('Daily Review archive exceeds the protocol result budget');
     }
-    const published = await this.#store.putArchive(archive);
-    await this.#store.pruneArchives(ARCHIVE_LIMIT);
-    return published;
+    return this.#store.publishArchive(archive, ARCHIVE_LIMIT);
   }
 
   #reconcileScheduler(enabled: boolean): void {
@@ -348,7 +385,7 @@ export class HostDailyReviewCoordinator {
     }
     this.#residency ??= this.#acquireResidency();
     this.#timer ??= this.#setInterval(() => {
-      void this.#tickScheduler().catch(() => this.#requestDrain());
+      void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
     }, SCHEDULER_INTERVAL_MS);
   }
 
@@ -367,6 +404,8 @@ export class HostDailyReviewCoordinator {
     this.#reconcileScheduler(config.enabled);
     const now = this.#now();
     if (!config.enabled || !scheduledTimeHasPassed(now, config.executeTime)) return;
+    // This is a latest-complete-day digest, not a historical job ledger. Without durable
+    // enablement history, older backfill could generate reviews for days before scheduling began.
     const day = localDayBoundsAt(now, -1);
     const archiveId = dailyReviewArchiveId(day, 1);
     if (await this.#store.getArchive(archiveId)) return;
@@ -381,11 +420,22 @@ export class HostDailyReviewCoordinator {
 
   #readFailure(error: unknown): OperationOutcome<'daily-review.query'> {
     if (this.#draining) return queryFailure('host_draining', 'Runtime Host is draining');
+    if (error instanceof CanonicalUsageProjectionIncompleteError) {
+      return queryFailure(
+        'projection_incomplete',
+        'Daily Review is waiting for canonical Usage repair',
+      );
+    }
     this.#requestDrain();
     return queryFailure(
       'persistence_failed',
       error instanceof Error ? 'Daily Review data is unavailable' : 'Daily Review query failed',
     );
+  }
+
+  #handleSchedulerError(error: unknown): void {
+    if (this.#draining || isAbort(error) || isRetryableSchedulerError(error)) return;
+    this.#requestDrain();
   }
 }
 
@@ -469,6 +519,20 @@ function buildRuleBasedSections(
 
 function isAbort(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function isRetryableSchedulerError(error: unknown): boolean {
+  return (
+    error instanceof CanonicalUsageProjectionIncompleteError ||
+    error instanceof DailyReviewRunConflictError
+  );
+}
+
+class DailyReviewRunConflictError extends Error {
+  constructor(archiveId: string) {
+    super(`Daily Review archive ${archiveId} is already being generated with different options`);
+    this.name = 'DailyReviewRunConflictError';
+  }
 }
 
 function querySuccess(

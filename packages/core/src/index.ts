@@ -1743,6 +1743,7 @@ export type {
   DailyReviewArchiveSummary,
   DailyReviewConfig,
   DailyReviewRange,
+  ParsedDailyReviewArchiveId,
   DailyReviewSectionKey,
   DailyReviewSessionRow,
   DailyReviewSummary,
@@ -1766,6 +1767,7 @@ export {
   localDayBoundsForInstant,
   normalizeDailyReviewConfig,
   normalizeDailyReviewArchive,
+  parseDailyReviewArchiveId,
   pickDailyReviewSessions,
   pickDailyReviewTopEntries,
 } from './daily-review.js';

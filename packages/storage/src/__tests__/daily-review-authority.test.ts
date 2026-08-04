@@ -58,7 +58,7 @@ test('Daily Review authority serializes config revisions and preserves archives'
         { kind: 'revision_conflict', expectedRevision: 0, actualRevision: 1 },
       );
 
-      const stored = await first.putArchive(archive());
+      const stored = await first.publishArchive(archive(), 180);
       assert.deepEqual(await second.getArchive(stored.id), stored);
       assert.deepEqual(
         (await second.listArchives()).map((item) => item.id),
@@ -85,14 +85,46 @@ test('Daily Review authority rejects operations after its root lease closes', as
     const writer = await openInteractiveDailyReviewAuthorityForWrite(owner.lease);
     await owner.close();
     await assert.rejects(() => writer.readConfig(), isInvalidLease);
-    await assert.rejects(() => writer.putArchive(archive()), isInvalidLease);
+    await assert.rejects(() => writer.publishArchive(archive(), 180), isInvalidLease);
     writer.close();
   });
 });
 
-function archive(): DailyReviewArchive {
-  const fromMs = new Date(2026, 7, 3).getTime();
-  const toMs = new Date(2026, 7, 4).getTime();
+test('Daily Review authority publishes and prunes archives in one operation', async () => {
+  await withInteractiveRoot(async ({ capability }) => {
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+    try {
+      const writer = await openInteractiveDailyReviewAuthorityForWrite(owner.lease);
+      const older = archive();
+      const newer = {
+        ...archive(new Date(2026, 7, 4).getTime()),
+        id: '2026-08-04-1d',
+        generatedAt: older.generatedAt + 1,
+      };
+      await writer.publishArchive(older, 1);
+      await writer.publishArchive(newer, 1);
+      assert.deepEqual(
+        (await writer.listArchives()).map((item) => item.id),
+        [newer.id],
+      );
+      assert.equal(await writer.getArchive(older.id), null);
+      await assert.rejects(() => writer.publishArchive({ ...newer, id: '2026-08-05-1d' }, 1));
+      assert.deepEqual(
+        (await writer.listArchives()).map((item) => item.id),
+        [newer.id],
+      );
+      writer.close();
+    } finally {
+      if (!owner.closed) await owner.close();
+    }
+  });
+});
+
+function archive(fromMs = new Date(2026, 7, 3).getTime()): DailyReviewArchive {
+  const start = new Date(fromMs);
+  const toMs = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1).getTime();
   return {
     id: '2026-08-03-1d',
     day: { fromMs, toMs },

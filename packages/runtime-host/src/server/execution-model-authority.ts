@@ -46,7 +46,7 @@ export interface HostGoalEvaluatorInput {
   readonly newId?: () => string;
 }
 
-export type HostSessionEffectModelFailureClass =
+export type HostAuxiliaryModelFailureClass =
   | 'aborted'
   | 'timeout'
   | 'configuration'
@@ -65,7 +65,7 @@ export type HostSessionRecapModelResult =
       readonly ok: false;
       readonly modelId?: string;
       readonly messages?: readonly ModelMessage[];
-      readonly errorClass: Exclude<HostSessionEffectModelFailureClass, 'persistence'>;
+      readonly errorClass: Exclude<HostAuxiliaryModelFailureClass, 'persistence'>;
     }
   | {
       readonly ok: false;
@@ -96,7 +96,7 @@ export type HostDailyReviewModelResult =
   | { readonly ok: true; readonly text: string; readonly modelKey: string }
   | {
       readonly ok: false;
-      readonly errorClass: HostSessionEffectModelFailureClass;
+      readonly errorClass: HostAuxiliaryModelFailureClass;
     };
 
 export interface HostDailyReviewModel {
@@ -124,6 +124,7 @@ export function createHostDailyReviewModel(
           resolveDailyReviewHeader(authority.runtimePolicy, modelKey),
         );
         const result = await runHostAuxiliaryModelCall(authority, {
+          transportContextId: 'daily-review',
           header,
           callKind: 'daily_review',
           callId: `daily_review_${authority.newId()}`,
@@ -138,7 +139,7 @@ export function createHostDailyReviewModel(
       } catch (error) {
         return {
           ok: false as const,
-          errorClass: sessionEffectModelErrorClass(error, effectiveAbortSignal),
+          errorClass: auxiliaryModelErrorClass(error, effectiveAbortSignal),
         };
       }
     },
@@ -164,7 +165,8 @@ export function createHostSessionEffectModel(
       ]);
       try {
         const result = await runHostAuxiliaryModelCall(authority, {
-          sessionId,
+          transportContextId: sessionId,
+          telemetrySessionId: sessionId,
           header,
           callKind: 'session_title',
           callId: `session_title_${sessionId}_${authority.newId()}`,
@@ -193,7 +195,8 @@ export function createHostSessionEffectModel(
       let messages: readonly ModelMessage[] | undefined;
       try {
         const result = await runHostAuxiliaryModelCall(authority, {
-          sessionId,
+          transportContextId: sessionId,
+          telemetrySessionId: sessionId,
           header,
           callKind: 'session_recap',
           callId: `session_recap_${sessionId}_${effectId}`,
@@ -219,7 +222,7 @@ export function createHostSessionEffectModel(
           ok: false as const,
           ...(modelId ? { modelId } : {}),
           ...(messages ? { messages } : {}),
-          errorClass: sessionEffectModelErrorClass(error, abortSignal),
+          errorClass: auxiliaryModelErrorClass(error, abortSignal),
         };
       }
     },
@@ -237,7 +240,8 @@ export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEval
       );
       return (
         await runHostAuxiliaryModelCall(authority, {
-          sessionId,
+          transportContextId: sessionId,
+          telemetrySessionId: sessionId,
           header,
           callKind: 'goal_evaluation',
           callId: `goal_evaluation_${sessionId}_${authority.newId()}`,
@@ -282,7 +286,8 @@ type AuxiliaryModelRequest = ToolFreeModelCallContent & {
 };
 
 interface HostAuxiliaryModelCallInput {
-  readonly sessionId?: string;
+  readonly transportContextId: string;
+  readonly telemetrySessionId?: string;
   readonly header: Pick<SessionHeader, 'llmConnectionSlug' | 'model' | 'thinkingLevel'>;
   readonly callKind: Exclude<ModelCallKind, 'main'>;
   readonly callId: string;
@@ -365,7 +370,7 @@ async function runHostAuxiliaryModelCall(
         binding: oauth.binding,
         initialTokens: initialOAuthTokens,
         connection: target.connection,
-        sessionId: input.sessionId ?? 'daily-review',
+        sessionId: input.transportContextId,
         modelId: target.model,
         claudeDeviceId: authority.claudeDeviceId,
         fetchFn: transport.fetch,
@@ -373,7 +378,7 @@ async function runHostAuxiliaryModelCall(
     }
     const startedAt = authority.now();
     const baseRecord = {
-      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.telemetrySessionId ? { sessionId: input.telemetrySessionId } : {}),
       callKind: input.callKind,
       callId: input.callId,
       connectionSlug: target.connection.slug,
@@ -575,10 +580,10 @@ function evaluatorErrorClass(error: unknown): string {
   return error instanceof Error ? error.name : 'UnknownError';
 }
 
-function sessionEffectModelErrorClass(
+function auxiliaryModelErrorClass(
   error: unknown,
   abortSignal: AbortSignal,
-): HostSessionEffectModelFailureClass {
+): HostAuxiliaryModelFailureClass {
   if (error instanceof AuxiliaryModelCallLocalError) return 'persistence';
   if (abortSignal.aborted) {
     const reason = abortSignal.reason;

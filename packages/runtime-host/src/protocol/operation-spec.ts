@@ -11,6 +11,7 @@ export type HostOperationErrorCode =
   | 'operation_conflict'
   | 'capability_unavailable'
   | 'invalid_request'
+  | 'projection_incomplete'
   | 'persistence_failed'
   | 'commit_outcome_unknown'
   | 'already_resolved'

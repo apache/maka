@@ -1,8 +1,10 @@
 import {
   DEFAULT_DAILY_REVIEW_CONFIG,
+  dailyReviewArchiveId,
   dailyReviewArchiveToSummary,
   normalizeDailyReviewArchive,
   normalizeDailyReviewConfig,
+  parseDailyReviewArchiveId,
   type DailyReviewArchive,
   type DailyReviewArchiveSummary,
   type DailyReviewConfig,
@@ -15,7 +17,6 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 
-const ARCHIVE_ID_PATTERN = /^\d{4}-\d{2}-\d{2}-(1d|7d|30d)$/;
 const writerBrand: unique symbol = Symbol('InteractiveDailyReviewAuthorityWriter');
 const writers = new WeakSet<object>();
 const writerByLease = new WeakMap<object, InteractiveDailyReviewAuthorityWriter>();
@@ -45,11 +46,10 @@ export interface InteractiveDailyReviewAuthorityWriter {
     expectedRevision: number,
     config: DailyReviewConfig,
   ): Promise<DailyReviewConfigMutationResult>;
-  putArchive(archive: DailyReviewArchive): Promise<DailyReviewArchive>;
+  publishArchive(archive: DailyReviewArchive, maxArchives: number): Promise<DailyReviewArchive>;
   listArchives(): Promise<readonly DailyReviewArchiveSummary[]>;
   getArchive(archiveId: string): Promise<DailyReviewArchive | null>;
   deleteArchive(archiveId: string): Promise<boolean>;
-  pruneArchives(maxArchives: number): Promise<void>;
   close(): void;
 }
 
@@ -156,13 +156,17 @@ function createWriterFacade(
           };
         }),
       ),
-    putArchive: (archive) =>
+    publishArchive: (archive, maxArchives) =>
       run((root) =>
         withDatabase(root, 'write', (database) => {
           assertArchiveId(archive.id);
+          const limit = requireArchiveLimit(maxArchives);
           const normalized = normalizeDailyReviewArchive(archive);
           if (normalized.id !== archive.id) {
             throw new Error(`Daily Review archive id mismatch: ${archive.id}`);
+          }
+          if (normalized.id !== dailyReviewArchiveId(normalized.day, normalized.range)) {
+            throw new Error(`Daily Review archive day mismatch: ${archive.id}`);
           }
           database
             .prepare(
@@ -182,6 +186,19 @@ function createWriterFacade(
               normalized.day.fromMs,
               JSON.stringify(normalized),
             );
+          database
+            .prepare(
+              `
+              DELETE FROM workflow_daily_review_archives
+              WHERE archive_id IN (
+                SELECT archive_id
+                FROM workflow_daily_review_archives
+                ORDER BY archive_id DESC
+                LIMIT -1 OFFSET ?
+              )
+            `,
+            )
+            .run(limit);
           return normalized;
         }),
       ),
@@ -194,7 +211,7 @@ function createWriterFacade(
                 `
                 SELECT archive_id AS archiveId, record_json AS recordJson
                 FROM workflow_daily_review_archives
-                ORDER BY generated_at DESC, day_from_ms DESC, archive_id
+                ORDER BY archive_id DESC
               `,
               )
               .all() as Array<{ archiveId: string; recordJson: string }>
@@ -228,26 +245,6 @@ function createWriterFacade(
               .prepare('DELETE FROM workflow_daily_review_archives WHERE archive_id = ?')
               .run(archiveId).changes > 0
           );
-        }),
-      ),
-    pruneArchives: (maxArchives) =>
-      run((root) =>
-        withDatabase(root, 'write', (database) => {
-          const limit = Math.max(0, Math.trunc(maxArchives));
-          if (limit === 0) return;
-          database
-            .prepare(
-              `
-              DELETE FROM workflow_daily_review_archives
-              WHERE archive_id IN (
-                SELECT archive_id
-                FROM workflow_daily_review_archives
-                ORDER BY generated_at DESC, day_from_ms DESC, archive_id
-                LIMIT -1 OFFSET ?
-              )
-            `,
-            )
-            .run(limit);
         }),
       ),
     close: () => {
@@ -293,9 +290,16 @@ function decodeArchive(archiveId: string, recordJson: string): DailyReviewArchiv
 }
 
 function assertArchiveId(archiveId: string): void {
-  if (!ARCHIVE_ID_PATTERN.test(archiveId)) {
+  if (!parseDailyReviewArchiveId(archiveId)) {
     throw new Error(`Invalid Daily Review archive id: ${archiveId}`);
   }
+}
+
+function requireArchiveLimit(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid Daily Review archive limit: ${value}`);
+  }
+  return value;
 }
 
 function sameConfig(left: DailyReviewConfig, right: DailyReviewConfig): boolean {

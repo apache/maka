@@ -1,9 +1,12 @@
 import {
   DAILY_REVIEW_ARCHIVE_STATUSES,
+  DAILY_REVIEW_LIST_LIMIT,
   DAILY_REVIEW_RANGES,
+  DAILY_REVIEW_SECTION_KEYS,
   isDailyReviewExecuteTime,
   normalizeDailyReviewArchive,
   normalizeDailyReviewConfig,
+  parseDailyReviewArchiveId,
   type DailyReviewArchive,
   type DailyReviewArchiveSummary,
   type DailyReviewConfig,
@@ -31,6 +34,7 @@ const QUERY_ERRORS = [
   'host_draining',
   'operation_unavailable',
   'invalid_request',
+  'projection_incomplete',
   'persistence_failed',
   'internal_failure',
 ] as const;
@@ -45,7 +49,7 @@ export type DailyReviewQueryInput =
     }
   | {
       readonly kind: 'archives';
-      readonly offset: number;
+      readonly beforeArchiveId: string | null;
       readonly limit: number;
     }
   | { readonly kind: 'archive'; readonly archiveId: string };
@@ -60,9 +64,8 @@ export type DailyReviewQueryResult =
   | {
       readonly kind: 'archives';
       readonly archives: readonly DailyReviewArchiveSummary[];
-      readonly offset: number;
-      readonly total: number;
-      readonly nextOffset: number | null;
+      readonly beforeArchiveId: string | null;
+      readonly nextBeforeArchiveId: string | null;
     }
   | { readonly kind: 'archive'; readonly archive: DailyReviewArchive | null };
 
@@ -145,7 +148,7 @@ export function decodeDailyReviewQueryInput(value: unknown): DailyReviewQueryInp
     case 'archives': {
       const input = requireExactRecord(record, 'Daily Review archives query input', [
         'kind',
-        'offset',
+        'beforeArchiveId',
         'limit',
       ]);
       const limit = requireCount(input.limit, 'Daily Review page limit');
@@ -154,7 +157,8 @@ export function decodeDailyReviewQueryInput(value: unknown): DailyReviewQueryInp
       }
       return {
         kind: 'archives',
-        offset: requireCount(input.offset, 'Daily Review page offset'),
+        beforeArchiveId:
+          input.beforeArchiveId === null ? null : requireArchiveId(input.beforeArchiveId),
         limit,
       };
     }
@@ -199,28 +203,37 @@ export function decodeDailyReviewQueryResult(value: unknown): DailyReviewQueryRe
       const output = requireExactRecord(record, 'Daily Review archives query result', [
         'kind',
         'archives',
-        'offset',
-        'total',
-        'nextOffset',
+        'beforeArchiveId',
+        'nextBeforeArchiveId',
       ]);
       if (!Array.isArray(output.archives) || output.archives.length > DAILY_REVIEW_PAGE_MAX_ITEMS) {
         throw invalidProtocolFrame('Daily Review archive page exceeds item limit');
       }
-      const offset = requireCount(output.offset, 'Daily Review page offset');
-      const total = requireCount(output.total, 'Daily Review archive total');
-      const nextOffset =
-        output.nextOffset === null
-          ? null
-          : requireCount(output.nextOffset, 'Daily Review next offset');
-      if (nextOffset !== null && (nextOffset <= offset || nextOffset > total)) {
-        throw invalidProtocolFrame('Invalid Daily Review archive page bounds');
+      const beforeArchiveId =
+        output.beforeArchiveId === null ? null : requireArchiveId(output.beforeArchiveId);
+      const nextBeforeArchiveId =
+        output.nextBeforeArchiveId === null ? null : requireArchiveId(output.nextBeforeArchiveId);
+      const archives = output.archives.map(requireArchiveSummary);
+      if (
+        archives.some((archive, index) => {
+          if (beforeArchiveId !== null && archive.id >= beforeArchiveId) return true;
+          const previous = archives[index - 1];
+          return previous !== undefined && previous.id <= archive.id;
+        })
+      ) {
+        throw invalidProtocolFrame('Invalid Daily Review archive page order');
+      }
+      if (
+        nextBeforeArchiveId !== null &&
+        (archives.length === 0 || archives.at(-1)?.id !== nextBeforeArchiveId)
+      ) {
+        throw invalidProtocolFrame('Invalid Daily Review archive page cursor');
       }
       result = {
         kind: 'archives',
-        archives: output.archives.map(requireArchiveSummary),
-        offset,
-        total,
-        nextOffset,
+        archives,
+        beforeArchiveId,
+        nextBeforeArchiveId,
       };
       break;
     }
@@ -378,7 +391,7 @@ function requireModelKey(value: unknown): string {
 
 function requireArchiveId(value: unknown): string {
   const archiveId = requireEntityId(value, 'Daily Review archive id');
-  if (!/^\d{4}-\d{2}-\d{2}-(1d|7d|30d)$/.test(archiveId)) {
+  if (!parseDailyReviewArchiveId(archiveId)) {
     throw invalidProtocolFrame('Invalid Daily Review archive id');
   }
   return archiveId;
@@ -394,13 +407,13 @@ function requireArchive(value: unknown): DailyReviewArchive {
   const sections = requireRecord(record.sections, 'Daily Review archive sections');
   if (
     Object.keys(sections).some(
-      (key) => key !== 'summary' && key !== 'gaps' && key !== 'usage' && key !== 'code',
+      (key) => !DAILY_REVIEW_SECTION_KEYS.some((sectionKey) => sectionKey === key),
     )
   ) {
     throw invalidProtocolFrame('Unknown Daily Review archive section');
   }
   const normalizedSections: Record<string, string> = {};
-  for (const key of ['summary', 'gaps', 'usage', 'code'] as const) {
+  for (const key of DAILY_REVIEW_SECTION_KEYS) {
     if (sections[key] === undefined) continue;
     normalizedSections[key] = requireBoundedText(
       sections[key],
@@ -409,6 +422,28 @@ function requireArchive(value: unknown): DailyReviewArchive {
       true,
     );
   }
+  const metadata = requireArchiveMetadata(record);
+  try {
+    return normalizeDailyReviewArchive({
+      ...metadata,
+      sections: normalizedSections,
+    });
+  } catch {
+    throw invalidProtocolFrame('Invalid Daily Review archive');
+  }
+}
+
+function requireArchiveSummary(value: unknown): DailyReviewArchiveSummary {
+  const record = requireShapedRecord(
+    value,
+    'Daily Review archive summary',
+    ['id', 'day', 'range', 'status', 'generatedAt', 'trigger', 'modelKey', 'totals'],
+    ['errorMessage'],
+  );
+  return requireArchiveMetadata(record);
+}
+
+function requireArchiveMetadata(record: Record<string, unknown>): DailyReviewArchiveSummary {
   if (!DAILY_REVIEW_ARCHIVE_STATUSES.includes(record.status as DailyReviewArchive['status'])) {
     throw invalidProtocolFrame('Invalid Daily Review archive status');
   }
@@ -424,37 +459,22 @@ function requireArchive(value: unknown): DailyReviewArchive {
           DAILY_REVIEW_RESULT_MAX_BYTES,
           true,
         );
-  try {
-    return normalizeDailyReviewArchive({
-      id: requireArchiveId(record.id),
-      day: requireDay(record.day),
-      range: requireRange(record.range),
-      status: record.status,
-      generatedAt: requireCount(record.generatedAt, 'Daily Review generated time'),
-      trigger: record.trigger,
-      modelKey: requireModelKey(record.modelKey),
-      sections: normalizedSections,
-      totals: requireTotals(record.totals),
-      ...(errorMessage === undefined ? {} : { errorMessage }),
-    });
-  } catch {
-    throw invalidProtocolFrame('Invalid Daily Review archive');
+  const id = requireArchiveId(record.id);
+  const range = requireRange(record.range);
+  if (parseDailyReviewArchiveId(id)?.range !== range) {
+    throw invalidProtocolFrame('Daily Review archive id does not match its range');
   }
-}
-
-function requireArchiveSummary(value: unknown): DailyReviewArchiveSummary {
-  const record = requireShapedRecord(
-    value,
-    'Daily Review archive summary',
-    ['id', 'day', 'range', 'status', 'generatedAt', 'trigger', 'modelKey', 'totals'],
-    ['errorMessage'],
-  );
-  const archive = requireArchive({
-    ...record,
-    sections: { summary: 'projection' },
-  });
-  const { sections: _sections, ...summary } = archive;
-  return summary;
+  return {
+    id,
+    day: requireDay(record.day),
+    range,
+    status: record.status as DailyReviewArchive['status'],
+    generatedAt: requireCount(record.generatedAt, 'Daily Review generated time'),
+    trigger: record.trigger,
+    modelKey: requireModelKey(record.modelKey),
+    totals: requireTotals(record.totals),
+    ...(errorMessage === undefined ? {} : { errorMessage }),
+  };
 }
 
 function requireSummary(value: unknown): DailyReviewSummary {
@@ -467,13 +487,13 @@ function requireSummary(value: unknown): DailyReviewSummary {
   ]);
   const day = requireDay(record.day);
   const totals = requireTotals(record.totals);
-  if (!Array.isArray(record.sessions) || record.sessions.length > 8) {
+  if (!Array.isArray(record.sessions) || record.sessions.length > DAILY_REVIEW_LIST_LIMIT) {
     throw invalidProtocolFrame('Invalid Daily Review sessions');
   }
-  if (!Array.isArray(record.topTools) || record.topTools.length > 8) {
+  if (!Array.isArray(record.topTools) || record.topTools.length > DAILY_REVIEW_LIST_LIMIT) {
     throw invalidProtocolFrame('Invalid Daily Review top tools');
   }
-  if (!Array.isArray(record.topModels) || record.topModels.length > 8) {
+  if (!Array.isArray(record.topModels) || record.topModels.length > DAILY_REVIEW_LIST_LIMIT) {
     throw invalidProtocolFrame('Invalid Daily Review top models');
   }
   return {

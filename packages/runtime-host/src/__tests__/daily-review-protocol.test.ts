@@ -17,12 +17,12 @@ test('Daily Review protocol exposes closed query and command operations', () => 
     decodeRequestFrame({
       requestId: 'request-1',
       operation: 'daily-review.query',
-      input: { kind: 'archives', offset: 0, limit: 10 },
+      input: { kind: 'archives', beforeArchiveId: null, limit: 10 },
     }),
     {
       requestId: 'request-1',
       operation: 'daily-review.query',
-      input: { kind: 'archives', offset: 0, limit: 10 },
+      input: { kind: 'archives', beforeArchiveId: null, limit: 10 },
     },
   );
   assert.deepEqual(
@@ -58,7 +58,7 @@ test('Daily Review protocol rejects open and unbounded inputs', () => {
       operation: 'daily-review.query',
       input: {
         kind: 'archives',
-        offset: 0,
+        beforeArchiveId: null,
         limit: DAILY_REVIEW_PAGE_MAX_ITEMS + 1,
       },
     }),
@@ -67,9 +67,24 @@ test('Daily Review protocol rejects open and unbounded inputs', () => {
     decodeDailyReviewQueryResult({
       kind: 'archives',
       archives: Array.from({ length: DAILY_REVIEW_PAGE_MAX_ITEMS + 1 }, archiveSummary),
-      offset: 0,
-      total: DAILY_REVIEW_PAGE_MAX_ITEMS + 1,
-      nextOffset: null,
+      beforeArchiveId: null,
+      nextBeforeArchiveId: null,
+    }),
+  );
+  assert.throws(() =>
+    decodeDailyReviewQueryResult({
+      kind: 'archives',
+      archives: [archiveSummary()],
+      beforeArchiveId: null,
+      nextBeforeArchiveId: '2026-08-02-1d',
+    }),
+  );
+  assert.throws(() =>
+    decodeDailyReviewQueryResult({
+      kind: 'archives',
+      archives: [{ ...archiveSummary(), range: 7 }],
+      beforeArchiveId: null,
+      nextBeforeArchiveId: null,
     }),
   );
   assert.throws(() =>
