@@ -139,7 +139,7 @@ async function testConnectionStrict(
       const remainingMs = CONNECTION_TEST_TIMEOUT_MS - (Date.now() - t0);
       if (remainingMs <= 0) break;
       const remainingCandidates = candidates.length - index;
-      const attemptTimeoutMs = Math.max(1_000, Math.floor(remainingMs / remainingCandidates));
+      const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / remainingCandidates));
       try {
         const result = await testConnectionModel(
           connection,
