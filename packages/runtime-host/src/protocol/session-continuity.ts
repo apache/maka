@@ -20,6 +20,7 @@ import {
 import { defineOperation } from './operation-spec.js';
 import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
 import { decodeGoalProjection, type GoalProjection } from './goal.js';
+import { decodeRuntimeResourceRef } from './runtime-resource.js';
 
 export const SESSION_CONTINUITY_SCHEMA_VERSION = 3 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
@@ -150,6 +151,31 @@ export interface SessionEventFrame extends SubscriptionEnvelope {
   event: SessionToolEvent;
 }
 
+export const SESSION_DOMAINS = ['task', 'plan', 'deep_research', 'runtime_resource'] as const;
+export type SessionDomain = (typeof SESSION_DOMAINS)[number];
+export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
+
+export interface SessionRuntimeResourceChange {
+  sourceSessionId: string;
+  ref: string;
+}
+
+export type SessionDomainChange =
+  | {
+      sessionId: string;
+      domain: Exclude<SessionDomain, 'runtime_resource'>;
+    }
+  | {
+      sessionId: string;
+      domain: 'runtime_resource';
+      resources: readonly SessionRuntimeResourceChange[];
+    };
+
+export type SessionDomainChangedFrame = SubscriptionEnvelope &
+  SessionDomainChange & {
+    kind: 'subscription.session_domain_changed';
+  };
+
 export type AgentGraphChangedReason = 'observation' | 'runtime_activity' | 'reconciled' | 'stopped';
 
 export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
@@ -168,6 +194,7 @@ export type SubscriptionFrame =
   | SessionProjectionFrame
   | SessionDeltaFrame
   | SessionEventFrame
+  | SessionDomainChangedFrame
   | AgentGraphChangedFrame
   | SubscriptionClosedFrame;
 
@@ -270,6 +297,28 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       graphId: requireEntityId(record.graphId, 'graphId'),
       reason: requireAgentGraphChangedReason(record.reason),
     };
+  } else if (record.kind === 'subscription.session_domain_changed') {
+    const domain = requireSessionDomain(record.domain);
+    assertExactKeys(record, 'Session domain changed frame', [
+      'kind',
+      'hostEpoch',
+      'subscriptionId',
+      'sequence',
+      'sessionId',
+      'domain',
+      ...(domain === 'runtime_resource' ? ['resources'] : []),
+    ]);
+    const sessionId = requireEntityId(record.sessionId, 'sessionId');
+    frame =
+      domain === 'runtime_resource'
+        ? {
+            kind: record.kind,
+            ...envelope,
+            sessionId,
+            domain,
+            resources: decodeSessionRuntimeResourceChanges(record.resources),
+          }
+        : { kind: record.kind, ...envelope, sessionId, domain };
   } else if (record.kind === 'subscription.closed') {
     assertExactKeys(record, 'subscription closed frame', [
       'kind',
@@ -288,14 +337,49 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
   return frame;
 }
 
+function decodeSessionRuntimeResourceChanges(value: unknown): SessionRuntimeResourceChange[] {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > SESSION_RUNTIME_RESOURCE_CHANGES_MAX
+  ) {
+    throw invalidProtocolFrame('Invalid Session Runtime Resource changes');
+  }
+  const seen = new Set<string>();
+  return value.map((candidate) => {
+    const record = requireExactRecord(candidate, 'Session Runtime Resource change', [
+      'sourceSessionId',
+      'ref',
+    ]);
+    const change = {
+      sourceSessionId: requireEntityId(record.sourceSessionId, 'sourceSessionId'),
+      ref: decodeRuntimeResourceRef(record.ref),
+    };
+    const identity = JSON.stringify([change.sourceSessionId, change.ref]);
+    if (seen.has(identity)) {
+      throw invalidProtocolFrame('Duplicate Session Runtime Resource change');
+    }
+    seen.add(identity);
+    return change;
+  });
+}
+
 export function isSubscriptionFrameKind(value: unknown): value is SubscriptionFrame['kind'] {
   return (
     value === 'subscription.session_projection' ||
     value === 'subscription.session_delta' ||
     value === 'subscription.session_event' ||
+    value === 'subscription.session_domain_changed' ||
     value === 'subscription.agent_graph_changed' ||
     value === 'subscription.closed'
   );
+}
+
+function requireSessionDomain(value: unknown): SessionDomain {
+  if (typeof value !== 'string' || !(SESSION_DOMAINS as readonly string[]).includes(value)) {
+    throw invalidProtocolFrame('Invalid Session domain');
+  }
+  return value as SessionDomain;
 }
 
 export function decodeSessionContinuitySnapshot(value: unknown): SessionContinuitySnapshot {

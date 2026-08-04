@@ -1,5 +1,9 @@
 import {
   DEEP_RESEARCH_CHECKLIST_ITEMS_MAX,
+  DEEP_RESEARCH_CLIENT_IMPLEMENTATION_PROMPT_MAX_BYTES,
+  DEEP_RESEARCH_CLIENT_OBJECTIVE_MAX_BYTES,
+  DEEP_RESEARCH_CLIENT_RECENT_ITEMS_MAX,
+  DEEP_RESEARCH_CLIENT_TEXT_MAX_BYTES,
   DEEP_RESEARCH_INSPECTED_REF_KINDS,
   DEEP_RESEARCH_REPORT_SECTION_KEYS,
   DEEP_RESEARCH_REPORT_SECTION_STATUSES,
@@ -8,6 +12,7 @@ import {
   DEEP_RESEARCH_STAGES,
   DEEP_RESEARCH_CHECKLIST_STATUSES,
   type DeepResearchChecklistStatus,
+  type DeepResearchClientProgress,
   type DeepResearchInspectedRefKind,
   type DeepResearchReportSectionKey,
   type DeepResearchReportSectionStatus,
@@ -27,10 +32,10 @@ import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export const DEEP_RESEARCH_RESULT_MAX_BYTES = 48 * 1024;
-export const DEEP_RESEARCH_RECENT_REFS_MAX = 8;
-export const DEEP_RESEARCH_CLIENT_OBJECTIVE_MAX_BYTES = 4 * 1024;
-export const DEEP_RESEARCH_CLIENT_TEXT_MAX_BYTES = 1024;
-export const DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_BYTES = 16 * 1024;
+export const DEEP_RESEARCH_RECENT_REFS_MAX = DEEP_RESEARCH_CLIENT_RECENT_ITEMS_MAX;
+export { DEEP_RESEARCH_CLIENT_OBJECTIVE_MAX_BYTES, DEEP_RESEARCH_CLIENT_TEXT_MAX_BYTES };
+export const DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_BYTES =
+  DEEP_RESEARCH_CLIENT_IMPLEMENTATION_PROMPT_MAX_BYTES;
 const DEEP_RESEARCH_STABLE_ID_MAX_BYTES = 128;
 const DEEP_RESEARCH_STABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
@@ -89,9 +94,31 @@ export type DeepResearchQueryResult =
       readonly reportSections: readonly DeepResearchReportSectionProjection[];
       readonly recentInspectedRefs: readonly DeepResearchInspectedRefProjection[];
       readonly workerRunIds: readonly string[];
+      readonly blockers: readonly string[];
       readonly reportArtifactId: string | null;
       readonly implementationPrompt: string | null;
     };
+
+export function encodeDeepResearchSnapshot(
+  progress: DeepResearchClientProgress,
+  revision: number,
+): Extract<DeepResearchQueryResult, { kind: 'snapshot' }> {
+  return decodeDeepResearchQueryResult({
+    kind: 'snapshot',
+    revision,
+    ...progress,
+    checklist: progress.checklist.map((item) => ({
+      ...item,
+      blockedReason: item.blockedReason ?? null,
+    })),
+    recentInspectedRefs: progress.recentInspectedRefs.map((ref) => ({
+      ...ref,
+      label: ref.label ?? null,
+    })),
+    reportArtifactId: progress.reportArtifactId ?? null,
+    implementationPrompt: progress.implementationPrompt ?? null,
+  }) as Extract<DeepResearchQueryResult, { kind: 'snapshot' }>;
+}
 
 export const DEEP_RESEARCH_OPERATION_SPECS = {
   'deep-research.query': defineOperation<
@@ -137,6 +164,7 @@ export function decodeDeepResearchQueryResult(value: unknown): DeepResearchQuery
       'reportSections',
       'recentInspectedRefs',
       'workerRunIds',
+      'blockers',
       'reportArtifactId',
       'implementationPrompt',
     ],
@@ -172,6 +200,7 @@ export function decodeDeepResearchQueryResult(value: unknown): DeepResearchQuery
     'reportSections',
     'recentInspectedRefs',
     'workerRunIds',
+    'blockers',
     'reportArtifactId',
     'implementationPrompt',
   ]);
@@ -201,6 +230,7 @@ export function decodeDeepResearchQueryResult(value: unknown): DeepResearchQuery
     reportSections: decodeReportSections(record.reportSections),
     recentInspectedRefs: decodeInspectedRefs(record.recentInspectedRefs),
     workerRunIds: decodeIds(record.workerRunIds, 'Deep Research worker run ids'),
+    blockers: decodeTexts(record.blockers, 'Deep Research blockers'),
     reportArtifactId: nullableId(record.reportArtifactId, 'Deep Research report artifact id'),
     implementationPrompt: nullableText(
       record.implementationPrompt,
@@ -208,6 +238,13 @@ export function decodeDeepResearchQueryResult(value: unknown): DeepResearchQuery
       DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_BYTES,
     ),
   };
+}
+
+function decodeTexts(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || value.length > DEEP_RESEARCH_RECENT_REFS_MAX) {
+    throw invalidProtocolFrame(`Invalid ${name}`);
+  }
+  return value.map((item) => requireUtf8String(item, name, DEEP_RESEARCH_CLIENT_TEXT_MAX_BYTES));
 }
 
 function decodeChecklist(value: unknown): DeepResearchChecklistProjection[] {

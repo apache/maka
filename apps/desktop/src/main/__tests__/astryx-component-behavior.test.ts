@@ -178,7 +178,7 @@ describe('Astryx component behavior', () => {
     assert.match(renderFields({ ...channel, appId: 'existing-app' }), /aria-expanded="true"/);
   });
 
-  it('exposes the first usage cell in each body row as its row header', async () => {
+  it('composes Usage from the settings page kit and Astryx data surface', async () => {
     const { LocaleProvider, ToastProvider, UsageSettingsPage } = await rendererComponents;
     const settings = {
       usage: {
@@ -219,6 +219,9 @@ describe('Astryx component behavior', () => {
       ToastProvider,
     );
 
+    assert.match(markup, /class="[^"]*settingsPageStack[^"]*settingsUsagePage/);
+    assert.match(markup, /class="astryx-card[^"]*settingsUsageTable/);
+    assert.match(markup, /class="astryx-table-scroll-wrapper/);
     assert.equal(markup.match(/<td\b[^>]*role="rowheader"/g)?.length, 1);
   });
 });

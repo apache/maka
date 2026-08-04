@@ -249,7 +249,8 @@ export class ClientSessionSubscription
       this.#latestProjectionRevision = frame.snapshot.projectionRevision;
     } else if (
       (frame.kind === 'subscription.session_delta' ||
-        frame.kind === 'subscription.session_event') &&
+        frame.kind === 'subscription.session_event' ||
+        frame.kind === 'subscription.session_domain_changed') &&
       frame.sessionId !== this.#expectedSessionId
     ) {
       throw new RuntimeHostSubscriptionError(

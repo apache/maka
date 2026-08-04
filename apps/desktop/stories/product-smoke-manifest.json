@@ -33,7 +33,7 @@
       "colorSchemes": ["light", "dark"]
     },
     "usage": {
-      "storyId": "product-settings-pages--usage-requests-populated",
+      "storyId": "product-settings-pages--usage-long-tail",
       "productionHost": "SettingsSurface > UsageSettingsPage",
       "state": "Populated usage metrics, filters, tabs, and request table",
       "viewports": ["wide", "compact", "floor"],

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { buildRunManifestFingerprint } from '../ab-manifest.js';
 import { buildPromptAbRunManifest, ensurePromptAbRunManifest } from '../prompt-ab-manifest.js';
 import type { PromptAbRunManifestInput } from '../prompt-ab-types.js';
 import { sha256 } from './helpers/hash-fixture.js';
@@ -201,19 +201,8 @@ function buildLegacyPromptAbRunManifest(
   });
   return {
     ...manifestWithoutFingerprint,
-    fingerprint: `sha256:${createHash('sha256').update(canonicalJson(manifestWithoutFingerprint)).digest('hex')}`,
+    fingerprint: buildRunManifestFingerprint(manifestWithoutFingerprint),
   };
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b));
-    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${canonicalJson(entryValue)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function withoutUndefined<T extends Record<string, unknown>>(value: T): T {

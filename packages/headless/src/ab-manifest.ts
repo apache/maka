@@ -104,7 +104,19 @@ function hasFullBodyFingerprint(
   return schemaVersion === 'maka.ab.run_manifest.v1';
 }
 
-function canonicalJson(value: unknown): string {
+/**
+ * Deterministic JSON serializer shared across `@maka/headless`: drops `undefined`
+ * object fields and recursively sorts object keys, so that two logically equal
+ * objects always serialize to the same bytes. Arrays preserve order (order is
+ * semantically meaningful). Every resume-identity and integrity fingerprint in
+ * the package goes through here via `buildRunManifestFingerprint`, so that
+ * canonicalization never drifts across call sites.
+ *
+ * Note: `harness-oracle-policy.ts` keeps its own `JSON.stringify`-based
+ * `fingerprintValue` for the execution-policy fingerprint, deliberately not
+ * canonicalized (its inputs are a single frozen `as const` object).
+ */
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
   if (value && typeof value === 'object') {
     const entries = Object.entries(value)

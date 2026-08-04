@@ -50,7 +50,11 @@ describe('real Host Runtime Resource process lifecycle', {
     });
     coordinator = new HostRuntimeResourceCoordinator({
       manager,
-      sessions: { listShellRunUpdates: (sessionId) => manager.listSessionUpdates(sessionId) },
+      sessions: {
+        listShellRunUpdates: (sessionId) => manager.listSessionUpdates(sessionId),
+        getShellRunUpdate: (sessionId, ref) =>
+          manager.getSessionUpdate(sessionId, ref).then((update) => update ?? null),
+      },
       sessionHeaders: {
         readHeader: async () => ({ status: 'idle', isArchived: false }),
       },

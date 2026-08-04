@@ -202,6 +202,60 @@ const usageStats: UsageStats = {
   pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
 };
 
+const emptyUsageStats: UsageStats = {
+  summary: {
+    totalRequests: 0,
+    totalCostUsd: 0,
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheTokens: 0,
+    cacheMiss: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    reasoning: 0,
+  },
+  logs: [],
+  byProvider: [],
+  byModel: [],
+  byTool: [],
+  pricing: [],
+};
+
+const singleProviderUsageStats: UsageStats = {
+  ...emptyUsageStats,
+  summary: {
+    ...emptyUsageStats.summary,
+    totalRequests: 37,
+    totalCostUsd: 0.18,
+    totalTokens: 24_800,
+    inputTokens: 19_600,
+    outputTokens: 5_200,
+  },
+  byProvider: [{ provider: 'zai-coding-plan', requests: 37, tokens: 24_800, costUsd: 0.18 }],
+};
+
+const multiModelUsageStats: UsageStats = {
+  ...emptyUsageStats,
+  summary: {
+    ...emptyUsageStats.summary,
+    totalRequests: 592,
+    totalCostUsd: 8.42,
+    totalTokens: 1_284_000,
+    inputTokens: 914_000,
+    outputTokens: 370_000,
+    cacheTokens: 436_000,
+    cacheRead: 436_000,
+  },
+  byModel: [
+    { model: 'glm-4.7', requests: 280, tokens: 624_000, costUsd: 1.5 },
+    { model: 'gpt-5', requests: 148, tokens: 318_000, costUsd: 3.74 },
+    { model: 'claude-sonnet-4-5-20250929', requests: 96, tokens: 214_000, costUsd: 2.56 },
+    { model: 'gemini-2.5-pro', requests: 48, tokens: 96_000, costUsd: 0.52 },
+    { model: 'qwen3-coder-480b-a35b-instruct', requests: 20, tokens: 32_000, costUsd: 0.1 },
+  ],
+};
+
 function makeMemoryEntry(input: {
   id: string;
   title: string;
@@ -611,23 +665,39 @@ const withMemoryPopulatedBridge = withScopedMakaBridge({
   ...makeMemoryBridgeChannels(populatedMemoryState),
 } satisfies Record<string, unknown>);
 
-/** Requests tab visible with the hostile-width logs (see `usageLogs`). */
-const usagePopulatedSettings = mergeSettings(createDefaultSettings(), {
-  usage: { showDetails: true, activeTab: 'requests' },
-});
+function withUsageStoryBridge(
+  stats: UsageStats,
+  usage: Partial<AppSettings['usage']>,
+) {
+  const settings = mergeSettings(createDefaultSettings(), { usage });
+  return withScopedMakaBridge({
+    ...makaBridge,
+    settings: {
+      ...makaBridge.settings,
+      get: async () => settings,
+      update: async (
+        patch: Parameters<typeof window.maka.settings.update>[0],
+      ): Promise<UpdateAppSettingsResult> => ({
+        settings: mergeSettings(settings, patch),
+      }),
+      usageStats: async (): Promise<UsageStats> => stats,
+    },
+  } satisfies Record<string, unknown>);
+}
 
-const withUsagePopulatedBridge = withScopedMakaBridge({
-  ...makaBridge,
-  settings: {
-    ...makaBridge.settings,
-    get: async () => usagePopulatedSettings,
-    update: async (
-      patch: Parameters<typeof window.maka.settings.update>[0],
-    ): Promise<UpdateAppSettingsResult> => ({
-      settings: mergeSettings(usagePopulatedSettings, patch),
-    }),
-  },
-} satisfies Record<string, unknown>);
+const withUsageEmptyBridge = withUsageStoryBridge(emptyUsageStats, {
+  activeTab: 'providers',
+});
+const withUsageSingleProviderBridge = withUsageStoryBridge(singleProviderUsageStats, {
+  activeTab: 'providers',
+});
+const withUsageMultiModelBridge = withUsageStoryBridge(multiModelUsageStats, {
+  activeTab: 'models',
+});
+const withUsageLongTailBridge = withUsageStoryBridge(usageStats, {
+  showDetails: true,
+  activeTab: 'requests',
+});
 
 const subagentStorySettings = mergeSettings(createDefaultSettings(), {
   subagents: {
@@ -940,16 +1010,30 @@ export const Appearance: Story = {
   render: () => <SettingsStory section="appearance" />,
 };
 /** #1362: proxy + auth enabled so the full form-grid stack renders. */
-/**
- * #1364: the requests Astryx Table with hostile-width content (dated preview
- * model ids, namespaced MCP tool names). No story rendered a table at
- * all before this — `logs` was `[]` and the requests tab defaulted to its
- * summary-only Banner.
- */
-// Real path: 设置 → 使用统计 → 详情记录 on → 请求日志, with recorded traffic.
-export const UsageRequestsPopulated: Story = {
-  decorators: [withUsagePopulatedBridge],
+// Real path: 设置 → 使用统计 → 供应商统计, before any usage has been recorded.
+export const UsageEmpty: Story = {
+  decorators: [withUsageEmptyBridge],
   render: () => <SettingsStory section="usage" />,
+};
+// Real path: 设置 → 使用统计 → 供应商统计, with traffic from one provider.
+export const UsageSingleProvider: Story = {
+  decorators: [withUsageSingleProviderBridge],
+  render: () => <SettingsStory section="usage" />,
+};
+// Real path: 设置 → 使用统计 → 模型统计, with several model families to compare.
+export const UsageMultiModel: Story = {
+  decorators: [withUsageMultiModelBridge],
+  render: () => <SettingsStory section="usage" />,
+};
+// Real path: 设置 → 使用统计 → 详情记录 on → 请求日志, with long model and tool names.
+export const UsageLongTail: Story = {
+  decorators: [withUsageLongTailBridge],
+  render: () => <SettingsStory section="usage" />,
+};
+// Real path: the same long-content Usage page at the minimum supported window width.
+export const UsageNarrow: Story = {
+  ...UsageLongTail,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 /**
  * #1364: entry list (long title / content / tag set), archived group, and

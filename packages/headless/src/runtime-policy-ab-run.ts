@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   runFixedPromptController,
   type FixedPromptTask,
@@ -240,22 +239,18 @@ function sanitizeSharedAgentEnv(
 }
 
 function contextEnvFingerprint(env: Partial<Record<RuntimePolicyContextEnvKey, string>>): string {
-  return `sha256:${createHash('sha256')
-    .update(canonicalJson(sanitizeContextEnv(env)))
-    .digest('hex')}`;
+  return buildRunManifestFingerprint(sanitizeContextEnv(env));
 }
 
 function sharedAgentEnvFingerprint(
   env: Partial<Record<RuntimePolicySharedAgentEnvKey, string>>,
 ): string {
-  return `sha256:${createHash('sha256')
-    .update(canonicalJson(sanitizeSharedAgentEnv(env)))
-    .digest('hex')}`;
+  return buildRunManifestFingerprint(sanitizeSharedAgentEnv(env));
 }
 
 function runtimePolicySharedConfigFingerprint(config: Config): string {
   const { systemPrompt: _systemPrompt, ...effectiveConfig } = config;
-  return `sha256:${createHash('sha256').update(canonicalJson(effectiveConfig)).digest('hex')}`;
+  return buildRunManifestFingerprint(effectiveConfig);
 }
 
 function runtimePolicyExecutionFingerprint(profile: RuntimePolicyAbExecutionProfile): string {
@@ -274,18 +269,14 @@ function runtimePolicyResumeFingerprint(input: {
   armContextEnvFingerprint: string;
   callerResumeFingerprint?: string;
 }): string {
-  return `sha256:${createHash('sha256')
-    .update(
-      canonicalJson({
-        version: 'maka-runtime-policy-resume-v2',
-        sharedConfigFingerprint: input.sharedConfigFingerprint,
-        executionProfileFingerprint: input.executionProfileFingerprint,
-        sharedAgentEnvFingerprint: input.sharedAgentEnvFingerprint,
-        armContextEnvFingerprint: input.armContextEnvFingerprint,
-        callerResumeFingerprint: input.callerResumeFingerprint,
-      }),
-    )
-    .digest('hex')}`;
+  return buildRunManifestFingerprint({
+    version: 'maka-runtime-policy-resume-v2',
+    sharedConfigFingerprint: input.sharedConfigFingerprint,
+    executionProfileFingerprint: input.executionProfileFingerprint,
+    sharedAgentEnvFingerprint: input.sharedAgentEnvFingerprint,
+    armContextEnvFingerprint: input.armContextEnvFingerprint,
+    callerResumeFingerprint: input.callerResumeFingerprint,
+  });
 }
 
 export function runtimePolicyArmResumeFingerprint(
@@ -304,15 +295,4 @@ export function runtimePolicyArmResumeFingerprint(
     armContextEnvFingerprint: contextEnvFingerprint(sanitizeContextEnv(arm.contextEnv)),
     callerResumeFingerprint: input.resumeFingerprint,
   });
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b));
-    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${canonicalJson(entryValue)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
 }

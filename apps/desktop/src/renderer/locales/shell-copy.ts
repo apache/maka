@@ -367,6 +367,8 @@ type ShellCopy = {
     resumeStartedDescription: string;
     resumeFailedTitle: string;
     resumeFailedFallback: string;
+    goalClearFailedTitle: string;
+    goalClearFailedFallback: string;
     appearanceLoadErrorTitle: string;
     appearanceLoadErrorFallback: string;
     memoryRefreshErrorTitle: string;
@@ -1032,6 +1034,8 @@ const SHELL_COPY_BY_LOCALE = {
       resumeStartedDescription: '正在从最后一个完整执行边界继续',
       resumeFailedTitle: '恢复失败',
       resumeFailedFallback: '无法启动安全恢复，请检查会话状态后重试。',
+      goalClearFailedTitle: '停止目标失败',
+      goalClearFailedFallback: '目标仍可能继续运行，请立即重试。',
       appearanceLoadErrorTitle: '载入外观设置失败',
       appearanceLoadErrorFallback: '外观设置暂时无法载入，请稍后重试。',
       memoryRefreshErrorTitle: '刷新本地记忆状态失败',
@@ -1535,6 +1539,8 @@ const SHELL_COPY_BY_LOCALE = {
       resumeStartedDescription: 'Continuing from the last complete execution boundary',
       resumeFailedTitle: 'Recovery failed',
       resumeFailedFallback: 'Safe recovery could not start. Check the conversation state and try again.',
+      goalClearFailedTitle: 'Could not stop the goal',
+      goalClearFailedFallback: 'The goal may still be running. Try again now.',
       appearanceLoadErrorTitle: 'Could not load appearance settings',
       appearanceLoadErrorFallback: 'Appearance settings are temporarily unavailable. Try again later.',
       memoryRefreshErrorTitle: 'Could not refresh local memory status',

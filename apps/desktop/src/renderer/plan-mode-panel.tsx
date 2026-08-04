@@ -36,7 +36,7 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     if (!session) return;
     const refreshOrReport = () => void refresh().catch((cause) => setError(message(cause)));
     refreshOrReport();
-    return window.maka.sessions.subscribeEvents(session.id, (event: SessionEvent) => {
+    const unsubscribeEvents = window.maka.sessions.subscribeEvents(session.id, (event: SessionEvent) => {
       if (
         event.type === 'plan_submitted'
         || event.type === 'complete'
@@ -46,6 +46,14 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
         refreshOrReport();
       }
     });
+    const unsubscribePlanChanges = window.maka.sessions.subscribePlanChanges(
+      session.id,
+      refreshOrReport,
+    );
+    return () => {
+      unsubscribeEvents();
+      unsubscribePlanChanges();
+    };
   }, [session?.id, session?.collaborationMode, refresh]);
 
   const run = useCallback(async (action: () => Promise<void>): Promise<void> => {

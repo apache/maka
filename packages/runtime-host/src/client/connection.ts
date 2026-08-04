@@ -480,6 +480,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
             case 'subscription.session_projection':
             case 'subscription.session_delta':
             case 'subscription.session_event':
+            case 'subscription.session_domain_changed':
             case 'subscription.agent_graph_changed':
             case 'subscription.closed':
               this.#acceptSubscriptionFrame(frame);

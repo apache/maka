@@ -10,6 +10,7 @@ import {
   getSharedUiCopy,
   ModuleHubSelector,
   SkillsPage,
+  type ManagedSkillUpdatePreview,
   type SkillEntry,
   ToastProvider,
   useUiLocale,
@@ -49,31 +50,130 @@ const CONFIGURED_COMPLETED_LAST_RUN = {
 
 const INSTALLED_SKILLS: SkillEntry[] = [
   {
+    ref: 'workspace:maka:skill-git-flow',
     id: 'skill-git-flow',
     name: 'git-flow',
     description: '封装分支创建、合并与发布打 tag 的常用 git 操作。',
     path: '~/.maka/skills/git-flow',
     declaredTools: ['Bash', 'Write'],
+    sourceType: 'workspace',
+    scope: 'workspace',
+    contextStatus: 'advertised',
+    manageable: true,
     enabled: true,
     runtimeStatus: 'enabled',
   },
   {
+    ref: 'user:agents:skill-docs-screenshot',
     id: 'skill-docs-screenshot',
     name: 'docs-screenshot',
     description: '把组件截图同步进设计文档，按 token 分类命名。',
     path: '~/.maka/skills/docs-screenshot',
     declaredTools: ['Bash', 'Read'],
+    sourceType: 'workspace',
+    scope: 'user',
+    contextStatus: 'disabled',
+    manageable: true,
     enabled: false,
     runtimeStatus: 'disabled',
   },
   {
+    ref: 'project:maka:skill-release-notes',
     id: 'skill-release-notes',
     name: 'release-notes',
     description: '从最近的 commit 历史生成发布说明草稿。',
     path: '~/.maka/skills/release-notes',
     declaredTools: ['Bash'],
+    sourceType: 'bundled',
+    scope: 'project',
+    contextStatus: 'advertised',
+    manageable: false,
     enabled: true,
     runtimeStatus: 'enabled',
+  },
+];
+
+const UPDATE_AVAILABLE_SKILLS: SkillEntry[] = [
+  {
+    ref: 'workspace:maka:release-checklist',
+    id: 'release-checklist',
+    name: 'release-checklist',
+    description: '发布前检查版本、测试证据和变更说明。',
+    path: '~/.maka/skills/release-checklist',
+    declaredTools: ['Bash', 'Read'],
+    sourceType: 'managed',
+    managedUpdateStatus: 'update_available',
+    scope: 'workspace',
+    contextStatus: 'advertised',
+    manageable: true,
+    enabled: true,
+    runtimeStatus: 'enabled',
+  },
+];
+
+const UPDATE_AVAILABLE_PREVIEW: ManagedSkillUpdatePreview = {
+  skill: {
+    id: 'release-checklist',
+    name: 'release-checklist',
+    description: '发布前检查版本、测试证据和变更说明。',
+    path: '~/.maka/skills/release-checklist/SKILL.md',
+    declaredTools: ['Bash', 'Read'],
+    sourceType: 'managed',
+    userModified: false,
+    validationStatus: 'ok',
+    enabled: true,
+    runtimeStatus: 'enabled',
+    validationCodes: [],
+    validationMessages: [],
+    managedSourceId: 'release-checklist-source',
+    managedUpdateStatus: 'update_available',
+    hasManagedBaseline: true,
+  },
+  currentContent: '# Release checklist\n\nRun the release tests.',
+  sourceContent: '# Release checklist\n\nRun tests and attach the release evidence.',
+  baselineContent: '# Release checklist\n\nRun the release tests.',
+  expectedCurrentSha256: 'current-story-sha256',
+  expectedSourceSha256: 'source-story-sha256',
+  summary: {
+    currentLineCount: 3,
+    sourceLineCount: 3,
+    changedLineCount: 1,
+  },
+};
+
+const DISABLED_SKILLS: SkillEntry[] = [
+  {
+    ref: 'workspace:maka:spreadsheet-audit',
+    id: 'spreadsheet-audit',
+    name: 'spreadsheet-audit',
+    description: '检查工作簿中的公式、格式和异常值。',
+    path: '~/.maka/skills/spreadsheet-audit',
+    declaredTools: ['Read'],
+    sourceType: 'bundled',
+    scope: 'workspace',
+    contextStatus: 'disabled',
+    manageable: true,
+    enabled: false,
+    runtimeStatus: 'disabled',
+  },
+];
+
+const BUNDLED_SKILLS: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkillCatalog']> = [
+  {
+    id: 'document-review',
+    name: 'Document review',
+    description: 'Review and refine documents before sharing.',
+    category: '文档与写作',
+    declaredTools: ['Read', 'Write'],
+    installed: false,
+  },
+  {
+    id: 'image-workbench',
+    name: 'Image workbench',
+    description: 'Generate and edit visual assets.',
+    category: '设计与UI',
+    declaredTools: ['Read', 'Write'],
+    installed: true,
   },
 ];
 
@@ -348,7 +448,11 @@ function ModuleSurface(props: {
   );
 }
 
-function ExtensionsSkillsSurface(props: { skills?: SkillEntry[] }) {
+function ExtensionsSkillsSurface(props: {
+  skills?: SkillEntry[];
+  bundledSkillCatalog?: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkillCatalog']>;
+  onUpdateManagedSkill?: ComponentProps<typeof SkillsPage>['onUpdateManagedSkill'];
+}) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.extensions;
   return (
     <ModuleSurface agentsView="skills">
@@ -360,10 +464,21 @@ function ExtensionsSkillsSurface(props: { skills?: SkillEntry[] }) {
         }}
         skills={props.skills ?? []}
         managedSkillSources={[]}
-        bundledSkillCatalog={[]}
+        bundledSkillCatalog={props.bundledSkillCatalog ?? []}
         onRefreshSkills={noop}
+        onRefreshManagedSkillSources={noop}
+        onRefreshBundledSkillCatalog={noop}
         onOpenSkill={noop}
+        onUseSkill={noop}
         onOpenSkillsFolder={noop}
+        onInstallBundledSkill={noop}
+        onPreviewManagedSkillUpdate={async (skillId) => (
+          skillId === UPDATE_AVAILABLE_PREVIEW.skill.id ? UPDATE_AVAILABLE_PREVIEW : null
+        )}
+        onUpdateManagedSkill={props.onUpdateManagedSkill ?? (async () => true)}
+        onSetSkillEnabled={noop}
+        onSetSkillPinned={noop}
+        onDeleteSkill={noop}
       />
     </ModuleSurface>
   );
@@ -446,6 +561,20 @@ async function waitForStoryButton(
   throw new Error('Story action button did not render');
 }
 
+async function waitForStoryMenuItem(
+  canvasElement: HTMLElement,
+  predicate: (menuItem: HTMLElement) => boolean,
+): Promise<HTMLElement> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const menuItem = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ).find(predicate);
+    if (menuItem) return menuItem;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error('Story menu item did not render');
+}
+
 async function waitForStorySelector<T extends Element>(
   canvasElement: HTMLElement,
   selector: string,
@@ -466,9 +595,92 @@ async function waitForStoryText(canvasElement: HTMLElement, text: string): Promi
   throw new Error(`Story text did not render: ${text}`);
 }
 
-// Real path: sidebar → 扩展 → 技能, with several installed skills.
+// Real path: sidebar → 扩展 → 技能, before any Skill or bundled catalog entry exists.
+export const ExtensionsSkillsEmpty: Story = {
+  render: () => <ExtensionsSkillsSurface />,
+};
+
+// Real path: sidebar → 扩展 → 技能, with several installed Skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+};
+
+// Real path: sidebar → 扩展 → 技能, with bundled Skills available to install.
+export const ExtensionsSkillsBundled: Story = {
+  render: () => <ExtensionsSkillsSurface bundledSkillCatalog={BUNDLED_SKILLS} />,
+};
+
+// Real path: sidebar → 扩展 → 技能, after a managed source reports an update.
+export const ExtensionsSkillsUpdateAvailable: Story = {
+  render: function Render() {
+    const [updateInput, setUpdateInput] = useState<unknown>(null);
+    return (
+      <>
+        <ExtensionsSkillsSurface
+          skills={UPDATE_AVAILABLE_SKILLS}
+          onUpdateManagedSkill={async (skillId, options) => {
+            setUpdateInput({ skillId, options });
+            return true;
+          }}
+        />
+        <output data-testid="skills-update-input" hidden>
+          {updateInput ? JSON.stringify(updateInput) : ''}
+        </output>
+      </>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const moreActions = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.getAttribute('aria-label') === 'release-checklist 的更多操作',
+    );
+    moreActions.click();
+
+    const storyDocument = canvasElement.ownerDocument.documentElement;
+    const viewUpdate = await waitForStoryMenuItem(
+      storyDocument,
+      (candidate) => candidate.textContent?.includes('查看更新') === true,
+    );
+    viewUpdate.click();
+
+    const review = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[aria-label="Skill 更新审查"]',
+    );
+    await expect(review.textContent).toContain(UPDATE_AVAILABLE_PREVIEW.currentContent);
+    await expect(review.textContent).toContain(UPDATE_AVAILABLE_PREVIEW.sourceContent);
+
+    const applyUpdate = await waitForStoryButton(
+      review,
+      (candidate) => candidate.textContent?.trim() === '更新到来源版本',
+    );
+    applyUpdate.click();
+
+    const output = await waitForStorySelector<HTMLOutputElement>(
+      canvasElement,
+      '[data-testid="skills-update-input"]',
+    );
+    await waitForStoryText(output, UPDATE_AVAILABLE_PREVIEW.expectedSourceSha256);
+    const input = JSON.parse(output.textContent ?? '') as Record<string, unknown>;
+    await expect(input).toEqual({
+      skillId: UPDATE_AVAILABLE_PREVIEW.skill.id,
+      options: {
+        expectedCurrentSha256: UPDATE_AVAILABLE_PREVIEW.expectedCurrentSha256,
+        expectedSourceSha256: UPDATE_AVAILABLE_PREVIEW.expectedSourceSha256,
+      },
+    });
+  },
+};
+
+// Real path: sidebar → 扩展 → 技能, with an installed Skill disabled.
+export const ExtensionsSkillsDisabled: Story = {
+  render: () => <ExtensionsSkillsSurface skills={DISABLED_SKILLS} />,
+};
+
+// Real path: sidebar → 扩展 → 技能, at a narrow desktop window.
+export const ExtensionsSkillsNarrow: Story = {
+  render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
 // Real path: sidebar → 扩展 → MCP, with one healthy server and one actionable failure.

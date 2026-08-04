@@ -76,7 +76,7 @@ import type {
   Task,
   TaskLedgerChangedEvent,
   DeepResearchChangedEvent,
-  DeepResearchRun,
+  DeepResearchClientProgress,
   LocalMemoryEntryPreview,
 } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
@@ -205,7 +205,7 @@ export interface MakaBridge {
     subscribeChanges(handler: (event: TaskLedgerChangedEvent) => void): () => void;
   };
   deepResearch: {
-    get(sessionId: string): Promise<DeepResearchRun | undefined>;
+    get(sessionId: string): Promise<DeepResearchClientProgress | undefined>;
     subscribeChanges(handler: (event: DeepResearchChangedEvent) => void): () => void;
   };
   graphs: {
@@ -290,6 +290,7 @@ export interface MakaBridge {
     setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<SessionSummary>;
     setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<SessionSummary>;
     getPlanState(sessionId: string): Promise<PlanSessionState>;
+    subscribePlanChanges(sessionId: string, handler: () => void): () => void;
     requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanSessionState>;
     abandonPlanProposal(
       sessionId: string,

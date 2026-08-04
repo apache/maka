@@ -4,9 +4,8 @@
   min-width: 0;
 }
 
-/* Skills page
-   card mirrors the Plan shell: 1px hairline border + 6px radius + 4% lift +
-   1px inner top highlight, with tight 4-6px internal gaps. */
+/* Astryx owns control and row geometry. This stylesheet only arranges the
+   Skills product surfaces and the update-diff content Astryx does not model. */
 .maka-skill-library {
   width: min(100%, 900px);
   margin-inline: auto;
@@ -14,125 +13,11 @@
   overflow: auto;
   display: grid;
   align-content: start;
-  /* Premium checklist rule 10: 24px between page tiers (banner / tabs /
-     market / installed); small steps only inside a unit. */
-  gap: var(--space-6);
-  /* Unboxed (maintainer 2026-07-18): the outer card chrome wrapped the
-     whole module (banner + tabs + list) in a second frame the MCP page
-     never had — the inner surfaces (featured banner, skill rows, market
-     cards) already carry their own borders, so the wrapper reads as a
-     box-in-box. Plain layout container now; content aligns flush with
-     the module header like the MCP page. */
-  padding: 0;
+  gap: var(--space-3);
 }
 
 .maka-skill-tool-summary-hidden {
   display: none;
-}
-
-.maka-skill-featured-banner {
-  position: relative;
-  min-height: 128px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-6);
-  overflow: hidden;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  box-shadow: var(--shadow-minimal);
-  padding: var(--space-6) var(--space-8);
-}
-
-.maka-skill-featured-banner h3 {
-  font: var(--maka-text-heading-3);
-  margin: 0;
-  color: var(--foreground);
-}
-
-.maka-skill-featured-banner p {
-  font: var(--maka-text-body);
-  max-width: 540px;
-  margin: var(--space-2-5) 0 0;
-  color: var(--foreground-secondary);
-}
-
-.maka-skill-featured-art {
-  position: relative;
-  align-self: stretch;
-  width: min(38%, 310px);
-  min-width: 220px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: calc(var(--space-4) * -1) var(--space-0-5) calc(var(--space-5) * -1) 0;
-}
-
-.maka-skill-featured-art span {
-  position: absolute;
-  /* Cards sized + offset so the banner's overflow:hidden never crops
-     their copy: previous 94-122px heights with 28px+ top offsets cut
-     「总结沉淀」mid-glyph at the banner edge. Corners may still bleed
-     off (intentional sticker collage), text must not. */
-  width: 84px;
-  height: 96px;
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  /* Fixed inks: these floating cards stay white in both themes (they
-     sit on the theme-independent banner), so their border/copy must
-     not follow --foreground or they wash out in dark mode. */
-  border: var(--border-width-hairline) solid oklch(from var(--brand-deep) 0.2 min(c, 0.01) h / 0.09);
-  border-radius: var(--radius-control);
-  background: linear-gradient(180deg, oklch(100% 0 0), oklch(98.2% 0.006 96));
-  color: oklch(from var(--brand-deep) 0.44 min(c, 0.015) h);
-  box-shadow:
-    0 12px 24px -20px oklch(from var(--brand-deep) 0.2 min(c, 0.02) h / 0.4),
-    0 1px 2px oklch(from var(--brand-deep) 0.2 min(c, 0.02) h / 0.08);
-}
-
-.maka-skill-featured-art strong {
-  font: var(--maka-text-heading-5);
-color: oklch(from var(--brand-deep) 0.34 min(c, 0.02) h);
-}
-
-.maka-skill-featured-art small {
-  font: var(--maka-text-heading-5);
-color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
-}
-
-.maka-skill-featured-art span:first-child {
-  left: 14px;
-  top: 12px;
-  transform: rotate(-14deg);
-  color: oklch(from var(--brand-deep) 0.64 min(c, 0.15) h);
-}
-
-.maka-skill-featured-art span:nth-child(2) {
-  left: 92px;
-  top: 4px;
-  /* PR-FE-BUG-HUNT-9 z-index allowlist: decorative sticker stack
-     local stacking (3 spans within `.maka-skill-featured-art`).
-     Bare 2 is intentional — these never escape the parent container,
-     so they don't need a global token. The contract test
-     `z-index-contract.test.ts` whitelists this exact site. */
-  z-index: 2;
-  width: 92px;
-  height: 106px;
-  transform: rotate(10deg);
-  color: oklch(54% 0.10 236);
-}
-
-.maka-skill-featured-art span:nth-child(3) {
-  right: 4px;
-  top: 18px;
-  width: 78px;
-  height: 92px;
-  transform: rotate(7deg);
-  color: oklch(58% 0.18 32);
 }
 
 .maka-skill-tabs-bar {
@@ -142,56 +27,98 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   gap: var(--space-4);
 }
 
-/* Category and sort selectors ride the market tab row's right edge. Astryx
-   owns their chrome; this product class only constrains toolbar geometry. */
-.maka-skill-market-controls {
+.maka-skill-market-controls,
+.maka-skill-filter-actions,
+.maka-skill-library-controls,
+.maka-skill-library-exceptions {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+.maka-skill-market-controls,
+.maka-skill-library-controls {
   flex: 0 0 auto;
+}
+
+.maka-skill-filter-actions,
+.maka-skill-library-exceptions {
+  flex-wrap: wrap;
 }
 
 .maka-skill-market-select {
   min-width: 0;
-  width: auto;
 }
 
-.maka-skill-filter-actions {
+.maka-skill-market,
+.maka-skill-installed {
   min-width: 0;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-.maka-skill-market {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .maka-skill-section-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2-5);
+  min-width: 0;
 }
 
-.maka-skill-context-inspector {
-  font: var(--maka-text-supporting);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background-elevated);
+.maka-skill-section-label {
+  font: var(--maka-text-heading-5);
   color: var(--foreground-secondary);
-  padding: var(--space-2) var(--space-3);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
 }
 
-.maka-skill-context-inspector strong {
-  font: var(--maka-text-label);
-  color: var(--foreground);
+.maka-skill-catalog-list,
+.maka-skill-library-list {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.maka-skill-catalog-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: var(--space-2);
+}
+
+.maka-skill-catalog-item,
+.maka-skill-library-item {
+  min-width: 0;
+}
+
+.maka-skill-catalog-details,
+.maka-skill-library-details {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-0-5);
+}
+
+.maka-skill-catalog-details > span,
+.maka-skill-library-details > span,
+.maka-skill-library-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.maka-skill-catalog-details > span,
+.maka-skill-library-details > span {
+  white-space: nowrap;
+}
+
+.maka-skill-library-list {
+  overflow: hidden;
+  display: grid;
+  align-content: start;
+  border: var(--border-width-hairline) solid var(--foreground-8);
+  border-radius: var(--radius-control);
+  background: var(--background);
+}
+
+.maka-skill-library-item + .maka-skill-library-item {
+  border-top: var(--border-width-hairline) solid var(--foreground-8);
 }
 
 .maka-skill-library-item[data-context-status='shadowed'],
@@ -199,283 +126,24 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   opacity: var(--opacity-pending);
 }
 
-.maka-skill-section-row small {
-  font: var(--maka-text-supporting);
-  font-variant-numeric: tabular-nums;
-  color: var(--muted-foreground);
-}
-
-.maka-skill-market-grid {
-  display: grid;
-  /* Marketplace grid: 3 columns on wide, collapsing to 2/1 via auto-fit as
-     the panel narrows (panel max-width 900px → ~2 cols; narrow → 1). */
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
-  gap: var(--space-3);
-}
-
-.maka-skill-market-card {
-  min-width: 0;
-  min-height: 150px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  border: var(--border-width-hairline) solid var(--foreground-8);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  padding: var(--space-4);
-  transition: border-color var(--duration-base) var(--ease-out-strong);
-}
-
-/* Premium checklist rule 17: flat is the default — no hover lift, no
-   hand-written shadow. The border deepening is the whole hover story. */
-.maka-skill-market-card:hover {
-  border-color: oklch(from var(--foreground) l c h / 0.14);
-}
-
-.maka-skill-market-card-head {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2-5);
-}
-
-.maka-skill-market-card-title {
-  min-width: 0;
-  flex: 1 1 auto;
-  display: grid;
-  gap: var(--space-0-5);
-}
-
-.maka-skill-market-card h3 {
-  font: var(--maka-text-heading-3);
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--foreground);
-}
-
-/* Slug caption: soft monospace, matching the library row's id treatment. */
-.maka-skill-market-card-title code {
-  font: var(--maka-text-supporting);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  letter-spacing: var(--tracking-normal);
-}
-
-.maka-skill-market-card small,
-.maka-skill-market-card code,
-.maka-skill-market-card-foot span {
-  font: var(--maka-text-supporting);
-  color: var(--muted-foreground);
-}
-
-.maka-skill-market-category {
-  justify-self: start;
-}
-
-.maka-skill-market-card p {
-  font: var(--maka-text-body);
-  min-height: 40px;
-  margin: 0;
-  color: var(--foreground-secondary);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.maka-skill-market-icon {
-  width: 38px;
-  height: 38px;
+.maka-skill-library-label {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background);
-  color: var(--foreground-secondary);
+  align-items: baseline;
+  max-width: 100%;
+  white-space: nowrap;
 }
 
-.maka-skill-market-card-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-top: auto;
-}
-
-.maka-skill-installed {
-  display: grid;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.maka-skill-section-label {
-  font: var(--maka-text-label);
-  color: var(--foreground-secondary);
-  letter-spacing: var(--tracking-widest);
-  text-transform: uppercase;
-}
-
-.maka-skill-library-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  min-height: 0;
-  overflow: hidden;
-  display: grid;
-  align-content: start;
-  gap: 0;
-  border: var(--border-width-hairline) solid var(--foreground-8);
-  border-radius: var(--radius-control);
-  background: var(--background);
-}
-
-.maka-skill-library-item {
-  --maka-skill-library-action-size: var(--h-control-sm);
-  min-width: 0;
-  display: grid;
-  /* Info column takes the slack; every trailing action (use / open / switch /
-     review / delete) flows into its own max-content implicit column, so the
-     row never wraps regardless of how many actions a skill surfaces. */
-  grid-template-columns: minmax(0, 1fr);
-  grid-auto-flow: column;
-  grid-auto-columns: max-content;
-  align-items: center;
-  gap: var(--space-2);
-  padding-right: var(--space-3);
-  transition: background-color var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-skill-library-item + .maka-skill-library-item {
-  border-top: var(--border-width-hairline) solid var(--foreground-8);
-}
-
-.maka-skill-library-row {
-  --maka-skill-library-icon-size: calc(var(--space-8) + var(--space-0-5));
-  --maka-skill-library-copy-min-inline: calc((var(--space-16) * 3) - var(--space-3));
-  --maka-skill-library-status-min-inline: calc(var(--space-16) + var(--space-2));
-  width: 100%;
-  min-height: calc(var(--maka-skill-library-icon-size) + (var(--space-3) * 2));
-  display: grid;
-  grid-template-columns:
-    var(--maka-skill-library-icon-size)
-    minmax(var(--maka-skill-library-copy-min-inline), 1fr)
-    minmax(var(--maka-skill-library-status-min-inline), max-content);
-  align-items: center;
-  justify-content: stretch;
-  gap: var(--space-2-5);
-  padding: var(--space-2-5) var(--space-3);
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--foreground);
-  white-space: normal;
-  text-align: left;
-  transition: background-color var(--duration-base) var(--ease-out-strong);
-}
-
-/* PR-UI-PIXEL-0 (2026-06-21): reference rule #2 — hover/selected states are
-   NEUTRAL gray (#efefef ≈ foreground/0.06), never tinted with the brand color.
-   The purple-tinted row hover read as "themed"; neutral reads calmer/native.
-   This is a deliberate local alignment exception. */
-.maka-skill-library-item:hover,
-.maka-skill-library-item:focus-within {
-  background: var(--state-hover-bg);
-}
-
-/* PR-UI-PIXEL-1: skill rows are anchored by a reference-style icon tile —
-   a 38px rounded white square with a hairline + ultra-soft shadow holding the
-   glyph (study §3.2), instead of the previous flat 20px chip. */
-.maka-skill-library-status {
-  width: var(--maka-skill-library-icon-size);
-  height: var(--maka-skill-library-icon-size);
-  display: inline-grid;
-  place-items: center;
-  border-radius: var(--radius-surface);
-  border: var(--border-width-hairline) solid var(--foreground-8);
-  background: var(--background);
+.maka-skill-library-slug {
+  margin-inline-start: var(--space-1-5);
   color: var(--muted-foreground);
-  transition: background-color var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong);
-}
-
-/* PR-UI-PIXEL-1: tile stays white on hover (reference keeps icon tiles
-   neutral); only the glyph deepens. */
-.maka-skill-library-item:hover .maka-skill-library-status,
-.maka-skill-library-item:focus-within .maka-skill-library-status {
-  background: var(--background);
-  color: var(--foreground);
-}
-
-.maka-skill-library-copy {
-  min-width: 0;
-  display: grid;
-  gap: var(--space-0-5);
-}
-
-/* PR-UI-PIXEL-4 (2026-06-21): reference's built-in skill rows use a 14px/600
-   name + 12px description (study §3.2). maka's 12/11 read cramped — bump to the
-   reference scale so the skills list feels as comfortable as 参考实现's. */
-.maka-skill-library-name {
-  font: var(--maka-text-heading-4);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-skill-library-description {
-  font: var(--maka-text-supporting);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--foreground-secondary);
-}
-
-.maka-skill-library-meta {
-  font: var(--maka-text-supporting);
-  display: inline-flex;
-  justify-self: end;
-  align-items: center;
-  gap: var(--space-1-5);
-  color: var(--muted-foreground);
-  white-space: nowrap;
-  min-width: 0;
-  overflow: hidden;
 }
 
 .maka-skill-library-supporting {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
   color: var(--muted-foreground);
 }
 
-.maka-skill-library-open-button {
-  justify-self: end;
-}
-
-.maka-skill-library-runtime-switch {
-  justify-self: end;
-}
-
-/* Per-row delete: neutral until armed. The two-step confirm state
-   (data-confirming) deepens to the destructive tone so 确认删除 reads as the
-   hot action, matching exception-only status color governance. */
-.maka-skill-library-delete-button {
-  justify-self: end;
-}
-
-.maka-skill-library-delete-button[data-confirming='true'] {
-  border-color: oklch(from var(--destructive) l c h / 0.4);
-  color: var(--destructive);
+.maka-skill-library-exceptions:empty {
+  display: none;
 }
 
 .maka-skill-installed-empty {
@@ -500,12 +168,8 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   gap: var(--space-1);
 }
 
-/* #1879: `--h-control-sm` (24px), not `xs`. The floor is arithmetic under
-   `border-box`: a 20px line box plus 2 x var(--space-0-5) needs 24px, and at
-   `xs` the declared padding would have been squeezed out of the box entirely.
-   This one stays product CSS rather than becoming an Astryx `Badge` because it
-   truncates — `max-width` + ellipsis on a long skill name is behaviour Badge
-   does not have. */
+/* Update-preview facts truncate as a unit; Astryx Badge does not provide a
+   max-width/ellipsis contract for user-authored Skill names. */
 .maka-skill-governance-summary span {
   font: var(--maka-text-heading-5);
   height: var(--h-control-sm);
@@ -577,35 +241,18 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
     width: min(100%, 280px);
   }
 
-  .maka-skill-library {
-    grid-template-columns: minmax(0, 1fr);
+  .maka-skill-tabs-bar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: var(--space-2);
   }
 
-  .maka-skill-library-item {
-    grid-template-columns: minmax(0, 1fr) max-content max-content;
-  }
-
-  .maka-skill-library-row {
-    --maka-skill-library-icon-size: calc(var(--space-8) + var(--space-1-5));
-    grid-template-columns: var(--maka-skill-library-icon-size) minmax(0, 1fr);
-    gap: var(--space-1-5);
-  }
-
-  .maka-skill-library-meta {
-    grid-column: 2;
+  .maka-skill-market-controls {
     flex-wrap: wrap;
-    white-space: normal;
   }
 
+  .maka-skill-catalog-list,
   .maka-skill-diff-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-}
-
-/* Collision-only slug: revealed inline beside the name ONLY when two visible
-   skills share a display name (normal rows keep the slug in the tooltip). */
-.maka-skill-library-slug {
-  font: var(--maka-text-supporting);
-  margin-left: var(--space-1-5);
-  color: var(--muted-foreground);
 }

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  type RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import type {
   OperationInput,
   OperationKey,
@@ -414,6 +417,140 @@ test('fails explicitly when the Host cannot represent a legacy Session', async (
   );
 });
 
+test('restarts Session sidecar reads when a paginated revision changes', async () => {
+  const taskRevisionOne = catalogRevision('3');
+  const taskRevisionTwo = catalogRevision('4');
+  const resourceRevisionOne = catalogRevision('5');
+  const resourceRevisionTwo = catalogRevision('6');
+  const { client, requests } = clientWithResponses([
+    {
+      kind: 'page',
+      sessionId: 'session-1',
+      revision: taskRevisionOne,
+      tasks: [{ id: 'stale' }],
+      nextCursor: 'task-stale',
+    },
+    { kind: 'revision_changed', expected: taskRevisionOne, actual: taskRevisionTwo },
+    {
+      kind: 'page',
+      sessionId: 'session-1',
+      revision: taskRevisionTwo,
+      tasks: [{ id: 'fresh' }],
+      nextCursor: null,
+    },
+    {
+      kind: 'page',
+      sessionId: 'session-1',
+      storeVersion: 7,
+      latestProposalId: 'proposal-stale',
+      activeExecutionId: null,
+      items: [{ kind: 'proposal', proposal: { proposalId: 'proposal-stale' } }],
+      nextCursor: 'plan-stale',
+    },
+    { kind: 'revision_changed', expected: 7, actual: 8 },
+    {
+      kind: 'page',
+      sessionId: 'session-1',
+      storeVersion: 8,
+      latestProposalId: 'proposal-1',
+      activeExecutionId: null,
+      items: [{ kind: 'proposal', proposal: { proposalId: 'proposal-1' } }],
+      nextCursor: null,
+    },
+    {
+      kind: 'page',
+      sessionId: 'session-1',
+      revision: resourceRevisionOne,
+      resources: [{ result: { ref: 'shell:stale' } }],
+      nextCursor: 'resource-stale',
+    },
+    { kind: 'revision_changed', expected: resourceRevisionOne, actual: resourceRevisionTwo },
+    {
+      kind: 'page',
+      sessionId: 'session-1',
+      revision: resourceRevisionTwo,
+      resources: [{ result: { ref: 'shell:1' } }],
+      nextCursor: null,
+    },
+  ]);
+
+  assert.deepEqual(
+    (await client.listTasks('session-1')).map((task) => task.id),
+    ['fresh'],
+  );
+  const plan = await client.getPlanState('session-1');
+  assert.equal(plan.storeVersion, 8);
+  assert.equal(plan.latestProposalId, 'proposal-1');
+  assert.equal(plan.proposals[0]?.proposalId, 'proposal-1');
+  assert.equal((await client.listRuntimeResources('session-1'))[0]?.result.ref, 'shell:1');
+  assert.deepEqual(
+    requests.slice(0, 3).map(({ input }) => input),
+    [
+      { kind: 'list_start', sessionId: 'session-1' },
+      {
+        kind: 'list_continue',
+        sessionId: 'session-1',
+        revision: taskRevisionOne,
+        cursor: 'task-stale',
+      },
+      { kind: 'list_start', sessionId: 'session-1' },
+    ],
+  );
+});
+
+test('retries Goal clear only while the same Goal generation remains active', async () => {
+  const first = goalProjection(1);
+  const second = goalProjection(2);
+  const conflict = new RuntimeHostOperationError(
+    'goal.control',
+    'operation_conflict',
+    'Goal revision changed',
+  );
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'session-1', goal: first },
+    conflict,
+    { sessionId: 'session-1', goal: second },
+    { sessionId: 'session-1', goal: { ...second, status: 'cleared' } },
+  ]);
+
+  await client.clearGoal('session-1');
+
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'goal.control').map(({ input }) => input),
+    [
+      { sessionId: 'session-1', goalId: 'goal-1', expectedRevision: 1, action: 'clear' },
+      { sessionId: 'session-1', goalId: 'goal-1', expectedRevision: 2, action: 'clear' },
+    ],
+  );
+});
+
+test('rejects an invalid sidecar continuation without misclassifying it as revision churn', async () => {
+  const revision = catalogRevision('7');
+  const { client, requests } = clientWithResponses([
+    {
+      kind: 'page',
+      sessionId: 'session-1',
+      revision,
+      tasks: [],
+      nextCursor: 'next',
+    },
+    {
+      kind: 'page',
+      sessionId: 'session-other',
+      revision,
+      tasks: [],
+      nextCursor: null,
+    },
+  ]);
+
+  await assert.rejects(
+    () => client.listTasks('session-1'),
+    (error: unknown) =>
+      error instanceof DesktopRuntimeHostClientError && error.code === 'projection_unstable',
+  );
+  assert.equal(requests.length, 2);
+});
+
 interface RecordedRequest {
   operation: OperationKey;
   input: unknown;
@@ -429,11 +566,33 @@ function clientWithResponses(responses: unknown[]): {
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
       requests.push({ operation, input });
       if (responses.length === 0) throw new Error(`Unexpected operation: ${operation}`);
-      return responses.shift();
+      const response = responses.shift();
+      if (response instanceof Error) throw response;
+      return response;
     },
     close: async () => undefined,
   } as unknown as RuntimeHostConnection;
   return { client: new DesktopRuntimeHostClient(connection), requests };
+}
+
+function goalProjection(revision: number) {
+  return {
+    goalId: 'goal-1',
+    revision,
+    sessionId: 'session-1',
+    condition: 'Finish the adapter',
+    status: 'active' as const,
+    setAt: 1,
+    iterations: 0,
+    maxIterations: 20,
+    consecutiveNoProgress: 0,
+    blockCap: 8,
+    tokenBudget: null,
+    tokensSpent: 0,
+    lastReason: null,
+    achievedAt: null,
+    pausedAt: null,
+  };
 }
 
 function catalogRevision(seed: string): `sha256:${string}` {
