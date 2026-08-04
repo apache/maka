@@ -21,6 +21,7 @@ const PROVIDERS = {
   'gemini-cli': 'google',
   groq: 'groq',
   huggingface: 'huggingface',
+  'kimi-coding-plan': 'kimi-for-coding',
   MiniMax: 'minimax',
   'MiniMax-cn': 'minimax-cn',
   mistral: 'mistral',

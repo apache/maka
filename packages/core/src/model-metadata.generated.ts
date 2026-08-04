@@ -20,6 +20,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
   | 'gemini-cli'
   | 'groq'
   | 'huggingface'
+  | 'kimi-coding-plan'
   | 'MiniMax'
   | 'MiniMax-cn'
   | 'mistral'
@@ -4150,6 +4151,46 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       maxOutputTokens: 131072,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
       modalities: { input: ['text'], output: ['text'] },
+    },
+  },
+  'kimi-coding-plan': {
+    k3: {
+      displayName: 'Kimi K3',
+      lifecycle: 'active',
+      docsUrl: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
+      contextWindow: 1048576,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'k3-256k': {
+      displayName: 'Kimi K3-256K',
+      lifecycle: 'active',
+      docsUrl: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
+      contextWindow: 262144,
+      maxOutputTokens: 131072,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'high', 'max'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'kimi-for-coding': {
+      displayName: 'Kimi K2.7 Code',
+      lifecycle: 'active',
+      docsUrl: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
+      contextWindow: 262144,
+      maxOutputTokens: 32768,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'kimi-for-coding-highspeed': {
+      displayName: 'Kimi For Coding HighSpeed',
+      lifecycle: 'active',
+      docsUrl: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
+      contextWindow: 262144,
+      maxOutputTokens: 32768,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
   },
   MiniMax: {
@@ -8383,7 +8424,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 131072,
-      maxOutputTokens: 128000,
+      maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
       modalities: { input: ['text'], output: ['text'] },
     },
@@ -9784,7 +9825,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 262144,
+      maxOutputTokens: 32768,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
       modalities: { input: ['text'], output: ['text'] },
     },
@@ -9838,7 +9879,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 262144,
-      maxOutputTokens: 262144,
+      maxOutputTokens: 16384,
       capabilities: { vision: false, reasoning: false, functionCalling: true },
       modalities: { input: ['text'], output: ['text'] },
     },
@@ -10453,7 +10494,7 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       lifecycle: 'active',
       docsUrl: 'https://openrouter.ai/models',
       contextWindow: 1048576,
-      maxOutputTokens: 131072,
+      maxOutputTokens: 262144,
       capabilities: { vision: false, reasoning: true, functionCalling: true },
       thinkingOptions: { efforts: ['high', 'xhigh'] },
       modalities: { input: ['text'], output: ['text'] },
@@ -14065,6 +14106,26 @@ export const GENERATED_MODELS_DEV_METADATA: Record<
       capabilities: { vision: false, reasoning: false, functionCalling: false },
       modalities: { input: ['audio'], output: ['text'] },
     },
+    'perplexity/pplx-embed-v1-0.6b': {
+      displayName: 'Embed v1 0.6b',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 32000,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'perplexity/pplx-embed-v1-4b': {
+      displayName: 'Embed v1 4b',
+      lifecycle: 'active',
+      docsUrl:
+        'https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway',
+      contextWindow: 32000,
+      maxOutputTokens: 0,
+      capabilities: { vision: false, reasoning: false, functionCalling: false },
+      modalities: { input: ['text'], output: ['text'] },
+    },
     'perplexity/sonar': {
       displayName: 'Sonar',
       lifecycle: 'active',
@@ -16503,6 +16564,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
   | 'gemini-cli'
   | 'groq'
   | 'huggingface'
+  | 'kimi-coding-plan'
   | 'MiniMax'
   | 'MiniMax-cn'
   | 'mistral'
@@ -16554,6 +16616,7 @@ export const GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES: Record<
   'gemini-cli': {},
   groq: {},
   huggingface: {},
+  'kimi-coding-plan': {},
   MiniMax: {},
   'MiniMax-cn': {},
   mistral: {},
@@ -16748,6 +16811,7 @@ export const GENERATED_MODELS_DEV_PROVIDER_FACTS: Record<
   | 'gemini-cli'
   | 'groq'
   | 'huggingface'
+  | 'kimi-coding-plan'
   | 'MiniMax'
   | 'MiniMax-cn'
   | 'mistral'
@@ -16855,6 +16919,12 @@ export const GENERATED_MODELS_DEV_PROVIDER_FACTS: Record<
     name: 'Hugging Face',
     api: 'https://router.huggingface.co/v1',
     doc: 'https://huggingface.co/docs/inference-providers',
+  },
+  'kimi-coding-plan': {
+    id: 'kimi-for-coding',
+    name: 'Kimi For Coding',
+    api: 'https://api.kimi.com/coding/v1',
+    doc: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
   },
   MiniMax: {
     id: 'minimax',

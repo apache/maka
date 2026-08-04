@@ -86,14 +86,28 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-  test('Kimi K3 always sends its required adaptive thinking at max effort', () => {
-    assert.deepEqual([...thinkingVariantsForModel('kimi-coding-plan', 'k3')], ['max']);
+  test('Kimi K3 passes the chosen effort through adaptive thinking, defaulting to max', () => {
+    assert.deepEqual([...thinkingVariantsForModel('kimi-coding-plan', 'k3')], [
+      'low',
+      'high',
+      'max',
+    ]);
     const expected = { anthropic: { thinking: { type: 'adaptive' }, effort: 'max' } };
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3'), expected);
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'max'), expected);
+    assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'low'), {
+      anthropic: { thinking: { type: 'adaptive' }, effort: 'low' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'high'), {
+      anthropic: { thinking: { type: 'adaptive' }, effort: 'high' },
+    });
+    // k3-256k shares the K3 family wire.
+    assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3-256k', 'high'), {
+      anthropic: { thinking: { type: 'adaptive' }, effort: 'high' },
+    });
   });
 
-  test('Kimi K3 sends max reasoning effort through the selected OpenAI-compatible namespace', () => {
+  test('Kimi K3 sends the chosen reasoning effort through the selected OpenAI-compatible namespace', () => {
     const connection = {
       ...conn('kimi-coding-plan'),
       models: [{ id: 'k3', apiProtocol: 'openai-chat' as const }],
@@ -101,6 +115,9 @@ describe('buildProviderOptions: thinking level', () => {
     const expected = { kimiCodingPlan: { reasoningEffort: 'max' } };
     assert.deepEqual(buildProviderOptions(connection, 'k3'), expected);
     assert.deepEqual(buildProviderOptions(connection, 'k3', 'max'), expected);
+    assert.deepEqual(buildProviderOptions(connection, 'k3', 'low'), {
+      kimiCodingPlan: { reasoningEffort: 'low' },
+    });
   });
 
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
