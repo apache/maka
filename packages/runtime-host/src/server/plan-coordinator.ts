@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   PlanConflictError,
   planUserControlMutationInput,
@@ -19,11 +20,14 @@ import {
   type OperationOutcome,
   type PlanControlInput,
   type PlanControlResult,
+  type PlanTurnStartInput,
   type PlanProjectionItem,
   type PlanQueryInput,
   type PlanQueryResult,
+  planTurnControlInput,
 } from '../protocol/index.js';
-import type { PlanOperationHandlerMap } from './operation-dispatcher.js';
+import type { ConnectionContext, PlanOperationHandlerMap } from './operation-dispatcher.js';
+import type { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
 
 type PlanRuntime = Pick<
@@ -35,6 +39,10 @@ type PlanRuntime = Pick<
   | 'cancelPlanExecution'
 >;
 
+type AdmittedPlanControlRequest =
+  | { readonly kind: 'ordinary'; readonly input: PlanControlInput }
+  | { readonly kind: 'plan_turn'; readonly input: PlanTurnStartInput };
+
 export interface HostPlanCoordinatorInput {
   readonly store: InteractivePlanStoreWriter;
   readonly sessions: Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
@@ -44,6 +52,7 @@ export interface HostPlanCoordinatorInput {
   readonly refreshContinuity: (sessionId: string, lease: SessionAdmissionLease) => Promise<void>;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
+  readonly root: Pick<RootTurnCoordinator, 'startHostedExternalTransition'>;
 }
 
 /** Host-owned Plan query and user-control boundary. */
@@ -51,7 +60,10 @@ export class HostPlanCoordinator {
   readonly handlers: PlanOperationHandlerMap = {
     'plan.query': (input) => this.#sessionAdmission.run(input.sessionId, () => this.#query(input)),
     'plan.control': (input) =>
-      this.#sessionAdmission.run(input.sessionId, (lease) => this.#control(input, lease)),
+      this.#sessionAdmission.run(input.sessionId, (lease) =>
+        this.#control({ kind: 'ordinary', input }, lease),
+      ),
+    'plan.turn.start': (input, context) => this.#startTurn(input, context),
   };
 
   readonly #store: InteractivePlanStoreWriter;
@@ -62,6 +74,7 @@ export class HostPlanCoordinator {
   readonly #refreshContinuity: HostPlanCoordinatorInput['refreshContinuity'];
   readonly #onProjectionChanged: HostPlanCoordinatorInput['onProjectionChanged'];
   readonly #requestDrain: () => void;
+  readonly #root: HostPlanCoordinatorInput['root'];
 
   constructor(input: HostPlanCoordinatorInput) {
     this.#store = authenticateInteractivePlanStoreWriter(input.store);
@@ -72,6 +85,49 @@ export class HostPlanCoordinator {
     this.#refreshContinuity = input.refreshContinuity;
     this.#onProjectionChanged = input.onProjectionChanged;
     this.#requestDrain = input.requestDrain;
+    this.#root = input.root;
+  }
+
+  async #startTurn(
+    input: PlanTurnStartInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'plan.turn.start'>> {
+    let plan: PlanControlResult | undefined;
+    let planFailure: Extract<OperationOutcome<'plan.control'>, { ok: false }> | undefined;
+    const turn = await this.#root.startHostedExternalTransition(
+      {
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        inputDigest: planTurnInputDigest(input),
+        archivedMessage: 'Cannot start Plan execution in an archived Session',
+        prepareContent: async (lease) => {
+          const outcome = await this.#control({ kind: 'plan_turn', input }, lease);
+          if (!outcome.ok) {
+            planFailure = outcome;
+            return {
+              kind: 'rejected',
+              outcome: {
+                ok: false,
+                error: { code: 'operation_conflict', message: outcome.error.message },
+              },
+            };
+          }
+          plan = outcome.result;
+          return { kind: 'ready', content: { text: planTurnPrompt(input, outcome.result) } };
+        },
+      },
+      context,
+    );
+    if (planFailure) return { ok: false, error: planFailure.error };
+    if (!turn.ok) return { ok: false, error: turn.error };
+    if (!plan) {
+      this.#requestDrain();
+      return {
+        ok: false,
+        error: { code: 'internal_failure', message: 'Plan Turn transition outcome is unknown' },
+      };
+    }
+    return { ok: true, result: { plan, turn: turn.result } };
   }
 
   async #query(input: PlanQueryInput): Promise<OperationOutcome<'plan.query'>> {
@@ -120,9 +176,10 @@ export class HostPlanCoordinator {
   }
 
   async #control(
-    input: PlanControlInput,
+    request: AdmittedPlanControlRequest,
     lease: SessionAdmissionLease,
   ): Promise<OperationOutcome<'plan.control'>> {
+    const input = request.kind === 'ordinary' ? request.input : planTurnControlInput(request.input);
     let replay = false;
     try {
       replay =
@@ -137,7 +194,7 @@ export class HostPlanCoordinator {
     if (!replay) {
       const unavailable = await this.#assertSessionAvailable(input.sessionId);
       if (unavailable) return controlAvailabilityFailure(unavailable.code, unavailable.message);
-      if (this.#isSessionActive(input.sessionId)) {
+      if (request.kind === 'ordinary' && this.#isSessionActive(input.sessionId)) {
         return controlFailure('session_busy', 'Session has an active root Turn');
       }
     }
@@ -314,4 +371,28 @@ function controlAvailabilityFailure(
   message: string,
 ): OperationOutcome<'plan.control'> {
   return { ok: false, error: { code, message } };
+}
+
+function planTurnInputDigest(input: PlanTurnStartInput): `sha256:${string}` {
+  const canonical =
+    input.kind === 'approve_proposal'
+      ? [
+          input.kind,
+          input.sessionId,
+          input.proposalId,
+          input.expectedRevision,
+          input.expectedStoreVersion,
+        ]
+      : [input.kind, input.sessionId, input.executionId];
+  return `sha256:${createHash('sha256').update(JSON.stringify(canonical)).digest('hex')}`;
+}
+
+function planTurnPrompt(input: PlanTurnStartInput, result: PlanControlResult): string {
+  if (input.kind === 'approve_proposal') {
+    if (result.executionId === null) {
+      throw new PlanConflictError('Plan approval did not create an execution');
+    }
+    return `Execute the approved plan execution ${result.executionId}.`;
+  }
+  return `Resume the approved plan execution ${input.executionId}.`;
 }

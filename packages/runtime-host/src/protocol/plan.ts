@@ -29,6 +29,7 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
+import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
 
 export const PLAN_PAGE_MAX_ITEMS = 16;
 export const PLAN_RESULT_MAX_BYTES = 64 * 1024;
@@ -88,6 +89,27 @@ export interface PlanControlResult {
   readonly executionId: string | null;
 }
 
+export type PlanTurnStartInput =
+  | {
+      readonly kind: 'approve_proposal';
+      readonly sessionId: string;
+      readonly proposalId: string;
+      readonly expectedRevision: number;
+      readonly expectedStoreVersion: number;
+      readonly turnId: string;
+    }
+  | {
+      readonly kind: 'resume_execution';
+      readonly sessionId: string;
+      readonly executionId: string;
+      readonly turnId: string;
+    };
+
+export interface PlanTurnStartResult {
+  readonly plan: PlanControlResult;
+  readonly turn: TurnSnapshot;
+}
+
 export const PLAN_OPERATION_SPECS = {
   'plan.query': defineOperation<PlanQueryInput, PlanQueryResult, (typeof QUERY_ERRORS)[number]>({
     mode: 'query',
@@ -112,6 +134,27 @@ export const PLAN_OPERATION_SPECS = {
     decodeInput: decodePlanControlInput,
     decodeOutput: decodePlanControlResult,
     assertOutputForInput: assertPlanControlResult,
+  }),
+  'plan.turn.start': defineOperation<
+    PlanTurnStartInput,
+    PlanTurnStartResult,
+    (typeof CONTROL_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: CONTROL_ERRORS,
+    decodeInput: decodePlanTurnStartInput,
+    decodeOutput: decodePlanTurnStartResult,
+    assertOutputForInput(input, output) {
+      if (
+        output.plan.sessionId !== input.sessionId ||
+        output.turn.sessionId !== input.sessionId ||
+        output.turn.turnId !== input.turnId
+      ) {
+        throw invalidProtocolFrame('Plan Turn start result changed operation identity');
+      }
+      assertPlanControlResult(planTurnControlInput(input), output.plan);
+    },
   }),
 } as const;
 
@@ -254,6 +297,70 @@ export function decodePlanControlResult(value: unknown): PlanControlResult {
     proposalId: nullableId(result.proposalId, 'proposalId'),
     executionId: nullableId(result.executionId, 'executionId'),
   };
+}
+
+export function decodePlanTurnStartInput(value: unknown): PlanTurnStartInput {
+  const record = requireRecord(value, 'Plan Turn start input');
+  if (record.kind === 'approve_proposal') {
+    const input = requireExactRecord(record, 'Plan approval Turn input', [
+      'kind',
+      'sessionId',
+      'proposalId',
+      'expectedRevision',
+      'expectedStoreVersion',
+      'turnId',
+    ]);
+    return {
+      kind: 'approve_proposal',
+      sessionId: requireEntityId(input.sessionId, 'sessionId'),
+      proposalId: requireEntityId(input.proposalId, 'proposalId'),
+      expectedRevision: requireCount(input.expectedRevision, 'expectedRevision'),
+      expectedStoreVersion: requireCount(input.expectedStoreVersion, 'expectedStoreVersion'),
+      turnId: requireEntityId(input.turnId, 'turnId'),
+    };
+  }
+  if (record.kind === 'resume_execution') {
+    const input = requireExactRecord(record, 'Plan resume Turn input', [
+      'kind',
+      'sessionId',
+      'executionId',
+      'turnId',
+    ]);
+    return {
+      kind: 'resume_execution',
+      sessionId: requireEntityId(input.sessionId, 'sessionId'),
+      executionId: requireEntityId(input.executionId, 'executionId'),
+      turnId: requireEntityId(input.turnId, 'turnId'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid Plan Turn start kind');
+}
+
+export function decodePlanTurnStartResult(value: unknown): PlanTurnStartResult {
+  requireEncodedByteLimit(value, 'Plan Turn start result', PLAN_RESULT_MAX_BYTES);
+  const result = requireExactRecord(value, 'Plan Turn start result', ['plan', 'turn']);
+  return {
+    plan: decodePlanControlResult(result.plan),
+    turn: decodeTurnSnapshot(result.turn),
+  };
+}
+
+export function planTurnControlInput(input: PlanTurnStartInput): PlanControlInput {
+  return input.kind === 'approve_proposal'
+    ? {
+        kind: input.kind,
+        sessionId: input.sessionId,
+        proposalId: input.proposalId,
+        expectedRevision: input.expectedRevision,
+        expectedStoreVersion: input.expectedStoreVersion,
+        operationId: input.turnId,
+      }
+    : {
+        kind: input.kind,
+        sessionId: input.sessionId,
+        executionId: input.executionId,
+        operationId: input.turnId,
+      };
 }
 
 function decodePlanProjectionItem(value: unknown): PlanProjectionItem {

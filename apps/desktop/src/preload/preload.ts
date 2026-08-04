@@ -341,16 +341,16 @@ const makaBridge = {
     approvePlan(sessionId: string, input: {
       proposalId: string;
       expectedRevision: number;
-      expectedStoreVersion?: number;
-    }): Promise<{ state: PlanSessionState; turnId: string; executionId: string }> {
+      expectedStoreVersion: number;
+      turnId: string;
+    }): Promise<{ turnId: string; executionId: string }> {
       return ipcRenderer.invoke('plan-mode:approve', sessionId, input);
     },
-    resumePlan(sessionId: string, executionId: string): Promise<{
-      state: PlanSessionState;
+    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<{
       turnId: string;
       executionId: string;
     }> {
-      return ipcRenderer.invoke('plan-mode:resume', sessionId, executionId);
+      return ipcRenderer.invoke('plan-mode:resume', sessionId, executionId, turnId);
     },
     abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState> {
       return ipcRenderer.invoke('plan-mode:abandonExecution', sessionId, executionId);

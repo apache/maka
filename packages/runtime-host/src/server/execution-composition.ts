@@ -755,6 +755,7 @@ export async function createExecutionRuntimeHostComposition(
       onProjectionChanged: (sessionId) =>
         continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'plan'),
       requestDrain: context.requestDrain,
+      root: coordinator,
     });
     const executionInspect = new HostExecutionInspectCoordinator(stores);
     const sessionRevisions = new HostSessionRevisionCoordinator({

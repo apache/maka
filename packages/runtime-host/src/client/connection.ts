@@ -39,6 +39,8 @@ import {
   type PlanControlResult,
   type PlanQueryInput,
   type PlanQueryResult,
+  type PlanTurnStartInput,
+  type PlanTurnStartResult,
   type ProtocolRange,
   type RequestFrame,
   type ResponseFrame,
@@ -161,6 +163,7 @@ export interface RuntimeHostConnection {
   ): Promise<SessionRecapGenerateResult>;
   queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult>;
   controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult>;
+  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult>;
   queryDeepResearch(
     input: DeepResearchQueryInput,
     timeoutMs?: number,
@@ -383,6 +386,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
     return this.request('plan.control', input, timeoutMs);
+  }
+
+  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult> {
+    return this.request('plan.turn.start', input, timeoutMs);
   }
 
   queryDeepResearch(

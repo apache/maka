@@ -23,6 +23,7 @@ const proposal = {
 test('Plan protocol declares bounded snapshot queries and stable controls', () => {
   assert.equal(HOST_OPERATION_SPECS['plan.query'].mode, 'query');
   assert.equal(HOST_OPERATION_SPECS['plan.control'].mode, 'control');
+  assert.equal(HOST_OPERATION_SPECS['plan.turn.start'].mode, 'command');
   assert.deepEqual(
     decodeRequestFrame({
       requestId: 'request-1',
@@ -93,6 +94,51 @@ test('Plan protocol declares bounded snapshot queries and stable controls', () =
         executionId: null,
       },
     ),
+  );
+});
+
+test('Plan Turn start closes approve and resume into one correlated command', () => {
+  const input = {
+    kind: 'approve_proposal' as const,
+    sessionId: 'session-1',
+    proposalId: 'proposal-1',
+    expectedRevision: 1,
+    expectedStoreVersion: 2,
+    turnId: 'turn-2',
+  };
+  assert.deepEqual(
+    decodeRequestFrame({ requestId: 'request-1', operation: 'plan.turn.start', input }),
+    { requestId: 'request-1', operation: 'plan.turn.start', input },
+  );
+  const result = {
+    plan: {
+      sessionId: 'session-1',
+      storeVersion: 3,
+      eventType: 'plan_approved' as const,
+      proposalId: 'proposal-1',
+      executionId: 'execution-1',
+    },
+    turn: {
+      sessionId: 'session-1',
+      turnId: 'turn-2',
+      runId: 'run-1',
+      status: 'running' as const,
+    },
+  };
+  assert.deepEqual(
+    decodeResponseFrame({
+      requestId: 'request-1',
+      operation: 'plan.turn.start',
+      ok: true,
+      result,
+    }),
+    { requestId: 'request-1', operation: 'plan.turn.start', ok: true, result },
+  );
+  assert.throws(() =>
+    HOST_OPERATION_SPECS['plan.turn.start'].assertOutputForInput?.(input, {
+      ...result,
+      turn: { ...result.turn, turnId: 'turn-other' },
+    }),
   );
 });
 

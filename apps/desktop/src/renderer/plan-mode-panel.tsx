@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState, type JSX } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type JSX } from 'react';
 import type {
   PlanExecutionStep,
   PlanProposal,
@@ -24,6 +24,18 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
   const [state, setState] = useState<PlanSessionState>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const approvalRetry = useRef<{
+    sessionId: string;
+    proposalId: string;
+    expectedRevision: number;
+    expectedStoreVersion: number;
+    turnId: string;
+  } | undefined>(undefined);
+  const resumeRetry = useRef<{
+    sessionId: string;
+    executionId: string;
+    turnId: string;
+  } | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     if (!session) return;
@@ -77,20 +89,44 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
   }, [run, session?.id]);
 
   const approve = useCallback(async (proposal: PlanProposal): Promise<void> => {
-    if (!session) return;
+    if (!session || !state) return;
+    const current = approvalRetry.current;
+    const input =
+      current
+      && current.sessionId === session.id
+      && current.proposalId === proposal.proposalId
+      && current.expectedRevision === proposal.revision
+        ? current
+        : {
+            sessionId: session.id,
+            proposalId: proposal.proposalId,
+            expectedRevision: proposal.revision,
+            expectedStoreVersion: state.storeVersion,
+            turnId: crypto.randomUUID(),
+          };
+    approvalRetry.current = input;
     await run(async () => {
       await window.maka.sessions.approvePlan(session.id, {
-        proposalId: proposal.proposalId,
-        expectedRevision: proposal.revision,
-        expectedStoreVersion: state?.storeVersion,
+        proposalId: input.proposalId,
+        expectedRevision: input.expectedRevision,
+        expectedStoreVersion: input.expectedStoreVersion,
+        turnId: input.turnId,
       });
+      approvalRetry.current = undefined;
     });
-  }, [run, session?.id, state?.storeVersion]);
+  }, [run, session?.id, state]);
 
   const resume = useCallback(async (executionId: string): Promise<void> => {
     if (!session) return;
+    const current = resumeRetry.current;
+    const input =
+      current && current.sessionId === session.id && current.executionId === executionId
+        ? current
+        : { sessionId: session.id, executionId, turnId: crypto.randomUUID() };
+    resumeRetry.current = input;
     await run(async () => {
-      await window.maka.sessions.resumePlan(session.id, executionId);
+      await window.maka.sessions.resumePlan(session.id, executionId, input.turnId);
+      resumeRetry.current = undefined;
     });
   }, [run, session?.id]);
 

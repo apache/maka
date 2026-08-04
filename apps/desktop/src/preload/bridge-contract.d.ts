@@ -299,10 +299,10 @@ export interface MakaBridge {
     approvePlan(sessionId: string, input: {
       proposalId: string;
       expectedRevision: number;
-      expectedStoreVersion?: number;
-    }): Promise<{ state: PlanSessionState; turnId: string; executionId: string }>;
-    resumePlan(sessionId: string, executionId: string): Promise<{
-      state: PlanSessionState;
+      expectedStoreVersion: number;
+      turnId: string;
+    }): Promise<{ turnId: string; executionId: string }>;
+    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<{
       turnId: string;
       executionId: string;
     }>;

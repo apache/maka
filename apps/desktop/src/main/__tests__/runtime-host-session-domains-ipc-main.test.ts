@@ -83,7 +83,7 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
   });
 });
 
-test('adapts non-starting Plan controls without exposing a split Plan-to-Turn transition', async () => {
+test('adapts Plan controls and starts approved execution through one Host command', async () => {
   const calls: unknown[] = [];
   const state: PlanSessionState = {
     schemaVersion: 1,
@@ -107,15 +107,66 @@ test('adapts non-starting Plan controls without exposing a split Plan-to-Turn tr
             executionId: null,
           };
         },
+        startPlanTurn: async (input) => {
+          calls.push({ kind: 'start', input });
+          return {
+            plan: {
+              sessionId: 'session-1',
+              storeVersion: 4,
+              eventType:
+                input.kind === 'approve_proposal'
+                  ? 'plan_approved'
+                  : 'plan_execution_resumed',
+              proposalId: input.kind === 'approve_proposal' ? 'proposal-1' : null,
+              executionId: 'execution-1',
+            },
+            turn: {
+              sessionId: 'session-1',
+              turnId: input.turnId,
+              runId: 'run-1',
+              status: 'running',
+            },
+          };
+        },
       }),
       emitModeChanged: (sessionId) => calls.push({ kind: 'changed', sessionId }),
-      newId: () => 'operation-1',
+      newId: (() => {
+        let sequence = 0;
+        return () => `operation-${++sequence}`;
+      })(),
     },
     ipc,
   );
 
   assert.deepEqual(await ipc.invoke('plan-mode:requestRevision', 'session-1', 'proposal-1'), state);
-  await assert.rejects(() => ipc.invoke('plan-mode:approve', 'session-1', {}), /missing handler/);
+  const approvalInput = {
+    proposalId: 'proposal-1',
+    expectedRevision: 2,
+    expectedStoreVersion: 3,
+    turnId: 'approval-turn',
+  };
+  assert.deepEqual(
+    await ipc.invoke('plan-mode:approve', 'session-1', approvalInput),
+    { turnId: 'approval-turn', executionId: 'execution-1' },
+  );
+  assert.deepEqual(
+    await ipc.invoke('plan-mode:approve', 'session-1', approvalInput),
+    { turnId: 'approval-turn', executionId: 'execution-1' },
+  );
+  assert.deepEqual(
+    await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'),
+    {
+      turnId: 'resume-turn',
+      executionId: 'execution-1',
+    },
+  );
+  assert.deepEqual(
+    await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'),
+    {
+      turnId: 'resume-turn',
+      executionId: 'execution-1',
+    },
+  );
   assert.deepEqual(calls, [
     {
       kind: 'control',
@@ -124,6 +175,50 @@ test('adapts non-starting Plan controls without exposing a split Plan-to-Turn tr
         sessionId: 'session-1',
         proposalId: 'proposal-1',
         operationId: 'operation-1',
+      },
+    },
+    { kind: 'changed', sessionId: 'session-1' },
+    {
+      kind: 'start',
+      input: {
+        kind: 'approve_proposal',
+        sessionId: 'session-1',
+        proposalId: 'proposal-1',
+        expectedRevision: 2,
+        expectedStoreVersion: 3,
+        turnId: 'approval-turn',
+      },
+    },
+    { kind: 'changed', sessionId: 'session-1' },
+    {
+      kind: 'start',
+      input: {
+        kind: 'approve_proposal',
+        sessionId: 'session-1',
+        proposalId: 'proposal-1',
+        expectedRevision: 2,
+        expectedStoreVersion: 3,
+        turnId: 'approval-turn',
+      },
+    },
+    { kind: 'changed', sessionId: 'session-1' },
+    {
+      kind: 'start',
+      input: {
+        kind: 'resume_execution',
+        sessionId: 'session-1',
+        executionId: 'execution-1',
+        turnId: 'resume-turn',
+      },
+    },
+    { kind: 'changed', sessionId: 'session-1' },
+    {
+      kind: 'start',
+      input: {
+        kind: 'resume_execution',
+        sessionId: 'session-1',
+        executionId: 'execution-1',
+        turnId: 'resume-turn',
       },
     },
     { kind: 'changed', sessionId: 'session-1' },

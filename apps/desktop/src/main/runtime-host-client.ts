@@ -441,6 +441,12 @@ export class DesktopRuntimeHostClient {
     return this.#request('plan.control', input);
   }
 
+  startPlanTurn(
+    input: OperationInput<'plan.turn.start'>,
+  ): Promise<OperationOutput<'plan.turn.start'>> {
+    return this.#request('plan.turn.start', input);
+  }
+
   queryAgentGraph(
     input: OperationInput<'agent.graph.query'>,
   ): Promise<OperationOutput<'agent.graph.query'>> {

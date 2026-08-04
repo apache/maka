@@ -78,11 +78,13 @@ test('two UDS Clients and a restarted production Host share one retry-safe Plan 
       proposalId: submitted.event.proposal.proposalId,
       expectedRevision: submitted.event.proposal.revision,
       expectedStoreVersion: first.storeVersion,
-      operationId: 'approve-operation',
+      turnId: 'approve-turn',
     };
-    const approved = await tui.controlPlan(approval);
+    const started = await tui.startPlanTurn(approval);
+    const approved = started.plan;
     assert.equal(approved.eventType, 'plan_approved');
     assert.ok(approved.executionId);
+    assert.equal(started.turn.turnId, approval.turnId);
     const changed = await withTimeout(
       nextFrameOfKind(subscription, 'subscription.session_domain_changed'),
       2_000,
@@ -116,9 +118,10 @@ test('two UDS Clients and a restarted production Host share one retry-safe Plan 
     owner = undefined;
     tui = await connect(root, 'tui');
 
-    const replayed = await tui.controlPlan(approval);
-    assert.equal(replayed.executionId, approved.executionId);
-    assert.equal(replayed.storeVersion, approved.storeVersion);
+    const replayed = await tui.startPlanTurn(approval);
+    assert.equal(replayed.plan.executionId, approved.executionId);
+    assert.equal(replayed.plan.storeVersion, approved.storeVersion);
+    assert.equal(replayed.turn.turnId, approval.turnId);
     const recovered = await tui.queryPlan({ kind: 'list_start', sessionId: session.id });
     assert.equal(recovered.kind, 'page');
     if (recovered.kind !== 'page') return;
@@ -128,14 +131,41 @@ test('two UDS Clients and a restarted production Host share one retry-safe Plan 
     if (!execution || execution.kind !== 'execution') return;
     assert.equal(execution.execution.status, 'interrupted');
 
-    const cancelled = await tui.controlPlan({
-      kind: 'cancel_execution',
+    await assert.rejects(
+      tui.startPlanTurn({
+        kind: 'resume_execution',
+        sessionId: session.id,
+        executionId: execution.execution.executionId,
+        turnId: approval.turnId,
+      }),
+      (error: unknown) =>
+        error instanceof Error && 'code' in error && error.code === 'operation_conflict',
+    );
+    const unchanged = await tui.queryPlan({ kind: 'list_start', sessionId: session.id });
+    assert.equal(unchanged.kind, 'page');
+    assert.equal(
+      unchanged.kind === 'page'
+        ? unchanged.items.find((item) => item.kind === 'execution')?.execution.status
+        : undefined,
+      'interrupted',
+    );
+
+    const resumed = await tui.startPlanTurn({
+      kind: 'resume_execution',
       sessionId: session.id,
       executionId: execution.execution.executionId,
-      operationId: 'cancel-operation',
+      turnId: 'resume-turn',
     });
-    assert.equal(cancelled.eventType, 'plan_execution_cancelled');
-    assert.equal(cancelled.storeVersion, approved.storeVersion + 2);
+    assert.equal(resumed.plan.eventType, 'plan_execution_resumed');
+    assert.equal(resumed.plan.executionId, execution.execution.executionId);
+    assert.equal(resumed.turn.turnId, 'resume-turn');
+    await waitForTerminal(tui, resumed.turn);
+    const afterResume = await tui.queryPlan({ kind: 'list_start', sessionId: session.id });
+    assert.equal(afterResume.kind, 'page');
+    assert.equal(
+      afterResume.kind === 'page' ? afterResume.activeExecutionId : undefined,
+      execution.execution.executionId,
+    );
   } finally {
     await Promise.allSettled([desktop?.close(), tui?.close()]);
     await host?.close().catch(() => undefined);
@@ -152,6 +182,28 @@ async function connect(
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Unable to connect to Runtime Host');
   return result.connection;
+}
+
+async function waitForTerminal(
+  connection: RuntimeHostConnection,
+  initial: Awaited<ReturnType<RuntimeHostConnection['startPlanTurn']>>['turn'],
+): Promise<void> {
+  let snapshot = initial;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (
+      snapshot.status === 'completed' ||
+      snapshot.status === 'failed' ||
+      snapshot.status === 'cancelled'
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    snapshot = await connection.queryTurn({
+      sessionId: snapshot.sessionId,
+      turnId: snapshot.turnId,
+    });
+  }
+  throw new Error('Plan execution Turn did not settle');
 }
 
 async function nextFrameOfKind<K extends SubscriptionFrame['kind']>(

@@ -23,6 +23,7 @@ type RuntimeHostSessionDomainClient = Pick<
   | 'queryAgentGraphOperator'
   | 'queryDeepResearch'
   | 'queryGoal'
+  | 'startPlanTurn'
   | 'stopAgentGraph'
 >;
 
@@ -102,6 +103,48 @@ export function registerRuntimeHostSessionDomainsIpc(
       });
       deps.emitModeChanged(normalizedSessionId);
       return deps.client.getPlanState(normalizedSessionId);
+    },
+  );
+  ipcMain.handle(
+    'plan-mode:approve',
+    async (_event, sessionId: unknown, value: unknown) => {
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const input = planApprovalInput(value);
+      const result = await deps.client.startPlanTurn({
+        kind: 'approve_proposal',
+        sessionId: normalizedSessionId,
+        proposalId: input.proposalId,
+        expectedRevision: input.expectedRevision,
+        expectedStoreVersion: input.expectedStoreVersion,
+        turnId: input.turnId,
+      });
+      if (result.plan.executionId === null) {
+        throw new Error('Plan approval did not create an execution');
+      }
+      deps.emitModeChanged(normalizedSessionId);
+      return {
+        turnId: input.turnId,
+        executionId: result.plan.executionId,
+      };
+    },
+  );
+  ipcMain.handle(
+    'plan-mode:resume',
+    async (_event, sessionId: unknown, executionId: unknown, turnId: unknown) => {
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      const normalizedExecutionId = requiredId(executionId, 'Plan execution');
+      const normalizedTurnId = requiredId(turnId, 'Turn');
+      await deps.client.startPlanTurn({
+        kind: 'resume_execution',
+        sessionId: normalizedSessionId,
+        executionId: normalizedExecutionId,
+        turnId: normalizedTurnId,
+      });
+      deps.emitModeChanged(normalizedSessionId);
+      return {
+        turnId: normalizedTurnId,
+        executionId: normalizedExecutionId,
+      };
     },
   );
   ipcMain.handle(
@@ -252,4 +295,35 @@ function requiredId(value: unknown, name: string, maxLength = 512): string {
     throw new TypeError(`Invalid ${name} id`);
   }
   return value;
+}
+
+function planApprovalInput(value: unknown): {
+  proposalId: string;
+  expectedRevision: number;
+  expectedStoreVersion: number;
+  turnId: string;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Invalid plan approval');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).some(
+      (key) =>
+        key !== 'proposalId'
+        && key !== 'expectedRevision'
+        && key !== 'expectedStoreVersion'
+        && key !== 'turnId',
+    ) ||
+    !Number.isSafeInteger(record.expectedRevision) ||
+    !Number.isSafeInteger(record.expectedStoreVersion)
+  ) {
+    throw new TypeError('Invalid plan approval');
+  }
+  return {
+    proposalId: requiredId(record.proposalId, 'Plan proposal'),
+    expectedRevision: record.expectedRevision as number,
+    expectedStoreVersion: record.expectedStoreVersion as number,
+    turnId: requiredId(record.turnId, 'Turn'),
+  };
 }

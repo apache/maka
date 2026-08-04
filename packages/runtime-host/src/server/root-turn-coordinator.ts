@@ -121,7 +121,7 @@ interface ActiveRootTurn {
   messageTransitionCommitted: boolean;
 }
 
-type TurnStartOutcome = OperationOutcome<'turn.start'>;
+export type TurnStartOutcome = OperationOutcome<'turn.start'>;
 
 type RootMessageExecution = Extract<
   RootExecutionDescriptor,
@@ -132,6 +132,9 @@ interface RootMessageStartRequestBase {
   readonly sessionId: string;
   readonly turnId: string;
   readonly archivedMessage: string;
+  readonly prepareReplayContent?: (
+    lease: SessionAdmissionLease,
+  ) => Promise<RootMessageContentPreparation>;
 }
 
 type RootMessageStartRequest =
@@ -143,7 +146,7 @@ type RootMessageStartRequest =
   | (RootMessageStartRequestBase & {
       readonly execution: Extract<RootMessageExecution, { kind: 'external_message' }>;
       readonly turnOrchestration?: TurnStartInput['turnOrchestration'];
-      prepareFreshContent(): Promise<RootMessageContentPreparation>;
+      prepareFreshContent(lease: SessionAdmissionLease): Promise<RootMessageContentPreparation>;
     })
   | (RootMessageStartRequestBase & {
       readonly execution: Extract<RootMessageExecution, { kind: 'regenerate' }>;
@@ -151,7 +154,7 @@ type RootMessageStartRequest =
       prepareContent(): Promise<MessageContent>;
     });
 
-type RootMessageContentPreparation =
+export type RootMessageContentPreparation =
   | {
       readonly kind: 'ready';
       readonly content: MessageContent;
@@ -160,6 +163,14 @@ type RootMessageContentPreparation =
       >;
     }
   | { readonly kind: 'rejected'; readonly outcome: TurnStartOutcome };
+
+export interface HostedExternalTurnTransitionInput {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly inputDigest: `sha256:${string}`;
+  readonly archivedMessage: string;
+  prepareContent(lease: SessionAdmissionLease): Promise<RootMessageContentPreparation>;
+}
 
 type RootTurnActivationInput =
   | TurnStartInput
@@ -635,6 +646,23 @@ export class RootTurnCoordinator {
       };
     }
     return this.#reservationsBySession.has(sessionId) ? { kind: 'reserved' } : { kind: 'idle' };
+  }
+
+  startHostedExternalTransition(
+    input: HostedExternalTurnTransitionInput,
+    context: ConnectionContext,
+  ): Promise<TurnStartOutcome> {
+    return this.startRootMessage(
+      {
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        execution: { kind: 'external_message', inputDigest: input.inputDigest },
+        archivedMessage: input.archivedMessage,
+        prepareFreshContent: input.prepareContent,
+        prepareReplayContent: input.prepareContent,
+      },
+      context,
+    );
   }
 
   private reserveRootTurn(sessionId: string): RootTurnReservation | undefined {
@@ -1693,8 +1721,20 @@ export class RootTurnCoordinator {
               operationConflict('Turn identity belongs to a different execution kind'),
             );
           }
-          const content =
-            'content' in request ? request.content : requireAdmissionMessageContent(existing);
+          if (!isDeepStrictEqual(existing.execution, request.execution)) {
+            return completedStart(
+              operationConflict('Turn identity belongs to a different execution payload'),
+            );
+          }
+          let content: MessageContent;
+          if (request.prepareReplayContent) {
+            const prepared = await request.prepareReplayContent(lease);
+            if (prepared.kind === 'rejected') return completedStart(prepared.outcome);
+            content = normalizeMessageContent(prepared.content);
+          } else {
+            content =
+              'content' in request ? request.content : requireAdmissionMessageContent(existing);
+          }
           if (!rootMessageAdmissionMatches(existing, request, content)) {
             return completedStart(
               operationConflict('Turn identity was already admitted with a different payload'),
@@ -1757,7 +1797,7 @@ export class RootTurnCoordinator {
           return completedStart(operationConflict('Turn identity already exists'));
         }
 
-        const prepared = await this.prepareRootMessageContent(request);
+        const prepared = await this.prepareRootMessageContent(request, lease);
         if (prepared.kind === 'rejected') return completedStart(prepared.outcome);
         const canonicalContent = preflightRootMessageContent(prepared.content);
         if (!canonicalContent.ok) return completedStart(canonicalContent.outcome);
@@ -1831,9 +1871,10 @@ export class RootTurnCoordinator {
 
   private async prepareRootMessageContent(
     request: RootMessageStartRequest,
+    lease: SessionAdmissionLease,
   ): Promise<RootMessageContentPreparation> {
     if ('content' in request) return { kind: 'ready', content: request.content };
-    if ('prepareFreshContent' in request) return request.prepareFreshContent();
+    if ('prepareFreshContent' in request) return request.prepareFreshContent(lease);
     try {
       return { kind: 'ready', content: normalizeMessageContent(await request.prepareContent()) };
     } catch (error) {
