@@ -18,19 +18,22 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import type { MessageContent } from '@maka/core/events';
+import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
+  BackendRegistry,
   buildTaskLedgerTools,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
+  FakeBackend,
+  SessionManager,
   type MakaTool,
   type MakaToolContext,
 } from '@maka/runtime';
@@ -47,6 +50,7 @@ import {
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -68,6 +72,7 @@ import {
 } from '../../protocol/index.js';
 import { SessionAdmissionGate } from '../../server/session-admission-gate.js';
 import { HostTaskLedgerCoordinator } from '../../server/task-ledger-coordinator.js';
+import { continuationSafetyDigest } from '../../server/root-turn-coordinator.js';
 import { FramedTransport } from '../../transport/framed-transport.js';
 
 export const CURRENT_PROTOCOL = {
@@ -105,16 +110,318 @@ export class ExecutionFixture {
     readonly sessionId: string,
   ) {}
 
-  sessionPath(): string {
-    return join(this.root, 'sessions', this.sessionId, 'session.jsonl');
+  async seedSession(): Promise<string> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for Session setup');
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const session = await stores.sessionStore.create({
+        cwd: this.root,
+        backend: 'fake',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      return session.id;
+    } finally {
+      await owner.close();
+    }
   }
 
-  runtimeEventsPath(runId: string): string {
-    return join(this.root, 'sessions', this.sessionId, 'runs', runId, 'runtime-events.jsonl');
+  async seedSafeBoundaryContinuationSource(requiredToolName?: string): Promise<{
+    sourceInvocationId: string;
+    sourceRunId: string;
+    sourceTurnId: string;
+    sourceRuntimeEventHighWater: number;
+  }> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for continuation setup');
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const sourceInvocationId = randomUUID();
+      const sourceRunId = randomUUID();
+      const sourceTurnId = randomUUID();
+      const createdAt = Date.now();
+      const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      const sourceRun: AgentRunHeader = {
+        runId: sourceRunId,
+        invocationId: sourceInvocationId,
+        sessionId: this.sessionId,
+        turnId: sourceTurnId,
+        status: 'created',
+        backendKind: 'fake',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+        cwd: this.root,
+        workspaceIdentity: workspace.workspaceIdentity,
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        createdAt,
+        updatedAt: createdAt,
+      };
+      await stores.agentRunStore.createRun(sourceRun, { durable: true });
+      await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, sourceRunId, {
+        id: randomUUID(),
+        sessionId: this.sessionId,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: createdAt,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'Continue this interrupted request.' },
+      });
+      if (requiredToolName) {
+        const toolCallId = randomUUID();
+        await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, sourceRunId, {
+          id: randomUUID(),
+          sessionId: this.sessionId,
+          invocationId: sourceInvocationId,
+          runId: sourceRunId,
+          turnId: sourceTurnId,
+          ts: createdAt + 1,
+          partial: false,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'function_call', id: toolCallId, name: requiredToolName, args: {} },
+          refs: { toolCallId },
+        });
+        await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, sourceRunId, {
+          id: randomUUID(),
+          sessionId: this.sessionId,
+          invocationId: sourceInvocationId,
+          runId: sourceRunId,
+          turnId: sourceTurnId,
+          ts: createdAt + 2,
+          partial: false,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: toolCallId,
+            name: requiredToolName,
+            result: { ok: true },
+            isError: false,
+          },
+          refs: { toolCallId },
+        });
+      }
+      const terminalAt = createdAt + (requiredToolName ? 3 : 1);
+      const terminal = buildRecoveredTerminalRuntimeEvent({
+        id: randomUUID(),
+        run: sourceRun,
+        status: 'failed',
+        ts: terminalAt,
+        failureClass: 'app_restarted',
+        recoveryReason: 'test_safe_boundary_source',
+      });
+      await commitTerminalRunWithRuntimeFact({
+        runStore: stores.agentRunStore,
+        runtimeEventStore: stores.runtimeEventStore,
+        newId: randomUUID,
+        sessionId: this.sessionId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        status: 'failed',
+        ts: terminalAt,
+        terminalEvent: terminal,
+        failureClass: 'app_restarted',
+      });
+      return {
+        sourceInvocationId,
+        sourceRunId,
+        sourceTurnId,
+        sourceRuntimeEventHighWater: requiredToolName ? 4 : 2,
+      };
+    } finally {
+      await owner.close();
+    }
   }
 
-  eventsPath(runId: string): string {
-    return join(this.root, 'sessions', this.sessionId, 'runs', runId, 'events.jsonl');
+  async seedSafeBoundaryContinuationCrash(
+    failpoint:
+      | 'after_continuation_claim_committed'
+      | 'after_run_created'
+      | 'after_continuation_start_committed',
+  ): Promise<{
+    sourceRunId: string;
+    sourceRuntimeEventHighWater: number;
+    targetRunId: string;
+    targetTurnId: string;
+  }> {
+    const source = await this.seedSafeBoundaryContinuationSource();
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for continuation crash setup');
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const backends = new BackendRegistry();
+      backends.register(
+        'fake',
+        (ctx) =>
+          new FakeBackend({
+            sessionId: ctx.sessionId,
+            header: ctx.header,
+            store: ctx.store,
+            appendMessage: ctx.appendMessage,
+          }),
+      );
+      const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      let markReached!: () => void;
+      const reached = new Promise<void>((resolve) => {
+        markReached = resolve;
+      });
+      const manager = new SessionManager({
+        store: stores.sessionStore,
+        runStore: stores.agentRunStore,
+        runtimeEventStore: stores.runtimeEventStore,
+        backends,
+        safeBoundaryResumeEnabled: true,
+        inspectContinuationSafety: async () => ({
+          workspaceIdentity: workspace.workspaceIdentity,
+          backgroundOperationsSettled: true,
+          availableToolNames: [],
+        }),
+        continuationFailpoint: async (point) => {
+          if (point !== failpoint) return;
+          markReached();
+          await new Promise<never>(() => undefined);
+        },
+        newId: randomUUID,
+        now: Date.now,
+        runtimeSource: 'test',
+      });
+      const plan = await manager.planAuthoritativeSafeBoundaryContinuation(this.sessionId, {
+        sourceRunId: source.sourceRunId,
+      });
+      const planned = plan.continuation;
+      assert.ok(planned?.claimId);
+      assert.ok(planned?.boundary);
+      assert.ok(planned?.providerReplayDigest);
+      if (!planned?.claimId || !planned.boundary || !planned.providerReplayDigest) {
+        throw new Error(`Unable to plan continuation crash setup: ${plan.rejectionReasons}`);
+      }
+      const claimId = planned.claimId;
+      const boundaryDigest = planned.boundary.manifestDigest;
+      const providerReplayDigest = planned.providerReplayDigest;
+      const targetTurnId = `turn-${failpoint}`;
+      const continuation = { ...planned, turnId: targetTurnId };
+      await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId: targetTurnId,
+        proposedRunId: continuation.runId,
+        proposedUserMessageId: null,
+        execution: {
+          kind: 'safe_boundary_continuation',
+          sourceInvocationId: continuation.sourceInvocationId,
+          sourceRunId: continuation.sourceRunId,
+          sourceTurnId: continuation.sourceTurnId,
+          sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+          claimId,
+          boundaryDigest,
+          providerReplayDigest,
+          safetyDigest: continuationSafetyDigest(continuation),
+          targetInvocationId: continuation.invocationId,
+        },
+        previousRootTurnId: null,
+        normalizedInput: null,
+        sourceMessages: [],
+        admittedAt: Date.now(),
+      });
+      void (async () => {
+        for await (const _event of manager.resumeSafeBoundaryContinuation(continuation)) {
+          // The selected durable failpoint never returns.
+        }
+      })().catch(() => undefined);
+      await withTimeout(reached, PROCESS_TIMEOUT_MS, `continuation did not reach ${failpoint}`);
+      return {
+        sourceRunId: source.sourceRunId,
+        sourceRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
+        targetRunId: continuation.runId,
+        targetTurnId,
+      };
+    } finally {
+      await owner.close();
+    }
+  }
+
+  async seedPendingSafeBoundaryContinuation(requiredToolName: string): Promise<{
+    sourceRunId: string;
+    sourceRuntimeEventHighWater: number;
+    targetRunId: string;
+    targetTurnId: string;
+  }> {
+    const source = await this.seedSafeBoundaryContinuationSource(requiredToolName);
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for continuation setup');
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      const manager = new SessionManager({
+        store: stores.sessionStore,
+        runStore: stores.agentRunStore,
+        runtimeEventStore: stores.runtimeEventStore,
+        backends: new BackendRegistry(),
+        safeBoundaryResumeEnabled: true,
+        inspectContinuationSafety: async () => ({
+          workspaceIdentity: workspace.workspaceIdentity,
+          backgroundOperationsSettled: true,
+          availableToolNames: [requiredToolName],
+        }),
+        newId: randomUUID,
+        now: Date.now,
+        runtimeSource: 'test',
+      });
+      const plan = await manager.planAuthoritativeSafeBoundaryContinuation(this.sessionId, {
+        sourceRunId: source.sourceRunId,
+      });
+      const planned = plan.continuation;
+      assert.ok(planned?.claimId);
+      assert.ok(planned?.boundary);
+      assert.ok(planned?.providerReplayDigest);
+      if (!planned?.claimId || !planned.boundary || !planned.providerReplayDigest) {
+        throw new Error(`Unable to plan pending continuation: ${plan.rejectionReasons}`);
+      }
+      const claimId = planned.claimId;
+      const boundaryDigest = planned.boundary.manifestDigest;
+      const providerReplayDigest = planned.providerReplayDigest;
+      const targetTurnId = 'turn-pending-client-capability-continuation';
+      const continuation = { ...planned, turnId: targetTurnId };
+      await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId: targetTurnId,
+        proposedRunId: continuation.runId,
+        proposedUserMessageId: null,
+        execution: {
+          kind: 'safe_boundary_continuation',
+          sourceInvocationId: continuation.sourceInvocationId,
+          sourceRunId: continuation.sourceRunId,
+          sourceTurnId: continuation.sourceTurnId,
+          sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+          claimId,
+          boundaryDigest,
+          providerReplayDigest,
+          safetyDigest: continuationSafetyDigest(continuation),
+          targetInvocationId: continuation.invocationId,
+        },
+        previousRootTurnId: null,
+        normalizedInput: null,
+        sourceMessages: [],
+        admittedAt: Date.now(),
+      });
+      return {
+        sourceRunId: source.sourceRunId,
+        sourceRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
+        targetRunId: continuation.runId,
+        targetTurnId,
+      };
+    } finally {
+      await owner.close();
+    }
   }
 
   async seedPendingChildAdmission(
@@ -402,6 +709,45 @@ export class ExecutionFixture {
     return this.seedTurnState(turnId, content, true, true);
   }
 
+  async seedRegenerateAdmissionWithoutRun(
+    sourceTurnId: string,
+    turnId: string,
+  ): Promise<{ runId: string; userMessageId: string }> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for regenerate admission setup');
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const messages = await stores.sessionStore.readMessages(this.sessionId);
+      const source = messages.find(
+        (message): message is Extract<StoredMessage, { type: 'user' }> =>
+          message.type === 'user' && message.turnId === sourceTurnId,
+      );
+      assert.ok(source);
+      if (!source) throw new Error('Regenerate source UserMessage is unavailable');
+      const chain = await stores.agentRunStore.listRootTurnAdmissionsForRecovery(this.sessionId);
+      const result = await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId,
+        proposedRunId: randomUUID(),
+        proposedUserMessageId: randomUUID(),
+        execution: { kind: 'regenerate', sourceTurnId },
+        previousRootTurnId: chain.at(-1)?.turnId ?? null,
+        normalizedInput: normalizeMessageContent(source),
+        sourceMessages: [],
+        admittedAt: Date.now(),
+      });
+      assert.equal(result.kind, 'admitted');
+      assert.ok(result.admission.userMessageId);
+      return {
+        runId: result.admission.runId,
+        userMessageId: result.admission.userMessageId,
+      };
+    } finally {
+      await owner.close();
+    }
+  }
+
   private async seedTurnState(
     turnId: string,
     input: string | MessageContent,
@@ -462,11 +808,14 @@ export class ExecutionFixture {
     }
   }
 
-  async startHost(recoveryProbe?: {
-    sessionId: string;
-    runId: string;
-  }): Promise<ExecutionHostHandle> {
-    const child = this.spawnHost('inherit', recoveryProbe);
+  async startHost(
+    recoveryProbe?: {
+      sessionId: string;
+      runId: string;
+    },
+    safeBoundaryResumeEnabled = true,
+  ): Promise<ExecutionHostHandle> {
+    const child = this.spawnHost('inherit', recoveryProbe, safeBoundaryResumeEnabled);
     const ready = await waitForHostReady(child);
     return { child, ...ready };
   }
@@ -608,7 +957,11 @@ export class ExecutionFixture {
   private spawnHost(
     stderr: 'inherit' | 'ignore',
     recoveryProbe?: { sessionId: string; runId: string },
+    safeBoundaryResumeEnabled = true,
   ): ChildProcess {
+    const env = { ...process.env };
+    if (safeBoundaryResumeEnabled) env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
+    else delete env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
     const child = fork(
       new URL('./execution-host.js', import.meta.url),
       [
@@ -617,7 +970,7 @@ export class ExecutionFixture {
         '60000',
         ...(recoveryProbe ? [recoveryProbe.sessionId, recoveryProbe.runId] : []),
       ],
-      { stdio: ['ignore', 'ignore', stderr, 'ipc'] },
+      { stdio: ['ignore', 'ignore', stderr, 'ipc'], env },
     );
     this.#children.add(child);
     return child;

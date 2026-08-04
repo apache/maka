@@ -16,7 +16,7 @@ import {
   unlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import {
   canWritePath,
   compilePermissionProfile,
@@ -52,7 +52,7 @@ import {
   type WorkspaceExecutor,
 } from './workspace-executor.js';
 import { lstat, mkdir, open, realpath, unlink, writeFile } from 'node:fs/promises';
-import { isPathInside } from './path-containment.js';
+import { isPathInside, realpathAllowMissing } from './path-containment.js';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
 // re-export only keeps back-compat for callers that imported from
@@ -84,6 +84,64 @@ import {
 // near-instant; this only bounds a pathological hang now that the stream
 // watchdog is paused during tool execution.
 const GREP_TIMEOUT_MS = 120_000;
+
+/**
+ * The filesystem worker answered with a well-formed result of a different
+ * operation than the one that was requested.
+ *
+ * Naming the worker told the model about an internal component it cannot
+ * address, and the original wording read like an argument complaint — on Edit
+ * the likeliest reaction was another `old_string` guess, which can never fix
+ * this. But the replacement has to be careful about two things it cannot say.
+ *
+ * It cannot say the write did not land. Real failures throw; this branch fires
+ * on a mislabelled success, and a mislabelled success is still a success as far
+ * as the disk is concerned. "Nothing was written to disk" is a claim about a
+ * file this code did not look at.
+ *
+ * And it cannot phrase a failed read as an empty one. "Grep could not be
+ * completed inside Maka, so no matches were produced" reads as a search that
+ * ran and found nothing, and a model that takes it that way concludes the
+ * pattern is absent from the repository — the opposite of what happened.
+ *
+ * So a read says no result came back, and says what that does not mean. A write
+ * says Maka cannot tell what happened to the file, and sends the model to look
+ * rather than to retry a call that may have already taken effect.
+ *
+ * Neither may name Bash. Read, Glob and Grep are the entire tool set of a
+ * `local_read` child (`agent-catalog.ts`), and `buildToolsForAgentDefinition`
+ * hands that child those three tools and nothing else. "Use Bash to do the same
+ * work" is, for the caller most likely to be running a bare Grep, an
+ * instruction it cannot carry out — a dead end dressed as a way out. The
+ * fallback is therefore offered on a condition the model can check for itself,
+ * and the sentence ends on a move that is available to every caller.
+ *
+ * The worker-protocol violation itself still has to reach an operator, so it
+ * travels as the `cause`: out of the model's sight, in every log and stack.
+ */
+function mismatchedWorkerResult(tool: string): Error {
+  return new Error(`Filesystem worker returned a mismatched ${tool} result.`);
+}
+
+function internalFilesystemReadFailure(tool: string, missing: string, notMeaning: string): Error {
+  return new Error(
+    `${tool} could not be completed inside Maka, so ${missing}. ` +
+      `This is an internal failure, not a problem with your arguments, and it does not mean ${notMeaning}. ` +
+      `Retry the same ${tool} call once. If it fails again, stop calling ${tool}: do the same ` +
+      `work with a shell tool if you have one, and otherwise report that ${tool} is failing inside Maka.`,
+    { cause: mismatchedWorkerResult(tool) },
+  );
+}
+
+function internalFilesystemWriteFailure(tool: string, subject: string, extra?: string): Error {
+  return new Error(
+    `${tool} could not be completed inside Maka. Maka cannot tell whether ${subject}, ` +
+      `so treat the file as being in an unknown state. ` +
+      `This is an internal failure, not a problem with your arguments${extra ? ` — ${extra}` : ''}. ` +
+      `Read the file to find out what it now contains before writing to it again.`,
+    { cause: mismatchedWorkerResult(tool) },
+  );
+}
 
 export interface BuildBuiltinToolsOptions {
   shellRuns?: ShellRunLauncher;
@@ -289,7 +347,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             return { kind: 'image' as const, mimeType: result.mimeType, ref };
           }
           if (result.kind !== 'read')
-            throw new Error('Filesystem worker returned a mismatched Read result.');
+            throw internalFilesystemReadFailure(
+              'Read',
+              'no file content came back',
+              'the file is empty or missing',
+            );
           return { content: result.content };
         }
         const { path: resolvedPath } = await executor.resolveExistingPath({
@@ -353,7 +415,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'write')
-              throw new Error('Filesystem worker returned a mismatched Write result.');
+              throw internalFilesystemWriteFailure('Write', 'the file was written');
             return { ok: result.ok, path: result.path, bytes: result.bytes };
           }
           const { path: resolvedPath } = await executor.resolveWritablePath({
@@ -405,7 +467,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'edit')
-              throw new Error('Filesystem worker returned a mismatched Edit result.');
+              throw internalFilesystemWriteFailure(
+                'Edit',
+                'the edit was applied',
+                'a different old_string will not help',
+              );
             return {
               ok: result.ok,
               path: result.path,
@@ -505,7 +571,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'format_json') {
-              throw new Error('Filesystem worker returned a mismatched FormatJson result.');
+              throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
             }
             return result;
           }
@@ -585,7 +651,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
           });
           if (result.kind !== 'glob')
-            throw new Error('Filesystem worker returned a mismatched Glob result.');
+            throw internalFilesystemReadFailure(
+              'Glob',
+              'no file list came back',
+              'no files match the pattern',
+            );
           return { files: result.files };
         }
         const { path: base } = await executor.resolveExistingPath({
@@ -628,7 +698,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             ...(abortSignal ? { abortSignal } : {}),
           });
           if (result.kind !== 'grep')
-            throw new Error('Filesystem worker returned a mismatched Grep result.');
+            throw internalFilesystemReadFailure(
+              'Grep',
+              'no search result came back',
+              'the pattern is absent',
+            );
           return { matches: result.matches };
         }
         const { path: searchPath } = await executor.resolveExistingPath({
@@ -1197,11 +1271,12 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
   return {
     async lockKey(path) {
       if (filesystemWorker) {
-        // Delete/Move address a directory entry, never the link target; the
-        // worker resolves the operand the same way. Following the final link
-        // here would reject an escaping symlink before its op ever runs.
-        await assertApplyPatchPathContained(canonicalCwd, path, false);
-        return fileToolWriteLockKey(canonicalCwd, path);
+        // Delete/Move address a directory entry, never the link target, so
+        // the lock key is the canonical entry path: concurrent ops through
+        // the same entry serialize on one key without rejecting an escaping
+        // link before its op runs.
+        const target = await assertApplyPatchEntryContained(canonicalCwd, path);
+        return target.entryPath;
       }
       return (await input.executor.writeLockKey({ cwd, path })).key;
     },
@@ -1212,9 +1287,9 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
           throw new Error('Filesystem worker returned mismatched lstat.');
         return result.targetType;
       }
-      const target = await assertApplyPatchPathContained(cwd, path, false);
+      const target = await assertApplyPatchEntryContained(cwd, path);
       try {
-        const metadata = await lstat(target.displayPath);
+        const metadata = await lstat(target.entryPath);
         if (metadata.isSymbolicLink()) return 'symlink';
         if (metadata.isFile()) return 'file';
         return 'other';
@@ -1254,18 +1329,20 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
         }
         return { path: result.path, bytes: result.bytes };
       }
-      const target = await assertApplyPatchPathContained(cwd, path, false);
+      const target = await assertApplyPatchPathContained(cwd, path);
       await mkdir(dirname(target.enforcementPath), { recursive: true });
       if (mode === 'create') {
-        await writeFile(target.displayPath, content, { encoding: 'utf8', flag: 'wx' });
-        return { path: target.displayPath, bytes: Buffer.byteLength(content, 'utf8') };
+        await writeFile(target.enforcementPath, content, { encoding: 'utf8', flag: 'wx' });
+        return { path: target.enforcementPath, bytes: Buffer.byteLength(content, 'utf8') };
       }
-      const metadata = await lstat(target.displayPath);
+      // Follow-final containment (#2059): an Update lands on the canonical
+      // target, never through a link, and O_NOFOLLOW keeps it there.
+      const metadata = await lstat(target.enforcementPath);
       if (!metadata.isFile() || metadata.isSymbolicLink()) {
         throw new Error(`ApplyPatch Update target must be a regular file: ${path}`);
       }
       const handle = await open(
-        target.displayPath,
+        target.enforcementPath,
         constants.O_NOFOLLOW === undefined ? 'r+' : constants.O_WRONLY | constants.O_NOFOLLOW,
       );
       try {
@@ -1274,7 +1351,7 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
       } finally {
         await handle.close();
       }
-      return { path: target.displayPath, bytes: Buffer.byteLength(content, 'utf8') };
+      return { path: target.enforcementPath, bytes: Buffer.byteLength(content, 'utf8') };
     },
     async deletePath(path) {
       if (filesystemWorker) {
@@ -1284,9 +1361,9 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
         }
         return { path: result.path };
       }
-      const target = await assertApplyPatchPathContained(cwd, path, false);
-      await unlink(target.displayPath);
-      return { path: target.displayPath };
+      const target = await assertApplyPatchEntryContained(cwd, path);
+      await unlink(target.entryPath);
+      return { path: target.entryPath };
     },
     async preflightPermissions(accesses: readonly ApplyPatchAccessIntent[]) {
       await preflightApplyPatchPermissions({
@@ -1305,7 +1382,6 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
 async function assertApplyPatchPathContained(
   cwd: string,
   path: string,
-  followFinalSymlink = true,
 ): Promise<Awaited<ReturnType<typeof normalizeSandboxBoundaryPath>>> {
   const root = await realpath(cwd);
   const target = await normalizeSandboxBoundaryPath({
@@ -1313,12 +1389,35 @@ async function assertApplyPatchPathContained(
     access: 'write',
     scope: 'exact',
     cwd: root,
-    followFinalSymlink,
   });
   if (!isPathInside(root, target.displayPath) || !isPathInside(root, target.enforcementPath)) {
     throw new Error(`ApplyPatch path must stay inside session cwd: ${path}`);
   }
   return target;
+}
+
+/**
+ * Canonicalise a directory entry (Delete/Move source, lstat operand) without
+ * following its final symlink: the parent chain resolves in realpath space
+ * (#2059 containment authority) and the leaf name is appended. A link inside
+ * the root whose parent chain resolves outside still fails containment; the
+ * entry itself (file or link) stays addressable for lstat/unlink.
+ */
+async function assertApplyPatchEntryContained(
+  cwd: string,
+  path: string,
+): Promise<{ displayPath: string; entryPath: string }> {
+  const root = await realpath(cwd);
+  const displayPath = resolve(root, path);
+  if (!isPathInside(root, displayPath)) {
+    throw new Error(`ApplyPatch path must stay inside session cwd: ${path}`);
+  }
+  const parentReal = await realpathAllowMissing(dirname(displayPath));
+  const entryPath = resolve(parentReal, basename(displayPath));
+  if (!isPathInside(root, entryPath)) {
+    throw new Error(`ApplyPatch path must stay inside session cwd: ${path}`);
+  }
+  return { displayPath, entryPath };
 }
 
 async function preflightApplyPatchPermissions(input: {
@@ -1338,11 +1437,7 @@ async function preflightApplyPatchPermissions(input: {
       if (intent.access === 'write') {
         await assertApplyPatchPathContained(input.cwd, intent.path);
       } else {
-        await input.executor.resolveExistingPath({
-          cwd: input.cwd,
-          path: intent.path,
-          label: 'ApplyPatch preflight',
-        });
+        await assertApplyPatchEntryContained(input.cwd, intent.path);
       }
     }
     return;
@@ -1375,14 +1470,25 @@ async function preflightApplyPatchPermissions(input: {
   }> = [];
 
   for (const intent of input.accesses) {
-    const target = await normalizeSandboxBoundaryPath({
-      path: intent.path,
-      access: 'write',
-      scope: 'exact',
-      cwd: input.canonicalCwd,
-      followFinalSymlink: false,
-    });
-    const runtimeWritableRoots = await filesystemWorkerRuntimeWritableRoots({
+    // Delete/Move sources address a directory entry; Add/Update/Move
+    // destinations write through the canonical (followed) target (#2059).
+    const entry =
+      intent.access === 'delete'
+        ? await assertApplyPatchEntryContained(input.canonicalCwd, intent.path)
+        : undefined;
+    const target = entry
+      ? {
+          displayPath: entry.displayPath,
+          enforcementPath: entry.entryPath,
+          targetType: await entryTargetType(entry.entryPath),
+        }
+      : await normalizeSandboxBoundaryPath({
+          path: intent.path,
+          access: 'write',
+          scope: 'exact',
+          cwd: input.canonicalCwd,
+        });
+    const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
       platform,
       access: 'write',
       enforcementPath: target.enforcementPath,
@@ -1423,6 +1529,24 @@ async function preflightApplyPatchPermissions(input: {
         }
       : {}),
   });
+}
+
+async function entryTargetType(path: string): Promise<'missing' | 'file' | 'other'> {
+  try {
+    const metadata = await lstat(path);
+    if (metadata.isFile() || metadata.isSymbolicLink()) return 'file';
+    return 'other';
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+    ) {
+      return 'missing';
+    }
+    throw error;
+  }
 }
 
 function terminalError(

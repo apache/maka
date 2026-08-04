@@ -3,6 +3,8 @@ import { isDeepResearchSession, type SessionHeader } from '@maka/core/session';
 
 const WORKTREE_CHILD_UNAVAILABLE_REASON =
   'Worktree child Sessions must be continued through their parent agent.';
+const CHILD_CONTINUATION_UNAVAILABLE_REASON =
+  'Child Sessions must be continued through their parent agent.';
 
 export function runtimeHostSessionUnavailableReason(
   header: Pick<SessionHeader, 'collaborationMode' | 'labels'>,
@@ -20,6 +22,18 @@ export function runtimeHostExternalTurnUnavailableReason(
   header: Pick<SessionHeader, 'collaborationMode' | 'labels' | 'subagentWorkspace'>,
 ): string | undefined {
   return runtimeHostExecutionUnavailableReason(header, { kind: 'external_message' });
+}
+
+export function runtimeHostSafeBoundaryContinuationUnavailableReason(
+  header: Pick<
+    SessionHeader,
+    'collaborationMode' | 'labels' | 'subagentParent' | 'subagentWorkspace'
+  >,
+): string | undefined {
+  return (
+    runtimeHostSessionUnavailableReason(header) ??
+    (header.subagentParent ? CHILD_CONTINUATION_UNAVAILABLE_REASON : undefined)
+  );
 }
 
 export function runtimeHostExecutionUnavailableReason(

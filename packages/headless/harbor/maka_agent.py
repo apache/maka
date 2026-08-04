@@ -430,6 +430,9 @@ class MakaAgent(BaseInstalledAgent):
                 f"2>&1 | tee {shlex.quote(run_log_path.as_posix())}"
             )
             command = f"bash -lc {shlex.quote(shell_script)}"
+            # _cell_env sets no MAKA_CELL_SOFT_TIMEOUT_MS, so this cell never
+            # stops early to settle: it calls the model until it is killed. The
+            # model budget is therefore the whole deadline, with no window to add.
             await self.exec_as_agent(environment, command=command, env=env, timeout_sec=self._cell_timeout_sec())
             await self._download_cell_output(environment)
         output = self._read_cell_output(required=True)
@@ -482,28 +485,33 @@ class MakaAgent(BaseInstalledAgent):
             if env is not None
             else self._get_env("MAKA_CELL_SETTLEMENT_GRACE_SEC")
         )
-        if not raw:
-            return self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
-        return value if value > 0 else self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
+        # Same accepted syntax as MAKA_CELL_TIMEOUT_SEC so both sides of the
+        # boundary reject exactly the same strings; bare int() would take
+        # "+60"/"060"/" 60 ", which the TypeScript producer never emits.
+        return _positive_int_literal(raw) or self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
 
-    def _cell_soft_timeout_ms(self, env: dict[str, str] | None = None) -> int:
-        timeout_sec = self._cell_timeout_sec(env)
-        grace_sec = self._cell_settlement_grace_sec(env)
-        if grace_sec >= timeout_sec:
+    def _model_budget_ms(self, env: dict[str, str] | None = None) -> int:
+        """Wall-clock the cell may spend calling the model, in milliseconds.
+
+        This is MAKA_CELL_TIMEOUT_SEC verbatim: the budget is the model budget on
+        every path, and the settlement window is added around it rather than
+        carved out of it. Benchmark arms are only comparable when this number is
+        the task-native budget for every harness.
+        """
+        budget_ms = self._cell_timeout_sec(env) * 1000
+        if budget_ms > _MAX_NODE_TIMER_MS:
             raise RuntimeError(
-                "MAKA_CELL_SETTLEMENT_GRACE_SEC must be smaller than MAKA_CELL_TIMEOUT_SEC"
-            )
-        soft_timeout_ms = (timeout_sec - grace_sec) * 1000
-        if soft_timeout_ms > _MAX_NODE_TIMER_MS:
-            raise RuntimeError(
-                "MAKA_CELL_SOFT_TIMEOUT_MS exceeds the Node timer limit "
+                "MAKA_CELL_TIMEOUT_SEC exceeds the Node timer limit "
                 f"of {_MAX_NODE_TIMER_MS}ms"
             )
-        return soft_timeout_ms
+        return budget_ms
+
+    def _agent_phase_timeout_sec(self, env: dict[str, str] | None = None) -> int:
+        """Wall-clock the whole agent phase may take: the model budget plus the
+        window the cell needs to settle its artifacts after it stops calling the
+        model. Every hard process deadline uses this, never the model budget, or
+        the cell would be killed exactly when it starts writing."""
+        return self._cell_timeout_sec(env) + self._cell_settlement_grace_sec(env)
 
     def _host_side_llm_enabled(self) -> bool:
         return bool(
@@ -532,14 +540,14 @@ class MakaAgent(BaseInstalledAgent):
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self._cell_timeout_sec())
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self._agent_phase_timeout_sec())
             except BaseException as error:
                 if process.returncode is None:
                     process.kill()
                 stdout, stderr = await process.communicate()
                 run_log_path.write_bytes(stdout + stderr)
                 if isinstance(error, asyncio.TimeoutError):
-                    raise RuntimeError(f"Maka host cell exceeded {self._cell_timeout_sec()}s") from error
+                    raise RuntimeError(f"Maka host cell exceeded {self._agent_phase_timeout_sec()}s") from error
                 raise
             run_log_path.write_bytes(stdout + stderr)
             if process.returncode == 124:
@@ -566,7 +574,7 @@ class MakaAgent(BaseInstalledAgent):
         env["MAKA_WORKDIR"] = container_cwd
         env["MAKA_HARBOR_TOOL_EXECUTOR_URL"] = executor.url
         env["MAKA_HARBOR_TOOL_EXECUTOR_TOKEN"] = executor.token
-        env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._cell_soft_timeout_ms())
+        env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._model_budget_ms())
         for key in _HOST_PROVIDER_AUTHORITY_ENV_KEYS:
             value = self._get_env(key)
             if value:
@@ -918,7 +926,7 @@ class MakaAgent(BaseInstalledAgent):
         env["MAKA_STORAGE_ROOT"] = str(out_dir / "runs")
         env["MAKA_CELL_ARTIFACT_DIR"] = EnvironmentPaths.agent_dir.as_posix()
         if model_deadline_at_ms is None:
-            env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._cell_soft_timeout_ms(env))
+            env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._model_budget_ms(env))
         else:
             env.pop("MAKA_CELL_SOFT_TIMEOUT_MS", None)
             env["MAKA_CELL_DEADLINE_AT_MS"] = str(model_deadline_at_ms)
@@ -942,7 +950,7 @@ class MakaAgent(BaseInstalledAgent):
     ) -> float:
         phase_timeout_sec = _positive_int_literal(env.get("MAKA_AGENT_PHASE_TIMEOUT_SEC"))
         if phase_timeout_sec is None:
-            return float(self._cell_timeout_sec(env))
+            return float(self._agent_phase_timeout_sec(env))
         remaining = phase_timeout_sec - max(0.0, time.monotonic() - phase_started_monotonic)
         if remaining <= 0:
             raise asyncio.TimeoutError("Maka agent phase exhausted before task-run start")
@@ -1014,7 +1022,7 @@ class MakaAgent(BaseInstalledAgent):
         env["MAKA_OUTPUT_DIR"] = str(output_dir)
         env["MAKA_STORAGE_ROOT"] = str(storage_root)
         self._trajectory_storage_root = output_dir / "trajectory-state"
-        env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._cell_soft_timeout_ms(env))
+        env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._model_budget_ms(env))
 
         task_workdir, workdir_probe = await self._resolve_task_workdir(environment)
 
@@ -1041,7 +1049,7 @@ class MakaAgent(BaseInstalledAgent):
             },
         )
 
-        timeout_sec = self._cell_timeout_sec(env)
+        timeout_sec = self._agent_phase_timeout_sec(env)
         proc: asyncio.subprocess.Process | None = None
         async with _ToolExecutorServer(self, environment) as executor:
             env["MAKA_HARBOR_TOOL_EXECUTOR_URL"] = executor.url
@@ -1875,6 +1883,8 @@ def _runner_env_summary(env: dict[str, str]) -> dict[str, str]:
         "MAKA_CELL_TIMEOUT_SEC",
         "MAKA_CELL_SOFT_TIMEOUT_MS",
         "MAKA_CELL_SETTLEMENT_GRACE_SEC",
+        "MAKA_AGENT_PHASE_TIMEOUT_SEC",
+        "MAKA_CELL_DEADLINE_AT_MS",
     ]
     return {key: env[key] for key in allowed_keys if key in env}
 

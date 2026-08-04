@@ -1,4 +1,5 @@
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import type { ToolActivityKind } from '@maka/core/events';
 import {
   assertExactKeys,
   requireCount,
@@ -115,16 +116,10 @@ export type SessionToolEvent =
       type: 'tool_start';
       toolName: string;
       operationId?: string;
-      activityKind?:
-        | 'read'
-        | 'search'
-        | 'websearch'
-        | 'webfetch'
-        | 'edit'
-        | 'command'
-        | 'explore'
-        | 'browser'
-        | 'tool';
+      // From the one list, not a fourth copy of it. This was written out by
+      // hand and drifted the moment a kind was added — the wire then rejected
+      // an event the rest of the system considered valid.
+      activityKind?: ToolActivityKind;
       displayName?: string;
       stepId?: string;
     })
@@ -645,21 +640,17 @@ function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number
   }
 }
 
-function requireToolActivityKind(
-  value: unknown,
-): Extract<SessionToolEvent, { type: 'tool_start' }>['activityKind'] {
-  if (
-    value === 'read' ||
-    value === 'search' ||
-    value === 'websearch' ||
-    value === 'webfetch' ||
-    value === 'edit' ||
-    value === 'command' ||
-    value === 'explore' ||
-    value === 'browser' ||
-    value === 'tool'
-  )
-    return value;
+/**
+ * Read against the one list rather than a copy of it.
+ *
+ * This was a hand-written chain, and a decoder is the worst place for a copy:
+ * a kind added anywhere else made this reject the whole frame, so the failure
+ * arrives as a protocol violation rather than as anything naming the field.
+ */
+function requireToolActivityKind(value: unknown): ToolActivityKind {
+  if (typeof value === 'string' && (TOOL_ACTIVITY_KINDS as readonly string[]).includes(value)) {
+    return value as ToolActivityKind;
+  }
   throw invalidProtocolFrame('Invalid Session tool activity kind');
 }
 

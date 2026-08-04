@@ -30,6 +30,7 @@ import {
   sanitizeArtifactName,
 } from '../artifact-store.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
+import { createSqliteArtifactMetadataRepository } from '../sqlite-artifact-metadata.js';
 
 describe('SQLite Artifact store', () => {
   test('creates a missing workspace root before acquiring the writer lock', async () => {
@@ -343,59 +344,6 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('reads merge-base names and replays the same legacy inputs without renaming', async () => {
-    await withWorkspace(async (root) => {
-      const fixtures = [
-        { id: 'legacy-dotfile', inputName: '-.gitignore', storedName: '.gitignore' },
-        {
-          id: 'legacy-leading-hyphen',
-          inputName: '. -report.txt',
-          storedName: '-report.txt',
-        },
-        { id: 'legacy-hyphen', inputName: 'report-', storedName: 'report-' },
-        { id: 'legacy-dot', inputName: 'report.', storedName: 'report.' },
-        {
-          id: 'legacy-surrogate',
-          inputName: `${'a'.repeat(119)}😀tail`,
-          storedName: `${'a'.repeat(119)}\ud83d`,
-        },
-        {
-          id: 'legacy-trailing-space',
-          inputName: `${'a'.repeat(119)} tail`,
-          storedName: `${'a'.repeat(119)} `,
-        },
-      ];
-      const records = fixtures.map(({ id, storedName }) =>
-        canonicalRecord({
-          id,
-          sessionId: 'session-1',
-          name: storedName,
-          sizeBytes: Buffer.byteLength(id),
-        }),
-      );
-      for (const record of records) {
-        const payloadPath = join(root, 'artifacts', record.relativePath);
-        await mkdir(dirname(payloadPath), { recursive: true });
-        await writeFile(payloadPath, record.id, 'utf8');
-      }
-      await writeArtifactMetadata(root, records);
-
-      const reopened = createArtifactStore(root);
-      for (const [index, fixture] of fixtures.entries()) {
-        const record = records[index]!;
-        assert.deepEqual(await reopened.get(record.id), record);
-        assert.deepEqual(await reopened.readText(record.id), { ok: true, text: record.id });
-        assert.deepEqual(
-          await reopened.create({
-            ...artifactInput(fixture.id, fixture.id, 1),
-            name: fixture.inputName,
-          }),
-          record,
-        );
-      }
-    });
-  });
-
   test('rejects metadata names that neither writer could have produced', async () => {
     for (const name of ['short ', 'embedded\ttab', 'embedded\nnewline']) {
       await withWorkspace(async (root) => {
@@ -404,7 +352,7 @@ describe('SQLite Artifact store', () => {
         ]);
         await assert.rejects(
           () => createArtifactStore(root).list('session-1', { includeDeleted: true }),
-          /Invalid artifact metadata line 1/,
+          /Invalid artifact metadata record 1/,
         );
       });
     }
@@ -757,17 +705,17 @@ describe('SQLite Artifact store', () => {
   test('self-managed SQLite mutation adopts an exact stable-id target-only orphan', async () => {
     await withWorkspace(async (root) => {
       const input = {
-        ...artifactInput('legacy-orphan', 'orphan bytes', 1),
-        name: '-.gitignore',
+        ...artifactInput('target-orphan', 'orphan bytes', 1),
+        name: 'report.txt',
       };
-      const orphanPath = join(root, 'artifacts', 'session-1', 'legacy-orphan-.gitignore');
+      const orphanPath = join(root, 'artifacts', 'session-1', 'target-orphan-report.txt');
       await mkdir(dirname(orphanPath), { recursive: true });
       await writeFile(orphanPath, input.content, { flag: 'wx' });
 
       const bare = createArtifactStore(root);
       const adopted = await bare.create(input);
-      assert.equal(adopted.name, '.gitignore');
-      assert.equal(adopted.relativePath, 'session-1/legacy-orphan-.gitignore');
+      assert.equal(adopted.name, 'report.txt');
+      assert.equal(adopted.relativePath, 'session-1/target-orphan-report.txt');
       assert.deepEqual(await createArtifactStore(root).readText(adopted.id), {
         ok: true,
         text: input.content,
@@ -831,26 +779,6 @@ describe('SQLite Artifact store', () => {
     });
 
     await withWorkspace(async (root) => {
-      const input = {
-        ...artifactInput('legacy-surrogate-orphan', 'surrogate bytes', 1),
-        name: `${'a'.repeat(119)}😀tail`,
-      };
-      const legacyName = `${'a'.repeat(119)}\ud83d`;
-      const orphanPath = join(root, 'artifacts', 'session-1', `${input.id}-${legacyName}`);
-      await mkdir(dirname(orphanPath), { recursive: true });
-      await writeFile(orphanPath, input.content, { flag: 'wx' });
-
-      const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
-      const adopted = await authority.store.create(input);
-      assert.equal(adopted.name, legacyName);
-      assert.deepEqual(await authority.store.readText(adopted.id), {
-        ok: true,
-        text: input.content,
-      });
-    });
-
-    await withWorkspace(async (root) => {
       const input = artifactInput('late-payload', 'same bytes', 1);
       const authority = createArtifactStoreWriteAuthority(root);
       const store = authority.store;
@@ -868,19 +796,19 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('write recovery durably removes only canonical root transaction temp files', async () => {
+  test('write recovery removes only canonical purge-intent temp files', async () => {
     await withWorkspace(async (root) => {
       const artifactRoot = join(root, 'artifacts');
       await mkdir(artifactRoot, { recursive: true });
       const canonicalTemps = [
-        join(artifactRoot, 'metadata.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
-        join(artifactRoot, 'metadata.jsonl.123.1700000000000.tmp'),
         join(
           artifactRoot,
           '.artifact-purge-intent.json.123.00000000-0000-4000-8000-000000000000.tmp',
         ),
       ];
       const unknownFiles = [
+        join(artifactRoot, 'metadata.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
+        join(artifactRoot, 'metadata.jsonl.123.1700000000000.tmp'),
         join(artifactRoot, 'metadata.jsonl.123.not-a-uuid.tmp'),
         join(artifactRoot, '.artifact-purge-intent.json.123.not-a-uuid.tmp'),
         join(artifactRoot, 'other.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
@@ -914,17 +842,7 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('fails closed on malformed metadata and mismatched publication residue', async () => {
-    await withWorkspace(async (root) => {
-      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      await mkdir(join(root, 'artifacts'), { recursive: true });
-      await writeFile(metadataPath, '{"id":"incomplete","status":"live"}\n', 'utf8');
-      await assert.rejects(
-        () => createArtifactStore(root).list('session-1'),
-        /Invalid artifact metadata line 1/,
-      );
-    });
-
+  test('fails closed on mismatched publication residue', async () => {
     await withWorkspace(async (root) => {
       const residue = await createPublicationResidue(root, 'mismatch', 'file.txt', 'payload');
       await rm(residue.targetPath);
@@ -952,7 +870,7 @@ describe('SQLite Artifact store', () => {
         await writeArtifactMetadata(root, [recordWithIdentity(field, value)]);
         await assert.rejects(
           () => createArtifactStore(root).list('session-1', { includeDeleted: true }),
-          /Invalid artifact metadata line 1/,
+          /Invalid artifact metadata record 1/,
         );
       });
     }
@@ -982,20 +900,6 @@ describe('SQLite Artifact store', () => {
         assert.equal((await stat(intentPath)).isFile(), true);
       });
     }
-  });
-
-  test('fails loud when the metadata path cannot be read as a file', async () => {
-    await withWorkspace(async (root) => {
-      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      await mkdir(metadataPath, { recursive: true });
-
-      await assert.rejects(
-        () => createArtifactStore(root).list('session-1'),
-        (error: unknown) =>
-          typeof error === 'object' && error !== null && 'code' in error && error.code === 'EISDIR',
-      );
-      assert.equal((await stat(metadataPath)).isDirectory(), true);
-    });
   });
 
   test('soft delete tombstones bytes until idempotent purge', async () => {
@@ -1248,7 +1152,7 @@ describe('SQLite Artifact store', () => {
   test('self-managed SQLite stores recover an interrupted purge before the next write', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
-      const record = await store.create(artifactInput('legacy-purge', 'remove me', 1));
+      const record = await store.create(artifactInput('interrupted-purge', 'remove me', 1));
       await rm(join(root, 'artifacts', record.relativePath));
       await writeFile(
         join(root, 'artifacts', '.artifact-purge-intent.json'),
@@ -1539,14 +1443,13 @@ async function writeArtifactMetadata(
   root: string,
   records: readonly ArtifactRecord[],
 ): Promise<string> {
-  const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-  await mkdir(dirname(metadataPath), { recursive: true });
-  await writeFile(
-    metadataPath,
-    records.map((record) => JSON.stringify(record)).join('\n') + '\n',
-    'utf8',
-  );
-  return metadataPath;
+  const repository = createSqliteArtifactMetadataRepository(root);
+  try {
+    repository.replaceAll(records);
+  } finally {
+    repository.close();
+  }
+  return join(root, 'runtime.sqlite');
 }
 
 async function createSymlinkOrSkip(

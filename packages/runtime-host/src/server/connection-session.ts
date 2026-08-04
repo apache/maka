@@ -226,7 +226,7 @@ export class RuntimeHostConnectionSession {
   }
 
   #detachClientCapabilities(): void {
-    this.#clientCapabilities?.close();
+    void this.#clientCapabilities?.close();
     this.#clientCapabilities = undefined;
     this.#clientCapabilityService = undefined;
   }

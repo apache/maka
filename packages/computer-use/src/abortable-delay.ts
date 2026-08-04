@@ -4,12 +4,13 @@
  * The model-facing `wait` action used a bare setTimeout, so a user stop during
  * a long wait was ignored until the timer fired on its own.
  *
- * Only the maka-cu backend waits this way. `cua-driver-backend.ts` still calls
- * a bare `setTimeout` for its own `wait`, so a stop during one is still ignored
- * there for up to ten seconds — a pre-existing bug on the default backend, and
- * not one this module fixed by existing. This comment previously claimed both
- * backends waited the same way, which is the kind of sentence that stops the
- * next person from checking.
+ * This used to note that only the maka-cu backend waited this way, and that
+ * `cua-driver-backend.ts` still used a bare `setTimeout` for its own `wait`.
+ * That backend is gone, so there is no longer a wait in this package that a
+ * stop cannot interrupt. The note is kept in this shape rather than deleted
+ * because the claim it replaced — that both backends waited the same way —
+ * was false, and false claims of that kind are what stop the next person from
+ * checking.
  */
 export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();

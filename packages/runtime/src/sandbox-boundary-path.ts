@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
+import { realpathAllowMissing } from './path-containment.js';
 import {
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
   validateSandboxBoundaryExpansion,
@@ -13,7 +14,7 @@ export interface NormalizedSandboxBoundaryPath {
   readonly enforcementPath: string;
   readonly access: SandboxBoundaryAccess;
   readonly scope: SandboxBoundaryScope;
-  readonly targetType: 'file' | 'directory' | 'symlink' | 'other' | 'missing';
+  readonly targetType: 'file' | 'directory' | 'other' | 'missing';
 }
 
 export async function normalizeSandboxBoundaryPath(input: {
@@ -21,8 +22,6 @@ export async function normalizeSandboxBoundaryPath(input: {
   access: SandboxBoundaryAccess;
   scope: SandboxBoundaryScope | 'auto';
   cwd: string;
-  /** Delete/lstat address a directory entry and must not follow its final link. */
-  followFinalSymlink?: boolean;
 }): Promise<NormalizedSandboxBoundaryPath> {
   if (
     !input.path ||
@@ -33,11 +32,8 @@ export async function normalizeSandboxBoundaryPath(input: {
   }
   const canonicalCwd = await fs.realpath(input.cwd);
   const displayPath = resolve(canonicalCwd, input.path);
-  const followFinalSymlink = input.followFinalSymlink ?? true;
-  const enforcementPath = followFinalSymlink
-    ? await realpathAllowMissing(displayPath)
-    : await canonicalDirectoryEntryPath(displayPath);
-  const targetType = await targetTypeFor(enforcementPath, followFinalSymlink);
+  const enforcementPath = await realpathAllowMissing(displayPath);
+  const targetType = await targetTypeFor(enforcementPath);
   const scope =
     input.scope === 'auto' ? (targetType === 'directory' ? 'subtree' : 'exact') : input.scope;
   if (scope === 'subtree' && targetType !== 'directory') {
@@ -78,35 +74,9 @@ export async function normalizeSandboxBoundaryExpansion(
   return normalized.expansion;
 }
 
-async function realpathAllowMissing(target: string): Promise<string> {
-  let cursor = target;
-  const missing: string[] = [];
-  while (true) {
-    try {
-      const realParent = await fs.realpath(cursor);
-      return resolve(realParent, ...missing.reverse());
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      const parent = dirname(cursor);
-      if (parent === cursor) throw error;
-      missing.push(cursor.slice(parent.length + (parent === '/' ? 0 : 1)));
-      cursor = parent;
-    }
-  }
-}
-
-async function canonicalDirectoryEntryPath(path: string): Promise<string> {
-  const parent = dirname(path);
-  return resolve(await realpathAllowMissing(parent), path.slice(parent.length + 1));
-}
-
-async function targetTypeFor(
-  path: string,
-  followFinalSymlink: boolean,
-): Promise<NormalizedSandboxBoundaryPath['targetType']> {
+async function targetTypeFor(path: string): Promise<NormalizedSandboxBoundaryPath['targetType']> {
   try {
-    const stat = followFinalSymlink ? await fs.stat(path) : await fs.lstat(path);
-    if (stat.isSymbolicLink()) return 'symlink';
+    const stat = await fs.stat(path);
     if (stat.isFile()) return 'file';
     if (stat.isDirectory()) return 'directory';
     return 'other';

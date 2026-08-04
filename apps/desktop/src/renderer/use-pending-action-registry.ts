@@ -12,7 +12,7 @@ type RefBox<T> = { current: T };
  * The four instances differ only along two axes, both opt-in:
  *
  *   - `trackState` — the turn-footer registry drives a React-visible disabled
- *     mask (deriveAppShellTurnViewModel reads `keys`), so it mirrors the ref
+ *     mask (the turn presentation derivation reads `keys`), so it mirrors the ref
  *     into state on every mutation. The three ref-only registries pass their
  *     `keysRef` straight to their action factories / the bootstrap cleanup
  *     effect and never re-render, so they skip the state mirror entirely.

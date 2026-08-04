@@ -561,7 +561,7 @@ const opencodeFreeModelIds = [
   'nemotron-3-ultra-free',
   'deepseek-v4-flash-free',
   'north-mini-code-free',
-  'hy3-free',
+  'laguna-s-2.1-free',
 ] as const;
 for (const id of opencodeFreeModelIds) {
   const model = GENERATED_MODELS_DEV_METADATA.opencode[id];

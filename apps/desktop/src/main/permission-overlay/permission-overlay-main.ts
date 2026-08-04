@@ -23,12 +23,13 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { UiLocale } from '@maka/core';
-import { openSystemPermissionPane } from '../permissions-actions.js';
-import { resolveAppBundle } from './app-bundle.js';
+import { openSystemPermissionPane, requestPermissionAccess } from '../permissions-actions.js';
+import { loadNativeBundleIcon, resolveAppBundle } from './app-bundle.js';
 import { getPermissionOverlayCopy } from './permission-overlay-copy.js';
 import {
   createPermissionOverlayController,
   isDragGrantPermission,
+  startScreenRecordingOnboarding,
   type DragGrantPermissionId,
   type PermissionOverlayController,
   type PermissionOverlayWindowLike,
@@ -82,16 +83,14 @@ export function createPermissionOverlayMain(
 
   async function resolveAppIconDataUrl(bundlePath: string | null): Promise<string | null> {
     if (!bundlePath) return null;
-    try {
-      // nativeImage.createFromPath does not decode .icns reliably. Asking
-      // macOS for the bundle icon returns the same image Finder and the TCC
-      // list display, and works for both Maka.app and Electron.app in dev.
-      const icon = await app.getFileIcon(bundlePath, { size: 'large' });
-      if (icon.isEmpty()) return null;
-      return icon.resize({ width: 64, height: 64 }).toDataURL();
-    } catch {
-      return null;
-    }
+    const icon = await loadNativeBundleIcon(app.isPackaged, () =>
+      app.getFileIcon(bundlePath, { size: 'large' }),
+    );
+    if (!icon || icon.isEmpty()) return null;
+    // nativeImage.createFromPath does not decode .icns reliably. Asking
+    // macOS for the bundle icon returns the same image Finder and the TCC
+    // list display for packaged Maka builds.
+    return icon.resize({ width: 64, height: 64 }).toDataURL();
   }
 
   const controller = createPermissionOverlayController({
@@ -281,12 +280,11 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
       if (!fromRenderer.isEmpty()) icon = fromRenderer;
     }
     if (icon.isEmpty()) {
-      try {
-        const fallback = await app.getFileIcon(resolved.bundlePath, { size: 'large' });
-        if (!fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
-      } catch {
-        // The file drag still works without a decorative drag image.
-      }
+      const fallback = await loadNativeBundleIcon(app.isPackaged, () =>
+        app.getFileIcon(resolved.bundlePath, { size: 'large' }),
+      );
+      if (fallback && !fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
+      // The file drag still works without a decorative drag image.
     }
 
     if (!win.isDestroyed()) win.webContents.startDrag({ file: resolved.bundlePath, icon });
@@ -305,9 +303,18 @@ export interface PermissionOverlayIpcDeps {
  */
 export function registerPermissionOverlayIpc(deps: PermissionOverlayIpcDeps): void {
   const electron = requireElectron('electron') as Electron;
-  const { ipcMain } = electron;
+  const { ipcMain, systemPreferences } = electron;
 
   ipcMain.handle('permissions:startDragOnboarding', async (_event, id: unknown) => {
+    if (id === 'screen_recording') {
+      return startScreenRecordingOnboarding({
+        requestAccess: () => requestPermissionAccess(id),
+        isGranted: () => systemPreferences.getMediaAccessStatus('screen') === 'granted',
+        // A real capture request engages TCC, but macOS may still require the
+        // bundle in System Settings. Preserve the drag-card second half.
+        startDrag: () => deps.controller.start(id),
+      });
+    }
     return deps.controller.start(id);
   });
 }

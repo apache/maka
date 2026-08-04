@@ -87,6 +87,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
@@ -545,25 +546,6 @@ export interface MakaBridge {
     refreshTokens(): Promise<SubscriptionActionResult>;
     logout(): Promise<SubscriptionActionResult>;
   };
-  cursorSubscription: {
-    isExperimentalEnabled(): Promise<boolean>;
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
-    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult>;
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
-    getAccountState(): Promise<{
-      provider: 'cursor-subscription';
-      runtimeState:
-        | 'not_logged_in'
-        | 'authorizing'
-        | 'authenticated'
-        | 'refreshing'
-        | 'refresh_failed';
-      errorMessage?: string;
-    }>;
-    refreshTokens(): Promise<SubscriptionActionResult>;
-    logout(): Promise<SubscriptionActionResult>;
-  };
   antigravitySubscription: {
     isExperimentalEnabled(): Promise<boolean>;
     getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
@@ -600,6 +582,10 @@ export interface MakaBridge {
       handler: (event: { type: 'plans_changed'; reason: string; reminderId?: string; ts: number }) => void,
     ): () => void;
     subscribeDue(handler: (reminder: PlanReminder) => void): () => void;
+  };
+  inspector: {
+    /** Read-only per-session causal trace (#1625). */
+    trace(sessionId: string): Promise<Result<SessionTrace>>;
   };
   usage: {
     summary(query: UsageQuery): Promise<Result<UsageSummaryV2>>;

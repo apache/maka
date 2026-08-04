@@ -339,7 +339,7 @@ describe('OAuth refresh persistence transaction', () => {
     const committedValues: string[] = [];
 
     const result = await resolveAndPersistOAuthSubscriptionTokens({
-      slug: 'cursor-subscription',
+      slug: 'test-subscription',
       credentialStore: {
         getSecret: async () => current,
         compareAndSetSecret: async (_slug, _kind, expected, value) => {

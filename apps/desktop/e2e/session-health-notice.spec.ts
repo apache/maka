@@ -3,14 +3,15 @@
 // "will the next send fail?" from the same facts as the send gate
 // (connection list, hasSecret probe, connectionLocked on the summary).
 //
-// The stale-sessions e2e-fixture seeds the exact on-disk states, and
-// both stale sessions carry user messages, so storage self-heals them to
-// `connectionLocked: true` on first read — the send can neither use
-// their connections nor silently rebind, even though a healthy default
+// The stale-sessions e2e-fixture seeds the exact on-disk states: one
+// locked fake-backend session and one healthy ai-sdk session. The stale
+// session carries user messages, so storage self-heals it to
+// `connectionLocked: true` on first read — the send can neither use its
+// connection nor silently rebind, even though a healthy default
 // connection exists. The old "default exists && enabled" proxy hid the
 // notice in exactly this state (#1038 case 1); it must now show.
-// The silent-rebind counterpart (unlocked empty stale session) is
-// covered by the projection and notice unit tests.
+// The deleted-connection and legacy-backend notice variants are covered
+// by deriveSessionHealthNotice unit tests.
 
 import { test, expect } from './fixtures';
 
@@ -39,7 +40,7 @@ async function probeNoticeAlignment(page: import('@playwright/test').Page) {
   });
 }
 
-test('locked stale sessions show the health notice even with a ready default', async ({ staleSessionsWindow: page }) => {
+test('a locked stale session shows the health notice even with a ready default', async ({ staleSessionsWindow: page }) => {
   // Active = stale fake session (locked by its history): notice shows.
   await expect(page.getByText('会话已过期 · 请先配置真实模型')).toBeVisible();
 
@@ -48,12 +49,14 @@ test('locked stale sessions show the health notice even with a ready default', a
   expect(alignment.leftDelta).toBeLessThanOrEqual(1);
   expect(alignment.rightDelta).toBeLessThanOrEqual(1);
 
-  // Switch to the locked legacy session → its deleted-connection notice.
+  // A healthy session must not show the notice.
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await page.getByText('旧的 Claude 连接会话').first().click();
-  await expect(page.getByText('连接已删除')).toBeVisible();
+  await page.getByText('正常会话（Z.ai Live）').first().click();
+  await expect(page.getByText('会话已过期 · 请先配置真实模型')).toBeHidden();
 
-  // Click-through lands in Settings · 模型.
+  // Back on the stale session, click-through lands in Settings · 模型.
+  await page.getByText('旧的本地模拟会话').first().click();
+  await expect(page.getByText('会话已过期 · 请先配置真实模型')).toBeVisible();
   await page.getByRole('button', { name: '去模型' }).click();
   await expect(page.getByLabel('设置内容')).toBeVisible();
   // The connection list itself, not just the settings shell: `add-connection`

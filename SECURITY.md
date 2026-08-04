@@ -92,14 +92,14 @@ supply their own boundary. See
    user's workspace directory. Its load-bearing boundary is the OS
    user account plus filesystem controls: directory mode 0o700,
    file mode 0o600, atomic writes, and no symlink/traversal escape.
-   Subscription OAuth tokens (Claude, Codex, GitHub Copilot, and the
-   Cursor/Antigravity previews) live in the same store: `credentials.json`
+   Subscription OAuth tokens (Claude, Codex, GitHub Copilot, xAI, and the
+   Antigravity preview) live in the same store: `credentials.json`
    is the single authority every surface — Desktop, TUI, headless —
    reads and writes, under the same OS-account and 0o700/0o600 boundary
    as other runtime credentials. Electron safeStorage is not part of
-   this boundary anymore; Desktop startup imports pre-existing
-   safeStorage-encrypted token files into the store once and removes
-   them (#1125).
+   this boundary anymore. Pre-existing safeStorage-encrypted credential
+   or token files are not imported; users with only those copies must
+   re-authenticate.
 3. **Renderer process sandbox + preload IPC bridge.** The
    renderer cannot reach files, network, or shell directly. Every
    IPC handler in `apps/desktop/src/main/main.ts` is the trust
@@ -152,7 +152,7 @@ are welcome as ordinary issues, not security advisories.
 Beyond security, Maka treats the following as user-facing
 privacy commitments:
 
-- **Workspace JSONL stays local.** Session messages, tool
+- **Workspace state stays local.** Session messages, tool
   results, telemetry, settings are stored under
   `app.getPath('userData')`. Cloud sync is not shipped.
 - **Tool query strings are NEVER logged.** The WebSearch tool's
@@ -179,8 +179,7 @@ boundary in §2.3 was crossed. Examples:
   looser than the 0o700/0o600 boundary.
 - A production OAuth path writes or requires a safeStorage-encrypted
   token copy again. `credentials.json` is the single documented token
-  authority; safeStorage exists only inside the one-shot legacy import
-  (#1125).
+  authority; there is no safeStorage legacy import fallback.
 - A cleartext secret crosses main→renderer IPC under any
   circumstance (including error paths, settings preview, IPC
   result envelopes, log lines).

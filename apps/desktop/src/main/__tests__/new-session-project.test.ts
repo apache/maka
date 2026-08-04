@@ -166,7 +166,10 @@ test('new sessions resolve a merged project alias to the surviving project id', 
   });
 
   try {
-    const original = await catalog.importLegacyPath(join(base, 'missing-original'));
+    const originalPath = join(base, 'original');
+    await mkdir(originalPath);
+    const original = await catalog.register(originalPath);
+    await rm(originalPath, { recursive: true, force: true });
     const duplicate = await catalog.register(cwd);
     await catalog.relink(original.id, cwd, async () => {});
 

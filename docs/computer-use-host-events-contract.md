@@ -9,7 +9,7 @@ This layer connects only events with a typed, attributable source.
   - `screen_locked` -> locked
   - `blocked_url` -> terminal URL block
   - `outcome_unknown`, service unavailable, or service mismatch -> re-observe
-- cua-driver service release:
+- Executor service release:
   - clears executor-local observations and keyboard ownership
   - advances the corresponding Runtime session to re-observe
 - Turn/session terminal events:
@@ -30,8 +30,8 @@ This layer connects only events with a typed, attributable source.
   state remains reserved for a future attributable deadline producer.
 - Maka currently binds targets by PID/window/content/page identity. The V10
   reverse-engineered boundary is stronger: canonical app path plus the current
-  live process instance. Maka does not claim that boundary until cua-driver or a
-  native host API can provide an atomic, high-precision process identity.
+  live process instance. Maka does not claim that boundary until the executor or
+  a native host API can provide an atomic, high-precision process identity.
 
 ## Verification
 

@@ -17,7 +17,6 @@ import {
   harborTraceMode,
   hostTraceEventsPath,
   isBudgetExhaustedError,
-  isBudgetExhaustedTrialException,
   mergeAgentEnv,
   modelIdForProvider,
   providerProxyApiProtocol,
@@ -26,13 +25,17 @@ import {
   providerTokenSummary,
   readCellOutput,
   readTimedOutTrialArtifacts,
+  classifyTrialTermination,
+  formatTrialException,
   readTrialException,
   resolveNativeTrialTimeoutMs,
+  trialExceptionSuffix,
   withProviderTelemetryArtifact,
   incompleteTerminalProviderRequest,
   modelForOpenCode,
   type HarborTaskPricing,
 } from './harbor-task-runner.js';
+import { agentPhaseTimeoutSec, settlementGraceSec } from './maka-settlement.js';
 import {
   harnessAgentImportPath,
   providerProxyClientAuthMode,
@@ -84,7 +87,6 @@ const PROVIDER_REQUEST_TELEMETRY = 'provider-request-telemetry.json';
  * container reaching the host proxy through Squid must present one of those.
  * 443 keeps the model endpoint on the conventional TLS port. */
 export const PIER_PROVIDER_PROXY_DEFAULT_PORT = 443;
-export const PIER_MAKA_SETTLEMENT_GRACE_SEC = 30;
 
 /** Compatibility fallback for callers that do not provide a run-scoped proxy
  * hub. Such callers still bind one fixed port per attempt, so concurrent binds
@@ -296,8 +298,8 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
       taskAgentTimeoutSec !== undefined
         ? {
             modelBudgetSec: taskAgentTimeoutSec,
-            settlementGraceSec: PIER_MAKA_SETTLEMENT_GRACE_SEC,
-            phaseTimeoutSec: taskAgentTimeoutSec + PIER_MAKA_SETTLEMENT_GRACE_SEC,
+            settlementGraceSec: settlementGraceSec(agent, attemptAgentEnv),
+            phaseTimeoutSec: agentPhaseTimeoutSec(agent, attemptAgentEnv, taskAgentTimeoutSec),
           }
         : undefined;
     const jobsDir = join(
@@ -491,57 +493,69 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
       // then unconditionally runs verification, so an exceptional trial can
       // still carry an authoritative reward. Mirror Harbor's authority order
       // exactly: an ungraded budget exhaustion is a budget_exhausted outcome;
-      // every other exception falls through to the normal reward/cell reads —
-      // a graded trial scores on its actual reward (e.g. a non-zero Kimi CLI
-      // exit the verifier still passed), and missing artifacts become infra
-      // there, with the trial exception attached for diagnosis.
+      // an agent-owned exit the verifier graded scores on its actual reward
+      // (e.g. a non-zero Kimi CLI exit the verifier still passed), whatever
+      // pier's own exit code was; and an externally ended run is infra however
+      // complete its artifacts look, because the agent never got the run it was
+      // given. The trial exception rides along for diagnosis.
       const trialException = await readTrialException(
         join(trialDir, TRIAL_RESULT),
         'PierTrialError',
       );
+      const termination = classifyTrialTermination(trialException);
       let completeTimedOutTrial = false;
-      if (trialException && isBudgetExhaustedTrialException(trialException)) {
+      let verifierSettledTrial = false;
+      if (termination === 'agent_budget' || termination === 'agent_exit') {
         const [grade, cellArtifact] = await Promise.all([
           readPierGrade(trialDir, input.task.id),
           readOptionalText(join(trialDir, TRIAL_CELL_OUTPUT)),
         ]);
-        // Budget-gate context, distinct from the graded read path: the agent has
-        // already exhausted its budget, which is the authoritative fact. A
-        // verifier that crashed or wrote a corrupt reward here does NOT overturn
-        // it — an `invalid` grade is treated exactly like `ungraded` / a missing
-        // reward file, yielding budget_exhausted (no retry, Pass@1 evidence
-        // preserved) rather than an infra failure the controller would retry. In
-        // the graded read path a corrupt scoring authority IS infra; only when
-        // the budget is already spent does the agent fact take precedence.
-        if (grade.state !== 'graded' || cellArtifact === null) {
-          // Recover attested evidence (identity/usage/cell output) via the shared
-          // Harbor implementation so a budget-exhausted sample keeps its Pass@1
-          // eligibility instead of being excluded as missing_execution_identity.
-          const artifactRefs = await readTimedOutTrialArtifacts(
-            trialDir,
-            input.task.id,
-            agent,
-            harborTraceMode(attemptAgentEnv),
-          );
-          throw new FixedPromptBudgetExhaustedError(
-            `agent budget exhausted for task ${input.task.id}`,
-            // Carry the invalid-grade detail alongside the exhaustion cause so a
-            // corrupt/crashed verifier is still diagnosable, without letting it
-            // count toward the score.
-            grade.state === 'invalid' ? `${trialException}; ${grade.detail}` : trialException,
-            artifactRefs || providerTelemetry.length > 0
-              ? {
-                  ...(artifactRefs ?? {}),
-                  ...(providerTelemetry.length > 0 ? { providerTelemetryPath } : {}),
-                }
-              : undefined,
-          );
+        const settledByEvidence = grade.state === 'graded' && cellArtifact !== null;
+        if (termination === 'agent_exit') {
+          verifierSettledTrial = settledByEvidence;
+        } else {
+          // Budget-gate context, distinct from the graded read path: the agent has
+          // already exhausted its budget, which is the authoritative fact. A
+          // verifier that crashed or wrote a corrupt reward here does NOT overturn
+          // it — an `invalid` grade is treated exactly like `ungraded` / a missing
+          // reward file, yielding budget_exhausted (no retry, Pass@1 evidence
+          // preserved) rather than an infra failure the controller would retry. In
+          // the graded read path a corrupt scoring authority IS infra; only when
+          // the budget is already spent does the agent fact take precedence.
+          if (!settledByEvidence) {
+            // Recover attested evidence (identity/usage/cell output) via the shared
+            // Harbor implementation so a budget-exhausted sample keeps its Pass@1
+            // eligibility instead of being excluded as missing_execution_identity.
+            const artifactRefs = await readTimedOutTrialArtifacts(
+              trialDir,
+              input.task.id,
+              agent,
+              harborTraceMode(attemptAgentEnv),
+            );
+            throw new FixedPromptBudgetExhaustedError(
+              `agent budget exhausted for task ${input.task.id}`,
+              // Carry the invalid-grade detail alongside the exhaustion cause so a
+              // corrupt/crashed verifier is still diagnosable, without letting it
+              // count toward the score.
+              grade.state === 'invalid'
+                ? `${formatTrialException(trialException)}; ${grade.detail}`
+                : formatTrialException(trialException),
+              artifactRefs || providerTelemetry.length > 0
+                ? {
+                    ...(artifactRefs ?? {}),
+                    ...(providerTelemetry.length > 0 ? { providerTelemetryPath } : {}),
+                  }
+                : undefined,
+            );
+          }
+          completeTimedOutTrial = true;
         }
-        completeTimedOutTrial = true;
       }
-      if (result.exitCode !== 0 && !completeTimedOutTrial) {
+      if (result.exitCode !== 0 && !completeTimedOutTrial && !verifierSettledTrial) {
         throw new PierInfraError(
-          `pier run exited ${result.exitCode} for task ${input.task.id}`,
+          // The WAL keeps only the message, so the trial exception has to travel
+          // in it or an infra bucket full of timeouts stays invisible to grep.
+          `pier run exited ${result.exitCode} for task ${input.task.id}${trialExceptionSuffix(trialException)}`,
           tail(result.stderr || result.stdout),
         );
       }
@@ -549,11 +563,11 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
       // last provider request is infra, never a graded model failure.
       const terminalProviderRequest = incompleteTerminalProviderRequest(
         providerTelemetry,
-        completeTimedOutTrial,
+        completeTimedOutTrial || verifierSettledTrial,
       );
       if (terminalProviderRequest) {
         throw new PierInfraError(
-          `terminal provider request did not complete for task ${input.task.id}`,
+          `terminal provider request did not complete for task ${input.task.id}${trialExceptionSuffix(trialException)}`,
           [
             `outcome=${terminalProviderRequest.outcome}`,
             terminalProviderRequest.status !== undefined
@@ -567,7 +581,11 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
         );
       }
 
-      const reward = await readPierReward(trialDir, input.task.id, trialException);
+      const reward = await readPierReward(
+        trialDir,
+        input.task.id,
+        formatTrialException(trialException),
+      );
       const rawCell = await readCellOutput(
         join(trialDir, TRIAL_CELL_OUTPUT),
         input.task.id,
@@ -784,6 +802,8 @@ function buildPierAgentEnv(
   Object.assign(env, providerAgentEnv);
   Object.assign(env, mergeAgentEnv(options.agentEnv, input.agentEnv) ?? {});
   if (makaDeadline) {
+    // The budget is the model budget and the settlement window is added around
+    // it, so the agent phase Pier is given is one window longer.
     env.MAKA_CELL_TIMEOUT_SEC = String(makaDeadline.modelBudgetSec);
     env.MAKA_CELL_SETTLEMENT_GRACE_SEC = String(makaDeadline.settlementGraceSec);
     env.MAKA_AGENT_PHASE_TIMEOUT_SEC = String(makaDeadline.phaseTimeoutSec);
@@ -1091,7 +1111,7 @@ function classifyPierReward(reward: number, taskId: string): PierGrade {
 async function readPierReward(
   trialDir: string,
   taskId: string,
-  trialException: string | null,
+  trialException: string | undefined,
 ): Promise<number> {
   const grade = await readPierGrade(trialDir, taskId);
   if (grade.state === 'graded') return grade.reward;

@@ -1,9 +1,14 @@
 import { MAX_READ_IMAGE_BYTES, type BackendKind, type StorageRef } from '@maka/core';
-import type { EffectiveProductToolSurface, MakaTool } from '@maka/runtime';
+import type {
+  EffectiveProductToolSurface,
+  MakaTool,
+  ToolResultArchiveResourceReader,
+} from '@maka/runtime';
 import { type EditingProtocol } from '@maka/core/apply-patch';
 import {
   assertProductBindingCatalogClean,
   bashToolShellGuidance,
+  buildArchiveReadTool,
   buildForegroundBashTool,
   buildParentAgentTools,
   computeEditedSource,
@@ -36,6 +41,12 @@ export interface BuildIsolatedHeadlessToolsOptions {
   agentTools?: boolean;
   /** Per-run editing protocol consumed only by the product-tool projector. */
   editingProtocol?: EditingProtocol;
+  /**
+   * Ref-addressed archive reader. Supplying it binds `ArchiveRead`, which pruned
+   * tool results name explicitly in their placeholders. Pass it whenever the host
+   * also archives tool results, or the model is told to call a tool it does not have.
+   */
+  archiveResources?: ToolResultArchiveResourceReader;
   heavyTaskEvidence?: HeavyTaskEvidenceRecorder;
   heavyTaskProgress?: HeavyTaskProgressRecorder;
   heavyTaskSelfCheck?: HeavyTaskSelfCheckRecorder;
@@ -93,7 +104,7 @@ export function buildIsolatedHeadlessProductToolSurface(
   executor: IsolatedToolExecutor,
   options: Pick<
     BuildIsolatedHeadlessToolsOptions,
-    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage' | 'editingProtocol'
+    'agentTools' | 'archiveResources' | 'heavyTaskEvidence' | 'snapshotImage' | 'editingProtocol'
   > = {},
 ): EffectiveProductToolSurface {
   const editingProtocol: EditingProtocol = options.editingProtocol ?? 'edit_write';
@@ -108,6 +119,7 @@ export function buildIsolatedHeadlessProductToolSurface(
     buildIsolatedGlobTool(executor, options),
     buildIsolatedGrepTool(executor, options),
     ...buildParentAgentTools(),
+    ...(options.archiveResources ? [buildArchiveReadTool(options.archiveResources)] : []),
   ];
   assertProductBindingCatalogClean(
     'headless',
@@ -133,7 +145,7 @@ export function buildHeadlessProductToolSurfaceForBackend(
   executor: IsolatedToolExecutor | undefined,
   options: Pick<
     BuildIsolatedHeadlessToolsOptions,
-    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage' | 'editingProtocol'
+    'agentTools' | 'archiveResources' | 'heavyTaskEvidence' | 'snapshotImage' | 'editingProtocol'
   > = {},
 ): EffectiveProductToolSurface | undefined {
   if (!headlessBackendBindsMakaProductTools(backend) || !executor) return undefined;

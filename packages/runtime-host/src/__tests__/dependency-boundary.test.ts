@@ -25,6 +25,7 @@ const allowedHostExternalImports = new Set([
 const allowedServerExternalImports = new Set([
   ...allowedHostExternalImports,
   '@maka/core/agent-run',
+  '@maka/core/attachments',
   '@maka/core/artifacts',
   '@maka/core/automation',
   '@maka/core/backend-types',
@@ -64,6 +65,7 @@ const allowedServerExternalImports = new Set([
   '@maka/storage/shell-run-authority',
   '@maka/storage/task-ledger-authority',
   '@maka/storage/usage-stores',
+  '@maka/storage/workspace-identity',
   'node:async_hooks',
   'node:http',
 ]);

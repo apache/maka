@@ -2,6 +2,7 @@ import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunStore,
+  EmittedAgentRunEvent,
   RuntimeEvent,
   RuntimeEventStore,
   ToolBoundaryProtocol,
@@ -114,6 +115,7 @@ export interface AgentRunInput {
   sessionId: string;
   header: SessionHeader;
   userInput: UserMessageInput;
+  rootExecutionKind?: AgentRunHeader['rootExecutionKind'];
   runId?: string;
   userMessageId?: string;
   durability?: AgentRunDurability;
@@ -1085,6 +1087,7 @@ export class AgentRun {
             agentGraphWakeAttemptId: this.input.userInput.origin.attemptId,
           }
         : {}),
+      ...(this.input.rootExecutionKind ? { rootExecutionKind: this.input.rootExecutionKind } : {}),
     };
     const header =
       continuation && this.input.claimedRunHeader ? this.input.claimedRunHeader : computedHeader;
@@ -1565,7 +1568,7 @@ export class AgentRun {
   }
 }
 
-function traceToRunEvent(event: RunTraceEvent, runId: string): AgentRunEvent {
+function traceToRunEvent(event: RunTraceEvent, runId: string): EmittedAgentRunEvent {
   return {
     type: event.type,
     id: event.id,

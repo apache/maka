@@ -10,9 +10,11 @@ export {
   BackendRegistry,
   SessionConfigurationRevisionConflictError,
   SessionConfigurationTransitionError,
+  RuntimeRegenerateTurnError,
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
+export { RuntimeContextCompactError } from './runtime-kernel.js';
 export type { ModelMessage, JSONValue } from './model-protocol.js';
 export type {
   CompactSessionInput,
@@ -22,6 +24,7 @@ export type {
   SessionConfigurationStoreUpdate,
   SessionConfigurationTransitionRequest,
   SessionConfigurationTransitionErrorCode,
+  RegenerateTurnSource,
   SessionStore,
   StrictRecoveryAgentRunStore,
   StrictRecoverySessionStore,
@@ -55,8 +58,14 @@ export type {
   CloneConversationRuntimeLedgerInput,
   CloneConversationRuntimeLedgerResult,
   ConversationCopyArtifactReferenceMap,
+  ConversationCopyExternalChildReferences,
+  ConversationCopyLinkedChildReference,
   ConversationCopySlice,
   ConversationRuntimeLedgerCopyPlan,
+} from './conversation-copy.js';
+export {
+  collectConversationCopyLinkedChildReferences,
+  conversationCopyLinkedChildReferences,
 } from './conversation-copy.js';
 export type { SubagentExecutionRef } from './subagent-execution.js';
 export {
@@ -407,6 +416,7 @@ export type {
 } from './pi-agent-backend.js';
 
 export { buildBuiltinTools } from './builtin-tools.js';
+export { buildArchiveReadTool } from './archive-read-tool.js';
 export { queryTavily } from './tavily-search.js';
 export { buildWebSearchTool } from './web-search-tool.js';
 export type {
@@ -450,7 +460,11 @@ export type {
   ToolResultArchiveResourceReadInput,
   ToolResultArchiveResourceRequest,
 } from './tool-result-archive-resource.js';
-export { buildComputerUseTools, adaptToCuAction } from './computer-use-tools.js';
+export {
+  buildComputerUseTools,
+  adaptToCuAction,
+  DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS,
+} from './computer-use-tools.js';
 export {
   convertOpenAIComputerAction,
   openAIComputerActionSchema,
@@ -1023,6 +1037,7 @@ export {
   validateHistoryCompactBlockShape,
   validateSynthesisCacheBlockShape,
 } from './context-budget.js';
+export { stableToolResultArchiveArtifactId } from './tool-result-archive.js';
 export type {
   ArchivedToolResultReason,
   BudgetedRuntimeContext,
@@ -1586,6 +1601,8 @@ export {
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
+  GoalControlDecline,
+  GoalControlStanding,
   GoalObservedTurnStart,
   GoalObservedTurnSettler,
   GoalSessionCloseOperation,
@@ -1677,6 +1694,7 @@ export {
   composeSkillInvocationMessage,
   parseSkillInvocationTokens,
   prepareSkillInvocationMessage,
+  prepareSkillInvocationMessageFromInventory,
   SKILL_INVOCATION_TOKEN_SOURCE,
   stripSkillInvocationTokens,
 } from './skill-invocation.js';

@@ -1,10 +1,9 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import {
   DEEP_RESEARCH_DEFAULT_CHECKLIST,
   DEEP_RESEARCH_REPORT_SECTION_KEYS,
 } from '@maka/core';
-import type { DeepResearchEvent, SessionHeader, StoredMessage } from '@maka/core';
+import type { SessionHeader, StoredMessage } from '@maka/core';
+import { createSqliteDeepResearchStore } from '@maka/storage';
 import { header } from './seed-helpers.js';
 
 export const DEEP_RESEARCH_SESSION_ID = 'e2e-fixture-deep-research';
@@ -46,42 +45,30 @@ export function deepResearchMessages(now: number): StoredMessage[] {
 }
 
 export async function writeDeepResearchLedger(workspaceRoot: string, now: number): Promise<void> {
+  let eventNumber = 0;
+  const store = createSqliteDeepResearchStore(workspaceRoot, {
+    newId: () => `deep-research-event-${++eventNumber}`,
+    now: () => now,
+  });
   const hash = `sha256:${'a'.repeat(64)}`;
   const sourceArtifactId = 'source-paper';
-  let eventNumber = 0;
-  const nextEventId = () => `deep-research-event-${++eventNumber}`;
-  const events: DeepResearchEvent[] = [
-    {
-      eventId: nextEventId(),
-      type: 'research_started',
-      sessionId: DEEP_RESEARCH_SESSION_ID,
-      ts: now - 20 * 60_000,
-      objective: 'Reproduce a durable filesystem-backed Deep Research workflow in Maka.',
-      scopeLevel: 'standard',
-    },
-    {
-      eventId: nextEventId(),
-      type: 'research_artifact_recorded',
-      sessionId: DEEP_RESEARCH_SESSION_ID,
-      ts: now - 19 * 60_000,
-      artifact: {
-        artifactId: sourceArtifactId,
-        role: 'source',
-        name: 'fs-researcher-paper.md',
-        createdAt: now - 19 * 60_000,
-        locator: 'https://arxiv.org/abs/2602.01566',
-        contentHash: hash,
-        sourceArtifactIds: [],
-      },
-    },
-  ];
-  for (const [index, key] of DEEP_RESEARCH_REPORT_SECTION_KEYS.entries()) {
-    events.push({
-      eventId: nextEventId(),
-      type: 'research_artifact_recorded',
-      sessionId: DEEP_RESEARCH_SESSION_ID,
-      ts: now - (14 - index) * 60_000,
-      artifact: {
+  try {
+    await store.start(
+      DEEP_RESEARCH_SESSION_ID,
+      'Reproduce a durable filesystem-backed Deep Research workflow in Maka.',
+      'standard',
+    );
+    await store.recordArtifact(DEEP_RESEARCH_SESSION_ID, {
+      artifactId: sourceArtifactId,
+      role: 'source',
+      name: 'fs-researcher-paper.md',
+      createdAt: now - 19 * 60_000,
+      locator: 'https://arxiv.org/abs/2602.01566',
+      contentHash: hash,
+      sourceArtifactIds: [],
+    });
+    for (const [index, key] of DEEP_RESEARCH_REPORT_SECTION_KEYS.entries()) {
+      await store.recordArtifact(DEEP_RESEARCH_SESSION_ID, {
         artifactId: `section-${key}`,
         role: 'report_section',
         name: `${key}.md`,
@@ -90,16 +77,9 @@ export async function writeDeepResearchLedger(workspaceRoot: string, now: number
         sourceArtifactIds: [sourceArtifactId],
         reportSectionKey: key,
         reportSectionStatus: 'completed',
-      },
-    });
-  }
-  events.push({
-    eventId: nextEventId(),
-    type: 'research_step_recorded',
-    sessionId: DEEP_RESEARCH_SESSION_ID,
-    ts: now - 8 * 60_000,
-    step: {
-      stepId: 'step-local-architecture',
+      });
+    }
+    await store.recordStep(DEEP_RESEARCH_SESSION_ID, {
       kind: 'local_exploration',
       status: 'completed',
       objective: 'Trace the durable workspace from runtime tools to Desktop UI.',
@@ -116,91 +96,48 @@ export async function writeDeepResearchLedger(workspaceRoot: string, now: number
         { kind: 'test', locator: 'packages/runtime/src/__tests__/deep-research-tools.test.ts' },
       ],
       workerRunIds: ['worker-paper-review', 'worker-runtime-audit'],
-      createdAt: now - 8 * 60_000,
-    },
-  });
-  for (const item of DEEP_RESEARCH_DEFAULT_CHECKLIST) {
-    events.push({
-      eventId: nextEventId(),
-      type: 'research_checklist_updated',
-      sessionId: DEEP_RESEARCH_SESSION_ID,
-      ts: now - 7 * 60_000,
-      item: {
+    });
+    for (const item of DEEP_RESEARCH_DEFAULT_CHECKLIST) {
+      await store.updateChecklist(DEEP_RESEARCH_SESSION_ID, {
         itemId: item.itemId,
-        title: item.title,
         status: 'completed',
         evidenceArtifactIds: [sourceArtifactId],
-        updatedAt: now - 7 * 60_000,
-      },
+      });
+    }
+    await store.recordCheckpoint(DEEP_RESEARCH_SESSION_ID, {
+      round: 2,
+      stage: 'report_writing',
+      status: 'active',
+      summary: 'Evidence is complete and the implementation handoff is ready.',
+      openQuestions: [],
+      nextSteps: ['Review the handoff before entering implementation mode.'],
+      taskIds: [],
+      artifactIds: [sourceArtifactId],
     });
+    await store.recordArtifact(DEEP_RESEARCH_SESSION_ID, {
+      artifactId: 'report-final',
+      role: 'report',
+      name: 'deep-research-report.md',
+      createdAt: now - 5 * 60_000,
+      contentHash: hash,
+      sourceArtifactIds: [sourceArtifactId],
+    });
+    await store.recordArtifact(DEEP_RESEARCH_SESSION_ID, {
+      artifactId: 'handoff-final',
+      role: 'handoff',
+      name: 'implementation-handoff.md',
+      createdAt: now - 4 * 60_000,
+      contentHash: hash,
+      sourceArtifactIds: [sourceArtifactId],
+    });
+    await store.complete(DEEP_RESEARCH_SESSION_ID, 'report-final', {
+      artifactId: 'handoff-final',
+      implementationTasks: ['Harden resume semantics.', 'Ship the visible progress surface.'],
+      recommendedIssues: ['Track cross-platform durability failures separately.'],
+      recommendedPullRequests: ['Land the workspace foundation before autonomous search policy.'],
+      verificationCommands: ['npm run typecheck', 'npm test'],
+    });
+  } finally {
+    store.close();
   }
-  events.push(
-    {
-      eventId: nextEventId(),
-      type: 'research_checkpoint_recorded',
-      sessionId: DEEP_RESEARCH_SESSION_ID,
-      ts: now - 6 * 60_000,
-      checkpoint: {
-        checkpointId: 'checkpoint-report-ready',
-        round: 2,
-        stage: 'report_writing',
-        status: 'active',
-        summary: 'Evidence is complete and the implementation handoff is ready.',
-        openQuestions: [],
-        nextSteps: ['Review the handoff before entering implementation mode.'],
-        taskIds: [],
-        artifactIds: [sourceArtifactId],
-        createdAt: now - 6 * 60_000,
-      },
-    },
-    {
-      eventId: nextEventId(),
-      type: 'research_artifact_recorded',
-      sessionId: DEEP_RESEARCH_SESSION_ID,
-      ts: now - 5 * 60_000,
-      artifact: {
-        artifactId: 'report-final',
-        role: 'report',
-        name: 'deep-research-report.md',
-        createdAt: now - 5 * 60_000,
-        contentHash: hash,
-        sourceArtifactIds: [sourceArtifactId],
-      },
-    },
-    {
-      eventId: nextEventId(),
-      type: 'research_artifact_recorded',
-      sessionId: DEEP_RESEARCH_SESSION_ID,
-      ts: now - 4 * 60_000,
-      artifact: {
-        artifactId: 'handoff-final',
-        role: 'handoff',
-        name: 'implementation-handoff.md',
-        createdAt: now - 4 * 60_000,
-        contentHash: hash,
-        sourceArtifactIds: [sourceArtifactId],
-      },
-    },
-    {
-      eventId: nextEventId(),
-      type: 'research_completed',
-      sessionId: DEEP_RESEARCH_SESSION_ID,
-      ts: now - 3 * 60_000,
-      reportArtifactId: 'report-final',
-      handoff: {
-        artifactId: 'handoff-final',
-        implementationTasks: ['Harden resume semantics.', 'Ship the visible progress surface.'],
-        recommendedIssues: ['Track cross-platform durability failures separately.'],
-        recommendedPullRequests: ['Land the workspace foundation before autonomous search policy.'],
-        verificationCommands: ['npm run typecheck', 'npm test'],
-      },
-    },
-  );
-  const dir = join(workspaceRoot, 'sessions', DEEP_RESEARCH_SESSION_ID, 'deep-research');
-  await mkdir(dir, { recursive: true });
-  await writeFile(
-    join(dir, 'events.jsonl'),
-    events.map((event) => JSON.stringify(event)).join('\n') + '\n',
-    'utf8',
-  );
 }

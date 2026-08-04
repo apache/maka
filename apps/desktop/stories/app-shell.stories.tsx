@@ -4,10 +4,10 @@ import type { ComponentProps } from 'react';
 import { projectRevisionLinkedSessionTree } from '@maka/core';
 import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
 import { ChatSurfaceLayout, ChatView, Composer, SessionListPanel } from '@maka/ui';
-import type { ChatModelChoice, SessionViewMode } from '@maka/ui';
+import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
-import { deriveAppShellTurnViewModel } from '../src/renderer/app-shell-turn-view-model';
+import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import { deriveBranchBanner } from '../src/renderer/branch-banner';
 import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
@@ -290,13 +290,16 @@ function ComposedShell(props: {
   const sessionTree = projectRevisionLinkedSessionTree(sessions, active?.id);
   const sidebarRows = sessionTree.roots;
   const messages = props.chat?.messages ?? baseChatProps.messages;
-  const { turnFooterActionsByTurn } = deriveAppShellTurnViewModel({
-    activeId: active?.id,
-    messages,
-    pendingTurnActions: new Set<string>(),
-    uiLocale: 'zh',
-    pendingKeyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
-  });
+  // ChatView projects the transcript and calls this back with the turns, the
+  // same seam production uses (app-shell.tsx), so a story cannot show footer
+  // actions the production rules would not produce for its messages.
+  const deriveTurnPresentation = (turns: readonly TurnViewModel[]) =>
+    deriveAppShellTurnPresentation(turns, {
+      activeId: active?.id,
+      pendingTurnActions: new Set<string>(),
+      uiLocale: 'zh',
+      pendingKeyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
+    });
   const projectGroups: SessionGroup[] = catalogProjects.map((item) => ({
     id: `project:${item.id}`,
     label: item.name,
@@ -379,7 +382,7 @@ function ComposedShell(props: {
                 <ChatView
                   {...baseChatProps}
                   activeSession={active}
-                  turnFooterActionsByTurn={turnFooterActionsByTurn}
+                  deriveTurnPresentation={deriveTurnPresentation}
                   {...props.chat}
                   branchBanner={branchBanner}
                   revisionNavigation={revisionNavigation}

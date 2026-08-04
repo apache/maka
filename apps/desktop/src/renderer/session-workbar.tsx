@@ -11,6 +11,7 @@ import type { SessionSummary } from '@maka/core';
 import { ArtifactPane } from './artifact-pane';
 import { BrowserPanel } from './browser-panel';
 import { QuoteCompanionPanel } from './quote-companion-panel';
+import { SessionInspectorPanel } from './session-inspector-panel';
 import type { SessionWorkbarTab } from './session-workbar-layout';
 import { useSessionTasks } from './use-session-tasks';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -89,6 +90,7 @@ export function SessionWorkbar(props: {
                 label={copy.files}
                 endContent={<span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{artifactCount}</span>}
               />
+              <Tab value="inspector" label={copy.inspector} />
               {props.quote && <Tab value="quote" label={copy.quoteTab} />}
             </TabList>
           }
@@ -106,6 +108,12 @@ export function SessionWorkbar(props: {
         </div>
         <div hidden={props.activeTab !== 'files'} className="maka-session-workbar-panel">
           <ArtifactPane sessionId={props.sessionId} onCountChange={setArtifactCount} onDismiss={props.onDismiss} />
+        </div>
+        <div hidden={props.activeTab !== 'inspector'} className="maka-session-workbar-panel">
+          <SessionInspectorPanel
+            sessionId={props.sessionId}
+            active={!props.hidden && props.activeTab === 'inspector'}
+          />
         </div>
         {props.quote && (
           <div

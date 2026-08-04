@@ -1,25 +1,14 @@
-import { Buffer } from 'node:buffer';
-import {
-  appendFile,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  type FileHandle,
-} from 'node:fs/promises';
-import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import type { ExecutionLogCursor } from '@maka/core/execution-evidence';
+import { acquireOperationalStateDatabase, type OperationalStateDatabaseLease } from '@maka/storage';
 import {
   assertStorageRootLease,
   runWithStorageRootLease,
   type StorageRootLease,
 } from '@maka/storage/root-authority';
 import { chainWrite } from '@maka/storage/write-queue';
-import { unlock, waitForLock } from 'fs-native-extensions';
-import { publishFileExclusively } from './immutable-file.js';
 import type { TaskEvent } from './task-contracts.js';
-import { isTaskRunLocator, taskRunLocator } from './task-run-identity.js';
+import { taskRunLocator } from './task-run-identity.js';
 import { projectTaskRun, type TaskRunProjection } from './task-run-projection.js';
 
 export interface TaskRunReader {
@@ -48,8 +37,7 @@ export async function openHeadlessTaskRunReader(
   lease: StorageRootLease<'headless', 'read'>,
 ): Promise<TaskRunReader> {
   await assertStorageRootLease(lease, 'headless', 'read');
-  const store = new FileTaskRunStore(lease.canonicalPath);
-  return taskRunReaderFacade(store, (operation) =>
+  return taskRunReaderFacade(new SqliteTaskRunStore(lease.canonicalPath), (operation) =>
     runWithStorageRootLease(lease, 'headless', 'read', operation),
   );
 }
@@ -58,19 +46,18 @@ export async function openHeadlessTaskRunWriter(
   lease: StorageRootLease<'headless', 'write'>,
 ): Promise<TaskRunWriter> {
   await assertStorageRootLease(lease, 'headless', 'write');
-  const store = new FileTaskRunStore(lease.canonicalPath);
-  return taskRunWriterFacade(store, (operation) =>
+  return taskRunWriterFacade(new SqliteTaskRunStore(lease.canonicalPath), (operation) =>
     runWithStorageRootLease(lease, 'headless', 'write', operation),
   );
 }
 
 type RunTaskRunOperation = <T>(operation: () => Promise<T>) => Promise<T>;
 
-function taskRunReaderFacade(store: FileTaskRunStore, run: RunTaskRunOperation): TaskRunReader {
+function taskRunReaderFacade(store: SqliteTaskRunStore, run: RunTaskRunOperation): TaskRunReader {
   return Object.freeze(taskRunReaderMethods(store, run));
 }
 
-function taskRunReaderMethods(store: FileTaskRunStore, run: RunTaskRunOperation): TaskRunReader {
+function taskRunReaderMethods(store: SqliteTaskRunStore, run: RunTaskRunOperation): TaskRunReader {
   return {
     listTaskRunIds: () => run(() => store.listTaskRunIds()),
     readEventRecords: (taskRunId) => run(() => store.readEventRecords(taskRunId)),
@@ -79,12 +66,12 @@ function taskRunReaderMethods(store: FileTaskRunStore, run: RunTaskRunOperation)
   };
 }
 
-function taskRunWriterFacade(store: FileTaskRunStore, run: RunTaskRunOperation): TaskRunWriter {
-  const writer: TaskRunWriter = {
+function taskRunWriterFacade(store: SqliteTaskRunStore, run: RunTaskRunOperation): TaskRunWriter {
+  return Object.freeze({
     ...taskRunReaderMethods(store, run),
-    appendEvent: (taskRunId, event) => run(() => store.appendEvent(taskRunId, event)),
-  };
-  return Object.freeze(writer);
+    appendEvent: (taskRunId: string, event: TaskEvent) =>
+      run(() => store.appendEvent(taskRunId, event)),
+  });
 }
 
 class InMemoryTaskRunStore implements TaskRunWriter {
@@ -100,10 +87,7 @@ class InMemoryTaskRunStore implements TaskRunWriter {
   }
 
   async appendEvent(taskRunId: string, event: TaskEvent): Promise<void> {
-    if (event.taskRunId !== taskRunId) {
-      throw new Error(`taskRunId mismatch: append target ${taskRunId}, event ${event.taskRunId}`);
-    }
-
+    assertTaskRunEventIdentity(taskRunId, event);
     await chainWrite(this.queues, taskRunId, async () => {
       const events = this.events.get(taskRunId) ?? [];
       events.push(event);
@@ -131,38 +115,50 @@ class InMemoryTaskRunStore implements TaskRunWriter {
   }
 }
 
-class FileTaskRunStore implements TaskRunWriter {
-  private readonly queues = new Map<string, Promise<void>>();
-
+class SqliteTaskRunStore implements TaskRunWriter {
   constructor(private readonly storageRoot: string) {}
 
   async appendEvent(taskRunId: string, event: TaskEvent): Promise<void> {
-    if (event.taskRunId !== taskRunId) {
-      throw new Error(`taskRunId mismatch: append target ${taskRunId}, event ${event.taskRunId}`);
-    }
-
-    const locator = taskRunLocator(taskRunId);
-    await chainWrite(this.queues, locator, () =>
-      this.appendTaskRunEvent(locator, taskRunId, event),
+    assertTaskRunEventIdentity(taskRunId, event);
+    this.withDatabase((lease) =>
+      lease.transaction('write', () => {
+        const row = lease.database
+          .prepare(`
+            SELECT COALESCE(MAX(sequence), -1) AS lastSequence
+            FROM headless_task_run_events
+            WHERE task_run_id = ?
+          `)
+          .get(taskRunId) as { lastSequence?: unknown };
+        if (
+          typeof row.lastSequence !== 'number' ||
+          !Number.isSafeInteger(row.lastSequence) ||
+          row.lastSequence < -1
+        ) {
+          throw new Error(`Invalid TaskRun sequence for ${taskRunId}`);
+        }
+        lease.database
+          .prepare(`
+            INSERT INTO headless_task_run_events(
+              task_run_id, sequence, event_id, record_json
+            ) VALUES (?, ?, ?, ?)
+          `)
+          .run(taskRunId, row.lastSequence + 1, event.id, JSON.stringify(event));
+      }),
     );
   }
 
   async listTaskRunIds(): Promise<string[]> {
-    let entries: string[];
-    try {
-      entries = (await readdir(this.taskRunDir())).filter((name) => name.endsWith('.jsonl')).sort();
-    } catch (error) {
-      if (isNotFound(error)) return [];
-      throw error;
-    }
-    const identities: string[] = [];
-    for (const entry of entries) {
-      const locator = taskRunLocatorFromFilename(entry);
-      const header = await readTaskRunLedgerHeader(join(this.taskRunDir(), entry));
-      assertTaskRunLedgerIdentity(header, locator, entry);
-      identities.push(header.taskRunId);
-    }
-    return identities.sort();
+    return this.withDatabase((lease) =>
+      (
+        lease.database
+          .prepare(`
+            SELECT DISTINCT task_run_id AS taskRunId
+            FROM headless_task_run_events
+            ORDER BY task_run_id
+          `)
+          .all() as Array<{ taskRunId: string }>
+      ).map((row) => row.taskRunId),
+    );
   }
 
   async readEvents(taskRunId: string): Promise<TaskEvent[]> {
@@ -170,266 +166,65 @@ class FileTaskRunStore implements TaskRunWriter {
   }
 
   async readEventRecords(taskRunId: string): Promise<TaskEventLedgerEntry[]> {
-    const path = this.taskRunPath(taskRunId);
-    let content: string;
-    try {
-      content = await readFile(path, 'utf8');
-    } catch (error) {
-      if (isNotFound(error)) return [];
-      throw error;
-    }
-
-    const lines = durableJsonlLines(content);
-    const header = parseTaskRunLedgerHeader(lines.shift(), path);
-    assertTaskRunLedgerIdentity(header, taskRunLocator(taskRunId), path);
-    if (header.taskRunId !== taskRunId) {
-      throw new Error(`TaskRun ledger identity does not match requested taskRunId ${taskRunId}`);
-    }
-    const records: TaskEventLedgerEntry[] = [];
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      if (!line) continue;
-      let event: TaskEvent;
-      try {
-        const parsed = JSON.parse(line) as unknown;
-        if (
-          typeof parsed !== 'object' ||
-          parsed === null ||
-          typeof (parsed as { taskRunId?: unknown }).taskRunId !== 'string'
-        ) {
-          throw new Error('record is not a TaskEvent');
+    taskRunLocator(taskRunId);
+    return this.withDatabase((lease) =>
+      readTaskRunRows(lease.database, taskRunId).map((row) => {
+        const event = decodeTaskEvent(row.recordJson, taskRunId);
+        if (event.id !== row.eventId) {
+          throw new Error(`TaskRun ${taskRunId} event identity does not match SQLite metadata`);
         }
-        event = parsed as TaskEvent;
-      } catch (error) {
-        event = {
-          type: 'event_corrupt',
-          id: `corrupt-${i + 1}`,
-          taskRunId,
-          ts: 0,
-          raw: line,
-          error: errorMessage(error),
+        return {
+          event,
+          cursor: taskEventCursor(taskRunId, row.sequence, event.id),
         };
-      }
-      if (event.taskRunId !== taskRunId) {
-        throw new Error(`TaskRun ledger ${path} contains event for ${String(event.taskRunId)}`);
-      }
-      records.push({
-        event,
-        cursor: taskEventCursor(taskRunId, records.length, event.id),
-      });
-    }
-    return records;
+      }),
+    );
   }
 
   async project(taskRunId: string): Promise<TaskRunProjection> {
     return projectTaskRun(await this.readEvents(taskRunId), taskRunId);
   }
 
-  private taskRunDir(): string {
-    return join(this.storageRoot, 'task-runs');
-  }
-
-  private taskRunPath(taskRunId: string): string {
-    return join(this.taskRunDir(), `${taskRunLocator(taskRunId)}.jsonl`);
-  }
-
-  private async appendTaskRunEvent(
-    locator: string,
-    taskRunId: string,
-    event: TaskEvent,
-  ): Promise<void> {
-    const eventLine = `${JSON.stringify(event)}\n`;
-    await mkdir(this.taskRunDir(), { recursive: true });
-    const path = join(this.taskRunDir(), `${locator}.jsonl`);
-    await withTaskRunLedgerLock(`${path}.lock`, async () => {
-      let header: TaskRunLedgerHeader;
-      try {
-        header = await readTaskRunLedgerHeader(path);
-      } catch (error) {
-        if (!isNotFound(error)) throw error;
-        const initialContent = `${JSON.stringify(taskRunLedgerHeader(taskRunId))}\n${eventLine}`;
-        if (await publishFileExclusively(path, initialContent)) return;
-        header = await readTaskRunLedgerHeader(path);
-      }
-
-      assertTaskRunLedgerIdentity(header, locator, path);
-      if (header.taskRunId !== taskRunId) {
-        throw new Error(`TaskRun identity collision between ${header.taskRunId} and ${taskRunId}`);
-      }
-      await truncatePartialTaskRunTail(path);
-      await appendFile(path, eventLine, 'utf8');
-    });
-  }
-}
-
-const TASK_RUN_LEDGER_SCHEMA_VERSION = 1 as const;
-const TASK_RUN_LEDGER_TYPE = 'task_run_ledger' as const;
-
-interface TaskRunLedgerHeader {
-  schemaVersion: typeof TASK_RUN_LEDGER_SCHEMA_VERSION;
-  type: typeof TASK_RUN_LEDGER_TYPE;
-  taskRunId: string;
-}
-
-function taskRunLocatorFromFilename(filename: string): string {
-  const locator = filename.slice(0, -'.jsonl'.length);
-  if (!isTaskRunLocator(locator)) {
-    throw new Error(`Invalid TaskRun ledger filename ${filename}`);
-  }
-  return locator;
-}
-
-function taskRunLedgerHeader(taskRunId: string): TaskRunLedgerHeader {
-  taskRunLocator(taskRunId);
-  return {
-    schemaVersion: TASK_RUN_LEDGER_SCHEMA_VERSION,
-    type: TASK_RUN_LEDGER_TYPE,
-    taskRunId,
-  };
-}
-
-function parseTaskRunLedgerHeader(line: string | undefined, source: string): TaskRunLedgerHeader {
-  if (!line) throw new Error(`TaskRun ledger ${source} has no durable header`);
-  let record: unknown;
-  try {
-    record = JSON.parse(line);
-  } catch (error) {
-    throw new Error(`TaskRun ledger ${source} has an invalid header: ${errorMessage(error)}`);
-  }
-  if (
-    typeof record !== 'object' ||
-    record === null ||
-    (record as { schemaVersion?: unknown }).schemaVersion !== TASK_RUN_LEDGER_SCHEMA_VERSION ||
-    (record as { type?: unknown }).type !== TASK_RUN_LEDGER_TYPE ||
-    typeof (record as { taskRunId?: unknown }).taskRunId !== 'string'
-  ) {
-    throw new Error(`TaskRun ledger ${source} has an invalid header`);
-  }
-  const header = record as TaskRunLedgerHeader;
-  taskRunLocator(header.taskRunId);
-  return header;
-}
-
-function assertTaskRunLedgerIdentity(
-  header: TaskRunLedgerHeader,
-  expectedLocator: string,
-  source: string,
-): void {
-  if (taskRunLocator(header.taskRunId) !== expectedLocator) {
-    throw new Error(`TaskRun ledger ${source} does not match its identity locator`);
-  }
-}
-
-async function withTaskRunLedgerLock<T>(lockPath: string, operation: () => Promise<T>): Promise<T> {
-  const handle = await open(lockPath, 'a+', 0o600);
-  try {
-    await assertStableLockArtifact(handle, lockPath);
-    await handle.chmod(0o600);
-    await waitForLock(handle.fd);
+  private withDatabase<T>(operation: (lease: OperationalStateDatabaseLease) => T): T {
+    const lease = acquireOperationalStateDatabase(this.storageRoot);
     try {
-      await assertStableLockArtifact(handle, lockPath);
-      return await operation();
+      return operation(lease);
     } finally {
-      releaseLock(handle);
+      lease.close();
     }
-  } finally {
-    await handle.close();
   }
 }
 
-async function assertStableLockArtifact(handle: FileHandle, path: string): Promise<void> {
-  const [handleStats, pathStats] = await Promise.all([
-    handle.stat({ bigint: true }),
-    lstat(path, { bigint: true }),
-  ]);
-  if (
-    !handleStats.isFile() ||
-    !pathStats.isFile() ||
-    handleStats.dev !== pathStats.dev ||
-    handleStats.ino !== pathStats.ino
-  ) {
-    throw new Error(`TaskRun lock path is not one stable regular file: ${path}`);
+interface TaskRunEventRow {
+  sequence: number;
+  eventId: string;
+  recordJson: string;
+}
+
+function readTaskRunRows(database: DatabaseSync, taskRunId: string): TaskRunEventRow[] {
+  return database
+    .prepare(`
+      SELECT sequence, event_id AS eventId, record_json AS recordJson
+      FROM headless_task_run_events
+      WHERE task_run_id = ?
+      ORDER BY sequence
+    `)
+    .all(taskRunId) as unknown as TaskRunEventRow[];
+}
+
+function decodeTaskEvent(recordJson: string, taskRunId: string): TaskEvent {
+  const event = JSON.parse(recordJson) as TaskEvent;
+  assertTaskRunEventIdentity(taskRunId, event);
+  return event;
+}
+
+function assertTaskRunEventIdentity(taskRunId: string, event: TaskEvent): void {
+  taskRunLocator(taskRunId);
+  if (event.taskRunId !== taskRunId) {
+    throw new Error(`taskRunId mismatch: append target ${taskRunId}, event ${event.taskRunId}`);
   }
-}
-
-function releaseLock(handle: FileHandle): void {
-  try {
-    unlock(handle.fd);
-  } catch {
-    // Closing the file handle is the authoritative release path.
-  }
-}
-
-async function readTaskRunLedgerHeader(path: string): Promise<TaskRunLedgerHeader> {
-  return parseTaskRunLedgerHeader(await readFirstDurableLine(path), path);
-}
-
-async function truncatePartialTaskRunTail(path: string): Promise<void> {
-  const handle = await open(path, 'r+');
-  try {
-    const { size } = await handle.stat();
-    let position = size;
-    while (position > 0) {
-      const length = Math.min(position, 4096);
-      position -= length;
-      const buffer = Buffer.allocUnsafe(length);
-      let bytesRead = 0;
-      while (bytesRead < length) {
-        const read = await handle.read(buffer, bytesRead, length - bytesRead, position + bytesRead);
-        if (read.bytesRead === 0) {
-          throw new Error(`TaskRun ledger ${path} changed while repairing its tail`);
-        }
-        bytesRead += read.bytesRead;
-      }
-      const newline = buffer.lastIndexOf(0x0a);
-      if (newline === -1) continue;
-      const durableSize = position + newline + 1;
-      if (durableSize < size) {
-        await handle.truncate(durableSize);
-        await handle.sync();
-      }
-      return;
-    }
-    throw new Error(`TaskRun ledger ${path} has no durable record`);
-  } finally {
-    await handle.close();
-  }
-}
-
-async function readFirstDurableLine(path: string): Promise<string | undefined> {
-  const handle = await open(path, 'r');
-  const chunks: Buffer[] = [];
-  let position = 0;
-  try {
-    while (true) {
-      const buffer = Buffer.allocUnsafe(4096);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
-      if (bytesRead === 0) return undefined;
-      const bytes = buffer.subarray(0, bytesRead);
-      const newline = bytes.indexOf(0x0a);
-      chunks.push(newline === -1 ? bytes : bytes.subarray(0, newline));
-      if (newline !== -1) return Buffer.concat(chunks).toString('utf8');
-      position += bytesRead;
-    }
-  } finally {
-    await handle.close();
-  }
-}
-
-function durableJsonlLines(content: string): string[] {
-  return content.endsWith('\n') ? content.split('\n') : content.split('\n').slice(0, -1);
 }
 
 function taskEventCursor(taskRunId: string, sequence: number, eventId: string): ExecutionLogCursor {
   return { ledger: 'task_event', streamId: taskRunId, sequence, eventId };
-}
-
-function isNotFound(error: unknown): boolean {
-  return (
-    typeof error === 'object' && error !== null && (error as { code?: string }).code === 'ENOENT'
-  );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

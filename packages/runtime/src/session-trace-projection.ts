@@ -37,6 +37,11 @@ export interface SessionTraceInput {
   runtimeEvents: readonly RuntimeEvent[];
   /** Canonical metering, from the AgentRun stream's `model_call_attempt_recorded`. */
   modelCallAttempts: readonly ModelCallAttempt[];
+  /**
+   * Records the caller read but could not decode. Carried through to coverage
+   * so unreadable spend is visible instead of silently absent.
+   */
+  unreadableRecords?: number;
 }
 
 export function projectSessionTrace(input: SessionTraceInput): SessionTrace {
@@ -87,6 +92,7 @@ export function projectSessionTrace(input: SessionTraceInput): SessionTrace {
       turnsWithModelActivity,
       turnsMissingModelCalls,
       turnsWithFewerModelCallsThanSteps,
+      input.unreadableRecords ?? 0,
     ),
   };
 }
@@ -100,18 +106,26 @@ function resolveCoverage(
   turnsWithModelActivity: number,
   turnsMissingModelCalls: string[],
   turnsWithFewerModelCallsThanSteps: string[],
+  unreadableRecords: number,
 ): SessionTraceCoverage {
-  if (turnsWithModelActivity === 0) {
+  if (turnsWithModelActivity === 0 && unreadableRecords === 0) {
     return {
       modelCalls: 'none',
       turnsMissingModelCalls: [],
       turnsWithFewerModelCallsThanSteps: [],
+      unreadableRecords: 0,
     };
   }
-  if (turnsMissingModelCalls.length === turnsWithModelActivity) {
-    return { modelCalls: 'absent', turnsMissingModelCalls, turnsWithFewerModelCallsThanSteps };
+  if (turnsWithModelActivity > 0 && turnsMissingModelCalls.length === turnsWithModelActivity) {
+    return {
+      modelCalls: 'absent',
+      turnsMissingModelCalls,
+      turnsWithFewerModelCallsThanSteps,
+      unreadableRecords,
+    };
   }
-  const gaps = turnsMissingModelCalls.length + turnsWithFewerModelCallsThanSteps.length;
+  const gaps =
+    turnsMissingModelCalls.length + turnsWithFewerModelCallsThanSteps.length + unreadableRecords;
   return {
     // "No known gap" rather than "complete": records that are present cannot
     // prove that every call settled, so this is the absence of evidence of a
@@ -119,6 +133,7 @@ function resolveCoverage(
     modelCalls: gaps === 0 ? 'no_known_gap' : 'partial',
     turnsMissingModelCalls,
     turnsWithFewerModelCallsThanSteps,
+    unreadableRecords,
   };
 }
 

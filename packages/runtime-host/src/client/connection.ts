@@ -16,6 +16,10 @@ import {
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type ClientSurface,
+  type ContextCompactInput,
+  type ContextCompactResult,
+  type ContextDiagnosticsQueryInput,
+  type ContextDiagnosticsResult,
   type HostOperationErrorCode,
   type HostIncompatible,
   type HostRegistration,
@@ -29,7 +33,14 @@ import {
   type ResponseFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
+  type SessionCwdRelocateInput,
+  type SessionUpdateResult,
   type TurnQueryInput,
+  type TurnRegenerateInput,
+  type TurnResumePlan,
+  type TurnResumeQueryInput,
+  type TurnResumeStartInput,
+  type TurnResumeStartResult,
   type TurnSnapshot,
   type TurnStartInput,
   type TurnStopInput,
@@ -121,6 +132,18 @@ export interface RuntimeHostConnection {
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  queryContextDiagnostics(
+    input: ContextDiagnosticsQueryInput,
+    timeoutMs?: number,
+  ): Promise<ContextDiagnosticsResult>;
+  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult>;
+  relocateSessionCwd(
+    input: SessionCwdRelocateInput,
+    timeoutMs?: number,
+  ): Promise<SessionUpdateResult>;
+  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
+  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
@@ -292,6 +315,36 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot> {
     return this.request('turn.stop', input, timeoutMs);
+  }
+
+  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot> {
+    return this.request('turn.regenerate', input, timeoutMs);
+  }
+
+  queryContextDiagnostics(
+    input: ContextDiagnosticsQueryInput,
+    timeoutMs?: number,
+  ): Promise<ContextDiagnosticsResult> {
+    return this.request('context.diagnostics.query', input, timeoutMs);
+  }
+
+  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult> {
+    return this.request('context.compact', input, timeoutMs);
+  }
+
+  relocateSessionCwd(
+    input: SessionCwdRelocateInput,
+    timeoutMs?: number,
+  ): Promise<SessionUpdateResult> {
+    return this.request('session.cwd.relocate', input, timeoutMs);
+  }
+
+  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
+    return this.request('turn.resume.query', input, timeoutMs);
+  }
+
+  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult> {
+    return this.request('turn.resume.start', input, timeoutMs);
   }
 
   openSessionSubscription(

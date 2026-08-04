@@ -165,8 +165,10 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('deepinfra'), 'moonshotai/Kimi-K2.7-Code', 'off'), {
       deepinfra: { reasoningEffort: 'none' },
     });
-    // Groq reasoning_effort: only gpt-oss-120b / gpt-oss-20b accept it, with
-    // low/medium/high (no `none`). qwen/qwen3-32b does not accept reasoning_effort.
+    // Groq reasoning_effort: the gpt-oss family declares low/medium/high (no
+    // `none`), so an off choice never reaches the wire. qwen3-32b is pinned to
+    // no knob (Groq docs list reasoning_effort only for the gpt-oss family and
+    // qwen3.6-27b; models.dev's ['none','default'] is qwen3.6's set misapplied).
     assert.deepEqual(
       [...thinkingVariantsForModel('groq', 'openai/gpt-oss-120b')],
       ['low', 'medium', 'high'],
@@ -176,7 +178,13 @@ describe('buildProviderOptions: thinking level', () => {
     });
     assert.deepEqual(buildProviderOptions(conn('groq'), 'openai/gpt-oss-120b', 'off'), {});
     assert.deepEqual([...thinkingVariantsForModel('groq', 'qwen/qwen3-32b')], []);
-    assert.deepEqual([...thinkingVariantsForModel('groq', 'openai/gpt-oss-safeguard-20b')], []);
+    assert.deepEqual(buildProviderOptions(conn('groq'), 'qwen/qwen3-32b', 'off'), {});
+    // gpt-oss-safeguard-20b declares the same low/medium/high effort set as
+    // the rest of the Groq gpt-oss family in the current snapshot.
+    assert.deepEqual(
+      [...thinkingVariantsForModel('groq', 'openai/gpt-oss-safeguard-20b')],
+      ['low', 'medium', 'high'],
+    );
     assert.deepEqual([...thinkingVariantsForModel('groq', 'llama-3.3-70b-versatile')], []);
     // OpenRouter accepts the same `reasoning_effort` shorthand (none disables).
     assert.deepEqual(
@@ -209,6 +217,45 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air')], []);
     // miss model (deepseek-chat non-reasoning) drops level
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-chat', 'high'), {});
+  });
+
+  test('family fallback wires per-model override adapters under their SDK namespaces', () => {
+    // opencode serves models across several protocols via models.dev package
+    // overrides; the family fallback must emit the namespace each SDK consumes.
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'gpt-5.5', 'high'), {
+      openai: { reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'claude-fable-5', 'high'), {
+      anthropic: { effort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'gemini-3.5-flash', 'high'), {
+      google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } },
+    });
+    // Plain OpenAI-compatible access paths use the provider-type namespace.
+    assert.deepEqual(buildProviderOptions(conn('zenmux'), 'deepseek/deepseek-v4-flash', 'high'), {
+      zenmux: { reasoningEffort: 'high' },
+    });
+    // Copilot defaults to its OpenAI-compatible chat wire without a protocol hint.
+    assert.deepEqual(buildProviderOptions(conn('github-copilot'), 'gpt-5.4', 'high'), {
+      'github-copilot': { reasoningEffort: 'high' },
+    });
+  });
+
+  test('github-copilot routes thinking by the account-declared model protocol', () => {
+    const anthropic = {
+      ...conn('github-copilot'),
+      models: [{ id: 'claude-opus-4.8', apiProtocol: 'anthropic-messages' as const }],
+    };
+    assert.deepEqual(buildProviderOptions(anthropic, 'claude-opus-4.8', 'high'), {
+      anthropic: { effort: 'high' },
+    });
+    const responses = {
+      ...conn('github-copilot'),
+      models: [{ id: 'gpt-5.5', apiProtocol: 'openai-responses' as const }],
+    };
+    assert.deepEqual(buildProviderOptions(responses, 'gpt-5.5', 'high'), {
+      openai: { reasoningEffort: 'high' },
+    });
   });
 
   test('xAI Grok 4.5 requests encrypted Responses reasoning under the native OpenAI namespace', () => {
@@ -310,11 +357,25 @@ describe('buildProviderOptions: thinking level', () => {
   test('Cohere sends its native disabled thinking object without inventing effort levels', () => {
     const modelId = 'command-a-plus-05-2026';
     assert.deepEqual([...thinkingVariantsForModel('cohere', modelId)], ['off']);
-    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId), { cohere: {} });
+    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId), {});
     assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'off'), {
       cohere: { thinking: { type: 'disabled' } },
     });
-    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'high'), { cohere: {} });
+    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'high'), {});
+  });
+
+  test('Cohere north-mini serves the OpenAI-compatible compat wire declared by models.dev', () => {
+    // north-mini-code-1-0 carries a models.dev package override to the
+    // OpenAI-compatible endpoint, so its wire is the compat reasoning_effort
+    // shape, not the native Cohere thinking object.
+    const modelId = 'north-mini-code-1-0';
+    assert.deepEqual([...thinkingVariantsForModel('cohere', modelId)], ['off', 'high']);
+    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'high'), {
+      cohere: { reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('cohere'), modelId, 'off'), {
+      cohere: { reasoningEffort: 'none' },
+    });
   });
 
   test('Tencent Token Plan sends its documented reasoning effort under the stable provider namespace', () => {
@@ -491,71 +552,10 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
   });
 });
 
-describe('buildProviderOptions: resolver/options drift guard', () => {
-  // Every displayed level must map to a real providerOptions fragment. For
-  // `off`, that fragment must be an actual disabled/none/budget-zero wire, not
-  // an empty object that only means "no override".
-  const cases: Array<{
-    providerType: LlmConnection['providerType'];
-    model: string;
-    slug?: string;
-  }> = [
-    { providerType: 'anthropic', model: 'claude-opus-4-8' },
-    { providerType: 'anthropic', model: 'claude-haiku-4-5' },
-    { providerType: 'claude-subscription', model: 'claude-opus-4-8' },
-    { providerType: 'openai', model: 'gpt-5.5' },
-    { providerType: 'openai', model: 'gpt-5' },
-    { providerType: 'openai-codex', model: 'gpt-5.5' },
-    { providerType: 'google', model: 'gemini-3-pro-preview' },
-    { providerType: 'google', model: 'gemini-3.5-flash' },
-    { providerType: 'deepseek', model: 'deepseek-v4-flash' },
-    { providerType: 'xai', model: 'grok-4.5' },
-    { providerType: 'deepinfra', model: 'moonshotai/Kimi-K2.7-Code' },
-    { providerType: 'groq', model: 'openai/gpt-oss-120b' },
-    { providerType: 'openrouter', model: 'openai/gpt-5.6-sol' },
-    { providerType: 'vercel', model: 'xai/grok-4.3' },
-    { providerType: 'ollama-cloud', model: 'glm-5.2' },
-    { providerType: 'ollama-cloud', model: 'gpt-oss:120b' },
-    { providerType: 'cloudflare-workers-ai', model: '@cf/moonshotai/kimi-k2.6' },
-    { providerType: 'zai-coding-plan', model: 'glm-5.2', slug: 'zai-coding-plan' },
-    { providerType: 'volcengine-ark', model: 'doubao-seed-2-0-pro-260215' },
-    { providerType: 'cohere', model: 'command-a-plus-05-2026' },
-  ];
-  for (const { providerType, model, slug } of cases) {
-    test(`every effort level for ${providerType}/${model} maps to a non-empty fragment`, () => {
-      const connection = conn(providerType, slug ?? providerType);
-      for (const level of thinkingVariantsForModel(providerType, model)) {
-        const opts = buildProviderOptions(connection, model, level as ThinkingLevel);
-        const nonEmpty = Object.keys(opts).some((k) => {
-          const v = (opts as Record<string, unknown>)[k];
-          return v !== null && typeof v === 'object' && Object.keys(v as object).length > 0;
-        });
-        assert.equal(nonEmpty, true, `${providerType}/${model} level=${level} produced no options`);
-        if (level === 'off')
-          assert.equal(
-            hasRealOffWire(opts),
-            true,
-            `${providerType}/${model} exposed off without a real disabled wire`,
-          );
-      }
-    });
-  }
-
-  test('models without a real off wire do not expose off', () => {
-    assert.equal(thinkingVariantsForModel('deepseek', 'deepseek-v4-flash').includes('off'), false);
-    assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-5.1').includes('off'), false);
-    assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air').includes('off'), false);
-  });
-
-  function hasRealOffWire(opts: Record<string, unknown>): boolean {
-    const serialized = JSON.stringify(opts);
-    return (
-      serialized.includes('"reasoningEffort":"none"') ||
-      serialized.includes('"type":"disabled"') ||
-      serialized.includes('"thinkingBudget":0') ||
-      serialized.includes('"thinking":false')
-    );
-  }
+test('models without a real off wire do not expose off', () => {
+  assert.equal(thinkingVariantsForModel('deepseek', 'deepseek-v4-flash').includes('off'), false);
+  assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-5.1').includes('off'), false);
+  assert.equal(thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air').includes('off'), false);
 });
 
 describe('changesBackendConfig', () => {

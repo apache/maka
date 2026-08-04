@@ -18,7 +18,7 @@ skills-lock.json
 apps/desktop/tests/screenshots/
 deepseek.key
 
-# Generated cua-driver release artifact; provenance metadata stays tracked.
+# Generated Computer Use executor binary; provenance metadata stays tracked.
 apps/desktop/resources/bin/
 
 # Generated desktop release inputs and outputs.

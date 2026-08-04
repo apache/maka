@@ -184,7 +184,6 @@ export const MAKA_CU_ELEMENT_ACTIONS = [
   'scroll_right',
   'scroll_to_visible',
 ] as const;
-export type MakaCuElementAction = (typeof MAKA_CU_ELEMENT_ACTIONS)[number];
 
 export const MAKA_CU_VERIFICATION_METHODS = [
   'none',

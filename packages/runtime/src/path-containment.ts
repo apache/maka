@@ -1,13 +1,23 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /**
  * Shared filesystem-containment and identifier guards. This is the single
  * authority for path-containment checks across the runtime, the desktop main
  * process, and headless: both the pure-Node runtime and the desktop main (which
  * already depends on `@maka/runtime`) reach it here without reverse
- * dependencies. The leaf imports only `node:path`.
+ * dependencies. {@link isPathInside} itself is a pure `node:path` predicate; the
+ * canonicalisation and contained-I/O helpers around it touch the filesystem.
  *
  * {@link isPathInside} is separator-aware: it rejects only a real
  * parent-reference segment (`..` exactly, or `..${sep}`-prefixed), so a child
@@ -56,6 +66,65 @@ export function isSafeSkillId(value: string): boolean {
 export function toRelative(root: string, target: string): string {
   const rel = relative(root, target);
   return rel === '' ? '.' : rel.split(sep).join('/');
+}
+
+/**
+ * Canonicalise `target` even when its leaf (or a run of trailing segments) does
+ * not exist yet: the deepest existing ancestor is realpath'd and the missing
+ * segments are appended. Containment can then be decided against a realpath'd
+ * root in a single path space, which is what {@link isPathInside} assumes —
+ * comparing a realpath'd root against a merely `resolve`d candidate rejects
+ * every legitimate absolute path whenever the root sits under a symlink (macOS
+ * `/var` → `/private/var`, symlinked workspace roots).
+ *
+ * Because symlinks are followed all the way to the leaf, this never legalises
+ * an escape: a link inside the root that points out of it resolves to its
+ * outside target and fails containment. That includes a dangling link, whose
+ * `realpath` fails ENOENT — the link is read and followed by hand, because a
+ * write through it lands on its target, not on the link.
+ *
+ * Throws the underlying error when a path component is unreadable rather than
+ * missing, so permission problems are not silently treated as containment, and
+ * when a symlink cycle keeps the walk from terminating.
+ */
+export async function realpathAllowMissing(target: string): Promise<string> {
+  let cursor = resolve(target);
+  const missing: string[] = [];
+  // `realpath` reports a cycle as ELOOP, so each hop consumes one existing link
+  // and the walk terminates; the cap is a backstop against a pathological
+  // filesystem, not the cycle guard.
+  let hops = 0;
+  while (true) {
+    try {
+      const realExisting = await realpath(cursor);
+      return resolve(realExisting, ...missing.reverse());
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const link = await readlink(cursor).catch(() => null);
+      if (link !== null) {
+        if (++hops > MAX_DANGLING_SYMLINK_HOPS)
+          throw new Error(`Path ${JSON.stringify(target)} traverses too many dangling symlinks.`);
+        cursor = resolve(dirname(cursor), link);
+        continue;
+      }
+      const parent = dirname(cursor);
+      if (parent === cursor) throw error;
+      missing.push(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+/** Dangling links followed by {@link realpathAllowMissing} before it gives up. */
+const MAX_DANGLING_SYMLINK_HOPS = 32;
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+  );
 }
 
 // ── Contained file I/O ────────────────────────────────────────────────────

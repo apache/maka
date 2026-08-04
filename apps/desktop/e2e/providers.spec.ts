@@ -38,6 +38,10 @@ async function openCatalog(page: Page, options: { category: string; search: stri
   await page.getByRole('button', { name: '添加连接', exact: true }).click();
   const catalog = page.locator('[data-maka-contract="provider-catalog"]');
   await expect(catalog).toBeVisible();
+  // The catalog level lands on its search field before anything else is
+  // touched: it is what a user arrives here to do, and the shared route-focus
+  // hook is what puts them there.
+  await expect(catalog.getByPlaceholder('搜索服务商')).toBeFocused();
   await catalog.getByRole('combobox', { name: '分类', exact: true }).click();
   await page.getByRole('option', { name: options.category, exact: true }).click();
   await catalog.getByPlaceholder('搜索服务商').fill(options.search);
@@ -128,9 +132,31 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     // the page that owns every next move — no hunting for the new row.
     await expect(setup).toHaveCount(0);
     await expect(detail).toBeVisible();
+    // The level itself takes focus, not its back button, and it is a region
+    // named by its own heading so the landing is announced.
+    await expect(detail).toBeFocused();
+    await expect(detail).toHaveAttribute('role', 'region');
+    await expect(page.getByRole('region', { name: 'Cerebras' })).toBeVisible();
     const detailMark = detail.locator('.providerLogo[data-provider="cerebras"] img');
     await expect(detailMark).toBeVisible();
     expect(await detailMark.evaluate(colorAssetRenderContract)).toEqual(COLOR_ASSET_RENDER_CONTRACT);
+  });
+
+  await test.step('going back lands where the user came from', async () => {
+    await page.getByRole('button', { name: '返回模型连接', exact: true }).click();
+    await expect(detail).toHaveCount(0);
+    // This detail was reached by saving a new provider, not by opening a row,
+    // so there is no row to go back to and the primary action takes the ring.
+    await expect(page.getByRole('button', { name: '添加连接', exact: true })).toBeFocused();
+
+    // Opened from a row, the way back is that row — the ring returns to where
+    // the user left, not to the top of the list.
+    await connection.click();
+    await expect(detail).toBeVisible();
+    await page.getByRole('button', { name: '返回模型连接', exact: true }).click();
+    await expect(connection).toBeFocused();
+    await connection.click();
+    await expect(detail).toBeVisible();
   });
 
   await test.step('the detail replaces a key and manages enabled and default models', async () => {

@@ -68,14 +68,19 @@ describe('renderer session read state', () => {
     assert.equal(next?.hasUnread, false);
   });
 
-  it('keeps a newer unread list when an older list response arrives later', async () => {
+  it('coalesces concurrent refreshes into one in-flight request and one trailing request', async () => {
     const readBoundaries: SessionReadBoundaries = {};
-    const staleList = deferred<SessionSummary[]>();
-    const newerList = deferred<SessionSummary[]>();
-    const listCalls = [staleList.promise, newerList.promise];
+    const firstList = deferred<SessionSummary[]>();
+    const trailingList = deferred<SessionSummary[]>();
+    const listResults = [firstList.promise, trailingList.promise];
+    let listCalls = 0;
     let currentSessions: SessionSummary[] = [];
     const refresher = createSessionListRefresher({
-      listSessions: async () => listCalls.shift() ?? [],
+      listSessions: async () => {
+        const result = listResults[listCalls];
+        listCalls += 1;
+        return result ?? [];
+      },
       readBoundaries: () => readBoundaries,
       currentSessions: () => currentSessions,
       commitSessions: (next) => {
@@ -85,13 +90,19 @@ describe('renderer session read state', () => {
     });
 
     rememberSessionReadBoundary(readBoundaries, 's1', [messageAt(200)]);
-    const staleRefresh = refresher.refresh();
-    const newerRefresh = refresher.refresh();
-    newerList.resolve([session({ id: 's1', hasUnread: true, lastMessageAt: 250 })]);
-    await newerRefresh;
-    staleList.resolve([session({ id: 's1', hasUnread: true, lastMessageAt: 200 })]);
-    await staleRefresh;
+    const firstRefresh = refresher.refresh();
+    const secondRefresh = refresher.refresh();
+    const thirdRefresh = refresher.refresh();
+    assert.equal(listCalls, 1);
 
+    firstList.resolve([session({ id: 's1', hasUnread: true, lastMessageAt: 200 })]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(listCalls, 2);
+
+    trailingList.resolve([session({ id: 's1', hasUnread: true, lastMessageAt: 250 })]);
+    await Promise.all([firstRefresh, secondRefresh, thirdRefresh]);
+
+    assert.equal(listCalls, 2);
     assert.equal(currentSessions[0]?.lastMessageAt, 250);
     assert.equal(currentSessions[0]?.hasUnread, true);
   });

@@ -31,23 +31,21 @@ const ARTIFACT_RECORD_KEYS = new Set([
   'status',
 ]);
 
-export function decodeArtifactMetadata(text: string): ArtifactRecord[] {
+export function decodeArtifactRecordJsons(values: readonly unknown[]): ArtifactRecord[] {
   const records: ArtifactRecord[] = [];
   const ids = new Set<string>();
-  const lines = text.split('\n');
-  for (const [index, line] of lines.entries()) {
-    if (line.length === 0 && index === lines.length - 1) continue;
-    if (line.trim().length === 0) throw invalidMetadataLine(index + 1);
+  for (const [index, value] of values.entries()) {
     try {
-      const record = decodeArtifactRecord(JSON.parse(line), index + 1);
-      if (ids.has(record.id)) throw invalidMetadataLine(index + 1);
+      if (typeof value !== 'string') throw invalidMetadataRecord(index + 1);
+      const record = decodeArtifactRecord(JSON.parse(value), index + 1);
+      if (ids.has(record.id)) throw invalidMetadataRecord(index + 1);
       ids.add(record.id);
       records.push(record);
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Invalid artifact metadata line')) {
+      if (error instanceof Error && error.message.startsWith('Invalid artifact metadata record')) {
         throw error;
       }
-      throw invalidMetadataLine(index + 1, error);
+      throw invalidMetadataRecord(index + 1, error);
     }
   }
   return records;
@@ -74,10 +72,10 @@ export function validateCanonicalArtifactTargetName(targetName: string): void {
   }
 }
 
-function decodeArtifactRecord(value: unknown, line: number): ArtifactRecord {
-  if (!isRecord(value)) throw invalidMetadataLine(line);
+function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
+  if (!isRecord(value)) throw invalidMetadataRecord(index);
   if (Object.keys(value).some((key) => !ARTIFACT_RECORD_KEYS.has(key))) {
-    throw invalidMetadataLine(line);
+    throw invalidMetadataRecord(index);
   }
   if (
     !isCanonicalArtifactEntityId(value.id) ||
@@ -102,13 +100,13 @@ function decodeArtifactRecord(value: unknown, line: number): ArtifactRecord {
       (typeof value.source !== 'string' ||
         !ARTIFACT_SOURCE_SET.has(value.source as ArtifactSource)))
   ) {
-    throw invalidMetadataLine(line);
+    throw invalidMetadataRecord(index);
   }
   validateRelativeArtifactPath(value.relativePath);
   validateCanonicalArtifactTargetName(basename(value.relativePath));
-  if (!isCompatibleArtifactName(value.name)) throw invalidMetadataLine(line);
+  if (!isCompatibleArtifactName(value.name)) throw invalidMetadataRecord(index);
   if (value.relativePath !== `${value.sessionId}/${value.id}-${value.name}`) {
-    throw invalidMetadataLine(line);
+    throw invalidMetadataRecord(index);
   }
   return value as unknown as ArtifactRecord;
 }
@@ -121,8 +119,11 @@ function isCompatibleArtifactName(name: string): boolean {
   return true;
 }
 
-function invalidMetadataLine(line: number, cause?: unknown): Error {
-  return new Error(`Invalid artifact metadata line ${line}`, cause === undefined ? {} : { cause });
+function invalidMetadataRecord(index: number, cause?: unknown): Error {
+  return new Error(
+    `Invalid artifact metadata record ${index}`,
+    cause === undefined ? {} : { cause },
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -47,6 +47,47 @@ const AGENT_SWARM_ISOLATION_MODES = [
 const AGENT_SWARM_TASK_MAX_CHARS = 60_000;
 const AGENT_SWARM_ERROR_MAX_CHARS = 1_000;
 
+/**
+ * The two capability refusals `agent_swarm` can raise before anything runs.
+ *
+ * Both are thrown from two places — the preflight in `prepareAgentSwarmInput`
+ * and the guard in `impl` — so they are built here once. The model reads the
+ * message; an operator reads the `cause`, which still names the host callback
+ * that was missing. Collapsing the two failures into one indistinguishable
+ * sentence would have cost the log the only thing it had.
+ *
+ * The resume advice has to ask whether spawning is available before it
+ * prescribes it. `ToolRuntime.buildChildAgentContext` returns `{}` wholesale
+ * when `getCurrentRunId()` is falsy, so in the runtime that ships, spawn and
+ * resume disappear together: "drop resume_run_ids and send that work as new
+ * items instead" would then walk the model straight into the spawn refusal,
+ * which tells it that retrying fails the same way. An embedder that assembles
+ * its own context can supply one without the other, so the branch is a real
+ * question about state, not a constant — it is asked, not assumed.
+ */
+const AGENT_SWARM_NO_SPAWN =
+  'agent_swarm cannot start new child agents in this session, so nothing ran. ' +
+  'Retrying agent_swarm will fail the same way — do the items yourself with the tools you already have.';
+
+function agentSwarmSpawnUnavailable(): Error {
+  return new Error(AGENT_SWARM_NO_SPAWN, {
+    cause: new Error('spawnChildSession capability is unavailable in this runtime context'),
+  });
+}
+
+function agentSwarmResumeUnavailable(ctx: Pick<MakaToolContext, 'spawnChildSession'>): Error {
+  return new Error(
+    'agent_swarm cannot resume earlier child runs in this session, so nothing ran. ' +
+      (ctx.spawnChildSession
+        ? 'Drop resume_run_ids and send that work as new items instead.'
+        : 'This session cannot start new child agents either, so sending that work as new items ' +
+          'will fail the same way — do it yourself with the tools you already have.'),
+    {
+      cause: new Error('Child AgentRun resume capability is unavailable in this runtime context'),
+    },
+  );
+}
+
 export interface AgentSwarmExplicitItemInput {
   item_id: string;
   profile?: string;
@@ -143,13 +184,13 @@ export function buildAgentSwarmTool(
     impl: async (input, ctx) => {
       const prepared = await prepareAgentSwarmInput(input, ctx, definitions);
       if (prepared.items.some((item) => item.mode === 'spawn') && !ctx.spawnChildSession) {
-        throw new Error('spawnChildSession capability is unavailable in this runtime context');
+        throw agentSwarmSpawnUnavailable();
       }
       if (
         prepared.items.some((item) => item.mode === 'resume') &&
         (!ctx.prepareChildAgentResume || !ctx.resumeChildAgent)
       ) {
-        throw new Error('Child AgentRun resume capability is unavailable in this runtime context');
+        throw agentSwarmResumeUnavailable(ctx);
       }
 
       const startedAt = now();
@@ -240,7 +281,16 @@ export function buildAgentSwarmTool(
                     onEvent: (event) => progressProjectors[index]!.observe(event),
                   })) as SpawnChildAgentResult)
                 : (() => {
-                    throw new Error('retryChildAgent capability is unavailable');
+                    // Defensive: the scheduler only asks for a retry when the
+                    // retry capability is present (see the `rate_limited`
+                    // branch below), so this cannot fire from a swarm run
+                    // today. It still has to be a sentence a model can act on
+                    // rather than the name of a missing host callback.
+                    throw new Error(
+                      'agent_swarm cannot retry a failed child run in this session. ' +
+                        'The item was not retried; send it again as a new item instead.',
+                      { cause: new Error('retryChildAgent capability is unavailable') },
+                    );
                   })()
               : item.mode === 'resume'
                 ? ((await ctx.resumeChildAgent!({
@@ -667,10 +717,10 @@ async function prepareAgentSwarmInput(
   const presetProfiles = await readAvailablePresetProfiles(input, ctx);
   const preflight = preflightAgentSwarmInput(input, definitions, presetProfiles);
   if (preflight.items.length > 0 && !ctx.spawnChildSession) {
-    throw new Error('spawnChildSession capability is unavailable in this runtime context');
+    throw agentSwarmSpawnUnavailable();
   }
   if (preflight.resumes.length > 0 && (!ctx.prepareChildAgentResume || !ctx.resumeChildAgent)) {
-    throw new Error('Child AgentRun resume capability is unavailable in this runtime context');
+    throw agentSwarmResumeUnavailable(ctx);
   }
   const resumes = await Promise.all(
     preflight.resumes.map(async (item): Promise<PreparedAgentSwarmItem> => {

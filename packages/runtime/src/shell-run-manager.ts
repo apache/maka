@@ -70,6 +70,35 @@ import { CompletionLatch } from './completion-latch.js';
 import { closeChildFdSources } from './child-fd-input.js';
 
 type LifecycleCause = 'timeout' | 'cancel' | 'shutdown';
+
+/**
+ * Shown whenever a `ref` argument does not parse. Echoing the rejected string
+ * back taught the model nothing (and could carry command text back into the
+ * transcript); the canonical shape and where to obtain it are the only useful
+ * reply. Keep this in sync with the `ref` description in shell-tools.ts.
+ *
+ * `Read({ ref })` reaches this through `resourceDetail`, not through
+ * `stopBackgroundTask`: `classifyRuntimeResourceRef` waves through anything
+ * shaped `maka://runtime/<something>`, so a mistyped path segment gets all the
+ * way here. That is the likeliest place to mistype a ref, and it was the one
+ * still echoing.
+ */
+const BACKGROUND_TASK_REF_HELP =
+  'That is not a runtime background task ref. Use the ref exactly as it was returned when the ' +
+  'background task started — the form is maka://runtime/background-tasks/<id>.';
+
+/**
+ * The model reads {@link BACKGROUND_TASK_REF_HELP}; an operator reads the
+ * `cause`. Dropping the rejected string outright would have made three call
+ * sites indistinguishable in a log, so it travels the way `builtin-tools.ts`
+ * carries its worker-protocol violations: out of the transcript, in every
+ * stack.
+ */
+function backgroundTaskRefError(ref: string): Error {
+  return new Error(BACKGROUND_TASK_REF_HELP, {
+    cause: new Error(`Unsupported runtime background task ref: ${ref}`),
+  });
+}
 type DriverExit =
   | { mode: 'pipes'; value: PipeProcessExit }
   | { mode: 'pty'; value: PtyProcessExit };
@@ -125,7 +154,7 @@ interface LiveShellRunBase {
   termination?: TerminationLifecycle;
   pendingStops: Set<PendingStop>;
   timeoutTimer?: NodeJS.Timeout;
-  flushTimer?: NodeJS.Timeout;
+  cancelFlush?: () => void;
   flushInFlight?: Promise<ShellRunRecord>;
   persistChain: Promise<void>;
   persistFailure?: Error;
@@ -199,6 +228,7 @@ export class ShellRunProcessManager
   private readonly killGraceMs: number;
   private readonly exitAcknowledgementMs: number;
   private readonly pipeOutputDrainMs: number;
+  private readonly scheduleFlush: (run: () => void, delayMs: number) => () => void;
   private reservedShellRuns = 0;
   private reservedPtyRuns = 0;
   private shuttingDown = false;
@@ -214,6 +244,12 @@ export class ShellRunProcessManager
     this.exitAcknowledgementMs =
       input.exitAcknowledgementMs ?? DEFAULT_PROCESS_TERMINATION_GRACE_MS;
     this.pipeOutputDrainMs = input.pipeOutputDrainMs ?? DEFAULT_PIPE_OUTPUT_DRAIN_MS;
+    this.scheduleFlush =
+      input.scheduleFlush ??
+      ((run, delayMs) => {
+        const timer = setTimeout(run, delayMs);
+        return () => clearTimeout(timer);
+      });
   }
 
   async runBackgroundBash(input: ShellRunBashInput): Promise<ShellRunToolResult> {
@@ -281,7 +317,7 @@ export class ShellRunProcessManager
   async writeStdin(input: ShellRunWriteInput): Promise<ShellRunToolResult> {
     validateWriteStdinInput(input);
     const target = parseShellRunResourceRef(input.ref);
-    if (!target) throw new Error(`Unsupported runtime background task ref: ${input.ref}`);
+    if (!target) throw backgroundTaskRefError(input.ref);
     const live = this.liveResource(input.sessionId, target.shellRunId);
     if (!live) return this.writeStdinWithoutLive(input, target.shellRunId);
     if (live.mode !== 'pty') throw new Error('WriteStdin requires a PTY background task ref');
@@ -425,7 +461,7 @@ export class ShellRunProcessManager
     abortSignal: AbortSignal,
   ): Promise<ToolResultContent> {
     const target = parseShellRunResourceRef(ref);
-    if (!target) throw new Error(`Unsupported runtime background task ref: ${ref}`);
+    if (!target) throw backgroundTaskRefError(ref);
     const live = this.liveResource(sessionId, target.shellRunId);
     if (!live) return this.stopWithoutLive(sessionId, target.shellRunId, abortSignal);
     if (live.driverExit) {
@@ -889,27 +925,28 @@ export class ShellRunProcessManager
   private scheduleAutomaticFlush(live: LiveShellRun): void {
     if (live.finalizeOnce || live.driverExit || live.integrityFailure || live.persistFailure)
       return;
-    if (live.flushInFlight || live.flushTimer) return;
+    if (live.flushInFlight || live.cancelFlush) return;
     if (live.mode === 'pipes') {
       if (live.pendingFlushChars >= this.flushBytes) {
         this.queueAutomaticFlush(live);
       } else {
-        live.flushTimer = setTimeout(() => {
-          live.flushTimer = undefined;
+        live.cancelFlush = this.scheduleFlush(() => {
+          live.cancelFlush = undefined;
           this.queueAutomaticFlush(live);
         }, this.flushIntervalMs);
       }
       return;
     }
+    // Real elapsed time, not the injected `now()`: this paces flushes against the wall
+    // clock, while `now()` only stamps records and is a plain counter under test.
     const elapsed = Date.now() - live.lastSnapshotWallTime;
-    const delay = Math.max(0, this.flushIntervalMs - elapsed);
-    if (delay === 0) this.queueAutomaticFlush(live);
-    else {
-      live.flushTimer = setTimeout(() => {
-        live.flushTimer = undefined;
+    live.cancelFlush = this.scheduleFlush(
+      () => {
+        live.cancelFlush = undefined;
         this.queueAutomaticFlush(live);
-      }, delay);
-    }
+      },
+      Math.max(0, this.flushIntervalMs - elapsed),
+    );
   }
 
   private queueAutomaticFlush(live: LiveShellRun): void {
@@ -940,9 +977,9 @@ export class ShellRunProcessManager
     snapshotBarrier?: Promise<SnapshotAtCut | undefined>,
   ): Promise<ShellRunRecord> {
     if (live.integrityFailure || live.driverExit) return live.finished.join();
-    if (live.flushTimer) {
-      clearTimeout(live.flushTimer);
-      live.flushTimer = undefined;
+    if (live.cancelFlush) {
+      live.cancelFlush();
+      live.cancelFlush = undefined;
     }
     if (live.mode === 'pipes') live.pendingFlushChars = 0;
     const task = this.queuePersist(live, {}, snapshotBarrier ? { snapshotBarrier } : {});
@@ -1469,7 +1506,7 @@ export class ShellRunProcessManager
     abortSignal: AbortSignal,
   ): Promise<ShellRunToolResult> {
     const target = parseShellRunResourceRef(ref);
-    if (!target) throw new Error(`Unsupported runtime resource ref: ${ref}`);
+    if (!target) throw backgroundTaskRefError(ref);
     const live = this.liveResource(sessionId, target.shellRunId);
     let record: ShellRunRecord;
     if (live) {
@@ -1646,9 +1683,9 @@ export class ShellRunProcessManager
 
   private clearLiveTimers(live: LiveShellRun): void {
     if (live.timeoutTimer) clearTimeout(live.timeoutTimer);
-    if (live.flushTimer) clearTimeout(live.flushTimer);
+    live.cancelFlush?.();
     live.timeoutTimer = undefined;
-    live.flushTimer = undefined;
+    live.cancelFlush = undefined;
   }
 
   private sessionTerminationEpoch(sessionId: string): number {
@@ -1721,11 +1758,33 @@ export class ShellRunProcessManager
   }
 
   private reserveSlot(mode: ShellMode): ShellRunSlotReservation {
+    // The counters are manager-wide, so the session that hits the cap may own
+    // none of the runs holding it. Hedging on ownership — "stop one of yours
+    // if you started any" — is the wrong hedge, because the caller that most
+    // often hits this cap does not have the tool either. `Bash` reaches this
+    // path from a child agent, and `buildToolsForAgentDefinition` is a strict
+    // name allowlist: the `implementation` definition is granted Read, Glob,
+    // Grep, Write, Edit and Bash, and neither StopBackgroundTask nor
+    // WriteStdin is on any child list. Naming the tool would send that caller
+    // to look for a schema entry it does not have. So the refusal describes
+    // the action instead of naming the tool, and leads with waiting, which is
+    // the one move available to every caller.
     if (this.reservedShellRuns >= this.maxLiveShellRuns) {
-      throw new Error(`Live background task capacity is full (${this.maxLiveShellRuns})`);
+      throw new Error(
+        `No free background task slot: the runtime is at its limit of ${this.maxLiveShellRuns} ` +
+          'live background tasks. The limit is shared across sessions, so some of them may not be ' +
+          'yours. Wait for a running background task to finish and try again, or, if you have a ' +
+          'tool for stopping background tasks, stop one you started.',
+      );
     }
     if (mode === 'pty' && this.reservedPtyRuns >= this.maxLivePtyRuns) {
-      throw new Error(`Live PTY capacity is full (${this.maxLivePtyRuns})`);
+      throw new Error(
+        `No free interactive (PTY) background task slot: the runtime is at its limit of ` +
+          `${this.maxLivePtyRuns} live interactive tasks. The limit is shared across sessions, so ` +
+          'some of them may not be yours. Run this command as a non-interactive background task, ' +
+          'which does not use this limit, or wait for a running interactive task to finish and ' +
+          'try again.',
+      );
     }
     this.reservedShellRuns += 1;
     if (mode === 'pty') this.reservedPtyRuns += 1;

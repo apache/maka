@@ -102,8 +102,8 @@ describe('is a turn running', () => {
 
 const HEAD = {
   turnPhase: 'waiting',
-  streamingText: '',
-  thinkingText: '',
+  hasStreamingText: false,
+  hasThinkingText: false,
   hasInFlightTools: false,
 } as const;
 
@@ -140,8 +140,8 @@ describe('model wait state', () => {
     for (const [input, expected] of [
       [HEAD, 'processing'],
       [{ ...HEAD, turnPhase: undefined }, 'none'],
-      [{ ...HEAD, streamingText: 'answer' }, 'none'],
-      [{ ...HEAD, thinkingText: 'reasoning' }, 'none'],
+      [{ ...HEAD, hasStreamingText: true }, 'none'],
+      [{ ...HEAD, hasThinkingText: true }, 'none'],
       [{ ...HEAD, hasInFlightTools: true }, 'none'],
       [{ ...HEAD, turnPhase: 'streamed', hasInFlightTools: true }, 'none'],
       [{ ...HEAD, turnPhase: 'streamed' }, 'continuing'],

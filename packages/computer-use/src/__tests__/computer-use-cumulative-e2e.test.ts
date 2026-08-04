@@ -7,10 +7,25 @@ import {
   type CuObservation,
   type CuRunContext,
 } from '@maka/runtime';
+import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import {
   createComputerUseOverlayHook,
   type OverlayCursorSink,
 } from '../computer-use-overlay-hook.js';
+
+/**
+ * The observation id the tool just handed the model.
+ *
+ * The model-facing observation is a rendered document, not JSON, so this reads
+ * it with the runtime's own test-only reader rather than a fourth copy of a
+ * parser. It was `JSON.parse` here, which is how this suite went red the day
+ * the rendering changed.
+ */
+function observationIdOf(modelText: string | undefined): string {
+  const parsed = parseObservationText(modelText ?? '');
+  assert.ok(parsed, 'the tool did not return a rendered observation');
+  return parsed.observation_id;
+}
 
 function context(overrides: Partial<CuRunContext> = {}) {
   return {
@@ -145,7 +160,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
       } as never,
       context(),
     )) as { text: string; modelText?: string };
-    const observationId = JSON.parse(observed.modelText ?? '{}').observation_id;
+    const observationId = observationIdOf(observed.modelText);
     const result = (await tool.impl(
       {
         action: 'left_click',
@@ -234,7 +249,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
     await tool.impl(
       {
         action: 'left_click',
-        observation_id: JSON.parse(firstObservation.modelText ?? '{}').observation_id,
+        observation_id: observationIdOf(firstObservation.modelText),
         coordinate: [400, 200],
       } as never,
       context({ toolCallId: 'target-change' }),
@@ -254,7 +269,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
     await tool.impl(
       {
         action: 'left_click',
-        observation_id: JSON.parse(secondObservation.modelText ?? '{}').observation_id,
+        observation_id: observationIdOf(secondObservation.modelText),
         coordinate: [400, 200],
       } as never,
       context({ turnId: 'turn-2', toolCallId: 'unknown' }),
@@ -307,7 +322,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
     const afterTurn = (await tool.impl(
       {
         action: 'left_click',
-        observation_id: JSON.parse(observed.modelText ?? '{}').observation_id,
+        observation_id: observationIdOf(observed.modelText),
         coordinate: [400, 200],
       } as never,
       context({ toolCallId: 'late-action' }),

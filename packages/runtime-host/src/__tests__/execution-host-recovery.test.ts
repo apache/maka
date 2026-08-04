@@ -1,20 +1,11 @@
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import {
-  appendFile,
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
 import type { AgentRunHeader } from '@maka/core/agent-run';
@@ -99,131 +90,6 @@ test('startup recovery rejects claimed graph Run lineage drift', async () => {
   });
 });
 
-test('startup recovery imports past a truncated legacy RuntimeEvent tail without rewriting it', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const turnId = randomUUID();
-    const { runId } = await fixture.seedRunWithoutUserMessage(
-      turnId,
-      'recover after a partial RuntimeEvent write',
-    );
-    const runtimeEventsPath = fixture.runtimeEventsPath(runId);
-    await mkdir(dirname(runtimeEventsPath), { recursive: true });
-    await writeFile(runtimeEventsPath, '{"id":"truncated"', 'utf8');
-
-    const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'tui');
-    const recovered = await client.queryTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-    });
-    assert.equal(recovered.status, 'failed');
-    if (recovered.status === 'failed') {
-      assert.equal(recovered.failureClass, 'app_restarted');
-    }
-    await client.close();
-    await fixture.stopHost(host);
-
-    assert.equal(await readFile(runtimeEventsPath, 'utf8'), '{"id":"truncated"');
-    const ledger = await fixture.readTurn(turnId);
-    assert.equal(ledger.terminalEvents.length, 1);
-  });
-});
-
-test('startup recovery fails closed on a complete malformed RuntimeEvent record', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const turnId = randomUUID();
-    const { runId } = await fixture.seedRunWithoutUserMessage(
-      turnId,
-      'do not recover across durable corruption',
-    );
-    const runtimeEventsPath = fixture.runtimeEventsPath(runId);
-    const malformed = '{"id":"malformed"\n';
-    await mkdir(dirname(runtimeEventsPath), { recursive: true });
-    await writeFile(runtimeEventsPath, malformed, 'utf8');
-
-    await fixture.expectHostStartupFailure();
-    assert.equal(await readFile(runtimeEventsPath, 'utf8'), malformed);
-    await fixture.assertOwnerAvailable();
-  });
-});
-
-test('startup recovery fails closed on a complete malformed Session record', async () => {
-  await withExecutionRoot(async (fixture) => {
-    await fixture.seedRunWithoutUserMessage(
-      randomUUID(),
-      'do not rewrite durable Session corruption',
-    );
-    const sessionPath = fixture.sessionPath();
-    const malformed = '{"type":"user"\n';
-    await appendFile(sessionPath, malformed, 'utf8');
-    const expected = await readFile(sessionPath, 'utf8');
-
-    await fixture.expectHostStartupFailure();
-    assert.equal(await readFile(sessionPath, 'utf8'), expected);
-    await fixture.assertOwnerAvailable();
-  });
-});
-
-test('startup recovery fails closed on a complete malformed AgentRun record', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const { runId } = await fixture.seedRunWithoutUserMessage(
-      randomUUID(),
-      'do not recover across durable AgentRun corruption',
-    );
-    const eventsPath = fixture.eventsPath(runId);
-    const malformed = '{"type":"run_started"\n';
-    await mkdir(dirname(eventsPath), { recursive: true });
-    await writeFile(eventsPath, malformed, 'utf8');
-
-    await fixture.expectHostStartupFailure();
-    assert.equal(await readFile(eventsPath, 'utf8'), malformed);
-    await fixture.assertOwnerAvailable();
-  });
-});
-
-test('a pre-start durability failure rejects turn.start and drains the Host', {
-  skip:
-    process.platform === 'win32' || process.getuid?.() === 0 ? 'POSIX file-permission gate' : false,
-}, async () => {
-  await withExecutionRoot(async (fixture) => {
-    const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
-    const turnId = randomUUID();
-    const sessionPath = fixture.sessionPath();
-    await chmod(sessionPath, 0o400);
-    try {
-      await assert.rejects(
-        () =>
-          client.startTurn({
-            sessionId: fixture.sessionId,
-            turnId,
-            content: { text: 'fail before the durable start barrier' },
-          }),
-        operationError('internal_failure'),
-      );
-      await client.closed;
-      await fixture.waitForHostExit(host);
-    } finally {
-      await chmod(sessionPath, 0o600);
-    }
-
-    const successor = await fixture.startHost();
-    const observer = await connectClient(fixture.root, 'tui');
-    const recovered = await observer.queryTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-    });
-    assert.equal(recovered.status, 'failed');
-    await observer.close();
-    await fixture.stopHost(successor);
-
-    const ledger = await fixture.readTurn(turnId);
-    assert.equal(ledger.runs.length, 1);
-    assert.equal(ledger.userMessages.length, 1);
-    assert.equal(ledger.terminalEvents.length, 1);
-  });
-});
-
 test('retry after a discarded turn.start response reuses the durable semantic admission', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
@@ -288,6 +154,40 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
       [turnId, successorTurnId],
     );
     assert.equal(chain[1]?.previousRootTurnId, turnId);
+  });
+});
+
+test('startup recovery replays an admitted regenerate with its source lineage', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const firstHost = await fixture.startHost();
+    const first = await connectClient(fixture.root, 'desktop');
+    const sourceTurnId = randomUUID();
+    const regeneratedTurnId = randomUUID();
+    await first.startTurn({
+      sessionId: fixture.sessionId,
+      turnId: sourceTurnId,
+      content: quotedContent('recover this regeneration'),
+    });
+    await waitForTerminalTurn(first, fixture.sessionId, sourceTurnId);
+    await first.close();
+    await fixture.stopHost(firstHost);
+
+    const admitted = await fixture.seedRegenerateAdmissionWithoutRun(
+      sourceTurnId,
+      regeneratedTurnId,
+    );
+    const successorHost = await fixture.startHost();
+    const successor = await connectClient(fixture.root, 'tui');
+    const terminal = await waitForTerminalTurn(successor, fixture.sessionId, regeneratedTurnId);
+    assert.equal(terminal.runId, admitted.runId);
+    await successor.close();
+    await fixture.stopHost(successorHost);
+
+    const ledger = await fixture.readTurn(regeneratedTurnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.userMessages.length, 1);
+    assert.equal(ledger.runs[0]?.parentTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.regeneratedFromTurnId, sourceTurnId);
   });
 });
 

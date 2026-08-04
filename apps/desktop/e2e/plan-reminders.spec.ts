@@ -68,7 +68,9 @@ test('keeps Plan row actions keyboard ordered and destructive confirmation rever
   await expect(clearDialog.getByRole('button', { name: '取消' })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(clearDialog).toBeHidden();
-  await expect(reviewRow).toContainText('已生成本周竞品动态摘要');
+  // Premium-row redesign: run MESSAGES live in the 执行记录 tab; the task row
+  // keeps its schedule line. Cancelling the clear must leave the row intact.
+  await expect(reviewRow).toContainText('每周竞品动态追踪');
   await expect(reviewMenu).toBeFocused();
 });
 

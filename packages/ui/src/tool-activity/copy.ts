@@ -21,6 +21,45 @@ export interface ToolActivityCopy {
     description: string;
     copyAriaLabel: (label: string) => string;
   };
+  /**
+   * Row labels for one Computer Use call, derived from its arguments (see
+   * `computer-action-label.ts`). The tool's display name is a noun, so every
+   * call rendered the same row; these are verb phrases that say what the call
+   * did.
+   *
+   * Each entry uses exactly what the persisted projection carries — the action,
+   * the app, the window id, the element id — and nothing more. There is no
+   * entry that spells out a typed value, a key name or a coordinate, because
+   * the privacy boundary keeps those out of anything a renderer can read, so
+   * such an entry could only ever be exercised by a fixture.
+   */
+  computer: {
+    fallback: string;
+    listApps: string;
+    observe: string;
+    observeApp: (app: string) => string;
+    observeWindow: (windowId: number) => string;
+    screenshot: string;
+    screenshotApp: (app: string) => string;
+    screenshotWindow: (windowId: number) => string;
+    element: (elementId: string) => string;
+    elementUnknown: string;
+    clickElement: (element: string) => string;
+    setValue: (element: string) => string;
+    selectText: (element: string) => string;
+    secondaryAction: (element: string) => string;
+    scroll: string;
+    pressKey: string;
+    type: string;
+    holdKey: string;
+    wait: string;
+    zoom: string;
+    cursorPosition: string;
+    pointer: Record<
+      'move' | 'left' | 'right' | 'middle' | 'double' | 'triple' | 'down' | 'up' | 'drag',
+      string
+    >;
+  };
   automation: {
     created: (name: string) => string;
     nextFire: (value: string) => string;
@@ -137,6 +176,43 @@ const TOOL_ACTIVITY_COPY = {
     output: { redacted: '[已脱敏]', redactedAriaLabel: '已脱敏', truncated: '输出已截断' },
     copy: { idle: '复制', pending: '复制中…', copied: '已复制', failed: '复制失败' },
     sandboxBlocked: { title: '操作可能被沙箱阻止', description: '沙箱可能阻止了该调用中的至少一项操作。失败前可能已经产生部分结果，请检查输出和工作区状态后再决定是否重试。', copyAriaLabel: (label) => `${label}沙箱诊断信息` },
+    computer: {
+      fallback: '操作电脑',
+      listApps: '列出打开的应用',
+      observe: '观察当前窗口',
+      observeApp: (app) => `观察「${app}」窗口`,
+      observeWindow: (windowId) => `观察窗口 ${windowId}`,
+      screenshot: '截图当前窗口',
+      screenshotApp: (app) => `截图「${app}」窗口`,
+      screenshotWindow: (windowId) => `截图窗口 ${windowId}`,
+      element: (elementId) => `元素 ${elementId}`,
+      elementUnknown: '该元素',
+      clickElement: (element) => `点击${element}`,
+      // The element phrase ends every clause it appears in: it is "元素 e12",
+      // and Chinese typography wants a space around the latin id, which a
+      // trailing 「的值」/「执行」 would either eat or leave dangling.
+      setValue: (element) => `设置值：${element}`,
+      selectText: (element) => `选择文本：${element}`,
+      secondaryAction: (element) => `次要操作：${element}`,
+      scroll: '滚动',
+      pressKey: '按下按键',
+      type: '输入文本',
+      holdKey: '按住按键',
+      wait: '等待',
+      zoom: '放大查看区域',
+      cursorPosition: '读取指针位置',
+      pointer: {
+        move: '移动指针',
+        left: '点击',
+        right: '右键点击',
+        middle: '中键点击',
+        double: '双击',
+        triple: '三击',
+        down: '按下鼠标',
+        up: '松开鼠标',
+        drag: '拖动',
+      },
+    },
     automation: { created: (name) => `自动化任务已创建：${name}`, nextFire: (value) => `下次触发：${value}`, deleted: '自动化任务已删除', notFound: '未找到该任务（可能已完成或已删除）', list: (count) => `自动化任务列表 (${count})`, empty: '当前会话暂无自动化任务' },
     loadTools: { displayName: '加载工具组', loaded: (namespace) => namespace ? `已加载 ${namespace} 工具组` : '已加载工具组', count: (n) => `新增 ${n} 个可用工具：`, footer: '下一步即可调用' },
     permissionDenied: '用户已拒绝权限请求',
@@ -162,6 +238,40 @@ const TOOL_ACTIVITY_COPY = {
     output: { redacted: '[Redacted]', redactedAriaLabel: 'Redacted', truncated: 'Output truncated' },
     copy: { idle: 'Copy', pending: 'Copying…', copied: 'Copied', failed: 'Copy failed' },
     sandboxBlocked: { title: 'Operation may have been blocked by sandbox', description: 'The sandbox may have blocked at least one action in this call. Some effects may have occurred before it failed; check the output and workspace state before retrying.', copyAriaLabel: (label) => `${label} sandbox diagnostics` },
+    computer: {
+      fallback: 'Use the computer',
+      listApps: 'List open apps',
+      observe: 'Observe the current window',
+      observeApp: (app) => `Observe the “${app}” window`,
+      observeWindow: (windowId) => `Observe window ${windowId}`,
+      screenshot: 'Screenshot the current window',
+      screenshotApp: (app) => `Screenshot the “${app}” window`,
+      screenshotWindow: (windowId) => `Screenshot window ${windowId}`,
+      element: (elementId) => `element ${elementId}`,
+      elementUnknown: 'the element',
+      clickElement: (element) => `Click ${element}`,
+      setValue: (element) => `Set the value of ${element}`,
+      selectText: (element) => `Select text in ${element}`,
+      secondaryAction: (element) => `Run a secondary action on ${element}`,
+      scroll: 'Scroll',
+      pressKey: 'Press a key',
+      type: 'Type text',
+      holdKey: 'Hold a key',
+      wait: 'Wait',
+      zoom: 'Zoom into a region',
+      cursorPosition: 'Read the pointer position',
+      pointer: {
+        move: 'Move the pointer',
+        left: 'Click',
+        right: 'Right-click',
+        middle: 'Middle-click',
+        double: 'Double-click',
+        triple: 'Triple-click',
+        down: 'Press the mouse',
+        up: 'Release the mouse',
+        drag: 'Drag',
+      },
+    },
     automation: { created: (name) => `Automation created: ${name}`, nextFire: (value) => `Next run: ${value}`, deleted: 'Automation deleted', notFound: 'Automation not found (it may have completed or been deleted)', list: (count) => `Automations (${count})`, empty: 'No automations in this conversation' },
     loadTools: { displayName: 'Load tools', loaded: (namespace) => namespace ? `Loaded ${namespace} tools` : 'Loaded tools', count: (n) => `Added ${n} available ${n === 1 ? 'tool' : 'tools'}:`, footer: 'Ready to use' },
     permissionDenied: 'User denied the permission request',

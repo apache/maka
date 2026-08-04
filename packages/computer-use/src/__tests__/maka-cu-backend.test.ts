@@ -1701,7 +1701,7 @@ describe('maka-cu backend', () => {
 });
 
 describe('maka-cu backend selection', () => {
-  it('is reached only by being named, and refuses without a pinned digest', () => {
+  it('is reached by being named, and refuses without a pinned digest', () => {
     if (process.platform !== 'darwin') return;
     let made = 0;
     const stub = () => ({
@@ -1732,12 +1732,13 @@ describe('maka-cu backend selection', () => {
     assert.equal(made, 1);
   });
 
-  it('is not what a caller that names nothing gets', () => {
-    // This backend is additive. A host that has not been changed still selects
-    // the executor it selected before, so adding maka-cu cannot move anyone
-    // onto an unsigned binary by omission.
+  it('is what a caller that names nothing gets', () => {
+    // The default, and the only reason this assertion is worth writing down:
+    // "which executor runs" is a decision the selector owns, and a host that
+    // names nothing must land on the same one the constant names. If the two
+    // ever disagree, a machine runs an executor nobody chose.
     if (process.platform !== 'darwin') return;
-    assert.equal(DEFAULT_CU_BACKEND_ID, 'cua-driver');
+    assert.equal(DEFAULT_CU_BACKEND_ID, 'maka-cu');
     let made = 0;
     const selected = selectComputerUseBackend({
       binaryPath: '/tmp/does-not-matter',
@@ -1749,7 +1750,7 @@ describe('maka-cu backend selection', () => {
         } as never;
       },
     });
-    assert.equal(selected.backendId, 'cua-driver');
+    assert.equal(selected.backendId, 'maka-cu');
     assert.equal(made, 1);
   });
 });

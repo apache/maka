@@ -20,17 +20,17 @@ export const CODEX_TOOLCHAIN_SPEC = {
     binarySha256: '93956de2e59480474a7b46571da1651180b1a050cdf32641ebec4ce6e478e068',
   },
   codex: {
-    version: '0.144.6',
-    archiveUrl: 'https://registry.npmjs.org/@openai/codex/-/codex-0.144.6-linux-x64.tgz',
+    version: '0.146.0',
+    archiveUrl: 'https://registry.npmjs.org/@openai/codex/-/codex-0.146.0-linux-x64.tgz',
     archiveIntegrity:
-      'sha512-4E7EnzCg0OnBxCyYnwJ+qnZwWHYe0YScr5ucKWbngE9u4+0XrpWELqq2Kn9jl5GZK8MDjU7PrJwFIwusHOHjuw==',
+      'sha512-fswvyGprAPCMiOEue/7MKMk7pCjh9kZIJfJX5i9atmfnmGYbYCcUhZsEH9LEP0+0t5xyPqDbfNXY7NSxIVuXxA==',
     files: {
-      binary: 'a31ae9450a26216eb1e7c53102fd42123dd675974310b0e2ca3aa4cb622a2c15',
-      codeModeHost: 'b3c1b98e0272ed4bff2bf0459574ff5489dee3087149648e43b1b665a76373e1',
-      ripgrep: 'ebeaf56f8a25e102e9419933423738b3a2a613a444fd749d695e15eba53f71f2',
-      bubblewrap: '7df960565a0dece99240ea4b9d0e011307817f9f3b73176c7b71fda44fe84765',
+      binary: '2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04',
+      codeModeHost: '520e0f7e2c955a591995c4437d6b10c38595c43c94fba39cef4381a00dadcb98',
+      ripgrep: 'e62198eb19b136b88c330af83647b5a962cb99b6b1f066758568f12de1974849',
+      bubblewrap: '77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c',
       zsh: '67faaaa89242c4a332e16e508a1977cffc24bf7fca31d4411cdfd101f3831ef3',
-      packageMetadata: '4415fcb6e062b567abf79960dbbd38f046ce3c8fbb1170e35fd8129d476126d8',
+      packageMetadata: '3f9cd79076d1747cba97f610475f3ad99be314a15cbf665b8d8f179c020aa353',
     },
   },
 } as const;

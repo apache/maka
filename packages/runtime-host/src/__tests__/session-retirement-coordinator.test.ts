@@ -172,7 +172,7 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
-  test('recovers graph operators orphaned by legacy root-only retirement', async () => {
+  test('recovers graph operators orphaned by an interrupted retirement', async () => {
     await withHarness(async (harness) => {
       const childSessionId = await createClosedGraphOperator(harness, harness.rootId, 'a');
       const database = new DatabaseSync(join(harness.workspaceRoot, 'runtime.sqlite'));
@@ -199,17 +199,13 @@ describe('Host Session retirement coordinator', () => {
       } finally {
         database.close();
       }
-      for (const sessionId of harness.familyIds) {
-        await harness.store.purgeRemovedSessionTranscript(sessionId);
-      }
-
       await harness.coordinator.recover();
 
       await waitFor(
         async () =>
           (await harness.store.probeSessionRemoval(childSessionId)).kind === 'removed' &&
           (await harness.store.listPendingSessionRetirementCleanupIds()).length === 0,
-        'Legacy Agent Graph retirement did not converge',
+        'Agent Graph retirement did not converge',
       );
       const graphId = agentGraphIdForRootSession(harness.rootId);
       assert.deepEqual(await harness.graphStore.listAgentGraphScheduleUpdates(graphId), []);
@@ -218,7 +214,7 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
-  test('recovers legacy graph sidecars without operator provisions', async () => {
+  test('recovers graph sidecars without operator provisions', async () => {
     await withHarness(async (harness) => {
       const projectionGraphId = agentGraphIdForRootSession(harness.rootId);
       const finishedGraphId = agentGraphIdForRootSession(harness.revisionId);
@@ -274,15 +270,11 @@ describe('Host Session retirement coordinator', () => {
       } finally {
         database.close();
       }
-      for (const sessionId of harness.familyIds) {
-        await harness.store.purgeRemovedSessionTranscript(sessionId);
-      }
-
       await harness.coordinator.recover();
 
       await waitFor(
         async () => (await harness.store.listPendingSessionRetirementCleanupIds()).length === 0,
-        'Legacy Agent Graph sidecar cleanup did not converge',
+        'Agent Graph sidecar cleanup did not converge',
       );
       assert.equal(
         await harness.graphStore.readAgentGraphClientProjection(projectionGraphId),
@@ -745,8 +737,6 @@ async function withHarness(
           store.reconcileOrphanedAgentGraphRetirements(),
         listPendingSessionRetirementCleanupIds: (sessionId) =>
           store.listPendingSessionRetirementCleanupIds(sessionId),
-        purgeRemovedSessionTranscript: (sessionId) =>
-          store.purgeRemovedSessionTranscript(sessionId),
         completeSessionRetirementCleanup: (sessionId) =>
           store.completeSessionRetirementCleanup(sessionId),
         setSessionsLifecycleVersioned: (sessions, state) =>

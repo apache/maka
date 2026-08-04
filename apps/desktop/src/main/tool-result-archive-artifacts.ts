@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ArtifactStore } from '@maka/storage';
 import {
+  stableToolResultArchiveArtifactId,
   type ToolResultArchiveReaderInput,
   type ToolResultArchiveReadResult,
   type ToolResultArchiveRecorderInput,
@@ -70,20 +71,6 @@ async function readArchivedToolResultArtifact(
   if (!read.ok) return read;
   if (sha256(read.text) !== event.bodySha256) return { ok: false, reason: 'corrupt' };
   return { ok: true, serializedResult: read.text };
-}
-
-export function stableToolResultArchiveArtifactId(event: Pick<
-  ToolResultArchiveRecorderInput,
-  'sessionId' | 'runtimeEventId' | 'toolCallId' | 'toolName' | 'bodySha256' | 'rewriteVersion'
->): string {
-  return `tool-result-archive-${sha256(JSON.stringify({
-    sessionId: event.sessionId,
-    runtimeEventId: event.runtimeEventId,
-    toolCallId: event.toolCallId,
-    toolName: event.toolName,
-    bodySha256: event.bodySha256,
-    rewriteVersion: event.rewriteVersion,
-  })).slice(0, 32)}`;
 }
 
 function sha256(text: string): string {

@@ -226,7 +226,7 @@ describe('filesystem worker operations', () => {
     assert.equal(await readFile(target, 'utf8'), 'winner');
   });
 
-  test('replace-mode writes never follow a final symlink', async (t) => {
+  test('replace-mode writes land on the canonical target and never follow a final symlink', async (t) => {
     if (process.platform === 'win32') {
       t.skip('file symlink creation is not reliably available on Windows CI');
       return;
@@ -237,16 +237,42 @@ describe('filesystem worker operations', () => {
     await writeFile(target, 'target', 'utf8');
     await symlink(target, link);
 
+    // #2059 follow-final semantics: replace-mode is authorised against the
+    // canonical (followed) path and the O_NOFOLLOW open stays pinned there.
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'write', cwd: root, path: link, content: 'stale', mode: 'replace' },
-        { enforcementPath: link, access: 'write', scope: 'exact', targetType: 'symlink' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        link,
+      ),
+    );
+
+    assert.equal(response.ok, true);
+    assert.equal(await readFile(target, 'utf8'), 'stale');
+  });
+
+  test('denies a write through a dangling symlink the boundary does not cover', async () => {
+    // The worker enforces its own boundary rather than trusting the caller to
+    // have canonicalised the path: a link inside the root whose target does not
+    // exist yet cannot be realpath'd, and a write through it lands on the
+    // target, outside the root, while the boundary names only the link.
+    const root = await temporaryDirectory('maka-worker-dangling-root-');
+    const outside = await temporaryDirectory('maka-worker-dangling-outside-');
+    const link = join(root, 'dangling.txt');
+    const target = join(outside, 'not-yet.txt');
+    await symlink(target, link);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: link, content: 'blocked' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
         link,
       ),
     );
 
     assert.equal(response.ok, false);
-    assert.equal(await readFile(target, 'utf8'), 'target');
+    if (!response.ok) assert.equal(response.error.code, 'path_denied');
+    await assert.rejects(readFile(target, 'utf8'), { code: 'ENOENT' });
   });
 
   test('lstat reports the directory entry without following its final symlink', async (t) => {

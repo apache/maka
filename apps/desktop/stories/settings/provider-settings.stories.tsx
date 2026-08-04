@@ -227,9 +227,6 @@ function installSubscriptionFixtures() {
       runtimeState: 'not_logged_in',
     }),
     xaiOAuth: xaiDeviceSubscriptionFixture(),
-    cursorSubscription: browserSubscriptionFixture({
-      runtimeState: 'not_logged_in',
-    }),
     antigravitySubscription: browserSubscriptionFixture({
       runtimeState: 'storage_failed',
       errorMessage: '需要 Google client_id 后才能完成登录。',
@@ -436,4 +433,3 @@ export const AddProvider: Story = {
     />
   ),
 };
-

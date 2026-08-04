@@ -36,6 +36,16 @@ export type OverlayStartResult =
       message?: string;
     };
 
+export async function startScreenRecordingOnboarding<RequestResult extends { ok: boolean }>(deps: {
+  requestAccess(): Promise<RequestResult>;
+  isGranted(): boolean;
+  startDrag(): Promise<OverlayStartResult>;
+}): Promise<RequestResult | OverlayStartResult> {
+  const requested = await deps.requestAccess();
+  if (!requested.ok || deps.isGranted()) return requested;
+  return deps.startDrag();
+}
+
 /** The window surface the controller drives; faked in tests. */
 export interface PermissionOverlayWindowLike {
   setBounds(bounds: { x: number; y: number; width: number; height: number }): void;

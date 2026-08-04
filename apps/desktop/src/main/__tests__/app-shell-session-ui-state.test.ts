@@ -167,7 +167,8 @@ describe('app shell session UI state controller', () => {
 
   it('records event-stream health without notifying render subscribers', () => {
     let notifications = 0;
-    const controller = createAppShellSessionUiStateController(undefined, () => {
+    const controller = createAppShellSessionUiStateController();
+    controller.subscribe(() => {
       notifications += 1;
     });
     const snapshot = healthSnapshot('session');

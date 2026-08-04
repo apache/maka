@@ -21,12 +21,7 @@ import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import {
-  SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES,
-  SESSION_BUNDLE_PORTABLE_SESSION_FILES,
-  SESSION_BUNDLE_STATE_ENTRIES,
-  isArtifactPathForSession,
-} from '@maka/storage';
+import { SESSION_BUNDLE_STATE_ENTRIES, isArtifactPathForSession } from '@maka/storage';
 import { STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
 import {
   constants as zlibConstants,
@@ -57,8 +52,23 @@ const SUPPORTED_OPTIONS = new Set([
 // must be regenerated when a session export is materialized elsewhere.
 const STORAGE_ROOT_AUTHORITY_MARKER = STORAGE_ROOT_MARKER_FILE;
 const PORTABLE_STATE_TOP_LEVEL = new Set(SESSION_BUNDLE_STATE_ENTRIES);
-const PORTABLE_SESSION_DIRECTORIES = new Set(SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES);
-const PORTABLE_SESSION_FILES = new Set(SESSION_BUNDLE_PORTABLE_SESSION_FILES);
+// Legacy directory exports may still be supplied to this measurement tool,
+// but storage's SQLite-only authority no longer exports these compatibility
+// constants. Keep the historical read allowlist local to the legacy reader.
+const PORTABLE_SESSION_DIRECTORIES = new Set([
+  'deep-research',
+  'projections',
+  'runs',
+  'shell-runs',
+  'turn-admissions',
+]);
+const PORTABLE_SESSION_FILES = new Set([
+  'execution-boundary.json',
+  'plan-events.jsonl',
+  'plans.json',
+  'task-events.jsonl',
+  'tasks.json',
+]);
 const MAX_JSON_BYTES = 1_048_576;
 const EXCLUDED_WORKSPACE_SEGMENTS = new Set(['.git', 'node_modules']);
 const SENSITIVE_WORKSPACE_FILE_PATTERNS = [

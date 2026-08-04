@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
   decodeClientFrame,
   decodeHostFrame,
@@ -32,6 +32,8 @@ import {
   TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH,
   TURN_MESSAGE_QUOTE_MAX_COUNT,
   TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH,
+  TURN_SKILL_ID_MAX_COUNT,
+  TURN_SKILL_ID_MAX_LENGTH,
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
@@ -49,6 +51,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'agent.graph.query',
       'agent.graph.stop',
       'artifact.delete',
+      'artifact.ingest',
       'artifact.query',
       'automation.mutate',
       'automation.query',
@@ -61,6 +64,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'connection.catalog.update',
       'connection.models.fetch',
       'connection.test.run',
+      'context.compact',
+      'context.diagnostics.query',
       'credential.vault.delete',
       'credential.vault.query',
       'credential.vault.set',
@@ -90,6 +95,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.catalog.query',
       'session.configuration.update',
       'session.create',
+      'session.cwd.relocate',
       'session.lifecycle.set',
       'session.metadata.update',
       'session.read_marker.set',
@@ -104,6 +110,9 @@ describe('Runtime Host bootstrap protocol', () => {
       'turn.interrupt',
       'turn.message.submit',
       'turn.query',
+      'turn.regenerate',
+      'turn.resume.query',
+      'turn.resume.start',
       'turn.start',
       'turn.stop',
       'usage.query',
@@ -300,6 +309,48 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+  });
+
+  /**
+   * The decoder is the worst place to keep a second copy of a vocabulary: a
+   * kind added anywhere else made this reject the whole frame, and the failure
+   * arrived as a protocol violation naming nothing. `requireToolActivityKind`
+   * was a hand-written chain that had already fallen behind — it threw on
+   * `'computer'` — and nothing in this package exercised it, so putting it back
+   * would have cost no test at all.
+   *
+   * Every kind on the wire decodes; a plausible one that is not on it does not.
+   */
+  test('accepts every declared tool activity kind and nothing else', () => {
+    const envelope = {
+      kind: 'subscription.session_event' as const,
+      hostEpoch: 'epoch-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      sessionId: 'session-1',
+      runId: 'run-1',
+    };
+    const start = {
+      id: 'event-1',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      type: 'tool_start' as const,
+      toolName: 'maka_computer',
+    };
+    assert.ok(TOOL_ACTIVITY_KINDS.includes('computer'));
+    for (const activityKind of TOOL_ACTIVITY_KINDS) {
+      assert.doesNotThrow(
+        () => decodeHostFrame({ ...envelope, event: { ...start, activityKind } }),
+        `the wire declares ${activityKind}, so the decoder must accept it`,
+      );
+    }
+    for (const activityKind of ['desktop', 'Computer', '', 7]) {
+      assert.throws(
+        () => decodeHostFrame({ ...envelope, event: { ...start, activityKind } }),
+        isInvalidFrame,
+      );
+    }
   });
 
   test('enforces UTF-8 snapshot, live field, and whole-frame byte bounds', () => {
@@ -665,6 +716,120 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('keeps safe-boundary continuation plans closed and bounded', () => {
+    const query = {
+      requestId: 'resume-query-1',
+      operation: 'turn.resume.query' as const,
+      input: {
+        sessionId: 'session-1',
+        sourceRunId: 'run-source-1',
+        expectedRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeClientFrame(query), query);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...query,
+          input: { sessionId: 'session-1', expectedRuntimeEventHighWater: 2 },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...query,
+          input: { ...query.input, expectedRuntimeEventHighWater: 0 },
+        }),
+      isInvalidFrame,
+    );
+
+    const ready = {
+      requestId: query.requestId,
+      operation: query.operation,
+      ok: true as const,
+      result: {
+        sessionId: 'session-1',
+        disposition: 'ready' as const,
+        sourceRunId: 'run-source-1',
+        sourceTurnId: 'turn-source-1',
+        sourceRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(ready), ready);
+    assert.throws(
+      () =>
+        HOST_OPERATION_SPECS['turn.resume.query'].assertOutputForInput?.(query.input, {
+          ...ready.result,
+          sourceRuntimeEventHighWater: 3,
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...ready,
+          result: { ...ready.result, diagnostics: ['private runtime detail'] },
+        }),
+      isInvalidFrame,
+    );
+
+    const parked = {
+      requestId: query.requestId,
+      operation: query.operation,
+      ok: true as const,
+      result: {
+        sessionId: 'session-1',
+        disposition: 'parked' as const,
+        reason: 'safety_check_failed' as const,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(parked), parked);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...parked,
+          result: { ...parked.result, reason: 'workspace_identity_mismatch' },
+        }),
+      isInvalidFrame,
+    );
+
+    const start = {
+      requestId: 'resume-start-1',
+      operation: 'turn.resume.start' as const,
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-resume-1',
+        sourceRunId: 'run-source-1',
+        sourceRuntimeEventHighWater: 2,
+      },
+    };
+    assert.deepEqual(decodeClientFrame(start), start);
+    const started = {
+      requestId: start.requestId,
+      operation: start.operation,
+      ok: true as const,
+      result: {
+        kind: 'started' as const,
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'turn-resume-1',
+          runId: 'run-resume-1',
+          status: 'running' as const,
+        },
+      },
+    };
+    assert.deepEqual(decodeHostFrame(started), started);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...started,
+          result: { kind: 'parked', plan: ready.result },
+        }),
+      isInvalidFrame,
+    );
+  });
+
   test('requires stable Message command identities, origin Host Epoch, and exact inputs', () => {
     const submit = {
       requestId: 'submit-request-1',
@@ -822,6 +987,89 @@ describe('Runtime Host bootstrap protocol', () => {
         ...submitWire,
         input: { ...submitWire.input, content: { text: 'valid' } },
       },
+    );
+  });
+
+  test('accepts bounded explicit Skill identities only on turn.start', () => {
+    const start = (skillIds: unknown, text = '') =>
+      decodeClientFrame({
+        requestId: 'skill-start',
+        operation: 'turn.start',
+        input: {
+          sessionId: 'session-1',
+          turnId: 'turn-skill-1',
+          content: { text },
+          skillIds,
+        },
+      });
+    assert.deepEqual(start(['writer', 'project:maka:reviewer']), {
+      requestId: 'skill-start',
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-skill-1',
+        content: { text: '' },
+        skillIds: ['writer', 'project:maka:reviewer'],
+      },
+    });
+    assert.doesNotThrow(() =>
+      start(Array.from({ length: TURN_SKILL_ID_MAX_COUNT }, (_, index) => `skill-${index}`)),
+    );
+    for (const skillIds of [
+      Array.from({ length: TURN_SKILL_ID_MAX_COUNT + 1 }, (_, index) => `skill-${index}`),
+      ['bad/id'],
+      ['bad id'],
+      ['x'.repeat(TURN_SKILL_ID_MAX_LENGTH + 1)],
+      [1],
+    ]) {
+      assert.throws(() => start(skillIds), isInvalidFrame);
+    }
+    assert.throws(() => start(undefined), isInvalidFrame);
+    assert.deepEqual(start([], 'plain'), {
+      requestId: 'skill-start',
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-skill-1',
+        content: { text: 'plain' },
+      },
+    });
+  });
+
+  test('decodes a closed regenerate identity without accepting replacement content', () => {
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-regenerate',
+        operation: 'turn.regenerate',
+        input: {
+          sessionId: 'session-1',
+          sourceTurnId: 'turn-source',
+          turnId: 'turn-regenerated',
+        },
+      }),
+      {
+        requestId: 'request-regenerate',
+        operation: 'turn.regenerate',
+        input: {
+          sessionId: 'session-1',
+          sourceTurnId: 'turn-source',
+          turnId: 'turn-regenerated',
+        },
+      },
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-regenerate',
+          operation: 'turn.regenerate',
+          input: {
+            sessionId: 'session-1',
+            sourceTurnId: 'turn-source',
+            turnId: 'turn-regenerated',
+            content: { text: 'replacement' },
+          },
+        }),
+      isInvalidFrame,
     );
   });
 

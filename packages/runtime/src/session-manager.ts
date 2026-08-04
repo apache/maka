@@ -2,7 +2,7 @@
  * SessionManager — the public Runtime API.
  *
  * Ties together:
- *   SessionStore (storage)           — JSONL persistence
+ *   SessionStore (storage)           — SQLite persistence
  *   AgentBackend (AiSdkBackend etc) — SDK adapter
  *   ExecutionBoundary                — session sandbox authority
  *
@@ -23,8 +23,9 @@ import type {
   PermissionRequestEvent,
   QueueEnqueueOutcome,
   ShellRunUpdate,
+  MessageContent,
 } from '@maka/core/events';
-import { messageContentsEqual } from '@maka/core/events';
+import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
 import type {
   SessionHeader,
   SessionBlockedReason,
@@ -169,6 +170,7 @@ import {
   type BackendActivationBoundary,
   type RuntimeExecutionClaim,
   type RuntimeKernelLike,
+  type ResumeContinuationOptions,
   type TurnStartOptions,
 } from './runtime-kernel.js';
 import { fallbackSessionTitle, sessionTitleSource } from './session-title.js';
@@ -230,8 +232,7 @@ export interface StopSessionInput {
   mode?: BackendStopMode;
 }
 
-export interface CompactSessionInput {
-  turnId?: string;
+interface CompactSessionOptions {
   /**
    * Override the configured recent-turn tail. Supervisor overflow recovery
    * uses zero because the failed wake turn itself can contain the oversized
@@ -239,6 +240,19 @@ export interface CompactSessionInput {
    */
   minRecentTurns?: number;
 }
+
+export type CompactSessionInput =
+  | (CompactSessionOptions & {
+      turnId?: string;
+      hostedRoot?: never;
+    })
+  | (CompactSessionOptions & {
+      turnId: string;
+      hostedRoot: {
+        runId: string;
+        onRunStarted?: () => void | Promise<void>;
+      };
+    });
 
 export type PlanSafeBoundaryContinuationInput = Omit<RuntimeContinuationPlannerInput, 'sessionId'>;
 
@@ -574,6 +588,22 @@ export class SessionConfigurationRevisionConflictError extends Error {
   }
 }
 
+export class RuntimeRegenerateTurnError extends Error {
+  readonly name = 'RuntimeRegenerateTurnError';
+
+  constructor(
+    readonly code: 'not_found' | 'operation_conflict',
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export interface RegenerateTurnSource {
+  readonly sourceTurnId: string;
+  readonly content: MessageContent;
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   createSubagent(
@@ -611,6 +641,11 @@ export interface SessionStore {
   appendMessage(sessionId: string, m: StoredMessage): Promise<void>;
   appendMessages(sessionId: string, ms: StoredMessage[]): Promise<void>;
   updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader>;
+  updateHeaderVersioned?(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+    expectedRevision: number,
+  ): Promise<VersionedSessionHeader>;
   readHeaderRecordSnapshot?(sessionId: string): Promise<VersionedSessionHeader>;
   updateSessionConfiguration?(
     sessionId: string,
@@ -1096,6 +1131,75 @@ export class SessionManager {
           });
       },
     );
+    this.runtimeKernel.updateCachedHeader(sessionId, next.header);
+    return next;
+  }
+
+  async relocateSessionWorkspace(
+    sessionId: string,
+    input: { readonly expectedRevision: number; readonly cwd: string },
+  ): Promise<VersionedSessionHeader> {
+    const updateHeaderVersioned = this.deps.store.updateHeaderVersioned?.bind(this.deps.store);
+    const readHeaderRecordSnapshot = this.deps.store.readHeaderRecordSnapshot?.bind(
+      this.deps.store,
+    );
+    if (!updateHeaderVersioned || !readHeaderRecordSnapshot) {
+      throw new SessionConfigurationTransitionError(
+        'operation_unavailable',
+        'Session workspace relocation authority is unavailable',
+      );
+    }
+    const next = await this.runSessionQuiescentMutation([sessionId], async () => {
+      if (this.runtimeKernel.hasActiveRuns(sessionId)) {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session workspace cannot change while a Turn is active',
+        );
+      }
+      const current = await readHeaderRecordSnapshot(sessionId);
+      if (current.revision !== input.expectedRevision) {
+        throw new SessionConfigurationRevisionConflictError(
+          input.expectedRevision,
+          current.revision,
+        );
+      }
+      if (current.header.isArchived || current.header.status === 'archived') {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Archived Session workspace cannot be relocated',
+        );
+      }
+      if (current.header.subagentWorkspace || current.header.subagentParent) {
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'Managed child Session workspaces cannot be relocated',
+        );
+      }
+      if (current.header.status === 'waiting_for_user') {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session has a pending Interaction',
+        );
+      }
+      if (current.header.cwd === input.cwd) return current;
+
+      const shellRunClose = await this.deps.shellRuns?.terminateSession(sessionId);
+      let committed: VersionedSessionHeader;
+      try {
+        await this.runtimeKernel.disposeBackend(sessionId);
+        committed = await updateHeaderVersioned(
+          sessionId,
+          { cwd: input.cwd },
+          input.expectedRevision,
+        );
+      } catch (error) {
+        if (shellRunClose) this.deps.shellRuns?.rollbackSessionClose(shellRunClose);
+        throw error;
+      }
+      if (shellRunClose) await this.deps.shellRuns?.commitSessionClose(shellRunClose);
+      this.deps.shellRuns?.resumeSession(sessionId);
+      return committed;
+    });
     this.runtimeKernel.updateCachedHeader(sessionId, next.header);
     return next;
   }
@@ -1979,10 +2083,24 @@ export class SessionManager {
       this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
       return plan;
     }
-    const [header, observation] = await Promise.all([
-      this.deps.store.readHeader(sessionId),
-      this.deps.inspectContinuationSafety(sessionId),
-    ]);
+    const header = await this.deps.store.readHeader(sessionId);
+    let observation: RuntimeContinuationSafetyObservation;
+    try {
+      observation = await this.deps.inspectContinuationSafety(sessionId);
+    } catch {
+      const plan: SafeBoundaryContinuationPlan = {
+        disposition: 'park',
+        rejectionReasons: ['safety_observation_unavailable'],
+        diagnostics: [
+          {
+            code: 'safety_observation_unavailable',
+            message: 'authoritative continuation safety inspection failed',
+          },
+        ],
+      };
+      this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
+      return plan;
+    }
     return this.planSafeBoundaryContinuation(sessionId, {
       sourceRunId: input.sourceRunId,
       currentCwd: header.cwd,
@@ -2049,6 +2167,7 @@ export class SessionManager {
 
   async *resumeSafeBoundaryContinuation(
     continuation: RuntimeContinuation,
+    options: ResumeContinuationOptions = {},
   ): AsyncIterable<SessionEvent> {
     const resume = this.runtimeKernel.resumeContinuation;
     if (!resume) throw new Error('RuntimeKernel does not support safe-boundary continuation');
@@ -2059,7 +2178,7 @@ export class SessionManager {
       targetRunId: continuation.runId,
     });
     try {
-      yield* resume.call(this.runtimeKernel, continuation);
+      yield* resume.call(this.runtimeKernel, continuation, options);
       this.recordContinuationLifecycleEvent({
         type: 'execution_completed',
         sessionId: continuation.sessionId,
@@ -2114,6 +2233,10 @@ export class SessionManager {
     input: CompactSessionInput = {},
   ): AsyncIterable<SessionEvent> {
     yield* this.runtimeKernel.compactSession(sessionId, input);
+  }
+
+  async preflightContextCompaction(sessionId: string): Promise<void> {
+    await this.runtimeKernel.preflightContextCompaction(sessionId);
   }
 
   async *startChildTurn(
@@ -4420,7 +4543,11 @@ export class SessionManager {
     admittedAt: number;
     execution: Exclude<
       RootExecutionDescriptor,
-      { kind: 'external_message' } | { kind: 'automation' }
+      | { kind: 'external_message' }
+      | { kind: 'regenerate' }
+      | { kind: 'context_compact' }
+      | { kind: 'automation' }
+      | { kind: 'safe_boundary_continuation' }
     >;
   }): Promise<void> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
@@ -4652,33 +4779,58 @@ export class SessionManager {
   ): AsyncIterable<SessionEvent> {
     const execution = this.runtimeKernel.claimExecution(sessionId);
     try {
-      // retry semantics merged into regenerate (#546): regenerate now accepts
-      // failed/aborted turns too, not just completed — one action re-runs the
-      // turn regardless of how the previous attempt ended.
-      const source = await this.requireTurnForAction(
-        sessionId,
-        input.sourceTurnId,
-        ['failed', 'aborted', 'completed'],
-        'regenerate',
-      );
-      const user = await this.requireUserMessageForTurn(sessionId, source.turnId);
+      const source = await this.prepareRegenerateTurn(sessionId, input.sourceTurnId);
       yield* this.sendMessage(
         sessionId,
         {
           turnId: input.turnId ?? this.deps.newId(),
-          text: user.text,
-          ...(user.displayText !== undefined ? { displayText: user.displayText } : {}),
-          ...(user.attachments ? { attachments: user.attachments } : {}),
-          ...(user.quotes ? { quotes: user.quotes } : {}),
-          ...(user.inlineReferences ? { inlineReferences: user.inlineReferences } : {}),
-          parentTurnId: source.turnId,
-          regeneratedFromTurnId: source.turnId,
+          ...source.content,
+          parentTurnId: source.sourceTurnId,
+          regeneratedFromTurnId: source.sourceTurnId,
         },
         { execution },
       );
     } finally {
       execution.release();
     }
+  }
+
+  async prepareRegenerateTurn(
+    sessionId: string,
+    sourceTurnId: string,
+  ): Promise<RegenerateTurnSource> {
+    const view = await this.getSessionView(sessionId);
+    const source = view.turns.find((candidate) => candidate.turnId === sourceTurnId);
+    if (!source) {
+      throw new RuntimeRegenerateTurnError(
+        'not_found',
+        `Cannot regenerate unknown Turn ${sourceTurnId}`,
+      );
+    }
+    if (
+      source.status !== 'failed' &&
+      source.status !== 'aborted' &&
+      source.status !== 'completed'
+    ) {
+      throw new RuntimeRegenerateTurnError(
+        'operation_conflict',
+        `Cannot regenerate Turn ${sourceTurnId} while it is ${source.status}`,
+      );
+    }
+    const user = view.messages.find(
+      (message): message is UserMessage =>
+        message.type === 'user' && message.turnId === sourceTurnId,
+    );
+    if (!user) {
+      throw new RuntimeRegenerateTurnError(
+        'operation_conflict',
+        `Turn ${sourceTurnId} has no UserMessage`,
+      );
+    }
+    return {
+      sourceTurnId,
+      content: normalizeMessageContent(user),
+    };
   }
 
   async branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
@@ -5131,14 +5283,6 @@ export class SessionManager {
       throw new Error(`Cannot ${action}: turn ${turnId} is ${turn.status}`);
     }
     return turn;
-  }
-
-  private async requireUserMessageForTurn(sessionId: string, turnId: string): Promise<UserMessage> {
-    const user = (await this.getSessionView(sessionId)).messages.find(
-      (message): message is UserMessage => message.type === 'user' && message.turnId === turnId,
-    );
-    if (!user) throw new Error(`Turn ${turnId} has no user message`);
-    return user;
   }
 
   private async getSessionView(

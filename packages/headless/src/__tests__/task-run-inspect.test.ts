@@ -3,12 +3,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { AgentRunEvent, AgentRunHeader, RuntimeEvent } from '@maka/core';
+import type {
+  AgentRunEventType,
+  AgentRunHeader,
+  EmittedAgentRunEvent,
+  RuntimeEvent,
+} from '@maka/core';
 import { buildHistoryCompactCheckpoint } from '@maka/runtime';
-import {
-  createLegacyAgentRunStoreForTest,
-  createLegacyRuntimeEventStoreForTest,
-} from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import type { HeavyTaskSemanticSelfCheckState, TaskEvent } from '../task-contracts.js';
 import { taskAttemptExecutionEvidence } from '../task-execution-lineage.js';
 import { createInMemoryTaskRunStore } from '../task-run-store.js';
@@ -353,16 +355,16 @@ const TURN_ID = 'turn-1';
 async function withStores(
   run: (stores: {
     taskRunStore: ReturnType<typeof createInMemoryTaskRunStore>;
-    agentRunStore: ReturnType<typeof createLegacyAgentRunStoreForTest>;
-    runtimeEventStore: ReturnType<typeof createLegacyRuntimeEventStoreForTest>;
+    agentRunStore: ReturnType<typeof createSqliteAgentRunStore>;
+    runtimeEventStore: ReturnType<typeof createWorkspaceRuntimeStore>;
   }) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-task-run-inspect-'));
   try {
     await run({
       taskRunStore: createInMemoryTaskRunStore(),
-      agentRunStore: createLegacyAgentRunStoreForTest(root),
-      runtimeEventStore: createLegacyRuntimeEventStoreForTest(root),
+      agentRunStore: createSqliteAgentRunStore(root),
+      runtimeEventStore: createWorkspaceRuntimeStore(root),
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -388,7 +390,7 @@ function runHeader(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
   };
 }
 
-function runEvent(id: string, type: AgentRunEvent['type']): AgentRunEvent {
+function runEvent(id: string, type: AgentRunEventType): EmittedAgentRunEvent {
   return { id, type, runId: RUN_ID, sessionId: SESSION_ID, turnId: TURN_ID, ts: 10 };
 }
 

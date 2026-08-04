@@ -770,6 +770,11 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
       }
       break;
     }
+    case 'maka_computer': {
+      const line = computerCallSummary(obj);
+      if (line) return line;
+      break;
+    }
   }
   if (input === undefined) return '';
   // Generic fallback: use the shared invocation-line formatter instead of
@@ -781,4 +786,45 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
   if (line) return limitText(line, 600);
   // Absolute last resort — still single-line for the compact header contract.
   return `input: ${limitText(formatUnknownInline(input), 600)}`;
+}
+
+/**
+ * What one Computer Use call did, for the row that names it.
+ *
+ * Every other tool's row is legible from its name plus one headline argument.
+ * This tool's name is `Maka Computer` for observing a window, clicking a
+ * button and observing again alike, so ten calls in a turn printed ten
+ * identical headers; the generic fallback then spelled the arguments out as
+ * `action: … / approvalClass: … / rememberForTurnAllowed: …`, which names the
+ * host's own approval bookkeeping rather than anything the model asked for.
+ *
+ * The arguments here are a `ComputerUseModelCallArgs`, not the raw wire call:
+ * `ToolRuntime` substitutes that projection for any tool declaring
+ * `categoryHint: 'computer_use'` before anything is persisted. It keeps every
+ * key the model sent in the names the tool accepts — `window_id`, `element_id`
+ * — and reduces a screen-derived or typed value to its shape, so the action,
+ * the app, the window and the element are available and a written value is
+ * not. Reading `windowId`/`elementId` here instead is not a compile error and
+ * not a crash; it is every row silently losing its element, which is the defect
+ * this function exists to remove.
+ */
+function computerCallSummary(args: Record<string, unknown> | undefined): string | undefined {
+  if (!args) return undefined;
+  const text = (key: string): string | undefined => {
+    const value = args[key];
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  };
+  const action = text('action');
+  if (!action) return undefined;
+  const parts = [action];
+  const elementId = text('element_id');
+  if (elementId) parts.push(`element ${elementId}`);
+  const app = text('app');
+  const windowId = args.window_id;
+  const target =
+    app && typeof windowId === 'number'
+      ? `${app} window ${windowId}`
+      : (app ?? (typeof windowId === 'number' ? `window ${windowId}` : undefined));
+  if (target) parts.push(target);
+  return limitText(parts.join(' · '), 600);
 }

@@ -644,7 +644,9 @@
       excluded — animation tracks, not interaction feedback.
       PR-TRANSFORM-AMPLITUDE-0 (issue #520 PR2). */
    --scale-press: 0.96;        /* active/press 缩小 (snap 0.96/0.97/0.98) */
-   --lift-hover: -1px;         /* hover 上浮 (snap -0.5/-1) */
+   /* --lift-hover retired (premium checklist rule 17): hover lifts read as
+      cheap motion on non-overlapping surfaces; the last consumer (skill
+      market cards) now hovers by border tone only. */
 
    /* === page-card recipe ===
      Single source of truth for lifted page-card chrome: a subtle border,

@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { decodeRuntimeEvent } from '@maka/core';
 import { HARBOR_CELL_CONTEXT_ENV_KEYS } from '../harbor-cell.js';
-import { isBudgetExhaustedTrialException } from '../harbor-task-runner.js';
+import { buildHarborJobConfig, classifyTrialTermination } from '../harbor-task-runner.js';
+import { agentPhaseTimeoutSec, MAKA_SETTLEMENT_GRACE_SEC } from '../maka-settlement.js';
 import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '../system-prompts.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
@@ -176,9 +177,12 @@ describe('Harbor adapter contract', () => {
     );
     const template = source.match(/f"(Maka host cell exceeded [^"]+)"/)?.[1];
     assert.ok(template, 'host-cell timeout message template');
-    const message = template.replace('{self._cell_timeout_sec()}', '1800');
+    const message = template.replace('{self._agent_phase_timeout_sec()}', '1800');
 
-    assert.equal(isBudgetExhaustedTrialException(`RuntimeError: ${message}`), true);
+    // The host cell's deadline arrives as a generic RuntimeError, so this is the
+    // one termination still identified by its message. That is only sound while
+    // the raiser lives in this repo, which is exactly what this test pins.
+    assert.equal(classifyTrialTermination({ type: 'RuntimeError', message }), 'agent_budget');
   });
 
   test('run-host-cell.mjs resolves package-local harbor-cell internals at runtime', (t: TestContext) => {
@@ -506,6 +510,69 @@ describe('Harbor adapter contract', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  test('the runners and the Python adapter agree on one model budget', (t: TestContext) => {
+    // The bug this pins: MAKA_CELL_TIMEOUT_SEC used to mean the model budget on
+    // one path and budget-plus-window on another, so TypeScript had to predict
+    // which Python branch would run. Nothing caught a wrong prediction because
+    // each side only ever asserted its own arithmetic. Feed what the runners
+    // actually emit into the adapter that actually consumes it.
+    const budgetSec = 1800;
+    const harborConfig = buildHarborJobConfig(
+      {
+        runId: 'run-1',
+        roundId: 'round-1',
+        task: { id: 'task-1', path: '/tasks/task-1', metadata: { agentTimeoutSec: budgetSec } },
+        config: {
+          id: 'cfg',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+        },
+        systemPrompt: 'PROMPT\n',
+      },
+      {
+        makaRepoPath: '/repo',
+        jobsDir: '/jobs/x',
+        jobName: 'trial',
+        model: 'deepseek/deepseek-v4-flash',
+      },
+    );
+    const harborAgent = (
+      harborConfig.agents as Array<{ env: Record<string, string>; max_timeout_sec?: number }>
+    )[0]!;
+    assert.equal(harborAgent.env.MAKA_CELL_TIMEOUT_SEC, String(budgetSec));
+
+    // Pier reaches the same two numbers through its own deadline model.
+    const pierEnv = {
+      MAKA_HARBOR_MODE: 'task-run',
+      MAKA_CELL_TIMEOUT_SEC: String(budgetSec),
+      MAKA_CELL_SETTLEMENT_GRACE_SEC: String(MAKA_SETTLEMENT_GRACE_SEC),
+    };
+    const pierPhaseSec = agentPhaseTimeoutSec('maka', pierEnv, budgetSec);
+
+    const result = spawnSync(
+      'python3',
+      [
+        '-c',
+        pythonBudgetContractScript(repoRoot, [
+          {
+            label: 'harbor',
+            env: harborAgent.env,
+            agentPhaseSec: harborAgent.max_timeout_sec!,
+          },
+          { label: 'pier', env: pierEnv, agentPhaseSec: pierPhaseSec },
+        ]),
+      ],
+      { cwd: repoRoot, encoding: 'utf8' },
+    );
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /budget contract ok/);
   });
 
   test('maka_agent.py hydrates a valid cell output without Harbor installed', (t: TestContext) => {
@@ -1319,6 +1386,147 @@ finally:
 `;
 }
 
+/** Harbor is not installed in this repo, so every Python contract script
+ * stubs the parts of its package tree the adapters import. Shared so a stub
+ * that drifts cannot make one script pass while another fails to import. */
+function pythonHarborStubPrelude(root: string): string {
+  return String.raw`
+import json
+import os
+import sys
+import tempfile
+import time
+import types
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+
+def module(name):
+    mod = types.ModuleType(name)
+    sys.modules[name] = mod
+    return mod
+
+module("harbor")
+module("harbor.agents")
+module("harbor.agents.installed")
+base_mod = module("harbor.agents.installed.base")
+
+class BaseInstalledAgent:
+    def __init__(self, logs_dir, *args, **kwargs):
+        self.logs_dir = Path(logs_dir)
+        self._extra_env = kwargs.get("extra_env") or {}
+        self._resolved_flags = {}
+        self.model_name = None
+        self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
+
+    def _get_env(self, key):
+        if key in self._extra_env:
+            return self._extra_env[key]
+        return os.environ.get(key)
+
+    def version(self):
+        return "test"
+
+    async def exec_as_root(self, environment, command, **kwargs):
+        environment.root_commands.append(command)
+        return types.SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+    async def exec_as_agent(self, environment, command, **kwargs):
+        environment.agent_commands.append(command)
+        return types.SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+class CliFlag:
+    def __init__(self, *args, **kwargs):
+        pass
+
+def with_prompt_template(fn):
+    return fn
+
+base_mod.BaseInstalledAgent = BaseInstalledAgent
+base_mod.CliFlag = CliFlag
+base_mod.with_prompt_template = with_prompt_template
+
+module("harbor.environments")
+env_mod = module("harbor.environments.base")
+class BaseEnvironment:
+    pass
+env_mod.BaseEnvironment = BaseEnvironment
+
+module("harbor.models")
+module("harbor.models.agent")
+context_mod = module("harbor.models.agent.context")
+class AgentContext:
+    def __init__(self):
+        self.metadata = {}
+context_mod.AgentContext = AgentContext
+
+traj_mod = module("harbor.models.trajectories")
+class Agent:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+class FinalMetrics:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+class Step:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+class Trajectory:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+    def to_json_dict(self):
+        return {"ok": True}
+traj_mod.Agent = Agent
+traj_mod.FinalMetrics = FinalMetrics
+traj_mod.Step = Step
+traj_mod.Trajectory = Trajectory
+
+module("harbor.models.trial")
+paths_mod = module("harbor.models.trial.paths")
+class EnvironmentPaths:
+    agent_dir = Path("/logs/agent")
+paths_mod.EnvironmentPaths = EnvironmentPaths
+
+module("harbor.utils")
+utils_mod = module("harbor.utils.trajectory_utils")
+utils_mod.format_trajectory_json = lambda value: json.dumps(value)
+
+`;
+}
+
+function pythonBudgetContractScript(
+  root: string,
+  cases: Array<{ label: string; env: Record<string, string>; agentPhaseSec: number }>,
+): string {
+  return `${pythonHarborStubPrelude(root)}
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+from maka_agent import MakaAgent
+
+cases = json.loads(${JSON.stringify(JSON.stringify(cases))})
+with tempfile.TemporaryDirectory() as tmp:
+    for case in cases:
+        env = case["env"]
+        agent = MakaAgent(Path(tmp), extra_env=env)
+        budget_sec = int(env["MAKA_CELL_TIMEOUT_SEC"])
+        # The number that has to be identical across arms: the runner hands the
+        # adapter a model budget, and the adapter must read back exactly that.
+        assert agent._model_budget_ms() == budget_sec * 1000, (case["label"], agent._model_budget_ms())
+        # The deadline the executor was told to kill at must be the same deadline
+        # the adapter derives for itself. If these two drift, the cell is either
+        # killed while settling or given time the other arms never got.
+        assert agent._agent_phase_timeout_sec() == case["agentPhaseSec"], (
+            case["label"],
+            agent._agent_phase_timeout_sec(),
+            case["agentPhaseSec"],
+        )
+        phase_env = dict(env)
+        phase_env.setdefault("MAKA_AGENT_PHASE_TIMEOUT_SEC", str(case["agentPhaseSec"]))
+        remaining = agent._task_run_hard_timeout_sec(phase_env, time.monotonic())
+        assert abs(remaining - float(case["agentPhaseSec"])) < 1.0, (case["label"], remaining)
+
+print("budget contract ok")
+`;
+}
+
 function pythonAdapterSmokeScript(root: string): string {
   return String.raw`
 import json
@@ -1702,7 +1910,10 @@ with tempfile.TemporaryDirectory() as tmp:
     assert container_env["MAKA_OUTPUT_DIR"] == "/logs/agent/maka-task-run", container_env
     assert container_env["MAKA_CELL_ARTIFACT_DIR"] == "/logs/agent", container_env
     assert container_env["MAKA_STORAGE_ROOT"] == "/logs/agent/maka-task-run/runs", container_env
-    assert container_kwargs["timeout_sec"] == 7200, container_kwargs
+    # No MAKA_AGENT_PHASE_TIMEOUT_SEC here, so the hard process deadline falls
+    # back to the model budget plus the settlement window rather than the budget
+    # itself — killing at the budget would cut the cell off as it starts writing.
+    assert container_kwargs["timeout_sec"] == 7230, container_kwargs
     assert "/logs/agent/maka-task-run" in container_environment.download_dirs
     assert "/logs/agent/maka-cell-output.json" in container_environment.downloads
     assert json.loads(
@@ -2031,15 +2242,29 @@ with tempfile.TemporaryDirectory() as tmp:
     assert MakaAgent(Path(tmp), extra_env={"MAKA_CELL_TIMEOUT_SEC": "01800"})._cell_timeout_sec() == 900
     assert MakaAgent(Path(tmp), extra_env={"MAKA_CELL_TIMEOUT_SEC": "1٢"})._cell_timeout_sec() == 900
     assert MakaAgent(Path(tmp), extra_env={"MAKA_CELL_TIMEOUT_SEC": "9" * 5000})._cell_timeout_sec() == 900
-    assert MakaAgent(Path(tmp))._cell_soft_timeout_ms() == 870000
-    assert MakaAgent(Path(tmp), extra_env={
+    # MAKA_CELL_TIMEOUT_SEC is the model budget verbatim on every path, and the
+    # settlement window is added around it. Benchmark arms are only comparable
+    # while the model budget stays exactly the task-native budget.
+    assert MakaAgent(Path(tmp))._model_budget_ms() == 900000
+    assert MakaAgent(Path(tmp))._agent_phase_timeout_sec() == 930
+    graced = MakaAgent(Path(tmp), extra_env={
         "MAKA_CELL_TIMEOUT_SEC": "1800",
         "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
-    })._cell_soft_timeout_ms() == 1740000
+    })
+    assert graced._model_budget_ms() == 1800000
+    assert graced._agent_phase_timeout_sec() == 1860
+    # A window wider than the budget is not a contradiction any more: it just
+    # buys more settlement time, and the model budget is untouched.
+    wide = MakaAgent(Path(tmp), extra_env={
+        "MAKA_CELL_TIMEOUT_SEC": "60",
+        "MAKA_CELL_SETTLEMENT_GRACE_SEC": "600",
+    })
+    assert wide._model_budget_ms() == 60000
+    assert wide._agent_phase_timeout_sec() == 660
     try:
         MakaAgent(Path(tmp), extra_env={
             "MAKA_CELL_TIMEOUT_SEC": "2147514",
-        })._cell_soft_timeout_ms()
+        })._model_budget_ms()
     except RuntimeError as exc:
         assert "Node timer limit" in str(exc), str(exc)
     else:
@@ -2052,7 +2277,7 @@ with tempfile.TemporaryDirectory() as tmp:
         url="http://127.0.0.1:1",
         token="test-token",
     ))
-    assert host_deadline_env["MAKA_CELL_SOFT_TIMEOUT_MS"] == "870000", host_deadline_env
+    assert host_deadline_env["MAKA_CELL_SOFT_TIMEOUT_MS"] == "900000", host_deadline_env
 
     copilot_host_env = MakaAgent(Path(tmp), extra_env={
         "MAKA_HOST_API_KEY": "copilot-token",
@@ -2224,8 +2449,29 @@ with tempfile.TemporaryDirectory() as tmp:
             "MAKA_ECONOMY_TASK_MODE": "true",
         })
         host_process_environment = types.SimpleNamespace(root_commands=[], agent_commands=[])
-        asyncio.run(host_process_agent._run_host_cell(host_process_environment, Path(tmp) / "instruction.txt"))
+        host_cell_walls = []
+        original_wait_for = asyncio.wait_for
+
+        async def recording_wait_for(awaitable, timeout=None, **wait_kwargs):
+            host_cell_walls.append(timeout)
+            return await original_wait_for(awaitable, timeout=timeout, **wait_kwargs)
+
+        asyncio.wait_for = recording_wait_for
+        try:
+            asyncio.run(host_process_agent._run_host_cell(host_process_environment, Path(tmp) / "instruction.txt"))
+        finally:
+            asyncio.wait_for = original_wait_for
         host_cell_process = dict(captured_host_process)
+        # This is the path Terminal-Bench actually takes. The cell stops calling
+        # the model at MAKA_CELL_SOFT_TIMEOUT_MS and then writes its artifacts,
+        # so the wall that kills it has to be a settlement window later — killing
+        # at the model budget would compress that window to nothing.
+        assert host_cell_walls == [930], host_cell_walls
+        assert (
+            host_cell_walls[0] * 1000
+            - int(host_cell_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"])
+            == 30_000
+        ), (host_cell_walls, host_cell_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"])
 
         task_run_agent = MakaAgent(Path(tmp), extra_env={
             "MAKA_BACKEND": "fake",
@@ -2253,7 +2499,9 @@ with tempfile.TemporaryDirectory() as tmp:
         )
         task_run_env = captured_host_process["kwargs"]["env"]
         assert "MAKA_MAX_STEPS" not in task_run_env, task_run_env.get("MAKA_MAX_STEPS")
-        assert task_run_timeouts[-1] == 7200, task_run_timeouts
+            # The hard process deadline is the model budget plus the settlement
+        # window, never the budget itself: the cell is still writing at 7200.
+        assert task_run_timeouts[-1] == 7230, task_run_timeouts
 
         host_repo_root = Path(tmp) / "different-host-repo"
         relative_task_run_agent = MakaAgent(Path(tmp), extra_env={
@@ -2301,7 +2549,7 @@ with tempfile.TemporaryDirectory() as tmp:
             )
         finally:
             maka_agent_mod._DEFAULT_RUNNER_ENV = original_runner_env
-        assert task_run_timeouts[-1] == 4321, task_run_timeouts
+        assert task_run_timeouts[-1] == 4351, task_run_timeouts
 
         capped_task_run_agent = MakaAgent(Path(tmp), extra_env={
             "MAKA_BACKEND": "fake",
@@ -2350,7 +2598,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 AgentContext(),
             )
         )
-        assert captured_host_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"] == "50000"
+        assert captured_host_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"] == "60000"
         assert FakeToolExecutor.instances[-1].reclaim_active_commands
         assert not FakeToolExecutor.instances[-1].reclaim_scoped_processes
 
@@ -2870,15 +3118,6 @@ def write_artifact_database(store_root, records, artifact_schema_version=1):
             version INTEGER NOT NULL,
             applied_at INTEGER NOT NULL
         );
-        CREATE TABLE cutover_journal (
-            store_name TEXT PRIMARY KEY,
-            source_path TEXT NOT NULL,
-            source_fingerprint TEXT NOT NULL,
-            state TEXT NOT NULL,
-            started_at INTEGER NOT NULL,
-            completed_at INTEGER,
-            validation_json TEXT
-        );
         CREATE TABLE artifact_records (
             storage_key TEXT PRIMARY KEY,
             artifact_id TEXT NOT NULL,
@@ -2892,9 +3131,6 @@ def write_artifact_database(store_root, records, artifact_schema_version=1):
     connection.execute(
         "INSERT INTO operational_schema_migrations(scope, version, applied_at) VALUES ('artifact', ?, 1)",
         (artifact_schema_version,),
-    )
-    connection.execute(
-        "INSERT INTO cutover_journal(store_name, source_path, source_fingerprint, state, started_at, completed_at, validation_json) VALUES ('artifact_metadata', 'artifacts/metadata.jsonl', 'none', 'completed', 1, 1, '{}')"
     )
     for record in records:
         connection.execute(
@@ -2991,19 +3227,6 @@ with tempfile.TemporaryDirectory() as tmp:
     assert image_content[0].source.path.startswith("trajectory-assets/"), image_content
     assert image_content[0].source.path.endswith(".png"), image_content
     assert (logs_dir / image_content[0].source.path).is_file(), image_content
-
-    database_path.unlink()
-    metadata_path = artifact_root / "metadata.jsonl"
-    metadata_path.write_text(json.dumps(image_record) + "\n", encoding="utf-8")
-    agent._apply_cell_output(context, {
-        "status": "completed",
-        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
-        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
-    })
-    legacy_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
-    assert legacy_payload["extra"]["maka_artifact_kind"] == "summary", legacy_payload
-    assert legacy_payload["extra"]["maka_summary_reason"] == "image_artifact_metadata_missing", legacy_payload
-    metadata_path.unlink()
 
     write_artifact_database(artifact_root.parent, [image_record], artifact_schema_version=2)
     agent._apply_cell_output(context, {
@@ -3871,6 +4094,7 @@ function pythonClaudeCodeAdapterSmokeScript(root: string): string {
 import asyncio
 import json
 import os
+import shlex
 import sys
 import tempfile
 import types
@@ -3882,6 +4106,36 @@ def module(name):
     mod = types.ModuleType(name)
     sys.modules[name] = mod
     return mod
+
+def written_payload(command, marker):
+    """Return the file payload a write command sends, keyed by content.
+
+    A process-scope wrapper re-quotes the whole script for bash -lc, so
+    unquote layer by layer until nothing but the written payload is left.
+    """
+    payload = command
+    while "printf" in payload:
+        payload = min((token for token in shlex.split(payload) if marker in token), key=len)
+    return payload
+
+def redirect_target(command):
+    """Return the path a write command redirects into, peeling bash -lc wrappers."""
+    while True:
+        tokens = shlex.split(command)
+        if ">" in tokens:
+            return tokens[tokens.index(">") + 1]
+        nested = [token for token in tokens if ">" in token]
+        if not nested:
+            return None
+        command = max(nested, key=len)
+
+class RecordingEnvironment:
+    def __init__(self):
+        self.calls = []
+
+    async def exec(self, command, env=None, as_root=False, **kwargs):
+        self.calls.append((command, env or {}, as_root))
+        return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
 module("harbor")
 module("harbor.agents")
@@ -3911,6 +4165,9 @@ class ClaudeCode:
             "auth_token": self._get_env("ANTHROPIC_AUTH_TOKEN"),
             "oauth_token": self._get_env("CLAUDE_CODE_OAUTH_TOKEN"),
         })
+        if instruction == "cancel":
+            environment.started.set()
+            await asyncio.Event().wait()
         if instruction == "pipeline-fail":
             result = await self.exec_as_agent(
                 environment,
@@ -4038,6 +4295,68 @@ with tempfile.TemporaryDirectory() as tmp:
     assert pipeline_cell["status"] == "failed", pipeline_cell
     assert pipeline_cell["errorClass"] == "infra_failed", pipeline_cell
 
+    install_environment = RecordingEnvironment()
+    install_agent = agent(logs)
+    install_agent._extra_env["MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT"] = "fingerprint"
+    asyncio.run(install_agent.install(install_environment))
+    managed_calls = [
+        call for call in install_environment.calls if "/etc/claude-code/managed-settings.json" in call[0]
+    ]
+    # Exactly one writer: a second command could append settings that re-enable the tools.
+    assert len(managed_calls) == 1, install_environment.calls
+    managed_command, _, managed_as_root = managed_calls[0]
+    # Only the managed scope binds nested invocations rather than one process.
+    assert managed_as_root is True, managed_calls
+    assert redirect_target(managed_command) == "/etc/claude-code/managed-settings.json", managed_command
+    # A swallowed failure would leave the tools enabled while install reports
+    # success; Harbor's exec raises on a non-zero exit, so keep that reachable.
+    assert "|| true" not in managed_command, managed_command
+    assert json.loads(written_payload(managed_command, "permissions")) == {
+        "permissions": {"deny": ["WebSearch", "WebFetch"]}
+    }, managed_command
+
+    # Arm symmetry with the Codex adapter's cancel_codex() case below: a
+    # benchmark deadline is the harness cancelling the agent phase, and the arm
+    # that observed it is the only one that can report it. An arm whose cell
+    # output omits deadlineSettlement has its timeouts read as ordinary runtime
+    # failures, which silently changes what that arm's score means.
+    class CancelEnvironment(RecordingEnvironment):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+
+    cancel_environment = CancelEnvironment()
+    cancel_agent = agent(logs)
+
+    async def cancel_claude():
+        task = asyncio.create_task(cancel_agent.run("cancel", cancel_environment, context))
+        await asyncio.wait_for(cancel_environment.started.wait(), timeout=2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("expected Claude Code cancellation")
+
+    asyncio.run(cancel_claude())
+    cancel_agent.populate_context_post_run(context)
+    cancel_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert cancel_cell["status"] == "failed", cancel_cell
+    assert cancel_cell["errorClass"] == "budget_exhausted", cancel_cell
+    assert cancel_cell["deadlineSettlement"] == {
+        "source": "benchmark.deadline",
+        "mode": "immediate",
+    }, cancel_cell
+
+    # A normal run must NOT claim the deadline settled it — the assertion above
+    # passes just as well if the field is written unconditionally.
+    settled_free = agent(logs)
+    asyncio.run(settled_free.run("success", Environment(), context))
+    settled_free.populate_context_post_run(context)
+    success_cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
+    assert "deadlineSettlement" not in success_cell, success_cell
+
 print("claude-code adapter ok")
 `;
 }
@@ -4047,10 +4366,12 @@ function pythonCodexAdapterSmokeScript(root: string): string {
 import asyncio
 import json
 import os
+import shlex
 import signal
 import sys
 import tempfile
 import time
+import tomllib
 import types
 from pathlib import Path
 
@@ -4060,6 +4381,28 @@ def module(name):
     mod = types.ModuleType(name)
     sys.modules[name] = mod
     return mod
+
+def written_payload(command, marker):
+    """Return the file payload a write command sends, keyed by content.
+
+    A process-scope wrapper re-quotes the whole script for bash -lc, so
+    unquote layer by layer until nothing but the written payload is left.
+    """
+    payload = command
+    while "printf" in payload:
+        payload = min((token for token in shlex.split(payload) if marker in token), key=len)
+    return payload
+
+def redirect_target(command):
+    """Return the path a write command redirects into, peeling bash -lc wrappers."""
+    while True:
+        tokens = shlex.split(command)
+        if ">" in tokens:
+            return tokens[tokens.index(">") + 1]
+        nested = [token for token in tokens if ">" in token]
+        if not nested:
+            return None
+        command = max(nested, key=len)
 
 module("harbor")
 module("harbor.agents")
@@ -4209,8 +4552,8 @@ with tempfile.TemporaryDirectory() as tmp:
     commands = []
 
     class Environment:
-        async def exec(self, command, env=None, **kwargs):
-            commands.append((command, env or {}))
+        async def exec(self, command, env=None, as_root=False, **kwargs):
+            commands.append((command, env or {}, as_root))
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
     context = types.SimpleNamespace(
@@ -4223,7 +4566,7 @@ with tempfile.TemporaryDirectory() as tmp:
     agent = MakaCodexAgent(
         logs,
         prompt_template_path=template,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4242,14 +4585,14 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     environment = Environment()
     asyncio.run(agent.install(environment))
-    install_command, install_env = commands[0]
+    install_command, install_env, _install_root = commands[0]
     assert "sha256sum --check" in install_command, install_command
     assert "/opt/maka-codex-toolchain/bin/codex" in install_command, install_command
     assert install_env["MAKA_EXPECTED_TOOLCHAIN_FINGERPRINT"] == "sha256:" + "a" * 64, install_env
     assert "ca-certificates" not in install_command, install_command
     assert "npm" not in install_command, install_command
     assert "curl" not in install_command, install_command
-    alias_commands = [command for command, _env in commands if "ln -sf" in command]
+    alias_commands = [command for command, _env, _root in commands if "ln -sf" in command]
     assert len(alias_commands) == 1, commands
     assert "/opt/maka-codex-toolchain/bin/node" not in alias_commands[0], alias_commands[0]
     assert "/usr/local/bin/node" not in alias_commands[0], alias_commands[0]
@@ -4258,15 +4601,33 @@ with tempfile.TemporaryDirectory() as tmp:
 
     asyncio.run(agent.run("hi", environment, context))
     http_provider_command = next(
-        command for command, _env in commands if "supports_websockets = false" in command
+        command for command, _env, _root in commands if "supports_websockets = false" in command
     )
     assert 'model_provider = "maka-http"' in http_provider_command, http_provider_command
     assert 'base_url = "http://host.docker.internal:43210"' in http_provider_command, http_provider_command
     assert 'wire_api = "responses"' in http_provider_command, http_provider_command
     assert "ephemeral-token" not in http_provider_command, http_provider_command
+    # Parse rather than substring-match: the same line under a table header would
+    # become model_providers.maka-http.web_search, which Codex never reads.
+    written_config = tomllib.loads(written_payload(http_provider_command, "model_provider"))
+    assert written_config["web_search"] == "disabled", written_config
+    assert "web_search" not in written_config["model_providers"]["maka-http"], written_config
+    requirements_calls = [
+        call for call in commands if "/etc/codex/requirements.toml" in call[0]
+    ]
+    assert len(requirements_calls) == 1, commands
+    requirements_command, _requirements_env, requirements_as_root = requirements_calls[0]
+    # /etc is root-owned: writing this as the agent user fails silently enough to
+    # leave web search enabled, so the privilege is part of the contract.
+    assert requirements_as_root is True, requirements_calls
+    assert redirect_target(requirements_command) == "/etc/codex/requirements.toml", requirements_command
+    assert "|| true" not in requirements_command, requirements_command
+    assert tomllib.loads(written_payload(requirements_command, "allowed_web_search_modes")) == {
+        "allowed_web_search_modes": ["disabled"]
+    }, requirements_command
     deepseek_agent = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="deepseek-v4-flash",
         extra_env={"MAKA_MODEL": "deepseek-v4-flash"},
     )
@@ -4301,7 +4662,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     failing = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4324,7 +4685,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     transport = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4347,7 +4708,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     incomplete = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4372,7 +4733,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     transcript = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="deepseek-v4-flash",
         reasoning_effort="max",
         extra_env={
@@ -4390,7 +4751,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     policy = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={
@@ -4445,7 +4806,7 @@ with tempfile.TemporaryDirectory() as tmp:
     timeout_environment = TimeoutEnvironment()
     timeout_agent = MakaCodexAgent(
         logs,
-        version="0.144.6",
+        version="0.146.0",
         model_name="gpt-5.6-sol",
         reasoning_effort="max",
         extra_env={

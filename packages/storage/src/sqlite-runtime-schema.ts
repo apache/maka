@@ -1,12 +1,15 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 7;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 9;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY = 'runtime_workspace_version_authority';
 export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION = 1;
+const SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS = 5_000;
+const SQLITE_INITIALIZATION_RETRY_DELAY_MS = 10;
+const initializationRetryGate = new Int32Array(new SharedArrayBuffer(4));
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -92,11 +95,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     3,
     `
-    CREATE TABLE runtime_import_sources (
-      source_path TEXT PRIMARY KEY,
-      fingerprint TEXT NOT NULL,
-      imported_at INTEGER NOT NULL
-    );
+    SELECT 1;
   `,
   ],
   [
@@ -241,17 +240,38 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       VALUES ('runtime_workspace_version_authority', 1);
   `,
   ],
+  [
+    8,
+    `
+    CREATE TABLE headless_task_run_events (
+      task_run_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      event_id TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (task_run_id, sequence)
+    );
+  `,
+  ],
+  [
+    9,
+    `
+    CREATE TABLE runtime_storage_root_binding (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      root_id TEXT NOT NULL CHECK (
+        length(root_id) = 64 AND root_id NOT GLOB '*[^0-9a-f]*'
+      ),
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1)
+    );
+  `,
+  ],
 ]);
 
 export function configureSqliteRuntimeDatabase(db: DatabaseSync): void {
   // Bound lock acquisition before touching persistent journal state. WAL mode is
   // database-persistent, so established workspaces only need to verify it rather
   // than making every concurrent opener execute the setting form of the pragma.
-  db.exec('PRAGMA busy_timeout = 5000');
-  const journalMode = readJournalMode(db);
-  if (journalMode !== 'wal') {
-    db.exec('PRAGMA journal_mode = WAL');
-  }
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS}`);
+  ensureWalJournalMode(db);
   db.exec('PRAGMA synchronous = FULL');
   db.exec('PRAGMA foreign_keys = ON');
 }
@@ -305,6 +325,45 @@ function readJournalMode(db: DatabaseSync): string {
     throw new Error('Invalid SQLite runtime journal mode');
   }
   return row.journal_mode.toLowerCase();
+}
+
+function ensureWalJournalMode(db: DatabaseSync): void {
+  const deadline = Date.now() + SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS;
+  while (true) {
+    try {
+      const journalMode = readJournalMode(db);
+      if (journalMode === 'wal' || journalMode === 'memory') return;
+      db.exec('PRAGMA journal_mode = WAL');
+      const configuredMode = readJournalMode(db);
+      if (configuredMode !== 'wal') {
+        throw new Error(`SQLite runtime requires WAL journal mode, received ${configuredMode}`);
+      }
+      return;
+    } catch (error) {
+      if (!isSqliteBusy(error) || Date.now() >= deadline) throw error;
+      Atomics.wait(
+        initializationRetryGate,
+        0,
+        0,
+        Math.min(SQLITE_INITIALIZATION_RETRY_DELAY_MS, Math.max(1, deadline - Date.now())),
+      );
+    }
+  }
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const sqliteError = error as Error & {
+    code?: unknown;
+    errcode?: unknown;
+    errstr?: unknown;
+  };
+  return (
+    sqliteError.errcode === 5 ||
+    sqliteError.code === 'SQLITE_BUSY' ||
+    sqliteError.errstr === 'database is locked' ||
+    /database (?:is )?(?:locked|busy)/i.test(sqliteError.message)
+  );
 }
 
 function rollback(db: DatabaseSync): void {

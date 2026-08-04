@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { RootExecutionDescriptor } from '@maka/core/agent-run';
-import { createAgentRunStore, type AdmitRootTurnInput } from '../agent-run-store.js';
+import { createSqliteAgentRunStore, type AdmitRootTurnInput } from '../agent-run-store.js';
 
 test('Agent Graph supervisor admission durably binds wake identity and Graph orchestration', async () => {
   await withTempRoot(async (root) => {
-    const store = createAgentRunStore(root);
+    const store = createSqliteAgentRunStore(root);
     const admitted = await store.admitRootTurn(admissionInput());
 
     assert.equal(admitted.kind, 'admitted');
@@ -18,7 +18,7 @@ test('Agent Graph supervisor admission durably binds wake identity and Graph orc
       source: 'host_api',
     });
 
-    const reopened = createAgentRunStore(root);
+    const reopened = createSqliteAgentRunStore(root);
     assert.deepEqual(
       await reopened.readRootTurnAdmission('root-session', 'supervisor-turn'),
       admitted.admission,
@@ -28,7 +28,7 @@ test('Agent Graph supervisor admission durably binds wake identity and Graph orc
 
 test('Agent Graph supervisor admission rejects malformed identity and non-Graph orchestration', async () => {
   await withTempRoot(async (root) => {
-    const store = createAgentRunStore(root);
+    const store = createSqliteAgentRunStore(root);
     await assert.rejects(
       () =>
         store.admitRootTurn(

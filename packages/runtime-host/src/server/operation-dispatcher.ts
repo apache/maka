@@ -34,7 +34,16 @@ export type OperationHandlerMap = {
 };
 
 export type DomainOperationKey = Exclude<OperationKey, 'host.status'>;
-export type TurnOperationKey = Extract<OperationKey, 'turn.start' | 'turn.query' | 'turn.stop'>;
+export type TurnOperationKey = Extract<
+  OperationKey,
+  | 'turn.start'
+  | 'turn.query'
+  | 'turn.stop'
+  | 'turn.regenerate'
+  | 'turn.resume.query'
+  | 'turn.resume.start'
+>;
+export type ContextOperationKey = Extract<OperationKey, `context.${string}`>;
 export type RuntimePolicyOperationKey = Extract<
   OperationKey,
   `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`
@@ -78,6 +87,7 @@ export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capabil
 export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
+export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
 export type ConnectionEffectOperationHandlerMap = Pick<
   OperationHandlerMap,

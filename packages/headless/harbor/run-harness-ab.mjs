@@ -14,12 +14,8 @@ import {
   resolveFixedPromptRunRoot,
   selectTasksByIds,
 } from '#fixed-prompt-task-source';
-import { createHarborTaskRunner } from '#harbor-task-runner';
-import {
-  createPierProviderProxyHub,
-  createPierTaskRunner,
-  PIER_MAKA_SETTLEMENT_GRACE_SEC,
-} from '#pier-task-runner';
+import { createHarborTaskRunner, MAKA_SETTLEMENT_GRACE_SEC } from '#harbor-task-runner';
+import { createPierProviderProxyHub, createPierTaskRunner } from '#pier-task-runner';
 import {
   buildHarnessOracleExecutionPolicyFingerprint,
   HARBOR_ORACLE_DOCKER_PLATFORM,
@@ -800,9 +796,9 @@ export function buildHarnessAbManifest({
       ...(pierVersion === null ? {} : { executor: { id: 'pier', version: pierVersion } }),
       timeoutPolicy: 'task-native',
       timeoutMultiplier: 1,
-      ...(benchmarkProfile.executor === 'pier'
-        ? { agentSettlementGraceSec: PIER_MAKA_SETTLEMENT_GRACE_SEC }
-        : {}),
+      // Both executors give the Maka arm this settlement window on top of the
+      // task-native model budget, so every arm gets the same model time.
+      agentSettlementGraceSec: MAKA_SETTLEMENT_GRACE_SEC,
       outerTimeoutGraceSec: HARBOR_SETUP_TEARDOWN_GRACE_SEC,
     },
     taskIds: resolvedTaskIds,
@@ -824,7 +820,10 @@ export function buildHarnessAbManifest({
           ...(competitorProfiles.length > 1
             ? { transport: harnessMeasuredTransport('maka', execution.provider) }
             : {}),
-          externalSystemPrompt: 'empty',
+          // The runner hands every arm MAKA_SYSTEM_PROMPT, but only the Maka
+          // cell applies it; the native CLIs hash it into their execution
+          // identity and drop it. Record what each arm actually runs with.
+          externalSystemPrompt: 'default-headless',
           reasoningEffort: execution.reasoningEffort,
           continuation: false,
           attemptPolicy: 'single',
@@ -855,7 +854,7 @@ export function buildHarnessAbManifest({
             : {}),
           ...(profile.id === 'opencode' ? { variant: runtimeProfile.reasoningEffort } : {}),
           billingMode: runtimeProfile.billingMode,
-          externalSystemPrompt: 'empty',
+          externalSystemPrompt: 'none',
           profile: profile.id,
           ...(benchmarkProfile.executor === 'pier'
             ? { execution: { placement: 'task-container' } }

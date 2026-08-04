@@ -17,6 +17,11 @@ import {
   type CuObservation,
   type CuSemanticAction,
 } from '../computer-use-tools.js';
+import {
+  latestObservationIn,
+  stringsIn,
+  type ParsedObservation,
+} from './observation-text-reader.js';
 import { createDurableTurnHarness, drainWithDurableTurn } from './durable-turn-harness.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
@@ -72,7 +77,13 @@ describe('AiSdkBackend Computer Use model loop', () => {
       assert.match(serialized, /Prefer click_element or set_value/);
       assert.match(
         serialized,
-        /Coordinate click, pointer move, scroll, drag, press_key, type.*disabled by default/,
+        // Was asserting "disabled by default … fail closed with
+        // unsupported_action", which the desktop host has not done since
+        // cua-driver's compatibility backend went away — it passes
+        // `allowCompatibilityInputDispatch: true`. The test was holding a
+        // sentence that had become false. What is true, and what the model
+        // needs, is which surface to prefer and why.
+        /Coordinate click, pointer move, scroll and drag aim at a pixel.*Prefer an element action/s,
       );
     }
   });
@@ -156,7 +167,10 @@ describe('AiSdkBackend Computer Use model loop', () => {
         ledger: durable.ledger,
       }),
     );
-    assert.deepEqual(backendCalls, ['list_apps', 'observe', 'set_value']);
+    // The model's own list_apps, then observe resolving the `app` it was given.
+    // The second lookup is a backend call the model never waits on, which is
+    // the trade the resolution makes: a host round trip instead of a model one.
+    assert.deepEqual(backendCalls, ['list_apps', 'list_apps', 'observe', 'set_value']);
     assert.equal(value.current, 'model-written');
     assert.equal(events.at(-1)?.type, 'complete');
     const textComplete = [...events].reverse().find((event) => event.type === 'text_complete');
@@ -174,7 +188,7 @@ describe('AiSdkBackend Computer Use model loop', () => {
     assert.match(JSON.stringify(modelPrompts[3]), /model-written/);
     assert.match(
       JSON.stringify(modelTools[0]),
-      /Coordinate click, pointer move, scroll, drag, press_key, type.*disabled by default/,
+      /Coordinate click, pointer move, scroll and drag aim at a pixel.*Prefer an element action/s,
     );
     assert.match(JSON.stringify(modelTools[0]), /Prefer click_element or set_value/);
     assert.equal(
@@ -267,7 +281,17 @@ describe('AiSdkBackend Computer Use model loop', () => {
       }),
     );
     assert.equal(value.current, 'recovered');
-    assert.deepEqual(backendCalls, ['observe', 'left_click', 'observe', 'set_value']);
+    // Each observe resolves its `app` first, because the model is allowed to
+    // say the name a person would use. That lookup is a backend call and not a
+    // model round trip, which is the round trip the resolution exists to save.
+    assert.deepEqual(backendCalls, [
+      'list_apps',
+      'observe',
+      'left_click',
+      'list_apps',
+      'observe',
+      'set_value',
+    ]);
     assert.equal(events.at(-1)?.type, 'complete');
   });
 });
@@ -411,45 +435,10 @@ function textCompletion(text: string): LanguageModelV4StreamPart[] {
   ];
 }
 
-function latestObservation(prompt: unknown): {
-  observation_id: string;
-  elements: Array<{
-    element_id: string;
-    label?: string;
-    value?: string;
-  }>;
-} {
-  const candidates = stringsIn(prompt).flatMap((text) => {
-    const marker = text.lastIndexOf('Fresh observation:\n');
-    const json =
-      marker >= 0
-        ? text.slice(marker + 'Fresh observation:\n'.length)
-        : text.trim().startsWith('{')
-          ? text.trim()
-          : '';
-    if (!json) return [];
-    try {
-      const value = JSON.parse(json) as Record<string, unknown>;
-      return typeof value.observation_id === 'string' && Array.isArray(value.elements)
-        ? [value]
-        : [];
-    } catch {
-      return [];
-    }
-  });
-  const latest = candidates.at(-1);
+function latestObservation(prompt: unknown): ParsedObservation {
+  const latest = latestObservationIn(prompt);
   assert.ok(latest, `model prompt did not contain an observation: ${JSON.stringify(prompt)}`);
-  return latest as {
-    observation_id: string;
-    elements: Array<{ element_id: string; label?: string; value?: string }>;
-  };
-}
-
-function stringsIn(value: unknown): string[] {
-  if (typeof value === 'string') return [value];
-  if (Array.isArray(value)) return value.flatMap(stringsIn);
-  if (!value || typeof value !== 'object') return [];
-  return Object.values(value).flatMap(stringsIn);
+  return latest;
 }
 
 async function collect(iterable: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {

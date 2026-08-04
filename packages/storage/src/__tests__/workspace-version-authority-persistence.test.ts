@@ -12,13 +12,17 @@ import {
   type RuntimeEvent,
   type WorkspaceBaselineAuthorityInput,
 } from '@maka/core';
-import { createRuntimeEventStore } from '../agent-run-store.js';
 import { createConversationOperationalStateStore } from '../conversation-operational-state.js';
 import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
-import { commitWorkspaceBaselineInternal } from '../workspace-version-authority-internal.js';
+import {
+  bindWorkspaceBaselineAuthorityStoreRootInternal,
+  commitWorkspaceBaselineInternal,
+} from '../workspace-version-authority-internal.js';
+
+const TEST_STORAGE_ROOT_ID = 'a'.repeat(64);
 
 describe('workspace version persistence authority', () => {
   it('does not expose the unverified baseline writer on the public SQLite store', () => {
@@ -50,6 +54,7 @@ describe('workspace version persistence authority', () => {
     const dbPath = join(root, 'runtime.sqlite');
     const input = baselineInput();
     const writer = createSqliteRuntimeStore(dbPath);
+    bindWorkspaceBaselineAuthorityStoreRootInternal(writer, TEST_STORAGE_ROOT_ID);
     let writePromise: ReturnType<typeof commitWorkspaceBaselineInternal> | undefined;
     let injected = false;
     const reader = createSqliteRuntimeStore(dbPath, {
@@ -129,6 +134,53 @@ describe('workspace version persistence authority', () => {
         raw.close();
       }
     });
+  });
+
+  it('refuses to silently claim unbound workspace authority facts for another root', async () => {
+    await withDatabase(async ({ dbPath, store }) => {
+      await commitWorkspaceBaselineInternal(store, baselineInput());
+      const raw = new DatabaseSync(dbPath);
+      try {
+        raw.exec('DELETE FROM runtime_storage_root_binding');
+      } finally {
+        raw.close();
+      }
+      await assert.rejects(
+        commitWorkspaceBaselineInternal(store, baselineInput()),
+        /durable storage-root binding changed/u,
+      );
+      assert.throws(
+        () => bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'b'.repeat(64)),
+        /require explicit storage-root adoption/u,
+      );
+    });
+  });
+
+  it('refuses to silently claim an unbound database with ordinary runtime state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-unbound-operational-state-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      const event: RuntimeEvent = {
+        id: 'ordinary-existing-runtime-event',
+        sessionId: 'session-existing',
+        invocationId: 'invocation-existing',
+        runId: 'run-existing',
+        turnId: 'turn-existing',
+        ts: 1,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'existing root-owned state' },
+      };
+      await store.appendRuntimeEvent(event.sessionId, event.runId, event);
+      assert.throws(
+        () => bindWorkspaceBaselineAuthorityStoreRootInternal(store, TEST_STORAGE_ROOT_ID),
+        /unbound operational data require explicit storage-root adoption/iu,
+      );
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   for (const failpoint of [
@@ -229,7 +281,7 @@ describe('workspace version persistence authority', () => {
     });
   });
 
-  it('rejects workspace facts through SQLite and JSONL generic writers', async () => {
+  it('rejects workspace facts through generic RuntimeEvent writers', async () => {
     await withDatabase(async ({ store, root }) => {
       const { epochOpenedEvent } = buildWorkspaceBaselineAuthorityEvents(baselineInput());
       await assert.rejects(
@@ -339,30 +391,6 @@ describe('workspace version persistence authority', () => {
         }),
         /workspace version authority writer/i,
       );
-
-      const jsonl = createRuntimeEventStore(join(root, 'jsonl'));
-      await assert.rejects(
-        jsonl.appendRuntimeEvent(
-          epochOpenedEvent.sessionId,
-          epochOpenedEvent.runId,
-          epochOpenedEvent,
-        ),
-        /workspace version authority writer/i,
-      );
-      await assert.rejects(
-        jsonl.ensureTerminalRuntimeEventDurable(
-          epochOpenedEvent.sessionId,
-          epochOpenedEvent.runId,
-          epochOpenedEvent,
-        ),
-        /workspace version authority writer/i,
-      );
-      await assert.rejects(
-        jsonl.importConversationCopyRuntimeEvents(epochOpenedEvent.sessionId, [
-          { runId: epochOpenedEvent.runId, events: [epochOpenedEvent] },
-        ]),
-        /workspace version authority writer/i,
-      );
     });
   });
 
@@ -439,6 +467,7 @@ async function withDatabase(
       if (point === activeFailpoint) throw new Error(`failpoint:${point}`);
     },
   });
+  bindWorkspaceBaselineAuthorityStoreRootInternal(store, TEST_STORAGE_ROOT_ID);
   try {
     await run({
       root,

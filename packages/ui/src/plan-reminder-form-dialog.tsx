@@ -17,7 +17,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { Check, Plus, X } from './icons.js';
+import { Check, X } from './icons.js';
 import { BotBrandLogo } from './bot-brand-logo.js';
 import type {
   BotProvider,
@@ -36,12 +36,12 @@ import {
 } from './plan-reminder-helpers.js';
 import {
   Button as UiButton,
+  DateTimeInput,
   Field,
   TextInput,
 } from '@astryxdesign/core';
+import type { ISODateTimeString } from '@astryxdesign/core/DateTimeInput';
 import { IconButton } from '@astryxdesign/core';
-import { Dialog } from '@astryxdesign/core/Dialog';
-import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import {
   DropdownMenu,
   DropdownMenuItem,
@@ -78,7 +78,6 @@ function PlanValueMenu(props: {
         'aria-label': `${props.fieldLabel}: ${current}`,
       }}
       menuWidth={220}
-      className="maka-plan-value-menu"
     >
       {props.options.map((option) => (
         <DropdownMenuItem
@@ -143,6 +142,24 @@ export function PlanReminderFormDialog(props: {
       submitPendingRef.current = false;
     };
   }, []);
+
+  // Split-view panel (no <dialog>): own the focus contract the Dialog used
+  // to provide. On open, capture the opener (the panel has already re-focused
+  // the triggering row control by layout-effect time) and move focus to the
+  // title; on close, hand focus back to the opener — the e2e asserts the row
+  // menu regains focus after Escape.
+  const planFormOpenerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!props.open) return undefined;
+    planFormOpenerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    document.getElementById('maka-plan-title')?.focus();
+    return () => {
+      const opener = planFormOpenerRef.current;
+      planFormOpenerRef.current = null;
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [props.open]);
 
   useEffect(() => {
     if (editingId && !props.reminders.some((reminder) => reminder.id === editingId)) resetForm();
@@ -213,47 +230,36 @@ export function PlanReminderFormDialog(props: {
     }
   }
 
+  if (!props.open) return null;
+
+  // Split-view panel (reference layout): the form is an in-page column flush
+  // against the task list — not an overlay. Non-modal `role="dialog"` keeps
+  // the e2e/assistive name; Escape closes via the same guarded path.
   return (
-    <Dialog
-      isOpen={props.open}
-      onOpenChange={(open) => {
-        if (open) {
-          props.onOpenChange(true);
-        } else {
+    <aside
+      className="maka-plan-form-aside"
+      role="dialog"
+      aria-labelledby="maka-plan-dialog-title"
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
           closeReminderDialog();
         }
       }}
-      className="maka-plan-dialog"
-      width={440}
-      maxHeight="100dvh"
-      position={{ top: 0, right: 0, bottom: 0 }}
-      aria-labelledby="maka-plan-dialog-title"
-      padding={0}
-      purpose="form"
     >
-      <Layout
-        content={
-          <LayoutContent padding={0}>
-        {/* Redesign (WAWQAQ msg `67d21f99`): the form reads like the reference
-            scheduled-task panels now — a quiet kicker, a large borderless
-            title, a bare description field, then label-left / control-right
-            hairline rows in two labeled groups. All state, validation and
-            submit invariants are unchanged; only the presentation moved. */}
-        <form className="maka-plan-form" onSubmit={submit} aria-busy={submitPending ? 'true' : undefined}>
-          <header className="maka-plan-form-header">
-            <h3 id="maka-plan-dialog-title" className="maka-plan-form-kicker">{isEditing ? copy.editTitle : copy.createTitle}</h3>
-            <div className="maka-plan-form-header-actions">
-              {!isEditing && (
-                <DropdownMenu
-                  button={{
-                    label: copy.useTemplate,
-                    variant: 'ghost',
-                    size: 'sm',
-                    isDisabled: formInteractionDisabled,
-                  }}
-                  menuWidth={240}
-                  className="maka-plan-template-menu"
-                >
+            <div className="maka-plan-form-header">
+              <h3 id="maka-plan-dialog-title" className="maka-plan-form-kicker">{isEditing ? copy.editTitle : copy.createTitle}</h3>
+              <div className="maka-plan-form-header-actions">
+                {!isEditing && (
+                  <DropdownMenu
+                    button={{
+                      label: copy.useTemplate,
+                      variant: 'ghost',
+                      size: 'sm',
+                      isDisabled: formInteractionDisabled,
+                    }}
+                    menuWidth={240}
+                  >
                     {templates.map((template) => (
                       <DropdownMenuItem
                         key={template.id}
@@ -262,38 +268,47 @@ export function PlanReminderFormDialog(props: {
                         endContent={template.scheduleLabel}
                       />
                     ))}
-                </DropdownMenu>
-              )}
-              <IconButton
-                onClick={closeReminderDialog}
-                isDisabled={formInteractionDisabled}
-                label={copy.close}
-                icon={<X size={16} aria-hidden="true" />}
-                variant="ghost"
-                size="sm"
-              />
+                  </DropdownMenu>
+                )}
+                <IconButton
+                  onClick={closeReminderDialog}
+                  isDisabled={formInteractionDisabled}
+                  label={copy.close}
+                  icon={<X size={16} aria-hidden="true" />}
+                  variant="ghost"
+                  size="sm"
+                />
+              </div>
             </div>
-          </header>
+        {/* Redesign (WAWQAQ msg `67d21f99`): the form reads like the reference
+            scheduled-task panels now — a quiet kicker, a large borderless
+            title, a bare description field, then label-left / control-right
+            hairline rows in two labeled groups. All state, validation and
+            submit invariants are unchanged; only the presentation moved. */}
+        <form id="maka-plan-reminder-form" className="maka-plan-form" onSubmit={submit} aria-busy={submitPending ? 'true' : undefined}>
           <Field
             label={copy.field.title}
             inputID="maka-plan-title"
             isLabelHidden
+            isRequired
             isDisabled={formInteractionDisabled}
             status={titleTouched && validation?.field === 'title'
               ? { type: 'error', message: validation.message }
               : undefined}
             statusVariant="detached"
           >
+            {/* Raw input inside Field: the Field contract generates the ids but
+                injects nothing — describedby / invalid / required and the
+                Dialog's data-autofocus hook (raw autoFocus fires before
+                showModal() and silently loses) are wired here by hand. */}
             <input
               id="maka-plan-title"
               className="maka-plan-title-input"
               value={title}
-              // Not React's `autoFocus`: it runs during commit, before the
-              // dialog's showModal() makes the field visible, so the focus
-              // silently fails. Astryx's Dialog focuses `[data-autofocus]`
-              // after opening — the same seam TextInput's `hasAutoFocus`
-              // emits, which this bare input replaced.
-              data-autofocus
+              data-autofocus="true"
+              aria-required="true"
+              aria-invalid={titleTouched && validation?.field === 'title' ? 'true' : undefined}
+              aria-describedby={titleTouched && validation?.field === 'title' ? 'maka-plan-title-status' : undefined}
               onChange={(event) => {
                 setTitleTouched(true);
                 setTitle(event.target.value.slice(0, 120));
@@ -308,7 +323,6 @@ export function PlanReminderFormDialog(props: {
             isLabelHidden
             value={note}
             onChange={(value) => setNote(value.slice(0, 1000))}
-            maxLength={1000}
             rows={3}
             placeholder={copy.notePlaceholder}
             isDisabled={formInteractionDisabled}
@@ -328,15 +342,17 @@ export function PlanReminderFormDialog(props: {
               </div>
               <div className="maka-plan-row">
                 <span className="maka-plan-row-label">{copy.field.at}</span>
-                <TextInput
-                  label={copy.field.time}
+                <DateTimeInput
+                  label={copy.field.at}
                   isLabelHidden
-                  value={runAtLocal}
-                  onChange={setRunAtLocal}
-                  placeholder={copy.timePlaceholder}
+                  value={(runAtLocal || undefined) as ISODateTimeString | undefined}
+                  onChange={(value) => setRunAtLocal(value ?? '')}
                   isDisabled={formInteractionDisabled}
                   isRequired
-                  width={220}
+                  size="sm"
+                  hourFormat="24h"
+                  timeIncrement={5}
+                  width="100%"
                   status={validation?.field === 'time'
                     ? { type: 'error', message: validation.message }
                     : undefined}
@@ -360,19 +376,19 @@ export function PlanReminderFormDialog(props: {
                   />
                 </div>
               )}
-            </div>
-            <div className="maka-plan-presets" aria-label={copy.presetsAriaLabel}>
-              {copy.presets.map(([preset, label]) => (
-                <UiButton
-                  key={preset}
-                  variant="ghost"
-                  size="sm"
-                  className="maka-plan-preset"
-                  onClick={() => applyRunAtPreset(preset)}
-                  isDisabled={formInteractionDisabled}
-                  label={label}
-                />
-              ))}
+              <div className="maka-plan-presets" role="group" aria-label={copy.presetsAriaLabel}>
+                {copy.presets.map(([preset, label]) => (
+                  <UiButton
+                    key={preset}
+                    variant="ghost"
+                    size="sm"
+                    className="maka-plan-preset"
+                    onClick={() => applyRunAtPreset(preset)}
+                    isDisabled={formInteractionDisabled}
+                    label={label}
+                  />
+                ))}
+              </div>
             </div>
           </section>
           <section className="maka-plan-group" aria-label={copy.groupDelivery}>
@@ -436,19 +452,16 @@ export function PlanReminderFormDialog(props: {
               </p>
             )}
           </section>
-          <footer className="maka-plan-form-footer">
-            <UiButton
-              variant="primary"
-              type="submit"
-              isDisabled={submitDisabled}
-              icon={isEditing ? <Check size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
-              label={submitPending ? (isEditing ? copy.saving : copy.creating) : (isEditing ? copy.save : copy.create)}
-            />
-          </footer>
         </form>
-          </LayoutContent>
-        }
-      />
-    </Dialog>
+        <div className="maka-plan-form-footer">
+          <UiButton
+            variant="primary"
+            type="submit"
+            form="maka-plan-reminder-form"
+            isDisabled={submitDisabled}
+            label={submitPending ? (isEditing ? copy.saving : copy.creating) : (isEditing ? copy.save : copy.create)}
+          />
+        </div>
+    </aside>
   );
 }

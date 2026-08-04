@@ -14,9 +14,9 @@
   overflow: auto;
   display: grid;
   align-content: start;
-  /* Atlas §14.6 quick-win: section gap 14 -> 8 to track the reference's
-     4px `--agents-content-area-gap` cadence. */
-  gap: var(--space-2);
+  /* Premium checklist rule 10: 24px between page tiers (banner / tabs /
+     market / installed); small steps only inside a unit. */
+  gap: var(--space-6);
   /* Unboxed (maintainer 2026-07-18): the outer card chrome wrapped the
      whole module (banner + tabs + list) in a second frame the MCP page
      never had — the inner surfaces (featured banner, skill rows, market
@@ -190,7 +190,7 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 }
 
 .maka-skill-context-inspector strong {
-  font: var(--maka-text-heading-5);
+  font: var(--maka-text-label);
   color: var(--foreground);
 }
 
@@ -200,7 +200,7 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 }
 
 .maka-skill-section-row small {
-  font: var(--maka-text-heading-5);
+  font: var(--maka-text-supporting);
   font-variant-numeric: tabular-nums;
   color: var(--muted-foreground);
 }
@@ -223,16 +223,13 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   border-radius: var(--radius-control);
   background: var(--background);
   padding: var(--space-4);
-  transition:
-    border-color var(--duration-base) var(--ease-out-strong),
-    box-shadow var(--duration-emphasized) var(--ease-out-strong),
-    transform var(--duration-emphasized) var(--ease-out-strong);
+  transition: border-color var(--duration-base) var(--ease-out-strong);
 }
 
+/* Premium checklist rule 17: flat is the default — no hover lift, no
+   hand-written shadow. The border deepening is the whole hover story. */
 .maka-skill-market-card:hover {
   border-color: oklch(from var(--foreground) l c h / 0.14);
-  box-shadow: 0 4px 12px -8px oklch(from var(--foreground) l c h / 0.08);
-  transform: translateY(var(--lift-hover));
 }
 
 .maka-skill-market-card-head {
@@ -261,7 +258,7 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 
 /* Slug caption: soft monospace, matching the library row's id treatment. */
 .maka-skill-market-card-title code {
-  font: var(--maka-text-heading-5);
+  font: var(--maka-text-supporting);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -272,7 +269,7 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 .maka-skill-market-card small,
 .maka-skill-market-card code,
 .maka-skill-market-card-foot span {
-  font: var(--maka-text-heading-5);
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
 }
 
@@ -302,7 +299,6 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   border-radius: var(--radius-surface);
   background: var(--background);
   color: var(--foreground-secondary);
-  box-shadow: 0 1px 2px oklch(from var(--foreground) l c h / 0.05);
 }
 
 .maka-skill-market-card-foot {
@@ -315,14 +311,12 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 
 .maka-skill-installed {
   display: grid;
-  /* Atlas §14.6 quick-win — section internal gap aligned to reference's
-     `--agents-content-area-gap: 4px` cadence; was 6px. */
-  gap: var(--space-1);
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .maka-skill-section-label {
-  font: var(--maka-text-heading-5);
+  font: var(--maka-text-label);
   color: var(--foreground-secondary);
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
@@ -406,7 +400,6 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   border-radius: var(--radius-surface);
   border: var(--border-width-hairline) solid var(--foreground-8);
   background: var(--background);
-  box-shadow: 0 1px 2px oklch(from var(--foreground) l c h / 0.05);
   color: var(--muted-foreground);
   transition: background-color var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong);
 }

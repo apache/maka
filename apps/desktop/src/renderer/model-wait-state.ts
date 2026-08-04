@@ -67,10 +67,10 @@ export function deriveTurnActive(input: {
 export interface ModelWaitInputs {
   /** Turn phase, or undefined when no turn is in flight. */
   turnPhase: TurnPhase | undefined;
-  /** Active session's live assistant answer buffer. */
-  streamingText: string;
-  /** Active session's live reasoning buffer. */
-  thinkingText: string;
+  /** Whether the active assistant answer buffer has any content. */
+  hasStreamingText: boolean;
+  /** Whether the active reasoning buffer has any content. */
+  hasThinkingText: boolean;
   /** Whether any live tool is still pending / running / awaiting permission. */
   hasInFlightTools: boolean;
 }
@@ -86,10 +86,7 @@ export type ModelWaitKind = 'none' | 'processing' | 'continuing';
  * `'continuing'`.
  */
 export function deriveModelWait(input: ModelWaitInputs): ModelWaitKind {
-  const idle =
-    input.streamingText.length === 0 &&
-    input.thinkingText.length === 0 &&
-    !input.hasInFlightTools;
+  const idle = !input.hasStreamingText && !input.hasThinkingText && !input.hasInFlightTools;
   if (!idle || input.turnPhase === undefined) return 'none';
   return input.turnPhase === 'waiting' ? 'processing' : 'continuing';
 }

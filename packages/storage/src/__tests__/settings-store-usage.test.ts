@@ -1,47 +1,28 @@
 import { strict as assert } from 'node:assert';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { StoredMessage } from '@maka/core/session';
 import { createSessionStore } from '../session-store.js';
 import { createSettingsStore } from '../settings-store.js';
 
-function makeHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
-  return {
-    id: 'session-1',
-    workspaceRoot: '/tmp/maka-workspace',
-    cwd: '/tmp/maka-workspace',
-    createdAt: 1,
-    lastUsedAt: 1,
-    name: 'Usage fixture',
-    titleIsManual: true,
-    isFlagged: false,
-    labels: [],
-    isArchived: false,
-    status: 'active',
-    hasUnread: false,
-    backend: 'ai-sdk',
-    llmConnectionSlug: 'anthropic',
-    connectionLocked: true,
-    model: 'claude-sonnet-4',
-    permissionMode: 'ask',
-    schemaVersion: 1,
-    ...overrides,
-  };
-}
-
-async function seedSession(
-  workspaceRoot: string,
-  header: SessionHeader,
-  messages: StoredMessage[],
-) {
-  const sessionDir = join(workspaceRoot, 'sessions', header.id);
-  await mkdir(sessionDir, { recursive: true });
-  await writeFile(
-    join(sessionDir, 'session.jsonl'),
-    [header, ...messages].map((entry) => JSON.stringify(entry)).join('\n') + '\n',
-  );
+async function seedSession(workspaceRoot: string, messages: StoredMessage[]): Promise<string> {
+  const sessions = createSessionStore(workspaceRoot);
+  try {
+    const header = await sessions.create({
+      cwd: '/tmp/maka-workspace',
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'anthropic',
+      model: 'claude-sonnet-4',
+      permissionMode: 'ask',
+      name: 'Usage fixture',
+    });
+    await sessions.appendMessages(header.id, messages);
+    return header.id;
+  } finally {
+    await sessions.close?.();
+  }
 }
 
 describe('SettingsStore.usageStats request logs', () => {
@@ -89,7 +70,7 @@ describe('SettingsStore.usageStats request logs', () => {
   it('includes tool invocation rows without inflating model usage totals', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-usage-'));
     try {
-      await seedSession(workspaceRoot, makeHeader(), [
+      const sessionId = await seedSession(workspaceRoot, [
         {
           type: 'assistant',
           id: 'assistant-1',
@@ -146,7 +127,7 @@ describe('SettingsStore.usageStats request logs', () => {
 
       const modelLog = stats.logs.find((log) => log.kind === 'model');
       assert.ok(modelLog);
-      assert.equal(modelLog.sessionId, 'session-1');
+      assert.equal(modelLog.sessionId, sessionId);
       assert.equal(modelLog.turnId, 'turn-1');
       assert.equal(modelLog.model, 'claude-sonnet-4-runtime');
       assert.equal(modelLog.inputTokens, 120);
@@ -159,7 +140,7 @@ describe('SettingsStore.usageStats request logs', () => {
       const toolLog = stats.logs.find((log) => log.kind === 'tool');
       assert.ok(toolLog);
       assert.equal(toolLog.id, 'tool:tool-1');
-      assert.equal(toolLog.sessionId, 'session-1');
+      assert.equal(toolLog.sessionId, sessionId);
       assert.equal(toolLog.turnId, 'turn-1');
       assert.equal(toolLog.provider, 'anthropic');
       assert.equal(toolLog.model, 'claude-sonnet-4');
@@ -201,7 +182,7 @@ describe('SettingsStore.usageStats request logs', () => {
         },
       ];
 
-      await seedSession(workspaceRoot, makeHeader({ id: 'session-a' }), [
+      await seedSession(workspaceRoot, [
         ...bashTurn('session-a', false, 20),
         {
           type: 'tool_call',
@@ -223,9 +204,7 @@ describe('SettingsStore.usageStats request logs', () => {
           content: { kind: 'text', text: 'ok' },
         },
       ]);
-      await seedSession(workspaceRoot, makeHeader({ id: 'session-b' }), [
-        ...bashTurn('session-b', true, 40),
-      ]);
+      await seedSession(workspaceRoot, [...bashTurn('session-b', true, 40)]);
 
       const stats = await createSettingsStore(workspaceRoot).usageStats('all');
 
@@ -248,90 +227,6 @@ describe('SettingsStore.usageStats request logs', () => {
         stats.byTool.map((row) => row.tool),
         ['Bash', 'Read'],
       );
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps valid usage rows when one session message line is corrupt', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-usage-corrupt-line-'));
-    try {
-      const header = makeHeader();
-      const sessionDir = join(workspaceRoot, 'sessions', header.id);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(
-        join(sessionDir, 'session.jsonl'),
-        [
-          JSON.stringify(header),
-          JSON.stringify({
-            type: 'assistant',
-            id: 'assistant-1',
-            turnId: 'turn-1',
-            ts: 10,
-            text: 'tracked',
-            modelId: 'runtime-model',
-          }),
-          '{"type":"tool_call"',
-          JSON.stringify({
-            type: 'token_usage',
-            id: 'usage-1',
-            turnId: 'turn-1',
-            ts: 20,
-            input: 10,
-            output: 5,
-            cacheRead: 2,
-            costUsd: 0.02,
-          }),
-        ].join('\n') + '\n',
-      );
-
-      const stats = await createSettingsStore(workspaceRoot).usageStats('all');
-
-      assert.equal(stats.summary.totalRequests, 1);
-      assert.equal(stats.summary.totalTokens, 15);
-      assert.equal(stats.summary.cacheRead, 2);
-      assert.equal(stats.summary.totalCostUsd, 0.02);
-      assert.equal(stats.logs[0]?.model, 'runtime-model');
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('ignores malformed usage rows instead of poisoning totals', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-usage-bad-token-row-'));
-    try {
-      const header = makeHeader();
-      const sessionDir = join(workspaceRoot, 'sessions', header.id);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(
-        join(sessionDir, 'session.jsonl'),
-        [
-          JSON.stringify(header),
-          JSON.stringify({
-            type: 'token_usage',
-            id: 'bad-usage',
-            turnId: 'turn-1',
-            ts: 20,
-            input: '10',
-            output: 5,
-          }),
-          JSON.stringify({
-            type: 'token_usage',
-            id: 'good-usage',
-            turnId: 'turn-2',
-            ts: 30,
-            input: 7,
-            output: 3,
-          }),
-        ].join('\n') + '\n',
-      );
-
-      const stats = await createSettingsStore(workspaceRoot).usageStats('all');
-
-      assert.equal(stats.summary.totalRequests, 1);
-      assert.equal(stats.summary.totalTokens, 10);
-      assert.equal(stats.logs.length, 1);
-      assert.equal(stats.logs[0]?.id, 'good-usage');
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }

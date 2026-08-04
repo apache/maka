@@ -17,12 +17,9 @@ import {
 import {
   createSessionStore,
   createSqliteSessionMetadataStore,
-  SQLITE_SESSION_METADATA_DATABASE_NAME,
+  OPERATIONAL_STATE_DATABASE_NAME,
 } from '@maka/storage';
-import {
-  createLegacyAgentRunStoreForTest,
-  createLegacyRuntimeEventStoreForTest,
-} from '@maka/storage/legacy-execution-test-support';
+import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
 import { FakeBackend } from '../fake-backend.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { SessionActivityRegistry } from '../goal-turn-lifecycle.js';
@@ -45,8 +42,8 @@ describe('host-managed agent graph coordinator', () => {
   test('boots an empty graph from agent work and recovers it without duplicate topology', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-coordinator-'));
     const sessionStore = createSessionStore(root);
-    const runStore = createLegacyAgentRunStoreForTest(root);
-    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
     let graphRuntimeHistoryReads = 0;
     const countedRuntimeEventStore = new Proxy(runtimeEventStore, {
       get(target, property) {
@@ -99,9 +96,7 @@ describe('host-managed agent graph coordinator', () => {
       );
       assert.ok(sourceRun);
 
-      controlStore = createSqliteSessionMetadataStore(
-        join(root, SQLITE_SESSION_METADATA_DATABASE_NAME),
-      );
+      controlStore = createSqliteSessionMetadataStore(join(root, OPERATIONAL_STATE_DATABASE_NAME));
       delayedControlStore = createDelayableControlStore(controlStore);
       const activities = new SessionActivityRegistry();
       let supervisorWakeTurnCount = 0;
@@ -696,13 +691,16 @@ describe('host-managed agent graph coordinator', () => {
     } as unknown as AgentGraphCoordinatorInput);
     try {
       assert.equal((await coordinator.getSnapshot(rootSessionId)).scheduleRevision, 0);
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'absent');
 
       scheduleUpdates = [addUpdate];
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
 
       scheduleUpdates = [addUpdate, finishUpdate];
       provisions = [provision];
       claims = [claim];
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
 
       runs = [{ ...runningRun, status: 'completed', completedAt: 14, updatedAt: 14 }];
@@ -722,6 +720,7 @@ describe('host-managed agent graph coordinator', () => {
           actions: { endInvocation: true },
         },
       ];
+      assert.equal(await coordinator.readSessionState(rootSessionId), 'terminal');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), false);
     } finally {
       await coordinator.close();
@@ -935,8 +934,8 @@ describe('host-managed agent graph coordinator', () => {
 
 function createCoordinator(input: {
   sessionStore: ReturnType<typeof createSessionStore>;
-  runStore: ReturnType<typeof createLegacyAgentRunStoreForTest>;
-  runtimeEventStore: ReturnType<typeof createLegacyRuntimeEventStoreForTest>;
+  runStore: ReturnType<typeof createSqliteAgentRunStore>;
+  runtimeEventStore: ReturnType<typeof createWorkspaceRuntimeStore>;
   controlStore: ReturnType<typeof createSqliteSessionMetadataStore>;
   manager: SessionManager;
   onReconciliation?: AgentGraphCoordinatorInput['onReconciliation'];

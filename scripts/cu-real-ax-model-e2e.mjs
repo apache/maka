@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 
 import { AiSdkBackend, buildComputerUseTools, getAIModel } from '../packages/runtime/dist/index.js';
-import { createCuaDriverBackend } from '../packages/computer-use/dist/index.js';
+import { createMakaCuBackend } from '../packages/computer-use/dist/index.js';
 import { createDirectRuntimeTurnLedger } from './cu-direct-runtime-ledger.mjs';
 import { sanitizeCuDirectReport } from './cu-report-sanitize.mjs';
 
 const repoRoot = new URL('..', import.meta.url).pathname;
-const binaryPath = join(repoRoot, 'apps/desktop/resources/bin/cua-driver');
+const binaryPath = join(repoRoot, 'apps/desktop/resources/bin/maka-cu');
 const labRoot =
   process.env.MAKA_CU_AX_MODEL_LAB_ROOT ??
   '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
@@ -30,10 +30,14 @@ const apiKey =
   process.env.MAKA_CU_MODEL_API_KEY ?? (provider === 'anthropic' ? 'coproxy' : 'bridge-managed');
 const scenario = process.env.MAKA_CU_AX_MODEL_SCENARIO ?? 'set-value';
 const targetValue = 'model-real-ax';
-const expectedBinarySha256 =
-  process.env.MAKA_CU_AX_MODEL_EXPECTED_SHA256 ??
-  '683dad5cccb47dd0a8bb5d534d62fbb9e6edfb1cded232509cf4c2b190066040';
-const expectedServerVersion = process.env.MAKA_CU_AX_MODEL_EXPECTED_VERSION ?? '0.7.1';
+// The digest the manifest pins, rather than a copy of it: a hardcoded digest
+// here goes stale the first time the executor is rebuilt, and the failure it
+// produces is "refusing to spawn an unrecognized binary", which reads like a
+// tampering alarm rather than like a stale constant.
+const pinnedExecutorSha256 = JSON.parse(
+  await readFile(join(repoRoot, 'apps', 'desktop', 'bundled-tools.json'), 'utf8'),
+).makaCu.binarySha256;
+const expectedBinarySha256 = process.env.MAKA_CU_AX_MODEL_EXPECTED_SHA256 ?? pinnedExecutorSha256;
 const resolvedTemporaryDirectory = resolve(temporaryDirectory ?? '');
 const relativeTemporaryDirectory = relative(resolve(tmpdir()), resolvedTemporaryDirectory);
 
@@ -174,13 +178,9 @@ async function physicalInputRecentlyActive() {
   return ageSeconds < 1;
 }
 
-const backend = createCuaDriverBackend({
+const backend = createMakaCuBackend({
   binaryPath,
-  hostBundleId: 'com.maka.desktop',
   expectedBinarySha256,
-  expectedServerName: 'cua-driver',
-  expectedServerVersion,
-  expectedProtocolVersion: '2025-06-18',
   timeoutMs: 10_000,
   physicalInputRecentlyActive,
   allowCompatibilityInputDispatch: false,

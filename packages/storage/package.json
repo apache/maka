@@ -14,8 +14,6 @@
     "./agent-graph-control-store": "./dist/agent-graph-control-store.js",
     "./interaction-store": "./dist/interaction-store-public.js",
     "./git-worktree-child-executor": "./dist/git-worktree-child-executor.js",
-    "./legacy-execution-test-support": "./dist/legacy-execution-test-support.js",
-    "./legacy-storage-test-support": "./dist/legacy-storage-test-support.js",
     "./memory-bundle-store": "./dist/memory-bundle-store.js",
     "./long-term-memory-store": "./dist/long-term-memory-store.js",
     "./root-authority": "./dist/root-authority.js",

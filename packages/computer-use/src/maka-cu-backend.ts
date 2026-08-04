@@ -457,12 +457,30 @@ export type MakaCuBackend = Omit<
   'runSemantic' | 'observeApp' | 'captureObservation'
 > & {
   observeApp(
-    input: { app?: string; windowId?: number; includeScreenshot: boolean },
+    input: {
+      app?: string;
+      windowId?: number;
+      includeScreenshot: boolean;
+      menu?: string;
+      query?: string;
+    },
     signal: AbortSignal,
     context: CuRunContext,
   ): Promise<MakaCuObservation>;
   captureObservation(
-    input: { app?: string; windowId?: number; includeScreenshot: true },
+    input: {
+      app?: string;
+      windowId?: number;
+      // Was pinned to `true` on both of these while every caller wanted a
+      // picture. `observe` now asks for one only when the model does, and a
+      // capture between the steps of a sequence asks for none at all. The
+      // declaration said otherwise while `observe` itself passed `menu` and
+      // `query` that were not declared either — the implementation delegates to
+      // one `observe` that has always handled all of it.
+      includeScreenshot: boolean;
+      menu?: string;
+      query?: string;
+    },
     signal: AbortSignal,
     context: CuRunContext,
   ): Promise<MakaCuObservation>;

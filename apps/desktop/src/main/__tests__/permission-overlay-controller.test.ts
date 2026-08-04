@@ -16,10 +16,14 @@ import {
   GRANT_POLL_MS,
   createPermissionOverlayController,
   isDragGrantPermission,
+  startScreenRecordingOnboarding,
   type PermissionOverlayDeps,
   type PermissionOverlayWindowLike,
 } from '../permission-overlay/permission-overlay-controller.js';
-import { resolveAppBundle } from '../permission-overlay/app-bundle.js';
+import {
+  loadNativeBundleIcon,
+  resolveAppBundle,
+} from '../permission-overlay/app-bundle.js';
 
 /** Deterministic timer wheel — no real time passes in these tests. */
 function createClock() {
@@ -129,6 +133,17 @@ function createHarness(overrides: Partial<PermissionOverlayDeps> = {}) {
 }
 
 describe('drag-to-grant permission overlay', () => {
+  it('requests screen capture before continuing into the drag card', async () => {
+    const calls: string[] = [];
+    const result = await startScreenRecordingOnboarding({
+      requestAccess: async () => { calls.push('request'); return { ok: true }; },
+      isGranted: () => false,
+      startDrag: async () => { calls.push('drag'); return { ok: true }; },
+    });
+    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(calls, ['request', 'drag']);
+  });
+
   it('only recognises the two drag-to-grant permissions', () => {
     assert.equal(isDragGrantPermission('accessibility'), true);
     assert.equal(isDragGrantPermission('screen_recording'), true);
@@ -292,6 +307,17 @@ describe('drag-to-grant permission overlay', () => {
 });
 
 describe('app bundle resolution for the drag', () => {
+  it('never calls the native icon loader for an unpackaged app', async () => {
+    let calls = 0;
+    const icon = await loadNativeBundleIcon(false, async () => {
+      calls += 1;
+      return 'icon';
+    });
+    assert.equal(icon, null);
+    assert.equal(calls, 0, 'unpackaged development must not call app.getFileIcon()');
+    assert.equal(await loadNativeBundleIcon(true, async () => 'icon'), 'icon');
+  });
+
   it('walks three levels up from the executable to the .app', () => {
     assert.deepEqual(
       resolveAppBundle({
@@ -303,14 +329,14 @@ describe('app bundle resolution for the drag', () => {
     );
   });
 
-  it('resolves Electron.app in dev, which is the correct TCC identity there', () => {
+  it('resolves the containing app bundle independent of its development name', () => {
     assert.deepEqual(
       resolveAppBundle({
-        executablePath: '/repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron',
+        executablePath: '/repo/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron',
         platform: 'darwin',
         exists: () => true,
       }),
-      { ok: true, bundlePath: '/repo/node_modules/electron/dist/Electron.app' },
+      { ok: true, bundlePath: '/repo/apps/desktop/.maka-dev/Maka Dev.app' },
     );
   });
 

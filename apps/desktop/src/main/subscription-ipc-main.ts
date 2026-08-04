@@ -8,10 +8,6 @@ import {
   isOpenAiCodexExperimentalEnabled,
 } from './oauth/openai-codex-service.js';
 import {
-  type CursorSubscriptionService,
-  isCursorSubscriptionExperimentalEnabled,
-} from './oauth/cursor-subscription-service.js';
-import {
   type AntigravitySubscriptionService,
   isAntigravitySubscriptionExperimentalEnabled,
 } from './oauth/antigravity-subscription-service.js';
@@ -31,7 +27,6 @@ interface SubscriptionIpcDeps {
   openAiCodex: OpenAiCodexService;
   githubCopilotSubscription: GitHubCopilotSubscriptionService;
   xaiOAuth: XaiOAuthService;
-  cursorSubscription: CursorSubscriptionService;
   antigravitySubscription: AntigravitySubscriptionService;
   isClaudeSubscriptionAuthenticatedState(
     state: Awaited<ReturnType<ClaudeSubscriptionService['getAccountState']>>,
@@ -350,65 +345,6 @@ export function registerSubscriptionIpc(deps: SubscriptionIpcDeps): void {
       deps.emitConnectionListChanged();
     }
     return result;
-  });
-
-  const cursorDisabledResponse = {
-    ok: false as const,
-    reason: 'experimental_disabled' as const,
-    message: 'Cursor 订阅账号为内部实验，当前未开启。',
-  };
-  ipcMain.handle('cursor-subscription:is-experimental-enabled', async () =>
-    isCursorSubscriptionExperimentalEnabled(),
-  );
-  ipcMain.handle('cursor-subscription:get-auth-url', async () => {
-    if (!isCursorSubscriptionExperimentalEnabled()) return cursorDisabledResponse;
-    return deps.cursorSubscription.getAuthorizationUrl();
-  });
-  ipcMain.handle(
-    'cursor-subscription:open-auth-url',
-    async (_event, authRequestId: unknown) => {
-      if (!isCursorSubscriptionExperimentalEnabled()) return cursorDisabledResponse;
-      if (typeof authRequestId !== 'string') {
-        return { ok: false as const, reason: 'authorization_pending' as const, message: '授权会话不存在。' };
-      }
-      return deps.cursorSubscription.openAuthorizationUrl(authRequestId);
-    },
-  );
-  ipcMain.handle(
-    'cursor-subscription:complete-authorization',
-    async (_event, authRequestId: unknown) => {
-      if (!isCursorSubscriptionExperimentalEnabled()) return cursorDisabledResponse;
-      if (typeof authRequestId !== 'string') {
-        return { ok: false as const, reason: 'authorization_pending' as const, message: '授权会话不存在。' };
-      }
-      return deps.cursorSubscription.completeAuthorization(authRequestId);
-    },
-  );
-  ipcMain.handle(
-    'cursor-subscription:cancel-authorization',
-    async (_event, authRequestId: unknown) => {
-      if (!isCursorSubscriptionExperimentalEnabled()) return { ok: true as const };
-      deps.cursorSubscription.cancelAuthorization(
-        typeof authRequestId === 'string' ? authRequestId : undefined,
-      );
-      return { ok: true as const };
-    },
-  );
-  ipcMain.handle('cursor-subscription:get-account-state', async () => {
-    if (!isCursorSubscriptionExperimentalEnabled()) {
-      return {
-        provider: 'cursor-subscription' as const,
-        runtimeState: 'not_logged_in' as const,
-      };
-    }
-    return deps.cursorSubscription.getAccountState();
-  });
-  ipcMain.handle('cursor-subscription:refresh-tokens', async () => {
-    if (!isCursorSubscriptionExperimentalEnabled()) return cursorDisabledResponse;
-    return deps.cursorSubscription.refreshTokens();
-  });
-  ipcMain.handle('cursor-subscription:logout', async () => {
-    return deps.cursorSubscription.logout();
   });
 
   const antigravityDisabledResponse = {

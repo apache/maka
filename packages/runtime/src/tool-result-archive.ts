@@ -1,4 +1,5 @@
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { createHash } from 'node:crypto';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type {
   ArchivedToolResultSourceRef,
@@ -117,6 +118,29 @@ export type ToolResultArchiveReadResult =
 export type ToolResultArchiveReader = (
   input: ToolResultArchiveReaderInput,
 ) => Promise<ToolResultArchiveReadResult> | ToolResultArchiveReadResult;
+
+export function stableToolResultArchiveArtifactId(event: {
+  sessionId: string;
+  runtimeEventId: string;
+  toolCallId: string;
+  toolName: string;
+  bodySha256: string;
+  rewriteVersion: number;
+}): string {
+  return `tool-result-archive-${createHash('sha256')
+    .update(
+      JSON.stringify({
+        sessionId: event.sessionId,
+        runtimeEventId: event.runtimeEventId,
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        bodySha256: event.bodySha256,
+        rewriteVersion: event.rewriteVersion,
+      }),
+    )
+    .digest('hex')
+    .slice(0, 32)}`;
+}
 
 export interface ArchiveRetrievalResult {
   events: RuntimeEvent[];

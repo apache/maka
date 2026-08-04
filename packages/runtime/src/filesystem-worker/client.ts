@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import {
   canReadPath,
   canWritePath,
@@ -9,10 +9,13 @@ import {
   type ExecutionBoundary,
   type PermissionMode,
   type PermissionProfile,
+  type SandboxBoundaryAccess,
   type SandboxBoundaryExpansion,
+  type SandboxBoundaryScope,
 } from '@maka/core';
 
-import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
+import { realpathAllowMissing } from '../path-containment.js';
+import { normalizeSandboxBoundaryPath, type NormalizedSandboxBoundaryPath } from '../sandbox-boundary-path.js';
 import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
@@ -150,17 +153,24 @@ export class FilesystemWorkerClient {
     if (!parsedOperation.success) throw clientError('invalid_operation', 'validation', requestId);
 
     const access = operationAccess(parsedOperation.data.kind);
-    const target = await normalizeSandboxBoundaryPath({
-      path: parsedOperation.data.path,
-      access,
-      scope: operationScope(parsedOperation.data.kind),
-      cwd: canonicalCwd,
-      ...(parsedOperation.data.kind === 'delete' ||
+    const entryMode =
+      parsedOperation.data.kind === 'delete' ||
       parsedOperation.data.kind === 'lstat' ||
-      (parsedOperation.data.kind === 'write' && parsedOperation.data.mode)
-        ? { followFinalSymlink: false }
-        : {}),
-    }).catch(() => {
+      (parsedOperation.data.kind === 'write' && parsedOperation.data.mode);
+    const target = await (entryMode
+      ? normalizeDirectoryEntryTarget(
+          canonicalCwd,
+          parsedOperation.data.path,
+          access,
+          operationScope(parsedOperation.data.kind),
+        )
+      : normalizeSandboxBoundaryPath({
+          path: parsedOperation.data.path,
+          access,
+          scope: operationScope(parsedOperation.data.kind),
+          cwd: canonicalCwd,
+        }),
+    ).catch(() => {
       throw clientError('invalid_operation', 'validation', requestId);
     });
     const compiled =
@@ -177,7 +187,7 @@ export class FilesystemWorkerClient {
           : compilePermissionProfile({ mode: input.mode ?? 'ask', cwd: canonicalCwd });
     const effectiveProfile = compiled.profile;
     const platform = this.input.platform ?? process.platform;
-    const runtimeWritableRoots = await filesystemWorkerRuntimeWritableRoots({
+    const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
       platform,
       access,
       enforcementPath: target.enforcementPath,
@@ -437,46 +447,62 @@ export class FilesystemWorkerClient {
 }
 
 /** @internal Runtime-only widening for a trusted, single-operation worker. */
-export async function filesystemWorkerRuntimeWritableRoots(input: {
+export function filesystemWorkerRuntimeWritableRoots(input: {
   platform: SandboxPlatform;
   access: 'read' | 'write';
   enforcementPath: string;
   targetType: FilesystemWorkerTarget['targetType'];
-}): Promise<readonly string[] | undefined> {
+}): readonly string[] | undefined {
   if (input.platform !== 'linux' || input.access !== 'write' || input.targetType !== 'missing') {
     return undefined;
   }
-  // A create may need several missing parent directories. Grant the one
-  // trusted worker kernel access to the deepest existing ancestor of the
-  // target only; the worker still validates the exact operation boundary
-  // before mutating, and it can mkdir the remaining chain from that ancestor.
-  // This stays as narrow as the mkdir chain requires instead of widening
-  // every create-mode write (including the Write tool) to the whole session
-  // workspace root.
-  return [await deepestExistingAncestor(input.enforcementPath)];
+  // A create may need several parent directories. The worker still validates
+  // the exact operation boundary before mutating; this runtime-only root merely
+  // gives that one trusted worker enough kernel access to mkdir the path.
+  return [dirname(input.enforcementPath)];
 }
 
-async function deepestExistingAncestor(path: string): Promise<string> {
-  let cursor = path;
-  for (;;) {
-    try {
-      return await realpath(cursor);
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      const parent = dirname(cursor);
-      if (parent === cursor) return parent;
-      cursor = parent;
+
+/**
+ * Canonicalise a directory entry (Delete/Move operand, lstat probe,
+ * create-mode write) without following its final symlink: the parent chain
+ * resolves in realpath space and the leaf name is appended, matching the
+ * worker-side resolveDeleteOperandAllowed semantics. A link inside the root
+ * whose parent chain resolves outside still fails containment; the entry
+ * itself (file or link) stays addressable for lstat/unlink/create checks.
+ */
+async function normalizeDirectoryEntryTarget(
+  cwd: string,
+  path: string,
+  access: SandboxBoundaryAccess,
+  scope: SandboxBoundaryScope,
+): Promise<NormalizedSandboxBoundaryPath> {
+  const canonicalCwd = await fs.realpath(cwd);
+  const displayPath = resolve(canonicalCwd, path);
+  const parentReal = await realpathAllowMissing(dirname(displayPath));
+  const enforcementPath = resolve(parentReal, basename(displayPath));
+  return { displayPath, enforcementPath, access, scope, targetType: await entryTargetTypeOf(enforcementPath) };
+}
+
+async function entryTargetTypeOf(
+  path: string,
+): Promise<NormalizedSandboxBoundaryPath['targetType']> {
+  try {
+    const metadata = await fs.lstat(path);
+    if (metadata.isFile() || metadata.isSymbolicLink()) return 'file';
+    if (metadata.isDirectory()) return 'directory';
+    return 'other';
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+    ) {
+      return 'missing';
     }
+    throw error;
   }
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error.code === 'ENOENT' || error.code === 'ENOTDIR')
-  );
 }
 
 function deriveWorkerProfile(

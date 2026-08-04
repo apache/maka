@@ -248,10 +248,9 @@ async function run() {
         cwd: repoRoot,
       });
     }
-    await runChild('npm', ['run', 'prepare:cua-driver'], { cwd: repoRoot });
-    await runChild('npm', ['run', 'check:cua-driver-artifact'], { cwd: repoRoot });
+    await runChild('npm', ['run', 'prepare:maka-cu'], { cwd: repoRoot });
     if (driverOverride) {
-      await copyFile(driverOverride, join(repoRoot, 'apps/desktop/resources/bin/cua-driver'));
+      await copyFile(driverOverride, join(repoRoot, 'apps/desktop/resources/bin/maka-cu'));
     }
     await runChild('swiftc', [inputAgeSource, '-o', inputAgePath], {
       stdio: ['ignore', 'ignore', 'inherit'],

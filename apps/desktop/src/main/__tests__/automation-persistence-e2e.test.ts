@@ -1,13 +1,11 @@
 /**
  * End-to-end: durable cron persistence + cross-session query/management.
  *
- * Exercises the REAL host wiring (createMainAutomationWiring) against a REAL
- * FileAutomationStore on a real temp workspace, simulating an app restart:
+ * Exercises the real host wiring against the operational SQLite authority,
+ * simulating an app restart:
  *
- *   session A creates a durable cron  ──sync──►  <workspace>/automations.json
- *                                                        │
- *   (restart: a fresh wiring loads it) ◄──loadAll────────┘
- *                                                        │
+ *   session A creates a durable cron ──sync──► runtime.sqlite
+ *   (restart: a fresh wiring loads it) ◄──loadAll───────┘
  *   session B (never saw it) lists / pauses / resumes / deletes it
  *
  * This is the query-and-persistence loop the reviewer asked for: a persisted
@@ -18,10 +16,11 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it, before, after } from 'node:test';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MakaToolContext, MakaTool } from '@maka/runtime';
+import { createAutomationStore } from '@maka/storage';
 import { createMainAutomationWiring } from '../automation-wiring.js';
 
 function ctx(sessionId: string): MakaToolContext {
@@ -60,15 +59,13 @@ function automationTool(wiring: ReturnType<typeof makeWiring>): MakaTool {
 }
 
 async function readStore(workspaceRoot: string): Promise<Array<{ id: string; name: string }>> {
-  try {
-    const raw = await readFile(join(workspaceRoot, 'automations.json'), 'utf8');
-    return (JSON.parse(raw) as { automations: Array<{ id: string; name: string }> }).automations;
-  } catch {
-    return [];
-  }
+  return (await createAutomationStore(workspaceRoot).loadAll()).map(({ id, name }) => ({
+    id,
+    name,
+  }));
 }
 
-/** The store sync is fire-and-forget; poll the file until it settles. */
+/** Store sync is fire-and-forget; poll the authority until it settles. */
 async function waitForStore(
   workspaceRoot: string,
   predicate: (rows: Array<{ id: string; name: string }>) => boolean,
@@ -175,7 +172,7 @@ describe('E2E: durable cron persistence + cross-session query/management', () =>
 });
 
 describe('E2E: a cron-disabled host (CLI) sharing the workspace never clobbers durable crons', () => {
-  it('a heartbeat-only wiring neither loads nor overwrites the owner\'s automations.json', async () => {
+  it('a heartbeat-only wiring neither loads nor overwrites durable Automations', async () => {
     const ws = await mkdtemp(join(tmpdir(), 'maka-automation-clobber-'));
     try {
       // ── owner (cron-enabled, desktop) creates a durable cron ──────────────

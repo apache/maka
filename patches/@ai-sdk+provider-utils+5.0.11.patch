@@ -1,14 +1,158 @@
 diff --git a/node_modules/@ai-sdk/provider-utils/dist/index.js b/node_modules/@ai-sdk/provider-utils/dist/index.js
-index 851fce4..d16f64c 100644
+index 851fce4..2e78ce1 100644
 --- a/node_modules/@ai-sdk/provider-utils/dist/index.js
 +++ b/node_modules/@ai-sdk/provider-utils/dist/index.js
-@@ -3567,6 +3567,9 @@ var StreamingToolCallTracker = class {
+@@ -3537,6 +3537,9 @@ function resolveSync(value) {
+ import {
+   InvalidResponseDataError
+ } from "@ai-sdk/provider";
++function absentIfBlank(value) {
++  return value != null && value.trim() !== "" ? value : void 0;
++}
+ var StreamingToolCallTracker = class {
+   constructor(controller, options = {}) {
+     this.toolCalls = [];
+@@ -3554,26 +3557,75 @@ var StreamingToolCallTracker = class {
+    */
+   processDelta(toolCallDelta) {
+     var _a2;
+-    const index = (_a2 = toolCallDelta.index) != null ? _a2 : this.toolCalls.length;
+-    if (this.toolCalls[index] == null) {
+-      this.processNewToolCall(index, toolCallDelta);
+-    } else {
+-      this.processExistingToolCall(index, toolCallDelta);
++    const wireId = absentIfBlank(toolCallDelta.id);
++    const wireIndex = toolCallDelta.index != null ? toolCallDelta.index : void 0;
++    const wireName = absentIfBlank((_a2 = toolCallDelta.function) == null ? void 0 : _a2.name);
++    let toolCall = this.findByAlias(wireId, wireIndex, wireName);
++    if (toolCall == null && this.toolCalls.length === 1) {
++      const only = this.toolCalls[0];
++      if ((wireName === void 0 || only.function.name === wireName) && (wireId === void 0 || only.wireId === void 0) && (wireIndex === void 0 || only.index === void 0)) {
++        toolCall = only;
++      }
++    }
++    if (toolCall == null) {
++      this.processNewToolCall(toolCallDelta, wireId, wireIndex, wireName);
++      return;
++    }
++    if (wireId !== void 0) {
++      toolCall.wireId = wireId;
++    }
++    if (wireIndex !== void 0) {
++      toolCall.index = wireIndex;
+     }
++    this.processExistingToolCall(toolCall, toolCallDelta);
++  }
++  /**
++   * The most recent tool call this delta's aliases claim. An alias the candidate has not
++   * seen yet cannot disagree, so it neither matches nor rejects; at least one alias must
++   * actually match, which is why a delta carrying only arguments never resolves here.
++   *
++   * Scanning stops at the first call an alias claims, and a `function.name` that disagrees
++   * with that call rejects the delta rather than letting the scan continue. Continuing past
++   * it reaches a call whose claim on the alias a later call has already superseded, which
++   * files a whole new call as a continuation of one two positions back.
++   */
++  findByAlias(wireId, wireIndex, wireName) {
++    for (let position = this.toolCalls.length - 1; position >= 0; position--) {
++      const candidate = this.toolCalls[position];
++      let matched = false;
++      if (wireIndex !== void 0 && candidate.index !== void 0) {
++        if (candidate.index !== wireIndex) {
++          continue;
++        }
++        matched = true;
++      }
++      if (wireId !== void 0 && candidate.wireId !== void 0) {
++        if (candidate.wireId !== wireId) {
++          continue;
++        }
++        matched = true;
++      }
++      if (matched) {
++        return wireName !== void 0 && candidate.function.name !== wireName ? void 0 : candidate;
++      }
++    }
++    return void 0;
+   }
+   /**
+    * Finalize any unfinished tool calls. Should be called during the stream's
+    * flush handler to ensure all tool calls are properly completed.
     */
    flush() {
-     for (const toolCall of this.toolCalls) {
-+      if (toolCall == null) {
-+        continue;
-+      }
+-    for (const toolCall of this.toolCalls) {
++    const indices = this.toolCalls.map((toolCall) => toolCall.index);
++    const ordered = indices.every((index) => index !== void 0) && new Set(indices).size === indices.length ? [...this.toolCalls].sort((a, b) => a.index - b.index) : this.toolCalls;
++    for (const toolCall of ordered) {
        if (!toolCall.hasFinished) {
          this.finishToolCall(toolCall);
        }
+     }
+   }
+-  processNewToolCall(index, toolCallDelta) {
+-    var _a2, _b2, _c;
++  processNewToolCall(toolCallDelta, wireId, wireIndex, wireName) {
++    var _a2, _b2;
+     if (this.typeValidation === "required") {
+       if (toolCallDelta.type !== "function") {
+         throw new InvalidResponseDataError({
+@@ -3589,35 +3641,32 @@ var StreamingToolCallTracker = class {
+         });
+       }
+     }
+-    if (toolCallDelta.id == null) {
+-      throw new InvalidResponseDataError({
+-        data: toolCallDelta,
+-        message: `Expected 'id' to be a string.`
+-      });
+-    }
+-    if (((_a2 = toolCallDelta.function) == null ? void 0 : _a2.name) == null) {
++    if (wireName === void 0) {
+       throw new InvalidResponseDataError({
+         data: toolCallDelta,
+         message: `Expected 'function.name' to be a string.`
+       });
+     }
++    const mintedId = wireId === void 0 || this.toolCalls.some((candidate) => candidate.id === wireId) ? this._generateId() : wireId;
+     this.controller.enqueue({
+       type: "tool-input-start",
+-      id: toolCallDelta.id,
+-      toolName: toolCallDelta.function.name
++      id: mintedId,
++      toolName: wireName
+     });
+-    const metadata = (_b2 = this.extractMetadata) == null ? void 0 : _b2.call(this, toolCallDelta);
+-    this.toolCalls[index] = {
+-      id: toolCallDelta.id,
++    const metadata = (_a2 = this.extractMetadata) == null ? void 0 : _a2.call(this, toolCallDelta);
++    const toolCall = {
++      id: mintedId,
+       type: "function",
+       function: {
+-        name: toolCallDelta.function.name,
+-        arguments: (_c = toolCallDelta.function.arguments) != null ? _c : ""
++        name: wireName,
++        arguments: (_b2 = toolCallDelta.function.arguments) != null ? _b2 : ""
+       },
+       hasFinished: false,
+-      metadata
++      metadata,
++      wireId,
++      index: wireIndex
+     };
+-    const toolCall = this.toolCalls[index];
++    this.toolCalls.push(toolCall);
+     if (toolCall.function.arguments.length > 0) {
+       this.controller.enqueue({
+         type: "tool-input-delta",
+@@ -3626,9 +3675,8 @@ var StreamingToolCallTracker = class {
+       });
+     }
+   }
+-  processExistingToolCall(index, toolCallDelta) {
++  processExistingToolCall(toolCall, toolCallDelta) {
+     var _a2;
+-    const toolCall = this.toolCalls[index];
+     if (toolCall.hasFinished) {
+       return;
+     }

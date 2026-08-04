@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs';
 import { exec } from 'node:child_process';
 import { glob as nodeGlob } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve } from 'node:path';
-import { isPathInside } from './path-containment.js';
+import { isAbsolute, resolve } from 'node:path';
+import { isPathInside, realpathAllowMissing } from './path-containment.js';
 import { promisify } from 'node:util';
 import type { ToolExecutionFacts } from '@maka/core/permission';
 import { runProcessWithBoundedTail, runShellWithBoundedTail } from './shell-exec.js';
@@ -249,11 +249,16 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async resolveWritablePath(input: WorkspaceResolvePathInput): Promise<WorkspaceResolvePathResult> {
-    return { path: await resolveWritableInsideCwd(input.cwd, input.path, input.label) };
+    return { path: (await canonicalPathInsideCwd(input.cwd, input.path, input.label)).path };
   }
 
   async writeLockKey(input: WorkspaceWriteLockKeyInput): Promise<WorkspaceWriteLockKeyResult> {
-    return { key: resolve(await fs.realpath(input.cwd), input.path) };
+    // The resolvers' canonicalisation without their containment check, so every
+    // spelling of one file — relative, absolute, or through a symlink — takes
+    // the same lock. Escapes are rejected by the resolvers inside the lock, not
+    // here. Sharing the canonicalisation is what keeps the lock-key space and
+    // the resolved-path space from drifting apart.
+    return { key: (await canonicalPathUnderCwd(input.cwd, input.path)).path };
   }
 
   async globFiles(input: WorkspaceGlobInput): Promise<WorkspaceGlobResult> {
@@ -294,27 +299,36 @@ function shellEscape(arg: string): string {
   return `'${arg.replaceAll("'", "'\\''")}'`;
 }
 
-async function resolveWritableInsideCwd(
+/**
+ * Canonical session cwd and the canonical path `inputPath` names under it, with
+ * no containment check — the single place that decides which path space every
+ * caller works in. Both the root and the candidate are realpath'd, the candidate
+ * through its deepest existing ancestor since the target may not exist yet.
+ * Comparing a realpath'd root against a merely resolved candidate rejected every
+ * legitimate absolute path whenever the session cwd sat under a symlink — macOS
+ * tmpdirs (`/var` → `/private/var`) and symlinked workspace roots.
+ */
+async function canonicalPathUnderCwd(
+  cwd: string,
+  inputPath: string,
+): Promise<{ root: string; path: string }> {
+  const root = await fs.realpath(cwd);
+  const requested = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
+  return { root, path: await realpathAllowMissing(requested) };
+}
+
+/**
+ * The same canonical path, rejected unless it stays inside the session cwd.
+ * Following the symlinks does not weaken containment: a link inside the cwd that
+ * points out of it resolves to its outside target and is rejected.
+ */
+async function canonicalPathInsideCwd(
   cwd: string,
   inputPath: string,
   label: string,
-): Promise<string> {
-  const root = await fs.realpath(cwd);
-  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
-
-  if (!isPathInside(root, candidate)) {
-    throw new Error(
-      `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
-        `received ${JSON.stringify(inputPath)}.`,
-    );
-  }
-
-  const parent = await fs.realpath(dirname(candidate));
-  if (!isPathInside(root, parent)) {
-    throw new Error(`${label} path must stay inside session cwd`);
-  }
-
-  return candidate;
+): Promise<{ root: string; path: string }> {
+  const { root, path } = await canonicalPathUnderCwd(cwd, inputPath);
+  return { root, path: assertInsideCwd(root, path, inputPath, label) };
 }
 
 async function resolveExistingInsideCwd(
@@ -322,20 +336,29 @@ async function resolveExistingInsideCwd(
   inputPath: string,
   label: string,
 ): Promise<string> {
-  const root = await fs.realpath(cwd);
-  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
+  const { root, path: candidate } = await canonicalPathInsideCwd(cwd, inputPath, label);
+  // The read/search callers depend on the target existing; surface that here
+  // rather than as a downstream open/spawn failure.
+  //
+  // Do not drop the second assertion: it closes the window between the two
+  // awaits, where a segment that was missing during canonicalisation can become
+  // a symlink out of the cwd before the realpath runs. It is deliberately
+  // defence-in-depth and no deterministic test can drive that race, so nothing
+  // will fail if it is removed.
+  return assertInsideCwd(root, await fs.realpath(candidate), inputPath, label);
+}
 
+function assertInsideCwd(
+  root: string,
+  candidate: string,
+  inputPath: string,
+  label: string,
+): string {
   if (!isPathInside(root, candidate)) {
     throw new Error(
       `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
-        `received ${JSON.stringify(inputPath)}.`,
+        `received ${JSON.stringify(inputPath)}, which resolves to ${JSON.stringify(candidate)}.`,
     );
   }
-
-  const target = await fs.realpath(candidate);
-  if (!isPathInside(root, target)) {
-    throw new Error(`${label} path must stay inside session cwd`);
-  }
-
-  return target;
+  return candidate;
 }

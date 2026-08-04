@@ -11,7 +11,7 @@ import type {
   TokenUsageMessage,
 } from '@maka/core';
 import {
-  computerUseApprovalSummary,
+  computerUseModelCallArgs,
   decodeCanonicalToolResultContent,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
 } from '@maka/core';
@@ -453,9 +453,21 @@ export class PiAgentBackend implements AgentBackend {
   }
 }
 
+/**
+ * The args written into the persisted `tool_call` message and the `tool_start`
+ * event — the record of the call the model reads back on its next turn.
+ *
+ * Computer Use used the host's approval summary here. That projection exists to
+ * decide and display a permission: it renames `window_id` to `windowId`, adds
+ * `approvalClass` and `rememberForTurnAllowed`, and drops every argument it does
+ * not need. None of that is what the model sent, so the model's own history
+ * showed it calling `maka_computer` in a dialect the tool rejects, with the key
+ * or value it had chosen missing. `computerUseModelCallArgs` keeps the same
+ * privacy boundary and speaks the tool's own argument names.
+ */
 function projectPiToolArgs(toolName: string, args: unknown): unknown {
   const projected =
-    toolName === 'maka_computer' ? computerUseApprovalSummary(args) : redactUnknown(args);
+    toolName === 'maka_computer' ? computerUseModelCallArgs(args) : redactUnknown(args);
   return structuredClone(projected);
 }
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +17,233 @@ const connectionContext: ConnectionContext = {
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
+
+test('Artifact ingest is connection-bound, replay-safe, and commits one durable AttachmentRef', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-ingest-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await store.recover();
+    let now = 0;
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('successful ingest must not request Host drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      () => now,
+    );
+    const bytes = Buffer.from('host-owned attachment bytes');
+    const begin = {
+      kind: 'begin' as const,
+      sessionId: 'session-1',
+      uploadId: 'upload-1',
+      name: 'dir/fixture.txt',
+      mimeType: 'text/plain',
+      totalBytes: bytes.byteLength,
+      contentSha256: digest(bytes),
+    };
+    assert.deepEqual(await coordinator.handlers['artifact.ingest'](begin, connectionContext), {
+      ok: true,
+      result: { kind: 'upload_opened', uploadId: 'upload-1', nextOffset: 0 },
+    });
+    const first = bytes.subarray(0, 8);
+    const firstChunk = {
+      kind: 'chunk' as const,
+      sessionId: 'session-1',
+      uploadId: 'upload-1',
+      offset: 0,
+      chunkBase64: first.toString('base64'),
+    };
+    const firstAccepted = {
+      ok: true as const,
+      result: { kind: 'chunk_accepted' as const, uploadId: 'upload-1', nextOffset: first.length },
+    };
+    assert.deepEqual(
+      await coordinator.handlers['artifact.ingest'](firstChunk, connectionContext),
+      firstAccepted,
+    );
+    assert.deepEqual(
+      await coordinator.handlers['artifact.ingest'](firstChunk, connectionContext),
+      firstAccepted,
+    );
+    assert.deepEqual(
+      await coordinator.handlers['artifact.ingest'](firstChunk, {
+        ...connectionContext,
+        connectionId: 'connection-2',
+      }),
+      {
+        ok: false,
+        error: { code: 'not_found', message: 'Attachment upload was not found' },
+      },
+    );
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.ingest'](
+          {
+            kind: 'chunk',
+            sessionId: 'session-1',
+            uploadId: 'upload-1',
+            offset: first.length,
+            chunkBase64: bytes.subarray(first.length).toString('base64'),
+          },
+          connectionContext,
+        )
+      ).ok,
+      true,
+    );
+    const committed = await coordinator.handlers['artifact.ingest'](
+      { kind: 'commit', sessionId: 'session-1', uploadId: 'upload-1' },
+      connectionContext,
+    );
+    assert.equal(committed.ok, true);
+    if (!committed.ok || committed.result.kind !== 'committed') return;
+    assert.equal(committed.result.attachment.ref.kind, 'session_file');
+    if (committed.result.attachment.ref.kind !== 'session_file') return;
+    const artifactId = committed.result.attachment.ref.relativePath;
+    assert.deepEqual(committed.result.attachment, {
+      kind: 'other',
+      name: 'dir-fixture.txt',
+      mimeType: 'text/plain',
+      bytes: bytes.byteLength,
+      ref: {
+        kind: 'session_file',
+        sessionId: 'session-1',
+        relativePath: artifactId,
+      },
+    });
+    assert.deepEqual(
+      await store.readTextInSession('session-1', artifactId, { maxBytes: bytes.byteLength }),
+      { ok: true, text: bytes.toString('utf8') },
+    );
+    assert.deepEqual(
+      await coordinator.handlers['artifact.ingest'](
+        { kind: 'commit', sessionId: 'session-1', uploadId: 'upload-1' },
+        { ...connectionContext, connectionId: 'connection-after-reconnect' },
+      ),
+      committed,
+    );
+    assert.deepEqual(
+      await coordinator.handlers['artifact.ingest'](begin, {
+        ...connectionContext,
+        connectionId: 'connection-after-reconnect',
+      }),
+      committed,
+    );
+    const mismatchedBegin = {
+      ...begin,
+      uploadId: 'upload-digest-mismatch',
+      contentSha256: `sha256:${'0'.repeat(64)}` as const,
+    };
+    assert.equal(
+      (await coordinator.handlers['artifact.ingest'](mismatchedBegin, connectionContext)).ok,
+      true,
+    );
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.ingest'](
+          {
+            kind: 'chunk',
+            sessionId: 'session-1',
+            uploadId: mismatchedBegin.uploadId,
+            offset: 0,
+            chunkBase64: bytes.toString('base64'),
+          },
+          connectionContext,
+        )
+      ).ok,
+      true,
+    );
+    assert.deepEqual(
+      await coordinator.handlers['artifact.ingest'](
+        { kind: 'commit', sessionId: 'session-1', uploadId: mismatchedBegin.uploadId },
+        connectionContext,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'Attachment content digest does not match',
+        },
+      },
+    );
+    assert.deepEqual(
+      await coordinator.handlers['artifact.ingest'](
+        { kind: 'commit', sessionId: 'session-1', uploadId: mismatchedBegin.uploadId },
+        connectionContext,
+      ),
+      {
+        ok: false,
+        error: { code: 'not_found', message: 'Attachment upload was not found' },
+      },
+    );
+    assert.equal((await store.listPage('session-1', { offset: 0, limit: 10 })).records.length, 1);
+
+    const ttlMs = 5 * 60 * 1000;
+    const ttlBegin = {
+      ...begin,
+      uploadId: 'upload-ttl-conflict',
+      totalBytes: 1,
+      contentSha256: digest(Buffer.from('x')),
+    };
+    const exactReplayBegin = { ...ttlBegin, uploadId: 'upload-ttl-exact' };
+    assert.equal(
+      (await coordinator.handlers['artifact.ingest'](ttlBegin, connectionContext)).ok,
+      true,
+    );
+    assert.equal(
+      (await coordinator.handlers['artifact.ingest'](exactReplayBegin, connectionContext)).ok,
+      true,
+    );
+    now = ttlMs - 1;
+    const conflictingReplay = await coordinator.handlers['artifact.ingest'](
+      { ...ttlBegin, name: 'different.txt' },
+      connectionContext,
+    );
+    assert.equal(conflictingReplay.ok, false);
+    if (!conflictingReplay.ok) assert.equal(conflictingReplay.error.code, 'operation_conflict');
+    assert.equal(
+      (await coordinator.handlers['artifact.ingest'](exactReplayBegin, connectionContext)).ok,
+      true,
+    );
+    now = ttlMs;
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.ingest'](
+          {
+            kind: 'chunk',
+            sessionId: 'session-1',
+            uploadId: ttlBegin.uploadId,
+            offset: 0,
+            chunkBase64: Buffer.from('x').toString('base64'),
+          },
+          connectionContext,
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.ingest'](
+          {
+            kind: 'chunk',
+            sessionId: 'session-1',
+            uploadId: exactReplayBegin.uploadId,
+            offset: 0,
+            chunkBase64: Buffer.from('x').toString('base64'),
+          },
+          connectionContext,
+        )
+      ).ok,
+      true,
+    );
+    await store.close();
+  } finally {
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('Artifact mutation failure requests Host drain and fails closed', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-coordinator-'));
@@ -63,8 +291,34 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       },
     );
     assert.equal(drainRequests, 1);
+    assert.deepEqual(
+      await coordinator.handlers['artifact.ingest'](
+        {
+          kind: 'begin',
+          sessionId: 'session-1',
+          uploadId: 'upload-after-close',
+          name: 'fixture.txt',
+          mimeType: 'text/plain',
+          totalBytes: 1,
+          contentSha256: `sha256:${'0'.repeat(64)}`,
+        },
+        connectionContext,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'persistence_failed',
+          message: 'Attachment publication failed',
+        },
+      },
+    );
+    assert.equal(drainRequests, 2);
   } finally {
     await owner.close();
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function digest(bytes: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}

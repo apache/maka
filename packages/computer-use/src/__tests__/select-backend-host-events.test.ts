@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { CuDispatchBackend } from '@maka/runtime';
-import type { CuaDriverBackendOptions } from '../cua-driver-backend.js';
+import type { MakaCuBackendOptions } from '../maka-cu-backend.js';
 import { selectComputerUseBackend } from '../select-backend.js';
 
 test('service invalidation producer advances Runtime to reobserve', async () => {
@@ -27,7 +27,7 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
     },
   };
   const selected = selectComputerUseBackend({
-    binaryPath: '/tmp/fake-cua-driver',
+    binaryPath: '/tmp/fake-executor',
     expectedBinarySha256: '0'.repeat(64),
     createBackend(options) {
       invalidate = options.onSessionInvalidated as typeof invalidate;
@@ -62,7 +62,7 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
 test('physical input policy is passed to the selected backend', () => {
   if (process.platform !== 'darwin') return;
   const physicalInputRecentlyActive = () => true;
-  let received: CuaDriverBackendOptions['physicalInputRecentlyActive'];
+  let received: MakaCuBackendOptions['physicalInputRecentlyActive'];
   const backend: CuDispatchBackend = {
     async preflight() {
       return { accessibility: true, screenRecording: true };
@@ -72,7 +72,7 @@ test('physical input policy is passed to the selected backend', () => {
     },
   };
   selectComputerUseBackend({
-    binaryPath: '/tmp/fake-cua-driver',
+    binaryPath: '/tmp/fake-executor',
     expectedBinarySha256: '0'.repeat(64),
     physicalInputRecentlyActive,
     createBackend(options) {

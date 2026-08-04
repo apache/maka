@@ -43,6 +43,10 @@ const ALLOW = new Map([
     'startup chain diagnostics (e2e-fixture fatal/scenario, window create failure, repair/cleanup paths); no secrets (moved from main.ts, PR1880).',
   ],
   [
+    'apps/desktop/src/main/startup-step.ts',
+    'names a startup step that has not come back, before any window exists to show it in; a step name and no secrets.',
+  ],
+  [
     'apps/desktop/src/main/app-lifecycle.ts',
     'startup/shutdown diagnostics (dock icon, credential migration, e2e-fixture marker, cleanup failures); no secrets (moved from main.ts, arch R6).',
   ],
@@ -107,6 +111,10 @@ const ALLOW = new Map([
     'login-shell PATH resolution diagnostics at startup (PATH-entry count and sanitized failure reason); non-fatal, no shell-controlled output.',
   ],
   ['scripts/check-console.mjs', 'this script — explicit allow.'],
+  [
+    'apps/desktop/src/main/computer-use/pip-electron.ts',
+    'picture-in-picture load failure: the one state that is otherwise silent and invisible; logs the overlay asset path and the Chromium error code only.',
+  ],
   [
     'apps/desktop/src/main/automation-wiring.ts',
     'best-effort sync warning when durable automation persistence fails.',

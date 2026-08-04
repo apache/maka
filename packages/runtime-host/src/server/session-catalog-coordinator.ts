@@ -39,6 +39,7 @@ import {
   type SessionCatalogRevision,
   type SessionConfigurationUpdateInput,
   type SessionCreateInput,
+  type SessionCwdRelocateInput,
   type SessionMetadataUpdateInput,
   type SessionModelTarget,
   type SessionReadMarkerSetInput,
@@ -65,7 +66,10 @@ type SessionRuntimePolicyStores = {
   readonly operations: Pick<RuntimePolicyStoresWriter['operations'], 'resolveExecutionConnection'>;
 };
 
-type SessionConfigurationAuthority = Pick<SessionManager, 'transitionSessionConfiguration'>;
+type SessionConfigurationAuthority = Pick<
+  SessionManager,
+  'transitionSessionConfiguration' | 'relocateSessionWorkspace'
+>;
 type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
 
 type SessionOperationFailureCode =
@@ -105,6 +109,7 @@ export class HostSessionCatalogCoordinator {
     'session.create': (input) => this.#create(input),
     'session.metadata.update': (input) => this.#updateMetadata(input),
     'session.configuration.update': (input) => this.#updateConfiguration(input),
+    'session.cwd.relocate': (input) => this.#relocateCwd(input),
     'session.read_marker.set': (input) => this.#setReadMarker(input),
   };
 
@@ -356,6 +361,55 @@ export class HostSessionCatalogCoordinator {
           input,
           error,
           'Session configuration update outcome is unknown',
+        );
+      }
+    });
+  }
+
+  async #relocateCwd(
+    input: SessionCwdRelocateInput,
+  ): Promise<OperationOutcome<'session.cwd.relocate'>> {
+    let cwd: string;
+    try {
+      if (!isAbsolute(input.cwd)) {
+        throw new SessionOperationFailure('invalid_request', 'Session cwd must be absolute');
+      }
+      cwd = await canonicalSessionDirectory(input.cwd);
+    } catch (error) {
+      return cwdFailure(
+        error instanceof SessionOperationFailure ? error.code : 'invalid_request',
+        error instanceof Error ? error.message : 'Session cwd is invalid',
+      );
+    }
+    return this.#admission.run(input.sessionId, async (lease) => {
+      let commitAttempted = false;
+      try {
+        const current = await this.#stores.readHeaderRecordSnapshot(input.sessionId);
+        if (current.revision !== input.expectedRevision) {
+          return cwdSuccess(revisionConflict(input.expectedRevision, current.revision));
+        }
+        commitAttempted = true;
+        await this.#manager.relocateSessionWorkspace(input.sessionId, {
+          expectedRevision: input.expectedRevision,
+          cwd,
+        });
+        return cwdSuccess(await this.#committedUpdate(input.sessionId, lease));
+      } catch (error) {
+        if (isNotFound(error)) return cwdFailure('not_found', 'Session does not exist');
+        if (error instanceof SessionConfigurationRevisionConflictError) {
+          return cwdSuccess(revisionConflict(input.expectedRevision, error.actualRevision));
+        }
+        if (error instanceof SessionConfigurationTransitionError) {
+          return cwdFailure(error.code, error.message);
+        }
+        if (!commitAttempted) {
+          this.#requestDrain();
+          return cwdFailure('persistence_failed', 'Session workspace authority is unavailable');
+        }
+        this.#requestDrain();
+        return cwdFailure(
+          'commit_outcome_unknown',
+          'Session workspace relocation outcome is unknown',
         );
       }
     });
@@ -943,6 +997,10 @@ function configurationSuccess(
   return { ok: true, result };
 }
 
+function cwdSuccess(result: SessionUpdateResult): OperationOutcome<'session.cwd.relocate'> {
+  return { ok: true, result };
+}
+
 function createFailure(
   code: OperationError<'session.create'>['code'],
   message: string,
@@ -968,6 +1026,13 @@ function configurationFailure(
   code: OperationError<'session.configuration.update'>['code'],
   message: string,
 ): Extract<OperationOutcome<'session.configuration.update'>, { readonly ok: false }> {
+  return { ok: false, error: { code, message } };
+}
+
+function cwdFailure(
+  code: OperationError<'session.cwd.relocate'>['code'],
+  message: string,
+): Extract<OperationOutcome<'session.cwd.relocate'>, { readonly ok: false }> {
   return { ok: false, error: { code, message } };
 }
 

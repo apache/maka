@@ -626,6 +626,170 @@ test('two Clients share one execution after the starting Client disconnects', as
   });
 });
 
+test('regenerate replays the durable source content with one recoverable root identity', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root, 'tui');
+    const sourceTurnId = randomUUID();
+    const regeneratedTurnId = randomUUID();
+    try {
+      await client.startTurn(
+        {
+          sessionId: fixture.sessionId,
+          turnId: sourceTurnId,
+          content: quotedContent('repeat this request'),
+        },
+        PROCESS_TIMEOUT_MS,
+      );
+      await waitForTerminalTurn(client, fixture.sessionId, sourceTurnId);
+
+      const started = await client.regenerateTurn(
+        {
+          sessionId: fixture.sessionId,
+          sourceTurnId,
+          turnId: regeneratedTurnId,
+        },
+        PROCESS_TIMEOUT_MS,
+      );
+      const terminal = await waitForTerminalTurn(client, fixture.sessionId, regeneratedTurnId);
+      assert.equal(terminal.runId, started.runId);
+      assert.deepEqual(
+        await client.regenerateTurn({
+          sessionId: fixture.sessionId,
+          sourceTurnId,
+          turnId: regeneratedTurnId,
+        }),
+        terminal,
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+
+    const ledger = await fixture.readTurn(regeneratedTurnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.userMessages.length, 1);
+    assert.equal(ledger.runs[0]?.parentTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.regeneratedFromTurnId, sourceTurnId);
+    assert.deepEqual(
+      {
+        text: ledger.userMessages[0]?.text,
+        quotes: ledger.userMessages[0]?.quotes,
+      },
+      quotedContent('repeat this request'),
+    );
+  });
+});
+
+test('regenerate rejects self-source and legacy target collisions without draining Host', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const firstHost = await fixture.startHost();
+    const first = await connectClient(fixture.root, 'tui');
+    const sourceTurnId = randomUUID();
+    await first.startTurn({
+      sessionId: fixture.sessionId,
+      turnId: sourceTurnId,
+      content: { text: 'source request' },
+    });
+    await waitForTerminalTurn(first, fixture.sessionId, sourceTurnId);
+    await assert.rejects(
+      first.regenerateTurn({
+        sessionId: fixture.sessionId,
+        sourceTurnId,
+        turnId: sourceTurnId,
+      }),
+      operationError('operation_conflict'),
+    );
+    await first.close();
+    await fixture.stopHost(firstHost);
+
+    const legacy = await fixture.seedSafeBoundaryContinuationSource();
+    const secondHost = await fixture.startHost();
+    const second = await connectClient(fixture.root, 'desktop');
+    try {
+      await assert.rejects(
+        second.regenerateTurn({
+          sessionId: fixture.sessionId,
+          sourceTurnId,
+          turnId: legacy.sourceTurnId,
+        }),
+        operationError('operation_conflict'),
+      );
+      const followingTurnId = randomUUID();
+      await second.startTurn({
+        sessionId: fixture.sessionId,
+        turnId: followingTurnId,
+        content: { text: 'Host remains available' },
+      });
+      assert.equal(
+        (await waitForTerminalTurn(second, fixture.sessionId, followingTurnId)).status,
+        'completed',
+      );
+    } finally {
+      await second.close();
+      await fixture.stopHost(secondHost);
+    }
+    assert.deepEqual(await fixture.readTurnFootprint(legacy.sourceTurnId), {
+      admitted: false,
+      runCount: 1,
+      userMessageCount: 0,
+    });
+  });
+});
+
+test('context actions share root admission and expose backend capability honestly', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const first = await connectClient(fixture.root, 'desktop');
+    const second = await connectClient(fixture.root, 'tui');
+    const turnId = randomUUID();
+    const unavailableTurnId = randomUUID();
+    try {
+      assert.deepEqual(await first.queryContextDiagnostics({ sessionId: fixture.sessionId }), {
+        status: 'unavailable',
+        reason: 'no_completed_request',
+      });
+      const started = await first.startTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      });
+      await waitForRunningTurn(second, fixture.sessionId, turnId);
+      await assert.rejects(
+        second.compactContext({
+          sessionId: fixture.sessionId,
+          turnId: randomUUID(),
+        }),
+        operationError('session_busy'),
+      );
+      await second.stopTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        runId: started.runId,
+      });
+      await assert.rejects(
+        second.compactContext({
+          sessionId: fixture.sessionId,
+          turnId: unavailableTurnId,
+        }),
+        operationError('operation_unavailable'),
+      );
+      await assert.rejects(
+        second.queryContextDiagnostics({ sessionId: 'missing-session' }),
+        operationError('not_found'),
+      );
+    } finally {
+      await Promise.allSettled([first.close(), second.close()]);
+      await fixture.stopHost(host);
+    }
+    assert.deepEqual(await fixture.readTurnFootprint(unavailableTurnId), {
+      admitted: false,
+      runCount: 0,
+      userMessageCount: 0,
+    });
+  });
+});
+
 test('a disconnected Client leaves a durable Interaction that another Client can answer', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();

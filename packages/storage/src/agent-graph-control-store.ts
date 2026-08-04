@@ -9,9 +9,8 @@ import {
 } from './sqlite-session-metadata-store.js';
 
 /**
- * Open the metadata repository owned by the operational database. Session
- * JSONL remains the transcript-body authority; graph schedule/topology/claim
- * relationships are canonical in runtime.sqlite.
+ * Open the graph-control repository owned by the operational database.
+ * Session messages and graph state share runtime.sqlite as one authority.
  */
 export function createAgentGraphControlStore(workspaceRoot: string): SqliteSessionMetadataStore {
   const databaseLease = acquireOperationalStateDatabase(workspaceRoot);

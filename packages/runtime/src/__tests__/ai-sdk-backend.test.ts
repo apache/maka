@@ -75,6 +75,7 @@ import type {
   ProviderRequestCaptureRecord,
 } from '../provider-request-telemetry.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
+import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 describe('AiSdkBackend model history', () => {
@@ -180,7 +181,7 @@ describe('AiSdkBackend model history', () => {
       newId: idGenerator(),
       now: monotonicClock(),
     });
-    (backend as unknown as { currentRunTrace: RunTrace | null }).currentRunTrace = new RunTrace({
+    turnScope(backend, 'turn-1').runTrace = new RunTrace({
       sessionId: 'session-1',
       turnId: 'turn-1',
       connectionSlug: 'anthropic-main',
@@ -5404,6 +5405,22 @@ describe('AiSdkBackend model history', () => {
     });
     const recorded: HistoryCompactCheckpoint[] = [];
     const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
+    const modelCalls: ModelCallAttempt[] = [];
+    const meteredSummarize = buildLlmHistorySummarizer({
+      resolveModel: () =>
+        new MockLanguageModelV4({
+          doGenerate: {
+            content: [{ type: 'text', text: 'V2_ROLLED_SUMMARY' }],
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 11, noCache: 11, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 3, text: 3, reasoning: 0 },
+              raw: { input_tokens: 11, output_tokens: 3 },
+            },
+            warnings: [],
+          },
+        }) as never,
+    });
     const firstModel = completionModel();
     const firstBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -5428,26 +5445,42 @@ describe('AiSdkBackend model history', () => {
         },
       },
       loadHistoryCompactCheckpoint: () => previous,
+      // Metered through the canonical seam, not stubbed: the startup fold's run
+      // attribution only exists on a real provider request.
       summarizeHistoryCompact: async (input) => {
         summaryInputs.push({
           previous: input.previousCheckpoint?.summary,
           newlyFoldedIds: (input.newlyFoldedRuntimeEvents ?? []).map((event) => event.id),
         });
-        return 'V2_ROLLED_SUMMARY';
+        return await meteredSummarize(input);
       },
       recordHistoryCompactCheckpoint: (checkpoint) => {
         recorded.push(checkpoint);
+      },
+      recordModelCallAttempt: (attempt) => {
+        modelCalls.push(attempt);
       },
     });
 
     await drain(
       firstBackend.send({
         turnId: 'turn-current',
+        runId: 'run-current',
         text: 'continue',
         context: [],
         runtimeContext: [...oldEvents, recent],
       }),
     );
+
+    // The startup fold is billed to the run whose send triggered it. Nothing
+    // else catches a dropped run id here: usage accounting discards an
+    // unattributed record without an error (#1990).
+    const startupFold = modelCalls
+      .map((attempt) => decodeModelCallAttempt(attempt))
+      .find((attempt) => attempt.callKind === 'history_compact');
+    assert.ok(startupFold, 'the startup fold must settle a canonical record');
+    assert.equal(startupFold.runId, 'run-current');
+    assert.equal(startupFold.turnId, 'turn-current');
 
     assert.deepEqual(summaryInputs, [
       { previous: 'V2_PREVIOUS_SUMMARY', newlyFoldedIds: ['v2-old-2'] },
@@ -6787,7 +6820,7 @@ describe('AiSdkBackend error surfaces', () => {
       now: () => 1,
     });
 
-    await (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime.writeSyntheticToolResult(
+    await turnScope(backend, 'turn-1').toolRuntime.writeSyntheticToolResult(
       'tool-1',
       'turn-1',
       'failed with api_key=sk-live-secret-token-value',
@@ -10054,18 +10087,8 @@ describe('AiSdkBackend RunTrace', () => {
       newId: idGenerator(),
       now: monotonicClock(),
     });
-    (
-      backend as unknown as {
-        currentTurnId: string;
-        currentRunTrace: { abortRequested(reason: string): void };
-      }
-    ).currentTurnId = 'turn-1';
-    (
-      backend as unknown as {
-        currentRunTrace: { abortRequested(reason: string): void };
-      }
-    ).currentRunTrace = {
-      abortRequested: (reason) => {
+    turnScope(backend, 'turn-1').runTrace = {
+      abortRequested: (reason: string) => {
         trace.push({
           id: 'trace-1',
           sessionId: 'session-1',
@@ -10077,7 +10100,7 @@ describe('AiSdkBackend RunTrace', () => {
           data: { reason },
         });
       },
-    };
+    } as unknown as RunTrace;
 
     await backend.stop('redirect');
 
@@ -10345,11 +10368,7 @@ describe('AiSdkBackend tool execution', () => {
     });
     let pauseCount = 0;
     let resumeCount = 0;
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = {
+    turnScope(backend, 'turn-1').watchdog = {
       pause: () => {
         pauseCount += 1;
       },
@@ -10412,11 +10431,7 @@ describe('AiSdkBackend tool execution', () => {
     });
     let pauseCount = 0;
     let resumeCount = 0;
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = {
+    turnScope(backend, 'turn-1').watchdog = {
       pause: () => {
         pauseCount += 1;
       },
@@ -10770,9 +10785,84 @@ describe('AiSdkBackend tool-call repair', () => {
   });
 });
 
-describe('AiSdkBackend loop-gate turn wiring', () => {
-  test('send() resets ToolRuntime per turn (at turn start and at cleanup)', async () => {
-    const model = completionModel();
+describe('AiSdkBackend concurrent turns', () => {
+  // #1990: RuntimeKernel reuses one backend per Session and lets one generation
+  // hold several concurrent runs. A finishing turn used to clear the backend's
+  // shared "current run", so an overlapping turn's next tool call committed
+  // against no run at all and the whole turn died with "Operation failed".
+  test('a finishing turn does not strip the run identity of an overlapping turn', async () => {
+    const first = durableTurnHarness('turn-a', 'first', {
+      runId: 'run-a',
+      invocationId: 'invocation-a',
+    });
+    const second = durableTurnHarness('turn-b', 'second', {
+      runId: 'run-b',
+      invocationId: 'invocation-b',
+    });
+    const ledgers = new Map([
+      ['turn-a', first],
+      ['turn-b', second],
+    ]);
+    const preparedRunIds: Array<string | undefined> = [];
+    const executions: string[] = [];
+    // The overlapping turn must reach its tool AFTER the other turn is fully
+    // torn down: run identity was read at dispatch, so that is the window the
+    // crash lived in. Holding the provider stream (not the tool body) is what
+    // puts the tool call on the far side of the other turn's cleanup.
+    const firstTurnDone = makeGate();
+    const overlappingStreamStarted = makeGate();
+
+    let servedToolCall = false;
+    const model = new MockLanguageModelV4({
+      doStream: async ({ prompt }) => {
+        const servesOverlappingTurn = !servedToolCall && JSON.stringify(prompt).includes('second');
+        if (servesOverlappingTurn) {
+          servedToolCall = true;
+          overlappingStreamStarted.release();
+          await firstTurnDone.promise;
+        }
+        const chunks: LanguageModelV4StreamPart[] = servesOverlappingTurn
+          ? [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: 'tool-b',
+                toolName: 'Read',
+                input: JSON.stringify({ path: 'b.md' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 0, reasoning: 0 },
+                },
+              },
+            ]
+          : [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'done' },
+              { type: 'text-end', id: 'text-1' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -10781,31 +10871,204 @@ describe('AiSdkBackend loop-gate turn wiring', () => {
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
       modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async ({ path }: { path: string }) => {
+            executions.push(path);
+            return { body: path };
+          },
+        },
+      ],
+      runtimeCommitSink: {
+        commitToolPrepared: async ({ runtimeEvent }) => {
+          preparedRunIds.push(runtimeEvent.runId);
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+      },
+      loadTurnRuntimeEvents: async (turnId: string) =>
+        (ledgers.get(turnId) ?? first).loadTurnRuntimeEvents(turnId),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const overlapping = drainDurably(
+      backend.send(second.input({ runId: 'run-b', invocationId: 'invocation-b' })),
+      second,
+    );
+    // Let the overlapping turn park mid-stream, run the other turn to completion
+    // on the SAME backend, then release the tool call into that aftermath.
+    await overlappingStreamStarted.promise;
+    await drainDurably(
+      backend.send(first.input({ runId: 'run-a', invocationId: 'invocation-a' })),
+      first,
+    );
+    firstTurnDone.release();
+    const events = await overlapping;
+
+    assert.deepEqual(executions, ['b.md']);
+    assert.deepEqual(preparedRunIds, ['run-b']);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+      'the overlapping turn must not fail when a sibling turn finishes',
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    // Both turns are done, so neither left a scope behind for a later turn to
+    // inherit — the leak that would reintroduce shared per-turn state.
+    assert.equal(backendInternals(backend).activeTurns.size, 0);
+  });
+
+  // A scope that reaches activeTurns must always leave it. Setup runs before the
+  // provider pump exists, and a throw there used to strand the scope forever:
+  // nothing overwrites a Set entry, and stop()/dispose() only iterate.
+  test('a send that throws during setup leaves no scope registered', async () => {
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    // Spy on the real ToolRuntime the backend already constructed, counting how
-    // many times send() resets it during one completed turn.
-    const runtime = (backend as unknown as { toolRuntime: { resetTurnState: () => void } })
-      .toolRuntime;
-    const original = runtime.resetTurnState.bind(runtime);
-    let resets = 0;
-    runtime.resetTurnState = () => {
-      resets += 1;
-      original();
+    await assert.rejects(
+      drain(
+        backend.send({
+          turnId: 'turn-1',
+          text: 'hi',
+          context: [],
+          // A hosted Interaction Run for a different turn: beginTurn refuses it,
+          // and it throws before anything installs the turn's own cleanup.
+          hostedInteraction: {
+            sessionId: 'session-1',
+            turnId: 'a-different-turn',
+          } as never,
+        }),
+      ),
+      /mismatched hosted Interaction Run/,
+    );
+
+    assert.equal(backendInternals(backend).activeTurns.size, 0);
+    // And the backend is still usable: a leaked scope would pin dispose() to the
+    // stop path and broadcast endTurn to a dead runtime forever.
+    await backend.dispose();
+  });
+
+  // A broadcast stop must reach every turn even when one of them cannot close.
+  // `endTurn` rejects when a durable sandbox denial cannot be written, and it is
+  // also the ONLY thing that rejects a tool parked on askUserQuestion — an abort
+  // signal does not wake the registry. So a stop that bails on the first failure
+  // parks the sibling forever: that turn's own send() cleanup is itself waiting
+  // on the tool the skipped endTurn was supposed to reject.
+  test('stop() closes every turn even when one turn fails to close', async () => {
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const aborted: string[] = [];
+    const endedTurns: string[] = [];
+    for (const turnId of ['turn-a', 'turn-b']) {
+      const scope = turnScope(backend, turnId);
+      scope.runTrace = {
+        emit: () => {},
+        abortRequested: () => aborted.push(turnId),
+      } as unknown as RunTrace;
+    }
+    // The first turn cannot complete teardown; the second parks on a question
+    // that only its own endTurn can reject.
+    const failing = turnScope(backend, 'turn-a');
+    const endFailingTurn = failing.toolRuntime.endTurn.bind(failing.toolRuntime);
+    failing.toolRuntime.endTurn = async (reason) => {
+      endedTurns.push(failing.turnId);
+      await endFailingTurn(reason);
+      throw new Error('Could not durably deny every sandbox boundary request');
+    };
+    const parked = turnScope(backend, 'turn-b');
+    const endParkedTurn = parked.toolRuntime.endTurn.bind(parked.toolRuntime);
+    parked.toolRuntime.endTurn = async (reason) => {
+      endedTurns.push(parked.turnId);
+      await endParkedTurn(reason);
     };
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    const events: SessionEvent[] = [];
+    const sink = { push: (event: SessionEvent) => events.push(event) };
+    // Each tool gets its OWN turn's abort signal, exactly as send() hands it out,
+    // so the broadcast is observed where tools actually receive it.
+    const abortObserved: string[] = [];
+    const abortCall = runtimeExecute(
+      backend,
+      {
+        ...testTool('WaitForAbort', z.object({})),
+        impl: async (_input: unknown, ctx: { abortSignal: AbortSignal }) =>
+          new Promise((resolve) => {
+            ctx.abortSignal.addEventListener('abort', () => {
+              abortObserved.push('turn-a');
+              resolve({ stopped: true });
+            });
+          }),
+      } as MakaTool,
+      'turn-a',
+      sink,
+    )({}, { toolCallId: 'tool-a', abortSignal: failing.abortController.signal });
+    const questionCall = runtimeExecute(
+      backend,
+      {
+        ...testTool('Ask', z.object({})),
+        impl: async (
+          _input: unknown,
+          ctx: { askUserQuestion: (questions: unknown[]) => Promise<unknown> },
+        ) => ctx.askUserQuestion([{ question: 'Continue?', options: ['yes', 'no'] }]),
+      } as MakaTool,
+      'turn-b',
+      sink,
+    )({}, { toolCallId: 'tool-b', abortSignal: parked.abortController.signal });
+    await waitFor(() => events.some((event) => event.type === 'user_question_request'));
 
-    // A completed turn resets the per-turn ToolRuntime state twice: once at the
-    // START of the turn (so the loop-gate failure streak, subagent count, and
-    // gating never carry over from the previous turn's teardown) and once at the
-    // END via cleanupAfterTurn(). Removing the start-of-turn reset drops this to 1
-    // and fails — which is what proves the wiring the ToolRuntime unit test alone
-    // cannot.
-    assert.equal(resets, 2, 'resetTurnState runs at turn start and at cleanup');
+    await assert.rejects(backend.stop('user_stop'), /Could not durably deny/);
+
+    // Every turn is aborted under its own controller, not just the first one:
+    // turn-a's tool observes the signal it was actually handed, and turn-b's
+    // controller is aborted even though turn-a's teardown failed.
+    assert.equal(
+      await Promise.race([
+        abortCall.then(() => 'aborted'),
+        new Promise((resolve) => setTimeout(() => resolve('still running'), 50)),
+      ]),
+      'aborted',
+    );
+    assert.deepEqual(abortObserved, ['turn-a']);
+    assert.equal(parked.abortController.signal.aborted, true);
+    // The failing turn's error still surfaces, and the sibling is closed anyway:
+    // its parked question is rejected rather than left waiting forever.
+    assert.deepEqual(endedTurns, ['turn-a', 'turn-b']);
+    assert.deepEqual(aborted, ['turn-a', 'turn-b']);
+    // settleToolCall reports a failed tool rather than rejecting, so what
+    // matters is that it settles at all instead of parking forever.
+    assert.equal(
+      await Promise.race([
+        questionCall.then(
+          () => 'settled',
+          () => 'settled',
+        ),
+        new Promise((resolve) => setTimeout(() => resolve('parked'), 50)),
+      ]),
+      'settled',
+    );
   });
 });
 
@@ -13483,9 +13746,13 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
   }
 }
 
-function durableTurnHarness(turnId: string, text: string) {
-  const runId = 'run-1';
-  const invocationId = 'invocation-1';
+function durableTurnHarness(
+  turnId: string,
+  text: string,
+  identity: { runId?: string; invocationId?: string } = {},
+) {
+  const runId = identity.runId ?? 'run-1';
+  const invocationId = identity.invocationId ?? 'invocation-1';
   const anchor: RuntimeEvent = {
     id: `runtime-user-${turnId}`,
     invocationId,
@@ -13638,13 +13905,43 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   assert.fail('condition was not met before timeout');
 }
 
+/**
+ * The execution scope for one turn, opened the same way `send()` opens it.
+ * Tests that drive ToolRuntime directly (without a provider stream) use this so
+ * they exercise the real per-turn wiring instead of a backend-wide singleton.
+ */
+interface TestTurnScope {
+  turnId: string;
+  abortController: AbortController;
+  toolRuntime: ToolRuntime;
+  watchdog: { pause(): void; resume(): void } | null;
+  runTrace: RunTrace | null;
+}
+
+function backendInternals(backend: AiSdkBackend): {
+  activeTurns: Set<TestTurnScope>;
+  openTurnScope(input: { turnId: string; text: string; context: [] }): TestTurnScope;
+} {
+  return backend as unknown as {
+    activeTurns: Set<TestTurnScope>;
+    openTurnScope(input: { turnId: string; text: string; context: [] }): TestTurnScope;
+  };
+}
+
+/** The live scope for a turn, opening one when the test drives a turn directly. */
+function turnScope(backend: AiSdkBackend, turnId: string): TestTurnScope {
+  const internals = backendInternals(backend);
+  for (const scope of internals.activeTurns) if (scope.turnId === turnId) return scope;
+  return internals.openTurnScope({ turnId, text: '', context: [] });
+}
+
 function runtimeExecute(
   backend: AiSdkBackend,
   tool: MakaTool,
   turnId: string,
   eventSink: { push(event: SessionEvent): void },
 ) {
-  const runtime = (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime;
+  const runtime = turnScope(backend, turnId).toolRuntime;
   const durableEventSink: DurableSessionEventSink = {
     push: (event) => eventSink.push(event),
     pushAndWaitUntilConsumed: async (event) => eventSink.push(event),

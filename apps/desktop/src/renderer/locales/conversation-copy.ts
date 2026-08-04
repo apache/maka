@@ -60,7 +60,21 @@ export interface DesktopConversationCopy {
     regeneratedTo: string;
     regeneratedToTooltip: string;
   };
-  workbar: { ariaLabel: string; sectionsAriaLabel: string; tasks: string; browser: string; files: string; quoteTab: string };
+  workbar: { ariaLabel: string; sectionsAriaLabel: string; tasks: string; browser: string; files: string; inspector: string; quoteTab: string };
+  inspector: {
+    ariaLabel: string;
+    loadFailed: string;
+    retry: string;
+    empty: string;
+    costUnavailable: string;
+    attempts: string;
+    retries: string;
+    compactions: string;
+    coveragePartial: string;
+    coverageAbsent: string;
+    unreadable: string;
+    turnFailed: string;
+  };
   quoteCompanion: {
     /** Read-only exploration hint shown in the empty companion panel. */
     hint: string;
@@ -138,7 +152,21 @@ const COPY = {
     },
     footer: { labels: { regenerate: '重新生成', branch: '分支', copy: '复制', info: '详情' }, pending: '正在处理…', regenerateRunning: '当前回答仍在进行中，结束后再重新生成', regenerateAgain: '已重新生成过，再次点击将创建新的并行回答', regenerate: '让模型重新生成本轮回答', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新对话', branch: '基于此回答的上下文分支出新对话', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
     lineage: { regeneratedFrom: '重新生成自旧回答', regeneratedFromTooltip: '这是重新生成的并行回答，点击查看被保留的旧回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '点击跳转到重新生成的新回答' },
-    workbar: { ariaLabel: '会话工作栏', sectionsAriaLabel: '会话工作栏栏目', tasks: '任务', browser: '浏览器', files: '文件', quoteTab: '追问引用' },
+    workbar: { ariaLabel: '会话工作栏', sectionsAriaLabel: '会话工作栏栏目', tasks: '任务', browser: '浏览器', files: '文件', inspector: '追踪', quoteTab: '追问引用' },
+    inspector: {
+      ariaLabel: '会话追踪',
+      loadFailed: '追踪读取失败',
+      retry: '重试',
+      empty: '这个会话还没有可追踪的活动',
+      costUnavailable: '费用不可得',
+      attempts: '次调用',
+      retries: '次重试',
+      compactions: '次压缩',
+      coveragePartial: '部分调用没有记录，下面的数字是下界',
+      coverageAbsent: '该后端不上报逐次调用明细',
+      unreadable: '条记录无法解析',
+      turnFailed: '本轮失败',
+    },
     quoteCompanion: {
       hint: '这里的追问会带上主对话的完整上下文：只做解释和只读探索，不会改动文件，也不写回主对话。在主对话里继续选中文本追问，会加进这个侧栏。',
       exit: '退出',
@@ -201,7 +229,21 @@ const COPY = {
     },
     footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new conversation from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
     lineage: { regeneratedFrom: 'Regenerated from previous response', regeneratedFromTooltip: 'This is a parallel regenerated response; click to view the retained previous response', regeneratedTo: 'Regenerated → New response', regeneratedToTooltip: 'Jump to the regenerated response' },
-    workbar: { ariaLabel: 'Conversation workbar', sectionsAriaLabel: 'Conversation workbar sections', tasks: 'Tasks', browser: 'Browser', files: 'Files', quoteTab: 'Quoted' },
+    workbar: { ariaLabel: 'Conversation workbar', sectionsAriaLabel: 'Conversation workbar sections', tasks: 'Tasks', browser: 'Browser', files: 'Files', inspector: 'Trace', quoteTab: 'Quoted' },
+    inspector: {
+      ariaLabel: 'Session trace',
+      loadFailed: 'Could not read the trace',
+      retry: 'Retry',
+      empty: 'Nothing to trace in this session yet',
+      costUnavailable: 'cost unavailable',
+      attempts: 'calls',
+      retries: 'retries',
+      compactions: 'compactions',
+      coveragePartial: 'Some calls have no record; the numbers below are a floor',
+      coverageAbsent: 'This backend does not report per-call detail',
+      unreadable: 'unreadable records',
+      turnFailed: 'Turn failed',
+    },
     quoteCompanion: {
       hint: 'Questions here carry the full context of the main conversation: read-only exploration and explanation, no file changes, and nothing is written back to the main conversation. Select more text in the main transcript to add it to this side panel.',
       exit: 'Exit',

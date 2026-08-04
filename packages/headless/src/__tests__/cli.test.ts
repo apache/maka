@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
+import { createSessionStore } from '@maka/storage';
 import { validateHarborCellOutput } from '../cell-output.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
 import { readResults } from '../results.js';
@@ -413,7 +414,12 @@ describe('maka-headless CLI', () => {
 
       const sessionId = inspectDocument.attempts[0]?.agentRuns[0]?.identity?.sessionId;
       assert.equal(typeof sessionId, 'string');
-      await rm(join(outDir, 'runs', 'sessions', sessionId, 'session.jsonl'), { force: true });
+      const sessions = createSessionStore(join(outDir, 'runs'));
+      try {
+        await sessions.remove(sessionId);
+      } finally {
+        await sessions.close?.();
+      }
 
       const aheExportDir = join(dir, 'ahe-export');
       const aheExported = await runCli([

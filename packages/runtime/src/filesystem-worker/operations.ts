@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, parse, resolve } from 'node:path';
-import { isPathInside } from '../path-containment.js';
+import { isPathInside, realpathAllowMissing } from '../path-containment.js';
 import { sandboxBoundaryExpansionAllowsPath } from '@maka/core';
 
 import { computeEditedSource } from '../edit-replace.js';
@@ -84,8 +84,17 @@ export async function executeFilesystemOperation(
 ): Promise<FilesystemWorkerResult> {
   switch (operation.kind) {
     case 'lstat': {
-      const path = await canonicalDirectoryEntryPath(operation.path);
+      // Address the directory entry (never the followed target) with the
+      // same containment as Delete, so a plan-time symlink probe is
+      // consistent with the mutation that follows.
+      const path = await resolveDeleteOperandAllowed(
+        operation.cwd,
+        operation.path,
+        'ApplyPatch lstat',
+        operationBoundary,
+      );
       return { kind: 'lstat', targetType: await lstatTargetTypeOf(path) };
+    }
     }
     case 'read': {
       const path = await resolveExistingAllowed(
@@ -387,16 +396,21 @@ async function resolveWritableAllowed(
   } catch (error) {
     if (nodeErrorCode(error) !== 'ENOENT') throw error;
   }
-  const enforcementPath = await realpathAllowMissing(candidate);
-  const parent = dirname(enforcementPath);
-  assertAllowed(root, enforcementPath, label, 'write', permission);
-  if (!isPathInside(root, parent) && !exactWriteCoversParent(permission, candidate, parent)) {
+  // The target does not exist, but it can still be a dangling symlink, and a
+  // write lands on what the link names rather than on the link. Authorise the
+  // followed path — the same one `assertTargetUnchanged` pins the request to —
+  // so the worker enforces its own boundary instead of trusting the caller to
+  // have canonicalised the path for it.
+  const followed = await realpathAllowMissing(candidate);
+  const parent = await fs.realpath(dirname(followed));
+  assertAllowed(root, followed, label, 'write', permission);
+  if (!isPathInside(root, parent) && !exactWriteCoversParent(permission, followed, parent)) {
     throw operationError(
       'path_denied',
       `${label} parent was not covered by the operation boundary.`,
     );
   }
-  return enforcementPath;
+  return followed;
 }
 
 async function resolveDirectoryEntryWritableAllowed(
@@ -494,17 +508,6 @@ function exactWriteCoversParent(
 function assertContainedGlobPattern(pattern: string): void {
   if (isAbsolute(pattern) || pattern.split(/[\\/]+/).includes('..')) {
     throw operationError('path_denied', 'Glob pattern must stay inside its search root.');
-  }
-}
-
-async function realpathAllowMissing(path: string): Promise<string> {
-  try {
-    return await fs.realpath(path);
-  } catch (error) {
-    if (nodeErrorCode(error) !== 'ENOENT') throw error;
-    const parent = dirname(path);
-    if (parent === path) throw error;
-    return resolve(await realpathAllowMissing(parent), path.slice(parent.length + 1));
   }
 }
 
