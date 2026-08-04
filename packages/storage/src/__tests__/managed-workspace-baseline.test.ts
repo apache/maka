@@ -21,10 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, before, test } from 'node:test';
 import { openManagedWorkspaceOwner } from '../managed-workspace-owner.js';
-import {
-  inspectManagedWorkspaceExecutionHandleInternal,
-  inspectManagedWorkspaceExecutionScopeInternal,
-} from '../managed-workspace-execution-authority-internal.js';
+import { managedWorkspaceExecutionAuthorityTestSupport } from '../managed-workspace-execution-authority-internal.js';
 import { createGitWorkspaceService } from '../git-workspace-service.js';
 import * as publicStorage from '../index.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
@@ -38,6 +35,10 @@ import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
 const execFileAsync = promisify(execFile);
 const cleanup: string[] = [];
+const {
+  inspectHandle: inspectManagedWorkspaceExecutionHandleInternal,
+  inspectScope: inspectManagedWorkspaceExecutionScopeInternal,
+} = managedWorkspaceExecutionAuthorityTestSupport;
 let gitExecutablePath: string;
 let gitExecutableSha256: `sha256:${string}`;
 

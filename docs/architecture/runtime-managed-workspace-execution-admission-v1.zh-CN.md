@@ -1,6 +1,6 @@
 # Managed Workspace Execution Admission v1：M1.1 可撤销 scope 门
 
-- 状态：M1.1 已实现；尚无 runtime-host / Desktop / CLI 生产消费者
+- 状态：M1.1 已实现；M1.2a owner-bound worker bridge 当前切片；尚无 runtime-host / Desktop / CLI 生产消费者
 - 更新日期：2026-08-04
 - 主要不变量：同一个 `ManagedWorkspaceOwner` 只能用其亲自签发的进程内 execution handle 创建 active
   execution scope；一次 admission 只签发一个 scope，但同一 handle 允许多个只读 admission 并发。每次创建
@@ -41,9 +41,12 @@ runtime protocol、host lifecycle 与工具 I/O 三个边界。
 |---|---|
 | execution admission owner | 只有签发 handle 的同一个 `ManagedWorkspaceOwner` 可以消费它 |
 | durable authority | handle/scope 都不是 durable fact；canonical head 通过注册时捕获的 storage-internal reader 读取，不调用可被 caller shadow 的 public method |
-| 原子性边界 | 不虚构 Git 与 SQLite 之外的新事务；在 owner/root lease residency 内完成 final root/DB/head proof，再以 exact receipt/binding/Git verification 作为 scope 签发前最后一个 await |
+| 原子性边界 | 不虚构 Git 与 SQLite 之外的新事务；在 owner/root lease residency 内先完成 exact receipt/binding/Git verification，再以 immutable SQLite workspace head 作为 scope 签发前最后一次 durable reread；随后执行 DB pathname/inode guard 和纯内存 identity compare，不再运行慢速 Git 命令 |
 | 执行期间 | 每个 callback 分别计入 owner active operation；同一 handle 可并发多个 `workspaceEffect: none` scope；`close()` 等全部 scope drain，新 admission 在 closing 后被拒绝 |
 | invalid handle | `managed_workspace_execution_handle_invalid`；不签发 scope |
+| foreign / expired scope | `managed_workspace_execution_scope_invalid` / `managed_workspace_execution_scope_expired`；bridge 不解析 cwd、不 dispatch worker |
+| worker 缺失 | `managed_workspace_worker_unavailable`；不从 managed mode fallback 到 host-local I/O |
+| mutation / unknown operation | `managed_workspace_operation_denied`；Write/Edit/Format/Bash/未知 operation 在 worker dispatch 前 fail closed |
 | canonical head 漂移/缺失 | fail closed；旧 handle 不能自行选择新 head |
 | artifact drift | 不签发 scope；所有 Git verification 阶段的 `managed_workspace_drifted` 统一 quarantine |
 | mutation permission | scope 固定 `workspaceEffect: none`；M2 前没有 raw cwd consumer，Write/Edit/Bash/未知工具不得接入 |
@@ -64,10 +67,10 @@ sequenceDiagram
   O->>S: internal reader 读取 exact workspace/epoch canonical head
   S-->>O: accepted WorkspaceHead
   O->>O: exact compare frozen expected head + full cross-plane identity
-  O->>O: final root marker / runtime.sqlite pathname+inode guard
-  O->>S: final internal head reread
   O->>G: one-shot exact receipt/binding/HEAD/tree/lock verification
   G-->>O: verified artifact
+  O->>S: final internal head reread
+  O->>O: runtime.sqlite pathname+inode guard + pure identity compare
   O->>T: callback(active opaque scope)
   T-->>O: result / error
   O->>O: revoke scope；释放 active residency；允许 close 收敛
@@ -127,14 +130,15 @@ verification 中断后，重启只能经完整 reopen/revalidate 获得新 scope
 
 ## 7. 后续切片
 
-1. M1.2：runtime-host lifecycle 组合与 managed/attached typed profile；storage-internal worker bridge 消费
-   active scope 并在内部解析 cwd，公共 host 仍不获得 path。managed profile 在 M2 前只允许
-   `workspaceEffect: none` 的 Read/Glob/Grep 类工具；Write/Edit/Bash/未知工具 fail closed。关闭顺序为
-   tool operations → managed owner → root owner；同时用 execution-context guard 拒绝 callback 内 reentrant
-   `owner.close()`，避免 callback 与自身 drain 互等。
-2. M1.3：显式 dependency/secret/scratch provisioning；首版若无法安全提供则保持
+1. M1.2a：owner-bound storage worker bridge 消费 active scope 并在内部解析 cwd；公共 caller 仍不获得 path。
+   managed profile 在 M2 前只允许 `workspaceEffect: none` 的 Read/Glob/Grep；Write/Edit/Format/Bash/未知工具在
+   worker dispatch 前 fail closed。无 ownerToken 的 inspect API 仅保留在显式 test support 中；callback 内
+   reentrant `owner.close()` 由 execution-context guard 拒绝。
+2. M1.2b：独立平铺 PR 完成 runtime-host managed/attached typed profile 和 startup/drain/shutdown 组合；关闭顺序为
+   tool operations → managed owner → root owner。M1.2a 合并不等于 Desktop/CLI 已启用 managed execution。
+3. M1.3：显式 dependency/secret/scratch provisioning；首版若无法安全提供则保持
    `canonical_tree_only_v1`，不能 silent fallback。
-3. M2：mutation candidate capture/accept；T1 前冻结 profile/base version，SQLite 原子接受 tool outcome
+4. M2：mutation candidate capture/accept；T1 前冻结 profile/base version，SQLite 原子接受 tool outcome
    与 successor workspace version。
 
-在 M1.2 出现真实生产消费者前，本切片不默认开启 managed execution，也不改变 attached mode。
+在 M1.2b 出现真实 runtime-host 生产消费者前，本切片不默认开启 managed execution，也不改变 attached mode。

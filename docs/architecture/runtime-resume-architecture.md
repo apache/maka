@@ -741,12 +741,12 @@ The Runtime host uses strict recovery stores. It does not silently turn an unrea
 The workspace plane now has a storage-owned execution-admission foundation, but it is not yet wired into the Runtime host:
 
 - baseline open returns an opaque handle bound to its `ManagedWorkspaceOwner`, never a raw cwd;
-- every admission reproves storage-root identity, the exact SQLite canonical head, and the exact Git receipt/binding/HEAD/tree/ownership; the ordinary production path performs one final Git verification immediately before scope issuance;
+- every admission reproves storage-root identity, the exact Git receipt/binding/HEAD/tree/ownership, and the exact SQLite canonical head; the ordinary path performs its slow Git verification first, then makes the immutable SQLite head the final durable reread before the DB identity guard and pure in-memory comparisons;
 - one admission issues one callback-scoped opaque scope with `workspaceEffect: none`; the same handle may have multiple concurrent read-only scopes;
 - `close()` rejects new admissions and drains every active scope; a scope expires when its callback exits, with typed `managed_workspace_execution_scope_invalid` and `managed_workspace_execution_scope_expired` codes for forged and retained scopes;
 - the crash harness may enable a preliminary-verification failpoint, but that test path must still pass the final verification before any scope is issued.
 
-This proves only the proof-to-scope seam for cooperating Maka writers; it does not make workspace-bound resume available. M1.2 still needs a real storage-internal worker consumer, typed managed/attached profiles, a read-only tool allowlist, a reentrant `close()` guard inside execution callbacks, and shutdown ordering of tool operations → managed owner → root owner. Until those gates exist, Desktop, CLI, and Runtime host must not receive a raw managed cwd; Write/Edit/Bash/unknown tools must fail closed; and managed mode must never silently fall back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
+M1.2 is split by invariant. M1.2a adds the owner-bound storage worker bridge, limits it to Read/Glob/Grep, demotes unchecked scope inspection to explicit test support, and rejects reentrant owner close from an active callback. M1.2b separately owns runtime-host managed/attached profile composition and shutdown ordering of tool operations → managed owner → root owner. Until M1.2b lands, Desktop, CLI, and Runtime host must not receive a raw managed cwd; Write/Edit/Format/Bash/unknown tools must fail closed; and managed mode must never silently fall back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
 
 ### Headless / Harbor
 
