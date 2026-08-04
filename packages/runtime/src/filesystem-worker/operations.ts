@@ -54,7 +54,7 @@ export async function executeFilesystemWorkerRequest(
       request.expectedTarget,
       request.operation.kind === 'delete' ||
         request.operation.kind === 'lstat' ||
-        (request.operation.kind === 'write' && Boolean(request.operation.mode)),
+        (request.operation.kind === 'write' && request.operation.mode === 'create'),
     );
     return {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
