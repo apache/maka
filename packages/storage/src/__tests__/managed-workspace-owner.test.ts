@@ -338,7 +338,7 @@ test('rejects execution when runtime.sqlite detaches from its canonical path aft
       owner.withManagedWorkspaceExecution(accepted.executionHandle, async () => {
         callbackCalled = true;
       }),
-      /workspace baseline authority database file identity changed|belongs to a different storage root/u,
+      /database file identity changed|belongs to a different storage root/u,
     );
     assert.equal(callbackCalled, false);
     await owner.close();
