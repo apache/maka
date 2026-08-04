@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { BackendKind, ProviderType } from '@maka/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import { createConnectionStore, resolveMakaWorkspaceRoot } from '@maka/storage';
@@ -849,12 +849,12 @@ export async function applyConnectionDefaults(
   // Skip for non-ai-sdk backends
   if (env.MAKA_BACKEND === 'fake' || env.MAKA_BACKEND === 'pi-agent') return;
 
-  // MAKA_CONNECTIONS_PATH points at the connections file directly (back-compat
-  // with tests and overrides); the store takes the containing workspace root.
-  // When unset, fall back to the shared workspace-path authority.
-  const root = env.MAKA_CONNECTIONS_PATH
-    ? dirname(env.MAKA_CONNECTIONS_PATH)
-    : resolveMakaWorkspaceRoot();
+  // MAKA_CONNECTIONS_PATH is the workspace ROOT (the directory containing
+  // llm-connections.json), not the file path — createConnectionStore joins
+  // 'llm-connections.json' onto it internally. A basename other than
+  // llm-connections.json is intentionally ignored (pinned by a test). When
+  // unset, fall back to the shared workspace-path authority.
+  const root = env.MAKA_CONNECTIONS_PATH ?? resolveMakaWorkspaceRoot();
   const store = createConnectionStore(root);
   try {
     const slug = await store.getDefault();
@@ -883,14 +883,6 @@ export async function applyConnectionDefaults(
     // malformed JSON, so this catch preserves harbor's historical silent
     // fallback for both cases.
   }
-}
-
-export function resolveDefaultConnectionsPath(): string {
-  // Route through the shared workspace-path authority (@maka/storage) instead
-  // of re-deriving the per-platform application-data root here. This file no
-  // longer hand-rolls the darwin/win32/linux branches — and the authority uses
-  // win32 path joining on Windows, which the old copy got wrong (posix join).
-  return join(resolveMakaWorkspaceRoot(), 'llm-connections.json');
 }
 
 function parseModelSpec(

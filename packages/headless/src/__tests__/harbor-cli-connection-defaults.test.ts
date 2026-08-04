@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { describe, test, afterEach } from 'node:test';
 import { resolveEconomyTaskMode } from '../economy-task-policy.js';
 import { resolveHarborCellAiSdkEnv } from '../harbor-cell.js';
@@ -19,9 +19,10 @@ let cleanupDirs: string[] = [];
 function makeTempConnections(content: object): string {
   const dir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
   cleanupDirs.push(dir);
-  const filePath = join(dir, 'llm-connections.json');
-  writeFileSync(filePath, JSON.stringify(content), 'utf8');
-  return filePath;
+  // MAKA_CONNECTIONS_PATH is the workspace ROOT (the directory), not the
+  // file path — createConnectionStore joins 'llm-connections.json' onto it.
+  writeFileSync(join(dir, 'llm-connections.json'), JSON.stringify(content), 'utf8');
+  return dir;
 }
 
 afterEach(() => {
@@ -59,7 +60,7 @@ describe('applyConnectionDefaults', () => {
     assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
     assert.equal(env.MAKA_BASE_URL, 'http://127.0.0.1:8537');
-    assert.equal(env.MAKA_CREDENTIALS_PATH, join(dirname(connectionsPath), 'credentials.json'));
+    assert.equal(env.MAKA_CREDENTIALS_PATH, join(connectionsPath, 'credentials.json'));
   });
 
   test('does not override explicit model, provider, or connection authority', async () => {
@@ -84,14 +85,14 @@ describe('applyConnectionDefaults', () => {
   });
 
   test('ignores missing, malformed, disabled, incomplete, or unsupported connection sources', async () => {
+    // Malformed: a workspace dir whose llm-connections.json is not valid JSON.
     const malformedDir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
     cleanupDirs.push(malformedDir);
-    const malformedPath = join(malformedDir, 'llm-connections.json');
-    writeFileSync(malformedPath, '{ not valid json!!!', 'utf8');
+    writeFileSync(join(malformedDir, 'llm-connections.json'), '{ not valid json!!!', 'utf8');
 
     const sources = [
-      '/tmp/nonexistent-path-abc123/llm-connections.json',
-      malformedPath,
+      '/tmp/nonexistent-path-abc123',
+      malformedDir,
       makeTempConnections(defaultDocument({ enabled: false })),
       makeTempConnections({
         connections: [
@@ -197,6 +198,38 @@ describe('applyConnectionDefaults', () => {
     assert.equal(env.MAKA_MODEL, 'openai-codex/gpt-5.6-sol');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'codex-subscription');
     assert.equal(env.MAKA_BASE_URL, 'https://chatgpt.com/backend-api/codex');
+  });
+
+  test('MAKA_CONNECTIONS_PATH is a directory: a non-standard filename is ignored', async () => {
+    // MAKA_CONNECTIONS_PATH points at the workspace ROOT (the directory
+    // containing llm-connections.json), not the file itself. The store joins
+    // 'llm-connections.json' onto it, so a sibling file with a different name
+    // (e.g. custom.json) is never read — pinning this so the choice does not
+    // silently revert to the old "full file path" semantics.
+    const dir = makeTempConnections(defaultDocument());
+    // Drop a decoy file that must NOT be read.
+    writeFileSync(
+      join(dir, 'custom.json'),
+      JSON.stringify({
+        defaultSlug: 'decoy',
+        connections: [
+          {
+            slug: 'decoy',
+            providerType: 'deepseek',
+            defaultModel: 'decoy-model',
+            enabled: true,
+          },
+        ],
+      }),
+      'utf8',
+    );
+    const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: dir };
+
+    await applyConnectionDefaults(env);
+
+    // The real llm-connections.json wins; the decoy custom.json is ignored.
+    assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
+    assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
   });
 });
 describe('resolveHarborRunOptions backend guard', () => {
