@@ -32,6 +32,7 @@ import {
   type TurnPresentationDeriver,
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
+import { useProgressiveTurnMount } from './use-progressive-turn-mount.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer } from './session-context-layer.js';
@@ -362,6 +363,19 @@ export function ChatView(props: {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
+  // #2052: the first commit after a session switch mounts only a tail window
+  // of turns; the rest arrive in idle chunks with scroll compensation. The
+  // full `turns` array above still feeds deriveTurnPresentation and the
+  // prompt rail, so presentation caching (#2030) and rail geometry are not
+  // window-dependent; only the JSX mapping below is sliced.
+  const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
+  const { start: mountStart, filled: turnsFilled, revealTurn } = useProgressiveTurnMount({
+    sessionId: props.activeSession?.id,
+    turnIds: orderedTurnIds,
+    scrollRef,
+    targetTurnId: props.scrollTargetTurn?.turnId,
+  });
+  const mountedTurns = mountStart === 0 ? turns : turns.slice(mountStart);
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -369,6 +383,7 @@ export function ChatView(props: {
     messages: props.messages,
     target: props.scrollTargetTurn,
     behavior: props.scrollBehavior,
+    warmupReady: turnsFilled,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -489,7 +504,7 @@ export function ChatView(props: {
           {showEmptyState ? null : (
             <>
               {chat.length === 0 && !streamingActive ? emptyContent : null}
-              {turns.map((turn) => {
+              {mountedTurns.map((turn) => {
                 return (
                   <Fragment key={turn.turnId}>
                     <TurnView
@@ -557,7 +572,7 @@ export function ChatView(props: {
             </>
           )}
         </ChatMessageList>
-        <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} />
+        <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} onNavigateFallback={revealTurn} />
         {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
           selectionActionsLayer.render(
             <div

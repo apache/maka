@@ -9,6 +9,13 @@ export function useChatScroll(input: {
   messages: readonly StoredMessage[];
   target?: { turnId: string; nonce: number };
   behavior?: ScrollBehavior;
+  /**
+   * #2052: false while the progressive mount is still filling the transcript.
+   * The warm-up snapshots the `.maka-turn` NodeList once, so starting it
+   * against a partial window would leave every not-yet-mounted turn at its
+   * 250px placeholder size for the life of the session.
+   */
+  warmupReady?: boolean;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
 
@@ -40,7 +47,7 @@ export function useChatScroll(input: {
     const root = input.scrollRef.current;
     if (!root) return;
     root.dataset.turnWarmup = 'running';
-    if (!input.hasTurns) return;
+    if (!input.hasTurns || input.warmupReady === false) return;
     let disposed = false;
     let cancelWarmup: (() => void) | undefined;
     let pollTimer: number | undefined;
@@ -85,7 +92,7 @@ export function useChatScroll(input: {
       window.clearTimeout(settleTimer);
       cancelWarmup?.();
     };
-  }, [input.sessionId, input.hasTurns, input.scrollRef]);
+  }, [input.sessionId, input.hasTurns, input.warmupReady, input.scrollRef]);
 
   useEffect(() => {
     const target = input.target;

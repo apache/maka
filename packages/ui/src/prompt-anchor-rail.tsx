@@ -14,6 +14,12 @@ export interface PromptAnchorRailProps {
   turns: readonly PromptAnchorRailTurn[];
   /** The scroll container that holds the `[data-turn-id]` turn sections. */
   scrollRef: RefObject<HTMLElement | null>;
+  /**
+   * #2052: called when a clicked turn has no `[data-turn-id]` element yet.
+   * The progressive mount keeps early turns out of the DOM until the idle
+   * fill reaches them, so the owner mounts the turn and finishes the scroll.
+   */
+  onNavigateFallback?: (turnId: string) => void;
 }
 
 /**
@@ -23,7 +29,7 @@ export interface PromptAnchorRailProps {
  * scrolls the target turn into view; an IntersectionObserver highlights the
  * tick whose turn is currently at the top of the viewport.
  */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   // Rebuilding this observer costs one querySelector + observe per turn over
@@ -68,6 +74,8 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     const el = scrollRef.current?.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
     if (el && 'scrollIntoView' in el) {
       (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (!el) {
+      onNavigateFallback?.(turnId);
     }
     setActiveTurnId(turnId);
   }
