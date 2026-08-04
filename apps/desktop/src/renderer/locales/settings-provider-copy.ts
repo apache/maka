@@ -100,7 +100,7 @@ const zhCopy = {
     slug: '连接标识', name: '显示名称',
     accountIdPlaceholder: '填写账户 ID',
     saving: '保存中…', save: '保存供应商', keyRequired: (name: string) => `请填写 ${name} API Key`,
-    apiKeyLabel: (required: boolean) => `API Key（${required ? '必填' : '可选'}）`, accountIdLabel: 'Cloudflare Account ID（必填）', endpointLabel: (required: boolean) => `服务地址${required ? '（必填）' : ''}`,
+    apiKeyLabel: 'API Key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: '服务地址',
     defaultModel: '默认模型', defaultModelPlaceholder: '填写你的中转站模型 ID，例如 gpt-4o、claude-sonnet-4-5 或自定义模型名', defaultModelHelp: '用于首次连接测试和模型选择器兜底；保存后仍会自动拉取模型目录。', defaultModelRequired: '请填写默认模型 ID。保存后仍会自动拉取模型目录。',
   },
   oauthFlow: {
@@ -241,7 +241,7 @@ const enCopy: ProviderSettingsCopy = {
     slug: 'Connection identifier', name: 'Display name',
     accountIdPlaceholder: 'Enter account ID',
     saving: 'Saving…', save: 'Save provider', keyRequired: (name: string) => `Enter the ${name} API key`,
-    apiKeyLabel: (required: boolean) => `API key (${required ? 'required' : 'optional'})`, accountIdLabel: 'Cloudflare Account ID (required)', endpointLabel: (required: boolean) => `Service URL${required ? ' (required)' : ''}`,
+    apiKeyLabel: 'API key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: 'Service URL',
     defaultModel: 'Default model', defaultModelPlaceholder: 'Enter your relay model id, e.g. gpt-4o, claude-sonnet-4-5, or a custom model name', defaultModelHelp: 'Used as the first connection-test and picker fallback; Maka still fetches the model catalog after saving.', defaultModelRequired: 'Enter a default model id. Maka still fetches the model catalog after saving.',
   },
   oauthFlow: {

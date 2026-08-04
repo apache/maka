@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { CommandPaletteList, NumberInput } from '@astryxdesign/core';
+import { CommandPaletteList, NumberInput, TextInput } from '@astryxdesign/core';
 import {
   AstryxLocaleProvider,
   astryxMessageOverrides,
@@ -32,6 +32,45 @@ describe('Astryx form-control localization', () => {
         numberClear: '清除{label}',
       },
     );
+  });
+
+  /**
+   * Guard for `patches/@astryxdesign+core+0.2.0.patch`. Upstream `FieldLabel`
+   * hard-codes the two words; the patch routes them through the catalog. Both
+   * halves matter and they fail differently: the marker is what the patch adds,
+   * `aria-required` is what a CSS-only or drop-the-prop workaround would have
+   * cost. Delete the patch when this passes without it.
+   */
+  it('localizes the required marker while keeping aria-required', () => {
+    const markup = renderChineseControl(
+      <TextInput label="API Key" value="" onChange={() => {}} isRequired />,
+    );
+
+    assert.match(markup, /必填/);
+    assert.doesNotMatch(markup, /Required/);
+    assert.match(markup, /aria-required="true"/);
+  });
+
+  it('localizes the optional marker', () => {
+    const markup = renderChineseControl(
+      <TextInput label="备注" value="" onChange={() => {}} isOptional />,
+    );
+
+    assert.match(markup, /可选/);
+    assert.doesNotMatch(markup, /Optional/);
+  });
+
+  it('keeps Astryx’s English markers when the locale is en', () => {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <AstryxLocaleProvider>
+          <TextInput label="API key" value="" onChange={() => {}} isRequired />
+        </AstryxLocaleProvider>
+      </LocaleProvider>,
+    );
+
+    assert.match(markup, /Required/);
+    assert.doesNotMatch(markup, /@astryx\.field/);
   });
 
   it('renders a Chinese accessible clear name', () => {

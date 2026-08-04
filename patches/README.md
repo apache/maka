@@ -1,6 +1,6 @@
 # patches
 
-`scripts/apply-dependency-patches.mjs` applies everything here during the root `postinstall`, with `--error-on-fail` so a patch that no longer applies blocks the install instead of silently disappearing. It skips when `patch-package` itself is absent, which happens under `npm ci --workspace <name>` and `npm ci --omit=dev`; those trees are not what ships, and an unpatched one fails the regression test below.
+`scripts/apply-dependency-patches.mjs` applies everything here during the root `postinstall`, with `--error-on-fail` so a patch that no longer applies blocks the install instead of silently disappearing. It skips when `patch-package` itself is absent, which happens under `npm ci --workspace <name>` and `npm ci --omit=dev`; those trees are not what ships, and an unpatched one fails the guard test named in each section below.
 
 After bumping a patched dependency, re-run `npx patch-package <name>` so the patch filename tracks the installed version.
 
@@ -60,3 +60,25 @@ Not upstreamed, by decision — treat this as a long-lived vendored correction, 
 Two `typeValidation` branches sit untouched inside a patched hunk and neither can execute in this tree: `openai-compatible` passes no setting, so it gets `'none'`, and its chunk schema has no `type` field to validate anyway; `openai` passes `'if-present'`, but its schema declares `type: z.literal('function').nullish()`, so a wrong type is rejected before the tracker is reached. Left alone deliberately — the class is upstream's, and narrowing it to what this repo happens to exercise would widen the diff for nothing.
 
 **Delete it when the guard still holds without it.** Remove the patch, reinstall, and run `packages/runtime/src/__tests__/model-factory-tool-call-index.test.ts`. Read the result by property, not by count. The patch is unnecessary once, on both the `openai` and `openai-compatible` paths, no case merges two calls' arguments into one input, drops a call, emits a duplicate or empty tool call id, emits a `tool-input-start`/`-delta`/`-end` sequence that does not match the `tool-call` it precedes, or crashes. `assertInputsSelfContained`, `assertToolCallIdsUsable`, and `assertEventLifecycle` are those properties. Two caveats when reading a red result: seven cases assert that an *undecidable* shape fails, and an upstream that genuinely fixed the layers below would make those shapes succeed — turning the guard red for a better implementation. And self-containment is a property of the shapes the guard covers, not of any implementation: the `shapes that cannot be demultiplexed` suite exists because a shared alias makes it unachievable, and it deliberately does not assert it. Related upstream reports, for context only: [vercel/ai#18333](https://github.com/vercel/ai/issues/18333), [vercel/ai#14277](https://github.com/vercel/ai/pull/14277), [vercel/ai#15879](https://github.com/vercel/ai/pull/15879).
+
+## `@astryxdesign/core`: a field's required/optional marker is copy, so it belongs in the catalog
+
+`FieldLabel` renders the marker beside a label as the literal words `'Optional'` / `'Required'` — no message id, so `AstryxLocaleProvider` cannot reach them. Every Astryx field the app marks with `isRequired` or `isOptional` therefore prints an English word inside a Chinese-first UI: the provider add form, the MCP server editor, the WeChat bot login, the plan-reminder dialog.
+
+The patch is two lines of behaviour: `FieldLabel` takes `useTranslator()` and resolves `@astryx.field.required` / `@astryx.field.optional`, and `locales/en.json` gains those two keys so `en` still resolves to `Required` / `Optional` through the shipped catalog rather than through a hard-coded string. `packages/ui/src/astryx-i18n.tsx` supplies the `zh` values from `getSharedUiCopy(...).formControls`, the same place every other Astryx override reads from.
+
+### Why not the two workarounds
+
+**Put the marker in the `label` string.** That is what `settings-provider-copy.ts` used to do (`API Key（必填）`), and it is why those fields rendered `API Key（必填） ∙ Required` — two markers, one of them untranslated. It also forces every copy catalog to re-derive a component-level convention, and it folds the marker into the field's accessible name, where it reads as part of the name rather than as a state.
+
+**Hide the marker with CSS and keep the prop.** `isRequired` is the only way to get `aria-required` onto the input — Astryx writes that attribute *after* spreading `...rest`, so passing it through is silently overwritten — so dropping the prop drops the semantics, and hiding the marker is the only alternative. That was the scoped stopgap in `apps/desktop/src/renderer/styles/astryx-field.css` on the plan-reminder form (PR #2155). It keys on the marker's DOM shape (a label's one element child wrapping an `aria-hidden` separator), which is not a contract; and unscoped it removes the visible required affordance from every form in the app. The patch keeps `aria-required` untouched *and* keeps the marker visible, so that file has nothing left to do.
+
+### Known boundaries
+
+Only `dist/Field/FieldLabel.js` is patched — `package.json` `exports` resolves there, and nothing in this repo compiles `src/`, so patching the `.tsx` would double the conflict surface for no runtime effect. `dist/astryx.umd.js` carries its own minified copy of the same logic and is left alone; nothing here loads the UMD bundle. `dist/Field/FieldLabel.js.map` is now stale for these two lines.
+
+`FieldLabel` gains a hook call. It is rendered by `Field`, `InputGroup`, `CheckboxInput`, and `Switch`, all of which already render under React; `useTranslator` reads a context with a default value, so a subtree with no `InternationalizationProvider` still resolves through the shipped `en` catalog exactly as before.
+
+### Lifecycle
+
+Upstreamable, unlike the `@ai-sdk` patch: the key naming follows `@astryx.fileInput.required`, which upstream already ships for the screen-reader mirror of this same marker. **Delete it when `packages/ui/src/__tests__/astryx-form-controls-localization.test.tsx` passes without it** — `localizes the required marker while keeping aria-required` asserts both halves, the localized marker and the surviving `aria-required`, and `keeps Astryx's English markers when the locale is en` asserts the `en` path did not regress into a raw key. Reinstall without the patch and run `npm --workspace @maka/ui run test`.

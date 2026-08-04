@@ -23,6 +23,11 @@ import type { UiLocale } from './locale-helpers.js';
  * config, not coverage.
  *
  * `en` needs no overrides — it resolves to Astryx's shipped defaults.
+ *
+ * `@astryx.field.required` / `@astryx.field.optional` are the one pair Astryx
+ * does not ship: upstream hard-codes those two words in `FieldLabel`. The keys
+ * exist because `patches/@astryxdesign+core+0.2.0.patch` routes the marker
+ * through this catalog — see that patch's entry in `patches/README.md`.
  */
 export function AstryxLocaleProvider({
   children,
@@ -64,6 +69,8 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
       '@astryx.popover.close': shared.primitives.close,
       '@astryx.toast.dismiss': shared.toast.closeNotification,
       '@astryx.toast.viewport': shared.toast.notifications,
+      '@astryx.field.required': form.required,
+      '@astryx.field.optional': form.optional,
       '@astryx.selector.placeholder': form.selectPlaceholder,
       '@astryx.selector.clearLabel': form.clear,
       '@astryx.numberInput.clearLabel': form.clear,

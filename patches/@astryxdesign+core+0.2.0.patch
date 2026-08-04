@@ -1,0 +1,41 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js b/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js
+index b5a8d9e..89a72cd 100644
+--- a/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js
++++ b/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js
+@@ -19,6 +19,7 @@ import { colorVars, fontWeightVars, spacingVars, typographyVars, typeScaleVars }
+ import { Icon, renderIconSlot } from "../Icon/index.js";
+ import { Tooltip } from "../Tooltip/index.js";
+ import { themeProps } from "../utils/themeProps.js";
++import { useTranslator } from "../i18n/index.js";
+ import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
+ const styles = {
+   label: {
+@@ -87,7 +88,8 @@ export function FieldLabel({
+   ref,
+   ...rest
+ }) {
+-  const statusText = isOptional ? 'Optional' : isRequired ? 'Required' : null;
++  const t = useTranslator();
++  const statusText = isOptional ? t('@astryx.field.optional') : isRequired ? t('@astryx.field.required') : null;
+ 
+   // A group label (e.g. for a radiogroup) must not be a literal `<label>`
+   // element: a `<label>` semantically names a single form control and can't be
+diff --git a/node_modules/@astryxdesign/core/locales/en.json b/node_modules/@astryxdesign/core/locales/en.json
+index fa4644c..505d815 100644
+--- a/node_modules/@astryxdesign/core/locales/en.json
++++ b/node_modules/@astryxdesign/core/locales/en.json
+@@ -747,6 +747,14 @@
+     "defaultMessage": "Code",
+     "description": "Screen-reader-only fallback name for a code-snippet scroll container when the code's language is unknown. \"Code\" = source code, not secret code or code of conduct."
+   },
++  "@astryx.field.required": {
++    "defaultMessage": "Required",
++    "description": "Visible marker after a field label indicating the field must be filled in. Rendered after an aria-hidden separator, so it reads on its own. Pairs with `field.optional`."
++  },
++  "@astryx.field.optional": {
++    "defaultMessage": "Optional",
++    "description": "Visible marker after a field label indicating the field may be left empty. Rendered after an aria-hidden separator, so it reads on its own. Pairs with `field.required`."
++  },
+   "@astryx.fileInput.clearLabel": {
+     "defaultMessage": "Clear {label}",
+     "description": "Screen-reader-only label on the X that removes the selected file from a FileInput. Example: `Clear Attachment`, `Clear Résumé`."

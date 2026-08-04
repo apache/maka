@@ -37,6 +37,8 @@ export interface SharedUiCopy {
   formControls: {
     selectPlaceholder: string;
     clear: string;
+    required: string;
+    optional: string;
   };
   modelPicker: {
     searchPlaceholder: string;
@@ -139,6 +141,8 @@ const SHARED_UI_COPY = {
     formControls: {
       selectPlaceholder: '选择…',
       clear: '清除{label}',
+      required: '必填',
+      optional: '可选',
     },
     modelPicker: {
       searchPlaceholder: '搜索模型…',
@@ -225,6 +229,8 @@ const SHARED_UI_COPY = {
     formControls: {
       selectPlaceholder: 'Select…',
       clear: 'Clear {label}',
+      required: 'Required',
+      optional: 'Optional',
     },
     modelPicker: {
       searchPlaceholder: 'Search models…',

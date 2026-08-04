@@ -181,8 +181,9 @@ export function AddProviderForm(props: {
             clearFieldError('apiKey');
           }}
           placeholder={copy.apiKeyPlaceholder}
-          label={copy.apiKeyLabel(requiresApiKey)}
+          label={copy.apiKeyLabel}
           isRequired={requiresApiKey}
+          isOptional={!requiresApiKey}
           status={
             error?.field === 'apiKey'
               ? { type: 'error', message: error.message }
@@ -221,8 +222,9 @@ export function AddProviderForm(props: {
               clearFieldError('apiKey');
             }}
             placeholder={copy.apiKeyPlaceholder}
-            label={copy.apiKeyLabel(requiresApiKey)}
+            label={copy.apiKeyLabel}
             isRequired={requiresApiKey}
+            isOptional={!requiresApiKey}
             isDisabled={isExperimental || busy}
             status={
               error?.field === 'apiKey'
@@ -279,7 +281,7 @@ export function AddProviderForm(props: {
             }}
             placeholder={defaults.baseUrl || 'https://…'}
             isDisabled={isExperimental || busy}
-            label={copy.endpointLabel(requiresBaseUrl)}
+            label={copy.endpointLabel}
             isRequired={requiresBaseUrl}
             status={
               error?.field === 'baseUrl'
