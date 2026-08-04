@@ -142,7 +142,6 @@ function splitUstarPath(path: string): { name: string; prefix: string } {
   if (Buffer.byteLength(path, 'utf8') <= USTAR_NAME_BYTES) return { name: path, prefix: '' };
 
   for (let index = path.length - 1; index > 0; index = path.lastIndexOf('/', index - 1)) {
-    if (index < 0) break;
     const prefix = path.slice(0, index);
     const name = path.slice(index + 1);
     if (
@@ -191,9 +190,6 @@ function parseOctal(value: Buffer): number {
     throw unsupportedEntry('Session bundle USTAR numeric field has unsupported trailing bytes');
   }
   const parsed = Number.parseInt(body, 8);
-  if (!Number.isSafeInteger(parsed)) {
-    throw unsupportedEntry('Session bundle USTAR numeric field exceeds the safe integer range');
-  }
   return parsed;
 }
 

@@ -24,6 +24,7 @@ const allowedSessionBundleCodecLocalModules = new Set([
   'session-bundle-canonical-tree.ts',
   'session-bundle-ustar.ts',
   'session-bundle-file-service.ts',
+  'stable-storage.ts',
 ]);
 const allowedAuthorityExternalImports = new Set([
   'fs-native-extensions',

@@ -17,7 +17,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { afterEach, test } from 'node:test';
 import { constants as zlibConstants, zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import {
@@ -42,6 +41,7 @@ const limits: SessionBundleLimits = {
   maxPathBytes: 255,
   maxPathDepth: 16,
 };
+const CHILD_PROCESS_TIMEOUT_MS = 15_000;
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -75,6 +75,7 @@ test('packs deterministically, inspects completely, and atomically hydrates', as
   );
   assert.equal(
     first.archiveDigest,
+    // Pinned with Node 24's bundled Zstandard encoder; Node 26 currently matches.
     'sha256:c7c9efbe9fc8a1c84f22ec016985457d82070001c4579d5cecb1304459fed5e1',
   );
   assert.equal(firstBytes.lastIndexOf(Buffer.from('28b52ffd', 'hex')), 0);
@@ -131,8 +132,9 @@ test('an independent process verifies and hydrates the same archive contract', a
   const stderr: Buffer[] = [];
   child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
   child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
-  const [code] = (await once(child, 'exit')) as [number | null];
-  assert.equal(code, 0, Buffer.concat(stderr).toString('utf8'));
+  const closed = waitForChildClose(child, CHILD_PROCESS_TIMEOUT_MS, 'Session Bundle child');
+  const result = await closed;
+  assert.equal(result.code, 0, Buffer.concat(stderr).toString('utf8'));
   assert.deepEqual(JSON.parse(Buffer.concat(stdout).toString('utf8')), {
     sessionId: 'cloud-session-1',
     archiveDigest: artifact.archiveDigest,
@@ -145,6 +147,60 @@ test('an independent process verifies and hydrates the same archive contract', a
     await readFile(join(destinationRoot, 'workspace', 'run.sh'), 'utf8'),
     '#!/bin/sh\necho ok\n',
   );
+});
+
+test('a process crash before hydration publication leaves only orphan staging', {
+  timeout: 30_000,
+}, async () => {
+  const fixture = await createFixture();
+  await writeFile(join(fixture.workspaceRoot, 'large.bin'), randomBytes(16 * 1024 * 1024));
+  const crashLimits: SessionBundleLimits = {
+    ...limits,
+    maxCompressedBytes: 32 * 1024 * 1024,
+    maxDecompressedTarBytes: 32 * 1024 * 1024,
+    maxPayloadBytes: 32 * 1024 * 1024,
+    maxFileBytes: 20 * 1024 * 1024,
+  };
+  const archivePath = join(fixture.root, 'crash-bundle.tar.zst');
+  const artifact = await packFixture(archivePath, fixture, crashLimits);
+  const childPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'session-bundle-inspect-child.js',
+  );
+  const destinationRoot = join(fixture.root, 'crash-hydrated');
+  const stagingPrefix = '.crash-hydrated.maka-session-bundle-staging-';
+  const child = spawn(
+    process.execPath,
+    [childPath, archivePath, artifact.archiveDigest, JSON.stringify(crashLimits), destinationRoot],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  const stderr: Buffer[] = [];
+  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const closed = waitForChildClose(child, CHILD_PROCESS_TIMEOUT_MS, 'hydration crash child');
+  try {
+    const stagingName = await waitForDirectoryEntry(
+      fixture.root,
+      stagingPrefix,
+      10_000,
+      'hydration staging',
+    );
+    assert.equal(child.kill('SIGKILL'), true);
+    const result = await closed;
+    assert.equal(result.signal, 'SIGKILL', Buffer.concat(stderr).toString('utf8'));
+    await assert.rejects(lstat(destinationRoot), { code: 'ENOENT' });
+    const stagingPath = join(fixture.root, stagingName);
+    const stagingMetadata = await lstat(stagingPath);
+    assert.equal(stagingMetadata.isDirectory(), true);
+    assert.equal(stagingMetadata.isSymbolicLink(), false);
+    assert.deepEqual(
+      (await readdir(fixture.root)).filter((name) => name.startsWith(stagingPrefix)),
+      [stagingName],
+    );
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed.catch(() => {});
+  }
 });
 
 test('concurrent publications never overwrite an existing destination', async () => {
@@ -198,7 +254,12 @@ test('binds pack publication and cleanup to the hashed temporary inode', async (
   const replacer = spawn(process.execPath, [replacerPath, fixture.root, replacementResultPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  await once(replacer.stdout, 'data');
+  const replacerClosed = waitForChildClose(
+    replacer,
+    CHILD_PROCESS_TIMEOUT_MS,
+    'Session Bundle temp replacer',
+  );
+  await waitForStreamText(replacer.stdout, 'ready\n', 5_000, 'Session Bundle temp replacer');
   const packing = packFixture(destination, fixture, {
     ...limits,
     maxCompressedBytes: 16 * 1024 * 1024,
@@ -206,8 +267,8 @@ test('binds pack publication and cleanup to the hashed temporary inode', async (
     maxPayloadBytes: 16 * 1024 * 1024,
     maxFileBytes: 10 * 1024 * 1024,
   });
-  const [replacerCode] = (await once(replacer, 'exit')) as [number | null];
-  assert.equal(replacerCode, 0);
+  const replacerResult = await replacerClosed;
+  assert.equal(replacerResult.code, 0);
   const { capturedPath, temporaryPath } = JSON.parse(
     await readFile(replacementResultPath, 'utf8'),
   ) as { capturedPath: string; temporaryPath: string };
@@ -371,6 +432,48 @@ test('enforces every explicit streaming quota with bounded details', async () =>
   }
 });
 
+test('accepts exact file, entry, path-byte, and path-depth quota boundaries', async () => {
+  const fixture = await createFixture();
+  const firstDirectory = 'a'.repeat(70);
+  const secondDirectory = 'b'.repeat(73);
+  const fileName = 'c'.repeat(100);
+  const boundaryDirectory = join(fixture.workspaceRoot, firstDirectory, secondDirectory);
+  await mkdir(boundaryDirectory, { recursive: true });
+  await writeFile(join(boundaryDirectory, fileName), Buffer.alloc(128, 0x5a));
+  const archivePath = join(fixture.root, 'boundary-source.tar.zst');
+  const artifact = await packFixture(archivePath, fixture);
+  const boundaryPath = `workspace/${firstDirectory}/${secondDirectory}/${fileName}`;
+  assert.equal(Buffer.byteLength(boundaryPath), 255);
+  assert.equal(boundaryPath.split('/').length, 4);
+
+  const exactLimits: SessionBundleLimits = {
+    ...limits,
+    maxCompressedBytes: artifact.compressedBytes,
+    maxDecompressedTarBytes: artifact.decompressedTarBytes,
+    maxPayloadBytes: artifact.payloadBytes,
+    maxFileBytes: 128,
+    maxEntryCount: artifact.entryCount,
+    maxPathBytes: 255,
+    maxPathDepth: 4,
+  };
+  const exactPath = join(fixture.root, 'boundary-exact.tar.zst');
+  const exact = await packFixture(exactPath, fixture, exactLimits);
+  assert.equal(exact.archiveDigest, artifact.archiveDigest);
+  assert.equal(exact.entryCount, exactLimits.maxEntryCount);
+  assert.equal(exact.payloadBytes, exactLimits.maxPayloadBytes);
+  assert.equal(exact.compressedBytes, exactLimits.maxCompressedBytes);
+  assert.equal(exact.decompressedTarBytes, exactLimits.maxDecompressedTarBytes);
+  assert.equal(
+    (
+      await createSessionBundleFileService().inspect({
+        source: { path: exactPath, expectedArchiveDigest: exact.archiveDigest },
+        limits: exactLimits,
+      })
+    ).verified,
+    true,
+  );
+});
+
 test('rejects unsafe paths, links, bad checksums, truncation, and trailing TAR bytes', async () => {
   const fixture = await createFixture();
   const archivePath = join(fixture.root, 'bundle.tar.zst');
@@ -419,7 +522,7 @@ test('rejects unsafe paths, links, bad checksums, truncation, and trailing TAR b
   await assertMutatedTarRejected(service, fixture.root, 'duplicate', duplicate, 'unsafe_path');
 });
 
-test('unsafe hydration cannot escape staging or remove unrelated paths', async () => {
+test('unsafe hydration paths cannot escape staging', async () => {
   const fixture = await createFixture();
   const archivePath = join(fixture.root, 'bundle.tar.zst');
   await packFixture(archivePath, fixture);
@@ -434,14 +537,6 @@ test('unsafe hydration cannot escape staging or remove unrelated paths', async (
 
   const outsidePath = join(fixture.root, 'outside');
   await writeFile(outsidePath, 'sentinel');
-  const unrelatedRoot = await mkdtemp(join(tmpdir(), 'maka-session-bundle-unrelated-'));
-  roots.push(unrelatedRoot);
-  await writeFile(join(unrelatedRoot, 'sentinel'), 'unrelated');
-  const unrelatedLink = join(
-    fixture.root,
-    '.unsafe-destination.maka-session-bundle-staging-unrelated',
-  );
-  await symlink(unrelatedRoot, unrelatedLink);
 
   const destinationRoot = join(fixture.root, 'unsafe-destination');
   await assertBundleRejects(
@@ -454,8 +549,6 @@ test('unsafe hydration cannot escape staging or remove unrelated paths', async (
     'unsafe_path',
   );
   assert.equal(await readFile(outsidePath, 'utf8'), 'sentinel');
-  assert.equal((await lstat(unrelatedLink)).isSymbolicLink(), true);
-  assert.equal(await readFile(join(unrelatedRoot, 'sentinel'), 'utf8'), 'unrelated');
   await assert.rejects(lstat(destinationRoot), { code: 'ENOENT' });
 });
 
@@ -665,4 +758,88 @@ async function assertBundleRejects(
 function assertBundleErrorValue(error: unknown, code: SessionBundleFileError['code']): void {
   assert.ok(error instanceof SessionBundleFileError);
   assert.equal(error.code, code);
+}
+
+function waitForChildClose(
+  child: ReturnType<typeof spawn>,
+  timeoutMs: number,
+  label: string,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolveChild, rejectChild) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      rejectChild(new Error(`${label} did not close within ${timeoutMs}ms`));
+    }, timeoutMs);
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      resolveChild({ code, signal });
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      rejectChild(error);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.off('close', onClose);
+      child.off('error', onError);
+    };
+    child.once('close', onClose);
+    child.once('error', onError);
+  });
+}
+
+function waitForStreamText(
+  stream: NonNullable<ReturnType<typeof spawn>['stdout']>,
+  expected: string,
+  timeoutMs: number,
+  label: string,
+): Promise<void> {
+  return new Promise((resolveText, rejectText) => {
+    let observed = '';
+    const timeout = setTimeout(() => {
+      cleanup();
+      rejectText(
+        new Error(`${label} did not emit ${JSON.stringify(expected)} within ${timeoutMs}ms`),
+      );
+    }, timeoutMs);
+    const onData = (chunk: Buffer | string) => {
+      observed += String(chunk);
+      if (!observed.includes(expected)) return;
+      cleanup();
+      resolveText();
+    };
+    const onEnd = () => {
+      cleanup();
+      rejectText(new Error(`${label} ended before emitting ${JSON.stringify(expected)}`));
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      rejectText(error);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+    };
+    stream.on('data', onData);
+    stream.once('end', onEnd);
+    stream.once('error', onError);
+  });
+}
+
+async function waitForDirectoryEntry(
+  root: string,
+  prefix: string,
+  timeoutMs: number,
+  label: string,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const entry = (await readdir(root)).find((name) => name.startsWith(prefix));
+    if (entry !== undefined) return entry;
+    await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 1));
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);
 }

@@ -47,6 +47,55 @@ test('uses the rightmost representable USTAR prefix split', () => {
   assert.equal(decodeSessionBundleUstarHeaderV1(header).path, path);
 });
 
+test('accepts exact USTAR field boundaries and non-BMP paths', () => {
+  const name100 = 'n'.repeat(100);
+  const nameHeader = Buffer.from(
+    encodeSessionBundleUstarHeaderV1({ kind: 'file', path: name100, mode: 0o644, size: 0 }),
+  );
+  assert.equal(nameHeader.subarray(0, 100).toString('utf8'), name100);
+  assert.equal(decodeSessionBundleUstarHeaderV1(nameHeader).path, name100);
+
+  const prefix155 = 'p'.repeat(155);
+  const total256 = `${prefix155}/${name100}`;
+  assert.equal(Buffer.byteLength(total256), 256);
+  const splitHeader = Buffer.from(
+    encodeSessionBundleUstarHeaderV1({
+      kind: 'file',
+      path: total256,
+      mode: 0o644,
+      size: 0o77_777_777_777,
+    }),
+  );
+  assert.equal(splitHeader.subarray(0, 100).toString('utf8'), name100);
+  assert.equal(splitHeader.subarray(345, 500).toString('utf8'), prefix155);
+  assert.deepEqual(decodeSessionBundleUstarHeaderV1(splitHeader), {
+    kind: 'file',
+    path: total256,
+    mode: 0o644,
+    size: 0o77_777_777_777,
+  });
+
+  const nonBmpPath = 'workspace/😀.txt';
+  const nonBmpHeader = encodeSessionBundleUstarHeaderV1({
+    kind: 'file',
+    path: nonBmpPath,
+    mode: 0o644,
+    size: 0,
+  });
+  assert.equal(decodeSessionBundleUstarHeaderV1(nonBmpHeader).path, nonBmpPath);
+
+  assertBundleError(
+    () =>
+      encodeSessionBundleUstarHeaderV1({
+        kind: 'file',
+        path: `${'p'.repeat(156)}/n`,
+        mode: 0o644,
+        size: 0,
+      }),
+    'unsafe_path',
+  );
+});
+
 test('rejects noncanonical metadata and unrepresentable paths', () => {
   for (const path of [
     '/absolute',

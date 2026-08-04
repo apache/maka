@@ -69,8 +69,8 @@ import {
   sessionBundleUstarPaddingBytes,
   type SessionBundleUstarHeader,
 } from './session-bundle-ustar.js';
+import { syncDirectory } from './stable-storage.js';
 
-const ZERO_BLOCK = Buffer.alloc(SESSION_BUNDLE_USTAR_BLOCK_BYTES);
 const ARCHIVE_TERMINATOR = Buffer.alloc(SESSION_BUNDLE_USTAR_BLOCK_BYTES * 2);
 const HYDRATION_STAGING_MARKER = '.maka-session-bundle-staging-';
 const PACK_TEMP_MARKER = '.maka-session-bundle-pack-';
@@ -201,9 +201,13 @@ export class NodeSessionBundleFileService implements SessionBundleFileService {
             'Session bundle hydration staging root changed before publication',
           );
         }
+        // Codec participants serialize this check/rename gap with the publication lock.
+        // A non-cooperating writer can still create an empty destination here because
+        // Node does not expose rename-without-replacement for directories.
         await rename(publicationStagingRoot, validated.destinationRoot);
+        published = true;
+        await syncDirectory(parent);
       });
-      published = true;
       return {
         ...inspectionFromReadResult(result),
         destinationRoot: validated.destinationRoot,
@@ -370,6 +374,7 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
       compressedMeter.bytes,
       publicationState,
     );
+    await syncDirectory(parent);
     published = true;
     return {
       path: validated.destination,
@@ -1130,7 +1135,11 @@ class OpenFileHandleWritable extends Writable {
   }
 }
 
-/** Remove the empty frame Node's streaming compressor appends after multi-chunk input. */
+/**
+ * Node 24/26's bundled encoder appends this empty frame after multi-chunk input.
+ * This is undocumented: if Node stops appending it, `_flush` emits the retained
+ * tail unchanged; any other encoder drift fails the golden archive test.
+ */
 class CanonicalZstdOutputTransform extends Transform {
   #tail = Buffer.alloc(0);
 
