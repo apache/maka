@@ -86,7 +86,9 @@ test('runHeadlessTests isolates user state and removes its temporary files', () 
 
       credentialsPath = options.env.MAKA_CREDENTIALS_PATH;
       assert.equal(readFileSync(credentialsPath, 'utf8'), '{"version":1,"values":{}}\n');
-      assert.equal(statSync(credentialsPath).mode & 0o777, 0o600);
+      if (process.platform !== 'win32') {
+        assert.equal(statSync(credentialsPath).mode & 0o777, 0o600);
+      }
       assert.equal(options.env.GIT_CONFIG_NOSYSTEM, '1');
       globalConfigPath = options.env.GIT_CONFIG_GLOBAL;
       assert.equal(readFileSync(globalConfigPath, 'utf8'), '');

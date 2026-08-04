@@ -10,6 +10,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import { terminateChildProcessTree } from '@maka/runtime';
 import { closeElectronApplication } from './electron-lifecycle.mjs';
 import { buildFixtureEnv } from './fixture-env.mjs';
 import { existsSync } from 'node:fs';
@@ -17,7 +18,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import os from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -58,6 +59,13 @@ export const PROGRAMMATIC_SMOKE_CHECKS = [
     id: 'programmatic-dock-visible',
     prompt:
       'macOS: the app keeps its Dock tile, so a reviewer who switches away can switch back via Dock or Cmd+Tab.',
+  },
+];
+
+const STARTUP_SMOKE_CHECKS = [
+  {
+    id: 'startup-app-ready',
+    prompt: 'The real Maka Electron main process reaches app ready.',
   },
 ];
 
@@ -127,6 +135,7 @@ function parseArgs(argv) {
     unverifiedNote: null,
     diagnosticWaitMs: DEFAULT_DIAGNOSTIC_WAIT_MS,
     programmaticOnly: false,
+    startupOnly: false,
     manual: false,
     help: false,
   };
@@ -142,6 +151,7 @@ function parseArgs(argv) {
     else if (arg === '--unverified-note') args.unverifiedNote = argv[++i] ?? '';
     else if (arg === '--diagnostic-wait-ms') args.diagnosticWaitMs = Number(argv[++i]);
     else if (arg === '--programmatic-only') args.programmaticOnly = true;
+    else if (arg === '--startup-only') args.startupOnly = true;
     else if (arg === '--manual') args.manual = true;
     else if (arg === '--help' || arg === '-h') args.help = true;
     else {
@@ -153,7 +163,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: desktop-real-window-smoke.mjs [--scenario name] [--width n] [--height n] [--no-launch] [--no-cleanup-stale] [--fail-note text] [--unverified-note text] [--diagnostic-wait-ms n] [--programmatic-only] [--manual]
+  console.log(`Usage: desktop-real-window-smoke.mjs [--scenario name] [--width n] [--height n] [--no-launch] [--no-cleanup-stale] [--fail-note text] [--unverified-note text] [--diagnostic-wait-ms n] [--programmatic-only] [--startup-only] [--manual]
 
 Launches a real Electron window with an isolated smoke workspace, then prompts
 the reviewer to confirm native desktop behavior that screenshots cannot prove.
@@ -278,7 +288,7 @@ async function launchElectron(args, diagnostics) {
   // nothing to look at — showWindow opts this run back into a visible window,
   // and the dock rule follows it.
   const env = buildFixtureEnv(userDataDir, homeDir, {
-    scenario: args.scenario,
+    scenario: args.startupOnly ? undefined : args.scenario,
     showWindow: true,
   });
   env.MAKA_E2E_FIXTURE_WIDTH = String(args.width);
@@ -303,6 +313,7 @@ async function launchElectron(args, diagnostics) {
     userDataDir,
   };
   let stdoutBuffer = '';
+  const diagnosticWaiters = [];
   diagnostics.windowDiagnostics = [];
   console.log(
     `[real-window-smoke] launched Electron pid=${child.pid ?? 'unknown'} userDataDir=${userDataDir}`,
@@ -314,11 +325,20 @@ async function launchElectron(args, diagnostics) {
     const lines = stdoutBuffer.split('\n');
     stdoutBuffer = lines.pop() ?? '';
     for (const line of lines) {
+      if (line.trim() === '[startup] app ready') {
+        diagnostics.startupReady = true;
+        for (const waiter of [...diagnosticWaiters]) {
+          if (waiter.stage === 'app-ready') waiter.finish(true);
+        }
+      }
       const match = /^\[real-window-smoke\] diagnostic (.+)$/.exec(line.trim());
       if (!match) continue;
       try {
         const diagnostic = JSON.parse(match[1]);
         diagnostics.windowDiagnostics.push(diagnostic);
+        for (const waiter of [...diagnosticWaiters]) {
+          if (waiter.stage === diagnostic.stage) waiter.finish(true);
+        }
       } catch {
         diagnostics.windowDiagnostics.push({ parseError: line.trim() });
       }
@@ -334,8 +354,23 @@ async function launchElectron(args, diagnostics) {
     userDataDir,
     command: launchCommand,
     electronPid: child.pid ?? null,
-    waitForDiagnostics: (timeoutMs = 1500) =>
-      new Promise((resolve) => setTimeout(resolve, Math.max(0, timeoutMs))),
+    waitForDiagnostics: (timeoutMs = 1500, stage = 'settled-1000ms') => {
+      if (stage === 'app-ready' && diagnostics.startupReady) return Promise.resolve(true);
+      if (diagnostics.windowDiagnostics.some((entry) => entry.stage === stage)) {
+        return Promise.resolve(true);
+      }
+      return new Promise((resolveDiagnostic) => {
+        const finish = (observed) => {
+          clearTimeout(timeout);
+          const index = diagnosticWaiters.indexOf(waiter);
+          if (index >= 0) diagnosticWaiters.splice(index, 1);
+          resolveDiagnostic(observed);
+        };
+        const timeout = setTimeout(() => finish(false), Math.max(0, timeoutMs));
+        const waiter = { stage, finish };
+        diagnosticWaiters.push(waiter);
+      });
+    },
   };
 }
 
@@ -458,6 +493,24 @@ function buildProgrammaticResults(args, diagnostics) {
   return checks.map(({ check, ok, note }) => ({
     ...check,
     layer: 'programmatic',
+    status: ok ? 'PASS' : 'FAIL',
+    ok,
+    note,
+  }));
+}
+
+function buildStartupResults(diagnostics) {
+  return [
+    {
+      check: STARTUP_SMOKE_CHECKS[0],
+      ok: diagnostics.startupReady === true,
+      note: diagnostics.startupReady
+        ? 'observed [startup] app ready from the Electron main process'
+        : 'Electron did not reach app ready before the startup deadline',
+    },
+  ].map(({ check, ok, note }) => ({
+    ...check,
+    layer: 'startup',
     status: ok ? 'PASS' : 'FAIL',
     ok,
     note,
@@ -607,18 +660,39 @@ function escapeMd(value) {
 // graceful close, then the same 5s-grace → SIGKILL-the-tree escalation every
 // other launcher uses. A wedged Electron must cost seconds, not a hung gate.
 async function stopElectron(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  await closeElectronApplication(
-    {
-      close: () =>
-        new Promise((resolve) => {
-          child.once('exit', resolve);
-          child.kill('SIGTERM');
-        }),
-      process: () => child,
-    },
-    5_000,
-  );
+  try {
+    if (child.exitCode === null && child.signalCode === null) {
+      if (process.platform === 'win32') {
+        await terminateChildProcessTree(child, 'SIGKILL');
+        await new Promise((resolveExit) => {
+          if (child.exitCode !== null || child.signalCode !== null) {
+            resolveExit();
+            return;
+          }
+          const timeout = setTimeout(resolveExit, 2_000);
+          child.once('exit', () => {
+            clearTimeout(timeout);
+            resolveExit();
+          });
+        });
+        return;
+      }
+      await closeElectronApplication(
+        {
+          close: () =>
+            new Promise((resolve) => {
+              child.once('exit', resolve);
+              child.kill('SIGTERM');
+            }),
+          process: () => child,
+        },
+        5_000,
+      );
+    }
+  } finally {
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  }
 }
 
 // Launch-only mode. The checklist and the report belong to the smoke gate;
@@ -673,18 +747,22 @@ async function main() {
     if (launchInfo?.waitForDiagnostics) {
       await launchInfo.waitForDiagnostics(
         Number.isFinite(args.diagnosticWaitMs) ? args.diagnosticWaitMs : 1500,
+        args.startupOnly ? 'app-ready' : 'settled-1000ms',
       );
       diagnostics.windowDiagnosticObserved = (diagnostics.windowDiagnostics?.length ?? 0) > 0;
     }
-    const programmaticResults = buildProgrammaticResults(args, diagnostics);
-    const results = args.programmaticOnly
-      ? programmaticResults
-      : [
-          ...programmaticResults,
-          ...(args.unverifiedNote !== null
-            ? buildUnverifiedOsHitTestResults(args)
-            : await promptChecks(args)),
-        ];
+    const programmaticResults = args.startupOnly
+      ? buildStartupResults(diagnostics)
+      : buildProgrammaticResults(args, diagnostics);
+    const results =
+      args.programmaticOnly || args.startupOnly
+        ? programmaticResults
+        : [
+            ...programmaticResults,
+            ...(args.unverifiedNote !== null
+              ? buildUnverifiedOsHitTestResults(args)
+              : await promptChecks(args)),
+          ];
     report = await writeReport(args, launchInfo, results, diagnostics);
   } finally {
     // Reclaim the window even when a later step throws — a failed report
@@ -694,7 +772,7 @@ async function main() {
   process.exit(report.ok ? 0 : 1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     console.error('[real-window-smoke] fatal:', err);
     process.exit(1);
