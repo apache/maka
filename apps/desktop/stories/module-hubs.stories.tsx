@@ -382,6 +382,27 @@ const configuredMcpConfig: McpConfigFile = {
   },
 };
 
+const editorMcpConfig: McpConfigFile = {
+  version: 1,
+  mcpServers: {
+    slack: {
+      enabled: false,
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-slack@2025.4.25'],
+      env: { SLACK_BOT_TOKEN: '', SLACK_TEAM_ID: '', SLACK_CHANNEL_IDS: '' },
+    },
+  },
+};
+
+const editorMcpStatus: McpServerStatus = {
+  serverId: 'slack',
+  state: 'disabled',
+  transport: 'stdio',
+  toolCount: 0,
+  tools: [],
+  updatedAt: NOW,
+};
+
 const configuredMcpStatuses: McpServerStatus[] = [
   {
     serverId: 'filesystem',
@@ -439,6 +460,21 @@ const withConfiguredMcpBridge = withScopedMakaBridge({
     cancelInstall: async () => configuredMcpConfig,
     test: async () => ({ ok: true, status: configuredMcpStatuses[0], latencyMs: 42 }),
     reconnect: async () => configuredMcpStatuses[0],
+    subscribeChanges: () => () => {},
+  },
+});
+
+const withEditorMcpBridge = withScopedMakaBridge({
+  mcp: {
+    getConfig: async () => editorMcpConfig,
+    listStatuses: async () => [editorMcpStatus],
+    setConfig: async () => editorMcpConfig,
+    upsert: async () => editorMcpConfig,
+    install: async () => editorMcpConfig,
+    remove: async () => editorMcpConfig,
+    cancelInstall: async () => editorMcpConfig,
+    test: async () => ({ ok: false, status: editorMcpStatus, latencyMs: 0 }),
+    reconnect: async () => editorMcpStatus,
     subscribeChanges: () => () => {},
   },
 });
@@ -764,6 +800,20 @@ export const ExtensionsMcpConfigured: Story = {
     if (!installed) throw new Error('Configured MCP story did not render the installed tab');
     installed.click();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → Slack 管理, with credential fields visible.
+export const ExtensionsMcpEditor: Story = {
+  decorators: [withEditorMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const manage = await waitForStoryButton(
+      canvasElement,
+      (button) => button.textContent?.trim() === '管理',
+    );
+    manage.click();
+    await waitForStoryText(canvasElement.ownerDocument.body, '编辑 slack');
   },
 };
 

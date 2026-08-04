@@ -520,7 +520,7 @@ function McpCatalogCard(props: {
     >
       <Item
         className="maka-mcp-market-item"
-        align="start"
+        align="center"
         density="spacious"
         startContent={(
           <div
@@ -680,8 +680,8 @@ function McpEditorDialog(props: {
       isOpen={props.isOpen}
       onOpenChange={props.onOpenChange}
       className="maka-mcp-editor-dialog"
-      width="min(92vw, var(--maka-chat-measure))"
-      maxHeight="85dvh"
+      width="min(92vw, 680px)"
+      maxHeight="min(760px, calc(100dvh - 32px))"
       purpose="form"
     >
       <Layout
@@ -694,7 +694,7 @@ function McpEditorDialog(props: {
           />
         }
         content={
-          <LayoutContent padding={0}>
+          <LayoutContent padding={0} isScrollable={false}>
         {!editing && (
           <RadioList
             className="maka-mcp-editor-choice"
@@ -716,12 +716,12 @@ function McpEditorDialog(props: {
             <RadioListItem
               value="manual"
               label={props.copy.editor.manual}
-              startContent={<Terminal aria-hidden="true" />}
+              startContent={<Terminal className="maka-mcp-choice-icon" aria-hidden="true" />}
             />
             <RadioListItem
               value="json"
               label={props.copy.editor.pasteJson}
-              startContent={<FileCode aria-hidden="true" />}
+              startContent={<FileCode className="maka-mcp-choice-icon" aria-hidden="true" />}
             />
           </RadioList>
         )}
@@ -750,42 +750,43 @@ function McpEditorDialog(props: {
               <RadioListItem
                 value="stdio"
                 label={props.copy.editor.localStdio}
-                startContent={<Terminal aria-hidden="true" />}
+                startContent={<Terminal className="maka-mcp-choice-icon" aria-hidden="true" />}
               />
               <RadioListItem
                 value="remote"
                 label={props.copy.editor.remoteUrl}
-                startContent={<Globe aria-hidden="true" />}
+                startContent={<Globe className="maka-mcp-choice-icon" aria-hidden="true" />}
               />
             </RadioList>
             <div className="maka-mcp-form-fields">
-              <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} description={props.copy.editor.serverIdHelp} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
+              <div className="maka-mcp-primary-fields">
+                <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
+                {props.state.draft.kind === 'stdio' ? (
+                  <TextInput hasAutoFocus={editing} label={props.copy.editor.command} value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" status={props.errors.command ? { type: 'error', message: props.copy.editor.required } : undefined} />
+                ) : (
+                  <TextInput hasAutoFocus={editing} label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
+                )}
+              </div>
               {props.state.draft.kind === 'stdio' ? (
                 <>
-                  <TextInput hasAutoFocus={editing} label={props.copy.editor.command} value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" status={props.errors.command ? { type: 'error', message: props.copy.editor.required } : undefined} />
                   <TextArea label={props.copy.editor.arguments} description={props.copy.editor.argumentsHelp} value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} />
-                  <Collapsible className="maka-mcp-advanced" defaultIsOpen={false} trigger={props.copy.editor.advanced}><div className="maka-mcp-advanced-fields">
-                    <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
-                    <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
-                  </div></Collapsible>
+                  <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
+                  <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
                 </>
               ) : (
                 <>
-                  <TextInput hasAutoFocus={editing} label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
-                  <Collapsible className="maka-mcp-advanced" defaultIsOpen={false} trigger={props.copy.editor.advanced}><div className="maka-mcp-advanced-fields">
-                    <Selector
-                      value={props.state.draft.transport}
-                      options={[
-                        { value: 'auto', label: props.copy.editor.transportAuto },
-                        { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
-                        { value: 'sse', label: props.copy.editor.transportLegacySse },
-                      ]}
-                      onChange={(value) => updateDraft('transport', value as Draft['transport'])}
-                      label={props.copy.editor.transportLabel}
-                      width="100%"
-                    />
-                    <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
-                  </div></Collapsible>
+                  <Selector
+                    value={props.state.draft.transport}
+                    options={[
+                      { value: 'auto', label: props.copy.editor.transportAuto },
+                      { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
+                      { value: 'sse', label: props.copy.editor.transportLegacySse },
+                    ]}
+                    onChange={(value) => updateDraft('transport', value as Draft['transport'])}
+                    label={props.copy.editor.transportLabel}
+                    width="100%"
+                  />
+                  <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
                 </>
               )}
             </div>

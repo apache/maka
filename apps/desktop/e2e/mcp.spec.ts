@@ -23,6 +23,112 @@ test('module navigation removes the hidden chat surface from layout and hit test
   ).toBe(false);
 });
 
+test('MCP workspace stays centered without horizontal overflow at compact widths', async ({ window: page }) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('navigation', { name: '对话列表' }).getByRole('button', { name: '扩展', exact: true }).click();
+  await page.locator('.maka-module-hub-selector').getByRole('button', { name: 'MCP' }).click();
+  await expect(page.locator('.maka-mcp-workspace')).toBeVisible();
+
+  for (const width of [861, 860, 761]) {
+    await page.setViewportSize({ width, height: 700 });
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+
+    const geometry = await page.evaluate(() => {
+      const main = document.querySelector<HTMLElement>('.maka-module-main');
+      const header = document.querySelector<HTMLElement>('.maka-module-main-header');
+      const workspace = document.querySelector<HTMLElement>('.maka-mcp-workspace');
+      const commandBar = document.querySelector<HTMLElement>('.maka-mcp-command-bar');
+      if (!main || !header || !workspace || !commandBar) {
+        throw new Error('Expected the MCP module layout');
+      }
+      const mainRect = main.getBoundingClientRect();
+      const workspaceRect = workspace.getBoundingClientRect();
+      return {
+        mainOverflow: main.scrollWidth - main.clientWidth,
+        centerDelta: Math.abs(
+          workspaceRect.left + workspaceRect.width / 2
+            - (mainRect.left + main.clientWidth / 2),
+        ),
+        headerDisplay: getComputedStyle(header).display,
+        commandBarDisplay: getComputedStyle(commandBar).display,
+      };
+    });
+
+    expect(geometry.mainOverflow, `${width}px: ${JSON.stringify(geometry)}`).toBe(0);
+    expect(geometry.centerDelta, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(1);
+    expect(geometry.headerDisplay).toBe(width <= 860 ? 'grid' : 'flex');
+    expect(geometry.commandBarDisplay).toBe(width <= 860 ? 'grid' : 'flex');
+  }
+});
+
+test('MCP market cards vertically center their item content', async ({ window: page }) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('navigation', { name: '对话列表' }).getByRole('button', { name: '扩展', exact: true }).click();
+  await page.locator('.maka-module-hub-selector').getByRole('button', { name: 'MCP' }).click();
+
+  const alignment = await page.locator('.maka-mcp-market-card').first().evaluate((card) => {
+    const item = card.querySelector<HTMLElement>('.maka-mcp-market-item');
+    if (!item) throw new Error('Expected the MCP catalog item');
+    const cardRect = card.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    const itemCenter = itemRect.top + itemRect.height / 2;
+    const childCenterDeltas = Array.from(item.children, (child) => {
+      const rect = child.getBoundingClientRect();
+      return Math.abs(rect.top + rect.height / 2 - itemCenter);
+    });
+    return {
+      cardHeight: cardRect.height,
+      insetDelta: Math.abs(
+        itemRect.top - cardRect.top
+          - (cardRect.bottom - itemRect.bottom),
+      ),
+      maxChildCenterDelta: Math.max(...childCenterDeltas),
+    };
+  });
+
+  expect(alignment.cardHeight).toBeGreaterThanOrEqual(104);
+  expect(alignment.insetDelta, JSON.stringify(alignment)).toBeLessThanOrEqual(1);
+  expect(alignment.maxChildCenterDelta, JSON.stringify(alignment)).toBeLessThanOrEqual(1);
+});
+
+test('credentialed MCP editor fits a compact desktop viewport without incidental scrolling', async ({ window: page }) => {
+  await page.setViewportSize({ width: 1164, height: 700 });
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('navigation', { name: '对话列表' }).getByRole('button', { name: '扩展', exact: true }).click();
+  await page.locator('.maka-module-hub-selector').getByRole('button', { name: 'MCP' }).click();
+
+  const slackCard = page.locator('[data-maka-contract="mcp-market-card"]').filter({ hasText: 'Slack' });
+  await slackCard.getByRole('button', { name: '安装 Slack' }).click();
+  await slackCard.getByRole('button', { name: '管理' }).click();
+
+  const editor = page.getByRole('dialog', { name: '编辑 slack' });
+  await expect(editor).toBeVisible();
+  await expect.poll(() => editor.evaluate((element) => (
+    element.getAnimations().every((animation) => animation.playState === 'finished')
+  ))).toBe(true);
+  const overflow = await editor.evaluate((dialog) => {
+    const fields = dialog.querySelector<HTMLElement>('.maka-mcp-form-fields');
+    if (!fields) throw new Error('Expected MCP editor fields');
+    return {
+      dialog: dialog.scrollHeight - dialog.clientHeight,
+      fields: fields.scrollHeight - fields.clientHeight,
+    };
+  });
+
+  expect(overflow.dialog, JSON.stringify(overflow)).toBeLessThanOrEqual(1);
+  expect(overflow.fields, JSON.stringify(overflow)).toBeLessThanOrEqual(1);
+
+  const selectedTransportSpacing = await editor.getByRole('radio', { name: '本地 stdio' }).evaluate((radio) => {
+    const radioWrapper = radio.parentElement;
+    const icon = radioWrapper?.nextElementSibling;
+    if (!(radioWrapper instanceof HTMLElement) || !(icon instanceof SVGElement)) {
+      throw new Error('Expected selected transport radio and icon');
+    }
+    return icon.getBoundingClientRect().left - radioWrapper.getBoundingClientRect().right;
+  });
+  expect(selectedTransportSpacing).toBeGreaterThanOrEqual(4);
+});
+
 test('MCP module completes stdio add, discovery, disable, JSON import, and delete', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   const sidebar = page.getByRole('navigation', { name: '对话列表' });
@@ -73,14 +179,23 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await expect(editor.locator('label').filter({ hasText: '服务器 ID' })).toBeVisible();
   await expect(editor.locator('label').filter({ hasText: '命令' })).toBeVisible();
   await expect(editor.locator('label').filter({ hasText: '参数' })).toBeVisible();
+  await expect(editor.locator('label').filter({ hasText: '工作目录' })).toBeVisible();
+  await expect(editor.locator('label').filter({ hasText: '环境变量' })).toBeVisible();
+  const environmentBox = await editor.getByLabel('环境变量').boundingBox();
+  const workingDirectoryBox = await editor.getByLabel('工作目录').boundingBox();
+  expect(environmentBox).not.toBeNull();
+  expect(workingDirectoryBox).not.toBeNull();
+  expect(environmentBox!.y).toBeLessThan(workingDirectoryBox!.y);
+  await expect(editor.getByText('高级设置', { exact: true })).toHaveCount(0);
   await editor.getByRole('button', { name: '保存并连接' }).click();
   await expect(editor.getByLabel('服务器 ID')).toHaveAttribute('aria-invalid', 'true');
   await expect(editor.getByLabel('命令')).toHaveAttribute('aria-invalid', 'true');
   await editor.getByLabel('服务器 ID').fill('e2e-fixture');
   await expect(editor.getByLabel('命令')).toHaveAttribute('aria-invalid', 'true');
   await editor.getByRole('radio', { name: '远程 URL' }).click();
-  await editor.getByText('高级设置', { exact: true }).click();
   await expect(editor.locator('label').filter({ hasText: '传输协议' })).toBeVisible();
+  await expect(editor.locator('label').filter({ hasText: 'HTTP 请求头' })).toBeVisible();
+  await expect(editor.getByText('高级设置', { exact: true })).toHaveCount(0);
   await editor.getByRole('radio', { name: '本地 stdio' }).click();
   await editor.getByLabel('命令').fill(process.execPath);
   await editor.getByLabel('参数').fill(fixtureServer);

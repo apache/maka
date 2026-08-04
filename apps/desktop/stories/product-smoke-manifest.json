@@ -78,6 +78,13 @@
       "viewports": ["wide", "compact", "floor"],
       "colorSchemes": ["light", "dark"]
     },
+    "mcpEditor": {
+      "storyId": "product-module-hubs--extensions-mcp-editor",
+      "productionHost": "AppShellDetailPanel > McpPage > McpEditorDialog",
+      "state": "Credentialed stdio server editor with all required setup fields visible",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
     "mcpConnectionFailed": {
       "storyId": "product-module-hubs--extensions-mcp-connection-failed",
       "productionHost": "AppShellDetailPanel > McpPage",
