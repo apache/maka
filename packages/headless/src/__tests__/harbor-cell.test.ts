@@ -2096,7 +2096,13 @@ describe('runHarborCell', () => {
       for (const expected of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
         assert.ok(toolNames.includes(expected), `expected provider schema tool ${expected}`);
       }
-      for (const unexpected of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
+      for (const unexpected of [
+        'WebSearch',
+        'agent_spawn',
+        'agent_swarm',
+        'agent_list',
+        'agent_output',
+      ]) {
         assert.ok(!toolNames.includes(unexpected), `unexpected default Agent tool ${unexpected}`);
       }
       assert.match(
@@ -2132,6 +2138,82 @@ describe('runHarborCell', () => {
       assert.deepEqual(scopedInput.toolAvailability, { economy: true, groups: [] });
       for (const capability of AGENT_RUNTIME_CAPABILITIES) {
         assert.equal(scopedInput[capability], undefined, `unexpected scoped ${capability}`);
+      }
+    });
+  });
+
+  test('Harbor opt-in routes native WebSearch over Responses and Anthropic Messages', async () => {
+    await withDirs(async ({ workspaceDir, artifactStore }) => {
+      const toolExecutor = fakeToolExecutor();
+      for (const wire of [
+        {
+          provider: 'deepseek',
+          providerToolKind: 'openai-web-search',
+          env: {
+            DEEPSEEK_API_KEY: 'test-key',
+            MAKA_WEB_SEARCH_ENABLED: 'true',
+          },
+        },
+        {
+          provider: 'anthropic-compatible',
+          providerToolKind: 'anthropic-web-search-20250305',
+          env: {
+            MAKA_HOST_API_KEY: 'test-key',
+            MAKA_HOST_BASE_URL: 'https://api.deepseek.com/anthropic',
+            MAKA_WEB_SEARCH_ENABLED: 'true',
+          },
+        },
+      ] as const) {
+        const registry = new BackendRegistry();
+        const register = buildAiSdkCellBackendRegistration({
+          provider: wire.provider,
+          model: 'deepseek-v4-flash',
+          env: wire.env,
+          now: () => 123,
+          newId: () => 'id',
+        });
+        await registerProjectedAiSdkBackend(register, registry, {
+          config: {
+            id: `harbor-native-search-${wire.provider}`,
+            backend: 'ai-sdk',
+            llmConnectionSlug: wire.provider,
+            model: 'deepseek-v4-flash',
+            systemPrompt: DEFAULT_HEADLESS_SYSTEM_PROMPT,
+          },
+          task: { id: 'harbor-cell', instruction: 'search', workspaceDir },
+          storageRoot: workspaceDir,
+          workspaceDir,
+          artifactStore,
+          realBackendIsolation: {
+            kind: 'external',
+            label: 'Harbor task container',
+            toolExecutor,
+          },
+          toolExecutor,
+          ...createHeadlessSessionCapabilityBridge().capabilities,
+        });
+
+        const rootBackend = await registry.build('ai-sdk', backendContext(workspaceDir));
+        const rootInput = (rootBackend as unknown as { input: AiSdkBackendInput }).input;
+        const rootWebSearch = rootInput.tools.find((tool) => tool.name === 'WebSearch');
+        assert.equal(rootWebSearch?.providerTool?.kind, wire.providerToolKind);
+
+        const scopedBackend = await registry.build('ai-sdk', {
+          ...backendContext(workspaceDir),
+          tools: [
+            {
+              name: 'ReadOnlyProbe',
+              description: 'Read-only test probe',
+              parameters: {},
+              impl: () => 'ok',
+            },
+          ],
+        });
+        const scopedInput = (scopedBackend as unknown as { input: AiSdkBackendInput }).input;
+        assert.deepEqual(
+          scopedInput.tools.map((tool) => tool.name),
+          ['ReadOnlyProbe'],
+        );
       }
     });
   });

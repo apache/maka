@@ -627,6 +627,9 @@ function projectText(
       turnId: event.turnId,
       ts: event.ts,
       text: event.content.text,
+      ...(event.content.providerOptions !== undefined
+        ? { providerOptions: structuredClone(event.content.providerOptions) }
+        : {}),
       ...(contentOrder ? { contentOrder } : {}),
       modelId: header.modelId,
     });
@@ -764,6 +767,12 @@ function projectFunctionCall(
     // the UI timeline falls back to legacy tools-before-text ordering.
     ...(event.refs?.stepId ? { stepId: event.refs.stepId } : {}),
     args: event.content.args,
+    ...(event.content.providerOptions !== undefined
+      ? { providerOptions: structuredClone(event.content.providerOptions) }
+      : {}),
+    ...(event.content.providerExecuted !== undefined
+      ? { providerExecuted: event.content.providerExecuted }
+      : {}),
   });
   return true;
 }
@@ -859,6 +868,12 @@ function projectFunctionResponse(
     toolUseId,
     isError: event.content.isError === true,
     content: resultContent,
+    ...(event.content.providerExecuted !== undefined
+      ? { providerExecuted: event.content.providerExecuted }
+      : {}),
+    ...(event.content.providerExecuted && event.content.providerOutput !== undefined
+      ? { providerOutput: structuredClone(event.content.providerOutput) }
+      : {}),
     ...(numberStateDelta(event, 'durationMs') !== undefined
       ? { durationMs: numberStateDelta(event, 'durationMs') }
       : {}),

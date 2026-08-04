@@ -21,6 +21,7 @@ import {
   buildLlmHistorySummarizer,
   buildPersonalizationPromptFragment,
   buildCancelPlanTool,
+  buildParentAgentTools,
   buildPricingLookup,
   buildProviderOptions,
   buildSubmitPlanTool,
@@ -35,8 +36,10 @@ import {
   createProxiedFetchTransport,
   getAIModel,
   isDeepResearchToolAllowed,
+  listRunnableBuiltinAgentDefinitions,
   projectEffectiveProductToolSurface,
   recordToolInvocation,
+  routeWebSearchTools,
   resolveProjectGitInfo,
   resolveSelectedModelContextWindow,
   renderInterruptedPlanContext,
@@ -272,6 +275,8 @@ export interface HostAiSdkBackendInput {
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
+  readonly childTools?: readonly MakaTool[];
+  readonly worktreePatchWriteBackAvailable?: boolean;
   readonly childAgents?: HostChildAgentBackendCapabilities;
   readonly planStore?: PlanStore;
   readonly deepResearchTools?: readonly MakaTool[];
@@ -296,6 +301,10 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     input.context.abortSignal,
   );
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
+  const runtimePolicySnapshot = await readDuringBackendCreation(
+    () => input.runtimePolicy.runtimePolicy.getSnapshot(),
+    input.context.abortSignal,
+  );
   const transport = createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
   );
@@ -348,20 +357,49 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
             input.context.abortSignal,
           )
         : [];
-    const hostTools = [...(input.hostTools ?? []), ...rootTools];
+    const candidateHostTools = [...(input.hostTools ?? []), ...rootTools];
+    const webSearchRouting = {
+      tools: candidateHostTools,
+      settings: runtimePolicySnapshot.policy.webSearch,
+      connection: target.connection,
+      model: target.model,
+      privacy: runtimePolicySnapshot.policy.privacy,
+    } as const;
+    const hostTools = routeWebSearchTools(webSearchRouting);
+    const boundTools = input.context.tools
+      ? routeWebSearchTools({
+          ...webSearchRouting,
+          tools: input.context.tools,
+        })
+      : undefined;
+    const routedChildTools = input.childTools
+      ? routeWebSearchTools({
+          ...webSearchRouting,
+          tools: input.childTools,
+        })
+      : undefined;
+    const parentAgentTools = routedChildTools
+      ? buildParentAgentTools({
+          taskLedger: input.taskLedger,
+          definitions: listRunnableBuiltinAgentDefinitions({
+            tools: routedChildTools,
+            worktreeChildExecutorAvailable: input.worktreePatchWriteBackAvailable,
+          }),
+        })
+      : input.parentAgentTools;
     modelComposition = createHostExecutionModelComposition({
       policy: input.runtimePolicy.runtimePolicy,
       skills: input.skills,
       memory: input.memory,
       taskLedger: input.taskLedger,
       ...(input.context.systemPrompt ? { childInstruction: input.context.systemPrompt } : {}),
-      ...(input.context.tools ? { boundTools: input.context.tools } : {}),
+      ...(boundTools ? { boundTools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
       ...(hostTools.length > 0 ? { hostTools } : {}),
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       ...(input.goalTools ? { goalTools: input.goalTools } : {}),
-      ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
+      ...(parentAgentTools ? { parentAgentTools } : {}),
       ...(planState && input.planStore
         ? {
             plan: {

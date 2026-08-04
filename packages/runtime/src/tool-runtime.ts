@@ -112,6 +112,15 @@ export interface MakaTool<P = any, R = unknown> {
   categoryHint?: ToolCategory;
   /** Optional trusted facts about the executor that runs this tool. */
   executionFacts?: ToolExecutionFacts;
+  /**
+   * Provider-native tool declaration. The provider executes this tool inside
+   * the primary model request; ToolRuntime must never dispatch `impl` for it.
+   */
+  providerTool?: {
+    readonly kind: 'openai-web-search' | 'anthropic-web-search-20250305';
+    readonly searchContextSize?: 'low' | 'medium' | 'high';
+    readonly maxUses?: number;
+  };
   /** Crash-recovery contract used by the durable tool boundary. */
   recoveryMode?: ToolRecoveryMode;
   /** Step-level admission contract. Exclusive tools cannot share an assistant step. */

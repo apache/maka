@@ -52,6 +52,7 @@ describe('Harbor adapter contract', () => {
             apiKey: 'private-provider-api-key',
           },
         },
+        providerExecuted: true,
       },
       refs: { stepId: 'step-1', toolCallId: 'call-1' },
     });
@@ -2303,6 +2304,12 @@ with tempfile.TemporaryDirectory() as tmp:
     })._cell_env(Path("/logs/agent/instruction.txt"))
     assert agent_tools_env["MAKA_AGENT_TOOLS"] == "true", agent_tools_env
 
+    web_search_env = MakaAgent(Path(tmp), extra_env={
+        "MAKA_BACKEND": "fake",
+        "MAKA_WEB_SEARCH_ENABLED": "true",
+    })._cell_env(Path("/logs/agent/instruction.txt"))
+    assert web_search_env["MAKA_WEB_SEARCH_ENABLED"] == "true", web_search_env
+
     # Host-side LLM mode must not forward provider secrets into the task-cell env.
     host_agent = MakaAgent(Path(tmp), extra_env={
         "MAKA_HOST_API_KEY_FILE": "/host/secrets/deepseek-key",
@@ -2836,6 +2843,29 @@ assert provider_options_extra["maka_provider_options"] == {
         "apiKey": "[REDACTED]",
     }
 }, provider_options_extra
+
+native_search_events = json.loads(json.dumps(events))
+native_search_events[5]["content"]["providerExecuted"] = True
+native_search_events[6]["content"]["providerExecuted"] = True
+native_search_events[6]["content"]["providerOutput"] = [
+    {
+        "type": "web_search_result",
+        "url": "https://maka.example/",
+        "title": "Maka",
+        "pageAge": None,
+        "encryptedContent": "encrypted-result",
+    }
+]
+native_search_events[7]["content"]["providerOptions"] = {
+    "openai": {
+        "itemId": "message-1",
+        "annotations": [{"type": "url_citation", "url": "https://maka.example/"}],
+    }
+}
+native_search = build_runtime_trajectory(
+    native_search_events, "completed", runtime_refs
+)
+assert native_search.artifact_kind == "full", native_search
 
 schema_corpus = json.loads(${JSON.stringify(schemaCorpusJson)})
 schema_runtime_refs = {

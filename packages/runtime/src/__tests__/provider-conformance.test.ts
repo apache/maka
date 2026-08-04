@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
 import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core';
-import { generateText, isStepCount, streamText, tool } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { anthropic } from '@ai-sdk/anthropic';
+import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
@@ -64,6 +66,172 @@ describe('models.dev provider conformance', () => {
     });
 
     assert.deepEqual(requestBody?.cache_control, { type: 'ephemeral' });
+  });
+
+  test('Anthropic Messages accepts the Claude Code web_search_20250305 tool', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      respondJson(response, 200, {
+        id: 'msg_anthropic_search',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-4-6',
+        content: [
+          {
+            type: 'server_tool_use',
+            id: 'search_cc',
+            name: 'web_search',
+            input: { query: 'latest Maka' },
+          },
+          {
+            type: 'web_search_tool_result',
+            tool_use_id: 'search_cc',
+            content: [
+              {
+                type: 'web_search_result',
+                url: 'https://maka.example/',
+                title: 'Maka',
+                encrypted_content: 'encrypted-result',
+                page_age: '2026-08-04',
+              },
+            ],
+          },
+          { type: 'text', text: 'Search complete.' },
+        ],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 8, output_tokens: 3 },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'anthropic-search',
+      name: 'Anthropic Search',
+      providerType: 'anthropic',
+      baseUrl: server.url,
+      defaultModel: 'claude-sonnet-4-6',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await generateText({
+      model: getAIModel({
+        connection,
+        apiKey: 'anthropic-test-key',
+        modelId: connection.defaultModel,
+      }),
+      prompt: 'Search.',
+      tools: {
+        WebSearch: anthropic.tools.webSearch_20250305({ maxUses: 8 }),
+      },
+      maxRetries: 0,
+    });
+
+    assert.deepEqual(requestBody?.tools, [
+      {
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: 8,
+      },
+    ]);
+  });
+
+  test('Anthropic Messages replays provider-executed web search inside assistant content', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      respondJson(response, 200, {
+        id: 'msg_anthropic_search_replay',
+        type: 'message',
+        role: 'assistant',
+        model: 'deepseek-v4-flash',
+        content: [{ type: 'text', text: 'Replay complete.' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 8, output_tokens: 3 },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'anthropic-compatible-search-replay',
+      name: 'Anthropic-compatible Search Replay',
+      providerType: 'anthropic-compatible',
+      baseUrl: server.url,
+      defaultModel: 'deepseek-v4-flash',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Search.' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'search_cc',
+            toolName: 'WebSearch',
+            input: { query: 'latest Maka' },
+            providerExecuted: true,
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'search_cc',
+            toolName: 'WebSearch',
+            output: {
+              type: 'json',
+              value: [
+                {
+                  type: 'web_search_result',
+                  url: 'https://maka.example/',
+                  title: 'Maka',
+                  pageAge: null,
+                  encryptedContent: 'encrypted-result',
+                },
+              ],
+            },
+          },
+        ],
+      },
+      { role: 'user', content: 'Continue without searching.' },
+    ];
+
+    await generateText({
+      model: getAIModel({
+        connection,
+        apiKey: 'anthropic-test-key',
+        modelId: connection.defaultModel,
+      }),
+      messages,
+      tools: {
+        WebSearch: anthropic.tools.webSearch_20250305({ maxUses: 8 }),
+      },
+      maxRetries: 0,
+    });
+
+    const requestMessages = requestBody?.messages as
+      | Array<{ role?: string; content?: Array<Record<string, unknown>> }>
+      | undefined;
+    const assistant = requestMessages?.find((message) => message.role === 'assistant');
+    assert.deepEqual(assistant?.content?.[0], {
+      type: 'server_tool_use',
+      id: 'search_cc',
+      name: 'web_search',
+      input: { query: 'latest Maka' },
+    });
+    assert.deepEqual(assistant?.content?.[1], {
+      type: 'web_search_tool_result',
+      tool_use_id: 'search_cc',
+      content: [
+        {
+          type: 'web_search_result',
+          url: 'https://maka.example/',
+          title: 'Maka',
+          page_age: null,
+          encrypted_content: 'encrypted-result',
+        },
+      ],
+    });
   });
 
   test('xAI OAuth credential completes a Grok 4.5 Responses reasoning tool loop', async () => {
@@ -445,6 +613,161 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requests, ['/v1/responses', '/v1/chat/completions']);
     assert.equal(gpt5.text, 'Responses wire.');
     assert.equal(gpt4o.text, 'Chat wire.');
+  });
+
+  test('DeepSeek V4 Flash uses Responses and accepts provider-native web search', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    let requestUrl: string | undefined;
+    let authorization: string | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      requestUrl = request.url;
+      authorization = request.headers.authorization;
+      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      respondJson(response, 200, {
+        id: 'resp_deepseek_search',
+        object: 'response',
+        created_at: 1,
+        status: 'completed',
+        model: 'deepseek-v4-flash',
+        output: [
+          {
+            type: 'web_search_call',
+            id: 'search_deepseek',
+            status: 'completed',
+            action: { type: 'search', queries: ['latest Maka'] },
+          },
+          {
+            type: 'message',
+            id: 'msg_deepseek',
+            status: 'completed',
+            role: 'assistant',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Search complete.',
+                annotations: [],
+                logprobs: [],
+              },
+            ],
+          },
+        ],
+        usage: { input_tokens: 8, output_tokens: 3, total_tokens: 11 },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'deepseek',
+      name: 'DeepSeek',
+      providerType: 'deepseek',
+      baseUrl: server.url,
+      defaultModel: 'deepseek-v4-flash',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await generateText({
+      model: getAIModel({
+        connection,
+        apiKey: 'deepseek-test-key',
+        modelId: connection.defaultModel,
+      }),
+      prompt: 'Search.',
+      tools: { WebSearch: openai.tools.webSearch() },
+      maxRetries: 0,
+    });
+
+    assert.equal(requestUrl, '/responses');
+    assert.equal(authorization, 'Bearer deepseek-test-key');
+    assert.deepEqual(requestBody?.tools, [{ type: 'web_search' }]);
+  });
+
+  test('DeepSeek Responses replays hosted web search as an item reference, not an orphan output', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      respondJson(response, 200, {
+        id: 'resp_deepseek_search_replay',
+        object: 'response',
+        created_at: 2,
+        status: 'completed',
+        model: 'deepseek-v4-flash',
+        output: [
+          {
+            type: 'message',
+            id: 'msg_deepseek_replay',
+            status: 'completed',
+            role: 'assistant',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Replay complete.',
+                annotations: [],
+                logprobs: [],
+              },
+            ],
+          },
+        ],
+        usage: { input_tokens: 8, output_tokens: 3, total_tokens: 11 },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'deepseek-search-replay',
+      name: 'DeepSeek Search Replay',
+      providerType: 'deepseek',
+      baseUrl: server.url,
+      defaultModel: 'deepseek-v4-flash',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Search.' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'search_deepseek',
+            toolName: 'WebSearch',
+            input: {},
+            providerExecuted: true,
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'search_deepseek',
+            toolName: 'WebSearch',
+            output: {
+              type: 'json',
+              value: { action: { type: 'search', queries: ['latest Maka'] } },
+            },
+          },
+        ],
+      },
+      { role: 'user', content: 'Continue without searching.' },
+    ];
+
+    await generateText({
+      model: getAIModel({
+        connection,
+        apiKey: 'deepseek-test-key',
+        modelId: connection.defaultModel,
+      }),
+      messages,
+      tools: { WebSearch: openai.tools.webSearch() },
+      maxRetries: 0,
+    });
+
+    const input = requestBody?.input as Array<Record<string, unknown>> | undefined;
+    assert.equal(
+      input?.some((item) => item.type === 'function_call_output'),
+      false,
+      JSON.stringify(input),
+    );
+    assert.equal(
+      input?.some((item) => item.type === 'item_reference' && item.id === 'search_deepseek'),
+      true,
+      JSON.stringify(input),
+    );
   });
 
   test('OpenCode Zen routes GPT through Responses and preserves tool results across both stages', async () => {

@@ -27,6 +27,7 @@ import {
   validateWorkspacePrivacyContext,
   type WebSearchCredentialSource,
   type WebSearchErrorReason,
+  type WebSearchProvider,
 } from '@maka/core';
 import { defaultWorkspacePrivacyContext } from '@maka/core/incognito';
 import type { MakaTool } from '@maka/runtime';
@@ -41,11 +42,12 @@ function webSearchErrorContent(input: {
   message: string;
   query?: string;
   credentialSource?: WebSearchCredentialSource;
+  provider?: WebSearchProvider;
 }) {
   return {
     kind: 'web_search_error' as const,
     ok: false as const,
-    provider: 'tavily',
+    provider: input.provider ?? 'tavily',
     ...(input.query ? { query: input.query } : {}),
     reason: input.reason,
     message: input.message,
@@ -60,7 +62,7 @@ export function buildWebSearchAgentTool(deps: {
   return {
     name: WEB_SEARCH_TOOL_NAME,
     description:
-      'Query the live web via the configured search provider (Tavily). ' +
+      'Query the live web through the configured external search provider. ' +
       'Returns a short list of {title, url, snippet, source} rows. ' +
       'Use ONLY when the user asks for current external information; ' +
       'never call speculatively. Each call is gated on explicit user ' +
@@ -80,7 +82,7 @@ export function buildWebSearchAgentTool(deps: {
         .describe(`Max results to return (default ${WEB_SEARCH_DEFAULT_LIMIT}).`),
     }),
     displayName: '联网搜索',
-    impl: async ({ query, limit }) => {
+    impl: async ({ query, limit }, context) => {
       const normalizedQuery = normalizeWebSearchQuery(query);
       if (normalizedQuery === null) {
         return webSearchErrorContent({
@@ -105,13 +107,24 @@ export function buildWebSearchAgentTool(deps: {
         });
       }
       const settings = await deps.settingsStore.get();
-      const credentialSource = getTavilyCredentialSource(settings);
+      const credentialSource =
+        settings.webSearch.defaultProvider === 'tavily'
+          ? getTavilyCredentialSource(settings)
+          : undefined;
       if (!settings.webSearch.enabled) {
         return webSearchErrorContent({
           reason: 'not_configured',
-          message: '请先在 设置 · 联网搜索 中启用 Tavily 后再让 Maka 调用联网搜索工具。',
+          message: '请先在 设置 · 联网搜索 中启用联网搜索。',
           query: normalizedQuery,
-          credentialSource,
+          ...(credentialSource ? { credentialSource } : {}),
+        });
+      }
+      if (settings.webSearch.defaultProvider === 'model') {
+        return webSearchErrorContent({
+          reason: 'unsupported_provider',
+          message: '原生联网搜索必须由主模型请求执行，不能通过本地 WebSearch 工具调用。',
+          query: normalizedQuery,
+          provider: 'model',
         });
       }
       const apiKey = resolveTavilyApiKey({ settings });

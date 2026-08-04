@@ -128,6 +128,96 @@ describe('runtime event backfill', () => {
     expect(result.events.map((event) => event.invocationId)).toEqual(['persisted-invocation']);
   });
 
+  test('preserves provider-native identity in StoredMessage fallback backfill', () => {
+    const providerOutput = [
+      {
+        type: 'web_search_result',
+        url: 'https://maka.example/',
+        title: 'Maka',
+        pageAge: null,
+        encryptedContent: 'encrypted-result',
+      },
+    ];
+    const result = backfillRuntimeEventsFromStoredMessages({
+      run,
+      messages: [
+        {
+          type: 'tool_call',
+          id: 'search-1',
+          turnId: 'turn-1',
+          ts: 120,
+          toolName: 'WebSearch',
+          args: { query: 'latest Maka' },
+          providerExecuted: true,
+        },
+        {
+          type: 'tool_result',
+          id: 'search-result-1',
+          turnId: 'turn-1',
+          ts: 130,
+          toolUseId: 'search-1',
+          isError: false,
+          content: { kind: 'web_search', provider: 'model', query: 'latest Maka', rows: [] },
+          providerExecuted: true,
+          providerOutput,
+        },
+      ],
+      newId: nextIds(),
+      now: () => 999,
+    });
+
+    expect(result.events[0]?.content).toMatchObject({
+      kind: 'function_call',
+      providerExecuted: true,
+    });
+    expect(result.events[1]?.content).toMatchObject({
+      kind: 'function_response',
+      providerExecuted: true,
+      providerOutput,
+    });
+  });
+
+  test('drops provider-native fallback history when opaque replay output is unavailable', () => {
+    const result = backfillRuntimeEventsFromStoredMessages({
+      run,
+      messages: [
+        {
+          type: 'tool_call',
+          id: 'search-legacy',
+          turnId: 'turn-1',
+          ts: 120,
+          toolName: 'WebSearch',
+          args: { query: 'latest Maka' },
+          providerExecuted: true,
+        },
+        {
+          type: 'tool_result',
+          id: 'search-result-legacy',
+          turnId: 'turn-1',
+          ts: 130,
+          toolUseId: 'search-legacy',
+          isError: false,
+          content: { kind: 'web_search', provider: 'model', query: 'latest Maka', rows: [] },
+          providerExecuted: true,
+        },
+      ],
+      newId: nextIds(),
+      now: () => 999,
+    });
+
+    expect(result.events.map((event) => event.content?.kind ?? event.status)).toEqual([
+      'completed',
+    ]);
+    expect(result.diagnostics).toEqual([
+      {
+        code: 'skipped_provider_native_replay_gap',
+        message:
+          'provider-native tool history requires the opaque provider output for lossless recovery',
+        detail: { messageId: 'search-legacy', toolUseId: 'search-legacy' },
+      },
+    ]);
+  });
+
   test('backfills a host-authored graph wake without attributing it to the user', () => {
     const result = backfillRuntimeEventsFromStoredMessages({
       run,

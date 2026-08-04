@@ -817,7 +817,11 @@ const providerRegistry = {
     fallbackModels: ['deepseek-chat', 'deepseek-reasoner'],
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      supportsOpenAiResponses: true,
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',

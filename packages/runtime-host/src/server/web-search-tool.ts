@@ -30,6 +30,12 @@ export function createHostWebSearchTool(input: {
             reason: 'not_configured',
             message: 'Enable web search before using this tool.',
           };
+        case 'model_native_only':
+          return {
+            ok: false,
+            reason: 'unsupported_provider',
+            message: 'Provider-native web search executes inside the primary model request.',
+          };
         case 'credential_not_configured':
           return {
             ok: false,

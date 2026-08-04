@@ -29,8 +29,8 @@ export function registerWebSearchIpc(deps: WebSearchIpcDeps): void {
       _event,
       request: { query?: unknown; limit?: unknown; provider?: unknown; apiKey?: unknown },
     ) => {
-      const provider = request?.provider;
-      if (provider !== undefined && !isWebSearchProvider(provider)) {
+      const requestedProvider = request?.provider;
+      if (requestedProvider !== undefined && !isWebSearchProvider(requestedProvider)) {
         return unsupportedWebSearchProviderResponse;
       }
       const query = normalizeWebSearchQuery(request?.query);
@@ -46,7 +46,15 @@ export function registerWebSearchIpc(deps: WebSearchIpcDeps): void {
         return {
           ok: false,
           reason: 'not_configured' as const,
-          message: '请先在 设置 · 联网搜索 中启用 Tavily。',
+          message: '请先在 设置 · 联网搜索 中启用联网搜索。',
+        };
+      }
+      const provider = requestedProvider ?? settings.webSearch.defaultProvider;
+      if (provider === 'model') {
+        return {
+          ok: false,
+          reason: 'unsupported_provider' as const,
+          message: '原生联网搜索由对话中的主模型请求执行，不支持从设置页单独调用。',
         };
       }
       const effectiveKey = resolveTavilyApiKey({ settings, draftKey: request?.apiKey });
@@ -61,11 +69,19 @@ export function registerWebSearchIpc(deps: WebSearchIpcDeps): void {
       _event,
       request: { provider?: unknown; apiKey?: unknown } | undefined,
     ) => {
-      const provider = request?.provider;
-      if (provider !== undefined && !isWebSearchProvider(provider)) {
+      const requestedProvider = request?.provider;
+      if (requestedProvider !== undefined && !isWebSearchProvider(requestedProvider)) {
         return unsupportedWebSearchProviderResponse;
       }
       const settings = await deps.settingsStore.get();
+      const provider = requestedProvider ?? settings.webSearch.defaultProvider;
+      if (provider === 'model') {
+        return {
+          ok: false,
+          reason: 'unsupported_provider' as const,
+          message: '原生联网搜索由对话中的主模型请求执行，不需要单独测试搜索凭据。',
+        };
+      }
       const effectiveKey = resolveTavilyApiKey({ settings, draftKey: request?.apiKey });
       return queryTavily({
         apiKey: effectiveKey,

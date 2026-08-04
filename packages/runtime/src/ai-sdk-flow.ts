@@ -192,7 +192,13 @@ function mapBackendSessionEvent(
         ...base,
         role: 'model',
         author: 'agent',
-        content: { kind: 'text', text: event.text },
+        content: {
+          kind: 'text',
+          text: event.text,
+          ...(event.providerOptions !== undefined
+            ? { providerOptions: structuredClone(event.providerOptions) }
+            : {}),
+        },
         refs: { providerEventId: event.messageId },
       };
 
@@ -236,6 +242,9 @@ function mapBackendSessionEvent(
           args: structuredClone(event.args),
           ...(event.providerOptions !== undefined
             ? { providerOptions: structuredClone(event.providerOptions) }
+            : {}),
+          ...(event.providerExecuted !== undefined
+            ? { providerExecuted: event.providerExecuted }
             : {}),
         },
         refs: {
@@ -288,6 +297,12 @@ function mapBackendSessionEvent(
           name,
           result: event.content,
           ...(event.isError ? { isError: true } : {}),
+          ...(event.providerExecuted !== undefined
+            ? { providerExecuted: event.providerExecuted }
+            : {}),
+          ...(event.providerExecuted && event.providerOutput !== undefined
+            ? { providerOutput: structuredClone(event.providerOutput) }
+            : {}),
         },
         refs: {
           toolCallId: event.toolUseId,

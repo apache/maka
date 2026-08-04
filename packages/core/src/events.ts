@@ -450,6 +450,8 @@ export interface TextCompleteEvent extends BaseEvent {
   type: 'text_complete';
   messageId: string;
   text: string;
+  /** Provider-owned text metadata such as Responses URL citations. */
+  providerOptions?: Record<string, unknown>;
 }
 
 export interface ThinkingDeltaEvent extends BaseEvent {
@@ -479,6 +481,8 @@ export interface ToolStartEvent extends BaseEvent {
   args: unknown;
   /** Provider-owned opaque call metadata that must survive model replay. */
   providerOptions?: Record<string, unknown>;
+  /** True when the provider executed the tool inside the model request. */
+  providerExecuted?: boolean;
   displayName?: string;
   intent?: string;
   /**
@@ -525,6 +529,10 @@ export interface ToolResultEvent extends BaseEvent {
   toolUseId: string;
   /** Runtime-owned durable tool-operation identity (Phase 2). */
   operationId?: string;
+  /** True when the provider executed the tool inside the model request. */
+  providerExecuted?: boolean;
+  /** Raw provider result retained for provider-native replay; never rendered directly. */
+  providerOutput?: unknown;
   isError: boolean;
   content: ToolResultContent;
   durationMs?: number;

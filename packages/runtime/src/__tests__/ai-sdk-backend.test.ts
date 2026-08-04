@@ -35,6 +35,7 @@ import {
 } from '../ai-sdk-backend.js';
 import type { DurableSessionEventSink, MakaTool, ToolRuntime } from '../tool-runtime.js';
 import { LOAD_TOOLS_NAME } from '../tool-availability.js';
+import { buildNativeWebSearchTool } from '../native-web-search-tool.js';
 import {
   canonicalizeToolSet,
   computeRequestShapeDiagnostic,
@@ -2072,6 +2073,89 @@ describe('AiSdkBackend model history', () => {
       },
       { role: 'user', content: [{ type: 'text', text: 'current user' }] },
     ]);
+  });
+
+  test('replays provider-executed CC web search with encrypted result content intact', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildNativeWebSearchTool({ adapter: 'anthropic-messages' })],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u-search',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'search',
+          }),
+          runtimeEvent({
+            id: 'rt-search-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'search-1',
+              name: 'WebSearch',
+              args: { query: 'latest Maka' },
+              providerExecuted: true,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'search-1',
+              name: 'WebSearch',
+              result: [
+                {
+                  type: 'web_search_result',
+                  url: 'https://maka.example/',
+                  title: 'Maka',
+                  pageAge: '2026-08-04',
+                  encryptedContent: 'encrypted-result',
+                },
+              ],
+              providerExecuted: true,
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{
+      role: string;
+      content: Array<Record<string, unknown>>;
+    }>;
+    const assistant = prompt.find((message) => message.role === 'assistant');
+    const call = assistant?.content.find((part) => part.type === 'tool-call');
+    const result = assistant?.content.find((part) => part.type === 'tool-result');
+    assert.equal(call?.providerExecuted, true, JSON.stringify(prompt));
+    assert.deepEqual(call?.input, { query: 'latest Maka' });
+    assert.match(JSON.stringify(result?.output), /encrypted-result/);
+    assert.equal(
+      prompt.some((message) => message.role === 'tool'),
+      false,
+      JSON.stringify(prompt),
+    );
   });
 
   test('replays an image tool result as provider image data', async () => {
@@ -13313,6 +13397,317 @@ describe('AiSdkBackend steering durability and identity', () => {
         `a persisted ${event.content?.kind} event must read back as it was written`,
       );
     }
+  });
+
+  test('merges citation metadata across multiple provider text items', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'text-start', id: 'text-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'One' },
+            {
+              type: 'text-end',
+              id: 'text-1',
+              providerMetadata: {
+                openai: {
+                  itemId: 'message-1',
+                  annotations: [{ type: 'url_citation', start_index: 0, end_index: 3 }],
+                },
+              },
+            },
+            { type: 'text-start', id: 'text-2' },
+            { type: 'text-delta', id: 'text-2', delta: 'Two' },
+            {
+              type: 'text-end',
+              id: 'text-2',
+              providerMetadata: {
+                openai: {
+                  itemId: 'message-2',
+                  annotations: [{ type: 'url_citation', start_index: 0, end_index: 3 }],
+                },
+              },
+            },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const appended: StoredMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'cite twice', context: [] }));
+
+    const assistant = appended.find(
+      (message): message is AssistantMessage => message.type === 'assistant',
+    );
+    assert.equal(assistant?.text, 'OneTwo');
+    assert.deepEqual(assistant?.providerOptions, {
+      openai: {
+        annotations: [
+          { type: 'url_citation', start_index: 0, end_index: 3 },
+          { type: 'url_citation', start_index: 3, end_index: 6 },
+        ],
+      },
+    });
+  });
+
+  test('executes native WebSearch inside the primary provider stream', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'tool-call',
+              toolCallId: 'search-1',
+              toolName: 'WebSearch',
+              input: '{}',
+              providerExecuted: true,
+            },
+            {
+              type: 'tool-result',
+              toolCallId: 'search-1',
+              toolName: 'WebSearch',
+              result: {
+                action: { type: 'search', queries: ['latest Maka'] },
+                sources: [{ type: 'url', url: 'https://maka.example/' }],
+              },
+              providerExecuted: true,
+            },
+            { type: 'text-start', id: 'text-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'Maka is current.' },
+            {
+              type: 'text-end',
+              id: 'text-1',
+              providerMetadata: {
+                openai: {
+                  itemId: 'message-1',
+                  annotations: [
+                    {
+                      type: 'url_citation',
+                      url: 'https://maka.example/',
+                      title: 'Maka',
+                      startIndex: 0,
+                      endIndex: 4,
+                    },
+                  ],
+                },
+              },
+            },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const appended: StoredMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildNativeWebSearchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+
+    await collectEvents(backend.send({ turnId: 'turn-1', text: 'search', context: [] }), events);
+
+    assert.equal(
+      model.doStreamCalls[0]?.tools?.some(
+        (tool) => tool.type === 'provider' && tool.id === 'openai.web_search',
+      ),
+      true,
+    );
+    const start = events.find((event) => event.type === 'tool_start');
+    assert.equal(start?.type === 'tool_start' ? start.providerExecuted : undefined, true);
+    const result = events.find((event) => event.type === 'tool_result');
+    assert.equal(result?.type === 'tool_result' ? result.providerExecuted : undefined, true);
+    assert.deepEqual(result?.type === 'tool_result' ? result.content : undefined, {
+      kind: 'web_search',
+      provider: 'model',
+      query: 'latest Maka',
+      rows: [
+        {
+          title: 'maka.example',
+          url: 'https://maka.example/',
+          snippet: '',
+          source: 'maka.example',
+        },
+      ],
+    });
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    const assistant = appended.find(
+      (message): message is AssistantMessage => message.type === 'assistant',
+    );
+    assert.deepEqual(assistant?.providerOptions, {
+      openai: {
+        itemId: 'message-1',
+        annotations: [
+          {
+            type: 'url_citation',
+            url: 'https://maka.example/',
+            title: 'Maka',
+            startIndex: 0,
+            endIndex: 4,
+          },
+        ],
+      },
+    });
+    const mappingMemory = createSessionEventMapMemory();
+    const anchor = runtimeTextEvent({
+      id: 'native-search-user',
+      turnId: 'turn-1',
+      role: 'user',
+      author: 'user',
+      text: 'search',
+    });
+    const mappingContext: InvocationContext = {
+      sessionId: 'session-1',
+      invocationId: 'invocation-search',
+      runId: 'run-search',
+      turnId: 'turn-1',
+      source: 'desktop',
+      startedAt: 1,
+      request: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        text: 'search',
+        source: 'desktop',
+        initialRuntimeEvent: anchor,
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    };
+    for (const event of events) {
+      const mapped = mapSessionEventToRuntimeEvent(event, mappingContext, mappingMemory);
+      if (mapped.partial !== true && mapped.content) {
+        assert.doesNotThrow(() => encodeCanonicalRuntimeEvent(mapped));
+      }
+    }
+  });
+
+  test('projects CC-format Anthropic web search without exposing encrypted content', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'tool-call',
+              toolCallId: 'search-cc-1',
+              toolName: 'WebSearch',
+              input: JSON.stringify({ query: 'latest Maka' }),
+              providerExecuted: true,
+            },
+            {
+              type: 'tool-result',
+              toolCallId: 'search-cc-1',
+              toolName: 'WebSearch',
+              result: [
+                {
+                  type: 'web_search_result',
+                  url: 'https://maka.example/',
+                  title: 'Maka',
+                  pageAge: '2026-08-04',
+                  encryptedContent: 'encrypted-result',
+                },
+              ],
+              providerExecuted: true,
+            },
+            { type: 'text-start', id: 'text-cc-1' },
+            { type: 'text-delta', id: 'text-cc-1', delta: 'Maka is current.' },
+            { type: 'text-end', id: 'text-cc-1' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'end_turn' },
+              usage: emptyUsage(),
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildNativeWebSearchTool({ adapter: 'anthropic-messages' })],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+
+    await collectEvents(backend.send({ turnId: 'turn-1', text: 'search', context: [] }), events);
+
+    assert.equal(
+      model.doStreamCalls[0]?.tools?.some(
+        (tool) => tool.type === 'provider' && tool.id === 'anthropic.web_search_20250305',
+      ),
+      true,
+    );
+    const result = events.find((event) => event.type === 'tool_result');
+    const start = events.find((event) => event.type === 'tool_start');
+    assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, {
+      query: 'latest Maka',
+    });
+    assert.deepEqual(result?.type === 'tool_result' ? result.content : undefined, {
+      kind: 'web_search',
+      provider: 'model',
+      query: 'latest Maka',
+      rows: [
+        {
+          title: 'Maka',
+          url: 'https://maka.example/',
+          snippet: '2026-08-04',
+          source: 'maka.example',
+        },
+      ],
+    });
+    assert.doesNotMatch(
+      JSON.stringify(result?.type === 'tool_result' ? result.content : null),
+      /encrypted-result/,
+    );
   });
 });
 

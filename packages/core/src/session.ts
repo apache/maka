@@ -713,6 +713,8 @@ export interface AssistantMessage {
   turnId: string;
   ts: number;
   text: string;
+  /** Provider-owned text metadata such as Responses URL citations. */
+  providerOptions?: Record<string, unknown>;
   thinking?: AssistantThinking;
   /**
    * First-observed order of visible content inside this assistant step.
@@ -759,6 +761,7 @@ export interface ToolCallMessage {
   args: unknown;
   /** Provider-owned opaque call metadata retained for recovery backfill. */
   providerOptions?: Record<string, unknown>;
+  providerExecuted?: boolean;
   /**
    * Assistant step this call belongs to (equals the step's AssistantMessage
    * id, stamped from the same source as ToolStartEvent.stepId). Optional for
@@ -780,6 +783,9 @@ export interface ToolResultMessage {
   toolUseId: string;
   isError: boolean;
   content: ToolResultContent;
+  providerExecuted?: boolean;
+  /** Raw provider result retained only for provider-native replay. */
+  providerOutput?: unknown;
   durationMs?: number;
 }
 
@@ -898,15 +904,15 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
-  ['thinking', 'contentOrder'],
+  ['thinking', 'contentOrder', 'providerOptions'],
 );
 const TOOL_CALL_MESSAGE_SHAPE = defineObjectShape<ToolCallMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolName', 'args'],
-  ['activityKind', 'displayName', 'intent', 'providerOptions', 'stepId'],
+  ['activityKind', 'displayName', 'intent', 'providerOptions', 'providerExecuted', 'stepId'],
 );
 const TOOL_RESULT_MESSAGE_SHAPE = defineObjectShape<ToolResultMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'isError', 'content'],
-  ['durationMs'],
+  ['durationMs', 'providerExecuted', 'providerOutput'],
 );
 const PERMISSION_DECISION_MESSAGE_SHAPE = defineObjectShape<PermissionDecisionMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'toolName', 'decision'],
@@ -1030,6 +1036,7 @@ function decodeStoredMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.text === 'string' &&
         typeof message.modelId === 'string' &&
+        (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
         (message.thinking === undefined || isAssistantThinking(message.thinking)) &&
         (message.contentOrder === undefined ||
           (Array.isArray(message.contentOrder) &&
@@ -1050,6 +1057,7 @@ function decodeStoredMessage(
         isOptionalString(message.displayName) &&
         isOptionalString(message.intent) &&
         (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
+        (message.providerExecuted === undefined || typeof message.providerExecuted === 'boolean') &&
         isOptionalString(message.stepId)
       )
         return message as unknown as ToolCallMessage;
@@ -1060,6 +1068,7 @@ function decodeStoredMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.toolUseId === 'string' &&
         typeof message.isError === 'boolean' &&
+        (message.providerExecuted === undefined || typeof message.providerExecuted === 'boolean') &&
         isOptionalFiniteDuration(message.durationMs)
       )
         return message as unknown as ToolResultMessage;

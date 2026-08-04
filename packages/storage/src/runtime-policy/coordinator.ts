@@ -544,6 +544,10 @@ export class RuntimePolicyCoordinator {
         return deepFreeze({ kind: 'disabled' as const, provider });
       }
 
+      if (provider === 'model') {
+        return deepFreeze({ kind: 'model_native_only' as const, provider });
+      }
+
       const vault = await this.vault.read(root);
       const locator = { scope: 'web_search', provider, kind: 'api_key' } as const;
       const webSearchCredential = findCredential(vault, locator);

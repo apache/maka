@@ -323,6 +323,7 @@ export function pruneStaleToolResultsBeforeCompact(
     if (
       event.partial ||
       content?.kind !== 'function_response' ||
+      (content.providerExecuted === true && content.providerOutput !== undefined) ||
       protectedTurnIds.has(turnKey(event))
     ) {
       return event;
@@ -412,6 +413,7 @@ export function collectStaleToolResultArchiveCandidates(
     if (
       event.partial ||
       content?.kind !== 'function_response' ||
+      (content.providerExecuted === true && content.providerOutput !== undefined) ||
       protectedTurnIds.has(turnKey(event)) ||
       isArchivedToolResultPlaceholder(content.result)
     ) {

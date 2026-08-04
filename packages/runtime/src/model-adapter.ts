@@ -1,4 +1,6 @@
 import type { ErrorEvent, CompleteEvent } from '@maka/core/events';
+import { openai } from '@ai-sdk/openai';
+import { anthropic } from '@ai-sdk/anthropic';
 import {
   providerAuthRequiresSecret,
   type RuntimeExecutionConnection,
@@ -191,19 +193,23 @@ export class ModelAdapter {
           },
         })
       : input.model;
-    const schemaOnlyTools: ModelToolSet = Object.fromEntries(
+    const sdkTools = Object.fromEntries(
       Object.entries(input.tools).map(([name, definition]) => [
         name,
-        {
-          ...(definition.description !== undefined ? { description: definition.description } : {}),
-          inputSchema: definition.inputSchema,
-        },
+        definition.kind === 'provider'
+          ? compileProviderTool(definition.providerTool)
+          : {
+              ...(definition.description !== undefined
+                ? { description: definition.description }
+                : {}),
+              inputSchema: definition.inputSchema,
+            },
       ]),
     );
     const sdkResult = streamText({
       model: trackedModel,
       messages: lowerNativeAudioMessages(input.messages),
-      tools: schemaOnlyTools,
+      tools: sdkTools,
       activeTools: input.activeTools,
       // An empty active set is an authoritative tool-free request (not merely
       // an empty provider schema).  Some OpenAI-compatible models, including
@@ -482,6 +488,8 @@ interface AiSdkStreamChunk {
   args?: unknown;
   providerExecuted?: boolean;
   result?: unknown;
+  output?: unknown;
+  isError?: boolean;
   usage?: AiSdkUsageLike;
   finishReason?: unknown;
   error?: unknown;
@@ -549,9 +557,20 @@ function translateChunk(
   kimiOpenAiTransportState?: KimiOpenAiTransportState,
 ): ModelStreamEvent[] {
   switch (chunk.type) {
+    case 'text-start':
+      return [{ kind: 'text-start' }];
     case 'text-delta': {
       const text = chunk.text ?? chunk.textDelta ?? chunk.delta ?? '';
       return text ? [{ kind: 'text', text }] : [];
+    }
+    case 'text-end': {
+      if (!chunk.providerMetadata || typeof chunk.providerMetadata !== 'object') return [];
+      return [
+        {
+          kind: 'text-metadata',
+          providerOptions: chunk.providerMetadata as NonNullable<ModelMessage['providerOptions']>,
+        },
+      ];
     }
     case 'reasoning':
     case 'reasoning-delta': {
@@ -621,14 +640,34 @@ function translateChunk(
     case 'reasoning-start':
     case 'start-step':
     case 'tool-result':
-      return [];
+    case 'tool-error': {
+      if (
+        chunk.providerExecuted !== true ||
+        typeof chunk.toolCallId !== 'string' ||
+        typeof chunk.toolName !== 'string'
+      ) {
+        return [];
+      }
+      return [
+        {
+          kind: 'provider-tool-result',
+          toolCallId: chunk.toolCallId,
+          toolName: chunk.toolName,
+          output: chunk.type === 'tool-error' ? chunk.error : (chunk.output ?? chunk.result),
+          ...(chunk.type === 'tool-error' || chunk.isError === true ? { isError: true } : {}),
+        },
+      ];
+    }
     case 'tool-call': {
       if (typeof chunk.toolCallId !== 'string' || typeof chunk.toolName !== 'string') return [];
       const toolCall: ToolCallPart = {
         type: 'tool-call',
         toolCallId: chunk.toolCallId,
         toolName: chunk.toolName,
-        input: chunk.input ?? chunk.args,
+        input:
+          chunk.providerExecuted === true
+            ? parseProviderExecutedToolInput(chunk.input ?? chunk.args)
+            : (chunk.input ?? chunk.args),
         ...(chunk.providerExecuted !== undefined
           ? { providerExecuted: chunk.providerExecuted }
           : {}),
@@ -642,6 +681,30 @@ function translateChunk(
       return [{ kind: 'error', failure: normalizeModelFailure(chunk.error) }];
     default:
       return [];
+  }
+}
+
+function parseProviderExecutedToolInput(input: unknown): unknown {
+  if (typeof input !== 'string') return input;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return input;
+  }
+}
+
+function compileProviderTool(
+  tool: NonNullable<import('./tool-runtime.js').MakaTool['providerTool']>,
+): unknown {
+  switch (tool.kind) {
+    case 'openai-web-search':
+      return openai.tools.webSearch({
+        ...(tool.searchContextSize ? { searchContextSize: tool.searchContextSize } : {}),
+      });
+    case 'anthropic-web-search-20250305':
+      return anthropic.tools.webSearch_20250305({
+        ...(tool.maxUses !== undefined ? { maxUses: tool.maxUses } : {}),
+      });
   }
 }
 

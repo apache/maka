@@ -35,10 +35,14 @@ export type ResolveWebSearchExecutionResult =
       readonly kind: 'disabled';
       readonly provider: RuntimePolicy['webSearch']['defaultProvider'];
     }
+  | {
+      readonly kind: 'model_native_only';
+      readonly provider: 'model';
+    }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   | {
       readonly kind: 'ready';
-      readonly provider: RuntimePolicy['webSearch']['defaultProvider'];
+      readonly provider: 'tavily';
       readonly secretMaterial: {
         readonly webSearch: RuntimePolicyCredentialMaterial;
         readonly networkProxy?: RuntimePolicyCredentialMaterial;

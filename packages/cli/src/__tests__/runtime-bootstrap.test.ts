@@ -11,6 +11,7 @@ import {
 import {
   createConnectionStore,
   createFileCredentialStore,
+  createSettingsStore,
   createSessionStore,
   createSqliteShellRunStore,
 } from '@maka/storage';
@@ -27,6 +28,7 @@ import {
   GOAL_SET_TOOL_NAME,
   GOAL_STATUS_TOOL_NAME,
   IMPLEMENTATION_AGENT_ID,
+  WEB_RESEARCH_AGENT_ID,
   UPDATE_AGENT_GRAPH_TOOL_NAME,
   VIEW_AGENT_GRAPH_TOOL_NAME,
   YIELD_AGENT_GRAPH_TOOL_NAME,
@@ -173,6 +175,115 @@ describe('Maka CLI runtime bootstrap', () => {
       assert.equal(session.permissionMode, 'bypass');
     });
   });
+
+  for (const wire of [
+    {
+      name: 'Responses',
+      slug: 'deepseek-responses',
+      providerType: 'deepseek',
+      model: 'deepseek-v4-flash',
+      baseUrl: 'https://api.deepseek.com',
+      apiProtocol: 'openai-responses',
+      providerToolKind: 'openai-web-search',
+    },
+    {
+      name: 'Anthropic Messages',
+      slug: 'deepseek-anthropic',
+      providerType: 'anthropic-compatible',
+      model: 'deepseek-v4-flash',
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      apiProtocol: 'anthropic-messages',
+      providerToolKind: 'anthropic-web-search-20250305',
+    },
+  ] as const) {
+    test(`routes root native WebSearch over ${wire.name} without widening scoped child tools`, async () => {
+      await withWorkspace(async (workspaceRoot) => {
+        const connectionStore = createConnectionStore(workspaceRoot);
+        await connectionStore.create({
+          slug: wire.slug,
+          name: `DeepSeek ${wire.name}`,
+          providerType: wire.providerType,
+          baseUrl: wire.baseUrl,
+          defaultModel: wire.model,
+        });
+        await connectionStore.update(wire.slug, {
+          models: [
+            {
+              id: wire.model,
+              apiProtocol: wire.apiProtocol,
+            },
+          ],
+        });
+        await createFileCredentialStore(workspaceRoot).setSecret(wire.slug, 'api_key', 'test-key');
+        const settingsStore = createSettingsStore(workspaceRoot);
+        await settingsStore.update({
+          webSearch: { enabled: true, defaultProvider: 'model' },
+        });
+
+        const context = await createMakaCliRuntimeContext({
+          surface: 'run',
+          workspaceRoot,
+          cwd: '/repo',
+        });
+        try {
+          const session = await context.runtime.createSession({
+            cwd: context.cwd,
+            backend: 'ai-sdk',
+            llmConnectionSlug: wire.slug,
+            model: wire.model,
+            permissionMode: 'bypass',
+            name: `native-search-${wire.name}`,
+          });
+          const runtimeDeps = (context.runtime as unknown as RuntimeWithPrivateDeps).deps;
+          const header = await runtimeDeps.store.readHeader(session.id);
+          const rootBackend = await runtimeDeps.backends.build('ai-sdk', {
+            sessionId: session.id,
+            workspaceRoot,
+            header,
+            store: runtimeDeps.store,
+          });
+          const rootInput = (rootBackend as unknown as { input: AiSdkBackendInput }).input;
+          const rootWebSearch = rootInput.tools.find((tool) => tool.name === 'WebSearch');
+          assert.equal(rootWebSearch?.providerTool?.kind, wire.providerToolKind);
+
+          const scopedBackend = await runtimeDeps.backends.build('ai-sdk', {
+            sessionId: session.id,
+            workspaceRoot,
+            header,
+            store: runtimeDeps.store,
+            tools: [
+              {
+                name: 'ReadOnlyProbe',
+                description: 'Read-only test probe',
+                parameters: {},
+                impl: () => 'ok',
+              },
+            ],
+          });
+          const scopedInput = (scopedBackend as unknown as { input: AiSdkBackendInput }).input;
+          assert.deepEqual(
+            scopedInput.tools.map((tool) => tool.name),
+            ['ReadOnlyProbe'],
+          );
+
+          await settingsStore.update({ privacy: { incognitoActive: true } });
+          const privateBackend = await runtimeDeps.backends.build('ai-sdk', {
+            sessionId: session.id,
+            workspaceRoot,
+            header,
+            store: runtimeDeps.store,
+          });
+          const privateInput = (privateBackend as unknown as { input: AiSdkBackendInput }).input;
+          assert.equal(
+            privateInput.tools.some((tool) => tool.name === 'WebSearch'),
+            false,
+          );
+        } finally {
+          await context.close();
+        }
+      });
+    });
+  }
 
   test('treats child tools and prompt from BackendFactoryContext as hard boundaries', async () => {
     await withWorkspace(async (workspaceRoot) => {
@@ -594,7 +705,7 @@ describe('Maka CLI runtime bootstrap', () => {
         });
         assert.deepEqual(
           runtimeDeps.childTools?.map((tool) => tool.name),
-          ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'],
+          ['Read', 'Glob', 'Grep', 'WebSearch', 'Write', 'Edit', 'Bash'],
         );
         assert.equal(
           runtimeDeps.childTools?.some((tool) =>
@@ -612,6 +723,11 @@ describe('Maka CLI runtime bootstrap', () => {
           childAgents.definitions.find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)
             ?.availability,
           { status: 'available' },
+        );
+        assert.deepEqual(
+          childAgents.definitions.find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)
+            ?.availability,
+          { status: 'unavailable', reason: 'missing_tools', missingTools: ['WebSearch'] },
         );
         assert.equal(context.skills.host.toolNames.has(AGENT_SPAWN_TOOL_NAME), true);
         assert.equal(context.skills.host.toolNames.has(AGENT_SWARM_TOOL_NAME), true);

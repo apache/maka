@@ -246,10 +246,17 @@ export type ToolResultOutput =
  * schema construction is a local implementation detail. Execution belongs to
  * ToolRuntime and never crosses the provider adapter boundary.
  */
-export interface ModelToolDefinition {
-  description?: string;
-  inputSchema: unknown;
-}
+export type ModelToolDefinition =
+  | {
+      kind?: 'function';
+      description?: string;
+      inputSchema: unknown;
+      execute?: unknown;
+    }
+  | {
+      kind: 'provider';
+      providerTool: NonNullable<import('./tool-runtime.js').MakaTool['providerTool']>;
+    };
 
 export type ModelToolSet = Record<string, ModelToolDefinition>;
 
@@ -435,10 +442,19 @@ export interface ModelRequestMetadata {
  *   recovery and terminal error emission.
  */
 export type ModelStreamEvent =
+  | { kind: 'text-start' }
   | { kind: 'text'; text: string }
+  | { kind: 'text-metadata'; providerOptions: ProviderOptions }
   | { kind: 'thinking'; text: string; providerOptions?: ProviderOptions }
   | { kind: 'thinking-signature'; signature: string }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
+  | {
+      kind: 'provider-tool-result';
+      toolCallId: string;
+      toolName: string;
+      output: unknown;
+      isError?: boolean;
+    }
   | { kind: 'step-finish'; usage?: NormalizedUsage; finishReason?: ModelFinishReason }
   | { kind: 'finish'; finishReason?: ModelFinishReason }
   | { kind: 'error'; failure: ModelFailure };

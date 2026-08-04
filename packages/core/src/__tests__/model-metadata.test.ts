@@ -251,6 +251,12 @@ describe('openAiAdapterApiProtocol', () => {
     assert.equal(openAiAdapterApiProtocol('grok-4.5', 'openai'), 'openai-chat');
   });
 
+  it('routes only DeepSeek V4 Flash through the provider Responses wire', () => {
+    assert.equal(openAiAdapterApiProtocol('deepseek-v4-flash', 'deepseek'), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('deepseek-v4-pro', 'deepseek'), 'openai-chat');
+    assert.equal(openAiAdapterApiProtocol('deepseek-chat', 'deepseek'), 'openai-chat');
+  });
+
   it('reuses xAI model metadata for the OAuth access path', () => {
     assert.deepEqual(
       lookupModelMetadata('xai-oauth', 'grok-4.5'),

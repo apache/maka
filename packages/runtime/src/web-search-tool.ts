@@ -15,6 +15,7 @@ interface WebSearchExecutor {
   search(input: {
     readonly query: string;
     readonly limit: number;
+    readonly sessionId: string;
     readonly abortSignal?: AbortSignal;
   }): Promise<WebSearchResponse>;
 }
@@ -47,12 +48,13 @@ export function buildWebSearchTool(executor: WebSearchExecutor): MakaTool {
       const response = await executor.search({
         query: normalizedQuery,
         limit: normalizeWebSearchLimit(limit),
+        sessionId: context.sessionId,
         ...(context.abortSignal ? { abortSignal: context.abortSignal } : {}),
       });
       if (!response.ok) return webSearchError(response.reason, response.message, normalizedQuery);
       return {
         kind: 'web_search' as const,
-        provider: 'tavily' as const,
+        provider: response.provider ?? response.results[0]?.provider ?? ('tavily' as const),
         query: normalizedQuery,
         rows: response.results.map((row) => ({
           title: row.title,

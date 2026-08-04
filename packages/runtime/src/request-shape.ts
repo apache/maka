@@ -558,6 +558,7 @@ function toolShapeForDiagnostics(tool: MakaTool): unknown {
     name: tool.name,
     description: tool.description,
     inputSchema: schemaShapeForHash(tool.parameters),
+    ...(tool.providerTool ? { providerTool: tool.providerTool } : {}),
   };
 }
 

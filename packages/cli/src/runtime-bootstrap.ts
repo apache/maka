@@ -36,6 +36,7 @@ import {
   assertProductBindingCatalogClean,
   AGENT_TOOL_GROUP_ID,
   buildLlmHistorySummarizer,
+  buildNativeWebSearchTool,
   cleanupLegacyHistoryCompactArtifacts,
   buildProviderOptions,
   buildSubscriptionModelFetch,
@@ -43,10 +44,13 @@ import {
   getAIModel,
   generateSessionTitle as generateRuntimeSessionTitle,
   loadHistoryCompactBlocksFromArtifacts,
+  listRunnableBuiltinAgentDefinitions,
+  replayPlanItemsToModelMessages,
   recoverAgentGraphSupervisorContextOverflow,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
   projectEffectiveProductToolSurface,
+  routeWebSearchTools,
   type AutomationDefinition,
   type EffectiveProductToolSurface,
   type HostCapabilities,
@@ -336,8 +340,8 @@ export async function createMakaCliRuntimeContext(
   // worktree executor for implementation children). Agent tools are excluded
   // so children cannot recursively spawn from this surface.
   const childAgentTools = agentGraphEnabled
-    ? buildChildAgentTools(
-        buildBuiltinTools({
+    ? buildChildAgentTools([
+        ...buildBuiltinTools({
           snapshotImage: createReadImageSnapshotter(artifactStore),
           ...(sandboxManager ? { sandboxManager } : {}),
           ...(filesystemWorker
@@ -346,7 +350,8 @@ export async function createMakaCliRuntimeContext(
               }
             : {}),
         }),
-      )
+        buildNativeWebSearchTool(),
+      ])
     : [];
   const automationManager = new AutomationManager({
     generateId: () => randomUUID(),
@@ -569,7 +574,15 @@ export async function createMakaCliRuntimeContext(
           getTokenCount: (sessionId: string) => goalTokenCache.get(sessionId) ?? 0,
         })
       : [];
-  const subagentTools = agentGraphEnabled ? buildParentAgentTools() : [];
+  const subagentTools = agentGraphEnabled
+    ? buildParentAgentTools({
+        definitions: listRunnableBuiltinAgentDefinitions({
+          tools: childAgentTools.filter((tool) => tool.name !== 'WebSearch'),
+          worktreeChildExecutorAvailable: worktreeChildExecutor !== undefined,
+        }),
+      })
+    : [];
+  const subagentToolNames = new Set(subagentTools.map((tool) => tool.name));
   const surfaceTools =
     input.surface === 'tui' ? [buildAskUserQuestionTool(), buildRequestSandboxBoundaryTool()] : [];
   let cliProductToolSurface: EffectiveProductToolSurface;
@@ -644,9 +657,43 @@ export async function createMakaCliRuntimeContext(
       !ctx.tools && agentGraphEnabled
         ? await agentGraphCoordinator!.toolsForSession(ctx.sessionId)
         : [];
+    const settings = await settingsStore.get();
+    const routedChildTools = routeWebSearchTools({
+      tools:
+        settings.webSearch.defaultProvider === 'model'
+          ? childAgentTools
+          : childAgentTools.filter((tool) => tool.name !== 'WebSearch'),
+      settings: settings.webSearch,
+      connection: ready.connection,
+      model: ready.model,
+      privacy: settings.privacy,
+    });
+    const targetSubagentTools =
+      !ctx.tools && agentGraphEnabled
+        ? buildParentAgentTools({
+            definitions: listRunnableBuiltinAgentDefinitions({
+              tools: routedChildTools,
+              worktreeChildExecutorAvailable: worktreeChildExecutor !== undefined,
+            }),
+          })
+        : [];
+    const routedTools = routeWebSearchTools({
+      tools: ctx.tools
+        ? ctx.tools
+        : [
+            ...allTools.filter((tool) => !subagentToolNames.has(tool.name)),
+            ...targetSubagentTools,
+            ...agentGraphSupervisorTools,
+          ],
+      settings: settings.webSearch,
+      connection: ready.connection,
+      model: ready.model,
+      privacy: settings.privacy,
+      allowAddNative: ctx.tools === undefined,
+    });
     const productToolSurface = projectEffectiveProductToolSurface({
       host: 'cli',
-      tools: ctx.tools ? ctx.tools : [...allTools, ...agentGraphSupervisorTools],
+      tools: routedTools,
       policy: cliProductToolSurface.identity.policy,
     });
     const backendTools = [...productToolSurface.tools];
@@ -786,6 +833,26 @@ export async function createMakaCliRuntimeContext(
     });
   });
 
+  const resolveChildTools = async (sessionId: string): Promise<readonly MakaTool[]> => {
+    const header = await store.readHeader(sessionId);
+    const ready = await resolveSessionTargetForSlug(header.llmConnectionSlug, {
+      connectionStore,
+      credentialStore,
+      requestedModel: header.model,
+    });
+    const settings = await settingsStore.get();
+    return routeWebSearchTools({
+      tools:
+        settings.webSearch.defaultProvider === 'model'
+          ? childAgentTools
+          : childAgentTools.filter((tool) => tool.name !== 'WebSearch'),
+      settings: settings.webSearch,
+      connection: ready.connection,
+      model: ready.model,
+      privacy: settings.privacy,
+    });
+  };
+
   runtime = new SessionManager({
     store,
     runStore,
@@ -823,8 +890,8 @@ export async function createMakaCliRuntimeContext(
         );
       },
     }),
-    ...(cliProductToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
-      ? { childTools: childAgentTools, worktreeChildExecutor }
+    ...(agentGraphEnabled
+      ? { childTools: childAgentTools, resolveChildTools, worktreeChildExecutor }
       : {}),
     runtimeInvocationObserver: input.runtimeInvocationObserver,
     onSessionTitleChanged: input.onSessionTitleChanged,

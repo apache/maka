@@ -31,6 +31,9 @@ import type {
   ThinkingDeltaEvent,
   ProviderRetryEvent,
   ProviderRetryReason,
+  ToolResultEvent,
+  ToolResultContent,
+  ToolStartEvent,
   StorageRef,
   AttachmentRef,
   QuoteRef,
@@ -226,6 +229,176 @@ const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
   'Clearly separate verified findings from inference and explicitly name any remaining gaps.',
   '</step_budget_finalization>',
 ].join('\n');
+
+function providerToolResultContent(
+  toolName: string,
+  output: unknown,
+  input?: unknown,
+): ToolResultContent {
+  if (output === undefined) {
+    return { kind: 'text', text: `${toolName} completed without a structured result.` };
+  }
+  if (toolName !== 'WebSearch') {
+    return { kind: 'json', value: output };
+  }
+  const queryFromInput = providerWebSearchQuery(input);
+  if (Array.isArray(output)) {
+    const rows: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+    for (const result of output) {
+      if (
+        !result ||
+        typeof result !== 'object' ||
+        (result as { type?: unknown }).type !== 'web_search_result' ||
+        typeof (result as { url?: unknown }).url !== 'string'
+      ) {
+        continue;
+      }
+      const item = result as {
+        url: string;
+        title?: unknown;
+        pageAge?: unknown;
+      };
+      try {
+        const parsed = new URL(item.url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+        rows.push({
+          title: typeof item.title === 'string' && item.title.trim() ? item.title : parsed.hostname,
+          url: parsed.toString(),
+          snippet: typeof item.pageAge === 'string' ? item.pageAge : '',
+          source: parsed.hostname,
+        });
+      } catch {
+        // Provider source rows are untrusted; malformed URLs are dropped.
+      }
+    }
+    return { kind: 'web_search', provider: 'model', query: queryFromInput, rows };
+  }
+  if (!output || typeof output !== 'object') return { kind: 'json', value: output };
+  const providerError = output as { type?: unknown; errorCode?: unknown };
+  if (
+    providerError.type === 'web_search_tool_result_error' ||
+    typeof providerError.errorCode === 'string'
+  ) {
+    return {
+      kind: 'web_search_error',
+      ok: false,
+      provider: 'model',
+      ...(queryFromInput ? { query: queryFromInput } : {}),
+      reason: 'provider_error',
+      message:
+        typeof providerError.errorCode === 'string'
+          ? `Provider web search failed: ${providerError.errorCode}`
+          : 'Provider web search failed.',
+    };
+  }
+  const action = (output as { action?: unknown }).action;
+  const sources = (output as { sources?: unknown }).sources;
+  let query = queryFromInput;
+  if (action && typeof action === 'object') {
+    const value = action as { type?: unknown; query?: unknown; queries?: unknown };
+    if (Array.isArray(value.queries)) {
+      query = value.queries.filter((item): item is string => typeof item === 'string').join(' | ');
+    } else if (typeof value.query === 'string') {
+      query = value.query;
+    }
+  }
+  const rows: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+  if (Array.isArray(sources)) {
+    for (const source of sources) {
+      if (
+        !source ||
+        typeof source !== 'object' ||
+        (source as { type?: unknown }).type !== 'url' ||
+        typeof (source as { url?: unknown }).url !== 'string'
+      ) {
+        continue;
+      }
+      const url = (source as { url: string }).url;
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+        rows.push({
+          title: parsed.hostname,
+          url: parsed.toString(),
+          snippet: '',
+          source: parsed.hostname,
+        });
+      } catch {
+        // Provider source rows are untrusted; malformed URLs are dropped.
+      }
+    }
+  }
+  return { kind: 'web_search', provider: 'model', query, rows };
+}
+
+function providerWebSearchQuery(input: unknown): string {
+  let value = input;
+  if (typeof input === 'string') {
+    try {
+      value = JSON.parse(input);
+    } catch {
+      return '';
+    }
+  }
+  if (!value || typeof value !== 'object') return '';
+  const query = (value as { query?: unknown }).query;
+  return typeof query === 'string' ? query : '';
+}
+
+function mergeTextProviderOptions(
+  current: NonNullable<ModelMessage['providerOptions']> | undefined,
+  next: NonNullable<ModelMessage['providerOptions']>,
+  textOffset: number,
+): NonNullable<ModelMessage['providerOptions']> {
+  const shifted = structuredClone(next);
+  const shiftedOpenAi = shifted.openai;
+  if (shiftedOpenAi && typeof shiftedOpenAi === 'object' && !Array.isArray(shiftedOpenAi)) {
+    const annotations = (shiftedOpenAi as { annotations?: unknown }).annotations;
+    if (Array.isArray(annotations) && textOffset > 0) {
+      (shiftedOpenAi as { annotations: unknown[] }).annotations = annotations.map((annotation) => {
+        if (!annotation || typeof annotation !== 'object' || Array.isArray(annotation)) {
+          return annotation;
+        }
+        const value = { ...annotation } as Record<string, unknown>;
+        if (typeof value.startIndex === 'number') value.startIndex += textOffset;
+        if (typeof value.endIndex === 'number') value.endIndex += textOffset;
+        if (typeof value.start_index === 'number') value.start_index += textOffset;
+        if (typeof value.end_index === 'number') value.end_index += textOffset;
+        return value;
+      });
+    }
+  }
+  if (!current) return shifted;
+
+  const merged = { ...structuredClone(current), ...shifted };
+  const currentOpenAi = current.openai;
+  if (
+    currentOpenAi &&
+    typeof currentOpenAi === 'object' &&
+    !Array.isArray(currentOpenAi) &&
+    shiftedOpenAi &&
+    typeof shiftedOpenAi === 'object' &&
+    !Array.isArray(shiftedOpenAi)
+  ) {
+    const left = currentOpenAi as Record<string, unknown>;
+    const right = shiftedOpenAi as Record<string, unknown>;
+    const openai: Record<string, unknown> = { ...left, ...right };
+    const leftAnnotations = Array.isArray(left.annotations) ? left.annotations : [];
+    const rightAnnotations = Array.isArray(right.annotations) ? right.annotations : [];
+    if (leftAnnotations.length > 0 || rightAnnotations.length > 0) {
+      openai.annotations = [...leftAnnotations, ...rightAnnotations];
+    }
+    if (
+      typeof left.itemId === 'string' &&
+      typeof right.itemId === 'string' &&
+      left.itemId !== right.itemId
+    ) {
+      delete openai.itemId;
+    }
+    merged.openai = openai as NonNullable<ModelMessage['providerOptions']>[string];
+  }
+  return merged;
+}
 
 // ============================================================================
 // AgentBackend interface — port contract now lives in @maka/core/backend-types;
@@ -749,6 +922,8 @@ export class AiSdkBackend implements AgentBackend {
     // at its step boundary (see the stream loop below).
     let currentStepMessageId = this.newId();
     let stepText = '';
+    let stepTextProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
+    let stepTextPartStartOffset = 0;
     let stepThinking = '';
     let sawStepThinking = false;
     let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
@@ -787,6 +962,9 @@ export class AiSdkBackend implements AgentBackend {
         turnId,
         ts: this.now(),
         text: stepText,
+        ...(stepTextProviderOptions !== undefined
+          ? { providerOptions: stepTextProviderOptions }
+          : {}),
         modelId: this.input.modelId,
         ...(hasThinking
           ? {
@@ -833,8 +1011,13 @@ export class AiSdkBackend implements AgentBackend {
         ts: this.now(),
         messageId: stepId,
         text: stepText,
+        ...(stepTextProviderOptions !== undefined
+          ? { providerOptions: stepTextProviderOptions }
+          : {}),
       } satisfies TextCompleteEvent);
       stepText = '';
+      stepTextProviderOptions = undefined;
+      stepTextPartStartOffset = 0;
       stepThinking = '';
       sawStepThinking = false;
       stepThinkingProviderOptions = undefined;
@@ -955,10 +1138,13 @@ export class AiSdkBackend implements AgentBackend {
 
     const modelTools: ModelToolSet = {};
     for (const t of providerTools) {
-      modelTools[t.name] = {
-        description: t.description,
-        inputSchema: t.parameters,
-      };
+      modelTools[t.name] = t.providerTool
+        ? { kind: 'provider', providerTool: t.providerTool }
+        : {
+            kind: 'function',
+            description: t.description,
+            inputSchema: t.parameters,
+          };
     }
 
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
@@ -1363,10 +1549,13 @@ export class AiSdkBackend implements AgentBackend {
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
           const returnedToolCalls: ToolCallPart[] = [];
+          let providerToolActivityCount = 0;
+          const providerToolInputs = new Map<string, unknown>();
           const providerStepId = currentStepMessageId;
           let providerStepUsage: NormalizedUsage | undefined;
           const attemptHasNoObservableOutput = () =>
             returnedToolCalls.length === 0 &&
+            providerToolActivityCount === 0 &&
             stepText.length === 0 &&
             stepThinking.length === 0 &&
             stepSignature === undefined;
@@ -1440,7 +1629,9 @@ export class AiSdkBackend implements AgentBackend {
                 if (event.kind === 'finish' || event.kind === 'step-finish') {
                   rawFinishReason = event.finishReason ?? rawFinishReason;
                 }
-                if (event.kind === 'text') {
+                if (event.kind === 'text-start') {
+                  stepTextPartStartOffset = stepText.length;
+                } else if (event.kind === 'text') {
                   stepText += event.text;
                   queue.push({
                     type: 'text_delta',
@@ -1450,6 +1641,14 @@ export class AiSdkBackend implements AgentBackend {
                     messageId: currentStepMessageId,
                     text: event.text,
                   } satisfies TextDeltaEvent);
+                } else if (event.kind === 'text-metadata') {
+                  stepTextProviderOptions = mergeTextProviderOptions(
+                    stepTextProviderOptions,
+                    stripUndefinedDeep(event.providerOptions) as NonNullable<
+                      ModelMessage['providerOptions']
+                    >,
+                    stepTextPartStartOffset,
+                  );
                 } else if (event.kind === 'thinking') {
                   sawStepThinking = true;
                   stepThinking += event.text;
@@ -1494,7 +1693,49 @@ export class AiSdkBackend implements AgentBackend {
                 } else if (event.kind === 'thinking-signature') {
                   stepSignature = event.signature;
                 } else if (event.kind === 'tool-call') {
-                  returnedToolCalls.push(event.toolCall);
+                  if (event.toolCall.providerExecuted) {
+                    providerToolActivityCount += 1;
+                    providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);
+                    queue.push({
+                      type: 'tool_start',
+                      id: this.newId(),
+                      turnId,
+                      ts: this.now(),
+                      toolUseId: event.toolCall.toolCallId,
+                      toolName: event.toolCall.toolName,
+                      args: event.toolCall.input,
+                      providerExecuted: true,
+                      activityKind: 'websearch',
+                      displayName: 'Web search',
+                      stepId: providerStepId,
+                      ...(event.toolCall.providerOptions !== undefined
+                        ? {
+                            providerOptions: stripUndefinedDeep(event.toolCall.providerOptions),
+                          }
+                        : {}),
+                    } satisfies ToolStartEvent);
+                  } else {
+                    returnedToolCalls.push(event.toolCall);
+                  }
+                } else if (event.kind === 'provider-tool-result') {
+                  providerToolActivityCount += 1;
+                  const providerOutput = stripUndefinedDeep(event.output);
+                  queue.push({
+                    type: 'tool_result',
+                    id: this.newId(),
+                    turnId,
+                    ts: this.now(),
+                    toolUseId: event.toolCallId,
+                    providerExecuted: true,
+                    ...(providerOutput !== undefined ? { providerOutput } : {}),
+                    isError: event.isError === true,
+                    content: providerToolResultContent(
+                      event.toolName,
+                      providerOutput,
+                      providerToolInputs.get(event.toolCallId),
+                    ),
+                  } satisfies ToolResultEvent);
+                  providerToolInputs.delete(event.toolCallId);
                 } else if (event.kind === 'step-finish') {
                   // The step's text/thinking deltas are all in (the stream is
                   // drained in order), so flush this step's AssistantMessage and
@@ -2654,6 +2895,7 @@ export class AiSdkBackend implements AgentBackend {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
     type ToolResultItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
     type ThinkingItem = Extract<RuntimeEventModelReplayItem, { kind: 'thinking' }>;
+    type TextItem = Extract<RuntimeEventModelReplayItem, { kind: 'text' }>;
     type ReplayReasoning = {
       part?: ReasoningPart;
       providerOptions?: NonNullable<ModelMessage['providerOptions']>;
@@ -2662,7 +2904,7 @@ export class AiSdkBackend implements AgentBackend {
     let bufferedCalls: ToolCallItem[] = [];
     const results = new Map<string, ToolResultItem>();
     const reasoningByStep = new Map<string, ThinkingItem[]>();
-    const textByStep = new Map<string, string>();
+    const textByStep = new Map<string, TextItem>();
 
     const replaySupport = this.modelAdapter.runtimeEventReplaySupport();
     const reasoningReplay = (item: ThinkingItem): ReplayReasoning | undefined => {
@@ -2720,10 +2962,18 @@ export class AiSdkBackend implements AgentBackend {
     // back — the plan flags them as `unmatched_tool_result` (a non-blocking
     // diagnostic precisely so this drop path is reachable; see
     // hasBlockingReplayDiagnostics).
-    const pushToolResults = async (calls: readonly ToolCallItem[]) => {
+    const materializeReplayToolResult = async (result: ToolResultItem): Promise<ToolResultOutput> =>
+      settledModelOutputs?.get(result.toolCallId) ??
+      (await this.materializeToolResultOutput(
+        budget,
+        result.output,
+        result.isError,
+        `runtime-event:${result.eventId}:tool-result`,
+      ));
+    const pushClientToolResults = async (calls: readonly ToolCallItem[]) => {
       for (const call of calls) {
         const result = results.get(call.toolCallId);
-        if (!result) continue;
+        if (!result || result.providerExecuted === true) continue;
         results.delete(call.toolCallId);
         out.push({
           role: 'tool',
@@ -2732,14 +2982,7 @@ export class AiSdkBackend implements AgentBackend {
               type: 'tool-result',
               toolCallId: result.toolCallId,
               toolName: result.toolName,
-              output:
-                settledModelOutputs?.get(result.toolCallId) ??
-                (await this.materializeToolResultOutput(
-                  budget,
-                  result.output,
-                  result.isError,
-                  `runtime-event:${result.eventId}:tool-result`,
-                )),
+              output: await materializeReplayToolResult(result),
             },
           ],
         });
@@ -2749,7 +2992,7 @@ export class AiSdkBackend implements AgentBackend {
     // then the step's tool calls, followed by those calls' tool results.
     const emitStep = async (
       reasoning: readonly ThinkingItem[] | undefined,
-      text: string,
+      text: TextItem | undefined,
       calls: readonly ToolCallItem[],
     ) => {
       const content: unknown[] = [];
@@ -2759,7 +3002,13 @@ export class AiSdkBackend implements AgentBackend {
       for (const item of replayReasoning ?? []) {
         if (item.part) content.push(item.part);
       }
-      if (text.length > 0) content.push({ type: 'text', text });
+      if (text && text.content.length > 0) {
+        content.push({
+          type: 'text',
+          text: text.content,
+          ...(text.providerOptions !== undefined ? { providerOptions: text.providerOptions } : {}),
+        });
+      }
       for (const call of calls) {
         content.push({
           type: 'tool-call',
@@ -2767,6 +3016,20 @@ export class AiSdkBackend implements AgentBackend {
           toolName: call.toolName,
           input: call.input,
           ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+          ...(call.providerExecuted !== undefined
+            ? { providerExecuted: call.providerExecuted }
+            : {}),
+        });
+      }
+      for (const call of calls) {
+        const result = results.get(call.toolCallId);
+        if (!result || result.providerExecuted !== true) continue;
+        results.delete(call.toolCallId);
+        content.push({
+          type: 'tool-result',
+          toolCallId: result.toolCallId,
+          toolName: result.toolName,
+          output: await materializeReplayToolResult(result),
         });
       }
       const replayProviderOptions = replayReasoning?.find(
@@ -2779,7 +3042,7 @@ export class AiSdkBackend implements AgentBackend {
           ...(replayProviderOptions ? { providerOptions: replayProviderOptions } : {}),
         } as ModelMessage);
       }
-      await pushToolResults(calls);
+      await pushClientToolResults(calls);
     };
     // Emit tool calls no assistant text closed: a thinking + tool step with no
     // text (its empty closer is skipped from the plan), a pure-tool step, or a
@@ -2794,7 +3057,7 @@ export class AiSdkBackend implements AgentBackend {
         if (group.length === 0) return;
         const stepId = group[0]!.stepId;
         const reasoning = stepId !== undefined ? reasoningByStep.get(stepId) : undefined;
-        const text = stepId !== undefined ? (textByStep.get(stepId) ?? '') : '';
+        const text = stepId !== undefined ? textByStep.get(stepId) : undefined;
         if (stepId !== undefined) {
           reasoningByStep.delete(stepId);
           textByStep.delete(stepId);
@@ -2824,7 +3087,7 @@ export class AiSdkBackend implements AgentBackend {
       }
       for (const [stepId, reasoning] of reasoningByStep) {
         reasoningByStep.delete(stepId);
-        await emitStep(reasoning, '', []);
+        await emitStep(reasoning, undefined, []);
       }
     };
 
@@ -2871,18 +3134,24 @@ export class AiSdkBackend implements AgentBackend {
             // reasoning, if any) so step order is preserved.
             if (otherCalls.length > 0) await emitGroupedCalls(otherCalls);
             if (thisCalls.length > 0) {
-              await emitStep(reasoningByStep.get(stepId), item.content, thisCalls);
+              await emitStep(reasoningByStep.get(stepId), item, thisCalls);
               reasoningByStep.delete(stepId);
             } else {
               // Runtime-owned settlement persists assistant facts before the
               // matching tool calls. Hold the step closer until those calls
               // arrive; a terminal text-only step flushes below.
-              textByStep.set(stepId, item.content);
+              textByStep.set(stepId, item);
             }
           } else {
             // Legacy per-turn assistant text: standalone after any tool block.
             await flushPendingSteps();
-            out.push({ role: 'assistant', content: item.content });
+            out.push({
+              role: 'assistant',
+              content: item.content,
+              ...(item.providerOptions !== undefined
+                ? { providerOptions: item.providerOptions }
+                : {}),
+            });
           }
           break;
       }
@@ -2927,7 +3196,11 @@ export class AiSdkBackend implements AgentBackend {
         ),
       } as ModelMessage;
     }
-    return { role: item.role, content: item.content };
+    return {
+      role: item.role,
+      content: item.content,
+      ...(item.providerOptions !== undefined ? { providerOptions: item.providerOptions } : {}),
+    };
   }
 
   private async materializePriorMessages(
@@ -2970,7 +3243,15 @@ export class AiSdkBackend implements AgentBackend {
       // replaying it as an empty text block is a hard 400 on Anthropic-protocol
       // providers.
       else if (m.type === 'assistant' && m.text.length > 0)
-        out.push({ role: 'assistant', content: m.text });
+        out.push({
+          role: 'assistant',
+          content: m.text,
+          ...(m.providerOptions !== undefined
+            ? {
+                providerOptions: m.providerOptions as NonNullable<ModelMessage['providerOptions']>,
+              }
+            : {}),
+        } as ModelMessage);
       // empty assistant / tool_call / tool_result / permission_decision / token_usage / system_note skipped
     }
     return out;

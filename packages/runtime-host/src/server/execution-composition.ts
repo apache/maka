@@ -16,9 +16,11 @@ import {
   isBuiltinFilesystemWorkerSandboxAvailable,
   prepareSkillInvocationMessageFromInventory,
   RuntimeReadModel,
+  routeWebSearchTools,
   SessionManager,
   SessionActivityRegistry,
   ShellRunProcessManager,
+  type MakaTool,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -216,7 +218,11 @@ export async function createExecutionRuntimeHostComposition(
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };
-    const hostTools = [createHostWebSearchTool({ policy: runtimePolicyStores.operations })];
+    const hostTools = [
+      createHostWebSearchTool({
+        policy: runtimePolicyStores.operations,
+      }),
+    ];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
@@ -391,6 +397,8 @@ export async function createExecutionRuntimeHostComposition(
         resolveRootTools: (sessionId) =>
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
         parentAgentTools: childAgentTools.parentTools,
+        childTools: childAgentTools.childTools,
+        worktreePatchWriteBackAvailable: true,
         childAgents: bindHostChildAgentBackend(
           requireSessionManager(manager),
           backendContext.sessionId,
@@ -467,6 +475,28 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
     });
     sessionEffects = sessionEffectCoordinator;
+    const resolveChildTools = async (sessionId: string): Promise<readonly MakaTool[]> => {
+      const header = await stores.sessionStore.readHeader(sessionId);
+      const [resolved, snapshot] = await Promise.all([
+        runtimePolicyStores.operations.resolveExecutionConnection(header.llmConnectionSlug),
+        runtimePolicyStores.runtimePolicy.getSnapshot(),
+      ]);
+      if (resolved.kind !== 'ready') {
+        return childAgentTools.childTools.filter((tool) => tool.name !== 'WebSearch');
+      }
+      const { models, ...connection } = resolved.connection;
+      return routeWebSearchTools({
+        tools: childAgentTools.childTools,
+        settings: snapshot.policy.webSearch,
+        connection: {
+          ...connection,
+          defaultModel: header.model,
+          ...(models ? { models: [...models] } : {}),
+        },
+        model: header.model,
+        privacy: snapshot.policy.privacy,
+      });
+    };
     manager = new SessionManager({
       store: stores.sessionStore,
       runStore: stores.agentRunStore,
@@ -522,6 +552,7 @@ export async function createExecutionRuntimeHostComposition(
       shellRuns,
       planStore: openedPlanStore,
       childTools: childAgentTools.childTools,
+      resolveChildTools,
       worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>
         openedArtifactStore.listTurnArtifacts(sessionId, turnId),

@@ -52,6 +52,11 @@ default**:
   runners project that config to the canonical cell setting
   `MAKA_AGENT_TOOLS=true`; direct Harbor cell/CLI entrypoints accept the same
   environment setting (`false` is the default).
+- Provider-native web search is opt-in for benchmark reproducibility. Pass
+  `MAKA_WEB_SEARCH_ENABLED=true` through `HarborTaskRunnerOptions.agentEnv` or
+  the direct cell environment to expose native `WebSearch` when the exact
+  provider/model wire supports it. The Harbor adapter forwards this flag to the
+  in-container cell without forwarding a second search credential.
   Executors can implement native file-operation methods, or rely on the
   command-backed fallback when the isolated workspace has `node` available.
   The headless helper rejects absolute paths, `..` escapes, and absolute glob

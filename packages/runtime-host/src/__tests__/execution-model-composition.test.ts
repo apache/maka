@@ -22,6 +22,7 @@ import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
   type BackendFactoryContext,
+  type AiSdkBackendInput,
   type FilesystemWorkerExecuteInput,
   type MakaTool,
   type MakaToolContext,
@@ -275,6 +276,56 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
   );
   try {
     assert.equal(snapshotCalls, 0);
+  } finally {
+    await backend.dispose();
+  }
+});
+
+test('backend creation routes a bound WebSearch tool without widening the child ceiling', async () => {
+  const clientSearch: MakaTool = {
+    name: 'WebSearch',
+    description: 'Client web search',
+    parameters: {},
+    impl: async () => undefined,
+  };
+  const ready = {
+    kind: 'ready' as const,
+    connection: {
+      slug: 'deepseek-responses',
+      providerType: 'deepseek' as const,
+      enabledModelIds: ['deepseek-v4-flash'],
+      models: [{ id: 'deepseek-v4-flash', apiProtocol: 'openai-responses' as const }],
+    },
+    networkProxy: { enabled: false },
+    secretMaterial: { connection: { secret: API_KEY } },
+  };
+  const policy = {
+    ...createDefaultRuntimePolicy(),
+    webSearch: { enabled: true, defaultProvider: 'model' as const },
+  };
+  const runtimePolicy = {
+    operations: { resolveExecutionConnection: async () => ready },
+    runtimePolicy: {
+      getSnapshot: async () => ({ revision: 1, policy }),
+    },
+  } as unknown as RuntimePolicyStoresWriter;
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => ready,
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      runtimePolicy,
+      tools: [clientSearch],
+      modelId: 'deepseek-v4-flash',
+    }),
+  );
+  try {
+    const input = (backend as unknown as { input: AiSdkBackendInput }).input;
+    assert.deepEqual(
+      input.tools.map((tool) => tool.name),
+      ['WebSearch'],
+    );
+    assert.equal(input.tools[0]?.providerTool?.kind, 'openai-web-search');
   } finally {
     await backend.dispose();
   }
@@ -593,6 +644,15 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       },
     });
     assert.equal(memoryEnabled.kind, 'committed');
+    policySnapshot = await policy.runtimePolicy.getSnapshot();
+    const webSearchEnabled = await policy.runtimePolicy.mutate({
+      expectedRevision: policySnapshot.revision,
+      operation: {
+        kind: 'set_web_search',
+        value: { enabled: true, defaultProvider: 'tavily' },
+      },
+    });
+    assert.equal(webSearchEnabled.kind, 'committed');
 
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
@@ -1061,6 +1121,15 @@ test('production Host executes a durable runnable child with an exact tool ceili
       'committed',
     );
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
+    const policySnapshot = await policy.runtimePolicy.getSnapshot();
+    const webSearchEnabled = await policy.runtimePolicy.mutate({
+      expectedRevision: policySnapshot.revision,
+      operation: {
+        kind: 'set_web_search',
+        value: { enabled: true, defaultProvider: 'tavily' },
+      },
+    });
+    assert.equal(webSearchEnabled.kind, 'committed');
 
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
@@ -1169,7 +1238,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
       provider: 'tavily',
       query: 'latest hosted web result',
       reason: 'not_configured',
-      message: 'Enable web search before using this tool.',
+      message: 'Configure a Tavily API key before using web search.',
     });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
@@ -1326,7 +1395,6 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
     assert.deepEqual(toolParameterEnum(requests[1]?.body, 'agent_spawn', 'profile'), [
       'local_read',
-      'web_research',
       'implementation',
     ]);
     assert.deepEqual(toolNames(requests[2]?.body), [
@@ -2436,6 +2504,7 @@ function backendCreationFixture(input: {
   oauthCredentials?: HostOAuthExecutionAuthority;
   claudeDeviceId?: string;
   tools?: readonly MakaTool[];
+  modelId?: string;
   snapshotClientCapabilities?: () => unknown;
   executionBoundary?: unknown;
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
@@ -2449,7 +2518,7 @@ function backendCreationFixture(input: {
       workspaceRoot: '/workspace',
       header: {
         llmConnectionSlug: 'backend-creation-connection',
-        model: MODEL_ID,
+        model: input.modelId ?? MODEL_ID,
         cwd: '/workspace',
         permissionMode: 'bypass',
       },

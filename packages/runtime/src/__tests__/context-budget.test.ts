@@ -23,8 +23,43 @@ import {
 import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
 import { renderSynthesisCacheBlock, selectSynthesisCacheForReplay } from '../synthesis-cache.js';
 import { historyCompactBlockToCompactionBoundary } from '../compaction-boundary.js';
+import { estimateRuntimeEventChars } from '../context-budget-helpers.js';
 
 describe('context-budget archive retrieval', () => {
+  test('counts provider-native replay payloads and never archives only their display projection', () => {
+    const rawProviderOutput = [{ encryptedContent: 'x'.repeat(10_000) }];
+    const event = {
+      ...toolResult('result-native', 'turn-native', 'search-native', {
+        kind: 'web_search',
+        provider: 'model',
+        query: 'latest',
+        rows: [],
+      }),
+      content: {
+        kind: 'function_response' as const,
+        id: 'search-native',
+        name: 'WebSearch',
+        result: { kind: 'web_search', provider: 'model', query: 'latest', rows: [] },
+        providerExecuted: true,
+        providerOutput: rawProviderOutput,
+      },
+    };
+
+    assert.ok(estimateRuntimeEventChars(event) >= 10_000);
+    const budgeted = applyRuntimeEventContextBudget([event], {
+      staleToolResultPrune: {
+        enabled: true,
+        maxResultEstimatedTokens: 1,
+        minRecentTurnsFull: 0,
+        archiveRefs: [],
+      },
+      charsPerToken: 1,
+    });
+    assert.ok(budgeted);
+    assert.equal(budgeted.diagnostic.prunedToolResults ?? 0, 0);
+    assert.deepEqual(budgeted.events[0], event);
+  });
+
   test('prunes the newest turn when the full-result protection window is zero', () => {
     const sentinel = 'newest-turn-full-result-must-not-be-reinjected';
     const originalResult = { kind: 'text', text: sentinel.repeat(4) };

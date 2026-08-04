@@ -130,7 +130,13 @@ export function storedMessageToRuntimeEvent(
         partial: false,
         role: 'model',
         author: 'agent',
-        content: { kind: 'text', text: message.text },
+        content: {
+          kind: 'text',
+          text: message.text,
+          ...(message.providerOptions !== undefined
+            ? { providerOptions: structuredClone(message.providerOptions) }
+            : {}),
+        },
         refs: { storedMessageId: message.id },
       };
 
@@ -281,6 +287,9 @@ export function runtimeEventToStoredMessageDraft(
       turnId: event.turnId,
       ts: event.ts,
       text: content.text,
+      ...(content.providerOptions !== undefined
+        ? { providerOptions: structuredClone(content.providerOptions) }
+        : {}),
       modelId: options.modelId,
     };
     return draft;

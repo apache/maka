@@ -70,6 +70,7 @@ describe('WebSearch agent tool (PR-AGENT-WEB-SEARCH-TOOL-0)', () => {
       webSearch: {
         ...defaultWebSearchSettings(),
         enabled: true,
+        defaultProvider: 'tavily',
         providers: { tavily: { ...defaultWebSearchSettings().providers.tavily, apiKey: 'tvly-xxx' } },
       },
     }));
@@ -89,6 +90,7 @@ describe('WebSearch agent tool (PR-AGENT-WEB-SEARCH-TOOL-0)', () => {
       webSearch: {
         ...defaultWebSearchSettings(),
         enabled: false,
+        defaultProvider: 'tavily',
         providers: { tavily: { ...defaultWebSearchSettings().providers.tavily, apiKey: 'tvly-real-key' } },
       },
     }));
@@ -143,6 +145,7 @@ describe('WebSearch agent tool (PR-AGENT-WEB-SEARCH-TOOL-0)', () => {
       webSearch: {
         ...defaultWebSearchSettings(),
         enabled: true,
+        defaultProvider: 'tavily',
         providers: { tavily: { ...defaultWebSearchSettings().providers.tavily, apiKey: '' } },
       },
     }));

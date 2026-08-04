@@ -15,6 +15,7 @@ export const RUNTIME_EVENT_BACKFILL_STATE_KEY = 'makaRuntimeRecovery';
 
 export type RuntimeEventBackfillDiagnosticCode =
   | 'skipped_high_risk_message'
+  | 'skipped_provider_native_replay_gap'
   | 'skipped_unmatched_tool_result'
   | 'skipped_unmatched_permission_decision'
   | 'skipped_unsafe_terminal_state';
@@ -63,6 +64,16 @@ export function backfillRuntimeEventsFromStoredMessages(
     .slice()
     .sort((a, b) => a.ts - b.ts || messageId(a).localeCompare(messageId(b)));
   const toolCalls = new Map<string, ToolCallMessage>();
+  const replayableProviderToolUseIds = new Set(
+    turnMessages
+      .filter(
+        (message): message is ToolResultMessage =>
+          message.type === 'tool_result' &&
+          message.providerExecuted === true &&
+          message.providerOutput !== undefined,
+      )
+      .map((message) => message.toolUseId),
+  );
 
   for (const message of turnMessages) {
     if (message.type === 'tool_call') {
@@ -141,6 +152,15 @@ export function backfillRuntimeEventsFromStoredMessages(
         break;
 
       case 'tool_call': {
+        if (message.providerExecuted === true && !replayableProviderToolUseIds.has(message.id)) {
+          diagnostics.push({
+            code: 'skipped_provider_native_replay_gap',
+            message:
+              'provider-native tool history requires the opaque provider output for lossless recovery',
+            detail: { messageId: message.id, toolUseId: message.id },
+          });
+          break;
+        }
         const stateDelta = toolCallStateDelta(message);
         events.push({
           ...base,
@@ -154,6 +174,9 @@ export function backfillRuntimeEventsFromStoredMessages(
             args: message.args,
             ...(message.providerOptions !== undefined
               ? { providerOptions: structuredClone(message.providerOptions) }
+              : {}),
+            ...(message.providerExecuted !== undefined
+              ? { providerExecuted: message.providerExecuted }
               : {}),
           },
           ...(stateDelta ? { actions: { stateDelta } } : {}),
@@ -170,6 +193,9 @@ export function backfillRuntimeEventsFromStoredMessages(
       }
 
       case 'tool_result': {
+        if (message.providerExecuted === true && message.providerOutput === undefined) {
+          break;
+        }
         const call = safePriorToolCall(toolCalls, message);
         if (!call) {
           diagnostics.push({
@@ -196,6 +222,12 @@ export function backfillRuntimeEventsFromStoredMessages(
             name: call.toolName,
             result: message.content,
             isError: message.isError,
+            ...(message.providerExecuted !== undefined
+              ? { providerExecuted: message.providerExecuted }
+              : {}),
+            ...(message.providerExecuted && message.providerOutput !== undefined
+              ? { providerOutput: structuredClone(message.providerOutput) }
+              : {}),
           },
           ...(message.durationMs !== undefined
             ? { actions: { stateDelta: { durationMs: message.durationMs } } }

@@ -1,10 +1,16 @@
 import {
   activePlanExecution,
   DEFAULT_SESSION_NAME,
+  defaultWebSearchSettings,
   isDeepResearchSession,
   resolveModelVisionSupport,
 } from '@maka/core';
-import type { CollaborationMode, LlmConnection, SessionHeader } from '@maka/core';
+import type {
+  AppSettings,
+  CollaborationMode,
+  LlmConnection,
+  SessionHeader,
+} from '@maka/core';
 import {
   emptyPlanSessionState,
   type PlanExecution,
@@ -20,6 +26,7 @@ import {
   buildToolsForAgentDefinition,
   buildUpdatePlanTool,
   projectEffectiveProductToolSurface,
+  routeWebSearchTools,
   selectCollaborationTools,
 } from '@maka/runtime';
 import type {
@@ -48,6 +55,8 @@ export interface DesktopBackendToolSurfaceDeps {
     sessionId: string,
     header: SessionHeader,
   ) => Promise<readonly MakaTool[]>;
+  getWebSearchSettings?: () => Promise<AppSettings['webSearch']>;
+  getPrivacySettings?: () => Promise<AppSettings['privacy']>;
 }
 
 export interface DesktopBackendToolSurfaceInput {
@@ -206,6 +215,16 @@ export async function resolveDesktopBackendToolSurface(
     !input.tools && isDeepResearchSession(input.header.labels)
       ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
       : unscopedCandidateTools;
+  const webSearchSettings = await (deps.getWebSearchSettings?.() ??
+    Promise.resolve(defaultWebSearchSettings()));
+  const privacySettings = await deps.getPrivacySettings?.();
+  const routedCandidateTools = routeWebSearchTools({
+    tools: candidateTools,
+    settings: webSearchSettings,
+    connection,
+    model,
+    ...(privacySettings ? { privacy: privacySettings } : {}),
+  });
   const toolEconomy = deps.isComputerUseRealModelE2e ? false : deps.toolEconomy;
 
   const planControlTools = input.tools
@@ -219,7 +238,7 @@ export async function resolveDesktopBackendToolSurface(
           ]
         : [];
   const backendTools = computerUseToolsForModel(
-    [...candidateTools, ...planControlTools],
+    [...routedCandidateTools, ...planControlTools],
     deps.computerUseTools,
     supportsVision,
   );

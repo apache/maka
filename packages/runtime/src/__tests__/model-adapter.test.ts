@@ -229,6 +229,130 @@ describe('ModelAdapter stream and error normalization', () => {
     ]);
   });
 
+  test('normalizes provider-executed search results and text citation metadata', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-result',
+        toolCallId: 'search-1',
+        toolName: 'WebSearch',
+        providerExecuted: true,
+        output: {
+          action: { type: 'search', queries: ['latest Maka'] },
+          sources: [{ type: 'url', url: 'https://maka.example/' }],
+        },
+      } as Chunk),
+      [
+        {
+          kind: 'provider-tool-result',
+          toolCallId: 'search-1',
+          toolName: 'WebSearch',
+          output: {
+            action: { type: 'search', queries: ['latest Maka'] },
+            sources: [{ type: 'url', url: 'https://maka.example/' }],
+          },
+        },
+      ],
+    );
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-end',
+        providerMetadata: {
+          openai: {
+            itemId: 'message-1',
+            annotations: [
+              {
+                type: 'url_citation',
+                url: 'https://maka.example/',
+                title: 'Maka',
+                startIndex: 0,
+                endIndex: 4,
+              },
+            ],
+          },
+        },
+      } as Chunk),
+      [
+        {
+          kind: 'text-metadata',
+          providerOptions: {
+            openai: {
+              itemId: 'message-1',
+              annotations: [
+                {
+                  type: 'url_citation',
+                  url: 'https://maka.example/',
+                  title: 'Maka',
+                  startIndex: 0,
+                  endIndex: 4,
+                },
+              ],
+            },
+          },
+        },
+      ],
+    );
+  });
+
+  test('normalizes Anthropic web search results and server-tool errors', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const result = [
+      {
+        type: 'web_search_result',
+        url: 'https://maka.example/',
+        title: 'Maka',
+        pageAge: '2026-08-04',
+        encryptedContent: 'encrypted-result',
+      },
+    ];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-result',
+        toolCallId: 'search-anthropic',
+        toolName: 'WebSearch',
+        providerExecuted: true,
+        output: result,
+      } as Chunk),
+      [
+        {
+          kind: 'provider-tool-result',
+          toolCallId: 'search-anthropic',
+          toolName: 'WebSearch',
+          output: result,
+        },
+      ],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-error',
+        toolCallId: 'search-anthropic-error',
+        toolName: 'WebSearch',
+        providerExecuted: true,
+        error: {
+          type: 'web_search_tool_result_error',
+          errorCode: 'max_uses_exceeded',
+        },
+      } as Chunk),
+      [
+        {
+          kind: 'provider-tool-result',
+          toolCallId: 'search-anthropic-error',
+          toolName: 'WebSearch',
+          output: {
+            type: 'web_search_tool_result_error',
+            errorCode: 'max_uses_exceeded',
+          },
+          isError: true,
+        },
+      ],
+    );
+  });
+
   test('reduces AI SDK 7 step boundaries to Maka-owned step-finish events', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];

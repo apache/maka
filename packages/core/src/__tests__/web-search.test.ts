@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   WEB_SEARCH_CREDENTIAL_SOURCES,
+  WEB_SEARCH_CREDENTIAL_PROVIDERS,
   WEB_SEARCH_PROVIDERS,
   defaultWebSearchSettings,
   isWebSearchCredentialSource,
@@ -40,6 +41,7 @@ describe('web search settings', () => {
   it('accepts only closed provider and credential enums', () => {
     for (const provider of WEB_SEARCH_PROVIDERS) assert.equal(isWebSearchProvider(provider), true);
     for (const value of ['google', '', undefined]) assert.equal(isWebSearchProvider(value), false);
+    assert.deepEqual(WEB_SEARCH_CREDENTIAL_PROVIDERS, ['tavily']);
 
     for (const source of WEB_SEARCH_CREDENTIAL_SOURCES) {
       assert.equal(isWebSearchCredentialSource(source), true);
@@ -142,7 +144,7 @@ describe('web search settings', () => {
 
     assert.deepEqual(normalized, {
       enabled: false,
-      defaultProvider: 'tavily',
+      defaultProvider: 'model',
       providers: {
         tavily: {
           apiKey: '',

@@ -6,7 +6,11 @@ import type {
 } from './llm-connections.js';
 import type { ProviderType } from './provider-registry.js';
 import type { ChatDefaultPermissionMode, ProxyProtocol } from './settings.js';
-import { WEB_SEARCH_PROVIDERS, type WebSearchProvider } from './web-search.js';
+import {
+  WEB_SEARCH_PROVIDERS,
+  type WebSearchCredentialProvider,
+  type WebSearchProvider,
+} from './web-search.js';
 
 export { WEB_SEARCH_PROVIDERS };
 export type { ConnectionTestErrorClass, ModelDiscoverySource } from './llm-connections.js';
@@ -139,7 +143,7 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     workspaceInstructions: { enabled: true },
     privacy: { incognitoActive: false },
     chatDefaults: { permissionMode: 'ask' },
-    webSearch: { enabled: false, defaultProvider: 'tavily' },
+    webSearch: { enabled: false, defaultProvider: 'model' },
   };
 }
 
@@ -239,7 +243,11 @@ export type CredentialLocator =
       readonly connectionId: EntityId;
       readonly kind: 'api_key' | 'oauth_token';
     }
-  | { readonly scope: 'web_search'; readonly provider: WebSearchProvider; readonly kind: 'api_key' }
+  | {
+      readonly scope: 'web_search';
+      readonly provider: WebSearchCredentialProvider;
+      readonly kind: 'api_key';
+    }
   | { readonly scope: 'network_proxy'; readonly kind: 'password' };
 
 export interface CredentialIdentity {

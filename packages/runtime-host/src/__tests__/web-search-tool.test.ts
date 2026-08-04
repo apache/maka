@@ -33,7 +33,7 @@ test('Host WebSearch fails closed before transport creation for unavailable poli
         throw new Error('transport must not be created');
       },
     });
-    const result = (await tool.impl({ query: 'current result' }, {} as MakaToolContext)) as {
+    const result = (await tool.impl({ query: 'current result' }, context())) as {
       kind: string;
       reason: string;
     };
@@ -103,7 +103,7 @@ test('Host WebSearch consumes one canonical credential/proxy snapshot and closes
     },
   });
 
-  const result = await tool.impl({ query: ' latest Maka ', limit: 1 }, {} as MakaToolContext);
+  const result = await tool.impl({ query: ' latest Maka ', limit: 1 }, context());
   assert.deepEqual(proxy, {
     enabled: true,
     type: 'https',
@@ -153,14 +153,36 @@ test('Host WebSearch closes its transport when the owning turn is cancelled', as
     }),
   });
   const running = Promise.resolve(
-    tool.impl({ query: 'cancel me' }, {
-      abortSignal: abort.signal,
-    } as MakaToolContext),
+    tool.impl(
+      { query: 'cancel me' },
+      {
+        ...context(),
+        abortSignal: abort.signal,
+      },
+    ),
   );
   const reason = new DOMException('Turn stopped', 'AbortError');
   abort.abort(reason);
   await assert.rejects(running, (error: unknown) => error === reason);
   assert.equal(closed, true);
+});
+
+test('Host client WebSearch refuses provider-native execution outside the primary request', async () => {
+  let transportCreated = false;
+  const tool = createHostWebSearchTool({
+    policy: resolver({ kind: 'model_native_only', provider: 'model' }),
+    createFetchTransport: () => ({
+      fetch: async () => {
+        transportCreated = true;
+        throw new Error('provider-native search must not create a client transport');
+      },
+      close: async () => {},
+    }),
+  });
+
+  const result = await tool.impl({ query: 'DeepSeek current news', limit: 1 }, context());
+  assert.equal((result as { reason?: string }).reason, 'unsupported_provider');
+  assert.equal(transportCreated, false);
 });
 
 function resolver(
@@ -182,5 +204,16 @@ function readyDirectExecution(): ResolveWebSearchExecutionResult {
         secret: 'tavily-secret',
       },
     },
+  };
+}
+
+function context(): MakaToolContext {
+  return {
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    cwd: '/tmp',
+    toolCallId: 'tool-1',
+    abortSignal: new AbortController().signal,
+    emitOutput: () => {},
   };
 }

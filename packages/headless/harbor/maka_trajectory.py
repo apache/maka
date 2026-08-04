@@ -1795,6 +1795,7 @@ def _is_runtime_content(content: Any) -> bool:
                 "attachments",
                 "quotes",
                 "steering",
+                "providerOptions",
             }
             and isinstance(content.get("text"), str)
             and ("displayText" not in content or isinstance(content["displayText"], str))
@@ -1808,6 +1809,10 @@ def _is_runtime_content(content: Any) -> bool:
                 and all(_is_quote_ref(item) for item in content["quotes"])
             ))
             and ("steering" not in content or content["steering"] is True)
+            and (
+                "providerOptions" not in content
+                or isinstance(content["providerOptions"], dict)
+            )
         )
     if kind == "thinking":
         return (
@@ -1821,7 +1826,15 @@ def _is_runtime_content(content: Any) -> bool:
         )
     if kind == "function_call":
         return (
-            set(content) <= {"kind", "id", "name", "args", "providerOptions"}
+            set(content)
+            <= {
+                "kind",
+                "id",
+                "name",
+                "args",
+                "providerOptions",
+                "providerExecuted",
+            }
             and isinstance(content.get("id"), str)
             and isinstance(content.get("name"), str)
             and "args" in content
@@ -1829,14 +1842,31 @@ def _is_runtime_content(content: Any) -> bool:
                 "providerOptions" not in content
                 or isinstance(content["providerOptions"], dict)
             )
+            and (
+                "providerExecuted" not in content
+                or isinstance(content["providerExecuted"], bool)
+            )
         )
     if kind == "function_response":
         return (
-            set(content) <= {"kind", "id", "name", "result", "isError"}
+            set(content)
+            <= {
+                "kind",
+                "id",
+                "name",
+                "result",
+                "isError",
+                "providerExecuted",
+                "providerOutput",
+            }
             and isinstance(content.get("id"), str)
             and isinstance(content.get("name"), str)
             and "result" in content
             and ("isError" not in content or isinstance(content["isError"], bool))
+            and (
+                "providerExecuted" not in content
+                or isinstance(content["providerExecuted"], bool)
+            )
         )
     if kind == "error":
         return (

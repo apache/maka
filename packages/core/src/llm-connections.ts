@@ -56,6 +56,8 @@ export interface ModelInfo {
     reasoning?: boolean;
     functionCalling?: boolean;
     imageGeneration?: boolean;
+    /** Provider-hosted live web search, using this exact model and connection. */
+    webSearch?: boolean;
   };
   /**
    * Voice is transport-sensitive: an `audio` modality alone does not prove

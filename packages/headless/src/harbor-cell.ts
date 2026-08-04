@@ -27,6 +27,7 @@ import {
   loadSynthesisCacheBlocksFromArtifacts,
   persistSynthesisCacheBlocksToArtifacts,
   projectEffectiveProductToolSurface,
+  routeWebSearchTools,
   type InvocationResult,
   type SynthesisCacheArtifactStore,
   type SynthesisCacheLoader,
@@ -1059,6 +1060,8 @@ export function buildAiSdkCellBackendRegistration(input: {
     env: input.env,
     ts: input.now(),
   });
+  const nativeWebSearchEnabled =
+    booleanEnv(input.env.MAKA_WEB_SEARCH_ENABLED, 'MAKA_WEB_SEARCH_ENABLED') ?? false;
   const modelKey = `${connection.providerType}:${input.model}`;
   const pricingOverride = resolveHarborCellPricingOverride(input.env, modelKey);
   const lookupPricing = pricingOverride
@@ -1104,13 +1107,21 @@ export function buildAiSdkCellBackendRegistration(input: {
         ...(input.fetch ? { fetchFn: input.fetch } : {}),
       });
       const providerFetch = subscriptionFetch ?? input.fetch;
-      const productToolSurface = ctx.tools
-        ? projectEffectiveProductToolSurface({
-            host: 'headless',
-            tools: ctx.tools,
-            policy: context.productToolSurface!.identity.policy,
-          })
-        : context.productToolSurface!;
+      const routedTools = routeWebSearchTools({
+        tools: ctx.tools ?? context.productToolSurface!.tools,
+        settings: {
+          enabled: nativeWebSearchEnabled,
+          defaultProvider: 'model',
+        },
+        connection,
+        model: input.model,
+        allowAddNative: ctx.tools === undefined,
+      });
+      const productToolSurface = projectEffectiveProductToolSurface({
+        host: 'headless',
+        tools: routedTools,
+        policy: context.productToolSurface!.identity.policy,
+      });
       const productTools = [...productToolSurface.tools];
       const supplementalTools = ctx.tools
         ? []

@@ -5,7 +5,7 @@ import type {
   DeleteCredentialInput,
   SetCredentialInput,
 } from '../runtime-policy.js';
-import { WEB_SEARCH_PROVIDERS } from '../web-search.js';
+import { WEB_SEARCH_CREDENTIAL_PROVIDERS } from '../web-search.js';
 import {
   domainError,
   entityIdValue,
@@ -40,7 +40,7 @@ export function decodeCredentialLocator(value: unknown): CredentialLocator {
     const item = exactRecord(value, 'web search credential locator', ['scope', 'provider', 'kind']);
     if (
       item.kind !== 'api_key' ||
-      !(WEB_SEARCH_PROVIDERS as readonly unknown[]).includes(item.provider)
+      !(WEB_SEARCH_CREDENTIAL_PROVIDERS as readonly unknown[]).includes(item.provider)
     ) {
       throw domainError('web search credential locator is invalid');
     }

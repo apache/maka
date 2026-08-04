@@ -748,6 +748,8 @@ const desktopBackendToolSurfaceDeps = {
   builtinTools,
   toolEconomy: desktopProductToolSurface.identity.policy.economy,
   planStore,
+  getWebSearchSettings: async () => (await settingsStore.get()).webSearch,
+  getPrivacySettings: async () => (await settingsStore.get()).privacy,
   getAgentGraphSupervisorTools: (sessionId: string) =>
     agentGraphCoordinator.toolsForSession(sessionId),
 };

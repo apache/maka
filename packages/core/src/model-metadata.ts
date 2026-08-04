@@ -102,7 +102,8 @@ export function openAiAdapterApiProtocol(
   providerType?: ProviderType,
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
-  return /^gpt-5/i.test(id) ||
+  return (providerType === 'deepseek' && id === 'deepseek-v4-flash') ||
+    /^gpt-5/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
     : 'openai-chat';
@@ -475,6 +476,12 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     },
   },
   'ollama-cloud': ollamaCloudThinkingModels,
+  deepseek: {
+    'deepseek-v4-flash': {
+      capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+    },
+  },
   'zai-coding-plan': {
     // glm-5.1 / glm-5v-turbo / glm-4.5-air are absent from the current
     // snapshot; their toggle facts are preserved here until they return.

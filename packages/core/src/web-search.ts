@@ -8,9 +8,11 @@
  * fields and never expose cleartext credentials or raw provider errors.
  */
 
-/** Closed enum of providers V0.1 will accept. */
-export const WEB_SEARCH_PROVIDERS = ['tavily'] as const;
+/** Closed enum of search execution sources. */
+export const WEB_SEARCH_PROVIDERS = ['model', 'tavily'] as const;
 export type WebSearchProvider = (typeof WEB_SEARCH_PROVIDERS)[number];
+export const WEB_SEARCH_CREDENTIAL_PROVIDERS = ['tavily'] as const;
+export type WebSearchCredentialProvider = (typeof WEB_SEARCH_CREDENTIAL_PROVIDERS)[number];
 
 /** Renderer-safe result row. No raw HTML, no provider tag soup. */
 export interface WebSearchResultRow {
@@ -35,7 +37,11 @@ export type WebSearchErrorReason =
 
 /** Discriminated response: success = array, error = typed object. */
 export type WebSearchResponse =
-  | { readonly ok: true; readonly results: ReadonlyArray<WebSearchResultRow> }
+  | {
+      readonly ok: true;
+      readonly provider?: WebSearchProvider;
+      readonly results: ReadonlyArray<WebSearchResultRow>;
+    }
   | { readonly ok: false; readonly reason: WebSearchErrorReason; readonly message: string };
 
 export const WEB_SEARCH_QUERY_MAX_CHARS = 200;
@@ -128,7 +134,7 @@ export type WebSearchSettingsPatch = Partial<{
 export function defaultWebSearchSettings(): WebSearchSettings {
   return {
     enabled: false,
-    defaultProvider: 'tavily',
+    defaultProvider: 'model',
     providers: {
       tavily: {
         apiKey: '',
@@ -209,7 +215,7 @@ export function normalizeWebSearchSettings(settings: WebSearchSettings): WebSear
   const enabled = settings.enabled === true;
   const defaultProvider = isWebSearchProvider(settings.defaultProvider)
     ? settings.defaultProvider
-    : 'tavily';
+    : 'model';
   // Cap apiKey length defensively. Tavily keys are < 64 chars; anything
   // longer is almost certainly garbage that would break log redaction.
   const rawApiKey = settings.providers?.tavily?.apiKey;

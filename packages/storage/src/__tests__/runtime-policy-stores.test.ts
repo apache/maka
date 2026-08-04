@@ -1755,7 +1755,7 @@ describe('runtime policy stores', () => {
     await withInteractiveOwner(async ({ stores }) => {
       assert.deepEqual(await stores.operations.resolveWebSearchExecution(), {
         kind: 'disabled',
-        provider: 'tavily',
+        provider: 'model',
       });
 
       const enabled = await stores.runtimePolicy.mutate({
@@ -1787,8 +1787,8 @@ describe('runtime policy stores', () => {
       );
       const direct = await stores.operations.resolveWebSearchExecution();
       assert.equal(direct.kind, 'ready');
-      if (direct.kind !== 'ready') return;
-      assert.equal(direct.secretMaterial.webSearch?.secret, 'tavily-execution-secret');
+      if (direct.kind !== 'ready' || direct.provider !== 'tavily') return;
+      assert.equal(direct.secretMaterial.webSearch.secret, 'tavily-execution-secret');
       assert.equal(direct.secretMaterial.networkProxy, undefined);
       assert.equal(direct.networkProxy.enabled, false);
 
@@ -1824,8 +1824,8 @@ describe('runtime policy stores', () => {
       );
       const ready = await stores.operations.resolveWebSearchExecution();
       assert.equal(ready.kind, 'ready');
-      if (ready.kind !== 'ready') return;
-      assert.equal(ready.secretMaterial.webSearch?.secret, 'tavily-execution-secret');
+      if (ready.kind !== 'ready' || ready.provider !== 'tavily') return;
+      assert.equal(ready.secretMaterial.webSearch.secret, 'tavily-execution-secret');
       assert.equal(ready.secretMaterial.networkProxy?.secret, 'proxy-execution-secret');
       assert.equal(ready.networkProxy.host, 'proxy.example');
 
@@ -1836,6 +1836,23 @@ describe('runtime policy stores', () => {
       assert.equal(privatePolicy.kind, 'committed');
       assert.deepEqual(await stores.operations.resolveWebSearchExecution(), {
         kind: 'privacy_mode',
+      });
+    });
+  });
+
+  test('keeps provider-native WebSearch outside the client search credential resolver', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const policy = await stores.runtimePolicy.mutate({
+        expectedRevision: 0,
+        operation: {
+          kind: 'set_web_search',
+          value: { enabled: true, defaultProvider: 'model' },
+        },
+      });
+      assert.equal(policy.kind, 'committed');
+      assert.deepEqual(await stores.operations.resolveWebSearchExecution(), {
+        kind: 'model_native_only',
+        provider: 'model',
       });
     });
   });

@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { Link } from '@astryxdesign/core';
 import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
 import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
-import { Button, StatusDot, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Button, Selector, StatusDot, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getWebSearchSettingsCopy, type WebSearchSettingsCopy } from '../locales/settings-web-search-copy';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { SettingsActions, SettingsField, SettingsPage, SettingsRow, SettingsSection } from './settings-section';
@@ -32,6 +32,7 @@ export function WebSearchSettingsPage(props: {
   const copy = getWebSearchSettingsCopy(locale);
   const sharedCopy = getSettingsSharedCopy(locale);
   const webSearch = props.settings.webSearch;
+  const usingModelSearch = webSearch.defaultProvider === 'model';
   const tavily = webSearch.providers.tavily;
   const tavilyKey = tavily.apiKey;
   const credentialSource = tavily.credentialSource;
@@ -145,15 +146,15 @@ export function WebSearchSettingsPage(props: {
     const releaseTest = webSearchActionGuard.begin('test');
     if (!releaseTest) return;
     setTesting(true);
-    const usesDraftKey = draftKey.trim().length > 0;
+    const usesDraftKey = !usingModelSearch && draftKey.trim().length > 0;
     const testedCredentialVersion = tavily.credentialVersion;
     try {
       const result = await window.maka.webSearch.test({
-        provider: 'tavily',
+        provider: webSearch.defaultProvider,
         apiKey: usesDraftKey ? draftKey : undefined,
       });
       if (!webSearchMountedRef.current) return;
-      if (!usesDraftKey && hasUsableKey) {
+      if (!usingModelSearch && !usesDraftKey && hasUsableKey) {
         void persistCredentialStatus(webSearchCredentialStatusFromResponse(result), testedCredentialVersion);
       }
       if (result.ok) {
@@ -186,19 +187,19 @@ export function WebSearchSettingsPage(props: {
     const queriedCredentialVersion = tavily.credentialVersion;
     try {
       const result = await window.maka.webSearch.query({
-        provider: 'tavily',
+        provider: webSearch.defaultProvider,
         query: trimmed,
         limit: 5,
       });
       if (!isCurrentLiveQuery(queryOwner)) return;
       if (result.ok) {
         setLiveQueryResults(result.results);
-        if (hasUsableKey) {
+        if (!usingModelSearch && hasUsableKey) {
           void persistCredentialStatus('valid', queriedCredentialVersion);
         }
       } else {
         setLiveQueryError(copy.errors[result.reason]);
-        if (hasUsableKey) {
+        if (!usingModelSearch && hasUsableKey) {
           void persistCredentialStatus(webSearchCredentialStatusFromResponse(result), queriedCredentialVersion);
         }
       }
@@ -216,14 +217,20 @@ export function WebSearchSettingsPage(props: {
 
   const hasStoredKey = tavilyKey.length > 0;
   const hasUsableKey = hasStoredKey || usingEnvKey;
-  const statusCopy = presentWebSearchCredentialStatus(
-    credentialSource,
-    webSearch.enabled,
-    tavily.credentialStatus,
-    copy,
-  );
+  const hasUsableProvider = usingModelSearch || hasUsableKey;
+  const statusCopy = usingModelSearch
+    ? {
+        label: webSearch.enabled ? copy.statuses.modelEnabled : copy.statuses.modelDisabled,
+        tone: webSearch.enabled ? ('info' as const) : ('warning' as const),
+      }
+    : presentWebSearchCredentialStatus(
+        credentialSource,
+        webSearch.enabled,
+        tavily.credentialStatus,
+        copy,
+      );
   const queryDisabledReason = webSearchQueryDisabledReason({
-    hasUsableKey,
+    hasUsableKey: hasUsableProvider,
     enabled: webSearch.enabled,
     query: liveQuery,
     copy,
@@ -231,7 +238,7 @@ export function WebSearchSettingsPage(props: {
   const checkedAtMs = tavily.credentialCheckedAt
     ? Date.parse(tavily.credentialCheckedAt)
     : Number.NaN;
-  const hasCheckedAt = Number.isFinite(checkedAtMs);
+  const hasCheckedAt = !usingModelSearch && Number.isFinite(checkedAtMs);
   const credentialActionBusy = pendingCredentialAction !== null || testing;
 
   return (
@@ -240,6 +247,24 @@ export function WebSearchSettingsPage(props: {
         title={sharedCopy.groups.searchProvider}
         description={sharedCopy.groups.searchProviderHelp}
       >
+        <SettingsRow
+          label={copy.provider}
+          description={copy.providerHelp}
+          end={<Selector
+            value={webSearch.defaultProvider}
+            label={copy.provider}
+            isLabelHidden
+            options={[
+              { value: 'model', label: copy.providerModel },
+              { value: 'tavily', label: copy.providerTavily },
+            ]}
+            onChange={(value) =>
+              void updateWebSearch({
+                defaultProvider: value === 'tavily' ? 'tavily' : 'model',
+              })
+            }
+          />}
+        />
         <SettingsRow
           label={copy.enabled}
           description={copy.enabledHelp}
@@ -255,19 +280,23 @@ export function WebSearchSettingsPage(props: {
                   {copy.lastTest}<RelativeTime ts={checkedAtMs} />
                 </small>
               )}
-              <small>{presentWebSearchCredentialSource(credentialSource, hasStoredKey, copy)}</small>
+              <small>
+                {usingModelSearch
+                  ? copy.sources.model
+                  : presentWebSearchCredentialSource(credentialSource, hasStoredKey, copy)}
+              </small>
             </div>
             <Switch
               label={copy.enabledAria}
               isLabelHidden
               value={webSearch.enabled}
-              isDisabled={!hasUsableKey || pendingWebSearchEnabled}
+              isDisabled={!hasUsableProvider || pendingWebSearchEnabled}
               onChange={(enabled) => void setEnabled(enabled)}
             />
           </div>}
         />
 
-        {/* The key was an input squeezed into the row's end slot with the
+        {!usingModelSearch && <>{/* The key was an input squeezed into the row's end slot with the
             actions posing as a second labeled row. Astryx's own form idiom:
             a full-width credential Field, then the section's one action
             cluster (save primary, test secondary, clear ghost). */}
@@ -309,51 +338,50 @@ export function WebSearchSettingsPage(props: {
             />
           )}
         </SettingsActions>
+        </>}
+        {usingModelSearch && (
+          <SettingsRow label={copy.modelCredential} description={copy.modelCredentialHelp} />
+        )}
       </SettingsSection>
 
-      <SettingsSection
-        title={sharedCopy.groups.searchBehavior}
-        description={sharedCopy.groups.searchBehaviorHelp}
-      >
-        {/* UX audit (owner msg `30f736ed`): one action wore three labels —
-            真实查询验证 over 查询 over 执行查询, each with its own help line,
-            for what is a single act: type a query, press the button, read the
-            result. One label now, on the field the user actually fills in.
-
-            The query keeps the full row width — it was squeezed into a row's
-            end slot before, an ~360px input for a real search query. */}
-        <SettingsField>
-          <TextInput
-            value={liveQuery}
-            onChange={(value) => updateLiveQuery(value)}
-            placeholder={copy.queryPlaceholder}
-            label={copy.testSearch}
-            description={copy.testSearchHelp}
-            width="100%"
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !liveQueryRunning) {
-                event.preventDefault();
-                void runLiveQuery();
-              }
-            }}
-          />
-        </SettingsField>
-        <SettingsActions>
-          <div className="settingsWebSearchSearchControls">
-            <Button
-              variant="primary"
-              isDisabled={liveQueryRunning || queryDisabledReason !== null}
-              onClick={() => void runLiveQuery()}
-              label={liveQueryRunning ? copy.searching : copy.search}
+      {!usingModelSearch && (
+        <SettingsSection
+          title={sharedCopy.groups.searchBehavior}
+          description={sharedCopy.groups.searchBehaviorHelp}
+        >
+          {/* UX audit (owner msg `30f736ed`): one action wore three labels.
+              Keep one label on the full-width query field. */}
+          <SettingsField>
+            <TextInput
+              value={liveQuery}
+              onChange={(value) => updateLiveQuery(value)}
+              placeholder={copy.queryPlaceholder}
+              label={copy.testSearch}
+              description={copy.testSearchHelp}
+              width="100%"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !liveQueryRunning) {
+                  event.preventDefault();
+                  void runLiveQuery();
+                }
+              }}
             />
-            {!liveQueryRunning && queryDisabledReason && (
-              <small className="settingsWebSearchDisabledReason">
-                {queryDisabledReason}
-              </small>
-            )}
-          </div>
-        </SettingsActions>
-      </SettingsSection>
+          </SettingsField>
+          <SettingsActions>
+            <div className="settingsWebSearchSearchControls">
+              <Button
+                variant="primary"
+                isDisabled={liveQueryRunning || queryDisabledReason !== null}
+                onClick={() => void runLiveQuery()}
+                label={liveQueryRunning ? copy.searching : copy.search}
+              />
+              {!liveQueryRunning && queryDisabledReason && (
+                <small className="settingsWebSearchDisabledReason">{queryDisabledReason}</small>
+              )}
+            </div>
+          </SettingsActions>
+        </SettingsSection>
+      )}
 
       {liveQueryError && (
         <div className="settingsConnectionMeta" role="alert">

@@ -122,6 +122,8 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 
 export interface RuntimeEventTextContent extends MessageContent {
   kind: 'text';
+  /** Provider-owned text metadata such as Responses URL citations. */
+  providerOptions?: Record<string, unknown>;
   /** Durable provenance for a host-authored user-role turn. */
   origin?: TurnOrigin;
   /**
@@ -151,6 +153,7 @@ export interface RuntimeEventFunctionCallContent {
   args: unknown;
   /** Provider-owned opaque call metadata that must survive model replay. */
   providerOptions?: Record<string, unknown>;
+  providerExecuted?: boolean;
 }
 
 export interface RuntimeEventFunctionResponseContent {
@@ -160,6 +163,9 @@ export interface RuntimeEventFunctionResponseContent {
   name: string;
   result: unknown;
   isError?: boolean;
+  providerExecuted?: boolean;
+  /** Raw provider result retained for provider-native replay; never rendered directly. */
+  providerOutput?: unknown;
 }
 
 export interface RuntimeEventErrorContent {
@@ -426,7 +432,15 @@ const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
 );
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
-  ['displayText', 'origin', 'attachments', 'quotes', 'inlineReferences', 'steering'],
+  [
+    'displayText',
+    'origin',
+    'attachments',
+    'quotes',
+    'inlineReferences',
+    'steering',
+    'providerOptions',
+  ],
 );
 const THINKING_CONTENT_SHAPE = defineObjectShape<RuntimeEventThinkingContent>()(
   ['kind', 'text'],
@@ -434,11 +448,11 @@ const THINKING_CONTENT_SHAPE = defineObjectShape<RuntimeEventThinkingContent>()(
 );
 const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallContent>()(
   ['kind', 'id', 'name', 'args'],
-  ['providerOptions'],
+  ['providerOptions', 'providerExecuted'],
 );
 const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionResponseContent>()(
   ['kind', 'id', 'name', 'result'],
-  ['isError'],
+  ['isError', 'providerExecuted', 'providerOutput'],
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
@@ -627,7 +641,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       if (
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
-        (value.steering !== undefined && value.steering !== true)
+        (value.steering !== undefined && value.steering !== true) ||
+        (value.providerOptions !== undefined && !isRecord(value.providerOptions))
       ) {
         return false;
       }
@@ -653,7 +668,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.id === 'string' &&
         typeof value.name === 'string' &&
         Object.hasOwn(value, 'args') &&
-        (value.providerOptions === undefined || isRecord(value.providerOptions))
+        (value.providerOptions === undefined || isRecord(value.providerOptions)) &&
+        (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean')
       );
     case 'function_response':
       return (
@@ -661,7 +677,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.id === 'string' &&
         typeof value.name === 'string' &&
         Object.hasOwn(value, 'result') &&
-        (value.isError === undefined || typeof value.isError === 'boolean')
+        (value.isError === undefined || typeof value.isError === 'boolean') &&
+        (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean')
       );
     case 'error':
       return (

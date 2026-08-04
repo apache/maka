@@ -332,6 +332,123 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
+  test('projects provider-native search through the canonical read model while replay keeps raw output', () => {
+    const rawProviderOutput = [
+      {
+        type: 'web_search_result',
+        url: 'https://maka.example/',
+        title: 'Maka',
+        pageAge: null,
+        encryptedContent: 'encrypted-result',
+      },
+    ];
+    const events = [
+      ev({
+        id: 'evt-native-text',
+        ts: ts + 1,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'text',
+          text: 'Maka is current.',
+          providerOptions: {
+            openai: {
+              itemId: 'message-1',
+              annotations: [{ type: 'url_citation', url: 'https://maka.example/' }],
+            },
+          },
+        },
+        refs: { providerEventId: 'step-native' },
+      }),
+      ev({
+        id: 'evt-native-call',
+        ts: ts + 2,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'search-1',
+          name: 'WebSearch',
+          args: { query: 'latest Maka' },
+          providerOptions: { anthropic: { type: 'server_tool_use' } },
+          providerExecuted: true,
+        },
+        refs: { toolCallId: 'search-1', stepId: 'step-native' },
+      }),
+      ev({
+        id: 'evt-native-result',
+        ts: ts + 3,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'search-1',
+          name: 'WebSearch',
+          result: {
+            kind: 'web_search',
+            provider: 'model',
+            query: 'latest Maka',
+            rows: [
+              {
+                title: 'Maka',
+                url: 'https://maka.example/',
+                snippet: '',
+                source: 'maka.example',
+              },
+            ],
+          },
+          providerExecuted: true,
+          providerOutput: rawProviderOutput,
+        },
+        refs: { toolCallId: 'search-1' },
+      }),
+    ];
+
+    const projected = projectRuntimeEventsToStoredMessages(events, { runHeaders: [header] });
+    expect(projected.diagnostics).toEqual([]);
+    expect(projected.messages[0]).toMatchObject({
+      type: 'assistant',
+      providerOptions: {
+        openai: {
+          itemId: 'message-1',
+          annotations: [{ type: 'url_citation', url: 'https://maka.example/' }],
+        },
+      },
+    });
+    expect(projected.messages[1]).toMatchObject({
+      type: 'tool_call',
+      providerOptions: { anthropic: { type: 'server_tool_use' } },
+      providerExecuted: true,
+    });
+    expect(projected.messages[2]).toMatchObject({
+      type: 'tool_result',
+      providerExecuted: true,
+      providerOutput: rawProviderOutput,
+      content: {
+        kind: 'web_search',
+        provider: 'model',
+        query: 'latest Maka',
+        rows: [
+          {
+            title: 'Maka',
+            url: 'https://maka.example/',
+            snippet: '',
+            source: 'maka.example',
+          },
+        ],
+      },
+    });
+
+    const replay = buildRuntimeEventModelReplayPlan(events);
+    expect(replay.diagnostics).toEqual([]);
+    expect(
+      replay.items.find((item) => item.kind === 'tool_result' && item.toolCallId === 'search-1'),
+    ).toMatchObject({
+      output: rawProviderOutput,
+      providerExecuted: true,
+    });
+  });
+
   test('projects an AskUserQuestion round trip without a legacy row for the live request', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [

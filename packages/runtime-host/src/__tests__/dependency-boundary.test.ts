@@ -38,6 +38,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/model-call-usage-projection',
   '@maka/core/model-catalog',
   '@maka/core/model-metadata',
+  '@maka/core/model-web-search',
   '@maka/core/model-thinking',
   '@maka/core/oauth-subscription',
   '@maka/core/plan',

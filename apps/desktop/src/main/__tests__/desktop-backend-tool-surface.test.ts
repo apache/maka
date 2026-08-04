@@ -273,6 +273,18 @@ describe('Desktop backend tool surface', () => {
         webSearch,
       ],
       deepResearchTools: [deepResearchStatus],
+      getWebSearchSettings: async () => ({
+        enabled: true,
+        defaultProvider: 'tavily',
+        providers: {
+          tavily: {
+            apiKey: 'tavily-key',
+            credentialSource: 'saved',
+            credentialVersion: 1,
+            credentialStatus: 'valid',
+          },
+        },
+      }),
     });
     const input = inputFor('claude-sonnet-4-5-20250929');
     input.header.labels = ['mode:deep_research'];
@@ -282,6 +294,92 @@ describe('Desktop backend tool surface', () => {
     assert.deepEqual(
       surface.selectedTools.map((candidate) => candidate.name),
       ['Read', 'ExploreAgent', 'WebSearch', 'deep_research_status'],
+    );
+  });
+
+  it('replaces client-executed WebSearch with provider-native search for DeepSeek V4', async () => {
+    const clientSearch = tool('WebSearch', 'web_read');
+    const deepseek: LlmConnection = {
+      ...connectionFor('deepseek-v4-flash'),
+      providerType: 'deepseek',
+      models: [
+        {
+          id: 'deepseek-v4-flash',
+          apiProtocol: 'openai-responses',
+          capabilities: { webSearch: true },
+        },
+      ],
+    };
+    const deps = makeDeps({
+      builtinTools: [readTool, clientSearch],
+      getReadyConnection: async () => ({
+        connection: deepseek,
+        apiKey: 'deepseek-key',
+        model: 'deepseek-v4-flash',
+      }),
+      getWebSearchSettings: async () => ({
+        enabled: true,
+        defaultProvider: 'model',
+        providers: {
+          tavily: {
+            apiKey: '',
+            credentialSource: 'none',
+            credentialVersion: 0,
+            credentialStatus: 'untested',
+          },
+        },
+      }),
+    });
+
+    const surface = await resolveDesktopBackendToolSurface(
+      deps,
+      inputFor('deepseek-v4-flash'),
+    );
+    const searches = surface.selectedTools.filter((candidate) => candidate.name === 'WebSearch');
+    assert.equal(searches.length, 1);
+    assert.deepEqual(searches[0]?.providerTool, {
+      kind: 'openai-web-search',
+      searchContextSize: 'medium',
+    });
+  });
+
+  it('omits every WebSearch implementation while privacy mode is active', async () => {
+    const clientSearch = tool('WebSearch', 'web_read');
+    const deepseek: LlmConnection = {
+      ...connectionFor('deepseek-v4-flash'),
+      providerType: 'deepseek',
+      models: [{ id: 'deepseek-v4-flash', apiProtocol: 'openai-responses' }],
+    };
+    const deps = makeDeps({
+      builtinTools: [readTool, clientSearch],
+      getReadyConnection: async () => ({
+        connection: deepseek,
+        apiKey: 'deepseek-key',
+        model: 'deepseek-v4-flash',
+      }),
+      getWebSearchSettings: async () => ({
+        enabled: true,
+        defaultProvider: 'model',
+        providers: {
+          tavily: {
+            apiKey: '',
+            credentialSource: 'none',
+            credentialVersion: 0,
+            credentialStatus: 'untested',
+          },
+        },
+      }),
+      getPrivacySettings: async () => ({ incognitoActive: true }),
+    });
+
+    const surface = await resolveDesktopBackendToolSurface(
+      deps,
+      inputFor('deepseek-v4-flash'),
+    );
+
+    assert.equal(
+      surface.selectedTools.some((candidate) => candidate.name === 'WebSearch'),
+      false,
     );
   });
 

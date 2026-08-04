@@ -109,6 +109,7 @@ export type RuntimeEventModelReplayItem =
       kind: 'text';
       role: 'user' | 'assistant' | 'system';
       content: string;
+      providerOptions?: NonNullable<ModelMessage['providerOptions']>;
       /** Original attachments (if any) so replay can render image parts. */
       attachments?: AttachmentRef[];
       /** Assistant step id (model-role text only); groups a step's parts. */
@@ -139,6 +140,7 @@ export type RuntimeEventModelReplayItem =
       toolName: string;
       input: unknown;
       providerOptions?: NonNullable<ModelMessage['providerOptions']>;
+      providerExecuted?: boolean;
       /** Assistant step id (from tool_start); groups the call with its step. */
       stepId?: string;
       eventId: string;
@@ -150,6 +152,7 @@ export type RuntimeEventModelReplayItem =
       toolName: string;
       output: unknown;
       isError: boolean;
+      providerExecuted?: boolean;
       eventId: string;
       ts: number;
     };
@@ -455,6 +458,13 @@ export function buildRuntimeEventModelReplayPlan(
             : formatTextWithInlineRefs(event.content),
           ...(steeringReplay ? { steering: { eventId: event.id } } : {}),
           ...(event.content.attachments ? { attachments: event.content.attachments } : {}),
+          ...(event.content.providerOptions !== undefined
+            ? {
+                providerOptions: event.content.providerOptions as NonNullable<
+                  ModelMessage['providerOptions']
+                >,
+              }
+            : {}),
           // Live events carry providerEventId; missing-ledger recovery carries
           // the same assistant message identity as storedMessageId.
           ...(assistantStepId ? { stepId: assistantStepId } : {}),
@@ -532,6 +542,9 @@ export function buildRuntimeEventModelReplayPlan(
                 >,
               }
             : {}),
+          ...(event.content.providerExecuted !== undefined
+            ? { providerExecuted: event.content.providerExecuted }
+            : {}),
           ...(event.refs?.stepId ? { stepId: event.refs.stepId } : {}),
           eventId: event.id,
           ts: event.ts,
@@ -556,7 +569,10 @@ export function buildRuntimeEventModelReplayPlan(
         }
         const shellResult = normalizeShellToolResultContent(event.content.result);
         let invalidResultMessage: string | undefined;
-        let normalizedResult: unknown = event.content.result;
+        let normalizedResult: unknown =
+          event.content.providerExecuted && event.content.providerOutput !== undefined
+            ? event.content.providerOutput
+            : event.content.result;
         if (shellResult.state === 'invalid') {
           invalidResultMessage = 'function_response contains an invalid shell tool result';
         } else if (
@@ -616,6 +632,9 @@ export function buildRuntimeEventModelReplayPlan(
           toolName: event.content.name,
           output: normalizedResult,
           isError: event.content.isError === true,
+          ...(event.content.providerExecuted !== undefined
+            ? { providerExecuted: event.content.providerExecuted }
+            : {}),
           eventId: event.id,
           ts: event.ts,
         });

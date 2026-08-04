@@ -79,6 +79,7 @@
     "./provider-contract-matrix": "./dist/provider-contract-matrix.js",
     "./model-catalog": "./dist/model-catalog.js",
     "./model-metadata": "./dist/model-metadata.js",
+    "./model-web-search": "./dist/model-web-search.js",
     "./model-thinking": "./dist/model-thinking.js",
     "./connection-readiness": "./dist/connection-readiness.js",
     "./provider-auth": "./dist/provider-auth.js",
