@@ -2158,7 +2158,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('unsent draft');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('unsent draft'));
     terminal.input('\x03');
-    await delay(20);
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('unsent draft'));
 
     assert.equal(terminal.stopCalls, 0);
     assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /unsent draft/);
