@@ -46,8 +46,6 @@ import {
 import {
   createBoundaryFilesystemExecutor,
   type FilesystemExecuteInput,
-  type FilesystemExecutor,
-  type FilesystemWriteLockKeyInput,
 } from './filesystem-executor.js';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
@@ -55,7 +53,6 @@ import {
 // builtin-tools directly.
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export type { MakaTool, MakaToolContext };
-import { withFileWriteLock } from './file-write-lock.js';
 import { profileRequiresSandbox, type SandboxManager } from './sandbox/sandbox-manager.js';
 import { SandboxCommandError } from './sandbox/errors.js';
 import { isLikelySandboxDenial } from './sandbox/detect.js';
@@ -148,12 +145,6 @@ export interface BuildBuiltinToolsOptions {
   sandboxManager?: SandboxManager;
   /** Sandboxed worker used for all local filesystem tools. */
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
-  /**
-   * Boundary-driven filesystem authority for the file tools. Composed from
-   * `executor` and `filesystemWorker` when omitted, which is what every
-   * production caller wants; inject only to replace both backends at once.
-   */
-  filesystem?: FilesystemExecutor;
   /** Host-surface gate for Edit. Defaults to enabled. */
   includeEdit?: boolean;
   /** Test/embedding override. Production callers use the current process platform. */
@@ -169,13 +160,11 @@ export interface BuildBuiltinToolsOptions {
 
 export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
   const executor = options.executor ?? createLocalWorkspaceExecutor();
-  const filesystem =
-    options.filesystem ??
-    createBoundaryFilesystemExecutor({
-      workspace: executor,
-      ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
-      ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
-    });
+  const filesystem = createBoundaryFilesystemExecutor({
+    workspace: executor,
+    ...(options.filesystemWorker ? { worker: options.filesystemWorker } : {}),
+    ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
+  });
   const executionFacts = executor.facts;
   const readDescription = `Read a text file${options.snapshotImage ? ' or supported image' : ''} from disk${options.runtimeResources ? ', or read a whole runtime resource using ref' : ''}.`;
   const pathField = z
@@ -365,16 +354,13 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       executionFacts,
       impl: async ({ path, content }, ctx) => {
-        const key = await filesystem.writeLockKey(filesystemLockTarget(ctx, path));
-        return await withFileWriteLock(key, async () => {
-          const result = await filesystem.execute({
-            operation: { kind: 'write', path, content },
-            ...filesystemCall(ctx),
-          });
-          if (result.kind !== 'write')
-            throw internalFilesystemWriteFailure('Write', 'the file was written');
-          return { ok: result.ok, path: result.path, bytes: result.bytes };
+        const result = await filesystem.execute({
+          operation: { kind: 'write', path, content },
+          ...filesystemCall(ctx),
         });
+        if (result.kind !== 'write')
+          throw internalFilesystemWriteFailure('Write', 'the file was written');
+        return { ok: result.ok, path: result.path, bytes: result.bytes };
       },
     },
     {
@@ -393,27 +379,24 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       executionFacts,
       impl: async ({ path, old_string, new_string }, ctx) => {
-        const key = await filesystem.writeLockKey(filesystemLockTarget(ctx, path));
-        return await withFileWriteLock(key, async () => {
-          const result = await filesystem.execute({
-            operation: { kind: 'edit', path, oldString: old_string, newString: new_string },
-            ...filesystemCall(ctx),
-          });
-          if (result.kind !== 'edit')
-            throw internalFilesystemWriteFailure(
-              'Edit',
-              'the edit was applied',
-              'a different old_string will not help',
-            );
-          return {
-            ok: result.ok,
-            path: result.path,
-            replacements: result.replacements,
-            matchedVia: result.matchedVia,
-            startLine: result.startLine,
-            endLine: result.endLine,
-          };
+        const result = await filesystem.execute({
+          operation: { kind: 'edit', path, oldString: old_string, newString: new_string },
+          ...filesystemCall(ctx),
         });
+        if (result.kind !== 'edit')
+          throw internalFilesystemWriteFailure(
+            'Edit',
+            'the edit was applied',
+            'a different old_string will not help',
+          );
+        return {
+          ok: result.ok,
+          path: result.path,
+          replacements: result.replacements,
+          matchedVia: result.matchedVia,
+          startLine: result.startLine,
+          endLine: result.endLine,
+        };
       },
     },
     {
@@ -430,7 +413,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         path: z
           .string()
           .describe(
-            'Path to the JSON file to validate and normalize, relative to the session cwd.',
+            'Path to the JSON file to validate and normalize; relative paths are resolved from the session cwd.',
           ),
         sort_keys: z
           .boolean()
@@ -439,17 +422,17 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       executionFacts,
       impl: async ({ path, sort_keys }, ctx) => {
-        const key = await filesystem.writeLockKey(filesystemLockTarget(ctx, path));
-        return await withFileWriteLock(key, async () => {
-          const result = await filesystem.execute({
-            operation: { kind: 'format_json', path, sortKeys: sort_keys ?? false },
-            ...filesystemCall(ctx),
-          });
-          if (result.kind !== 'format_json') {
-            throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
-          }
-          return result;
+        const result = await filesystem.execute({
+          operation: { kind: 'format_json', path, sortKeys: sort_keys ?? false },
+          ...filesystemCall(ctx),
         });
+        if (result.kind !== 'format_json') {
+          throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
+        }
+        // The discriminator is how the backends name their results to each
+        // other; the model is owed the payload, as with every other file tool.
+        const { kind: _kind, ...diagnostic } = result;
+        return diagnostic;
       },
     },
     {
@@ -461,13 +444,13 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         pattern: z
           .string()
           .describe(
-            'Relative glob pattern without an absolute path or "..", for example "**/*.txt".',
+            'Glob pattern, for example "**/*.txt". Whether it may leave the search root is decided by the session permissions.',
           ),
         cwd: z
           .string()
           .optional()
           .describe(
-            'Optional search directory inside the session cwd. Absolute or relative directory paths are accepted.',
+            'Optional search directory. Absolute or relative directory paths are accepted; how far outside the session cwd it may reach is decided by the session permissions.',
           ),
       }),
       executionFacts,
@@ -534,14 +517,6 @@ function filesystemCall(
     ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
     ...(ctx.permissionMode ? { permissionMode: ctx.permissionMode } : {}),
     ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
-  };
-}
-
-function filesystemLockTarget(ctx: MakaToolContext, path: string): FilesystemWriteLockKeyInput {
-  return {
-    cwd: ctx.cwd,
-    path,
-    ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
   };
 }
 

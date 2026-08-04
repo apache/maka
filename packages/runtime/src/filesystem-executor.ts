@@ -14,6 +14,7 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { ExecutionBoundary, PermissionMode, PermissionProfile } from '@maka/core';
 import { computeEditedSource } from './edit-replace.js';
+import { withFileWriteLock } from './file-write-lock.js';
 import type {
   FilesystemWorkerClient,
   FilesystemWorkerClientOperation,
@@ -53,16 +54,13 @@ export interface FilesystemExecuteInput {
   abortSignal?: AbortSignal;
 }
 
-export interface FilesystemWriteLockKeyInput {
-  cwd: string;
-  path: string;
-  executionBoundary?: ExecutionBoundary;
-}
-
 export interface FilesystemExecutor {
+  /**
+   * Run one operation under the authority of the boundary it carries. A mutating
+   * operation holds the target's write lock for its whole read-modify-write, so
+   * no caller has to know that a lock exists or how its key is spelled.
+   */
   execute(input: FilesystemExecuteInput): Promise<FilesystemResult>;
-  /** Canonical identity of a write target, so every spelling takes one lock. */
-  writeLockKey(input: FilesystemWriteLockKeyInput): Promise<string>;
 }
 
 /** The workspace primitives the host-local backend drives. */
@@ -85,8 +83,15 @@ export interface BoundaryFilesystemExecutorInput {
  * Every other boundary — including a missing one, which is an embedder that
  * never opted in — stays workspace-scoped.
  */
-export function pathScopeForBoundary(boundary: ExecutionBoundary | undefined): WorkspacePathScope {
+function pathScopeForBoundary(boundary: ExecutionBoundary | undefined): WorkspacePathScope {
   return boundary?.kind === 'bypass' ? 'host' : 'workspace';
+}
+
+/** Operations that read, modify and write back, and so must hold the target's lock. */
+function mutates(operation: FilesystemOperation): boolean {
+  return (
+    operation.kind === 'write' || operation.kind === 'edit' || operation.kind === 'format_json'
+  );
 }
 
 /**
@@ -103,10 +108,13 @@ export function createBoundaryFilesystemExecutor(
   input: BoundaryFilesystemExecutorInput,
 ): FilesystemExecutor {
   const local = createWorkspaceFilesystemExecutor(input.workspace);
-  const usesWorker = (boundary: ExecutionBoundary | undefined): boolean => {
-    if (boundary?.kind === 'bypass' || boundary?.kind === 'external') return false;
-    if (input.worker) return true;
-    if (boundary?.kind !== 'managed') return false;
+  /** The worker that owns this boundary, or undefined when the workspace backend does. */
+  const workerFor = (
+    boundary: ExecutionBoundary | undefined,
+  ): Pick<FilesystemWorkerClient, 'execute'> | undefined => {
+    if (boundary?.kind === 'bypass' || boundary?.kind === 'external') return undefined;
+    if (input.worker) return input.worker;
+    if (boundary?.kind !== 'managed') return undefined;
     throw new SandboxCommandError({
       domain: 'filesystem',
       stage: 'capability',
@@ -117,50 +125,50 @@ export function createBoundaryFilesystemExecutor(
         'Managed filesystem execution is unavailable because the sandboxed worker cannot be enforced.',
     });
   };
+  async function run(call: FilesystemExecuteInput): Promise<FilesystemResult> {
+    const worker = workerFor(call.executionBoundary);
+    if (!worker) return await local.execute(call, pathScopeForBoundary(call.executionBoundary));
+    const result = await worker.execute({
+      operation: call.operation,
+      // The worker is host-local by definition, so a session opened through a
+      // symlinked cwd must reach it under the real path — otherwise the same
+      // file arrives under two identities. The workspace backend is left the cwd
+      // it was given: an isolated or remote workspace path is not the host's to
+      // rewrite, and its own resolvers canonicalise what they need.
+      cwd: await canonicalExistingPath(call.cwd),
+      ...(call.executionBoundary ? { executionBoundary: call.executionBoundary } : {}),
+      mode: call.permissionMode ?? 'ask',
+      ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
+      ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
+    });
+    if (result.kind === 'read_image') {
+      return {
+        kind: 'read_image',
+        bytes: Buffer.from(result.base64, 'base64'),
+        mimeType: result.mimeType,
+      };
+    }
+    return result;
+  }
   return {
     async execute(call) {
-      if (!usesWorker(call.executionBoundary)) {
-        return await local.execute(call, pathScopeForBoundary(call.executionBoundary));
-      }
-      const worker = input.worker;
-      if (!worker) throw new Error('Filesystem worker is unavailable.');
-      const result = await worker.execute({
-        operation: call.operation,
-        // The worker is host-local by definition, so a session opened through a
-        // symlinked cwd must reach it under the real path — otherwise the same
-        // file arrives under two identities. The workspace backend is left the
-        // cwd it was given: an isolated or remote workspace path is not the
-        // host's to rewrite, and its own resolvers canonicalise what they need.
-        cwd: await canonicalExistingPath(call.cwd),
-        ...(call.executionBoundary ? { executionBoundary: call.executionBoundary } : {}),
-        mode: call.permissionMode ?? 'ask',
-        ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
-        ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
-      });
-      if (result.kind === 'read_image') {
-        return {
-          kind: 'read_image',
-          bytes: Buffer.from(result.base64, 'base64'),
-          mimeType: result.mimeType,
-        };
-      }
-      return result;
-    },
-    async writeLockKey(call) {
-      // Canonicalisation without any containment check, so a path the policy
-      // later rejects still takes the same lock as its other spellings. The
-      // worker-backed and local backends must agree here or the lock-key space
-      // and the resolved-path space drift apart.
-      if (!usesWorker(call.executionBoundary)) {
-        return (await input.workspace.writeLockKey({ cwd: call.cwd, path: call.path })).key;
-      }
-      const target = await normalizeSandboxBoundaryPath({
-        path: call.path,
-        access: 'write',
-        scope: 'exact',
-        cwd: await canonicalExistingPath(call.cwd),
-      });
-      return target.enforcementPath;
+      if (!mutates(call.operation)) return await run(call);
+      // Canonicalisation without any containment check, so a target the policy
+      // goes on to reject still takes the same lock as its other spellings. The
+      // key is derived from the same canonicalisation the backend will resolve
+      // with, or the lock-key space and the resolved-path space drift apart.
+      const worker = workerFor(call.executionBoundary);
+      const key = worker
+        ? (
+            await normalizeSandboxBoundaryPath({
+              path: call.operation.path,
+              access: 'write',
+              scope: 'exact',
+              cwd: await canonicalExistingPath(call.cwd),
+            })
+          ).enforcementPath
+        : (await input.workspace.writeLockKey({ cwd: call.cwd, path: call.operation.path })).key;
+      return await withFileWriteLock(key, () => run(call));
     },
   };
 }

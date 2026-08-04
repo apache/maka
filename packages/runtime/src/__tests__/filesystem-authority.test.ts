@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -241,24 +242,135 @@ describe('file tools follow the execution boundary', () => {
   test('one file takes one write lock however its path is spelled', async () => {
     const { cwd, outside, cleanup } = await makeDirs();
     try {
-      const tools = toolsFor();
       const target = join(outside, 'note.md');
-      const order: string[] = [];
-      const write = toolNamed(tools, 'Write');
+      await writeFile(target, 'a', 'utf8');
+
+      // Instrumented so the assertion is about serialisation itself. A plain
+      // concurrent-write race proves nothing: one write(2) per file is already
+      // atomic, so the survivor is whole even with no lock at all. Only an
+      // overlap counter distinguishes a held lock from the kernel's own
+      // serialisation, and only two spellings of one path prove the key
+      // canonicalises.
+      const host = createLocalWorkspaceExecutor();
+      let active = 0;
+      let overlapped = false;
+      const tools = toolsFor({
+        executor: Object.assign(Object.create(host) as typeof host, {
+          readFile: async (input: Parameters<typeof host.readFile>[0]) => {
+            active += 1;
+            overlapped ||= active > 1;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            try {
+              return await host.readFile(input);
+            } finally {
+              active -= 1;
+            }
+          },
+        }),
+      });
+      const edit = toolNamed(tools, 'Edit');
 
       await Promise.all([
-        runTool(write, { path: target, content: 'a'.repeat(4096) }, cwd, BYPASS).then(() =>
-          order.push('absolute'),
-        ),
-        runTool(write, { path: join('..', 'outside', 'note.md'), content: 'b' }, cwd, BYPASS).then(
-          () => order.push('relative'),
+        runTool(edit, { path: target, old_string: 'a', new_string: 'b' }, cwd, BYPASS),
+        runTool(
+          edit,
+          { path: join('..', 'outside', 'note.md'), old_string: 'b', new_string: 'c' },
+          cwd,
+          BYPASS,
         ),
       ]);
 
-      // Both spellings resolve to one file, so the lock serialised them and the
-      // survivor is whole rather than interleaved.
-      expect(['a'.repeat(4096), 'b']).toContain(await readFile(target, 'utf8'));
-      expect(order).toHaveLength(2);
+      expect(overlapped).toBe(false);
+      // The second edit saw the first one's output, so they ran in sequence
+      // against one file rather than racing two reads of the same start state.
+      expect(await readFile(target, 'utf8')).toBe('c');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('the lock key is the same for every spelling of one file', async () => {
+    const { cwd, outside, cleanup } = await makeDirs();
+    try {
+      const executor = createLocalWorkspaceExecutor();
+      const target = join(outside, 'note.md');
+
+      const absolute = await executor.writeLockKey({ cwd, path: target });
+      const relative = await executor.writeLockKey({
+        cwd,
+        path: join('..', 'outside', 'note.md'),
+      });
+      expect(absolute.key).toBe(relative.key);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('a bypass boundary searches outside the session cwd', async () => {
+    const { cwd, outside, cleanup } = await makeDirs();
+    try {
+      const tools = toolsFor();
+      await writeFile(join(outside, 'note.md'), 'needle here\n', 'utf8');
+
+      const found = (await runTool(
+        toolNamed(tools, 'Grep'),
+        { pattern: 'needle', path: outside },
+        cwd,
+        BYPASS,
+      )) as { matches: string[] };
+      expect(found.matches).toHaveLength(1);
+      expect(found.matches[0]).toContain('needle here');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('a bypass boundary bypasses a wired worker too', async () => {
+    const { cwd, outside, cleanup } = await makeDirs();
+    try {
+      const calls: unknown[] = [];
+      const tools = toolsFor({
+        filesystemWorker: {
+          execute: async (input) => {
+            calls.push(input);
+            return { kind: 'write', ok: true, path: 'unused', bytes: 0 };
+          },
+        },
+      });
+      const target = join(outside, 'note.md');
+
+      await runTool(toolNamed(tools, 'Write'), { path: target, content: 'host' }, cwd, BYPASS);
+
+      expect(calls).toHaveLength(0);
+      expect(await readFile(target, 'utf8')).toBe('host');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('worker image bytes reach the tool decoded', async () => {
+    const { cwd, cleanup } = await makeDirs();
+    try {
+      const snapshots: Uint8Array[] = [];
+      const tools = toolsFor({
+        filesystemWorker: {
+          execute: async () => ({
+            kind: 'read_image',
+            base64: Buffer.from([137, 80, 78, 71]).toString('base64'),
+            mimeType: 'image/png',
+          }),
+        },
+        snapshotImage: async (input) => {
+          snapshots.push(input.bytes);
+          return { kind: 'session_file', sessionId: input.sessionId, relativePath: 'artifact-1' };
+        },
+      });
+
+      const result = await runTool(toolNamed(tools, 'Read'), { path: 'image.png' }, cwd, MANAGED);
+
+      expect(result).toMatchObject({ kind: 'image', mimeType: 'image/png' });
+      expect(snapshots).toHaveLength(1);
+      expect(Buffer.from(snapshots[0] ?? new Uint8Array()).toString('hex')).toBe('89504e47');
     } finally {
       await cleanup();
     }

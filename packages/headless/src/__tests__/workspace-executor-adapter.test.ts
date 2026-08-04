@@ -148,16 +148,18 @@ describe('isolatedToolExecutorToWorkspaceExecutor', () => {
     };
     const executor = isolatedToolExecutorToWorkspaceExecutor(isolated);
 
-    await assert.rejects(
-      () =>
-        executor.resolveWritablePath({
-          cwd: '/workspace',
-          path: '/tmp/out.txt',
-          label: 'Write',
-          scope: 'host',
-        }),
-      /cannot use host path scope/,
-    );
+    for (const resolve of [executor.resolveWritablePath, executor.resolveExistingPath]) {
+      await assert.rejects(
+        () =>
+          resolve({
+            cwd: '/workspace',
+            path: '/tmp/out.txt',
+            label: 'Write',
+            scope: 'host',
+          }),
+        /cannot use host path scope/,
+      );
+    }
     assert.deepEqual(
       await executor.resolveWritablePath({
         cwd: '/workspace',
