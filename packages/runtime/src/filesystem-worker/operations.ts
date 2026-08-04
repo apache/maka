@@ -127,7 +127,10 @@ export async function executeFilesystemOperation(
       return { kind: 'read', content: lines.slice(start, end).join('\n') };
     }
     case 'write': {
-      const path = operation.mode
+      // create-mode (ApplyPatch Add) addresses the directory entry so an
+      // existing link blocks the add; replace-mode follows the canonical
+      // target like a plain write (#2059).
+      const path = operation.mode === 'create'
         ? await resolveDirectoryEntryWritableAllowed(
             operation.cwd,
             operation.path,

@@ -894,7 +894,7 @@ export function normalizeSessionHeader(
     isPermissionMode(header.permissionMode) &&
     isCollaborationMode(header.collaborationMode) &&
     isOrchestrationMode(header.orchestrationMode) &&
-    isEditingProtocol(header.editingProtocol) &&
+    (header.editingProtocol === undefined || isEditingProtocol(header.editingProtocol)) &&
     header.schemaVersion === 1;
   if (!valid) {
     throw new Error(`Invalid session header for session ${sessionId}: malformed fields`);

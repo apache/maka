@@ -391,7 +391,7 @@ describe('filesystem worker Linux path context', () => {
     assert.ok(hasArgTriple(processInput.argv, '--ro-bind', `/proc/self/fd/${pinned.fd}`, target));
   });
 
-  test('pins the workspace root so a missing exact target can create nested parents', async (t) => {
+  test('pins the missing target existing parent so a create can build the chain', async (t) => {
     if (process.platform === 'win32') {
       t.skip('Linux sandbox path matching requires POSIX host paths');
       return;
@@ -414,8 +414,8 @@ describe('filesystem worker Linux path context', () => {
       (input): input is Extract<typeof input, { sourceFd: number }> => 'sourceFd' in input,
     );
     assert.ok(pinned);
-    assert.ok(hasArgTriple(processInput.argv, '--bind', `/proc/self/fd/${pinned.fd}`, workspace));
-    assert.equal(hasArgTriple(processInput.argv, '--bind', parent, parent), false);
+    assert.ok(hasArgTriple(processInput.argv, '--bind', `/proc/self/fd/${pinned.fd}`, parent));
+    assert.equal(hasArgTriple(processInput.argv, '--bind', workspace, workspace), false);
   });
 
   test('requests a trusted parent mount only for a missing write target', () => {

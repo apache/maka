@@ -15,7 +15,10 @@ import {
 } from '@maka/core';
 
 import { realpathAllowMissing } from '../path-containment.js';
-import { normalizeSandboxBoundaryPath, type NormalizedSandboxBoundaryPath } from '../sandbox-boundary-path.js';
+import {
+  normalizeSandboxBoundaryPath,
+  type NormalizedSandboxBoundaryPath,
+} from '../sandbox-boundary-path.js';
 import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
@@ -265,13 +268,13 @@ export class FilesystemWorkerClient {
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
     const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
     const pinnedTarget =
-      platform === 'linux' && target.targetType !== 'missing'
+      platform === 'linux' && !entryMode && target.targetType !== 'missing'
         ? (() => {
             try {
               return pinExistingLinuxProfilePath({
                 path: target.enforcementPath,
                 access,
-                targetType: target.targetType,
+                targetType: target.targetType as 'file' | 'directory' | 'other',
                 childFd: 4,
               });
             } catch {
@@ -284,11 +287,7 @@ export class FilesystemWorkerClient {
             }
           })()
         : undefined;
-    if (
-      platform === 'linux' &&
-      target.targetType !== 'missing' &&
-      !pinnedTarget
-    ) {
+    if (platform === 'linux' && !entryMode && target.targetType !== 'missing' && !pinnedTarget) {
       throw clientError(
         'path_changed',
         'validation',
@@ -461,7 +460,6 @@ export function filesystemWorkerRuntimeWritableRoots(input: {
   return [dirname(input.enforcementPath)];
 }
 
-
 /**
  * Canonicalise a directory entry (Delete/Move operand, lstat probe,
  * create-mode write) without following its final symlink: the parent chain
@@ -475,22 +473,24 @@ async function normalizeDirectoryEntryTarget(
   path: string,
   access: SandboxBoundaryAccess,
   scope: SandboxBoundaryScope | 'auto',
-): Promise<NormalizedSandboxBoundaryPath> {
+): Promise<Omit<NormalizedSandboxBoundaryPath, 'targetType'> & { targetType: FilesystemWorkerTarget['targetType'] }> {
   const canonicalCwd = await realpath(cwd);
   const displayPath = resolve(canonicalCwd, path);
   const parentReal = await realpathAllowMissing(dirname(displayPath));
   const enforcementPath = resolve(parentReal, basename(displayPath));
   const targetType = await entryTargetTypeOf(enforcementPath);
-  const effectiveScope = scope === 'auto' ? (targetType === 'directory' ? 'subtree' : 'exact') : scope;
+  const effectiveScope =
+    scope === 'auto' ? (targetType === 'directory' ? 'subtree' : 'exact') : scope;
   return { displayPath, enforcementPath, access, scope: effectiveScope, targetType };
 }
 
 async function entryTargetTypeOf(
   path: string,
-): Promise<NormalizedSandboxBoundaryPath['targetType']> {
+): Promise<FilesystemWorkerTarget['targetType']> {
   try {
     const metadata = await lstat(path);
-    if (metadata.isFile() || metadata.isSymbolicLink()) return 'file';
+    if (metadata.isSymbolicLink()) return 'symlink';
+    if (metadata.isFile()) return 'file';
     if (metadata.isDirectory()) return 'directory';
     return 'other';
   } catch (error) {
