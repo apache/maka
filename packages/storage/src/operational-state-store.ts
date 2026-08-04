@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   configureSqliteRuntimeDatabase,
   migrateSqliteRuntimeDatabase,
+  readUserVersion,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
 import {
@@ -32,6 +33,17 @@ import {
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
 export const OPERATIONAL_STATE_SCHEMA_VERSION = 1;
 
+const OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
+  ['runtime', SQLITE_RUNTIME_SCHEMA_VERSION],
+  ['session_metadata', SQLITE_SESSION_METADATA_SCHEMA_VERSION],
+  ['core_execution', SQLITE_CORE_EXECUTION_SCHEMA_VERSION],
+  ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
+  ['usage', SQLITE_USAGE_SCHEMA_VERSION],
+  ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
+  ['automation', SQLITE_AUTOMATION_SCHEMA_VERSION],
+  ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
+] as const);
+
 const require = createRequire(import.meta.url);
 const owners = new Map<string, OperationalStateDatabaseOwner>();
 
@@ -45,6 +57,55 @@ export interface OperationalStateDatabaseLease {
   transaction<T>(mode: 'read' | 'write', operation: () => T): T;
   backup(destinationPath: string): Promise<number>;
   close(): void;
+}
+
+/**
+ * Operational state is disposable across incompatible app versions. Settings
+ * and credentials live in dedicated stores, so rebuild this database instead
+ * of migrating or downgrading its schema.
+ */
+export function resetIncompatibleOperationalStateDatabase(workspaceRoot: string): boolean {
+  const databasePath = resolve(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME);
+  if (!existsSync(databasePath)) return false;
+  if (owners.has(databasePath)) {
+    throw new Error('Operational state compatibility must be checked before opening the database');
+  }
+
+  const Database = loadDatabaseSync();
+  const database = new Database(databasePath, { readOnly: true });
+  let compatible: boolean;
+  try {
+    compatible = hasCurrentOperationalSchema(database);
+  } finally {
+    database.close();
+  }
+  if (compatible) return false;
+
+  for (const suffix of ['', '-wal', '-shm']) {
+    rmSync(`${databasePath}${suffix}`, { force: true });
+  }
+  return true;
+}
+
+function hasCurrentOperationalSchema(database: DatabaseSync): boolean {
+  if (readUserVersion(database) !== SQLITE_RUNTIME_SCHEMA_VERSION) return false;
+  const table = database
+    .prepare(`
+      SELECT 1 AS present
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'operational_schema_migrations'
+    `)
+    .get() as { present?: unknown } | undefined;
+  if (table?.present !== 1) return false;
+
+  const rows = database
+    .prepare('SELECT scope, version FROM operational_schema_migrations')
+    .all() as Array<{ scope?: unknown; version?: unknown }>;
+  if (rows.length !== OPERATIONAL_SCHEMA_VERSIONS.size) return false;
+  return rows.every(
+    ({ scope, version }) =>
+      typeof scope === 'string' && OPERATIONAL_SCHEMA_VERSIONS.get(scope) === version,
+  );
 }
 
 /**
@@ -172,14 +233,9 @@ function migrateOperationalStateDatabase(db: DatabaseSync, now: () => number): v
       );
     `);
     const appliedAt = now();
-    registerSchema(db, 'runtime', SQLITE_RUNTIME_SCHEMA_VERSION, appliedAt);
-    registerSchema(db, 'session_metadata', SQLITE_SESSION_METADATA_SCHEMA_VERSION, appliedAt);
-    registerSchema(db, 'core_execution', SQLITE_CORE_EXECUTION_SCHEMA_VERSION, appliedAt);
-    registerSchema(db, 'workflow', SQLITE_WORKFLOW_SCHEMA_VERSION, appliedAt);
-    registerSchema(db, 'usage', SQLITE_USAGE_SCHEMA_VERSION, appliedAt);
-    registerSchema(db, 'artifact', SQLITE_ARTIFACT_SCHEMA_VERSION, appliedAt);
-    registerSchema(db, 'automation', SQLITE_AUTOMATION_SCHEMA_VERSION, appliedAt);
-    registerSchema(db, 'operational', OPERATIONAL_STATE_SCHEMA_VERSION, appliedAt);
+    for (const [scope, version] of OPERATIONAL_SCHEMA_VERSIONS) {
+      registerSchema(db, scope, version, appliedAt);
+    }
     db.exec('COMMIT');
   } catch (error) {
     rollback(db);
