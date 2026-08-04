@@ -6,6 +6,11 @@
  * Artifact schemas. State preparation and semantic identity validation happen
  * before this codec is called; state migration and re-keying happen after
  * hydration in the state-owning layer.
+ *
+ * V1 archive paths intentionally use a host-independent portability subset.
+ * Every segment rejects ASCII control characters, `<`, `>`, `:`, `"`, `|`,
+ * `?`, `*`, trailing dots/spaces, and case-insensitive Windows device names
+ * such as `CON`, `NUL`, `COM1`, and `LPT1`, even when encoding on POSIX.
  */
 
 export const SESSION_BUNDLE_SCHEMA_VERSION = 1 as const;
@@ -151,6 +156,11 @@ export interface SessionBundleHydrateInput extends SessionBundleReadInput {
   destinationRoot: string;
 }
 
+export interface SessionBundleHydrationCleanupInput {
+  /** Cleanup is restricted to codec-owned staging for this exact target. */
+  destinationRoot: string;
+}
+
 export interface SessionBundleManifestV1 {
   schemaVersion: 1;
   codec: {
@@ -200,10 +210,19 @@ export interface SessionBundleHydration extends SessionBundleInspection {
   workspaceRoot: string;
 }
 
+export interface SessionBundleHydrationCleanupResult {
+  destinationRoot: string;
+  removedStagingDirectories: number;
+  removedOwnershipRecords: number;
+}
+
 export interface SessionBundleFileService {
   pack(input: SessionBundlePackInput): Promise<SessionBundleArtifact>;
   inspect(input: SessionBundleReadInput): Promise<SessionBundleInspection>;
   hydrate(input: SessionBundleHydrateInput): Promise<SessionBundleHydration>;
+  cleanupHydrationStaging(
+    input: SessionBundleHydrationCleanupInput,
+  ): Promise<SessionBundleHydrationCleanupResult>;
 }
 
 export type SessionBundleFileErrorCode =
@@ -219,7 +238,7 @@ export type SessionBundleFileErrorCode =
   | 'source_changed'
   | 'io_failure';
 
-export type SessionBundleFileOperation = 'pack' | 'inspect' | 'hydrate';
+export type SessionBundleFileOperation = 'pack' | 'inspect' | 'hydrate' | 'cleanup';
 
 /**
  * Bounded diagnostic facts only. Raw attacker-controlled paths and strings do

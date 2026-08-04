@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   symlink,
@@ -149,7 +150,7 @@ test('an independent process verifies and hydrates the same archive contract', a
   );
 });
 
-test('a process crash before hydration publication leaves only orphan staging', {
+test('a process crash leaves owned staging that can be reclaimed without touching decoys', {
   timeout: 30_000,
 }, async () => {
   const fixture = await createFixture();
@@ -193,9 +194,58 @@ test('a process crash before hydration publication leaves only orphan staging', 
     const stagingMetadata = await lstat(stagingPath);
     assert.equal(stagingMetadata.isDirectory(), true);
     assert.equal(stagingMetadata.isSymbolicLink(), false);
+    const ownershipName = `${stagingName}.owner.json`;
+    assert.equal((await lstat(join(fixture.root, ownershipName))).isFile(), true);
     assert.deepEqual(
-      (await readdir(fixture.root)).filter((name) => name.startsWith(stagingPrefix)),
-      [stagingName],
+      (await readdir(fixture.root)).filter((name) => name.startsWith(stagingPrefix)).sort(),
+      [ownershipName, stagingName].sort(),
+    );
+
+    const unrelatedRoot = await mkdtemp(join(tmpdir(), 'maka-session-bundle-unrelated-'));
+    roots.push(unrelatedRoot);
+    await writeFile(join(unrelatedRoot, 'sentinel'), 'unrelated');
+    const decoyDirectory = join(fixture.root, `${stagingPrefix}unowned-directory`);
+    const decoyOwnership = `${decoyDirectory}.owner.json`;
+    await mkdir(decoyDirectory);
+    await writeFile(decoyOwnership, '{}\n');
+
+    const capturedStagingPath = `${stagingPath}.captured`;
+    await rename(stagingPath, capturedStagingPath);
+    await symlink(unrelatedRoot, stagingPath);
+    assert.deepEqual(
+      await createSessionBundleFileService().cleanupHydrationStaging({ destinationRoot }),
+      {
+        destinationRoot,
+        removedStagingDirectories: 0,
+        removedOwnershipRecords: 0,
+      },
+    );
+    assert.equal((await lstat(stagingPath)).isSymbolicLink(), true);
+    assert.equal((await lstat(join(fixture.root, ownershipName))).isFile(), true);
+    assert.equal(await readFile(join(unrelatedRoot, 'sentinel'), 'utf8'), 'unrelated');
+    await rm(stagingPath);
+    await rename(capturedStagingPath, stagingPath);
+
+    const cleanup = await createSessionBundleFileService().cleanupHydrationStaging({
+      destinationRoot,
+    });
+    assert.deepEqual(cleanup, {
+      destinationRoot,
+      removedStagingDirectories: 1,
+      removedOwnershipRecords: 1,
+    });
+    await assert.rejects(lstat(stagingPath), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(fixture.root, ownershipName)), { code: 'ENOENT' });
+    assert.equal((await lstat(decoyDirectory)).isDirectory(), true);
+    assert.equal(await readFile(decoyOwnership, 'utf8'), '{}\n');
+    assert.equal(await readFile(join(unrelatedRoot, 'sentinel'), 'utf8'), 'unrelated');
+    assert.deepEqual(
+      await createSessionBundleFileService().cleanupHydrationStaging({ destinationRoot }),
+      {
+        destinationRoot,
+        removedStagingDirectories: 0,
+        removedOwnershipRecords: 0,
+      },
     );
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
@@ -277,6 +327,87 @@ test('binds pack publication and cleanup to the hashed temporary inode', async (
   await assert.rejects(lstat(destination), { code: 'ENOENT' });
   assert.equal(await readFile(temporaryPath, 'utf8'), 'EVIL');
   assert.equal((await lstat(capturedPath)).isFile(), true);
+});
+
+test('cleans the inode actually linked when the pack pathname is swapped at link time', async () => {
+  const fixture = await createFixture();
+  const destination = join(fixture.root, 'link-window.tar.zst');
+  const resultPath = join(fixture.root, 'link-window-result.json');
+  const childPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'session-bundle-pack-link-replacer.js',
+  );
+  const child = spawn(
+    process.execPath,
+    [
+      childPath,
+      fixture.stateRoot,
+      fixture.workspaceRoot,
+      destination,
+      resultPath,
+      JSON.stringify(limits),
+      identityBytes.toString('hex'),
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  const stderr: Buffer[] = [];
+  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const result = await waitForChildClose(
+    child,
+    CHILD_PROCESS_TIMEOUT_MS,
+    'Session Bundle link replacer',
+  );
+  assert.equal(result.code, 0, Buffer.concat(stderr).toString('utf8'));
+  const replacement = JSON.parse(await readFile(resultPath, 'utf8')) as {
+    code: string;
+    capturedPath: string;
+    temporaryPath: string;
+  };
+  assert.equal(replacement.code, 'source_changed');
+  await assert.rejects(lstat(destination), { code: 'ENOENT' });
+  assert.equal(await readFile(replacement.temporaryPath, 'utf8'), 'EVIL');
+  assert.equal((await lstat(replacement.capturedPath)).isFile(), true);
+});
+
+test('reports read-side source changes and filesystem failures at the operation boundary', async () => {
+  const fixture = await createFixture();
+  const archivePath = join(fixture.root, 'read-errors.tar.zst');
+  await packFixture(archivePath, fixture);
+  const childPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'session-bundle-inspect-source-mutator.js',
+  );
+  const child = spawn(process.execPath, [childPath, archivePath, JSON.stringify(limits)], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const result = await waitForChildClose(
+    child,
+    CHILD_PROCESS_TIMEOUT_MS,
+    'Session Bundle source mutator',
+  );
+  assert.equal(result.code, 0, Buffer.concat(stderr).toString('utf8'));
+  assert.deepEqual(JSON.parse(Buffer.concat(stdout).toString('utf8')), {
+    code: 'source_changed',
+  });
+
+  await assert.rejects(
+    createSessionBundleFileService().inspect({
+      source: { path: join(fixture.root, 'missing.tar.zst') },
+      limits,
+    }),
+    (error) => {
+      assert.ok(error instanceof SessionBundleFileError);
+      assert.equal(error.code, 'io_failure');
+      assert.equal(error.details?.operation, 'inspect');
+      return true;
+    },
+  );
 });
 
 test('rejects corrupted payloads and transport mismatches without publishing hydration', async () => {
@@ -837,8 +968,11 @@ async function waitForDirectoryEntry(
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const entry = (await readdir(root)).find((name) => name.startsWith(prefix));
-    if (entry !== undefined) return entry;
+    for (const entry of await readdir(root)) {
+      if (!entry.startsWith(prefix)) continue;
+      const metadata = await lstat(join(root, entry));
+      if (metadata.isDirectory() && !metadata.isSymbolicLink()) return entry;
+    }
     await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 1));
   }
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);

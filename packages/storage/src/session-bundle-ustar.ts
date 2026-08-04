@@ -19,7 +19,11 @@ export interface SessionBundleUstarHeader {
   size: number;
 }
 
-/** Encode the exact POSIX USTAR header admitted by Session Bundle codec V1. */
+/**
+ * Encode the exact POSIX USTAR header admitted by Session Bundle codec V1.
+ * Paths use a portable subset on every host: Windows device names, forbidden
+ * characters, and trailing dots/spaces are rejected even when running on POSIX.
+ */
 export function encodeSessionBundleUstarHeaderV1(value: SessionBundleUstarHeader): Uint8Array {
   const path = splitUstarPath(value.path);
   if (value.kind === 'directory') {

@@ -6,7 +6,6 @@ import {
   link,
   lstat,
   mkdir,
-  mkdtemp,
   open,
   readdir,
   rename,
@@ -22,6 +21,7 @@ import { unlock, waitForLock } from 'fs-native-extensions';
 import {
   compareSessionBundleCanonicalPaths,
   computeSessionBundleCanonicalTreeDigest,
+  SessionBundleCanonicalLayoutValidator,
   SessionBundleCanonicalTreeDigestBuilder,
   type SessionBundleCanonicalTreeEntry,
 } from './session-bundle-canonical-tree.js';
@@ -47,6 +47,8 @@ import {
   type SessionBundleArtifact,
   type SessionBundleFileOperation,
   type SessionBundleFileService,
+  type SessionBundleHydrationCleanupInput,
+  type SessionBundleHydrationCleanupResult,
   type SessionBundleHydrateInput,
   type SessionBundleHydration,
   type SessionBundleInspection,
@@ -73,6 +75,11 @@ import { syncDirectory } from './stable-storage.js';
 
 const ARCHIVE_TERMINATOR = Buffer.alloc(SESSION_BUNDLE_USTAR_BLOCK_BYTES * 2);
 const HYDRATION_STAGING_MARKER = '.maka-session-bundle-staging-';
+const HYDRATION_OWNERSHIP_SUFFIX = '.owner.json';
+const HYDRATION_OWNERSHIP_KIND = 'maka-session-bundle-hydration-staging' as const;
+const HYDRATION_OWNERSHIP_MAX_BYTES = 2 * 1024;
+const HYDRATION_TOKEN_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PACK_TEMP_MARKER = '.maka-session-bundle-pack-';
 const PUBLICATION_LOCK_MARKER = '.maka-session-bundle-publish-';
 const PACK_FILE_CHUNK_BYTES = 64 * 1024;
@@ -91,7 +98,22 @@ interface FileFingerprint {
 }
 
 interface PackPublicationState {
-  destinationLinked: boolean;
+  linkedFingerprint?: FileFingerprint;
+}
+
+interface HydrationStagingBinding {
+  stagingRoot: string;
+  stagingFingerprint: FileFingerprint;
+  ownershipPath: string;
+  ownershipFingerprint: FileFingerprint;
+}
+
+interface HydrationStagingOwnershipV1 {
+  schemaVersion: 1;
+  kind: typeof HYDRATION_OWNERSHIP_KIND;
+  destinationName: string;
+  stagingName: string;
+  token: string;
 }
 
 interface PackDirectoryEntry {
@@ -126,12 +148,6 @@ interface ParsedTarResult {
   stateIdentity: OpaqueStateIdentityDescriptor;
 }
 
-interface ArchiveLayoutState {
-  directories: Set<string>;
-  logicalPaths: Set<string>;
-  previousPath?: string;
-}
-
 export function createSessionBundleFileService(): SessionBundleFileService {
   return new NodeSessionBundleFileService();
 }
@@ -160,65 +176,88 @@ export class NodeSessionBundleFileService implements SessionBundleFileService {
 
   async hydrate(input: SessionBundleHydrateInput): Promise<SessionBundleHydration> {
     const validated = validateHydrateInput(input);
-    const parent = dirname(validated.destinationRoot);
-    const prefix = `.${basename(validated.destinationRoot)}${HYDRATION_STAGING_MARKER}`;
-    let stagingRoot: string | undefined;
-    let stagingFingerprint: FileFingerprint | undefined;
-    let published = false;
-
     try {
-      await assertDestinationMissing(validated.destinationRoot, 'hydrate');
-      const parentMetadata = await stat(parent, { bigint: true });
-      if (!parentMetadata.isDirectory()) throw ioError('hydrate');
-      stagingRoot = await mkdtemp(join(parent, prefix));
-      await chmod(stagingRoot, 0o700);
-      const stagingMetadata = await lstat(stagingRoot, { bigint: true });
-      if (!stagingMetadata.isDirectory() || stagingMetadata.dev !== parentMetadata.dev) {
-        throw ioError('hydrate');
-      }
-      stagingFingerprint = fingerprint(stagingMetadata);
-
-      const result = await readAndValidateSessionBundle({
-        sourcePath: validated.sourcePath,
-        expectedArchiveDigest: validated.expectedArchiveDigest,
-        limits: validated.limits,
-        operation: 'hydrate',
-        expectedSessionId: validated.expectedSessionId,
-        stagingRoot,
-      });
-
-      const publicationStagingRoot = stagingRoot;
-      const publicationStagingFingerprint = stagingFingerprint;
-      await withDestinationPublicationLock(validated.destinationRoot, 'hydrate', async () => {
-        await assertDestinationMissing(validated.destinationRoot, 'hydrate');
-        const currentStaging = await lstat(publicationStagingRoot, { bigint: true });
-        if (
-          !currentStaging.isDirectory() ||
-          !sameFilesystemNode(publicationStagingFingerprint, fingerprint(currentStaging))
-        ) {
-          throw new SessionBundleFileError(
-            'source_changed',
-            'Session bundle hydration staging root changed before publication',
-          );
-        }
-        // Codec participants serialize this check/rename gap with the publication lock.
-        // A non-cooperating writer can still create an empty destination here because
-        // Node does not expose rename-without-replacement for directories.
-        await rename(publicationStagingRoot, validated.destinationRoot);
-        published = true;
-        await syncDirectory(parent);
-      });
-      return {
-        ...inspectionFromReadResult(result),
-        destinationRoot: validated.destinationRoot,
-        stateRoot: join(validated.destinationRoot, 'state'),
-        workspaceRoot: join(validated.destinationRoot, 'workspace'),
-      };
+      return await withDestinationPublicationLock(validated.destinationRoot, 'hydrate', () =>
+        hydrateSessionBundle(validated),
+      );
     } catch (error) {
       throw normalizeOperationError(error, 'hydrate');
-    } finally {
-      if (!published && stagingRoot !== undefined) {
-        await removeOwnedHydrationStaging(stagingRoot, parent, prefix, stagingFingerprint).catch(
+    }
+  }
+
+  async cleanupHydrationStaging(
+    input: SessionBundleHydrationCleanupInput,
+  ): Promise<SessionBundleHydrationCleanupResult> {
+    const destinationRoot = validateHydrationCleanupInput(input);
+    try {
+      return await withDestinationPublicationLock(destinationRoot, 'cleanup', async () => ({
+        destinationRoot,
+        ...(await cleanupHydrationStagingForDestination(destinationRoot)),
+      }));
+    } catch (error) {
+      throw normalizeOperationError(error, 'cleanup');
+    }
+  }
+}
+
+async function hydrateSessionBundle(validated: {
+  sourcePath: string;
+  expectedArchiveDigest?: Sha256Digest;
+  limits: SessionBundleLimits;
+  expectedSessionId: string;
+  destinationRoot: string;
+}): Promise<SessionBundleHydration> {
+  const parent = dirname(validated.destinationRoot);
+  const prefix = `.${basename(validated.destinationRoot)}${HYDRATION_STAGING_MARKER}`;
+  let staging: HydrationStagingBinding | undefined;
+  let published = false;
+
+  try {
+    await cleanupHydrationStagingForDestination(validated.destinationRoot, 'hydrate');
+    await assertDestinationMissing(validated.destinationRoot, 'hydrate');
+    const parentMetadata = await stat(parent, { bigint: true });
+    if (!parentMetadata.isDirectory()) throw ioError('hydrate');
+    staging = await createHydrationStaging(validated.destinationRoot, parentMetadata);
+
+    const result = await readAndValidateSessionBundle({
+      sourcePath: validated.sourcePath,
+      expectedArchiveDigest: validated.expectedArchiveDigest,
+      limits: validated.limits,
+      operation: 'hydrate',
+      expectedSessionId: validated.expectedSessionId,
+      stagingRoot: staging.stagingRoot,
+    });
+
+    await assertDestinationMissing(validated.destinationRoot, 'hydrate');
+    const currentStaging = await lstat(staging.stagingRoot, { bigint: true });
+    if (
+      !currentStaging.isDirectory() ||
+      !sameFilesystemNode(staging.stagingFingerprint, fingerprint(currentStaging))
+    ) {
+      throw new SessionBundleFileError(
+        'source_changed',
+        'Session bundle hydration staging root changed before publication',
+      );
+    }
+    // Codec participants hold the destination lifecycle lock from cleanup through
+    // publication. A non-cooperating writer can still create an empty destination
+    // here because Node does not expose rename-without-replacement for directories.
+    await rename(staging.stagingRoot, validated.destinationRoot);
+    published = true;
+    await removeOwnedPackFile(staging.ownershipPath, staging.ownershipFingerprint);
+    await syncDirectory(parent);
+    return {
+      ...inspectionFromReadResult(result),
+      destinationRoot: validated.destinationRoot,
+      stateRoot: join(validated.destinationRoot, 'state'),
+      workspaceRoot: join(validated.destinationRoot, 'workspace'),
+    };
+  } finally {
+    if (!published) {
+      if (staging !== undefined) {
+        await removeOwnedHydrationStaging(staging, parent, prefix).catch(() => {});
+      } else {
+        await cleanupHydrationStagingForDestination(validated.destinationRoot, 'hydrate').catch(
           () => {},
         );
       }
@@ -316,7 +355,7 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
   let handle: FileHandle | undefined;
   let temporaryFingerprint: FileFingerprint | undefined;
   let published = false;
-  const publicationState: PackPublicationState = { destinationLinked: false };
+  const publicationState: PackPublicationState = {};
   const archiveHash = createHash('sha256');
   const compressedMeter = new HashingQuotaTransform(
     archiveHash,
@@ -386,10 +425,12 @@ async function packSessionBundle(input: SessionBundlePackInput): Promise<Session
     };
   } finally {
     output?.destroy();
-    if (!published && publicationState.destinationLinked && temporaryFingerprint !== undefined) {
-      await removeOwnedPackPublication(validated.destination, parent, temporaryFingerprint).catch(
-        () => {},
-      );
+    if (!published && publicationState.linkedFingerprint !== undefined) {
+      await removeOwnedPackPublication(
+        validated.destination,
+        parent,
+        publicationState.linkedFingerprint,
+      ).catch(() => {});
     }
     if (temporaryFingerprint !== undefined) {
       await removeOwnedPackTemporary(temporaryPath, parent, temporaryFingerprint).catch(() => {});
@@ -778,10 +819,7 @@ async function parseAndValidateTar(
   }
 
   const builder = new SessionBundleCanonicalTreeDigestBuilder(manifest.payload.entryCount);
-  const layout: ArchiveLayoutState = {
-    directories: new Set(),
-    logicalPaths: new Set(),
-  };
+  const layout = new SessionBundleCanonicalLayoutValidator(manifest.payload.entryCount);
   let declaredPayloadBytes = 0;
   let identityBytes: Buffer | undefined;
 
@@ -851,16 +889,7 @@ async function parseAndValidateTar(
   }
   await reader.assertEof();
 
-  if (
-    !layout.directories.has(SESSION_BUNDLE_STATE_PATH) ||
-    !layout.directories.has(SESSION_BUNDLE_WORKSPACE_PATH)
-  ) {
-    throw new SessionBundleFileError(
-      'integrity_mismatch',
-      'Session bundle is missing a required payload root',
-    );
-  }
-
+  layout.finish();
   const tree = builder.finish();
   if (
     tree.treeDigest !== manifest.payload.treeDigest ||
@@ -889,59 +918,24 @@ async function parseAndValidateTar(
 
 function validateArchiveEntryBeforeContent(
   header: SessionBundleUstarHeader,
-  layout: ArchiveLayoutState,
+  layout: SessionBundleCanonicalLayoutValidator,
   input: { limits: SessionBundleLimits; operation: 'inspect' | 'hydrate' },
   entryIndex: number,
 ): void {
-  const { path } = header;
-  if (
-    !isValidUnicodeString(path) ||
-    path.length === 0 ||
-    path.includes('\0') ||
-    path.includes('\\') ||
-    path.startsWith('/') ||
-    /^[A-Za-z]:/.test(path)
-  ) {
-    throw unsafePath(input.operation, entryIndex);
+  assertPathQuota(input.operation, input.limits, header.path, entryIndex);
+  try {
+    layout.add(
+      header.kind === 'directory'
+        ? { kind: 'directory', path: header.path }
+        : { kind: 'file', path: header.path, mode: header.mode },
+    );
+  } catch (error) {
+    if (!(error instanceof SessionBundleFileError)) throw error;
+    throw new SessionBundleFileError(error.code, error.message, {
+      cause: error,
+      details: { operation: input.operation, entryIndex },
+    });
   }
-  const isDirectory = header.kind === 'directory';
-  if (isDirectory !== path.endsWith('/')) throw unsafePath(input.operation, entryIndex);
-  const logicalPath = isDirectory ? path.slice(0, -1) : path;
-  const segments = logicalPath.split('/');
-  if (
-    logicalPath.length === 0 ||
-    segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')
-  ) {
-    throw unsafePath(input.operation, entryIndex);
-  }
-  assertPathQuota(input.operation, input.limits, path, entryIndex);
-  if (
-    layout.previousPath !== undefined &&
-    compareSessionBundleCanonicalPaths(layout.previousPath, path) >= 0
-  ) {
-    throw unsafePath(input.operation, entryIndex);
-  }
-  if (layout.logicalPaths.has(logicalPath)) throw unsafePath(input.operation, entryIndex);
-  const parent = segments.length === 1 ? undefined : `${segments.slice(0, -1).join('/')}/`;
-  if (parent !== undefined && !layout.directories.has(parent)) {
-    throw unsafePath(input.operation, entryIndex);
-  }
-  if (path === SESSION_BUNDLE_STATE_IDENTITY_PATH) {
-    if (header.kind !== 'file' || header.mode !== 0o644) {
-      throw unsupportedEntry(input.operation, entryIndex);
-    }
-  } else if (path === SESSION_BUNDLE_STATE_PATH || path === SESSION_BUNDLE_WORKSPACE_PATH) {
-    if (header.kind !== 'directory') throw unsupportedEntry(input.operation, entryIndex);
-  } else if (
-    !path.startsWith(SESSION_BUNDLE_STATE_PATH) &&
-    !path.startsWith(SESSION_BUNDLE_WORKSPACE_PATH)
-  ) {
-    throw unsafePath(input.operation, entryIndex);
-  }
-
-  layout.logicalPaths.add(logicalPath);
-  if (isDirectory) layout.directories.add(path);
-  layout.previousPath = path;
 }
 
 async function consumeArchiveEntry(
@@ -1469,6 +1463,13 @@ function validateHydrateInput(input: SessionBundleHydrateInput): {
   };
 }
 
+function validateHydrationCleanupInput(input: SessionBundleHydrationCleanupInput): string {
+  if (!isRecord(input)) {
+    throw new TypeError('Session bundle hydration cleanup input must be an object');
+  }
+  return requiredFilesystemPath(input.destinationRoot, 'destinationRoot');
+}
+
 function requiredFilesystemPath(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) {
     throw new TypeError(`Session bundle ${label} must be a non-empty filesystem path`);
@@ -1537,17 +1538,29 @@ async function publishPackFileNoReplace(
   try {
     // Both paths are siblings, so a hard link is an atomic no-replace publication.
     await link(temporaryPath, destination);
-    state.destinationLinked = true;
   } catch (error) {
     if (isErrno(error, 'EEXIST')) throw destinationExists('pack');
     throw error;
   }
 
-  const [beforeHandle, beforeDestination] = await Promise.all([
+  const [beforeHandle, beforeTemporary, beforeDestination] = await Promise.all([
     handle.stat({ bigint: true }),
+    lstat(temporaryPath, { bigint: true }),
     lstat(destination, { bigint: true }),
   ]);
   const verificationFingerprint = fingerprint(beforeHandle);
+  const linkedFingerprint = fingerprint(beforeDestination);
+  if (
+    beforeTemporary.isFile() &&
+    beforeDestination.isFile() &&
+    !beforeTemporary.isSymbolicLink() &&
+    !beforeDestination.isSymbolicLink() &&
+    sameFilesystemNode(fingerprint(beforeTemporary), linkedFingerprint)
+  ) {
+    // Cleanup must follow the inode this link() actually published, even when
+    // the mutable temporary pathname was swapped after its binding check.
+    state.linkedFingerprint = linkedFingerprint;
+  }
   if (
     !beforeHandle.isFile() ||
     !beforeDestination.isFile() ||
@@ -1593,7 +1606,7 @@ async function digestOpenPackFile(
 
 async function withDestinationPublicationLock<T>(
   destination: string,
-  operation: 'hydrate',
+  operation: 'hydrate' | 'cleanup',
   action: () => Promise<T>,
 ): Promise<T> {
   const lockPath = join(
@@ -1648,7 +1661,7 @@ async function runWithPublicationLockGate<T>(
 async function assertStablePublicationLock(
   handle: FileHandle,
   lockPath: string,
-  operation: 'hydrate',
+  operation: 'hydrate' | 'cleanup',
 ): Promise<void> {
   const [handleMetadata, pathMetadata] = await Promise.all([
     handle.stat({ bigint: true }),
@@ -1697,32 +1710,261 @@ async function writeAll(
   }
 }
 
+async function createHydrationStaging(
+  destinationRoot: string,
+  parentMetadata: BigIntStats,
+): Promise<HydrationStagingBinding> {
+  const parent = dirname(destinationRoot);
+  const destinationName = basename(destinationRoot);
+  const prefix = `.${destinationName}${HYDRATION_STAGING_MARKER}`;
+  const token = randomUUID();
+  const stagingName = `${prefix}${token}`;
+  const stagingRoot = join(parent, stagingName);
+  const ownershipPath = `${stagingRoot}${HYDRATION_OWNERSHIP_SUFFIX}`;
+  const ownership = encodeHydrationStagingOwnership({
+    schemaVersion: 1,
+    kind: HYDRATION_OWNERSHIP_KIND,
+    destinationName,
+    stagingName,
+    token,
+  });
+  let ownershipHandle: FileHandle | undefined;
+  try {
+    ownershipHandle = await open(ownershipPath, 'wx', 0o600);
+    await writeAll(ownershipHandle, ownership, 'hydrate');
+    await ownershipHandle.sync();
+    const ownershipMetadata = await ownershipHandle.stat({ bigint: true });
+    if (!ownershipMetadata.isFile() || ownershipMetadata.nlink !== 1n) throw ioError('hydrate');
+    const ownershipFingerprint = fingerprint(ownershipMetadata);
+    await ownershipHandle.close();
+    ownershipHandle = undefined;
+    await syncDirectory(parent);
+
+    await mkdir(stagingRoot, { mode: 0o700 });
+    await chmod(stagingRoot, 0o700);
+    const stagingMetadata = await lstat(stagingRoot, { bigint: true });
+    if (
+      !stagingMetadata.isDirectory() ||
+      stagingMetadata.isSymbolicLink() ||
+      stagingMetadata.dev !== parentMetadata.dev
+    ) {
+      throw ioError('hydrate');
+    }
+    await syncDirectory(parent);
+    return {
+      stagingRoot,
+      stagingFingerprint: fingerprint(stagingMetadata),
+      ownershipPath,
+      ownershipFingerprint,
+    };
+  } finally {
+    await ownershipHandle?.close().catch(() => {});
+  }
+}
+
+async function cleanupHydrationStagingForDestination(
+  destinationRoot: string,
+  operation: 'hydrate' | 'cleanup' = 'cleanup',
+): Promise<{
+  removedStagingDirectories: number;
+  removedOwnershipRecords: number;
+}> {
+  const parent = dirname(destinationRoot);
+  const destinationName = basename(destinationRoot);
+  const prefix = `.${destinationName}${HYDRATION_STAGING_MARKER}`;
+  const parentMetadata = await stat(parent, { bigint: true });
+  if (!parentMetadata.isDirectory()) throw ioError(operation);
+  let removedStagingDirectories = 0;
+  let removedOwnershipRecords = 0;
+  let changed = false;
+
+  for (const ownershipName of (await readdir(parent)).sort()) {
+    if (!ownershipName.startsWith(prefix) || !ownershipName.endsWith(HYDRATION_OWNERSHIP_SUFFIX)) {
+      continue;
+    }
+    const owned = await readHydrationStagingOwnership(
+      parent,
+      destinationName,
+      prefix,
+      ownershipName,
+    );
+    if (owned === undefined) continue;
+    const stagingMetadata = await lstat(owned.stagingRoot, { bigint: true }).catch(
+      (error: unknown) => {
+        if (isErrno(error, 'ENOENT')) return undefined;
+        throw error;
+      },
+    );
+    if (stagingMetadata === undefined) {
+      if (await removeOwnedPackFile(owned.ownershipPath, owned.ownershipFingerprint)) {
+        removedOwnershipRecords += 1;
+        changed = true;
+      }
+      continue;
+    }
+    if (
+      !stagingMetadata.isDirectory() ||
+      stagingMetadata.isSymbolicLink() ||
+      stagingMetadata.dev !== parentMetadata.dev
+    ) {
+      continue;
+    }
+    const expectedStaging = fingerprint(stagingMetadata);
+    const currentStaging = await lstat(owned.stagingRoot, { bigint: true });
+    if (
+      !currentStaging.isDirectory() ||
+      currentStaging.isSymbolicLink() ||
+      !sameFingerprint(expectedStaging, fingerprint(currentStaging))
+    ) {
+      continue;
+    }
+    await rm(owned.stagingRoot, { recursive: true });
+    removedStagingDirectories += 1;
+    changed = true;
+    if (await removeOwnedPackFile(owned.ownershipPath, owned.ownershipFingerprint)) {
+      removedOwnershipRecords += 1;
+    }
+  }
+  if (changed) await syncDirectory(parent);
+  return { removedStagingDirectories, removedOwnershipRecords };
+}
+
+async function readHydrationStagingOwnership(
+  parent: string,
+  destinationName: string,
+  prefix: string,
+  ownershipName: string,
+): Promise<
+  | {
+      stagingRoot: string;
+      ownershipPath: string;
+      ownershipFingerprint: FileFingerprint;
+    }
+  | undefined
+> {
+  const ownershipPath = join(parent, ownershipName);
+  const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(ownershipPath, fsConstants.O_RDONLY | noFollow);
+  } catch (error) {
+    if (isErrno(error, 'ENOENT') || isErrno(error, 'ELOOP')) return undefined;
+    throw error;
+  }
+  try {
+    const [handleMetadata, pathMetadata] = await Promise.all([
+      handle.stat({ bigint: true }),
+      lstat(ownershipPath, { bigint: true }),
+    ]);
+    const ownershipFingerprint = fingerprint(handleMetadata);
+    if (
+      !handleMetadata.isFile() ||
+      !pathMetadata.isFile() ||
+      pathMetadata.isSymbolicLink() ||
+      handleMetadata.nlink !== 1n ||
+      handleMetadata.size > BigInt(HYDRATION_OWNERSHIP_MAX_BYTES) ||
+      !sameFingerprint(ownershipFingerprint, fingerprint(pathMetadata))
+    ) {
+      return undefined;
+    }
+    const bytes = await readBoundedFileHandle(handle, HYDRATION_OWNERSHIP_MAX_BYTES);
+    if (bytes === undefined) return undefined;
+    const after = await handle.stat({ bigint: true });
+    if (!sameFingerprint(ownershipFingerprint, fingerprint(after))) return undefined;
+    const ownership = decodeHydrationStagingOwnership(bytes);
+    if (
+      ownership === undefined ||
+      ownership.destinationName !== destinationName ||
+      ownership.stagingName !== `${prefix}${ownership.token}` ||
+      ownershipName !== `${ownership.stagingName}${HYDRATION_OWNERSHIP_SUFFIX}`
+    ) {
+      return undefined;
+    }
+    return {
+      stagingRoot: join(parent, ownership.stagingName),
+      ownershipPath,
+      ownershipFingerprint,
+    };
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+function encodeHydrationStagingOwnership(value: HydrationStagingOwnershipV1): Buffer {
+  return Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
+}
+
+function decodeHydrationStagingOwnership(value: Buffer): HydrationStagingOwnershipV1 | undefined {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value));
+  } catch {
+    return undefined;
+  }
+  if (
+    !isRecord(decoded) ||
+    Object.keys(decoded).length !== 5 ||
+    decoded.schemaVersion !== 1 ||
+    decoded.kind !== HYDRATION_OWNERSHIP_KIND ||
+    typeof decoded.destinationName !== 'string' ||
+    typeof decoded.stagingName !== 'string' ||
+    typeof decoded.token !== 'string' ||
+    !HYDRATION_TOKEN_PATTERN.test(decoded.token)
+  ) {
+    return undefined;
+  }
+  const ownership: HydrationStagingOwnershipV1 = {
+    schemaVersion: 1,
+    kind: HYDRATION_OWNERSHIP_KIND,
+    destinationName: decoded.destinationName,
+    stagingName: decoded.stagingName,
+    token: decoded.token,
+  };
+  return encodeHydrationStagingOwnership(ownership).equals(value) ? ownership : undefined;
+}
+
+async function readBoundedFileHandle(
+  handle: FileHandle,
+  maxBytes: number,
+): Promise<Buffer | undefined> {
+  const buffer = Buffer.alloc(maxBytes + 1);
+  let offset = 0;
+  while (offset < buffer.byteLength) {
+    const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return offset > maxBytes ? undefined : buffer.subarray(0, offset);
+}
+
 async function removeOwnedHydrationStaging(
-  stagingRoot: string,
+  staging: HydrationStagingBinding,
   parent: string,
   prefix: string,
-  expectedFingerprint: FileFingerprint | undefined,
 ): Promise<void> {
   if (
-    expectedFingerprint === undefined ||
-    dirname(stagingRoot) !== parent ||
-    !basename(stagingRoot).startsWith(prefix)
+    dirname(staging.stagingRoot) !== parent ||
+    !basename(staging.stagingRoot).startsWith(prefix) ||
+    dirname(staging.ownershipPath) !== parent ||
+    basename(staging.ownershipPath) !==
+      `${basename(staging.stagingRoot)}${HYDRATION_OWNERSHIP_SUFFIX}`
   ) {
     return;
   }
-  const metadata = await lstat(stagingRoot, { bigint: true }).catch((error: unknown) => {
+  const metadata = await lstat(staging.stagingRoot, { bigint: true }).catch((error: unknown) => {
     if (isErrno(error, 'ENOENT')) return undefined;
     throw error;
   });
   if (
-    metadata === undefined ||
-    !metadata.isDirectory() ||
-    metadata.isSymbolicLink() ||
-    !sameFilesystemNode(expectedFingerprint, fingerprint(metadata))
+    metadata !== undefined &&
+    metadata.isDirectory() &&
+    !metadata.isSymbolicLink() &&
+    sameFilesystemNode(staging.stagingFingerprint, fingerprint(metadata))
   ) {
-    return;
+    await rm(staging.stagingRoot, { recursive: true });
   }
-  await rm(stagingRoot, { recursive: true });
+  await removeOwnedPackFile(staging.ownershipPath, staging.ownershipFingerprint);
+  await syncDirectory(parent);
 }
 
 async function removeOwnedPackTemporary(
@@ -1746,7 +1988,7 @@ async function removeOwnedPackPublication(
 async function removeOwnedPackFile(
   path: string,
   expectedFingerprint: FileFingerprint,
-): Promise<void> {
+): Promise<boolean> {
   const metadata = await lstat(path, { bigint: true }).catch((error: unknown) => {
     if (isErrno(error, 'ENOENT')) return undefined;
     throw error;
@@ -1757,9 +1999,10 @@ async function removeOwnedPackFile(
     metadata.isSymbolicLink() ||
     !sameFilesystemNode(expectedFingerprint, fingerprint(metadata))
   ) {
-    return;
+    return false;
   }
   await rm(path);
+  return true;
 }
 
 function inspectionFromReadResult(result: ReadValidationResult): SessionBundleInspection {
