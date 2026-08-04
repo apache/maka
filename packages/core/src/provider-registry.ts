@@ -1,4 +1,5 @@
 import type { BackendKind } from './session.js';
+import { OPENCODE_FREE_DEFAULT_MODEL } from './bootstrap-connections.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
   GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
@@ -572,9 +573,9 @@ const opencodeGoModelIds = toolCallingModelIds(
 // validated against the opencode snapshot for active + tool-capable, mirroring
 // the bootstrap validation every other opencode plan entry performs.
 const opencodeFreeModelIds = [
-  'big-pickle',
+  OPENCODE_FREE_DEFAULT_MODEL,
   'mimo-v2.5-free',
-  'nemotron-3-ultra-free',
+  'big-pickle',
   'deepseek-v4-flash-free',
   'north-mini-code-free',
   'laguna-s-2.1-free',

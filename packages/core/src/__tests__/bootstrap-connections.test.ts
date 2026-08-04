@@ -15,7 +15,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { resolveBootstrapConnections } from '../bootstrap-connections.js';
+import {
+  OPENCODE_FREE_DEFAULT_MODEL,
+  isHistoricalOpenCodeFreeSeed,
+  resolveBootstrapConnections,
+} from '../bootstrap-connections.js';
 
 describe('resolveBootstrapConnections — zero-credential default seed', () => {
   it('selects one default while keeping the credential-free fallback', () => {
@@ -29,7 +33,7 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
     for (const [env, defaultSlug, excludesOpenAi] of cases) {
       const seeds = resolveBootstrapConnections(env);
       const free = seeds.find((seed) => seed.slug === 'opencode-free');
-      assert.equal(free?.defaultModel, 'big-pickle');
+      assert.equal(free?.defaultModel, OPENCODE_FREE_DEFAULT_MODEL);
       assert.deepEqual(
         seeds.filter((seed) => seed.isDefault).map((seed) => seed.slug),
         [defaultSlug],
@@ -39,5 +43,29 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
         !excludesOpenAi && 'OPENAI_API_KEY' in env,
       );
     }
+  });
+
+  it('recognizes only the untouched historical OpenCode Free seed', () => {
+    const historical = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free' as const,
+      defaultModel: 'big-pickle',
+      enabledModelIds: ['big-pickle'],
+    };
+
+    assert.equal(isHistoricalOpenCodeFreeSeed(historical), true);
+    assert.equal(
+      isHistoricalOpenCodeFreeSeed({ ...historical, name: 'My free connection' }),
+      false,
+    );
+    assert.equal(
+      isHistoricalOpenCodeFreeSeed({
+        ...historical,
+        enabledModelIds: ['big-pickle', 'mimo-v2.5-free'],
+      }),
+      false,
+    );
+    assert.equal(isHistoricalOpenCodeFreeSeed({ ...historical, models: [] }), false);
   });
 });

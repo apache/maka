@@ -1527,7 +1527,11 @@ export type {
   BootstrapConnectionSeed,
   BootstrapEnv,
 } from './bootstrap-connections.js';
-export { resolveBootstrapConnections } from './bootstrap-connections.js';
+export {
+  OPENCODE_FREE_DEFAULT_MODEL,
+  isHistoricalOpenCodeFreeSeed,
+  resolveBootstrapConnections,
+} from './bootstrap-connections.js';
 
 // model-catalog.ts
 export type {

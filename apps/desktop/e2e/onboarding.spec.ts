@@ -47,7 +47,7 @@ test('first run connects a provider and starts the first task without workspace 
     .toEqual({
       defaultSlug: null,
       defaultModel: '',
-      enabledModelIds: ['big-pickle'],
+      enabledModelIds: ['nemotron-3-ultra-free'],
     });
   await page.getByRole('button', { name: '返回应用', exact: true }).click();
 
@@ -69,5 +69,5 @@ test('first run connects a provider and starts the first task without workspace 
         }));
       }),
     )
-    .toContainEqual({ connectionSlug: 'opencode-free', model: 'big-pickle' });
+    .toContainEqual({ connectionSlug: 'opencode-free', model: 'nemotron-3-ultra-free' });
 });
