@@ -77,7 +77,8 @@ export function createVoiceIpcService(deps: {
   const operations = new Map<string, VoiceOperation>();
   const fetchImpl = deps.fetch ?? fetch;
   const now = deps.now ?? Date.now;
-  let realtimeLease: { sessionId: string; expiresAt: number } | undefined;
+  let realtimeSessionPending = false;
+  let activeRealtimeLease: { sessionId: string; expiresAt: number } | undefined;
 
   async function begin(input: VoiceBeginRequest): Promise<VoiceBeginResult> {
     sweepExpired();
@@ -176,13 +177,13 @@ export function createVoiceIpcService(deps: {
   }
 
   async function createRealtimeSession(offerSdpInput: unknown): Promise<VoiceRealtimeClientSession> {
-    if (realtimeLease && realtimeLease.expiresAt > now()) {
+    if (realtimeSessionPending || (activeRealtimeLease && activeRealtimeLease.expiresAt > now())) {
       throw new Error('voice_realtime_session_already_active');
     }
-    realtimeLease = undefined;
+    activeRealtimeLease = undefined;
     const offerSdp = normalizeRealtimeOfferSdp(offerSdpInput);
     const sessionId = randomUUID();
-    realtimeLease = { sessionId, expiresAt: now() + REALTIME_CONNECT_TIMEOUT_MS };
+    realtimeSessionPending = true;
     try {
       const { plan } = await resolveConfiguredRoute({ intent: 'voice_chat' });
       if (plan.kind === 'blocked') throw new Error(`voice_route_blocked:${plan.reason}`);
@@ -248,7 +249,7 @@ export function createVoiceIpcService(deps: {
         throw providerHttpError('realtime_connect', callResponse.status);
       }
       if (!answerSdp.trim()) throw new Error('voice_realtime_answer_invalid');
-      realtimeLease = { sessionId, expiresAt: now() + 24 * 60 * 60_000 };
+      activeRealtimeLease = { sessionId, expiresAt: now() + 24 * 60 * 60_000 };
       return {
         sessionId,
         answerSdp,
@@ -256,15 +257,14 @@ export function createVoiceIpcService(deps: {
         providerLabel: plan.target.providerLabel ?? plan.target.connectionSlug,
         expiresAt,
       };
-    } catch (error) {
-      if (realtimeLease?.sessionId === sessionId) realtimeLease = undefined;
-      throw error;
+    } finally {
+      realtimeSessionPending = false;
     }
   }
 
   function closeRealtimeSession(sessionIdInput: unknown): void {
     const sessionId = normalizeOperationId(sessionIdInput);
-    if (realtimeLease?.sessionId === sessionId) realtimeLease = undefined;
+    if (activeRealtimeLease?.sessionId === sessionId) activeRealtimeLease = undefined;
   }
 
   async function resolveConfiguredRoute(input: VoiceBeginRequest): Promise<{

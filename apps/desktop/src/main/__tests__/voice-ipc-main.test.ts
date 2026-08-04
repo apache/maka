@@ -39,6 +39,7 @@ function service(input: {
   settings: AppSettings;
   connection: LlmConnection;
   fetch?: typeof fetch;
+  now?: () => number;
 }) {
   return createVoiceIpcService({
     settingsStore: { get: async () => input.settings } as never,
@@ -47,7 +48,16 @@ function service(input: {
     } as never,
     resolveConnectionSecret: async () => 'server-secret',
     ...(input.fetch ? { fetch: input.fetch } : {}),
+    ...(input.now ? { now: input.now } : {}),
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 const audio = {
@@ -249,5 +259,81 @@ describe('voice IPC service', () => {
       }).createRealtimeSession('not-sdp'),
       /voice_realtime_offer_invalid/,
     );
+  });
+
+  it('keeps realtime creation single-flight past its old deadline and releases admission on settle', async () => {
+    let currentTime = 0;
+    let requestCount = 0;
+    let failNextToken = false;
+    const tokenRequested = deferred<void>();
+    const callRequested = deferred<void>();
+    const tokenResponse = deferred<Response>();
+    const callResponse = deferred<Response>();
+    const fetchMock: typeof fetch = async (url) => {
+      const requestIndex = requestCount;
+      requestCount += 1;
+      if (requestIndex === 0) {
+        tokenRequested.resolve(undefined);
+        return tokenResponse.promise;
+      }
+      if (requestIndex === 1) {
+        callRequested.resolve(undefined);
+        return callResponse.promise;
+      }
+      if (String(url).endsWith('/realtime/client_secrets')) {
+        if (failNextToken) {
+          failNextToken = false;
+          return new Response('{}', { status: 200 });
+        }
+        return new Response(JSON.stringify({ value: 'next-client-secret', expires_at: 123 }), {
+          status: 200,
+        });
+      }
+      return new Response('v=0\r\no=next-answer', { status: 200 });
+    };
+    const voice = service({
+      settings: settings({
+        realtime: {
+          connectionSlug: 'openai',
+          model: 'gpt-realtime',
+          voice: 'marin',
+        },
+      }),
+      connection: connection(['gpt-realtime']),
+      fetch: fetchMock,
+      now: () => currentTime,
+    });
+    const offerSdp = 'v=0\r\no=offer';
+
+    const firstPending = voice.createRealtimeSession(offerSdp);
+    await tokenRequested.promise;
+    currentTime = 18_000;
+    tokenResponse.resolve(
+      new Response(JSON.stringify({ value: 'first-client-secret', expires_at: 123 }), {
+        status: 200,
+      }),
+    );
+    await callRequested.promise;
+
+    currentTime = 31_000;
+    await assert.rejects(
+      () => voice.createRealtimeSession(offerSdp),
+      /voice_realtime_session_already_active/,
+    );
+    assert.equal(requestCount, 2, 'the rejected request must not reach the provider');
+
+    currentTime = 40_000;
+    callResponse.resolve(new Response('v=0\r\no=first-answer', { status: 200 }));
+    const first = await firstPending;
+    voice.closeRealtimeSession(first.sessionId);
+
+    failNextToken = true;
+    await assert.rejects(
+      () => voice.createRealtimeSession(offerSdp),
+      /voice_realtime_secret_missing/,
+    );
+    const next = await voice.createRealtimeSession(offerSdp);
+    assert.equal(next.answerSdp, 'v=0\r\no=next-answer');
+    assert.notEqual(next.sessionId, first.sessionId);
   });
 });
