@@ -12,6 +12,8 @@ const CLI_PATH = join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli.js');
 const DESKTOP_MAIN = join(REPO_ROOT, 'apps', 'desktop', 'dist', 'main', 'main.js');
 const DESKTOP_PRELOAD = join(REPO_ROOT, 'apps', 'desktop', 'dist', 'preload', 'preload.cjs');
 const DESKTOP_SMOKE = join(REPO_ROOT, 'scripts', 'desktop-real-window-smoke.mjs');
+const CLI_TIMEOUT_MS = 15_000;
+const DESKTOP_TIMEOUT_MS = 45_000;
 
 export function runWindowsSmoke(options = {}) {
   const platform = options.platform ?? process.platform;
@@ -35,13 +37,21 @@ export function runWindowsSmoke(options = {}) {
       LOCALAPPDATA: join(isolatedHome, 'AppData', 'Local'),
       MAKA_SKIP_SHELL_ENV: '1',
     };
-    runChecked(spawn, process.execPath, [CLI_PATH, '--version'], { cwd: REPO_ROOT, env });
-    runChecked(spawn, process.execPath, [CLI_PATH, '--help'], { cwd: REPO_ROOT, env });
+    runChecked(spawn, process.execPath, [CLI_PATH, '--version'], {
+      cwd: REPO_ROOT,
+      env,
+      timeout: CLI_TIMEOUT_MS,
+    });
+    runChecked(spawn, process.execPath, [CLI_PATH, '--help'], {
+      cwd: REPO_ROOT,
+      env,
+      timeout: CLI_TIMEOUT_MS,
+    });
     const desktop = runChecked(
       spawn,
       process.execPath,
       [DESKTOP_SMOKE, '--startup-only', '--diagnostic-wait-ms', '30000'],
-      { cwd: REPO_ROOT, env },
+      { cwd: REPO_ROOT, env, timeout: DESKTOP_TIMEOUT_MS },
     );
     if (!desktop.stdout?.includes('[real-window-smoke] report:')) {
       throw new Error('Electron startup smoke exited without producing a report');

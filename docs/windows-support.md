@@ -52,7 +52,7 @@ Environment: Windows 11 x64, Node.js 22.23.1, npm 11, Git for Windows.
 | Surface | Result | Notes |
 |---|---:|---|
 | Workspace build | PASS | All root `build:test` workspace builds completed. |
-| Repository script tests | 109 pass, 0 fail, 1 skip | The skip is a real macOS `pgrep` probe. |
+| Repository script tests | 110 pass, 0 fail, 1 skip | The skip is a real macOS `pgrep` probe. |
 | Managed workspace baseline tests | 17 pass, 0 fail, 5 skip | Passed after enabling Git for Windows long paths. |
 | Storage suite | 514 pass, 100 fail, 40 skip | Failures are dominated by `EBUSY` cleanup while SQLite files remain open. |
 | Complete repository test plan | TIMEOUT | `npm test` did not exit within 10 minutes and left the workspace test runner alive. |

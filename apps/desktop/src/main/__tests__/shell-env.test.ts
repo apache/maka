@@ -216,7 +216,6 @@ wait
 
   it(
     'does not execute the shell when MAKA_SKIP_SHELL_ENV is set',
-    { skip: process.platform === 'win32' },
     async () => {
       const restoreEnv = snapshotEnv();
       const shell = await createFakeShell(`

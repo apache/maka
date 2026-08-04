@@ -14,7 +14,7 @@ import { terminateChildProcessTree } from '@maka/runtime';
 import { closeElectronApplication } from './electron-lifecycle.mjs';
 import { buildFixtureEnv } from './fixture-env.mjs';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import os from 'node:os';
@@ -64,8 +64,8 @@ export const PROGRAMMATIC_SMOKE_CHECKS = [
 
 const STARTUP_SMOKE_CHECKS = [
   {
-    id: 'startup-app-ready',
-    prompt: 'The real Maka Electron main process reaches app ready.',
+    id: 'startup-window-ready',
+    prompt: 'The real Maka BrowserWindow and renderer reach a usable ready state.',
   },
 ];
 
@@ -500,13 +500,30 @@ function buildProgrammaticResults(args, diagnostics) {
 }
 
 function buildStartupResults(diagnostics) {
+  const diagnostic = latestWindowDiagnostic(diagnostics);
+  const renderer = diagnostic?.renderer ?? {};
+  const ok = Boolean(
+    diagnostics.startupReady === true &&
+      diagnostic?.stage === 'settled-1000ms' &&
+      diagnostic.windowExists === true &&
+      diagnostic.isVisible === true &&
+      renderer.readyState === 'complete' &&
+      renderer.appFramePresent === true &&
+      renderer.errorBoundaryPresent === false,
+  );
   return [
     {
       check: STARTUP_SMOKE_CHECKS[0],
-      ok: diagnostics.startupReady === true,
-      note: diagnostics.startupReady
-        ? 'observed [startup] app ready from the Electron main process'
-        : 'Electron did not reach app ready before the startup deadline',
+      ok,
+      note: [
+        `appReady=${diagnostics.startupReady === true}`,
+        `stage=${diagnostic?.stage ?? 'missing'}`,
+        `windowExists=${diagnostic?.windowExists ?? false}`,
+        `visible=${diagnostic?.isVisible ?? false}`,
+        `readyState=${renderer.readyState ?? 'missing'}`,
+        `appFramePresent=${renderer.appFramePresent ?? false}`,
+        `errorBoundaryPresent=${renderer.errorBoundaryPresent ?? 'missing'}`,
+      ].join(' '),
     },
   ].map(({ check, ok, note }) => ({
     ...check,
@@ -675,6 +692,9 @@ async function stopElectron(child) {
             resolveExit();
           });
         });
+        if (child.exitCode === null && child.signalCode === null) {
+          throw new Error('Electron process tree did not exit after taskkill');
+        }
         return;
       }
       await closeElectronApplication(
@@ -747,7 +767,7 @@ async function main() {
     if (launchInfo?.waitForDiagnostics) {
       await launchInfo.waitForDiagnostics(
         Number.isFinite(args.diagnosticWaitMs) ? args.diagnosticWaitMs : 1500,
-        args.startupOnly ? 'app-ready' : 'settled-1000ms',
+        'settled-1000ms',
       );
       diagnostics.windowDiagnosticObserved = (diagnostics.windowDiagnostics?.length ?? 0) > 0;
     }
@@ -767,7 +787,13 @@ async function main() {
   } finally {
     // Reclaim the window even when a later step throws — a failed report
     // write must not leave a live Electron behind.
-    if (launchInfo?.child) await stopElectron(launchInfo.child);
+    try {
+      if (launchInfo?.child) await stopElectron(launchInfo.child);
+    } finally {
+      if (args.startupOnly && launchInfo?.userDataDir) {
+        await rm(launchInfo.userDataDir, { recursive: true, force: true });
+      }
+    }
   }
   process.exit(report.ok ? 0 : 1);
 }

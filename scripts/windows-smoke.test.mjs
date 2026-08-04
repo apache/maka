@@ -7,8 +7,8 @@ test('Windows smoke checks CLI entry points before the real Electron window', ()
   runWindowsSmoke({
     platform: 'win32',
     existsSync: () => true,
-    spawnSync(command, args) {
-      calls.push([command, args]);
+    spawnSync(command, args, options) {
+      calls.push([command, args, options]);
       return {
         status: 0,
         stdout: args.includes('--startup-only') ? '[real-window-smoke] report: report.md\n' : '',
@@ -20,6 +20,9 @@ test('Windows smoke checks CLI entry points before the real Electron window', ()
   assert.deepEqual(calls[0][1].slice(-1), ['--version']);
   assert.deepEqual(calls[1][1].slice(-1), ['--help']);
   assert.ok(calls[2][1].includes('--startup-only'));
+  assert.equal(calls[0][2].timeout, 15_000);
+  assert.equal(calls[1][2].timeout, 15_000);
+  assert.equal(calls[2][2].timeout, 45_000);
 });
 
 test('Windows smoke refuses to claim evidence on another platform', () => {

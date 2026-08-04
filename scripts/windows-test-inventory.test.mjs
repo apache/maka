@@ -58,7 +58,7 @@ test('named pipe reconnect', {
     );
     await writeFile(
       join(root, 'apps', 'desktop', 'window.test.mjs'),
-      "test('macOS window probe', { skip: process.platform !== 'darwin' }, () => {});\n",
+      'test(\'macOS window probe\', { skip: process.platform !== "darwin" }, () => {});\n',
     );
 
     const entries = await collectWindowsTestSkips(root);
@@ -85,6 +85,7 @@ test('named pipe reconnect', {
     const rendered = renderWindowsTestInventory(entries);
     assert.match(rendered, /Total Windows-excluded declarations: \*\*3\*\*/u);
     assert.match(rendered, /windows-backend-gap \| 2/u);
+    assert.doesNotMatch(rendered, /window\.test\.mjs:\d+/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
