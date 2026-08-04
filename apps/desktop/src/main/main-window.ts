@@ -87,7 +87,14 @@ export function safeSendToRenderer(channel: string, ...args: unknown[]): void {
   wc.send(channel, ...args);
 }
 
-const MAIN_WINDOW_TRAFFIC_LIGHT_POSITION = { x: 14, y: 14 } as const;
+// The close button's centre sits on the same vertical line as the sidebar's
+// icon column, so the window's top-left reads as one column rather than two
+// near-misses. Contract: centre = x + 7 (the disc measures 14pt, not the 12pt
+// it is often quoted as), and the icon column centres on 24 (item edge 8 +
+// half of the 32pt icon slot) — so x = 24 - 7 = 17. Both numbers were read off
+// a screenshot of the running window, not derived. Move the sidebar's left
+// padding or icon slot and this has to move with it.
+const MAIN_WINDOW_TRAFFIC_LIGHT_POSITION = { x: 17, y: 14 } as const;
 const HIDDEN_TRAFFIC_LIGHT_POSITION = { x: -100, y: -100 } as const;
 
 // PR-SHOW-AFTER-FIRST-COMMIT: fallback reveal delay for a renderer that never
