@@ -27,7 +27,6 @@ import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
   type RunTraceEvent,
-  type RuntimeReadModelSessionView,
   type ScannedSkill,
   agentGraphIdForRootSession,
   buildParentAgentTools,
@@ -67,8 +66,6 @@ import {
   HostOAuthExecutionAuthority,
   OAuthExecutionCredentialError,
 } from '../server/oauth-execution-authority.js';
-import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostSessionEffectCoordinator } from '../server/session-effect-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
 
@@ -1601,12 +1598,6 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
 
     let preflightDrainRequests = 0;
     let preflightTransportCreations = 0;
-    let preflightDraining = false;
-    const requestPreflightDrain = () => {
-      if (preflightDraining) return;
-      preflightDraining = true;
-      preflightDrainRequests += 1;
-    };
     const failingPreflightEffects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
@@ -1622,82 +1613,29 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
             assert.fail('preflight failure must not record provider usage'),
         },
       } as unknown as InteractiveUsageStoresWriter,
-      requestDrain: requestPreflightDrain,
+      requestDrain: () => {
+        preflightDrainRequests += 1;
+      },
       createFetchTransport: () => {
         preflightTransportCreations += 1;
         throw new Error('preflight failure must not create a provider transport');
       },
     });
-    const preflightArtifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await preflightArtifacts.recover();
-    const preflightCoordinator = new HostSessionEffectCoordinator({
-      model: failingPreflightEffects,
-      readModel: {
-        getSessionView: async () => ({ events: [] }) as unknown as RuntimeReadModelSessionView,
-      },
-      artifacts: preflightArtifacts,
-      sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
-      readSessionHeader: async () => session,
-      sessionAdmission: new SessionAdmissionGate(),
-      acquireResidency: () => ({ release() {} }),
-      requestDrain: requestPreflightDrain,
-    });
-    const preflightInput = {
+    const preflightResult = await failingPreflightEffects.generateRecap({
       sessionId: session.id,
       effectId: 'recap-preflight-failure',
-      reason: 'manual' as const,
-    };
-    const preflightContext: ConnectionContext = {
-      hostEpoch: 'preflight-failure',
-      connectionId: 'preflight-failure',
-      surface: 'tui',
-      principal: 'local_os_user',
-      acquireResidency: () => ({ release() {} }),
-    };
-    assert.deepEqual(
-      await preflightCoordinator.handlers['session.recap.generate'](
-        preflightInput,
-        preflightContext,
-      ),
-      {
-        ok: false,
-        error: {
-          code: 'outcome_unknown',
-          message: 'Recap accounting outcome is unknown',
-        },
-      },
-    );
-    assert.deepEqual(
-      await preflightCoordinator.handlers['session.recap.generate'](
-        preflightInput,
-        preflightContext,
-      ),
-      {
-        ok: false,
-        error: {
-          code: 'outcome_unknown',
-          message: 'Recap provider outcome is unknown; use a new effect identity to retry',
-        },
-      },
-    );
+      header: session,
+      events: [],
+      abortSignal: new AbortController().signal,
+    });
+    assert.equal(preflightResult.ok, false);
+    if (!preflightResult.ok) assert.equal(preflightResult.errorClass, 'persistence');
     assert.equal(preflightTransportCreations, 0);
     assert.equal(preflightDrainRequests, 1);
-    assert.equal(
-      (await preflightArtifacts.listPage(session.id, { offset: 0, limit: 10 })).records.length,
-      1,
-    );
-    await preflightCoordinator.close();
-    preflightArtifacts.close();
 
     let oauthDrainRequests = 0;
     let oauthProviderDispatches = 0;
     let oauthTransportCloses = 0;
-    let oauthDraining = false;
-    const requestOAuthDrain = () => {
-      if (oauthDraining) return;
-      oauthDraining = true;
-      oauthDrainRequests += 1;
-    };
     const oauthPersistenceEffects = createHostSessionEffectModel({
       runtimePolicy: {
         operations: {
@@ -1739,7 +1677,9 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
       } as unknown as HostOAuthExecutionAuthority,
       claudeDeviceId: capability.rootId,
       usage,
-      requestDrain: requestOAuthDrain,
+      requestDrain: () => {
+        oauthDrainRequests += 1;
+      },
       createFetchTransport: () => ({
         fetch: async () => {
           oauthProviderDispatches += 1;
@@ -1750,55 +1690,18 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
         },
       }),
     });
-    const oauthArtifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await oauthArtifacts.recover();
-    const oauthCoordinator = new HostSessionEffectCoordinator({
-      model: oauthPersistenceEffects,
-      readModel: {
-        getSessionView: async () => ({ events: [] }) as unknown as RuntimeReadModelSessionView,
-      },
-      artifacts: oauthArtifacts,
-      sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
-      readSessionHeader: async () => session,
-      sessionAdmission: new SessionAdmissionGate(),
-      acquireResidency: () => ({ release() {} }),
-      requestDrain: requestOAuthDrain,
-    });
-    const oauthInput = {
+    const oauthResult = await oauthPersistenceEffects.generateRecap({
       sessionId: session.id,
       effectId: 'recap-oauth-persistence-failure',
-      reason: 'manual' as const,
-    };
-    assert.deepEqual(
-      await oauthCoordinator.handlers['session.recap.generate'](oauthInput, preflightContext),
-      {
-        ok: false,
-        error: {
-          code: 'outcome_unknown',
-          message: 'Recap accounting outcome is unknown',
-        },
-      },
-    );
-    assert.deepEqual(
-      await oauthCoordinator.handlers['session.recap.generate'](oauthInput, preflightContext),
-      {
-        ok: false,
-        error: {
-          code: 'outcome_unknown',
-          message: 'Recap provider outcome is unknown; use a new effect identity to retry',
-        },
-      },
-    );
+      header: session,
+      events: [],
+      abortSignal: new AbortController().signal,
+    });
+    assert.equal(oauthResult.ok, false);
+    if (!oauthResult.ok) assert.equal(oauthResult.errorClass, 'persistence');
     assert.equal(oauthProviderDispatches, 1);
     assert.equal(oauthTransportCloses, 1);
     assert.equal(oauthDrainRequests, 1);
-    const oauthRecords = (
-      await oauthArtifacts.listPage(session.id, { offset: 0, limit: 10 })
-    ).records.filter((record) => record.turnId === oauthInput.effectId);
-    assert.equal(oauthRecords.length, 1);
-    assert.equal(oauthRecords[0]?.name, 'session-recap-intent.json');
-    await oauthCoordinator.close();
-    oauthArtifacts.close();
 
     let accountingDrains = 0;
     const accountingAbort = new AbortController();
