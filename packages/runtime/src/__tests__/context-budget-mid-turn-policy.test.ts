@@ -122,6 +122,7 @@ describe('tool-result prune policy env plumbing', () => {
     assert.deepEqual(policy?.activeToolResultPrune, {
       enabled: true,
       maxCurrentResultEstimatedTokens: 2_048,
+      minSupersededResultEstimatedTokens: 256,
       minStepNumber: 1,
     });
     assert.deepEqual(policy?.staleToolResultPrune, {
@@ -135,6 +136,7 @@ describe('tool-result prune policy env plumbing', () => {
     const policy = buildDefaultContextBudgetPolicy(connection(), {
       env: {
         MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MAX_ESTIMATED_TOKENS: '4096',
+        MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_SUPERSEDED_TOKENS: '384',
         MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_STEP_NUMBER: '3',
         MAKA_CONTEXT_STALE_TOOL_RESULT_MAX_TOKENS: '8192',
         MAKA_CONTEXT_MIN_RECENT_TURNS: '4',
@@ -142,6 +144,7 @@ describe('tool-result prune policy env plumbing', () => {
       },
     });
     assert.equal(policy?.activeToolResultPrune?.maxCurrentResultEstimatedTokens, 4_096);
+    assert.equal(policy?.activeToolResultPrune?.minSupersededResultEstimatedTokens, 384);
     assert.equal(policy?.activeToolResultPrune?.minStepNumber, 3);
     assert.equal(policy?.staleToolResultPrune?.maxResultEstimatedTokens, 8_192);
     assert.equal(policy?.staleToolResultPrune?.minRecentTurnsFull, 5);

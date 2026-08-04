@@ -384,6 +384,209 @@ describe('active current-turn tool-result pruning', () => {
       'step 1 advertises the loaded group tool',
     );
   });
+
+  test('archives an exact duplicate below the ordinary size threshold', async () => {
+    const body = 'DUPLICATE_OBSERVATION'.repeat(80);
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages: [
+        largeToolMessage('CustomQuery', 'tool-old', body),
+        largeToolMessage('CustomQuery', 'tool-new', body),
+      ],
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('CustomQuery', 'tool-old', { query: 'status' }, 0),
+        completedCall('CustomQuery', 'tool-new', { query: 'status' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['tool-old']),
+      archiveToolResult: () => ({ artifactId: 'artifact-tool-old' }),
+    });
+
+    assert.equal(rewritten.rewritten, 1);
+    assert.equal(rewritten.diagnosticPatch.activeSupersededToolResults, 1);
+    assert.equal(rewritten.diagnosticPatch.activeDuplicateToolResults, 1);
+    const prompt = JSON.stringify(rewritten.messages);
+    assert.match(prompt, /exact_duplicate/);
+    assert.match(prompt, /tool-new/);
+    assert.equal(prompt.split(body).length - 1, 1, 'only the newest full body remains');
+
+    const secondPass = await rewriteActiveToolResultsInMessages({
+      messages: rewritten.messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 3,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('CustomQuery', 'tool-old', { query: 'status' }, 0),
+        completedCall('CustomQuery', 'tool-new', { query: 'status' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['tool-old']),
+      archiveToolResult: () => {
+        throw new Error('supersession placeholder must be idempotent');
+      },
+    });
+    assert.equal(secondPass.rewritten, 0);
+    assert.deepEqual(secondPass.messages, rewritten.messages);
+  });
+
+  test('a newer Read covering the old range supersedes different old content', async () => {
+    const oldBody = 'OLD_FILE_CONTENT'.repeat(100);
+    const newBody = 'NEW_FILE_CONTENT'.repeat(100);
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages: [
+        largeToolMessage('Read', 'read-old', oldBody),
+        largeToolMessage('Read', 'read-new', newBody),
+      ],
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Read', 'read-old', { path: './src/a.ts', offset: 20, limit: 10 }, 0),
+        completedCall('Read', 'read-new', { path: 'src/a.ts', offset: 0, limit: 100 }, 1),
+      ],
+      eligibleToolCallIds: new Set(['read-old']),
+      archiveToolResult: () => ({ artifactId: 'artifact-read-old' }),
+    });
+
+    assert.equal(rewritten.rewritten, 1);
+    assert.match(JSON.stringify(rewritten.messages), /newer_read_covers_range/);
+    assert.doesNotMatch(JSON.stringify(rewritten.messages), /OLD_FILE_CONTENT/);
+    assert.match(JSON.stringify(rewritten.messages), /NEW_FILE_CONTENT/);
+  });
+
+  test('does not merge parallel or non-covering Read observations', async () => {
+    const messages = [
+      largeToolMessage('Read', 'read-left', 'LEFT'.repeat(300)),
+      largeToolMessage('Read', 'read-right', 'RIGHT'.repeat(300)),
+      largeToolMessage('Read', 'read-parallel', 'PARALLEL'.repeat(300)),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Read', 'read-left', { path: 'a.ts', offset: 0, limit: 10 }, 0),
+        completedCall('Read', 'read-right', { path: 'a.ts', offset: 20, limit: 10 }, 1),
+        completedCall('Read', 'read-parallel', { path: 'a.ts', offset: 0, limit: 100 }, 0),
+      ],
+      eligibleToolCallIds: new Set(['read-left', 'read-parallel']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
+  test('supersedes matching search snapshots and resolved failures', async () => {
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages: [
+        errorToolMessage('Grep', 'grep-old', 'FAILED_SEARCH'.repeat(100)),
+        largeToolMessage('Grep', 'grep-new', 'MATCHES'.repeat(200)),
+      ],
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Grep', 'grep-old', { pattern: 'TODO', path: './src' }, 0),
+        completedCall('Grep', 'grep-new', { path: 'src', pattern: 'TODO' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['grep-old']),
+      archiveToolResult: () => ({ artifactId: 'artifact-grep-old' }),
+    });
+
+    assert.equal(rewritten.rewritten, 1);
+    const prompt = JSON.stringify(rewritten.messages);
+    assert.match(prompt, /failure_resolved/);
+    assert.match(prompt, /failureBodySha256/);
+    assert.match(prompt, /grep-new/);
+  });
+
+  test('a newer failed snapshot does not replace the last successful evidence', async () => {
+    const messages = [
+      largeToolMessage('Glob', 'glob-old', 'FILES'.repeat(300)),
+      errorToolMessage('Glob', 'glob-new', 'SEARCH_FAILED'.repeat(100)),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Glob', 'glob-old', { pattern: '**/*.ts' }, 0),
+        completedCall('Glob', 'glob-new', { pattern: '**/*.ts' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['glob-old']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
+  test('only allowlisted Bash snapshots participate in semantic supersession', async () => {
+    const messages = [
+      largeToolMessage('Bash', 'status-old', 'OLD_STATUS'.repeat(200)),
+      largeToolMessage('Bash', 'status-new', 'NEW_STATUS'.repeat(200)),
+      largeToolMessage('Bash', 'write-old', 'OLD_WRITE'.repeat(200)),
+      largeToolMessage('Bash', 'write-new', 'NEW_WRITE'.repeat(200)),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 4,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('Bash', 'status-old', { command: 'git status --short' }, 0),
+        completedCall('Bash', 'status-new', { command: 'git status --short' }, 1),
+        completedCall('Bash', 'write-old', { command: 'printf data > out.txt' }, 2),
+        completedCall('Bash', 'write-new', { command: 'printf data > out.txt' }, 3),
+      ],
+      eligibleToolCallIds: new Set(['status-old', 'write-old']),
+      archiveToolResult: ({ toolCallId }) => ({ artifactId: `artifact-${toolCallId}` }),
+    });
+
+    assert.equal(rewritten.rewritten, 1);
+    const prompt = JSON.stringify(rewritten.messages);
+    assert.match(prompt, /newer_snapshot/);
+    assert.doesNotMatch(prompt, /OLD_STATUS/);
+    assert.match(prompt, /OLD_WRITE/);
+  });
 });
 
 function largeToolMessage(toolName: string, toolCallId: string, body: string): ModelMessage {
@@ -412,6 +615,24 @@ function largeTextToolMessage(toolName: string, toolCallId: string, body: string
       },
     ],
   };
+}
+
+function errorToolMessage(toolName: string, toolCallId: string, body: string): ModelMessage {
+  return {
+    role: 'tool',
+    content: [
+      {
+        type: 'tool-result',
+        toolCallId,
+        toolName,
+        output: { type: 'error-json', value: { body } },
+      },
+    ],
+  };
+}
+
+function completedCall(toolName: string, toolCallId: string, input: unknown, stepNumber: number) {
+  return { toolName, toolCallId, input, stepNumber };
 }
 
 function invalidActivePlaceholder(): Record<string, unknown> {

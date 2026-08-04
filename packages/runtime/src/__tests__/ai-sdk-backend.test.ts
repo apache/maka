@@ -9157,6 +9157,100 @@ describe('AiSdkBackend usage telemetry', () => {
     }
   });
 
+  test('projects superseded current-turn observations before the next provider step', async () => {
+    const durable = durableTurnHarness('turn-1', 'hi');
+    const messages: unknown[] = [];
+    const prompts: unknown[] = [];
+    const oldBody = 'OLD_READ_RESULT'.repeat(200);
+    const newBody = 'NEW_READ_RESULT'.repeat(200);
+    let streamCalls = 0;
+    let readCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async ({ prompt }) => {
+        streamCalls += 1;
+        prompts.push(prompt);
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls <= 2
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: `read-${streamCalls}`,
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read description',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => ({ body: readCalls++ === 0 ? oldBody : newBody }),
+        },
+      ],
+      contextBudget: {
+        charsPerToken: 1,
+        activeToolResultPrune: {
+          enabled: true,
+          maxCurrentResultEstimatedTokens: 10_000,
+          minSupersededResultEstimatedTokens: 1,
+        },
+      },
+      archiveToolResult: async ({ toolCallId }) => ({ artifactId: `artifact-${toolCallId}` }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send(durable.input())) durable.record(event);
+
+    assert.equal(streamCalls, 3);
+    assert.match(JSON.stringify(prompts[1]), /OLD_READ_RESULT/);
+    const thirdPrompt = JSON.stringify(prompts[2]);
+    assert.doesNotMatch(thirdPrompt, /OLD_READ_RESULT/);
+    assert.match(thirdPrompt, /NEW_READ_RESULT/);
+    assert.match(thirdPrompt, /newer_read_covers_range/);
+    const usageMessage = messages.find(
+      (message) => (message as { type?: string }).type === 'token_usage',
+    ) as { contextBudget?: Record<string, unknown> } | undefined;
+    assert.equal(usageMessage?.contextBudget?.activeSupersededToolResults, 1);
+    assert.equal(usageMessage?.contextBudget?.activeDuplicateToolResults, undefined);
+  });
+
   test('active full compact sees the fresh tool result before active tool-result prune', async () => {
     const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
