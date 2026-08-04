@@ -144,7 +144,6 @@ export interface SkillsCopy {
     actions: string;
     search: string;
     openFolder: string;
-    refreshing: string;
     refresh: string;
   };
 }
@@ -163,7 +162,7 @@ const SKILLS_COPY = {
     review: { ariaLabel: 'Skill 更新审查', title: '更新审查', source: (id) => `来源 ${id}`, managedSource: '受管理来源', hasBaseline: '已有基线', missingBaseline: '缺少基线', lineTransition: (current, source) => `${current} → ${source} 行`, changedLines: (count) => `${count} 行不同`, warning: '工作区副本已有本地修改。继续更新会用来源库版本覆盖当前 SKILL.md。', workspace: '当前工作区', sourceVersion: '来源库版本', cancel: '取消', overwrite: '覆盖本地修改', update: '更新到来源版本' },
     description: { document: '创建、编辑、检查文档内容。', presentation: '创建、编辑、检查演示文稿。', spreadsheet: '创建、编辑、分析表格数据。', image: '生成或编辑图片素材。', browser: '打开、检查、操作网页界面。', macos: '辅助构建和调试 macOS 应用。', fallback: '打开技能文件查看适用场景。' },
     status: { metadataError: '元数据异常', managed: { source_missing: '来源缺失', update_available: '可更新', local_modified: '本地已修改', metadata_error: '元数据异常', up_to_date: '受管理', not_managed: '受管理' }, modified: '已修改', bundled: '内置', local: '本地', stateError: '状态异常', enabled: '已启用', disabled: '已停用' },
-    page: { title: '技能', subtitle: '安装与管理技能，在对话中扩展 Maka 的能力。', actions: '技能操作', search: '搜索技能', openFolder: '打开目录', refreshing: '刷新中…', refresh: '刷新' },
+    page: { title: '技能', subtitle: '安装与管理技能，在对话中扩展 Maka 的能力。', actions: '技能操作', search: '搜索技能', openFolder: '打开目录', refresh: '刷新' },
   },
   en: {
     categories: { '内容创作': 'Content creation', '数据与AI': 'Data & AI', '设计与UI': 'Design & UI', 'DevOps与部署': 'DevOps & deployment', '文档与写作': 'Documents & writing', '效率工具': 'Productivity', '研究与分析': 'Research & analysis' },
@@ -178,7 +177,7 @@ const SKILLS_COPY = {
     review: { ariaLabel: 'Skill update review', title: 'Update review', source: (id) => `Source ${id}`, managedSource: 'Managed source', hasBaseline: 'Baseline available', missingBaseline: 'No baseline', lineTransition: (current, source) => `${current} → ${source} lines`, changedLines: (count) => `${count} ${count === 1 ? 'line differs' : 'lines differ'}`, warning: 'The workspace copy has local changes. Continuing will replace the current SKILL.md with the source version.', workspace: 'Current workspace', sourceVersion: 'Source version', cancel: 'Cancel', overwrite: 'Overwrite local changes', update: 'Update to source version' },
     description: { document: 'Create, edit, and inspect documents.', presentation: 'Create, edit, and inspect presentations.', spreadsheet: 'Create, edit, and analyze spreadsheet data.', image: 'Generate or edit images.', browser: 'Open, inspect, and operate web interfaces.', macos: 'Build and debug macOS apps.', fallback: 'Open the skill file to see when to use it.' },
     status: { metadataError: 'Metadata error', managed: { source_missing: 'Source missing', update_available: 'Update available', local_modified: 'Locally modified', metadata_error: 'Metadata error', up_to_date: 'Managed', not_managed: 'Managed' }, modified: 'Modified', bundled: 'Built in', local: 'Local', stateError: 'State error', enabled: 'Enabled', disabled: 'Disabled' },
-    page: { title: 'Skills', subtitle: 'Install and manage skills to extend Maka in conversations.', actions: 'Skill actions', search: 'Search skills', openFolder: 'Open folder', refreshing: 'Refreshing…', refresh: 'Refresh' },
+    page: { title: 'Skills', subtitle: 'Install and manage skills to extend Maka in conversations.', actions: 'Skill actions', search: 'Search skills', openFolder: 'Open folder', refresh: 'Refresh' },
   },
 } satisfies UiCatalog<SkillsCopy>;
 

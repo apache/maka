@@ -513,9 +513,13 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
           tail(result.stderr || result.stdout),
         );
       }
+      // A trial that raised nothing ended its agent phase on its own terms, so it
+      // settles the tail request the same way the two abnormal shapes above do.
+      // Leaving it out read every clean exit that closed a stream mid-flight as
+      // an outage and threw the graded cell away.
       const terminalProviderRequest = incompleteTerminalProviderRequest(
         providerTelemetry,
-        completeTimedOutTrial || verifierSettledTrial,
+        termination === null || completeTimedOutTrial || verifierSettledTrial,
       );
       if (terminalProviderRequest) {
         throw new HarborInfraError(

@@ -47,7 +47,7 @@ import {
   enqueueInteraction,
   getConversationCopy,
   getSharedUiCopy,
-  reconcileSandboxBoundaryInteractions,
+  reconcileInteractions,
 } from '@maka/ui';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -276,9 +276,9 @@ function AppShellContent({
     setPendingSessionModelBySession,
     clearTurnTransientState,
   } = useAppShellSessionWorkspace(toastApi);
-  const sandboxBoundaryInteractionEpochRef = useRef(new Map<string, number>());
-  const markSandboxBoundaryInteractionChanged = useCallback((sessionId: string) => {
-    const epochs = sandboxBoundaryInteractionEpochRef.current;
+  const interactionHydrationEpochRef = useRef(new Map<string, number>());
+  const markInteractionChanged = useCallback((sessionId: string) => {
+    const epochs = interactionHydrationEpochRef.current;
     epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   }, []);
   const attachmentDraftKey = activeId ?? 'new-session';
@@ -1043,22 +1043,25 @@ function AppShellContent({
     reading: activeExecutionBoundaryReading,
     reload: reloadActiveExecutionBoundary,
   } = useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
+  // The session view only subscribes to the session it shows, so a request
+  // raised while another session was active never reaches this surface as a
+  // live event — and neither does one raised before the window existed. The
+  // runtime holds every unanswered request, so read them back whenever the
+  // active session changes (#2072).
   useEffect(() => {
     if (!activeId) return;
     let cancelled = false;
-    const hydrationEpoch = sandboxBoundaryInteractionEpochRef.current.get(activeId) ?? 0;
+    const hydrationEpoch = interactionHydrationEpochRef.current.get(activeId) ?? 0;
     void window.maka.sessions
-      .listActiveSandboxBoundaryRequests(activeId)
+      .listActiveInteractions(activeId)
       .then((requests) => {
         if (
           cancelled ||
-          (sandboxBoundaryInteractionEpochRef.current.get(activeId) ?? 0) !== hydrationEpoch
+          (interactionHydrationEpochRef.current.get(activeId) ?? 0) !== hydrationEpoch
         ) {
           return;
         }
-        setInteractionBySession((current) =>
-          reconcileSandboxBoundaryInteractions(current, activeId, requests),
-        );
+        setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
       })
       .catch(() => {});
     return () => {
@@ -1368,7 +1371,7 @@ function AppShellContent({
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
-    onSandboxBoundaryInteractionChanged: markSandboxBoundaryInteractionChanged,
+    onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
     toastApi,
@@ -1721,7 +1724,7 @@ function AppShellContent({
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
-    onSandboxBoundaryInteractionChanged: markSandboxBoundaryInteractionChanged,
+    onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
     toastApi,

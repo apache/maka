@@ -1,11 +1,6 @@
-import type {
-  SandboxBoundaryRequestEvent,
-  UserQuestionRequestEvent,
-} from '@maka/core';
+import type { ActiveInteractionRequestEvent } from '@maka/core';
 
-export type ComposerInteraction =
-  | SandboxBoundaryRequestEvent
-  | UserQuestionRequestEvent;
+export type ComposerInteraction = ActiveInteractionRequestEvent;
 export type InteractionQueues = Record<string, ComposerInteraction[]>;
 
 export function enqueueInteraction(
@@ -43,19 +38,20 @@ export function clearInteractions(queues: InteractionQueues, sessionId: string):
   return { ...queues, [sessionId]: [] };
 }
 
-export function reconcileSandboxBoundaryInteractions(
+/**
+ * Replace a session's queue with the runtime's live set of unanswered
+ * requests, keeping the order the surface already shows. The runtime owns both
+ * kinds of request, so anything it no longer holds is settled and drops out.
+ */
+export function reconcileInteractions(
   queues: InteractionQueues,
   sessionId: string,
-  liveRequests: readonly SandboxBoundaryRequestEvent[],
+  liveRequests: readonly ComposerInteraction[],
 ): InteractionQueues {
   const liveById = new Map(liveRequests.map((request) => [request.requestId, request]));
   const seen = new Set<string>();
   const reconciled: ComposerInteraction[] = [];
   for (const interaction of queues[sessionId] ?? []) {
-    if (interaction.type !== 'sandbox_boundary_request') {
-      reconciled.push(interaction);
-      continue;
-    }
     const live = liveById.get(interaction.requestId);
     if (!live) continue;
     seen.add(interaction.requestId);

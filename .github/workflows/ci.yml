@@ -175,6 +175,10 @@ jobs:
         env:
           MAKA_REQUIRE_HARBOR_CONTRACT: '1'
         run: npm --workspace @maka/headless run test:dist
+      # The Harbor adapters are Python, so their contracts cannot ride the
+      # workspace suite. This one needs only the stdlib.
+      - name: Run Harbor adapter tests
+        run: python3 packages/headless/harbor/tests/test_process_scope.py
 
   # Preserve one stable required check while letting independent heavy suites
   # occupy their own runners. The aggregator waits for every selected lane.

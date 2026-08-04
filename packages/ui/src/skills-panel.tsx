@@ -859,19 +859,23 @@ export function SkillsModuleMain(props: {
               placeholder={copy.page.search}
             />
           </div>
+          {/* clickAction draws the in-flight state on the button itself, so
+              刷新 stops renaming itself to 刷新中… . `pendingSkillAction` stays:
+              it is what tells the library below which row is busy, which is a
+              pane-wide fact no single button holds. */}
           <UiButton
             className="maka-skill-header-utility"
             variant="secondary"
-            onClick={() => void runSkillAction('folder', props.onOpenSkillsFolder)}
+            clickAction={() => runSkillAction('folder', props.onOpenSkillsFolder)}
             isDisabled={!props.onOpenSkillsFolder || skillActionBusy}
             label={copy.page.openFolder}
           />
           <UiButton
             className="maka-skill-header-utility"
             variant="secondary"
-            onClick={() => void runSkillAction('refresh', props.onRefreshSkills)}
+            clickAction={() => runSkillAction('refresh', props.onRefreshSkills)}
             isDisabled={!props.onRefreshSkills || skillActionBusy}
-            label={pendingSkillAction === 'refresh' ? copy.page.refreshing : copy.page.refresh}
+            label={copy.page.refresh}
           />
         </div>
         }

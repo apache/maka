@@ -10,6 +10,7 @@ import type {
 } from '@maka/core';
 import { isSessionInlineRun } from '@maka/core';
 import type {
+  ActiveInteractionRequestEvent,
   CompleteEvent,
   QueueEnqueueOutcome,
   QueueUpdateEvent,
@@ -147,9 +148,7 @@ export interface RuntimeKernelLike {
   ): AsyncIterable<SessionEvent>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
-  listActiveSandboxBoundaryRequests?(
-    sessionId: string,
-  ): Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>>;
+  listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
   /** Queue a user message for mid-turn injection at the next step boundary. */
   steer(sessionId: string, text: string): QueueEnqueueOutcome;
@@ -394,11 +393,11 @@ interface BackendInvalidationState {
   failure?: Error;
 }
 
-interface SandboxBoundaryRequestOwner {
+interface InteractionRequestOwner {
   sessionId: string;
   turnId: string;
   generation: number;
-  request: Extract<SessionEvent, { type: 'sandbox_boundary_request' }>;
+  request: ActiveInteractionRequestEvent;
 }
 
 export class RuntimeKernel implements RuntimeKernelLike {
@@ -420,7 +419,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private readonly pendingContinuationSessions = new Set<string>();
   private readonly steeringBySession = new Map<string, SessionSteeringState>();
   private readonly backendInvalidations = new Map<string, BackendInvalidationState>();
-  private readonly sandboxBoundaryRequestOwners = new Map<string, SandboxBoundaryRequestOwner>();
+  private readonly interactionRequestOwners = new Map<string, InteractionRequestOwner>();
   private nextBackendGeneration = 0;
   private readonly interactionRuns = new Map<AgentRun, RuntimeInteractionRunBinding>();
 
@@ -1618,7 +1617,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           requireTerminalWrite: Boolean(this.deps.runtimeEventStore),
           allowInteractionResume: await interactionResumeAllowed(interactionRun, sessionEvent),
         });
-        this.observeSandboxBoundaryEvent(sessionId, begin.backend, sessionEvent);
+        this.observeInteractionEvent(sessionId, begin.backend, sessionEvent);
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
@@ -1721,7 +1720,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           },
         });
       } finally {
-        this.clearSandboxBoundaryRequestOwners(sessionId, run.turnId);
+        this.clearInteractionRequestOwners(sessionId, run.turnId);
         releaseExecutionAbort();
       }
     }
@@ -1792,7 +1791,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           requireTerminalWrite: true,
           allowInteractionResume: await interactionResumeAllowed(interactionRun, sessionEvent),
         });
-        this.observeSandboxBoundaryEvent(continuation.sessionId, begin.backend, sessionEvent);
+        this.observeInteractionEvent(continuation.sessionId, begin.backend, sessionEvent);
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
@@ -1889,7 +1888,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           releaseOwner: () => owners.releaseMessage(),
         });
       } finally {
-        this.clearSandboxBoundaryRequestOwners(continuation.sessionId, run.turnId);
+        this.clearInteractionRequestOwners(continuation.sessionId, run.turnId);
         releaseExecutionAbort();
       }
     }
@@ -2353,9 +2352,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     sessionId: string,
     response: SandboxBoundaryResponse,
   ): Promise<void> {
-    const key = sandboxBoundaryOwnerKey(sessionId, response.requestId);
-    const owner = this.sandboxBoundaryRequestOwners.get(key);
-    if (!owner) throw new Error(`No pending sandbox boundary request ${response.requestId}`);
+    const key = interactionOwnerKey(sessionId, response.requestId);
+    const owner = this.interactionRequestOwners.get(key);
+    if (owner?.request.type !== 'sandbox_boundary_request') {
+      throw new Error(`No pending sandbox boundary request ${response.requestId}`);
+    }
     const active = this.backendGenerations.get(owner.generation);
     if (
       !active ||
@@ -2363,16 +2364,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
       active.phase === 'terminated' ||
       active.phase === 'failed'
     ) {
-      this.sandboxBoundaryRequestOwners.delete(key);
+      this.interactionRequestOwners.delete(key);
       throw new Error(`Sandbox boundary request owner is unavailable: ${response.requestId}`);
     }
     await active.backend.respondToSandboxBoundary(response);
   }
 
-  listActiveSandboxBoundaryRequests(
-    sessionId: string,
-  ): Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>> {
-    return [...this.sandboxBoundaryRequestOwners.values()]
+  listActiveInteractions(sessionId: string): ActiveInteractionRequestEvent[] {
+    return [...this.interactionRequestOwners.values()]
       .filter((owner) => owner.sessionId === sessionId)
       .sort((left, right) => left.request.ts - right.request.ts)
       .map((owner) => owner.request);
@@ -2616,20 +2615,30 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
-  private observeSandboxBoundaryEvent(
+  /**
+   * Track every request a session can park on until its settlement ack lands,
+   * so a surface that was not mounted when the request streamed by can still
+   * read it back and render the prompt (#2072).
+   */
+  private observeInteractionEvent(
     sessionId: string,
     backend: AgentBackend,
     event: SessionEvent,
   ): void {
     if (
       event.type !== 'sandbox_boundary_request' &&
-      event.type !== 'sandbox_boundary_decision_ack'
+      event.type !== 'user_question_request' &&
+      event.type !== 'sandbox_boundary_decision_ack' &&
+      event.type !== 'user_question_answer_ack'
     ) {
       return;
     }
-    const key = sandboxBoundaryOwnerKey(sessionId, event.requestId);
-    if (event.type === 'sandbox_boundary_decision_ack') {
-      this.sandboxBoundaryRequestOwners.delete(key);
+    const key = interactionOwnerKey(sessionId, event.requestId);
+    if (
+      event.type === 'sandbox_boundary_decision_ack' ||
+      event.type === 'user_question_answer_ack'
+    ) {
+      this.interactionRequestOwners.delete(key);
       return;
     }
     const generation = [...this.backendGenerations.values()].find(
@@ -2640,19 +2649,19 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
     if (!generation) {
       throw new RuntimeInteractionInvariantError(
-        `Sandbox boundary request ${event.requestId} has no active backend owner`,
+        `Interaction request ${event.requestId} has no active backend owner`,
       );
     }
-    const existing = this.sandboxBoundaryRequestOwners.get(key);
+    const existing = this.interactionRequestOwners.get(key);
     if (
       existing &&
       (existing.generation !== generation.generation || existing.turnId !== event.turnId)
     ) {
       throw new RuntimeInteractionInvariantError(
-        `Sandbox boundary request ${event.requestId} has conflicting owners`,
+        `Interaction request ${event.requestId} has conflicting owners`,
       );
     }
-    this.sandboxBoundaryRequestOwners.set(key, {
+    this.interactionRequestOwners.set(key, {
       sessionId,
       turnId: event.turnId,
       generation: generation.generation,
@@ -2660,10 +2669,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
   }
 
-  private clearSandboxBoundaryRequestOwners(sessionId: string, turnId: string): void {
-    for (const [key, owner] of this.sandboxBoundaryRequestOwners) {
+  private clearInteractionRequestOwners(sessionId: string, turnId: string): void {
+    for (const [key, owner] of this.interactionRequestOwners) {
       if (owner.sessionId === sessionId && owner.turnId === turnId) {
-        this.sandboxBoundaryRequestOwners.delete(key);
+        this.interactionRequestOwners.delete(key);
       }
     }
   }
@@ -3860,7 +3869,7 @@ class FailureCollector {
   }
 }
 
-function sandboxBoundaryOwnerKey(sessionId: string, requestId: string): string {
+function interactionOwnerKey(sessionId: string, requestId: string): string {
   return `${sessionId}\0${requestId}`;
 }
 

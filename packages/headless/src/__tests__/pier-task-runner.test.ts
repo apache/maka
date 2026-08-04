@@ -1694,6 +1694,9 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
     // A completed terminal request takes the normal reward path.
     const output = await makeRunner('completed')(runInput());
     assert.equal(output.harbor.reward, 0);
+    // So does a tail the agent tore down itself on its way out: the trial
+    // raised nothing and the verifier graded it, so the cell is evidence.
+    assert.equal((await makeRunner('aborted')(runInput())).harbor.reward, 0);
   });
 });
 

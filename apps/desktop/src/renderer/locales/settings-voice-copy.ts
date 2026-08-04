@@ -62,7 +62,6 @@ export type VoiceSettingsCopy = {
   recognitionConnectionModel: string;
   recognitionConnectionModelPlaceholder: string;
   recognitionConnectionSave: string;
-  recognitionConnectionSaving: string;
   recognitionConnectionUpdated: string;
   recognitionConnectionUpdatedDetail(connection: string, model: string): string;
   recognitionConnectionUpdateFailed: string;
@@ -150,7 +149,6 @@ const SETTINGS_VOICE_COPY = {
     recognitionConnectionModel: 'ASR 模型 ID',
     recognitionConnectionModelPlaceholder: '例如 FunAudioLLM/SenseVoiceSmall',
     recognitionConnectionSave: '保存配置',
-    recognitionConnectionSaving: '保存中…',
     recognitionConnectionUpdated: '语音识别配置已更新',
     recognitionConnectionUpdatedDetail: (connection, model) => `${connection} · ${model}`,
     recognitionConnectionUpdateFailed: '修改语音识别连接失败',
@@ -236,7 +234,6 @@ const SETTINGS_VOICE_COPY = {
     recognitionConnectionModel: 'ASR model ID',
     recognitionConnectionModelPlaceholder: 'For example, FunAudioLLM/SenseVoiceSmall',
     recognitionConnectionSave: 'Save configuration',
-    recognitionConnectionSaving: 'Saving…',
     recognitionConnectionUpdated: 'Speech recognition configuration updated',
     recognitionConnectionUpdatedDetail: (connection, model) => `${connection} · ${model}`,
     recognitionConnectionUpdateFailed: 'Could not update speech recognition connection',

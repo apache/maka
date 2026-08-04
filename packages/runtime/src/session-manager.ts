@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import type {
+  ActiveInteractionRequestEvent,
   SessionEvent,
   CompleteEvent,
   TextDeltaEvent,
@@ -1552,11 +1553,9 @@ export class SessionManager {
     return this.deps.store.readExecutionBoundary(sessionId);
   }
 
-  async listActiveSandboxBoundaryRequests(
-    sessionId: string,
-  ): Promise<Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>>> {
+  async listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]> {
     await this.deps.store.readHeader(sessionId);
-    return this.runtimeKernel.listActiveSandboxBoundaryRequests?.(sessionId) ?? [];
+    return this.runtimeKernel.listActiveInteractions?.(sessionId) ?? [];
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {

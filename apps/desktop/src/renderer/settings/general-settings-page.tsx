@@ -60,10 +60,12 @@ export function GeneralSettingsPage(props: {
             label={copy.enableIncognito}
             isLabelHidden
             value={props.settings.privacy.incognitoActive}
-            onChange={(incognitoActive) => {
-              props.onUpdate({ privacy: { incognitoActive } }).catch((error: unknown) => {
+            changeAction={async (incognitoActive) => {
+              try {
+                await props.onUpdate({ privacy: { incognitoActive } });
+              } catch (error: unknown) {
                 toast.error(copy.incognitoFailed, settingsActionErrorMessage(error, locale));
-              });
+              }
             }}
           />}
         />
@@ -74,10 +76,12 @@ export function GeneralSettingsPage(props: {
             label={copy.notifications}
             isLabelHidden
             value={props.settings.notifications.runComplete}
-            onChange={(runComplete) => {
-              props.onUpdate({ notifications: { runComplete } }).catch((error: unknown) => {
+            changeAction={async (runComplete) => {
+              try {
+                await props.onUpdate({ notifications: { runComplete } });
+              } catch (error: unknown) {
                 toast.error(copy.notificationsFailed, settingsActionErrorMessage(error, locale));
-              });
+              }
             }}
           />}
         />
@@ -88,10 +92,12 @@ export function GeneralSettingsPage(props: {
             label={copy.workspaceInstructions}
             isLabelHidden
             value={props.settings.workspaceInstructions.enabled}
-            onChange={(enabled) => {
-              props.onUpdate({ workspaceInstructions: { enabled } }).catch((error: unknown) => {
+            changeAction={async (enabled) => {
+              try {
+                await props.onUpdate({ workspaceInstructions: { enabled } });
+              } catch (error: unknown) {
                 toast.error(copy.workspaceInstructionsFailed, settingsActionErrorMessage(error, locale));
-              });
+              }
             }}
           />}
         />

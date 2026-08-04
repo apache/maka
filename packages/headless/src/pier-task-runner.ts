@@ -563,7 +563,7 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
       // last provider request is infra, never a graded model failure.
       const terminalProviderRequest = incompleteTerminalProviderRequest(
         providerTelemetry,
-        completeTimedOutTrial || verifierSettledTrial,
+        termination === null || completeTimedOutTrial || verifierSettledTrial,
       );
       if (terminalProviderRequest) {
         throw new PierInfraError(

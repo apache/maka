@@ -835,6 +835,13 @@ export interface SandboxBoundaryRequestEvent extends BaseEvent {
   expansion: SandboxBoundaryExpansion;
 }
 
+/**
+ * The requests a session can park on while it waits for the user. Both are
+ * registered by RuntimeKernel while unanswered, so a surface that missed the
+ * live event can rehydrate the prompt instead of stranding the run.
+ */
+export type ActiveInteractionRequestEvent = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+
 export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   type: 'sandbox_boundary_decision_ack';
   requestId: string;

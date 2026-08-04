@@ -292,11 +292,17 @@ export function DataSettingsPage() {
           />
         </SettingsField>
         <SettingsActions>
-          <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void exportConfig()} label={configBusy === 'export' ? copy.exporting : copy.exportConfig} />
+          {/* clickAction owns the in-flight affordance: same-tick dedupe, the
+              delayed spinner, aria-busy, and the live-region announcement — a
+              label that swapped to 导出中… said the same thing in a way a
+              screen reader had to re-read the button to notice. `configBusy`
+              stays because it is the *cross-button* rule (one config operation
+              at a time), which is not a thing a single control can know. */}
+          <Button variant="primary" isDisabled={configBusy !== null} clickAction={() => exportConfig()} label={copy.exportConfig} />
           {/* One primary per action row: export is the action this section
               is titled after; import is the inverse operation and reads
               secondary. Two filled buttons recommended neither. */}
-          <Button variant="secondary" isDisabled={configBusy !== null} onClick={() => void importConfig()} label={configBusy === 'import' ? copy.importing : copy.importConfig} />
+          <Button variant="secondary" isDisabled={configBusy !== null} clickAction={() => importConfig()} label={copy.importConfig} />
         </SettingsActions>
       </SettingsSection>
     </SettingsPage>

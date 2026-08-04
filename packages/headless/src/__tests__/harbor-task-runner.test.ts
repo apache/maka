@@ -715,6 +715,68 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
+  test('scores a cell whose agent exited cleanly while a provider stream was open', async () => {
+    // Codex and Claude Code end their last turn by tearing down an in-flight
+    // stream, which the proxy records as `aborted`. The trial itself raises
+    // nothing and the verifier grades it, so the cell is evidence: reading that
+    // tail as an outage discarded passing competitor cells as infra failures.
+    await withRun(async ({ jobsDir, repo, keyFile }) => {
+      const upstream = createServer((_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+      });
+      await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+      const address = upstream.address();
+      assert.ok(address && typeof address !== 'string');
+      try {
+        const runner = createHarborTaskRunner({
+          makaRepoPath: repo,
+          jobsDir,
+          agent: 'codex',
+          codexToolchainPath: '/toolchain',
+          agentVersion: '0.146.0',
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          reasoningEffort: 'max',
+          apiKeyFile: keyFile,
+          agentEnv: { MAKA_BASE_URL: `http://127.0.0.1:${address.port}` },
+          runHarbor: async (request) => {
+            const proxyUrl = request.env?.MAKA_PROVIDER_PROXY_URL?.replace(
+              'host.docker.internal',
+              '127.0.0.1',
+            );
+            const proxyToken = request.env?.MAKA_PROVIDER_PROXY_TOKEN;
+            assert.ok(proxyUrl && proxyToken);
+            const abort = new AbortController();
+            const pending = fetch(`${proxyUrl}/chat/completions`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${proxyToken}` },
+              body: '{}',
+              signal: abort.signal,
+            });
+            const response = await pending;
+            assert.equal(response.status, 200);
+            abort.abort();
+            await response.body?.cancel().catch(() => {});
+            return fakeRunner({ reward: '1\n' })(request);
+          },
+        });
+
+        const output = await runner(runInput());
+
+        assert.equal(output.harbor.reward, 1);
+        const telemetry = JSON.parse(
+          await readFile(output.cell.providerTelemetryPath!, 'utf8'),
+        ) as { requests: Array<{ outcome: string }> };
+        assert.equal(telemetry.requests.at(-1)?.outcome, 'aborted');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+  });
+
   test('gives Codex an ephemeral OpenAI proxy without exposing the provider key file', async () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       const captured: { config?: Record<string, unknown> } = {};

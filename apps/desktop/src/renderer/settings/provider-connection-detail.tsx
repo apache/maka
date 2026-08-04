@@ -43,6 +43,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
   const toast = useToast();
   const mounted = useMountedRef();
   const [deleting, setDeleting] = useState(false);
+  // NOT clickAction — see the note on the button below.
   async function remove() {
     if (deleting) return;
     const ok = await toast.confirm({
@@ -68,7 +69,15 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
   return (
     <VStack gap={3} hAlign="start">
       <Text>{copy.unknownDescription(connection.providerType)}</Text>
-      <Button variant="destructive" onClick={remove} isDisabled={deleting} label={deleting ? copy.deleting : copy.deleteUnused} />
+      {/* onClick, not clickAction: this handler awaits `toast.confirm`, and
+          clickAction runs inside startTransition. React defers state commits
+          made during an async transition until the action settles, so the
+          confirm dialog — which is React state, and needs four commits to
+          resolve its promise — can never render, and the action waits forever
+          on a dialog that waits on the action. `isLoading` still gives the
+          spinner, aria-busy, and the disable, so the label stays 删除 rather
+          than renaming itself to 删除中… . */}
+      <Button variant="destructive" onClick={() => void remove()} isLoading={deleting} label={copy.deleteUnused} />
     </VStack>
   );
 }
@@ -277,10 +286,16 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           disabled={detailActionBusy}
           onChange={(next) => void updateEnabledModels(next)}
         />
+        {/* Each button reports its own work through clickAction (spinner +
+            aria-busy + "Loading" announcement) instead of renaming itself to
+            测试中… — the section's `detailActionBusy` still says only one
+            connection action runs at a time. `refreshModels` is wrapped
+            because it takes an options object: handing it the click event
+            would pass a MouseEvent as `opts`. */}
         <HStack gap={2} vAlign="center" wrap="wrap">
-          <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
+          <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} clickAction={() => runTest()} label={copy.testConnection} />
           {supportsRemoteDiscovery && (
-            <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
+            <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
           )}
         </HStack>
       </DetailSection>
@@ -291,7 +306,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         <HStack>
           {/* The heading beside it already says 删除连接; repeating it on the
               button was the same three words twice in one row. */}
-          <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.delete} />
+          {/* onClick, not clickAction: `remove` awaits toast.confirm, which
+              cannot render from inside clickAction's transition (see the
+              fallback detail above). `deleting` already drives
+              detailActionBusy; feeding it to isLoading puts the spinner on
+              the button that is actually working. */}
+          <Button variant="destructive" isDisabled={detailActionBusy} isLoading={deleting} onClick={() => void remove()} label={copy.delete} />
         </HStack>
       </DetailSection>
     </VStack>
@@ -393,7 +413,10 @@ function GitHubCopilotReloginNotice(props: {
 }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
-  const [busy, setBusy] = useState(false);
+  // connectGuard stays: it survives this component's renders and is the
+  // cross-render "one connect at a time" record. The `busy` state it used to
+  // mirror is gone — one button, so clickAction's own disable and spinner are
+  // the whole visible story.
   const connectGuard = useActionGuard<'connect'>();
   const mountedRef = useMountedRef();
   const toast = useToast();
@@ -402,7 +425,6 @@ function GitHubCopilotReloginNotice(props: {
 
   async function connect() {
     if (!connectGuard.begin('connect')) return;
-    setBusy(true);
     try {
       const result = await window.maka.githubCopilotSubscription.connectExistingLogin();
       if (!result.ok) {
@@ -416,7 +438,6 @@ function GitHubCopilotReloginNotice(props: {
       }
     } finally {
       connectGuard.finish();
-      if (mountedRef.current) setBusy(false);
     }
   }
 
@@ -426,7 +447,7 @@ function GitHubCopilotReloginNotice(props: {
       title={loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}
       description={loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}
       endContent={!loading ? (
-          <Button variant="primary" size="sm" isDisabled={busy} onClick={() => void connect()} label={busy ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
+          <Button variant="primary" size="sm" clickAction={() => connect()} label={loggedIn ? copy.reimport : copy.importCredential} />
       ) : undefined} />
   );
 }
