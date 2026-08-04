@@ -92,7 +92,7 @@ const mismatchCases = [
       kind: 'page',
       revision: 8,
       offset: 50,
-      overrides: [],
+      entries: [],
       nextOffset: null,
     },
   },

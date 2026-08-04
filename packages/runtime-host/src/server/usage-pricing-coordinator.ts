@@ -6,6 +6,7 @@ import type {
   UsageLogRow,
   UsageQuery,
 } from '@maka/core/usage-stats/types';
+import { comparePricingModelKeys } from '@maka/core/usage-stats/pricing';
 import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
 import {
   mergeUsageBuckets,
@@ -15,6 +16,7 @@ import {
   type UsageProvenance,
 } from '@maka/core/usage-ledger-merge';
 import { repairPendingModelCallProjections } from '@maka/storage/model-call-ledger';
+import { BUILTIN_PRICING } from '@maka/runtime';
 import {
   authenticateInteractiveUsageStoresWriter,
   classifyInteractiveUsageStoresFailure,
@@ -30,6 +32,7 @@ import {
   USAGE_PAGE_MAX_ITEMS,
   USAGE_PROJECTION_TEXT_MAX_BYTES,
   type OperationOutcome,
+  type EffectivePricingEntry,
   type PricingMutateInput,
   type PricingQueryInput,
   type PricingQueryResult,
@@ -209,11 +212,9 @@ export class HostUsagePricingCoordinator {
           }),
         };
       }
+      const entries = projectEffectivePricingEntries(snapshot.overrides);
       const offset = input.kind === 'start' ? 0 : input.offset;
-      if (
-        offset > snapshot.overrides.length ||
-        (input.kind === 'continue' && offset === snapshot.overrides.length)
-      ) {
+      if (offset > entries.length || (input.kind === 'continue' && offset === entries.length)) {
         return {
           ok: false,
           error: { code: 'invalid_request', message: 'Pricing offset is invalid' },
@@ -221,7 +222,7 @@ export class HostUsagePricingCoordinator {
       }
       return {
         ok: true,
-        result: createPricingPage(snapshot.revision, snapshot.overrides, offset),
+        result: createPricingPage(snapshot.revision, entries, offset),
       };
     } catch (error) {
       return this.#mapReadFailure<'pricing.query'>(error, 'Pricing authority');
@@ -383,13 +384,13 @@ function invalidUsageOffset(): OperationOutcome<'usage.query'> {
 
 function createPricingPage(
   revision: number,
-  overrides: readonly Readonly<PricingConfig>[],
+  entries: readonly EffectivePricingEntry[],
   offset: number,
 ): PricingQueryResult {
-  const items: Readonly<PricingConfig>[] = [];
-  for (let index = offset; index < overrides.length; index += 1) {
+  const items: EffectivePricingEntry[] = [];
+  for (let index = offset; index < entries.length; index += 1) {
     if (items.length >= PRICING_PAGE_MAX_ITEMS) break;
-    const item = overrides[index];
+    const item = entries[index];
     if (!item) break;
     const candidate = [...items, item];
     const nextOffset = offset + candidate.length;
@@ -397,12 +398,12 @@ function createPricingPage(
       kind: 'page',
       revision,
       offset,
-      overrides: candidate,
-      nextOffset: nextOffset < overrides.length ? nextOffset : null,
+      entries: candidate,
+      nextOffset: nextOffset < entries.length ? nextOffset : null,
     };
     if (jsonBytes(page) > PRICING_PAGE_MAX_BYTES) {
       if (items.length === 0) {
-        throw new Error('Canonical pricing override exceeds the wire page limit');
+        throw new Error('Canonical pricing entry exceeds the wire page limit');
       }
       break;
     }
@@ -413,8 +414,28 @@ function createPricingPage(
     kind: 'page',
     revision,
     offset,
-    overrides: items,
-    nextOffset: nextOffset < overrides.length ? nextOffset : null,
+    entries: items,
+    nextOffset: nextOffset < entries.length ? nextOffset : null,
+  });
+}
+
+function projectEffectivePricingEntries(
+  overrides: readonly Readonly<PricingConfig>[],
+): readonly EffectivePricingEntry[] {
+  const builtinsByKey = new Map(BUILTIN_PRICING.map((pricing) => [pricing.modelKey, pricing]));
+  const overridesByKey = new Map(overrides.map((pricing) => [pricing.modelKey, pricing]));
+  const modelKeys = new Set([...builtinsByKey.keys(), ...overridesByKey.keys()]);
+
+  return [...modelKeys].sort(comparePricingModelKeys).map((modelKey) => {
+    const override = overridesByKey.get(modelKey);
+    if (override) {
+      return {
+        pricing: override,
+        source: 'custom',
+        resetEffect: builtinsByKey.has(modelKey) ? 'restore_builtin' : 'become_unpriced',
+      };
+    }
+    return { pricing: builtinsByKey.get(modelKey)!, source: 'builtin' };
   });
 }
 

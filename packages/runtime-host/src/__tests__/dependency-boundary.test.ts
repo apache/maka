@@ -51,6 +51,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/subagent-workspace',
   '@maka/core/task-ledger',
   '@maka/core/usage-ledger-merge',
+  '@maka/core/usage-stats/pricing',
   '@maka/core/usage-stats/types',
   '@maka/runtime',
   '@maka/storage/agent-graph-control-store',
