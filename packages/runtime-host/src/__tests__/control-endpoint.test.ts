@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { prepareRuntimeHostEndpoint, RuntimeHostEndpointError } from '../control/endpoint.js';
@@ -30,7 +30,7 @@ describe('runtime host control endpoint', { skip: process.platform === 'win32' }
     await removePosixEndpointDirectories(ROOT_ID);
   });
 
-  test('honors TMPDIR when the socket path fits and marks ownership', async () => {
+  test('honors TMPDIR when the socket path fits and encodes ownership atomically', async () => {
     const root = await mkdtemp('/tmp/ep-root-');
     try {
       process.env.TMPDIR = root;
@@ -40,8 +40,7 @@ describe('runtime host control endpoint', { skip: process.platform === 'win32' }
       assert.ok(Buffer.byteLength(endpoint.path, 'utf8') <= PORTABLE_UNIX_SOCKET_PATH_LIMIT);
       const directoryStat = await stat(directory);
       assert.equal(directoryStat.mode & 0o777, 0o700);
-      const marker = await readFile(join(directory, 'owner.pid'), 'utf8');
-      assert.equal(Number.parseInt(marker.trim(), 10), process.pid);
+      assert.match(directory, new RegExp(`${currentPrefix()}${process.pid.toString(36)}-.{6}$`));
       await endpoint.cleanup();
       await assert.rejects(stat(directory));
     } finally {
@@ -80,22 +79,19 @@ describe('runtime host control endpoint', { skip: process.platform === 'win32' }
     }
   });
 
-  test('startup sweep reclaims dead directories under current and legacy naming', async () => {
+  test('startup sweep reclaims a dead owned directory but preserves ambiguous legacy names', async () => {
     const root = await mkdtemp('/tmp/ep-root-');
     try {
       process.env.TMPDIR = root;
-      const unmarked = join(root, `${currentPrefix()}AAAAAA`);
-      await mkdir(unmarked);
       const exited = spawnSync(process.execPath, ['-e', '']);
-      const marked = join(root, `${currentPrefix()}BBBBBB`);
-      await mkdir(marked);
-      await writeFile(join(marked, 'owner.pid'), `${exited.pid}\n`);
+      assert.ok(exited.pid);
+      const dead = join(root, `${currentPrefix()}${exited.pid.toString(36)}-AAAAAA`);
+      await mkdir(dead);
       const legacy = join(root, `${legacyPrefix()}CCCCCC`);
       await mkdir(legacy);
       const endpoint = await prepareRuntimeHostEndpoint({ rootId: ROOT_ID, hostEpoch: '1' });
-      await assert.rejects(stat(unmarked));
-      await assert.rejects(stat(marked));
-      await assert.rejects(stat(legacy));
+      await assert.rejects(stat(dead));
+      await stat(legacy);
       await endpoint.cleanup();
     } finally {
       await rm(root, { recursive: true, force: true });

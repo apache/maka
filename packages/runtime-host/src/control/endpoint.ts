@@ -1,21 +1,10 @@
-import {
-  chmod,
-  lstat,
-  mkdtemp,
-  readdir,
-  readFile,
-  rm,
-  rmdir,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readdir, rm, rmdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const FALLBACK_ENDPOINT_ROOT = '/tmp';
 const PORTABLE_UNIX_SOCKET_PATH_LIMIT = 100;
 const ENDPOINT_SOCKET_NAME = 'h.sock';
-const OWNER_PID_FILE = 'owner.pid';
 const MKDTEMP_SUFFIX_LENGTH = 6;
 
 export interface RuntimeHostEndpointInput {
@@ -51,17 +40,13 @@ export async function prepareRuntimeHostEndpoint(
     };
   }
 
-  const prefix = endpointDirectoryPrefix(input.rootId);
+  const rootPrefix = endpointRootPrefix(input.rootId);
+  const prefix = endpointDirectoryPrefix(rootPrefix, process.pid);
   const root = resolveEndpointRoot(prefix);
-  await removeDeadEndpointDirectories(root, [prefix, legacyEndpointDirectoryPrefix(input.rootId)]);
+  await removeDeadEndpointDirectories(root, rootPrefix);
   const directory = await mkdtemp(join(root, prefix));
   try {
     await ensurePrivateEndpointDirectory(directory);
-    // The pid marker is what keeps a concurrent same-rootId host from
-    // sweeping this directory while we are still alive (#2133). Written
-    // before listen so the vulnerable window closes as soon as the
-    // directory exists.
-    await writeFile(join(directory, OWNER_PID_FILE), `${process.pid}\n`, { mode: 0o600 });
     const path = join(directory, ENDPOINT_SOCKET_NAME);
     if (Buffer.byteLength(path, 'utf8') > PORTABLE_UNIX_SOCKET_PATH_LIMIT) {
       throw new RuntimeHostEndpointError(
@@ -87,9 +72,6 @@ export async function prepareRuntimeHostEndpoint(
       },
       async cleanup() {
         await unlink(path).catch((error: unknown) => {
-          if (!isNodeError(error, 'ENOENT')) throw error;
-        });
-        await unlink(join(directory, OWNER_PID_FILE)).catch((error: unknown) => {
           if (!isNodeError(error, 'ENOENT')) throw error;
         });
         await rmdir(directory).catch((error: unknown) => {
@@ -120,15 +102,16 @@ function resolveEndpointRoot(prefix: string): string {
   return FALLBACK_ENDPOINT_ROOT;
 }
 
-function endpointDirectoryPrefix(rootId: string): string {
+function endpointRootPrefix(rootId: string): string {
   return `m-${currentUid()}-${endpointRootTag(rootId).slice(0, 16)}-`;
 }
 
-// Directories created before #2133 used the full 43-character root tag.
-// They carry no pid marker, so the liveness check classifies them as dead
-// and the sweep still reclaims them.
-function legacyEndpointDirectoryPrefix(rootId: string): string {
-  return `m-${currentUid()}-${endpointRootTag(rootId)}-`;
+// Put the owner in the name passed to mkdtemp. A complete, parseable owner
+// identity therefore appears atomically with the directory; a separate pid
+// file would leave a creation-to-write window where another startup sweep
+// could mistake a live directory for an abandoned one.
+function endpointDirectoryPrefix(rootPrefix: string, pid: number): string {
+  return `${rootPrefix}${pid.toString(36)}-`;
 }
 
 function endpointRootTag(rootId: string): string {
@@ -144,24 +127,26 @@ function endpointRootTag(rootId: string): string {
 // Reclaims same-rootId endpoint directories whose owning process is gone,
 // and only those: a concurrent live host keeps its directory (#2133). Both
 // the resolved root and /tmp are swept because the fallback means either
-// may hold leftovers.
-async function removeDeadEndpointDirectories(root: string, prefixes: string[]): Promise<void> {
+// may hold leftovers. Pre-#2133 names have no owner identity, so they are
+// deliberately left alone rather than guessed dead.
+async function removeDeadEndpointDirectories(root: string, rootPrefix: string): Promise<void> {
   const roots = root === FALLBACK_ENDPOINT_ROOT ? [root] : [root, FALLBACK_ENDPOINT_ROOT];
+  const ownedName = new RegExp(
+    `^${escapeRegExp(rootPrefix)}([0-9a-z]+)-[A-Za-z0-9]{${MKDTEMP_SUFFIX_LENGTH}}$`,
+  );
   await Promise.all(
     roots.map(async (endpointRoot) => {
       const entries = await readdir(endpointRoot, { withFileTypes: true }).catch(() => []);
       await Promise.all(
         entries.map(async (entry) => {
-          const prefix = prefixes.find(
-            (candidate) =>
-              entry.name.startsWith(candidate) &&
-              entry.name.length === candidate.length + MKDTEMP_SUFFIX_LENGTH,
-          );
-          if (!entry.isDirectory() || !prefix) return;
+          if (!entry.isDirectory()) return;
+          const match = ownedName.exec(entry.name);
+          if (!match) return;
           const path = join(endpointRoot, entry.name);
           const directoryStat = await lstat(path).catch(() => undefined);
           if (!directoryStat?.isDirectory() || directoryStat.uid !== currentUid()) return;
-          if (await endpointOwnerIsAlive(path)) return;
+          const pid = Number.parseInt(match[1] ?? '', 36);
+          if (!Number.isSafeInteger(pid) || pid <= 0 || processIsAlive(pid)) return;
           await rm(path, { recursive: true, force: true });
         }),
       );
@@ -169,11 +154,7 @@ async function removeDeadEndpointDirectories(root: string, prefixes: string[]): 
   );
 }
 
-async function endpointOwnerIsAlive(directory: string): Promise<boolean> {
-  const raw = await readFile(join(directory, OWNER_PID_FILE), 'utf8').catch(() => undefined);
-  if (raw === undefined) return false;
-  const pid = Number.parseInt(raw.trim(), 10);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -182,6 +163,10 @@ async function endpointOwnerIsAlive(directory: string): Promise<boolean> {
     // treat as alive so the sweep stays conservative.
     return isNodeError(error, 'EPERM');
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function ensurePrivateEndpointDirectory(path: string): Promise<void> {
