@@ -559,6 +559,58 @@ test('routes read-only execution through the owner-bound worker bridge', async (
   }
 });
 
+test('revokes the scope and releases owner residency when the filesystem worker fails', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  let retainedScope: ManagedWorkspaceExecutionScope | undefined;
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      filesystemWorker: {
+        async execute() {
+          throw new Error('simulated filesystem worker crash');
+        },
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+
+    await assert.rejects(
+      owner.withManagedWorkspaceExecution(accepted.executionHandle, async (scope) => {
+        retainedScope = scope;
+        return await owner.executeReadOnlyFilesystemOperation(scope, {
+          kind: 'read',
+          path: 'README.md',
+        });
+      }),
+      /simulated filesystem worker crash/u,
+    );
+
+    if (!retainedScope) throw new Error('Execution callback did not expose its scope');
+    const expiredScope = retainedScope;
+    assert.throws(
+      () => inspectManagedWorkspaceExecutionScopeInternal(expiredScope),
+      /execution scope has expired/u,
+    );
+    await owner.close();
+    assert.equal(owner.state, 'closed');
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
 test('rejects owner close reentrancy from an active execution callback', async () => {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');

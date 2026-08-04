@@ -49,6 +49,13 @@ export type ManagedWorkspaceReadOnlyResult =
   | { readonly kind: 'grep'; readonly matches: readonly string[] };
 
 export interface ManagedWorkspaceFilesystemWorker {
+  /**
+   * Resolves only after the one-shot filesystem operation and every process it
+   * owns have reached a terminal lifecycle state. Implementations must not
+   * return a detached filesystem effect to the caller. The production adapter
+   * satisfies this contract through FilesystemWorkerClient; M1.2 admits only
+   * read-only operations, so a host crash cannot leave a workspace mutation.
+   */
   execute(input: ManagedWorkspaceFilesystemWorkerInput): Promise<ManagedWorkspaceReadOnlyResult>;
 }
 
@@ -94,10 +101,7 @@ export function createManagedWorkspaceWorkerBridgeInternal(
         );
       }
       const state = requireManagedWorkspaceExecutionScopeInternal(ownerToken, scope);
-      if (
-        state.workspaceEffect !== 'none' ||
-        state.provisioning !== 'canonical_tree_only_v1'
-      ) {
+      if (state.workspaceEffect !== 'none' || state.provisioning !== 'canonical_tree_only_v1') {
         throw new ManagedWorkspaceWorkerBridgeError(
           'managed_workspace_operation_denied',
           'Managed workspace execution scope does not permit filesystem mutation',

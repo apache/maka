@@ -110,12 +110,22 @@ ignored dependency、secret 与 scratch overlay 必须作为独立 M1 provisioni
 | forged / cross-owner handle | `managed_workspace_execution_handle_invalid` |
 | callback 保存 scope 后再次使用 | scope 已 expired，internal consumer 必须拒绝 |
 | callback 抛错 | scope 仍在 finally 中 revoke，owner residency 正常释放 |
+| worker 在返回结果前失败 | worker error 结束本次 operation；callback 的 finally revoke scope，owner residency 被释放，后续 close 可收敛 |
+| worker timeout / abort | production `FilesystemWorkerClient` 终止并等待 one-shot worker process tree 与 I/O drain 后才 reject；scope 在此之后 revoke |
+| worker 已启动时 host process crash | M1.2 不承诺跨平台 parent-death kill；worker 仍受 read-only sandbox 与单次请求约束，不能留下 workspace mutation，且完成或超时后退出；新 host 必须重新 admission。Shell/Write/Edit 不得借此 seam 执行 |
 | 用户直接编辑 Maka-owned worktree | 系统不能物理阻止；下一次 admission 检测 drift 并 fail closed/quarantine |
 | 重启后恢复 | 新 root owner、新 managed owner、新 handle；不可恢复旧进程内 capability |
 
 production-shaped 测试使用真实 pinned Git、真实 SQLite、真实子进程和 `SIGKILL`，证明 execution artifact
 verification 中断后，重启只能经完整 reopen/revalidate 获得新 scope authority；真实 Git 并发测试证明两个
 只读 scope 可以并行，且 `close()` 必须等待二者全部退出。
+
+filesystem worker 是 one-shot request/response process。它的 `execute()` 合同要求 Promise 只有在该次操作及其
+拥有的 process lifecycle 已终止后才能 settle；storage owner 因而以这个 Promise 作为 execution residency，
+不再增加一个无法约束真实进程的装饰性 lease。正常返回、worker error、timeout 与 abort 都必须先由现有
+`FilesystemWorkerClient` / process runner 收敛，再退出 callback 并 revoke scope。host 被 `SIGKILL` 时无法执行
+JavaScript finally，因此本切片的安全保证来自“只读 operation allowlist + read-only sandbox”，而不是虚构所有平台
+都具备 parent-death cleanup。需要 durable handle 的 ShellRun 继续留在后续独立阶段。
 
 ## 6. 平台能力矩阵
 
