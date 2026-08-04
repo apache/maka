@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createBootstrapSelectionLease } from '../../renderer/bootstrap-selection-lease.js';
+import {
+  clearNewTaskReloadIntent,
+  hasNewTaskReloadIntent,
+  markNewTaskReloadIntent,
+} from '../../renderer/new-task-reload-intent.js';
 
 type Summary = { id: string; lastMessageAt?: number };
 
@@ -65,5 +70,27 @@ describe('bootstrap selection lease', () => {
     state.lease.release();
     assert.equal(state.lease.reconcile([session('history', 1)]), false);
     assert.equal(state.activeId(), undefined);
+  });
+
+  it('keeps an explicit new-task surface across a renderer reload only', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => void values.set(key, value),
+      removeItem: (key: string) => void values.delete(key),
+    };
+    markNewTaskReloadIntent(storage);
+    assert.equal(hasNewTaskReloadIntent(storage), true);
+
+    const reloaded = harness();
+    if (hasNewTaskReloadIntent(storage)) reloaded.lease.release();
+    assert.equal(reloaded.lease.reconcile([session('history', 1)]), false);
+    assert.equal(reloaded.activeId(), undefined);
+
+    clearNewTaskReloadIntent(storage);
+    assert.equal(hasNewTaskReloadIntent(storage), false);
+    const coldStart = harness();
+    assert.equal(coldStart.lease.reconcile([session('history', 1)]), true);
+    assert.equal(coldStart.activeId(), 'history');
   });
 });

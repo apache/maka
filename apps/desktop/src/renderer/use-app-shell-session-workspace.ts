@@ -3,6 +3,11 @@ import type { StoredMessage } from '@maka/core';
 import { useAppShellSessionUiState } from './app-shell-session-ui-state';
 import { useAppShellSessionList } from './use-app-shell-session-list';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease';
+import {
+  clearNewTaskReloadIntent,
+  hasNewTaskReloadIntent,
+  markNewTaskReloadIntent,
+} from './new-task-reload-intent';
 
 type ToastApi = {
   error(title: string, description?: string): void;
@@ -31,6 +36,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
       setMessageLoadPending(true);
     }
     activeIdRef.current = next;
+    if (next) clearNewTaskReloadIntent();
     setActiveIdState(next);
   }
 
@@ -40,9 +46,11 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
       readSelectionRevision: () => selectionRevisionRef.current,
       select: setActiveId,
     });
+    if (hasNewTaskReloadIntent()) bootstrapSelectionLeaseRef.current.release();
   }
 
   function startNewSession(): void {
+    markNewTaskReloadIntent();
     setActiveId(undefined);
     setMessages([]);
   }
