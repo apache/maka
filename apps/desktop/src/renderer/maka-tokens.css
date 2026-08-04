@@ -247,24 +247,8 @@
      --background); it carries its darwin overrides in "DARWIN GLASS" below. */
   --color-bg-container: var(--background);
 
-  /* === shadow opacity (subtle in light, stronger in dark) === */
-  --shadow-blur-opacity:   0.06;
-
   /* === shadow recipes ===
-     Always include the 1px border ring as the FIRST inset-like layer.
-     Subsequent layers are very low-opacity blurs that stack into a soft glow. */
-  /* Blur layers were
-     pure-black rgba — on a light warm-gray shell a pure black shadow
-     reads as a dirty smudge (taste-skill ban). Every layer now derives
-     from the warm foreground so shadow, border ring, and ink share one
-     light source. Dark mode collapses these to border rings below. */
-  --shadow-minimal:
-    rgba(0,0,0,0) 0 0 0 0,
-    rgba(0,0,0,0) 0 0 0 0,
-    oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px,
-    oklch(from var(--foreground) l c h / var(--shadow-blur-opacity)) 0 1px 1px -0.5px,
-    oklch(from var(--foreground) l c h / var(--shadow-blur-opacity)) 0 3px 3px -1.5px;
-
+     Flat elevation uses a foreground-derived 1px ring in both themes. */
   --shadow-minimal-flat:
     rgba(0,0,0,0) 0 0 0 0,
     rgba(0,0,0,0) 0 0 0 0,
@@ -636,8 +620,8 @@
    /* === transform amplitude (motion) ===
       Tokenize the geometric magnitude of press/hover feedback so the
       motion scale covers amplitude, not just duration/easing. Press
-      scale (active 缩小) and hover lift (上浮); no hover scale — nothing in
-      the app grows on hover. Reset
+      scale (active 缩小); no hover scale — nothing in the app grows on hover.
+      Reset
       transform: translate(0)/scale(1) uses literal 0/1. Decorative
       scale(1.1), strong lift -3px, sidebar slide translateX, and rotate
       are NOT tokenized (diverse, low coverage). Keyframe transform
@@ -787,7 +771,6 @@
   --success: oklch(0.60 0.17 145);
   --destructive: oklch(0.70 0.19 22);
 
-  --shadow-blur-opacity:   0.12;
   --opacity-overlay: 0.06;
 
   /* Dark-mode shadow collapse: blur shadows are nearly
@@ -797,8 +780,6 @@
      (interface-design: "dark mode shadows collapse to a single ring");
      modal keeps one deep drop so overlays still separate from the
      backdrop. */
-  --shadow-minimal:
-    0 0 0 1px oklch(1 0 0 / 0.08);
   --shadow-minimal-flat:
     0 0 0 1px oklch(1 0 0 / 0.08);
   /* Slate user bubble for dark mode — distinct from --accent and readable

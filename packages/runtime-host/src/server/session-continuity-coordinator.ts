@@ -1,17 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import type { SessionEvent } from '@maka/core/events';
+import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
   encodeProtocolFrame,
   RUNTIME_HOST_MAX_FRAME_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
+  SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
   SESSION_TOOL_NAME_MAX_BYTES,
   type AgentGraphChangedFrame,
   type AgentGraphChangedReason,
   type SessionAssistantDelta,
   type SessionContinuitySnapshot,
   type SessionDeltaFrame,
+  type SessionDomainChange,
+  type SessionDomainChangedFrame,
   type SessionEventFrame,
   type SessionToolEvent,
   type SessionTranscriptQueryInput,
@@ -113,6 +116,13 @@ interface PendingAgentGraphChange {
   };
 }
 
+type SessionProjectionDomain = Exclude<SessionDomainChange['domain'], 'runtime_resource'>;
+
+interface PendingSessionDomainChanges {
+  readonly domains: Set<SessionProjectionDomain>;
+  readonly runtimeResources: Map<string, { sourceSessionId: string; ref: string }>;
+}
+
 export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly handlers: SessionContinuityOperationHandlerMap = {
     'subscription.open': async (input, context) => {
@@ -140,6 +150,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly #transcriptSnapshots = new TranscriptSnapshotStore();
   readonly #pendingRefreshes = new Map<string, PendingRefresh>();
   readonly #pendingAgentGraphChanges = new Map<string, PendingAgentGraphChange>();
+  readonly #pendingSessionDomainChanges = new Map<string, PendingSessionDomainChanges>();
   readonly #hostEpoch: string;
   readonly #readCanonical: ReadCanonicalSessionProjection;
   readonly #readTranscript: ReadSessionTranscript | undefined;
@@ -267,6 +278,90 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       .catch((error: unknown) => {
         if (this.#pendingAgentGraphChanges.get(event.rootSessionId) === change) {
           this.#pendingAgentGraphChanges.delete(event.rootSessionId);
+        }
+        this.onPublicationFailure(error);
+      });
+  }
+
+  /** Coalesce domain projection invalidations onto the Session subscription sequence. */
+  enqueueSessionDomainChanged(sessionId: string, domain: SessionProjectionDomain): void {
+    if (this.#closed) return;
+    const pending = this.#pendingSessionDomainChanges.get(sessionId);
+    if (pending) {
+      pending.domains.add(domain);
+      return;
+    }
+    const changes: PendingSessionDomainChanges = {
+      domains: new Set([domain]),
+      runtimeResources: new Map(),
+    };
+    this.#pendingSessionDomainChanges.set(sessionId, changes);
+    this.#scheduleSessionDomainChanges(sessionId, changes);
+  }
+
+  /** Publish one lightweight source invalidation to every active Session view that may inherit it. */
+  enqueueRuntimeResourceChanged(update: ShellRunUpdate): void {
+    if (this.#closed) return;
+    const resource = { sourceSessionId: update.sessionId, ref: update.result.ref };
+    const key = JSON.stringify([resource.sourceSessionId, resource.ref]);
+    for (const sessionId of this.#sessions.keys()) {
+      const pending = this.#pendingSessionDomainChanges.get(sessionId);
+      if (pending) {
+        pending.runtimeResources.set(key, resource);
+        continue;
+      }
+      const changes: PendingSessionDomainChanges = {
+        domains: new Set(),
+        runtimeResources: new Map([[key, resource]]),
+      };
+      this.#pendingSessionDomainChanges.set(sessionId, changes);
+      this.#scheduleSessionDomainChanges(sessionId, changes);
+    }
+  }
+
+  #scheduleSessionDomainChanges(sessionId: string, changes: PendingSessionDomainChanges): void {
+    void this.sessionAdmission
+      .enqueueDetached(sessionId, () => {
+        if (this.#pendingSessionDomainChanges.get(sessionId) !== changes) return;
+        this.#pendingSessionDomainChanges.delete(sessionId);
+        if (this.#closed) return;
+        const state = this.#sessions.get(sessionId);
+        if (!state) return;
+        const frames: SessionDomainChange[] = [...changes.domains].map((domain) => ({
+          sessionId,
+          domain,
+        }));
+        const runtimeResources = [...changes.runtimeResources.values()];
+        for (
+          let offset = 0;
+          offset < runtimeResources.length;
+          offset += SESSION_RUNTIME_RESOURCE_CHANGES_MAX
+        ) {
+          frames.push({
+            sessionId,
+            domain: 'runtime_resource',
+            resources: runtimeResources.slice(
+              offset,
+              offset + SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
+            ),
+          });
+        }
+        for (const change of frames) {
+          for (const subscriber of state.subscribers.values()) {
+            const frame: SessionDomainChangedFrame = {
+              kind: 'subscription.session_domain_changed',
+              hostEpoch: this.#hostEpoch,
+              subscriptionId: subscriber.subscriptionId,
+              sequence: subscriber.nextSequence,
+              ...change,
+            };
+            this.#enqueue(subscriber, frame);
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        if (this.#pendingSessionDomainChanges.get(sessionId) === changes) {
+          this.#pendingSessionDomainChanges.delete(sessionId);
         }
         this.onPublicationFailure(error);
       });
@@ -442,6 +537,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     this.#transcriptSnapshots.close();
     this.#pendingRefreshes.clear();
     this.#pendingAgentGraphChanges.clear();
+    this.#pendingSessionDomainChanges.clear();
   }
 
   async #open(

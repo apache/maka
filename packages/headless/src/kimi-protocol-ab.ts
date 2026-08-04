@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ModelInfo } from '@maka/core';
 import { renderAbComparisonMarkdown } from './ab-render.js';
+import { buildRunManifestFingerprint, canonicalJson } from './ab-manifest.js';
 import { buildAbRoundId, runAbComparison } from './ab-run.js';
 import { summarizeAbComparison } from './ab-summary.js';
 import type { AbArmSpec, AbComparisonSummary } from './ab-types.js';
@@ -634,9 +635,7 @@ function protocolArmSpec(arm: (typeof KIMI_PROTOCOL_ARMS)[number]): AbArmSpec {
 }
 
 function armResumeFingerprint(base: string | undefined, protocol: KimiProtocol): string {
-  return `sha256:${createHash('sha256')
-    .update(canonicalJson({ version: 1, base: base ?? null, protocol }))
-    .digest('hex')}`;
+  return buildRunManifestFingerprint({ version: 1, base: base ?? null, protocol });
 }
 
 function requireCaptures(
@@ -661,17 +660,4 @@ function mean(values: readonly number[]): number | null {
   return values.length > 0
     ? values.reduce((total, value) => total + value, 0) / values.length
     : null;
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right));
-    return `{${entries
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
 }

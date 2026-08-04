@@ -43,6 +43,7 @@ from maka_trajectory import (
 from process_scope import (
     COMMAND_SCOPE_ENV as _COMMAND_SCOPE_ENV,
     COMMAND_SCOPE_ROOT as _COMMAND_SCOPE_ROOT,
+    exec_cleanup_command as _exec_cleanup_command,
     scoped_command as _scoped_command,
     scoped_command_cleanup_command as _scoped_command_cleanup_command,
     scoped_process_cleanup_command as _scoped_process_cleanup_command,
@@ -1508,7 +1509,7 @@ class _ToolExecutorServer:
                 self.command_scope, command_ids, signal
             )
         )
-        await self._agent.exec_as_agent(self._environment, command=command)
+        await _exec_cleanup_command(self._agent, self._environment, command)
 
     def _handle_post(self, handler: BaseHTTPRequestHandler) -> None:
         if handler.path != "/exec":

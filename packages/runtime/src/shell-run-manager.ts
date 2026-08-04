@@ -534,6 +534,17 @@ export class ShellRunProcessManager
     return records.map(shellRunUpdate);
   }
 
+  async getSessionUpdate(sessionId: string, ref: string): Promise<ShellRunUpdate | undefined> {
+    const target = parseShellRunResourceRef(ref);
+    if (!target) return undefined;
+    try {
+      return shellRunUpdate(await this.input.store.readShellRun(sessionId, target.shellRunId));
+    } catch (error) {
+      if (isNotFoundError(error)) return undefined;
+      throw error;
+    }
+  }
+
   async recoverOrphanedSession(sessionId: string): Promise<number> {
     const records = await this.input.store.listSessionShellRuns(sessionId);
     let recovered = 0;

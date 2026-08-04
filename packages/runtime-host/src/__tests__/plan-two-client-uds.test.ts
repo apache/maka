@@ -6,8 +6,12 @@ import { test } from 'node:test';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractivePlanStoreForWrite } from '@maka/storage/plan-authority';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
+import {
+  connectRuntimeHost,
+  type RuntimeHostConnection,
+  type RuntimeHostSessionSubscription,
+} from '../client/index.js';
+import { RUNTIME_HOST_PROTOCOL_VERSION, type SubscriptionFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import { RuntimeHostKernel } from '../server/host-kernel.js';
 
@@ -63,6 +67,7 @@ test('two UDS Clients and a restarted production Host share one retry-safe Plan 
     });
     owner = undefined;
     [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
+    const subscription = await desktop.openSessionSubscription({ sessionId: session.id });
 
     const first = await desktop.queryPlan({ kind: 'list_start', sessionId: session.id });
     assert.equal(first.kind, 'page');
@@ -75,9 +80,16 @@ test('two UDS Clients and a restarted production Host share one retry-safe Plan 
       expectedStoreVersion: first.storeVersion,
       operationId: 'approve-operation',
     };
-    const approved = await desktop.controlPlan(approval);
+    const approved = await tui.controlPlan(approval);
     assert.equal(approved.eventType, 'plan_approved');
     assert.ok(approved.executionId);
+    const changed = await withTimeout(
+      nextFrameOfKind(subscription, 'subscription.session_domain_changed'),
+      2_000,
+      'Plan invalidation did not reach the other Client',
+    );
+    assert.equal(changed.sessionId, session.id);
+    assert.equal(changed.domain, 'plan');
 
     const shared = await tui.queryPlan({ kind: 'list_start', sessionId: session.id });
     assert.equal(shared.kind, 'page');
@@ -86,6 +98,7 @@ test('two UDS Clients and a restarted production Host share one retry-safe Plan 
       assert.equal(shared.items.filter((item) => item.kind === 'execution').length, 1);
     }
 
+    await subscription.close();
     await Promise.all([desktop.close(), tui.close()]);
     desktop = undefined;
     tui = undefined;
@@ -139,4 +152,32 @@ async function connect(
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Unable to connect to Runtime Host');
   return result.connection;
+}
+
+async function nextFrameOfKind<K extends SubscriptionFrame['kind']>(
+  subscription: RuntimeHostSessionSubscription,
+  kind: K,
+): Promise<Extract<SubscriptionFrame, { kind: K }>> {
+  for await (const frame of subscription) {
+    if (frame.kind === kind) {
+      return frame as Extract<SubscriptionFrame, { kind: K }>;
+    }
+  }
+  throw new Error(`Session subscription ended before ${kind}`);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { buildRunManifestFingerprint } from '../ab-manifest.js';
 import {
   auditHarnessOracleRegistry,
   HarnessOracleAuditExecutionError,
@@ -298,8 +298,10 @@ describe('harness Oracle evidence registry', () => {
     });
     const invalid = structuredClone(baseline.snapshot);
     invalid.entries[0]!.oracle!.reward = 0;
-    invalid.entries[0]!.fingerprint = fingerprintFixture(withoutFingerprint(invalid.entries[0]!));
-    invalid.fingerprint = fingerprintFixture(withoutFingerprint(invalid));
+    invalid.entries[0]!.fingerprint = buildRunManifestFingerprint(
+      withoutFingerprint(invalid.entries[0]!),
+    );
+    invalid.fingerprint = buildRunManifestFingerprint(withoutFingerprint(invalid));
 
     assert.throws(
       () => planHarnessOracleRegistryAudit(tasks, invalid),
@@ -308,10 +310,12 @@ describe('harness Oracle evidence registry', () => {
 
     const excessiveAttempts = structuredClone(baseline.snapshot);
     excessiveAttempts.entries[0]!.oracle!.attempts = HARBOR_ORACLE_MAX_ATTEMPTS + 1;
-    excessiveAttempts.entries[0]!.fingerprint = fingerprintFixture(
+    excessiveAttempts.entries[0]!.fingerprint = buildRunManifestFingerprint(
       withoutFingerprint(excessiveAttempts.entries[0]!),
     );
-    excessiveAttempts.fingerprint = fingerprintFixture(withoutFingerprint(excessiveAttempts));
+    excessiveAttempts.fingerprint = buildRunManifestFingerprint(
+      withoutFingerprint(excessiveAttempts),
+    );
     assert.throws(
       () => planHarnessOracleRegistryAudit(tasks, excessiveAttempts),
       /registry entry is malformed/,
@@ -535,19 +539,4 @@ function oracleExecutionProvenance(runId: string) {
       dockerBuildxVersion: 'github.com/docker/buildx v0.22.0',
     },
   };
-}
-
-function fingerprintFixture(value: unknown): string {
-  return `sha256:${createHash('sha256').update(canonicalJsonFixture(value)).digest('hex')}`;
-}
-
-function canonicalJsonFixture(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJsonFixture).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJsonFixture(item)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
 }

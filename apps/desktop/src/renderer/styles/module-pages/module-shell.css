@@ -79,11 +79,6 @@
   flex-wrap: wrap;
 }
 
-/* Secondary header utilities stay hidden in the compact skills module shell. */
-.maka-panel-detail[data-agents-view="skills"] .maka-module-main-actions > .maka-skill-header-utility {
-  display: none;
-}
-
 @media (max-width: 820px) {
   .maka-module-main {
     padding: var(--space-4);

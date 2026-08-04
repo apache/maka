@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import { buildRunManifestFingerprint } from './ab-manifest.js';
 import type { FixedPromptTask } from './fixed-prompt-controller.js';
 import { fingerprintFixedPromptTask } from './fixed-prompt-task-source.js';
 import {
@@ -233,7 +233,7 @@ export function buildHarnessOracleEnvironmentFingerprint(
     baseImages.some((image) => image.reference.length === 0 || image.digest.length === 0)
   )
     throw new Error('Oracle environment identity is malformed');
-  return fingerprintValue({
+  return buildRunManifestFingerprint({
     schemaVersion: 1,
     environment: input.environment,
     platform: input.platform,
@@ -368,7 +368,7 @@ export function parseHarnessOracleRegistrySnapshot(value: unknown): HarnessOracl
 }
 
 export function fingerprintHarnessOracleDocument(value: unknown): string {
-  return fingerprintValue(value);
+  return buildRunManifestFingerprint(value);
 }
 
 function annotationState(entry: HarnessOracleRegistryEntry): HarnessOracleAnnotationState {
@@ -380,12 +380,12 @@ function annotationState(entry: HarnessOracleRegistryEntry): HarnessOracleAnnota
 }
 
 function qualificationKeyFor(taskId: string, identity: HarnessOracleQualificationIdentity): string {
-  return fingerprintValue({ schemaVersion: 1, taskId, identity });
+  return buildRunManifestFingerprint({ schemaVersion: 1, taskId, identity });
 }
 
 function assertSnapshotFingerprint(snapshot: HarnessOracleRegistrySnapshot): void {
   const { fingerprint, ...body } = snapshot;
-  if (fingerprint !== fingerprintValue(body)) {
+  if (fingerprint !== buildRunManifestFingerprint(body)) {
     throw new Error('Oracle registry snapshot fingerprint is invalid');
   }
   if (
@@ -440,7 +440,7 @@ function registryEntryIsValid(
   if (
     entry.schemaVersion !== 1 ||
     entry.taskId !== expectedTaskId ||
-    entry.fingerprint !== fingerprintValue(withoutFingerprint(entry)) ||
+    entry.fingerprint !== buildRunManifestFingerprint(withoutFingerprint(entry)) ||
     entry.qualificationKey !== qualificationKeyFor(entry.taskId, entry.identity) ||
     !qualificationIdentityIsValid(entry.identity) ||
     !executionProvenanceIsValid(entry.executionProvenance)
@@ -524,22 +524,7 @@ function withoutFingerprint<T extends { fingerprint: string }>(value: T): Omit<T
 }
 
 function withFingerprint<T extends Record<string, unknown>>(body: T): T & { fingerprint: string } {
-  return { ...body, fingerprint: fingerprintValue(body) };
-}
-
-function fingerprintValue(value: unknown): string {
-  return `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (isRecord(value)) {
-    return `{${Object.entries(value)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
+  return { ...body, fingerprint: buildRunManifestFingerprint(body) };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

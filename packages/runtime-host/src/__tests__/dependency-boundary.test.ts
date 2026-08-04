@@ -42,6 +42,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/oauth-subscription',
   '@maka/core/plan',
   '@maka/core/deep-research-run',
+  '@maka/core/deep-research-client-progress',
   '@maka/core/daily-review',
   '@maka/core/redaction',
   '@maka/core/runtime-policy',

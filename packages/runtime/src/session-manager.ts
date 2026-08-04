@@ -1228,24 +1228,9 @@ export class SessionManager {
 
     const ownUpdates = await shellRuns.listSessionUpdates(sessionId);
     const ownToolCalls = new Set(ownUpdates.map((update) => update.sourceToolCallId));
-    let messages: StoredMessage[];
-    try {
-      messages = await this.getMessages(sessionId);
-    } catch (error) {
-      if (!(error instanceof RuntimeReadModelError)) throw error;
-      // ShellRun hydration is a best-effort UI projection. A legacy RuntimeEvent
-      // incompatibility must not turn its retry loop into a permanent IPC error.
-      try {
-        messages = await this.deps.store.readMessages(sessionId);
-      } catch {
-        return ownUpdates;
-      }
-    }
-    const bashToolCalls = new Set(
-      messages.flatMap((message) =>
-        message.type === 'tool_call' && message.toolName === 'Bash' ? [message.id] : [],
-      ),
-    );
+    const messages = await this.readShellRunProjectionMessages(sessionId);
+    if (!messages) return ownUpdates;
+    const bashToolCalls = shellRunBashToolCallIds(messages);
     const inherited = new Map<
       string,
       {
@@ -1296,6 +1281,55 @@ export class SessionManager {
       }),
     );
     return [...ownUpdates, ...inheritedUpdates];
+  }
+
+  async getShellRunUpdate(sessionId: string, ref: string): Promise<ShellRunUpdate | null> {
+    const shellRuns = this.deps.shellRuns;
+    if (!shellRuns) return null;
+    const own = await shellRuns.getSessionUpdate(sessionId, ref);
+    if (own) return own;
+
+    const messages = await this.readShellRunProjectionMessages(sessionId);
+    if (!messages) return null;
+    const bashToolCalls = shellRunBashToolCallIds(messages);
+    let candidate:
+      | {
+          turnId: string;
+          toolUseId: string;
+          result: ShellRunUpdate['result'];
+        }
+      | undefined;
+    for (const message of messages) {
+      if (
+        message.type === 'tool_result' &&
+        bashToolCalls.has(message.toolUseId) &&
+        message.content.kind === 'shell_run' &&
+        message.content.ref === ref &&
+        isActiveShellRunStatus(message.content.status)
+      ) {
+        const { operation: _operation, ...result } = message.content;
+        candidate = { turnId: message.turnId, toolUseId: message.toolUseId, result };
+      }
+    }
+    if (!candidate) return null;
+
+    const inheritedFrom = await this.deps.store.readHeader(sessionId);
+    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
+    if (!parentSessionId) return null;
+    const owner = await this.resolveShellRunOwner(parentSessionId, ref);
+    return {
+      sessionId,
+      ownership: owner
+        ? {
+            kind: 'source_owned',
+            sourceSessionId: parentSessionId,
+            ownerSessionId: owner.sessionId,
+          }
+        : { kind: 'source_unavailable', sourceSessionId: parentSessionId },
+      sourceTurnId: candidate.turnId,
+      sourceToolCallId: candidate.toolUseId,
+      result: owner?.result ?? candidate.result,
+    };
   }
 
   async recoverInterruptedSessions(): Promise<string[]> {
@@ -5090,6 +5124,21 @@ export class SessionManager {
     return undefined;
   }
 
+  private async readShellRunProjectionMessages(sessionId: string): Promise<StoredMessage[] | null> {
+    try {
+      return await this.getMessages(sessionId);
+    } catch (error) {
+      if (!(error instanceof RuntimeReadModelError)) throw error;
+      // ShellRun hydration is a best-effort UI projection. A legacy RuntimeEvent
+      // incompatibility must not turn its retry loop into a permanent IPC error.
+      try {
+        return await this.deps.store.readMessages(sessionId);
+      } catch {
+        return null;
+      }
+    }
+  }
+
   private async findChildRunForOutput(
     sessionId: string,
     input: AgentOutputInput,
@@ -6667,6 +6716,14 @@ function boundAgentOutputCollections(
 function tail<T>(items: readonly T[], max: number): T[] {
   if (items.length <= max) return [...items];
   return items.slice(items.length - max);
+}
+
+function shellRunBashToolCallIds(messages: readonly StoredMessage[]): Set<string> {
+  return new Set(
+    messages.flatMap((message) =>
+      message.type === 'tool_call' && message.toolName === 'Bash' ? [message.id] : [],
+    ),
+  );
 }
 
 function throwIfChildExecutionAborted(signal: AbortSignal | undefined, message: string): void {

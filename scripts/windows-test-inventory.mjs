@@ -1,0 +1,267 @@
+#!/usr/bin/env node
+
+import { existsSync } from 'node:fs';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '..');
+const OUTPUT_PATH = join(REPO_ROOT, 'docs', 'windows-test-inventory.md');
+const SEARCH_ROOTS = ['apps', 'packages', 'scripts'];
+
+export async function collectWindowsTestSkips(root = REPO_ROOT) {
+  const files = [];
+  for (const searchRoot of SEARCH_ROOTS) {
+    const absolute = join(root, searchRoot);
+    if (existsSync(absolute)) await collectTestFiles(absolute, files);
+  }
+
+  const entries = [];
+  for (const file of files.sort()) {
+    const path = relative(root, file).replaceAll('\\', '/');
+    if (path === 'scripts/windows-test-inventory.test.mjs') continue;
+    const sourceText = await readFile(file, 'utf8');
+    const sourceLines = sourceText.split(/\r?\n/u);
+    for (const skip of findSkipExpressions(sourceText)) {
+      const expression = skip.expression.replaceAll(/\s+/gu, ' ');
+      if (!excludesWindows(expression)) continue;
+      const index = sourceText.slice(0, skip.offset).split(/\r?\n/u).length - 1;
+      const title = nearbyTestTitle(sourceLines, index);
+      entries.push({
+        path,
+        line: index + 1,
+        title,
+        expression,
+        classification: classifySkip(path, title, expression),
+      });
+    }
+  }
+  return entries.sort(
+    (left, right) => left.path.localeCompare(right.path) || left.line - right.line,
+  );
+}
+
+export function findSkipExpressions(sourceText) {
+  const expressions = [];
+  let index = 0;
+  while (index < sourceText.length) {
+    const next = skipTriviaOrLiteral(sourceText, index);
+    if (next !== index) {
+      index = next;
+      continue;
+    }
+    if (!sourceText.startsWith('skip', index) || isIdentifierPart(sourceText[index - 1])) {
+      index += 1;
+      continue;
+    }
+    const afterIdentifier = index + 4;
+    if (isIdentifierPart(sourceText[afterIdentifier])) {
+      index = afterIdentifier;
+      continue;
+    }
+    const colon = skipWhitespaceAndComments(sourceText, afterIdentifier);
+    if (sourceText[colon] !== ':') {
+      index = afterIdentifier;
+      continue;
+    }
+    const expressionStart = skipWhitespaceAndComments(sourceText, colon + 1);
+    const expressionEnd = findExpressionEnd(sourceText, expressionStart);
+    const expression = sourceText.slice(expressionStart, expressionEnd).trim();
+    if (expression) expressions.push({ offset: index, expression });
+    index = Math.max(expressionEnd, afterIdentifier);
+  }
+  return expressions;
+}
+
+function findExpressionEnd(sourceText, start) {
+  const closing = [];
+  let index = start;
+  while (index < sourceText.length) {
+    const next = skipTriviaOrLiteral(sourceText, index);
+    if (next !== index) {
+      index = next;
+      continue;
+    }
+    const char = sourceText[index];
+    if (char === '(') closing.push(')');
+    else if (char === '[') closing.push(']');
+    else if (char === '{') closing.push('}');
+    else if (closing.at(-1) === char) closing.pop();
+    else if (closing.length === 0 && (char === ',' || char === '}')) return index;
+    index += 1;
+  }
+  return index;
+}
+
+function skipTriviaOrLiteral(sourceText, index) {
+  const char = sourceText[index];
+  if (char === '/' && sourceText[index + 1] === '/') {
+    const newline = sourceText.indexOf('\n', index + 2);
+    return newline === -1 ? sourceText.length : newline + 1;
+  }
+  if (char === '/' && sourceText[index + 1] === '*') {
+    const end = sourceText.indexOf('*/', index + 2);
+    return end === -1 ? sourceText.length : end + 2;
+  }
+  if (char === "'" || char === '"' || char === '`')
+    return skipQuotedLiteral(sourceText, index, char);
+  return index;
+}
+
+function skipQuotedLiteral(sourceText, start, quote) {
+  let index = start + 1;
+  while (index < sourceText.length) {
+    if (sourceText[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (sourceText[index] === quote) return index + 1;
+    index += 1;
+  }
+  return index;
+}
+
+function skipWhitespaceAndComments(sourceText, start) {
+  let index = start;
+  while (index < sourceText.length) {
+    if (/\s/u.test(sourceText[index])) {
+      index += 1;
+      continue;
+    }
+    const next = skipTriviaOrLiteral(sourceText, index);
+    if (next === index || !sourceText.startsWith('/', index)) return index;
+    index = next;
+  }
+  return index;
+}
+
+function isIdentifierPart(char) {
+  return char !== undefined && /[$\w]/u.test(char);
+}
+
+export function renderWindowsTestInventory(entries) {
+  const counts = new Map();
+  for (const entry of entries) {
+    counts.set(entry.classification, (counts.get(entry.classification) ?? 0) + 1);
+  }
+  const lines = [
+    '# Windows test skip inventory',
+    '',
+    '<!-- Generated by `node scripts/windows-test-inventory.mjs --write`. Do not edit manually. -->',
+    '',
+    'This inventory covers test declarations whose `skip` expression excludes Windows. It is a Phase 0 baseline, not permission to retain the skips indefinitely.',
+    'Locations intentionally omit line numbers so unrelated edits do not invalidate the semantic inventory.',
+    '',
+    '## Classifications',
+    '',
+    '- `windows-backend-gap`: the product contract is relevant on Windows, but the Windows transport, process, crash, or sandbox evidence is missing.',
+    '- `portable-candidate`: the behavior appears platform-neutral; remove the skip or document the concrete Windows blocker.',
+    '- `platform-contract`: the test intentionally exercises a POSIX/macOS primitive with no direct Windows equivalent.',
+    '',
+    '## Summary',
+    '',
+    '| Classification | Count |',
+    '|---|---:|',
+  ];
+  for (const classification of ['windows-backend-gap', 'portable-candidate', 'platform-contract']) {
+    lines.push(`| ${classification} | ${counts.get(classification) ?? 0} |`);
+  }
+  lines.push(
+    '',
+    `Total Windows-excluded declarations: **${entries.length}**`,
+    '',
+    '## Inventory',
+    '',
+  );
+  lines.push('| Classification | Test | Skip expression |');
+  lines.push('|---|---|---|');
+  for (const entry of entries) {
+    lines.push(
+      `| ${entry.classification} | \`${escapeTable(entry.path)}\` ${escapeTable(entry.title)} | \`${escapeTable(entry.expression)}\` |`,
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function classifySkip(path, title, expression) {
+  const value = `${path} ${title} ${expression}`.toLowerCase();
+  if (
+    /process\.platform\s*!==\s*['"]darwin['"]/u.test(expression) ||
+    value.includes('posix process discovery') ||
+    value.includes('posix detached process-group') ||
+    value.includes('publishes private posix endpoint') ||
+    value.includes('fifo') ||
+    value.includes('non-utf-8 git path') ||
+    value.includes('permissions') ||
+    path.endsWith('/shell-env.test.ts')
+  ) {
+    return 'platform-contract';
+  }
+  if (
+    path.includes('/runtime-host/') ||
+    value.includes('process death') ||
+    value.includes('real-process crash') ||
+    value.includes('sqlite-runtime-crash') ||
+    value.includes('sqlite-long-term-memory-crash') ||
+    value.includes('sandbox')
+  ) {
+    return 'windows-backend-gap';
+  }
+  return 'portable-candidate';
+}
+
+function excludesWindows(expression) {
+  const compact = expression.replaceAll(/\s+/gu, ' ');
+  return (
+    /process\.platform\s*===\s*['"]win32['"]/u.test(compact) ||
+    /process\.platform\s*!==\s*['"]darwin['"]/u.test(compact)
+  );
+}
+
+function nearbyTestTitle(lines, skipIndex) {
+  const context = lines.slice(Math.max(0, skipIndex - 12), skipIndex + 1).join('\n');
+  const matches = [...context.matchAll(/\b(?:test|it|describe)\s*\(\s*(['"`])([\s\S]+?)\1/gu)];
+  return matches.at(-1)?.[2].replaceAll(/\s+/gu, ' ').trim() ?? '<dynamic test title>';
+}
+
+async function collectTestFiles(directory, output) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await collectTestFiles(path, output);
+    else if (/\.test\.(?:[cm]?js|tsx?)$/u.test(entry.name)) output.push(path);
+  }
+}
+
+function escapeTable(value) {
+  return String(value).replaceAll('|', '\\|').replaceAll('\n', ' ');
+}
+
+async function main(args) {
+  const entries = await collectWindowsTestSkips();
+  const rendered = renderWindowsTestInventory(entries);
+  if (args.includes('--write')) {
+    await writeFile(OUTPUT_PATH, rendered);
+    console.log(`wrote ${relative(REPO_ROOT, OUTPUT_PATH)} (${entries.length} declarations)`);
+    return;
+  }
+  if (args.includes('--check')) {
+    const current = existsSync(OUTPUT_PATH) ? await readFile(OUTPUT_PATH, 'utf8') : '';
+    if (current !== rendered) {
+      throw new Error(
+        'Windows test skip inventory is stale; run `npm run windows:inventory:write`',
+      );
+    }
+    console.log(`Windows test skip inventory is current (${entries.length} declarations)`);
+    return;
+  }
+  process.stdout.write(rendered);
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
+  main(process.argv.slice(2)).catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}

@@ -1150,6 +1150,7 @@ export type {
   DeepResearchArtifactRole,
   DeepResearchChecklistItem,
   DeepResearchChecklistStatus,
+  DeepResearchClientProgress,
   DeepResearchChangedEvent,
   DeepResearchCheckpoint,
   DeepResearchEvent,
@@ -1183,6 +1184,11 @@ export {
   DEEP_RESEARCH_CHECKPOINTS_MAX,
   DEEP_RESEARCH_CHECKLIST_ITEMS_MAX,
   DEEP_RESEARCH_CHECKLIST_STATUSES,
+  DEEP_RESEARCH_CLIENT_IMPLEMENTATION_PROMPT_MAX_BYTES,
+  DEEP_RESEARCH_CLIENT_OBJECTIVE_MAX_BYTES,
+  DEEP_RESEARCH_CLIENT_PROGRESS_MAX_BYTES,
+  DEEP_RESEARCH_CLIENT_RECENT_ITEMS_MAX,
+  DEEP_RESEARCH_CLIENT_TEXT_MAX_BYTES,
   DEEP_RESEARCH_DEFAULT_CHECKLIST,
   DEEP_RESEARCH_EVENT_TYPES,
   DEEP_RESEARCH_INSPECTED_REFS_MAX,
@@ -1213,6 +1219,7 @@ export {
   normalizeDeepResearchObjective,
   projectDeepResearchEvents,
 } from './deep-research-run.js';
+export { projectDeepResearchClientProgress } from './deep-research-client-progress.js';
 
 // memory.ts (PR-MEMORY-1) — core contract; no IPC/storage/embedding/UI.
 export type {

@@ -2813,6 +2813,8 @@ function fixedGitArguments(hooksPath: string): string[] {
     '-c',
     'core.fsmonitor=false',
     '-c',
+    'core.longpaths=true',
+    '-c',
     `core.hooksPath=${hooksPath}`,
     '-c',
     'credential.helper=',

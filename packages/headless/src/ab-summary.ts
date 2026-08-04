@@ -1,3 +1,4 @@
+import { canonicalJson } from './ab-manifest.js';
 import { BUDGET_EXHAUSTED_RUNTIME_UNAVAILABLE_REASON } from './fixed-prompt-controller.js';
 import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 import type { HarborCellTokenSummary } from './cell-output.js';
@@ -840,17 +841,6 @@ function roundRateDelta(value: number): number {
 
 function clampRateDelta(value: number): number {
   return Math.min(1, Math.max(-1, value));
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b));
-    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${canonicalJson(entryValue)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function assertSameRunCount(

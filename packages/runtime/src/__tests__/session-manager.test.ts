@@ -18265,6 +18265,9 @@ describe('SessionManager permission mode updates', () => {
       async listSessionUpdates() {
         return [];
       },
+      async getSessionUpdate() {
+        return undefined;
+      },
       async inspectResource(sessionId: string, candidateRef: string) {
         if (ownerAvailable && candidateRef === ref && sessionId === 'session-1')
           return sourceSnapshot;
@@ -18413,6 +18416,10 @@ describe('SessionManager permission mode updates', () => {
     });
     expect(updates[0]?.sourceToolCallId).toBe('bash-1');
     expect(updates[0]?.result).toEqual(sourceSnapshot);
+    expect(await manager.getShellRunUpdate(child.id, sourceSnapshot.ref)).toEqual(updates[0]);
+    expect(
+      await manager.getShellRunUpdate(child.id, 'maka://runtime/background-tasks/missing-shell'),
+    ).toBeNull();
 
     const revisionUpdates = await manager.listShellRunUpdates(revision.id);
     expect(revisionUpdates).toHaveLength(1);
@@ -18434,6 +18441,9 @@ describe('SessionManager permission mode updates', () => {
     });
     expect(danglingUpdates[0]?.result.status).toBe('running');
     expect(danglingUpdates[0]?.result.output).toBe(undefined);
+    expect(await manager.getShellRunUpdate(child.id, sourceSnapshot.ref)).toEqual(
+      danglingUpdates[0],
+    );
   });
 
   test('branchFromTurn preserves parent thinking, collaboration, and orchestration modes', async () => {
