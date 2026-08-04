@@ -300,9 +300,7 @@ export function buildToolsForAgentDefinition(
   definition: AgentRuntimeDefinition = LOCAL_READ_AGENT_DEFINITION,
 ): MakaTool[] {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  return buildToolNamesForAgentDefinition(definition, byName).map(
-    (name) => byName.get(name)!,
-  );
+  return buildToolNamesForAgentDefinition(definition, byName).map((name) => byName.get(name)!);
 }
 
 /**

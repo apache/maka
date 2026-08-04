@@ -360,7 +360,10 @@ describe('subagent tools', () => {
       buildChildAgentTools(buildBuiltinTools()),
       'apply_patch',
     );
-    const projected = projectDefinitionToolNames(IMPLEMENTATION_AGENT_DEFINITION, parentScopedTools);
+    const projected = projectDefinitionToolNames(
+      IMPLEMENTATION_AGENT_DEFINITION,
+      parentScopedTools,
+    );
 
     // The snapshot must equal what resume/retry/restore rebuilds from the
     // snapshot: buildToolsForAgentDefinition against the same host tools.

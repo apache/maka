@@ -1778,10 +1778,7 @@ describe('isolated headless tools', () => {
 
       const result = await apply.impl(
         {
-          patch:
-            '*** Begin Patch\n' +
-            '*** Delete File: escape.txt\n' +
-            '*** End Patch\n',
+          patch: '*** Begin Patch\n' + '*** Delete File: escape.txt\n' + '*** End Patch\n',
         },
         toolCtx(cwd),
       );
