@@ -528,7 +528,7 @@ RuntimeEvents 决定 Maka 是否接受某个文件版本；Git commit、ref、re
 
 ## 4. Git-native managed workspace 演进
 
-### M0 — Baseline admission（当前切片）
+### M0 — Baseline admission（已合并）
 
 M0 只证明一条接受链：
 
@@ -555,6 +555,19 @@ baseline open 中。
 - ignored dependencies、`.env` 与 build scratch 使用明确 provisioning/overlay policy，不污染 canonical tree；
 - 外部修改 Maka-owned worktree 时检测 drift、fail closed 并 quarantine；
 - attached 与 managed execution profile 在类型和配置上不可静默互相 fallback。
+
+M1 拆成独立不变量，避免一次 PR 同时跨越 host lifecycle、runtime protocol 与 platform I/O：
+
+1. **M1.1 execution cwd admission（当前切片）**：M0 只返回 owner-bound opaque handle；同一 owner 每次
+   execution 都在 drain residency 内重新证明 canonical head、Git receipt、HEAD/tree/ownership 与 root
+   identity，最后才在 callback 中发布 cwd。provisioning 固定为 `canonical_tree_only_v1`；
+2. **M1.2 runtime-host composition**：建立 managed/attached typed profile、startup/drain/shutdown 顺序，并让
+   worker 只能在 callback 内取得 cwd；
+3. **M1.3 environment provisioning**：单独设计 ignored dependency、secret 与 scratch overlay。M1.1 不复制
+   `.env`、`node_modules` 或 build output，也不以 attached checkout silent fallback 掩盖能力缺失。
+
+M1.1 合同见
+[Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
 
 ### M2 — Mutation version acceptance
 
@@ -601,11 +614,13 @@ Git-native workspace:
 M0.1 Git artifact owner (merged)
   + M0.2 workspace version authority (merged)
   + M0.3 managed owner lifecycle (merged)
-  └─> M0.4 baseline open bundle (current)
-       └─> M1 execution admission / provisioning
-            └─> M2 mutation version acceptance
-                 └─> M3 workspace-bound continuation
-                      └─> M4 restore / rebaseline / publish / replication
+  └─> M0.4 baseline open bundle (merged)
+       └─> M1.1 execution cwd admission (current)
+            └─> M1.2 runtime-host composition
+                 └─> M1.3 explicit environment provisioning
+                      └─> M2 mutation version acceptance
+                           └─> M3 workspace-bound continuation
+                                └─> M4 restore / rebaseline / publish / replication
 
 Independent maintenance gates before broad production enablement:
   - legacy non-empty DB root-binding adoption

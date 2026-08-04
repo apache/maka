@@ -1,7 +1,7 @@
 # Managed Workspace Owner v1：M0 生命周期门
 
-- 状态：实现完成；Git Workspace Service 与 Workspace Version Authority 合并后平铺重建
-- 更新日期：2026-08-02
+- 状态：已合并；M1 execution admission 继续复用本 owner 的 lifecycle/drain 门
+- 更新日期：2026-08-04
 - 主要不变量：一个 authenticated interactive storage-root owner 在其生命周期内至多发布一个
   managed workspace owner；已经 admission 的 workspace 操作必须在关闭前 drain
 - artifact owner：`GitWorkspaceService`
@@ -56,10 +56,12 @@ stateDiagram-v2
 
 ## 4. Workspace gate
 
-owner 的 public surface 只开放一个 workspace admission 操作：
+owner 的 public surface 开放两个连续、不可绕过的 workspace admission 操作：
 
 1. `openManagedWorkspaceBaseline(store, identity)` 从 eligible clean source 创建/exact-adopt artifact，
-   持久化并复验 receipt，再由 storage-internal writer 接受 canonical baseline。
+   持久化并复验 receipt，再由 storage-internal writer 接受 canonical baseline，返回 owner-bound execution handle；
+2. `withManagedWorkspaceExecution(handle, callback)` 在每次执行前重新证明 canonical head、receipt、HEAD/tree、
+   ownership 与 root identity，只在 drain-managed callback 中发布 cwd。
 
 artifact-only create/open 和 `GitWorkspaceService` factory 不从 package root 导出。调用者不能在 SQLite
 acceptance 前取得 `worktreePath` 或裸 `ManagedWorkspaceBinding`。入口返回前必须验证 worktree、index、
@@ -69,6 +71,9 @@ HEAD、tree、ownership lock、canonical `runtime.sqlite` pathname/inode、durab
 
 本切片不扫描目录来猜测 workspace identity。Baseline Open Bundle 通过 Git artifact owner 的 durable
 receipt 与 canonical workspace authority 绑定 exact identity；未接受 Git artifact 属于 orphan GC 范畴。
+
+M1 execution admission 的详细合同见
+[Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
 
 ## 5. Crash 与并发证明
 
@@ -98,7 +103,7 @@ reopen/repair，最后才允许 baseline authority read”的组合顺序。
 
 ## 7. 明确延期
 
-- Desktop、CLI、runtime-host 接线与 managed-mode 设置；
+- Desktop、CLI、runtime-host 接线与 managed-mode 设置；execution admission API 已建立，但尚无生产 host consumer；
 - filesystem worker、mutation coordinator 与工具 cwd 切换；
 - candidate refs、mutation repair、GC、replication outbox；
 - ignored dependencies、build/test environment provisioning；
@@ -108,4 +113,4 @@ reopen/repair，最后才允许 baseline authority read”的组合顺序。
 
 这些能力不能借 owner lifecycle PR 顺手接入。Baseline Open Bundle 已作为本 owner 的第一个
 canonical-fact consumer 完成组合，证明 Git baseline 与 RuntimeEvent baseline 不会只成功一半；后续
-M1 execution admission 仍必须从该 bundle 成功返回的结果进入，不能重新开放 artifact-only 旁路。
+M1 execution admission 已从该 bundle 返回的 owner-bound handle 进入，未重新开放 artifact-only 旁路。

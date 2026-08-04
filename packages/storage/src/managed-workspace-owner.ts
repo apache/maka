@@ -12,6 +12,11 @@ import {
   requireManagedBaselineReceiptAuthorityInternal,
   type ManagedBaselineReceiptAuthorityInternal,
 } from './managed-baseline-receipt-authority-internal.js';
+import {
+  issueManagedWorkspaceExecutionHandleInternal,
+  requireManagedWorkspaceExecutionHandleInternal,
+  type ManagedWorkspaceExecutionHandle,
+} from './managed-workspace-execution-authority-internal.js';
 import type { RuntimeWorkspaceVersionAuthorityStore, WorkspaceHeadRecordV1 } from '@maka/core';
 import {
   assertInteractiveRootOwner,
@@ -35,7 +40,8 @@ export type ManagedWorkspaceOwnerErrorCode =
   | 'managed_workspace_owner_conflict'
   | 'managed_workspace_owner_unavailable'
   | 'managed_workspace_owner_closing'
-  | 'managed_workspace_quarantined';
+  | 'managed_workspace_quarantined'
+  | 'managed_workspace_execution_handle_invalid';
 
 export class ManagedWorkspaceOwnerError extends Error {
   constructor(
@@ -58,15 +64,28 @@ export type ManagedWorkspaceOwnerFailpoint =
   | GitWorkspaceServiceFailpoint
   | 'after_initial_store_root_validation'
   | 'after_baseline_authority_commit'
-  | 'after_post_commit_artifact_verification';
+  | 'after_post_commit_artifact_verification'
+  | 'after_execution_artifact_verification';
 
 export type OpenManagedWorkspaceBaselineInput = CreateManagedWorkspaceFromSourceInput;
 
 export interface OpenManagedWorkspaceBaselineResult {
   readonly created: boolean;
-  readonly binding: ManagedWorkspaceBinding;
-  readonly receipt: ManagedWorkspaceBaselineReceiptV1;
   readonly head: WorkspaceHeadRecordV1;
+  readonly executionHandle: ManagedWorkspaceExecutionHandle;
+}
+
+export interface ManagedWorkspaceExecutionContext {
+  readonly kind: 'managed_worktree';
+  readonly provisioning: 'canonical_tree_only_v1';
+  readonly cwd: string;
+  readonly repositoryId: string;
+  readonly workspaceId: string;
+  readonly workspaceEpochId: string;
+  readonly workspaceInstanceId: string;
+  readonly workspaceVersionId: string;
+  readonly commitOid: string;
+  readonly treeOid: string;
 }
 
 export interface ManagedWorkspaceOwner {
@@ -75,8 +94,14 @@ export interface ManagedWorkspaceOwner {
     store: RuntimeWorkspaceVersionAuthorityStore,
     input: OpenManagedWorkspaceBaselineInput,
   ): Promise<OpenManagedWorkspaceBaselineResult>;
+  withManagedWorkspaceExecution<T>(
+    handle: ManagedWorkspaceExecutionHandle,
+    operation: (context: ManagedWorkspaceExecutionContext) => Promise<T>,
+  ): Promise<T>;
   close(): Promise<void>;
 }
+
+export type { ManagedWorkspaceExecutionHandle };
 
 const owners = new WeakMap<InteractiveRootOwner, object>();
 
@@ -132,6 +157,7 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
   readonly #drainWaiters = new Set<() => void>();
   readonly #assertCurrentRootIdentity: () => Promise<void>;
   #closeTask: Promise<void> | undefined;
+  readonly #executionOwnerToken = {};
 
   constructor(
     private readonly rootOwner: InteractiveRootOwner,
@@ -226,7 +252,76 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       // verification. Revalidate its identity at the final return gate without
       // rejecting an operation that owner.close() is legitimately draining.
       await this.#assertCurrentRootIdentity();
-      return { ...committed, binding, receipt: durableReceipt };
+      return {
+        ...committed,
+        executionHandle: issueManagedWorkspaceExecutionHandleInternal(this.#executionOwnerToken, {
+          store,
+          binding,
+          receipt: durableReceipt,
+          head: committed.head,
+        }),
+      };
+    });
+  }
+
+  async withManagedWorkspaceExecution<T>(
+    handle: ManagedWorkspaceExecutionHandle,
+    operation: (context: ManagedWorkspaceExecutionContext) => Promise<T>,
+  ): Promise<T> {
+    return this.#run(async () => {
+      let accepted;
+      try {
+        accepted = requireManagedWorkspaceExecutionHandleInternal(
+          this.#executionOwnerToken,
+          handle,
+        );
+      } catch (error) {
+        throw new ManagedWorkspaceOwnerError(
+          'managed_workspace_execution_handle_invalid',
+          'Managed workspace execution handle is invalid for this owner',
+          { cause: error },
+        );
+      }
+      await assertWorkspaceBaselineAuthorityStoreRootInternal(
+        accepted.store,
+        this.rootOwner.capability.canonicalPath,
+      );
+      bindWorkspaceBaselineAuthorityStoreRootInternal(
+        accepted.store,
+        this.rootOwner.capability.rootId,
+      );
+      const currentHead = await accepted.store.readWorkspaceHead(
+        accepted.binding.workspaceId,
+        accepted.binding.workspaceEpochId,
+      );
+      if (!currentHead || !sameWorkspaceHead(currentHead, accepted.head)) {
+        throw new ManagedWorkspaceOwnerError(
+          'managed_workspace_owner_unavailable',
+          'Managed workspace execution handle no longer matches the canonical workspace head',
+        );
+      }
+      await this.#openReadyBinding(accepted.binding);
+      await this.receiptAuthority.verify(accepted.receipt);
+      await this.failpoint?.('after_execution_artifact_verification');
+      // Receipt verification and cwd publication are separate await points.
+      // Re-open the exact binding once more so drift introduced in that seam
+      // is quarantined before the callback can observe an executable path.
+      const binding = await this.#openReadyBinding(accepted.binding);
+      await this.#assertCurrentRootIdentity();
+      return operation(
+        Object.freeze({
+          kind: 'managed_worktree' as const,
+          provisioning: 'canonical_tree_only_v1' as const,
+          cwd: binding.worktreePath,
+          repositoryId: binding.repositoryId,
+          workspaceId: binding.workspaceId,
+          workspaceEpochId: binding.workspaceEpochId,
+          workspaceInstanceId: binding.workspaceInstanceId,
+          workspaceVersionId: currentHead.workspaceVersionId,
+          commitOid: currentHead.commitOid,
+          treeOid: currentHead.treeOid,
+        }),
+      );
     });
   }
 
@@ -301,4 +396,15 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       );
     }
   }
+}
+
+function sameWorkspaceHead(left: WorkspaceHeadRecordV1, right: WorkspaceHeadRecordV1): boolean {
+  return (
+    left.workspaceId === right.workspaceId &&
+    left.workspaceEpochId === right.workspaceEpochId &&
+    left.workspaceVersionId === right.workspaceVersionId &&
+    left.acceptedEventId === right.acceptedEventId &&
+    left.commitOid === right.commitOid &&
+    left.treeOid === right.treeOid
+  );
 }

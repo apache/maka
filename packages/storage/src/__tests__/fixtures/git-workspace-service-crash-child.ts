@@ -34,6 +34,17 @@ if (process.env.MAKA_GIT_WORKSPACE_ACTION === 'baseline-receipt') {
   throw new Error('Managed baseline crash child missed its failpoint');
 }
 
+if (process.env.MAKA_GIT_WORKSPACE_ACTION === 'execution-admission') {
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  if (!rootOwner) throw new Error('Unable to acquire crash-child root owner');
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  const owner = await openManagedWorkspaceOwner({ rootOwner, gitRuntime, failpoint });
+  const accepted = await owner.openManagedWorkspaceBaseline(runtimeStore, request);
+  await owner.withManagedWorkspaceExecution(accepted.executionHandle, async () => undefined);
+  throw new Error('Managed execution admission crash child missed its failpoint');
+}
+
 const service = createGitWorkspaceService({
   storageRoot,
   gitRuntime,

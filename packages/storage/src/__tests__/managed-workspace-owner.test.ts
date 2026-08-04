@@ -11,7 +11,9 @@ import { afterEach, before, test } from 'node:test';
 import {
   ManagedWorkspaceOwnerError,
   openManagedWorkspaceOwner,
+  type ManagedWorkspaceExecutionHandle,
 } from '../managed-workspace-owner.js';
+import { inspectManagedWorkspaceExecutionHandleInternal } from '../managed-workspace-execution-authority-internal.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
@@ -108,15 +110,262 @@ test('creates an accepted managed baseline only through the active owner', async
       },
     });
 
-    const { binding } = await owner.openManagedWorkspaceBaseline(
+    const accepted = await owner.openManagedWorkspaceBaseline(
       runtimeStore,
       openRequest(sourceRoot),
     );
+    const { binding } = inspectManagedWorkspaceExecutionHandleInternal(accepted.executionHandle);
 
     assert.equal(binding.sourceTreeOid, binding.baselineTreeOid);
     assert.equal(existsSync(join(binding.worktreePath, '.maka-workspace.json')), false);
     await owner.close();
   } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('publishes a managed tool cwd only through its accepted execution handle', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+
+    assert.equal('binding' in accepted, false);
+    assert.equal('receipt' in accepted, false);
+    const execution = await owner.withManagedWorkspaceExecution(
+      accepted.executionHandle,
+      async (context) => ({
+        ...context,
+        tracked: existsSync(join(context.cwd, 'tracked.txt')),
+      }),
+    );
+
+    assert.equal(execution.kind, 'managed_worktree');
+    assert.equal(execution.provisioning, 'canonical_tree_only_v1');
+    assert.equal(execution.workspaceVersionId, accepted.head.workspaceVersionId);
+    assert.equal(execution.commitOid, accepted.head.commitOid);
+    assert.equal(execution.treeOid, accepted.head.treeOid);
+    assert.equal(execution.tracked, true);
+    assert.equal(execution.cwd.startsWith(storageRoot), true);
+    await owner.close();
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('quarantines drift introduced after execution artifact verification before publishing cwd', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  let executionFailpointArmed = false;
+  let callbackCalled = false;
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      async failpoint(point) {
+        if (
+          executionFailpointArmed &&
+          (point as string) === 'after_execution_artifact_verification'
+        ) {
+          executionFailpointArmed = false;
+          const acceptedEvidence = inspectManagedWorkspaceExecutionHandleInternal(
+            accepted.executionHandle,
+          );
+          await writeFile(
+            join(acceptedEvidence.binding.worktreePath, 'tracked.txt'),
+            'external drift after verification\n',
+            'utf8',
+          );
+        }
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+    executionFailpointArmed = true;
+
+    await assert.rejects(
+      owner.withManagedWorkspaceExecution(accepted.executionHandle, async () => {
+        callbackCalled = true;
+      }),
+      isOwnerError('managed_workspace_quarantined'),
+    );
+
+    assert.equal(callbackCalled, false);
+    await owner.close();
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('rejects a forged execution handle before invoking the tool callback', async () => {
+  const storageRoot = await temporaryRoot();
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  let callbackCalled = false;
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+
+    await assert.rejects(
+      owner.withManagedWorkspaceExecution(
+        Object.freeze({
+          kind: 'managed_workspace_execution_handle_v1',
+        }) as ManagedWorkspaceExecutionHandle,
+        async () => {
+          callbackCalled = true;
+        },
+      ),
+      isOwnerError('managed_workspace_execution_handle_invalid'),
+    );
+
+    assert.equal(callbackCalled, false);
+    await owner.close();
+  } finally {
+    await rootOwner.close();
+  }
+});
+
+test('rejects an execution handle issued by another managed workspace owner', async () => {
+  const root = await temporaryRoot();
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const leftCapability = await resolveStorageRoot({
+    path: join(root, 'left-storage'),
+    kind: 'interactive',
+  });
+  const rightCapability = await resolveStorageRoot({
+    path: join(root, 'right-storage'),
+    kind: 'interactive',
+  });
+  const leftRootOwner = await tryAcquireInteractiveRootOwner(leftCapability);
+  const rightRootOwner = await tryAcquireInteractiveRootOwner(rightCapability);
+  assert.ok(leftRootOwner);
+  assert.ok(rightRootOwner);
+  const leftStore = createSqliteRuntimeStore(join(leftCapability.canonicalPath, 'runtime.sqlite'));
+  try {
+    const leftOwner = await openManagedWorkspaceOwner({
+      rootOwner: leftRootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+    const rightOwner = await openManagedWorkspaceOwner({
+      rootOwner: rightRootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+    const accepted = await leftOwner.openManagedWorkspaceBaseline(
+      leftStore,
+      openRequest(sourceRoot),
+    );
+
+    await assert.rejects(
+      rightOwner.withManagedWorkspaceExecution(accepted.executionHandle, async () => {}),
+      isOwnerError('managed_workspace_execution_handle_invalid'),
+    );
+
+    await leftOwner.close();
+    await rightOwner.close();
+  } finally {
+    leftStore.close();
+    await leftRootOwner.close();
+    await rightRootOwner.close();
+  }
+});
+
+test('drains an admitted managed execution before owner close completes', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  let releaseExecution!: () => void;
+  const executionMayFinish = new Promise<void>((resolve) => {
+    releaseExecution = resolve;
+  });
+  let executionAdmitted!: () => void;
+  const executionStarted = new Promise<void>((resolve) => {
+    executionAdmitted = resolve;
+  });
+  let executing: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+    executing = owner.withManagedWorkspaceExecution(accepted.executionHandle, async () => {
+      executionAdmitted();
+      await executionMayFinish;
+    });
+    await executionStarted;
+
+    let closeSettled = false;
+    closing = owner.close().then(() => {
+      closeSettled = true;
+    });
+    assert.equal(
+      await Promise.race([closing.then(() => 'closed'), delay(250, 'pending')]),
+      'pending',
+    );
+    assert.equal(closeSettled, false);
+    await assert.rejects(
+      owner.withManagedWorkspaceExecution(accepted.executionHandle, async () => {}),
+      isOwnerError('managed_workspace_owner_closing'),
+    );
+
+    releaseExecution();
+    await executing;
+    await closing;
+    assert.equal(owner.state, 'closed');
+  } finally {
+    releaseExecution();
+    await Promise.allSettled([executing, closing].filter((value) => value !== undefined));
     runtimeStore.close();
     await rootOwner.close();
   }
@@ -214,10 +463,11 @@ test('rejects external drift instead of reopening a non-ready workspace', async 
         expectedSha256: gitExecutableSha256,
       },
     });
-    const { binding } = await owner.openManagedWorkspaceBaseline(
+    const accepted = await owner.openManagedWorkspaceBaseline(
       runtimeStore,
       openRequest(sourceRoot),
     );
+    const { binding } = inspectManagedWorkspaceExecutionHandleInternal(accepted.executionHandle);
     await writeFile(join(binding.worktreePath, 'tracked.txt'), 'external drift\n', 'utf8');
 
     await assert.rejects(

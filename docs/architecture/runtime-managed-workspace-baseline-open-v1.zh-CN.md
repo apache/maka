@@ -1,8 +1,7 @@
 # Managed Workspace Baseline Open v1：M0 最终接受门
 
-- 状态：M0 实现与审查收口中；前置 Git Workspace Service、Workspace Version Authority 与
-  Managed Workspace Owner 合并后仍需从最新 `main` 平铺重建
-- 更新日期：2026-08-02
+- 状态：已合并；M1 execution admission 在其返回值上增加 owner-bound handle，不改变 M0 durable authority
+- 更新日期：2026-08-04
 - 主要不变量：只有经 Git artifact owner 持久化并重新验证的 exact baseline receipt，才能由同一
   storage-root lifecycle owner 提交给 SQLite workspace authority；Git artifact 单独成功不构成
   canonical workspace version
@@ -104,8 +103,10 @@ v1 receipt 严格包含：
 `ManagedWorkspaceOwner` 只暴露 `openManagedWorkspaceBaseline(...)` 与 lifecycle close。对应 receipt capability
 位于未被 package root 导出的 internal module，并通过实例绑定的 `WeakMap` 只交给该 owner。普通 package
 consumer 既不能预占一个 epoch 的 admission identity，也不能在 canonical acceptance 前取得 executable
-worktree path。未来 ToolRuntime 接入时只允许消费由该入口成功返回的 accepted handle；在真实 consumer 出现前，
-M0 不预设一个无消费者的 opaque-handle 抽象。
+worktree path。M1 execution admission 只允许消费由该入口成功返回的 owner-bound handle；handle 的 consumer
+是同一 `ManagedWorkspaceOwner.withManagedWorkspaceExecution(...)` 准入门，仍未把 cwd 暴露给 Desktop、CLI
+或 ToolRuntime。详细合同见
+[Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
 
 receipt 不保存 wall-clock `committedAt`：artifact owner 无法从 Git evidence 重新证明该时间，允许它进入 receipt
 会让 orphan receipt 篡改污染 canonical event 时间。M0 的 baseline authority 使用协议固定逻辑时间 `0`；
