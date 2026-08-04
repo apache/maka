@@ -258,7 +258,13 @@ export class HostSessionRevisionCoordinator {
         }),
         this.#stores.sessionStore.listHeaders(),
       ]);
-    } catch {
+    } catch (error) {
+      if (isConversationRuntimeFactRewriteUnsupported(error)) {
+        return copyFailure(
+          'operation_unavailable',
+          'Session conversation copy does not yet support continuation authority facts',
+        );
+      }
       return copyFailure('persistence_failed', 'Source conversation lineage is unavailable');
     }
     if (
@@ -681,6 +687,14 @@ export class HostSessionRevisionCoordinator {
     }
     return boundary >= 0 && messages.slice(boundary + 1).some((message) => message.type === 'user');
   }
+}
+
+function isConversationRuntimeFactRewriteUnsupported(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    error.code === 'branch_runtime_fact_rewrite_unsupported'
+  );
 }
 
 function conversationCopyFingerprint(

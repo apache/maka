@@ -1688,6 +1688,7 @@ export {
 export {
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
+  isAuthenticationErrorText,
   redactSecrets,
 } from './redaction.js';
 

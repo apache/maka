@@ -26,6 +26,7 @@ import {
   commitTerminalRunWithRuntimeFact,
 } from './terminal-run-commit.js';
 import { buildToolOperationId } from './runtime-commit-sink.js';
+import { isContinuationStartRuntimeEvent } from './runtime-event-read-model.js';
 import {
   buildToolResultArchiveResourceRef,
   parseToolResultArchiveResourceRef,
@@ -231,12 +232,30 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
       return { run, runtimeEvents: events, operationalEvents };
     }),
   );
-  return {
+  const plan = {
     sourceSessionId: input.sourceSessionId,
     copyTurnIds,
     inlineRuntimeEvents: [...input.sourceEvents],
     runs,
   };
+  assertConversationRuntimeLedgerCopySupported(plan);
+  return plan;
+}
+
+function assertConversationRuntimeLedgerCopySupported(
+  plan: ConversationRuntimeLedgerCopyPlan,
+): void {
+  const unsupported = plan.runs.some(
+    ({ run, runtimeEvents }) =>
+      run.continuationSource !== undefined || runtimeEvents.some(isContinuationStartRuntimeEvent),
+  );
+  if (!unsupported) return;
+
+  const error = new Error(
+    'Conversation copy contains durable runtime authority facts that require typed identity rewriting',
+  ) as Error & { code: string };
+  error.code = 'branch_runtime_fact_rewrite_unsupported';
+  throw error;
 }
 
 export async function cloneConversationRuntimeLedger(

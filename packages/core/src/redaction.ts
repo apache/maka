@@ -188,7 +188,7 @@ export function generalizedErrorMessage(error: unknown, fallback = 'Operation fa
   const lower = redacted.toLowerCase();
   if (lower.includes('timeout')) return 'Request timed out';
   if (lower.includes('429') || lower.includes('rate')) return 'Rate limit exceeded';
-  if (lower.includes('401') || lower.includes('403') || containsAuthenticationTerm(lower))
+  if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
     return 'Authentication failed';
   if (lower.includes('5') && /\b5\d\d\b/.test(lower)) return 'Provider returned an error';
   if (
@@ -220,7 +220,7 @@ export function generalizedErrorMessageChinese(error: unknown, fallback = '操�
   const lower = redacted.toLowerCase();
   if (lower.includes('timeout')) return '请求超时';
   if (lower.includes('429') || lower.includes('rate')) return '触发模型速率限制';
-  if (lower.includes('401') || lower.includes('403') || containsAuthenticationTerm(lower))
+  if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
     return '鉴权失败';
   if (lower.includes('5') && /\b5\d\d\b/.test(lower)) return '模型服务返回错误';
   if (
@@ -233,8 +233,6 @@ export function generalizedErrorMessageChinese(error: unknown, fallback = '操�
   return fallback;
 }
 
-function containsAuthenticationTerm(message: string): boolean {
-  return /\b(?:auth|authentication|authorization|oauth|unauthenticated|unauthorized)\b/.test(
-    message,
-  );
+export function isAuthenticationErrorText(message: string): boolean {
+  return message.replace(/\bauthorit\w*/g, '').includes('auth');
 }

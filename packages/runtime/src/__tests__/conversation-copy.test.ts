@@ -519,6 +519,95 @@ test('conversation copy turn closure includes legacy children but excludes later
   assert.deepEqual(plan.copyTurnIds, ['turn-parent', 'turn-child', 'turn-grandchild']);
 });
 
+test('conversation copy rejects continuation authority selected through the child-run closure', async () => {
+  const parent = agentRunHeader({ runId: 'run-parent', turnId: 'turn-parent' });
+  const child = agentRunHeader({
+    runId: 'run-child-retry',
+    turnId: 'turn-child-retry',
+    parentRunId: 'run-parent',
+    agentId: 'agent-child',
+    continuationSource: {
+      sourceInvocationId: parent.invocationId!,
+      sourceRunId: parent.runId,
+      sourceTurnId: parent.turnId,
+      sourceRuntimeEventHighWater: 1,
+    },
+  });
+  const runs = [parent, child];
+
+  await assert.rejects(
+    prepareConversationRuntimeLedgerCopy({
+      sourceSessionId: 'session-source',
+      sourceEvents: [],
+      copiedMessages: [
+        {
+          type: 'user',
+          id: 'message-parent',
+          turnId: parent.turnId,
+          ts: 1,
+          text: 'retain the parent and its child closure',
+        },
+      ],
+      runStore: {
+        listSessionRuns: async () => runs,
+        readEvents: async () => [],
+      },
+      runtimeEventStore: {
+        readRuntimeEvents: async (_sessionId, runId) => {
+          const run = runs.find((candidate) => candidate.runId === runId);
+          assert.ok(run);
+          return [
+            runtimeEvent({
+              id: `terminal-${runId}`,
+              runId,
+              invocationId: run.invocationId,
+              turnId: run.turnId,
+              status: 'completed',
+            }),
+          ];
+        },
+      },
+    }),
+    /typed identity rewriting/i,
+  );
+});
+
+test('conversation copy rejects legacy v1 continuation-start events', async () => {
+  const run = agentRunHeader({ runId: 'run-v1', turnId: 'turn-v1' });
+  await assert.rejects(
+    prepareConversationRuntimeLedgerCopy({
+      sourceSessionId: 'session-source',
+      sourceEvents: [],
+      copiedMessages: [
+        { type: 'user', id: 'message-v1', turnId: run.turnId, ts: 1, text: 'retain' },
+      ],
+      runStore: {
+        listSessionRuns: async () => [run],
+        readEvents: async () => [],
+      },
+      runtimeEventStore: {
+        readRuntimeEvents: async () => [
+          runtimeEvent({
+            id: 'v1-start',
+            runId: run.runId,
+            invocationId: run.invocationId,
+            turnId: run.turnId,
+            actions: { stateDelta: { continuationStart: true } },
+          }),
+          runtimeEvent({
+            id: 'v1-terminal',
+            runId: run.runId,
+            invocationId: run.invocationId,
+            turnId: run.turnId,
+            status: 'completed',
+          }),
+        ],
+      },
+    }),
+    /typed identity rewriting/i,
+  );
+});
+
 test('conversation copy rejects a retained AgentRun without RuntimeEvent facts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-missing-runtime-copy-'));
   try {

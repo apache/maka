@@ -125,6 +125,7 @@ import {
   cloneConversationRuntimeLedger as cloneConversationLedger,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
+  type ConversationRuntimeLedgerCopyPlan,
 } from './conversation-copy.js';
 import { firstRuntimeRepairRunId, RuntimeLedgerRepair } from './runtime-ledger-repair.js';
 import {
@@ -4897,7 +4898,7 @@ export class SessionManager {
     copied: StoredMessage[],
     input: ReviseBeforeTurnInput,
   ): Promise<SessionSummary> {
-    this.assertConversationRuntimeLedgerCloneSupported(sourceView, copied);
+    const plan = await this.prepareConversationRuntimeLedgerClone(sessionId, sourceView, copied);
     const [header, boundary] = await Promise.all([
       this.deps.store.readHeader(sessionId),
       this.deps.store.readExecutionBoundary(sessionId),
@@ -4937,12 +4938,7 @@ export class SessionManager {
       boundary,
     );
     try {
-      const rewritten = await this.cloneConversationRuntimeLedger(
-        sessionId,
-        next.id,
-        sourceView,
-        copied,
-      );
+      const rewritten = await this.cloneConversationRuntimeLedger(next.id, copied, plan);
       if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
       await this.deps.store.appendMessage(next.id, {
         type: 'system_note',
@@ -4973,7 +4969,7 @@ export class SessionManager {
     copied: StoredMessage[],
     input: BranchFromTurnInput,
   ): Promise<SessionSummary> {
-    this.assertConversationRuntimeLedgerCloneSupported(sourceView, copied);
+    const plan = await this.prepareConversationRuntimeLedgerClone(sessionId, sourceView, copied);
     const [header, boundary] = await Promise.all([
       this.deps.store.readHeader(sessionId),
       this.deps.store.readExecutionBoundary(sessionId),
@@ -4998,12 +4994,7 @@ export class SessionManager {
       boundary,
     );
     try {
-      const rewritten = await this.cloneConversationRuntimeLedger(
-        sessionId,
-        next.id,
-        sourceView,
-        copied,
-      );
+      const rewritten = await this.cloneConversationRuntimeLedger(next.id, copied, plan);
       if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
       await this.deps.store.appendMessage(next.id, {
         type: 'system_note',
@@ -5412,26 +5403,33 @@ export class SessionManager {
     );
   }
 
-  private async cloneConversationRuntimeLedger(
+  private async prepareConversationRuntimeLedgerClone(
     sourceSessionId: string,
-    childSessionId: string,
     sourceView: RuntimeReadModelSessionView,
     copiedMessages: readonly StoredMessage[],
-  ): Promise<readonly StoredMessage[]> {
-    if (!this.deps.runStore || !this.deps.runtimeEventStore) return copiedMessages;
-    const plan = await prepareConversationRuntimeLedgerCopy({
+  ): Promise<ConversationRuntimeLedgerCopyPlan | undefined> {
+    if (!this.deps.runStore || !this.deps.runtimeEventStore) return undefined;
+    return prepareConversationRuntimeLedgerCopy({
       sourceSessionId,
       sourceEvents: sourceView.events,
       copiedMessages,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
     });
+  }
+
+  private async cloneConversationRuntimeLedger(
+    childSessionId: string,
+    copiedMessages: readonly StoredMessage[],
+    plan: ConversationRuntimeLedgerCopyPlan | undefined,
+  ): Promise<readonly StoredMessage[]> {
+    if (!plan || !this.deps.runStore || !this.deps.runtimeEventStore) return copiedMessages;
     const copied = await cloneConversationLedger({
       plan,
       copiedMessages,
       referenceMap: {
         mode: 'preserve_external',
-        sourceSessionId,
+        sourceSessionId: plan.sourceSessionId,
         targetSessionId: childSessionId,
       },
       runStore: this.deps.runStore,
@@ -5450,46 +5448,6 @@ export class SessionManager {
         `Conversation copy ${sessionId} failed and could not be removed`,
       );
     }
-    throw error;
-  }
-
-  /**
-   * Tool operation identities are rewritten by cloneConversationRuntimeLedger.
-   * Continuation authority is different: its claim and boundary evidence live
-   * outside the copied Run/Event ledger. Until that authority has a typed copy
-   * protocol, fail before creating a target Session rather than carrying source
-   * continuation identities into a readable-looking clone.
-   */
-  private assertConversationRuntimeLedgerCloneSupported(
-    sourceView: RuntimeReadModelSessionView,
-    copiedMessages: readonly StoredMessage[],
-  ): void {
-    const copiedTurnIds = new Set<string>();
-    for (const message of copiedMessages) {
-      if ('turnId' in message && typeof message.turnId === 'string') {
-        copiedTurnIds.add(message.turnId);
-      }
-    }
-    if (copiedTurnIds.size === 0) return;
-
-    const selectedRuns = new Set(
-      sourceView.runs.filter((run) => copiedTurnIds.has(run.turnId)).map((run) => run.runId),
-    );
-    const unsupportedRun = sourceView.runs.find(
-      (run) => selectedRuns.has(run.runId) && run.continuationSource !== undefined,
-    );
-    const unsupportedContinuationEvent = sourceView.events.find(
-      (event) =>
-        selectedRuns.has(event.runId) &&
-        copiedTurnIds.has(event.turnId) &&
-        event.actions?.continuationStart !== undefined,
-    );
-    if (!unsupportedRun && !unsupportedContinuationEvent) return;
-
-    const error = new Error(
-      'Conversation copy contains durable runtime authority facts that require typed identity rewriting',
-    ) as Error & { code: string };
-    error.code = 'branch_runtime_fact_rewrite_unsupported';
     throw error;
   }
 

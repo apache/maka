@@ -269,6 +269,18 @@ describe('generalizedErrorMessage', () => {
       'Conversation copy failed',
     );
   });
+
+  test('recognizes provider authentication error spellings', () => {
+    for (const message of [
+      'AuthenticationError',
+      'OAuth2 token expired',
+      'User is not authorized',
+      'Please authenticate',
+      'authToken is missing',
+    ]) {
+      assert.equal(generalizedErrorMessage(new Error(message)), 'Authentication failed');
+    }
+  });
 });
 
 describe('generalizedErrorMessageChinese', () => {

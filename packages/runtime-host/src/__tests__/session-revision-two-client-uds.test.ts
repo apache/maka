@@ -58,6 +58,7 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
     metadataLinkedSourceSessionId,
     archivedOwnedSourceSessionId,
     graphChildSessionId,
+    continuationSourceSessionId,
   } = await seedSource(root, capability);
   let host: ExecutionHostHandle | undefined;
   try {
@@ -70,6 +71,7 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
       metadataLinkedSourceSessionId,
       archivedOwnedSourceSessionId,
       graphChildSessionId,
+      continuationSourceSessionId,
     );
     await stopHost(host);
     host = undefined;
@@ -113,11 +115,29 @@ async function verifyConcurrentRevisionAuthority(
   metadataLinkedSourceSessionId: string,
   archivedOwnedSourceSessionId: string,
   graphChildSessionId: string,
+  continuationSourceSessionId: string,
 ): Promise<void> {
   const desktop = await connectClient(root, 'desktop');
   const tui = await connectClient(root, 'tui');
   try {
     const source = await querySession(desktop, sourceSessionId);
+    const continuationSource = await querySession(desktop, continuationSourceSessionId);
+    await assert.rejects(
+      desktop.request('session.branch.create', {
+        sourceSessionId: continuationSourceSessionId,
+        targetSessionId: 'continuation-copy-target',
+        sourceTurnId: 'continuation-parent-turn',
+        expectedSourceRevision: continuationSource.revision,
+      }),
+      operationError('operation_unavailable'),
+    );
+    assert.deepEqual(
+      await tui.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: 'continuation-copy-target',
+      }),
+      { kind: 'session', session: null },
+    );
     const linkedChildSource = await querySession(desktop, linkedChildSourceSessionId);
     await assert.rejects(
       desktop.request('session.branch.create', {
@@ -441,6 +461,7 @@ async function seedSource(
   metadataLinkedSourceSessionId: string;
   archivedOwnedSourceSessionId: string;
   graphChildSessionId: string;
+  continuationSourceSessionId: string;
 }> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -491,6 +512,56 @@ async function seedSource(
       model: 'fake-model',
       permissionMode: 'ask',
     });
+    const continuationSource = await execution.sessionStore.create({
+      cwd: root,
+      name: 'Continuation Source Session',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    await execution.sessionStore.appendMessage(continuationSource.id, {
+      type: 'user',
+      id: 'continuation-parent-user',
+      turnId: 'continuation-parent-turn',
+      ts: 1,
+      text: 'retain the child continuation closure',
+    });
+    const continuationParent = agentRunHeader(
+      root,
+      continuationSource.id,
+      'continuation-parent-run',
+      'continuation-parent-invocation',
+      'continuation-parent-turn',
+    );
+    const continuationChild: AgentRunHeader = {
+      ...agentRunHeader(
+        root,
+        continuationSource.id,
+        'continuation-child-run',
+        'continuation-child-invocation',
+        'continuation-child-turn',
+      ),
+      parentRunId: continuationParent.runId,
+      agentId: 'child-agent',
+      continuationSource: {
+        sourceInvocationId: continuationParent.invocationId!,
+        sourceRunId: continuationParent.runId,
+        sourceTurnId: continuationParent.turnId,
+        sourceRuntimeEventHighWater: 1,
+      },
+    };
+    for (const run of [continuationParent, continuationChild]) {
+      await execution.agentRunStore.createRun(run);
+      await execution.runtimeEventStore.appendRuntimeEvent(
+        run.sessionId,
+        run.runId,
+        runtimeEvent(run.sessionId, run.runId, run.invocationId!, run.turnId, {
+          id: `${run.runId}-terminal`,
+          status: 'completed',
+        }),
+      );
+    }
     const artifact = await artifacts.create({
       id: 'source-artifact',
       sessionId: source.id,
@@ -1123,6 +1194,7 @@ async function seedSource(
       metadataLinkedSourceSessionId: metadataLinkedSource.id,
       archivedOwnedSourceSessionId: archivedOwnedSource.id,
       graphChildSessionId: graphChild.header.id,
+      continuationSourceSessionId: continuationSource.id,
     };
   } finally {
     graph.close();

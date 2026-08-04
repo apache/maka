@@ -518,3 +518,18 @@ describe('Provider error classification', () => {
     assert.deepEqual(errorPresentationFromClass('Other'), {});
   });
 });
+test('auth classification preserves broad provider spellings without matching authority', () => {
+  for (const message of [
+    'AuthenticationError',
+    'OAuth2 token expired',
+    'User is not authorized',
+    'Please authenticate',
+    'authToken is missing',
+  ]) {
+    assert.equal(classifyError(new Error(message)), 'Auth');
+  }
+  assert.equal(
+    classifyError(new Error('Conversation copy contains durable runtime authority facts')),
+    'Error',
+  );
+});
