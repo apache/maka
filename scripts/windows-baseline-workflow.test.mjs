@@ -37,6 +37,17 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
   }
 
   assert.match(workflow, /Get-CimInstance Win32_Process/u);
+  assert.match(workflow, /name: Capture process baseline/u);
+  assert.match(workflow, /process-baseline\.json/u);
+  assert.match(workflow, /CreationDate/u);
+  assert.match(workflow, /HashSet\[string\]/u);
+  assert.match(workflow, /HashSet\[int\]/u);
+  assert.doesNotMatch(workflow, /CommandLine -match/u);
+  assert.match(workflow, /\$treeProcessIds\.Contains\(\$process\.ParentProcessId\)/u);
+  assert.match(workflow, /residual-process-tree\.json/u);
+  assert.match(workflow, /taskkill\.exe \/PID \$process\.ProcessId \/T \/F/u);
+  assert.match(workflow, /residual-processes-after-cleanup\.json/u);
+  assert.match(workflow, /\$unreaped\.Count -gt 0/u);
   assert.match(workflow, /\$exitCode = \$LASTEXITCODE/u);
   assert.match(
     workflow,

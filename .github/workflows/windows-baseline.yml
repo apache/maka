@@ -34,6 +34,28 @@ jobs:
         shell: pwsh
         run: New-Item -ItemType Directory -Force $env:WINDOWS_BASELINE_LOG_DIR | Out-Null
 
+      - name: Capture process baseline
+        shell: pwsh
+        run: |
+          $processes = @(
+            Get-CimInstance Win32_Process |
+              Where-Object { $_.Name -in @('node.exe', 'electron.exe') } |
+              ForEach-Object {
+                [pscustomobject]@{
+                  ProcessId = $_.ProcessId
+                  ParentProcessId = $_.ParentProcessId
+                  Name = $_.Name
+                  CreationDate = $_.CreationDate.ToUniversalTime().ToString('o')
+                  CommandLine = $_.CommandLine
+                }
+              }
+          )
+          [pscustomobject]@{
+            CapturedAtUtc = [DateTime]::UtcNow.ToString('o')
+            Processes = $processes
+          } | ConvertTo-Json -Depth 4 |
+            Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/process-baseline.json"
+
       - id: install
         name: Install dependencies
         continue-on-error: true
@@ -100,32 +122,87 @@ jobs:
           exit $exitCode
 
       - id: processes
-        name: Audit residual repository processes
+        name: Audit residual job processes
         if: always()
         continue-on-error: true
         shell: pwsh
         run: |
-          $repoPattern = [regex]::Escape($env:GITHUB_WORKSPACE)
-          $leaks = @(
+          $baseline = Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/process-baseline.json" -Raw |
+            ConvertFrom-Json
+          $baselineKeys = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::Ordinal
+          )
+          foreach ($process in @($baseline.Processes)) {
+            [void]$baselineKeys.Add("$($process.ProcessId)|$($process.CreationDate)")
+          }
+          $allProcesses = @(
             Get-CimInstance Win32_Process |
-              Where-Object {
-                $_.ProcessId -ne $PID -and
+              ForEach-Object {
+                [pscustomobject]@{
+                  ProcessId = $_.ProcessId
+                  ParentProcessId = $_.ParentProcessId
+                  Name = $_.Name
+                  CreationDate = $_.CreationDate.ToUniversalTime().ToString('o')
+                  CommandLine = $_.CommandLine
+                }
+              }
+          )
+          $leaks = @(
+            $allProcesses | Where-Object {
                 $_.Name -in @('node.exe', 'electron.exe') -and
-                $_.CommandLine -match $repoPattern
-              } |
-              Select-Object ProcessId, ParentProcessId, Name, CommandLine
+                -not $baselineKeys.Contains("$($_.ProcessId)|$($_.CreationDate)")
+              }
           )
           ConvertTo-Json -InputObject $leaks -Depth 3 |
             Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes.json"
           if ($leaks.Count -eq 0) {
-            Write-Output 'No residual repository Node or Electron processes.'
+            Write-Output 'No residual job-created Node or Electron processes.'
             exit 0
           }
+          $treeProcessIds = [System.Collections.Generic.HashSet[int]]::new()
+          foreach ($process in $leaks) {
+            [void]$treeProcessIds.Add($process.ProcessId)
+          }
+          do {
+            $addedDescendant = $false
+            foreach ($process in $allProcesses) {
+              if (
+                $treeProcessIds.Contains($process.ParentProcessId) -and
+                $treeProcessIds.Add($process.ProcessId)
+              ) {
+                $addedDescendant = $true
+              }
+            }
+          } while ($addedDescendant)
+          $ownedTree = @(
+            $allProcesses | Where-Object { $treeProcessIds.Contains($_.ProcessId) }
+          )
+          ConvertTo-Json -InputObject $ownedTree -Depth 3 |
+            Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-process-tree.json"
           $leaks | Format-List | Out-String | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes.log"
           foreach ($process in $leaks) {
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+            & taskkill.exe /PID $process.ProcessId /T /F 2>&1 |
+              Add-Content "$env:WINDOWS_BASELINE_LOG_DIR/process-cleanup.log"
           }
-          Write-Error "Found and terminated $($leaks.Count) residual repository process(es)."
+          Start-Sleep -Seconds 1
+          $remainingById = @{}
+          Get-CimInstance Win32_Process |
+            ForEach-Object {
+              $key = "$($_.ProcessId)|$($_.CreationDate.ToUniversalTime().ToString('o'))"
+              $remainingById[$key] = $_
+            }
+          $unreaped = @(
+            $ownedTree | Where-Object {
+              $remainingById.ContainsKey("$($_.ProcessId)|$($_.CreationDate)")
+            }
+          )
+          ConvertTo-Json -InputObject $unreaped -Depth 3 |
+            Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes-after-cleanup.json"
+          if ($unreaped.Count -gt 0) {
+            Write-Error "Failed to reap $($unreaped.Count) process(es) from the residual job tree."
+            exit 1
+          }
+          Write-Error "Found $($leaks.Count) residual job root(s) and reaped their $($ownedTree.Count)-process tree."
           exit 1
 
       - name: Publish baseline summary
