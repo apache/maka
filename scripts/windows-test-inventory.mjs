@@ -22,12 +22,10 @@ export async function collectWindowsTestSkips(root = REPO_ROOT) {
     if (file === join(REPO_ROOT, 'scripts', 'windows-test-inventory.test.mjs')) continue;
     const sourceText = await readFile(file, 'utf8');
     const sourceLines = sourceText.split(/\r?\n/u);
-    for (let index = 0; index < sourceLines.length; index += 1) {
-      const line = sourceLines[index];
-      const skip = /\bskip:\s*(.+?)(?:,\s*(?:timeout|only|todo):|[,}])/u.exec(line);
-      if (!skip) continue;
-      const expression = skip[1].trim();
+    for (const skip of findSkipExpressions(sourceText)) {
+      const expression = skip.expression.replaceAll(/\s+/gu, ' ');
       if (!excludesWindows(expression)) continue;
+      const index = sourceText.slice(0, skip.offset).split(/\r?\n/u).length - 1;
       const title = nearbyTestTitle(sourceLines, index);
       const path = relative(root, file).replaceAll('\\', '/');
       entries.push({
@@ -42,6 +40,104 @@ export async function collectWindowsTestSkips(root = REPO_ROOT) {
   return entries.sort(
     (left, right) => left.path.localeCompare(right.path) || left.line - right.line,
   );
+}
+
+export function findSkipExpressions(sourceText) {
+  const expressions = [];
+  let index = 0;
+  while (index < sourceText.length) {
+    const next = skipTriviaOrLiteral(sourceText, index);
+    if (next !== index) {
+      index = next;
+      continue;
+    }
+    if (!sourceText.startsWith('skip', index) || isIdentifierPart(sourceText[index - 1])) {
+      index += 1;
+      continue;
+    }
+    const afterIdentifier = index + 4;
+    if (isIdentifierPart(sourceText[afterIdentifier])) {
+      index = afterIdentifier;
+      continue;
+    }
+    const colon = skipWhitespaceAndComments(sourceText, afterIdentifier);
+    if (sourceText[colon] !== ':') {
+      index = afterIdentifier;
+      continue;
+    }
+    const expressionStart = skipWhitespaceAndComments(sourceText, colon + 1);
+    const expressionEnd = findExpressionEnd(sourceText, expressionStart);
+    const expression = sourceText.slice(expressionStart, expressionEnd).trim();
+    if (expression) expressions.push({ offset: index, expression });
+    index = Math.max(expressionEnd, afterIdentifier);
+  }
+  return expressions;
+}
+
+function findExpressionEnd(sourceText, start) {
+  const closing = [];
+  let index = start;
+  while (index < sourceText.length) {
+    const next = skipTriviaOrLiteral(sourceText, index);
+    if (next !== index) {
+      index = next;
+      continue;
+    }
+    const char = sourceText[index];
+    if (char === '(') closing.push(')');
+    else if (char === '[') closing.push(']');
+    else if (char === '{') closing.push('}');
+    else if (closing.at(-1) === char) closing.pop();
+    else if (closing.length === 0 && (char === ',' || char === '}')) return index;
+    index += 1;
+  }
+  return index;
+}
+
+function skipTriviaOrLiteral(sourceText, index) {
+  const char = sourceText[index];
+  if (char === '/' && sourceText[index + 1] === '/') {
+    const newline = sourceText.indexOf('\n', index + 2);
+    return newline === -1 ? sourceText.length : newline + 1;
+  }
+  if (char === '/' && sourceText[index + 1] === '*') {
+    const end = sourceText.indexOf('*/', index + 2);
+    return end === -1 ? sourceText.length : end + 2;
+  }
+  if (char === "'" || char === '"' || char === '`')
+    return skipQuotedLiteral(sourceText, index, char);
+  return index;
+}
+
+function skipQuotedLiteral(sourceText, start, quote) {
+  let index = start + 1;
+  while (index < sourceText.length) {
+    if (sourceText[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (sourceText[index] === quote) return index + 1;
+    index += 1;
+  }
+  return index;
+}
+
+function skipWhitespaceAndComments(sourceText, start) {
+  let index = start;
+  while (index < sourceText.length) {
+    if (/\s/u.test(sourceText[index])) {
+      index += 1;
+      continue;
+    }
+    const next = skipTriviaOrLiteral(sourceText, index);
+    if (next === index || !sourceText.startsWith('/', index)) return index;
+    index = next;
+  }
+  return index;
+}
+
+function isIdentifierPart(char) {
+  return char !== undefined && /[$\w]/u.test(char);
 }
 
 export function renderWindowsTestInventory(entries) {

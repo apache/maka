@@ -15,10 +15,10 @@ This inventory covers test declarations whose `skip` expression excludes Windows
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 28 |
-| portable-candidate | 14 |
+| portable-candidate | 21 |
 | platform-contract | 17 |
 
-Total Windows-excluded declarations: **59**
+Total Windows-excluded declarations: **66**
 
 ## Inventory
 
@@ -63,12 +63,19 @@ Total Windows-excluded declarations: **59**
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts:114` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts:483` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts:529` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts:744` ignores a Stop abort that occurs after another admitted Stop commits termination | `process.platform === 'win32' ? 'Windows termination has no asynchronous POSIX snapshot window' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts:911` keeps a pipe task alive when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts:969` keeps a PTY task controllable when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts:1969` settles after root exit when a detached descendant retains inherited stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts:2057` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts:2206` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | portable-candidate | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts:515` preserves the durable database root binding across formal whole-root import | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts:654` rejects an authority database whose file identity changes after registration | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts:685` does not return an accepted baseline when runtime.sqlite is replaced after the initial root check | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts:1021` rejects a source tree containing a non-UTF-8 Git path | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/managed-workspace-owner.test.ts:299` rejects execution when runtime.sqlite detaches from its canonical path after verification | `process.platform === 'win32' ? 'Open SQLite files cannot be renamed reliably on Windows' : false` |
 | portable-candidate | `packages/storage/src/__tests__/memory-bundle-store.test.ts:715` rejects a symbolic-link Memory parent without reading or writing outside the root | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts:461` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' \|\| (typeof process.getuid === 'function' && process.getuid() === 0)` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts:535` rejects FIFO marker paths without blocking root resolution | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts:669` rejects a lock path that aliases another filesystem object | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts:718` validates an existing control directory without repairing its permissions | `process.platform === 'win32'` |

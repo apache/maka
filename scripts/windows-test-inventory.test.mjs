@@ -3,7 +3,38 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { collectWindowsTestSkips, renderWindowsTestInventory } from './windows-test-inventory.mjs';
+import {
+  collectWindowsTestSkips,
+  findSkipExpressions,
+  renderWindowsTestInventory,
+} from './windows-test-inventory.mjs';
+
+test('reads multiline skip expressions through their property delimiter', () => {
+  const source = `
+// skip: process.platform === 'win32',
+const example = "skip: process.platform === 'win32',";
+test('direct multiline', {
+  skip:
+    process.platform === 'win32'
+      ? 'not on Windows'
+      : false,
+}, () => {});
+test('logical multiline', {
+  skip:
+    process.platform === 'win32' ||
+    anotherCondition,
+  timeout: 1000,
+}, () => {});
+`;
+
+  assert.deepEqual(
+    findSkipExpressions(source).map(({ expression }) => expression),
+    [
+      "process.platform === 'win32'\n      ? 'not on Windows'\n      : false",
+      "process.platform === 'win32' ||\n    anotherCondition",
+    ],
+  );
+});
 
 test('collects and classifies every test declaration that excludes Windows', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-windows-inventory-'));
@@ -12,7 +43,18 @@ test('collects and classifies every test declaration that excludes Windows', asy
     await mkdir(join(root, 'apps', 'desktop'), { recursive: true });
     await writeFile(
       join(root, 'packages', 'runtime-host', 'host.test.ts'),
-      "test('named pipe peer', { skip: process.platform === 'win32' }, () => {});\n",
+      `test('named pipe peer', {
+  skip:
+    process.platform === 'win32'
+      ? 'not on Windows'
+      : false,
+}, () => {});
+test('named pipe reconnect', {
+  skip:
+    process.platform === 'win32' ||
+    anotherCondition,
+}, () => {});
+`,
     );
     await writeFile(
       join(root, 'apps', 'desktop', 'window.test.mjs'),
@@ -33,11 +75,16 @@ test('collects and classifies every test declaration that excludes Windows', asy
           title: 'named pipe peer',
           classification: 'windows-backend-gap',
         },
+        {
+          path: 'packages/runtime-host/host.test.ts',
+          title: 'named pipe reconnect',
+          classification: 'windows-backend-gap',
+        },
       ],
     );
     const rendered = renderWindowsTestInventory(entries);
-    assert.match(rendered, /Total Windows-excluded declarations: \*\*2\*\*/u);
-    assert.match(rendered, /windows-backend-gap \| 1/u);
+    assert.match(rendered, /Total Windows-excluded declarations: \*\*3\*\*/u);
+    assert.match(rendered, /windows-backend-gap \| 2/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
