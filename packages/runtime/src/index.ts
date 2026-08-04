@@ -63,7 +63,10 @@ export type {
   ConversationCopySlice,
   ConversationRuntimeLedgerCopyPlan,
 } from './conversation-copy.js';
-export { conversationCopyLinkedChildReferences } from './conversation-copy.js';
+export {
+  collectConversationCopyLinkedChildReferences,
+  conversationCopyLinkedChildReferences,
+} from './conversation-copy.js';
 export type { SubagentExecutionRef } from './subagent-execution.js';
 export {
   AGENT_GRAPH_RECORD_FACETS,

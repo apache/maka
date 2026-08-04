@@ -2,8 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
-import { agentGraphIdForRootSession } from '@maka/runtime';
-import { prepareAgentGraphRevisionReferences } from '../server/session-revision-graph-references.js';
+import {
+  agentGraphIdForRootSession,
+  collectConversationCopyLinkedChildReferences,
+} from '@maka/runtime';
+import {
+  agentGraphRevisionAdmissionSessionIds,
+  prepareAgentGraphRevisionReferences,
+} from '../server/session-revision-graph-references.js';
 
 const ROOT_SESSION_ID = 'root-session';
 const CHILD_SESSION_ID = 'child-session';
@@ -151,12 +157,57 @@ test('Agent Graph revision references verify resumed Run lineage', async () => {
   });
   assert.equal(accepted.ok, true);
 
+  const firstResumeAttempt = agentRun({
+    runId: 'resume-attempt',
+    turnId: 'resume-turn',
+    resumedFromRunId: 'source-run',
+  });
+  const retry = agentRun({ retriedFromRunId: 'resume-attempt' });
+  const retriedResume = await prepare({
+    messages: [linkedResult({ resumedFromRunId: 'source-run' })],
+    runs: [resumedFrom, firstResumeAttempt, retry],
+    artifactTurnId: 'resume-turn',
+  });
+  assert.equal(retriedResume.ok, true);
+
   const mismatched = await prepare({
     messages: [linkedResult({ resumedFromRunId: 'source-run' })],
     runs: [resumedFrom, agentRun({ resumedFromRunId: undefined })],
   });
   assert.equal(mismatched.ok, false);
   if (!mismatched.ok) assert.equal(mismatched.code, 'operation_unavailable');
+});
+
+test('Agent Graph revision references accept the canonical timeout projection', async () => {
+  const timedOut = await prepare({
+    messages: [linkedResult({ status: 'failed', failureClass: 'Timeout' })],
+    runs: [agentRun({ status: 'cancelled' })],
+  });
+  assert.equal(timedOut.ok, true);
+
+  const unrelatedFailure = await prepare({
+    messages: [linkedResult({ status: 'failed', failureClass: 'ChildAgentError' })],
+    runs: [agentRun({ status: 'cancelled' })],
+  });
+  assert.equal(unrelatedFailure.ok, false);
+});
+
+test('Agent Graph revision admission includes only retained direct and referenced children', () => {
+  const laterChild = childHeader({ id: 'later-child', parentTurnId: 'later-turn' });
+  const siblingChild = childHeader({ id: 'sibling-child', parentSessionId: 'sibling-session' });
+  assert.deepEqual(
+    agentGraphRevisionAdmissionSessionIds({
+      sourceSessionId: ROOT_SESSION_ID,
+      sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader(), laterChild, siblingChild],
+      copyTurnIds: [ROOT_TURN_ID],
+      requests: collectConversationCopyLinkedChildReferences({
+        messages: [linkedResult()],
+        runtimeEvents: [],
+        archivedResults: [],
+      }),
+    }),
+    [CHILD_SESSION_ID],
+  );
 });
 
 interface PrepareOverrides {
@@ -174,6 +225,7 @@ interface PrepareOverrides {
 
 async function prepare(overrides: PrepareOverrides = {}) {
   const sourceHeader = sessionHeader(ROOT_SESSION_ID);
+  const messages = overrides.messages ?? [linkedResult()];
   return prepareAgentGraphRevisionReferences(
     {
       kind: overrides.kind ?? 'revision',
@@ -181,9 +233,11 @@ async function prepare(overrides: PrepareOverrides = {}) {
       sourceHeader,
       sessionHeaders: overrides.sessionHeaders ?? [sourceHeader, childHeader()],
       copyTurnIds: [ROOT_TURN_ID],
-      messages: overrides.messages ?? [linkedResult()],
-      runtimeEvents: [],
-      archivedResults: overrides.archivedResults ?? [],
+      requests: collectConversationCopyLinkedChildReferences({
+        messages,
+        runtimeEvents: [],
+        archivedResults: overrides.archivedResults ?? [],
+      }),
     },
     {
       agentRunStore: {
@@ -240,9 +294,15 @@ function linkedSubagentResult(
 }
 
 function linkedResult(
-  overrides: { readonly runId?: string; readonly resumedFromRunId?: string } = {},
+  overrides: {
+    readonly runId?: string;
+    readonly resumedFromRunId?: string;
+    readonly status?: 'completed' | 'failed' | 'cancelled';
+    readonly failureClass?: string;
+  } = {},
 ): Extract<StoredMessage, { readonly type: 'tool_result' }> {
   const runId = Object.hasOwn(overrides, 'runId') ? overrides.runId : CHILD_RUN_ID;
+  const status = overrides.status ?? 'completed';
   return {
     type: 'tool_result',
     id: 'graph-result',
@@ -252,7 +312,7 @@ function linkedResult(
     isError: false,
     content: {
       kind: 'agent_swarm',
-      status: 'completed',
+      status: status === 'completed' ? 'completed' : 'partial',
       items: [
         {
           itemId: 'item',
@@ -263,9 +323,10 @@ function linkedResult(
           turnId: CHILD_TURN_ID,
           ...(runId ? { runId } : {}),
           ...(overrides.resumedFromRunId ? { resumedFromRunId: overrides.resumedFromRunId } : {}),
-          status: 'completed',
+          status,
           summary: 'done',
           artifactIds: [CHILD_ARTIFACT_ID],
+          ...(overrides.failureClass ? { failureClass: overrides.failureClass } : {}),
         },
       ],
       startedAt: 1,
@@ -300,12 +361,14 @@ function sessionHeader(id: string): SessionHeader {
 
 function childHeader(
   overrides: {
+    readonly id?: string;
     readonly parentSessionId?: string;
+    readonly parentTurnId?: string;
     readonly graph?: boolean;
     readonly graphId?: string;
   } = {},
 ): SessionHeader {
-  const header = sessionHeader(CHILD_SESSION_ID);
+  const header = sessionHeader(overrides.id ?? CHILD_SESSION_ID);
   const parentSessionId = overrides.parentSessionId ?? ROOT_SESSION_ID;
   return {
     ...header,
@@ -314,7 +377,7 @@ function childHeader(
       parentSessionId,
       spawnedBy: {
         parentRunId: 'root-run',
-        parentTurnId: ROOT_TURN_ID,
+        parentTurnId: overrides.parentTurnId ?? ROOT_TURN_ID,
         toolCallId: 'graph-call',
       },
       ...(overrides.graph === false

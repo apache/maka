@@ -1,21 +1,11 @@
-import type { ToolResultContent } from '@maka/core/events';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
-import {
-  sessionRevisionFamilyId,
-  type SessionHeader,
-  type StoredMessage,
-} from '@maka/core/session';
-import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import { sessionRevisionFamilyId, type SessionHeader } from '@maka/core/session';
 import {
   agentGraphIdForRootSession,
-  conversationCopyLinkedChildReferences,
-  deserializeToolResultArchive,
-  isArchivedToolResultPlaceholder,
   type AgentGraphCoordinator,
   type ConversationCopyExternalChildReferences,
   type ConversationCopyLinkedChildReference,
 } from '@maka/runtime';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 
 type ConversationCopyKind = 'branch' | 'revision';
@@ -62,13 +52,11 @@ export async function prepareAgentGraphRevisionReferences(
     readonly sourceHeader: SessionHeader;
     readonly sessionHeaders: readonly SessionHeader[];
     readonly copyTurnIds: readonly string[];
-    readonly messages: readonly StoredMessage[];
-    readonly runtimeEvents: readonly RuntimeEvent[];
-    readonly archivedResults: readonly string[];
+    readonly requests: readonly ConversationCopyLinkedChildReference[];
   },
   dependencies: GraphRevisionDependencies,
 ): Promise<AgentGraphRevisionReferencePreparation> {
-  const requests = collectLinkedChildReferenceRequests(input);
+  const requests = input.requests;
   const retainedTurnIds = new Set(input.copyTurnIds);
   const sourceFamilyId = sessionRevisionFamilyId(input.sourceHeader);
   const familySessionIds = new Set(
@@ -173,18 +161,18 @@ export async function prepareAgentGraphRevisionReferences(
       return failure('operation_unavailable', 'Retained Agent Graph result lacks a Run anchor');
     }
     const currentRun = runsById.get(request.runId);
-    const resumedRun = request.resumedFromRunId
-      ? runsById.get(request.resumedFromRunId)
-      : undefined;
     if (
       !currentRun ||
       currentRun.sessionId !== childSessionId ||
       currentRun.turnId !== request.turnId ||
-      currentRun.status !== request.status ||
-      (request.resumedFromRunId !== undefined &&
-        (!resumedRun ||
-          resumedRun.sessionId !== childSessionId ||
-          currentRun.resumedFromRunId !== request.resumedFromRunId))
+      !linkedResultStatusMatchesRun(request, currentRun)
+    ) {
+      return failure('operation_unavailable', 'Retained Agent Graph run reference is unavailable');
+    }
+    const lineage = traceChildRunLineage(currentRun, runsById, childSessionId);
+    if (
+      !lineage ||
+      (request.resumedFromRunId !== undefined && !lineage.runIds.has(request.resumedFromRunId))
     ) {
       return failure('operation_unavailable', 'Retained Agent Graph run reference is unavailable');
     }
@@ -196,7 +184,7 @@ export async function prepareAgentGraphRevisionReferences(
         !artifact?.record ||
         artifact.record.sessionId !== childSessionId ||
         artifact.record.status === 'deleted' ||
-        artifact.record.turnId !== request.turnId
+        !lineage.turnIds.has(artifact.record.turnId)
       ) {
         return failure('operation_unavailable', 'Retained Agent Graph Artifact is unavailable');
       }
@@ -213,44 +201,24 @@ export async function prepareAgentGraphRevisionReferences(
   return { ok: true, references };
 }
 
-function collectLinkedChildReferenceRequests(input: {
-  readonly messages: readonly StoredMessage[];
-  readonly runtimeEvents: readonly RuntimeEvent[];
-  readonly archivedResults: readonly string[];
-}): readonly ConversationCopyLinkedChildReference[] {
-  const requests: ConversationCopyLinkedChildReference[] = [];
-  const add = (content: ToolResultContent): void => {
-    requests.push(...conversationCopyLinkedChildReferences(content));
-  };
-
-  for (const message of input.messages) {
-    if (message.type === 'tool_result') add(message.content);
-  }
-  for (const event of input.runtimeEvents) {
-    if (event.content?.kind !== 'function_response') continue;
-    const content = decodeToolResultContent(event.content.result);
-    if (content) add(content);
-  }
-  for (const serializedResult of input.archivedResults) {
-    let value: unknown;
-    try {
-      value = deserializeToolResultArchive(serializedResult);
-    } catch {
-      continue;
+export function agentGraphRevisionAdmissionSessionIds(input: {
+  readonly sourceSessionId: string;
+  readonly sessionHeaders: readonly SessionHeader[];
+  readonly copyTurnIds: readonly string[];
+  readonly requests: readonly ConversationCopyLinkedChildReference[];
+}): readonly string[] {
+  const retainedTurnIds = new Set(input.copyTurnIds);
+  const sessionIds = new Set(input.requests.map((request) => request.childSessionId));
+  for (const header of input.sessionHeaders) {
+    const parent = header.subagentParent;
+    if (
+      parent?.parentSessionId === input.sourceSessionId &&
+      retainedTurnIds.has(parent.spawnedBy.parentTurnId)
+    ) {
+      sessionIds.add(header.id);
     }
-    const content = decodeToolResultContent(value);
-    if (content) add(content);
   }
-  return requests;
-}
-
-function decodeToolResultContent(value: unknown): ToolResultContent | undefined {
-  if (isArchivedToolResultPlaceholder(value)) return undefined;
-  try {
-    return decodeCanonicalToolResultContent(value);
-  } catch {
-    return undefined;
-  }
+  return [...sessionIds];
 }
 
 function failure(
@@ -262,4 +230,36 @@ function failure(
 
 function isTerminalRunStatus(status: string): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+function linkedResultStatusMatchesRun(
+  request: ConversationCopyLinkedChildReference,
+  run: AgentRunHeader,
+): boolean {
+  return (
+    run.status === request.status ||
+    (request.status === 'failed' &&
+      request.failureClass === 'Timeout' &&
+      run.status === 'cancelled')
+  );
+}
+
+function traceChildRunLineage(
+  current: AgentRunHeader,
+  runsById: ReadonlyMap<string, AgentRunHeader>,
+  childSessionId: string,
+): { readonly runIds: ReadonlySet<string>; readonly turnIds: ReadonlySet<string> } | undefined {
+  const runIds = new Set<string>();
+  const turnIds = new Set<string>();
+  let cursor: AgentRunHeader | undefined = current;
+  while (cursor) {
+    if (cursor.sessionId !== childSessionId || runIds.has(cursor.runId)) return undefined;
+    runIds.add(cursor.runId);
+    turnIds.add(cursor.turnId);
+    const previousRunId = cursor.retriedFromRunId ?? cursor.resumedFromRunId;
+    if (!previousRunId) break;
+    cursor = runsById.get(previousRunId);
+    if (!cursor) return undefined;
+  }
+  return { runIds, turnIds };
 }

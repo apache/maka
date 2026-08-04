@@ -49,7 +49,6 @@ const allowedServerExternalImports = new Set([
   '@maka/core/shell-run',
   '@maka/core/subagent-workspace',
   '@maka/core/task-ledger',
-  '@maka/core/tool-result-record-schema',
   '@maka/core/usage-ledger-merge',
   '@maka/core/usage-stats/types',
   '@maka/runtime',

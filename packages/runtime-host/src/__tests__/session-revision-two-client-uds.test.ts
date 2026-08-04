@@ -5,7 +5,12 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentGraphOperatorProvisionRequest, AgentRunHeader, RuntimeEvent } from '@maka/core';
+import {
+  decodeCanonicalToolResultContent,
+  type AgentGraphOperatorProvisionRequest,
+  type AgentRunHeader,
+  type RuntimeEvent,
+} from '@maka/core';
 import { agentGraphIdForRootSession, FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
@@ -1196,6 +1201,28 @@ async function verifyDurableBranch(
     assert.equal(graphResult.content.items[0]?.childSessionId, graphChildSessionId);
     assert.equal(graphResult.content.items[0]?.runId, 'graph-child-run');
     assert.deepEqual(graphResult.content.items[0]?.artifactIds, ['graph-child-artifact']);
+    const graphRevisionRuns = await execution.agentRunStore.listSessionRuns(graphRevisionTargetId);
+    const graphRevisionRun = graphRevisionRuns.find((run) => run.turnId === 'linked-turn');
+    assert.ok(graphRevisionRun);
+    const graphRuntimeResult = (
+      await execution.runtimeEventStore.readRuntimeEvents(
+        graphRevisionTargetId,
+        graphRevisionRun.runId,
+      )
+    ).find((event) => event.content?.kind === 'function_response')?.content;
+    assert.ok(graphRuntimeResult?.kind === 'function_response');
+    if (graphRuntimeResult?.kind !== 'function_response') {
+      assert.fail('Copied Graph revision must retain its RuntimeEvent result');
+    }
+    const runtimeGraphResult = decodeCanonicalToolResultContent(graphRuntimeResult.result);
+    assert.equal(runtimeGraphResult.kind, 'agent_swarm');
+    if (runtimeGraphResult.kind !== 'agent_swarm') {
+      assert.fail('Copied RuntimeEvent result must remain an Agent Graph result');
+    }
+    const runtimeGraphItem = runtimeGraphResult.items[0];
+    assert.equal(runtimeGraphItem?.childSessionId, graphChildSessionId);
+    assert.equal(runtimeGraphItem?.runId, 'graph-child-run');
+    assert.deepEqual(runtimeGraphItem?.artifactIds, ['graph-child-artifact']);
     assert.equal(
       (await artifacts.getInSession(graphChildSessionId, 'graph-child-artifact')).record?.id,
       'graph-child-artifact',

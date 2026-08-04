@@ -10,6 +10,7 @@ import {
 import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
+  collectConversationCopyLinkedChildReferences,
   createConversationCopySlice,
   isArchivedToolResultPlaceholder,
   prepareConversationRuntimeLedgerCopy,
@@ -41,11 +42,19 @@ import type {
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import { projectSessionCatalogRecord } from './session-catalog-coordinator.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
-import { prepareAgentGraphRevisionReferences } from './session-revision-graph-references.js';
+import {
+  agentGraphRevisionAdmissionSessionIds,
+  prepareAgentGraphRevisionReferences,
+} from './session-revision-graph-references.js';
 import { purgeSessionSidecars } from './session-sidecar-purge.js';
 
 type ConversationCopyKind = 'branch' | 'revision';
 type ConversationCopyOutcome = OperationOutcome<SessionRevisionOperationKey>;
+const CONVERSATION_COPY_ADMISSION_PASSES = 2;
+interface ConversationCopyAdmissionRetry {
+  readonly kind: 'retry_admission';
+  readonly sessionIds: readonly string[];
+}
 type ConversationCopyCreateInput = CreateSessionInput & {
   readonly conversationCopy: SessionConversationCopy;
 };
@@ -150,10 +159,22 @@ export class HostSessionRevisionCoordinator {
         : copyFailure('persistence_failed', 'Source Session metadata is unavailable');
     }
 
-    return this.options.admission.runMany(
-      [input.sourceSessionId, input.targetSessionId, rootSessionId],
-      (lease) => this.#copyAdmitted(kind, input, requestFingerprint, lease),
-    );
+    const admittedSessionIds = new Set([
+      input.sourceSessionId,
+      input.targetSessionId,
+      rootSessionId,
+    ]);
+    // The first admitted read discovers only children retained by this copy.
+    // Artifact deletion uses each child Session lane, so retry with those exact
+    // lanes and keep the complete lease through validation and publication.
+    for (let pass = 0; pass < CONVERSATION_COPY_ADMISSION_PASSES; pass += 1) {
+      const result = await this.options.admission.runMany([...admittedSessionIds], (lease) =>
+        this.#copyAdmitted(kind, input, requestFingerprint, lease, admittedSessionIds),
+      );
+      if ('ok' in result) return result;
+      for (const sessionId of result.sessionIds) admittedSessionIds.add(sessionId);
+    }
+    return copyFailure('session_busy', 'Agent Graph child ownership changed during copy');
   }
 
   async #copyAdmitted(
@@ -161,7 +182,8 @@ export class HostSessionRevisionCoordinator {
     input: SessionConversationCopyInput,
     requestFingerprint: `sha256:${string}`,
     lease: SessionAdmissionLease,
-  ): Promise<ConversationCopyOutcome> {
+    admittedSessionIds: ReadonlySet<string>,
+  ): Promise<ConversationCopyOutcome | ConversationCopyAdmissionRetry> {
     const existing = await this.#resolveExistingTarget(kind, input, requestFingerprint, false);
     if (existing) return existing;
 
@@ -253,6 +275,20 @@ export class HostSessionRevisionCoordinator {
       copyTurnIds,
     );
     if (!archivePreflight.ok) return archivePreflight.outcome;
+    const linkedChildRequests = collectConversationCopyLinkedChildReferences({
+      messages: slice.messages,
+      runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+      archivedResults: archivePreflight.serializedResults,
+    });
+    const missingGraphChildSessionIds = agentGraphRevisionAdmissionSessionIds({
+      sourceSessionId: input.sourceSessionId,
+      sessionHeaders,
+      copyTurnIds,
+      requests: linkedChildRequests,
+    }).filter((sessionId) => !admittedSessionIds.has(sessionId));
+    if (missingGraphChildSessionIds.length > 0) {
+      return { kind: 'retry_admission', sessionIds: missingGraphChildSessionIds };
+    }
     const linkedReferences = await prepareAgentGraphRevisionReferences(
       {
         kind,
@@ -260,9 +296,7 @@ export class HostSessionRevisionCoordinator {
         sourceHeader,
         sessionHeaders,
         copyTurnIds,
-        messages: slice.messages,
-        runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
-        archivedResults: archivePreflight.serializedResults,
+        requests: linkedChildRequests,
       },
       {
         agentRunStore: this.#stores.agentRunStore,
@@ -345,9 +379,13 @@ export class HostSessionRevisionCoordinator {
         targetSessionId: input.targetSessionId,
         artifactIds: artifactCopy.artifactIds,
         relativePaths: artifactCopy.relativePaths,
-        ...(linkedReferences.references.size > 0
-          ? { externalChildReferences: linkedReferences.references }
-          : {}),
+        linkedChildren:
+          linkedReferences.references.size > 0
+            ? {
+                mode: 'preserve_validated' as const,
+                references: linkedReferences.references,
+              }
+            : { mode: 'reject' as const },
       };
       const runtimeCopy = await cloneConversationRuntimeLedger({
         plan,

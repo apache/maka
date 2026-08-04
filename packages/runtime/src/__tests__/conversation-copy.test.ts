@@ -270,6 +270,7 @@ test('conversation copy rewrites owned references without changing opaque tool p
   ];
   const references = {
     mode: 'exact' as const,
+    linkedChildren: { mode: 'reject' as const },
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -406,15 +407,18 @@ test('conversation copy rewrites owned references without changing opaque tool p
     },
     {
       ...references,
-      externalChildReferences: new Map([
-        [
-          'child-session',
-          {
-            runIds: new Set(['child-run']),
-            artifactIds: new Set(['child-artifact']),
-          },
-        ],
-      ]),
+      linkedChildren: {
+        mode: 'preserve_validated',
+        references: new Map([
+          [
+            'child-session',
+            {
+              runIds: new Set(['child-run']),
+              artifactIds: new Set(['child-artifact']),
+            },
+          ],
+        ]),
+      },
     },
   );
   assert.equal(
@@ -429,11 +433,22 @@ test('conversation copy rewrites owned references without changing opaque tool p
       : undefined,
     ['child-artifact'],
   );
+  assert.deepEqual(
+    rewriteConversationCopyMessage(linked, {
+      mode: 'preserve_external',
+      sourceSessionId: 'session-source',
+      targetSessionId: 'session-target',
+      runIds: new Map(),
+      runtimeEventIds: new Map(),
+      providerTraceIds: new Map(),
+    }),
+    linked,
+  );
   assert.throws(
     () =>
       rewriteConversationCopyMessage(linked, {
         ...references,
-        externalChildReferences: new Map(),
+        linkedChildren: { mode: 'preserve_validated', references: new Map() },
       }),
     /missing linked child Session child-session/,
   );
@@ -560,6 +575,7 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
+            linkedChildren: { mode: 'reject' },
             sourceSessionId: 'session-source',
             targetSessionId: 'session-target',
             artifactIds: new Map(),
@@ -710,6 +726,7 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
+        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -838,6 +855,7 @@ test('conversation copy validates operational events before persisting target le
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
+            linkedChildren: { mode: 'reject' },
             sourceSessionId: 'session-source',
             targetSessionId: 'session-target',
             artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -1095,6 +1113,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
+            linkedChildren: { mode: 'reject' },
             sourceSessionId: 'session-source',
             targetSessionId: 'session-missing-artifact',
             artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -1124,6 +1143,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
+        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map([
@@ -1374,6 +1394,7 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
+        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
@@ -1551,6 +1572,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
+        linkedChildren: { mode: 'reject' },
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map(),
