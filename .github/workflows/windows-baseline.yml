@@ -1,0 +1,148 @@
+name: Windows baseline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-baseline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  windows_baseline:
+    name: windows_baseline (non-blocking)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    env:
+      WINDOWS_BASELINE_LOG_DIR: artifacts/windows-baseline
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Create log directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force $env:WINDOWS_BASELINE_LOG_DIR | Out-Null
+
+      - id: install
+        name: Install dependencies
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm ci 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/install.log"
+          exit $LASTEXITCODE
+
+      - id: build
+        name: Build test artifacts
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm run build:test 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - id: inventory
+        name: Check Windows skip inventory
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm run windows:inventory 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
+          exit $LASTEXITCODE
+
+      - id: scripts
+        name: Run repository script tests
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm run test:scripts 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
+          exit $LASTEXITCODE
+
+      - id: smoke
+        name: Run CLI and Electron startup smoke
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm run smoke:windows 2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
+          exit $LASTEXITCODE
+
+      - id: storage
+        name: Capture storage test baseline
+        if: always() && steps.build.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          node scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage 2>&1 |
+            Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
+          exit $LASTEXITCODE
+
+      - id: processes
+        name: Audit residual repository processes
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $repoPattern = [regex]::Escape($env:GITHUB_WORKSPACE)
+          $leaks = @(
+            Get-CimInstance Win32_Process |
+              Where-Object {
+                $_.ProcessId -ne $PID -and
+                $_.Name -in @('node.exe', 'electron.exe') -and
+                $_.CommandLine -match $repoPattern
+              } |
+              Select-Object ProcessId, ParentProcessId, Name, CommandLine
+          )
+          $leaks | ConvertTo-Json -Depth 3 | Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes.json"
+          if ($leaks.Count -eq 0) {
+            Write-Output 'No residual repository Node or Electron processes.'
+            exit 0
+          }
+          $leaks | Format-List | Out-String | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes.log"
+          foreach ($process in $leaks) {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+          }
+          Write-Error "Found and terminated $($leaks.Count) residual repository process(es)."
+          exit 1
+
+      - name: Publish baseline summary
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          ## Windows baseline
+
+          This lane is intentionally non-blocking while the Phase 1 backlog is being reduced.
+
+          | Check | Outcome |
+          |---|---|
+          | Install | ${{ steps.install.outcome }} |
+          | Build | ${{ steps.build.outcome }} |
+          | Skip inventory | ${{ steps.inventory.outcome }} |
+          | Script tests | ${{ steps.scripts.outcome }} |
+          | CLI / Electron smoke | ${{ steps.smoke.outcome }} |
+          | Storage suite | ${{ steps.storage.outcome }} |
+          | Residual processes | ${{ steps.processes.outcome }} |
+
+          Download the `windows-baseline` artifact for complete logs.
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload Windows baseline logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-baseline
+          path: artifacts/windows-baseline
+          if-no-files-found: warn
+          retention-days: 14
