@@ -700,7 +700,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Skill',
       'SkillSearch',
       'StopBackgroundTask',
-      'WebSearch',
       'Write',
       'WriteStdin',
       'load_tools',
@@ -1110,7 +1109,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     );
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(requests.length, 7);
+    assert.equal(requests.length, 6);
     assert.ok(toolNames(requests[0]?.body).includes('load_tools'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
@@ -1121,9 +1120,8 @@ test('production Host executes a durable runnable child with an exact tool ceili
     ]);
     assert.deepEqual(toolNames(requests[2]?.body), ['Glob', 'Grep', 'Read']);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
-    assert.deepEqual(toolNames(requests[4]?.body), ['WebSearch']);
-    assert.deepEqual(toolNames(requests[5]?.body), ['WebSearch']);
-    assert.ok(toolNames(requests[6]?.body).includes('agent_spawn'));
+    assert.deepEqual(toolNames(requests[4]?.body), []);
+    assert.ok(toolNames(requests[5]?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
     const child = sessions.find((session) => session.subagentRuntime?.profile === 'local_read');
@@ -1159,18 +1157,13 @@ test('production Host executes a durable runnable child with an exact tool ceili
       webChild.id,
       webChildRuns[0]!.runId,
     );
-    const searchResult = webChildEvents.find(
-      (event) => event.content?.kind === 'function_response' && event.content.name === 'WebSearch',
+    assert.equal(
+      webChildEvents.some(
+        (event) =>
+          event.content?.kind === 'function_response' && event.content.name === 'WebSearch',
+      ),
+      false,
     );
-    assert.ok(searchResult?.content?.kind === 'function_response');
-    assert.deepEqual(decodeCanonicalToolResultContent(searchResult.content.result), {
-      kind: 'web_search_error',
-      ok: false,
-      provider: 'tavily',
-      query: 'latest hosted web result',
-      reason: 'not_configured',
-      message: 'Enable web search before using this tool.',
-    });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
     assert.equal(childArtifacts.length, 1);
@@ -2065,6 +2058,45 @@ test('Deep Research composition keeps one read-only research surface and prompt'
   assert.doesNotMatch(prompt, /ExploreAgent/);
 });
 
+test('Host composition omits unavailable WebSearch and keeps it when ready', () => {
+  const webSearch = {
+    name: 'WebSearch',
+    description: 'Web search fixture.',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+  const base = {
+    policy: {
+      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {} as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    hostTools: [webSearch],
+    deepResearch: { tools: [] },
+  } as const;
+
+  const unavailable = createHostExecutionModelComposition({
+    ...base,
+    webSearchAvailable: false,
+  });
+  assert.equal(
+    unavailable.tools.some((candidate) => candidate.name === 'WebSearch'),
+    false,
+  );
+
+  const ready = createHostExecutionModelComposition({
+    ...base,
+    webSearchAvailable: true,
+  });
+  assert.equal(
+    ready.tools.some((candidate) => candidate.name === 'WebSearch'),
+    true,
+  );
+});
+
 test('Plan composition admits only planning tools before approval and execution controls after', async () => {
   const proposal = {
     planId: 'plan-1',
@@ -2858,15 +2890,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 5) {
-    assert.deepEqual(toolNames(body), ['WebSearch']);
-    respondProviderToolCall(response, streamRequestIndex, 'WebSearch', {
-      query: 'latest hosted web result',
-      limit: 1,
-    });
-    return;
-  }
-  if (flow.kind === 'child_agent' && streamRequestIndex === 6) {
-    assert.deepEqual(toolNames(body), ['WebSearch']);
+    assert.deepEqual(toolNames(body), []);
     respondProviderText(response, WEB_RESEARCH_CHILD_RESULT_TEXT);
     return;
   }

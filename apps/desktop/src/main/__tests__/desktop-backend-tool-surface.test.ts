@@ -23,6 +23,7 @@ import {
 const readTool = tool('Read', 'read');
 const writeTool = tool('Write', 'file_write');
 const computerTool = tool('maka_computer', 'computer_use');
+const webSearchTool = tool('WebSearch', 'web_read');
 const availability: ToolAvailabilityConfig = {
   economy: true,
   groups: [
@@ -285,6 +286,30 @@ describe('Desktop backend tool surface', () => {
     );
   });
 
+  it('omits unavailable WebSearch after the Deep Research allowlist and keeps it when ready', async () => {
+    const input = inputFor('claude-sonnet-4-5-20250929');
+    input.header.labels = ['mode:deep_research'];
+    const builtinTools = [readTool, webSearchTool];
+
+    const unavailable = await resolveDesktopBackendToolSurface(
+      makeDeps({
+        builtinTools,
+        resolveWebSearchAvailability: async () => false,
+      }),
+      input,
+    );
+    assert.equal(unavailable.selectedTools.some((tool) => tool.name === 'WebSearch'), false);
+
+    const ready = await resolveDesktopBackendToolSurface(
+      makeDeps({
+        builtinTools,
+        resolveWebSearchAvailability: async () => true,
+      }),
+      input,
+    );
+    assert.equal(ready.selectedTools.some((tool) => tool.name === 'WebSearch'), true);
+  });
+
   it('uses explicit preview inputs without reading a nonexistent session plan', async () => {
     let connectionReads = 0;
     let planReads = 0;
@@ -336,6 +361,7 @@ function makeDeps(
     deepResearchTools: [],
     computerUseTools: [computerTool],
     builtinTools: [readTool, writeTool, computerTool],
+    resolveWebSearchAvailability: async () => true,
     toolEconomy: availability.economy,
     planStore,
     ...overrides,

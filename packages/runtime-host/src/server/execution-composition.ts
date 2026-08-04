@@ -96,7 +96,7 @@ import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
-import { createHostWebSearchTool } from './web-search-tool.js';
+import { createHostWebSearchTool, resolveHostWebSearchAvailability } from './web-search-tool.js';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
 
 export async function createExecutionRuntimeHostComposition(
@@ -388,6 +388,8 @@ export async function createExecutionRuntimeHostComposition(
         goalTools: requireGoal(goal).tools,
         builtinTools,
         hostTools,
+        resolveWebSearchAvailability: () =>
+          resolveHostWebSearchAvailability(runtimePolicyStores.operations),
         resolveRootTools: (sessionId) =>
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
         parentAgentTools: childAgentTools.parentTools,
@@ -413,9 +415,10 @@ export async function createExecutionRuntimeHostComposition(
       try {
         const graphTools =
           await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId);
-        const [header, planState] = await Promise.all([
+        const [header, planState, webSearchAvailable] = await Promise.all([
           stores.sessionStore.readHeaderSnapshot(sessionId),
           openedPlanStore.readState(sessionId),
+          resolveHostWebSearchAvailability(runtimePolicyStores.operations),
         ]);
         return createHostExecutionModelComposition({
           policy: runtimePolicyStores.runtimePolicy,
@@ -425,6 +428,7 @@ export async function createExecutionRuntimeHostComposition(
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
           hostTools: [...hostTools, ...graphTools],
+          webSearchAvailable,
           automationTool: requireAutomationCoordinator(automations).modelTool,
           goalTools: requireGoal(goal).tools,
           parentAgentTools: childAgentTools.parentTools,

@@ -80,6 +80,7 @@ import type { HostChildAgentBackendCapabilities } from './child-agent-compositio
 import type { HostExecutionArtifactServices } from './execution-artifacts.js';
 import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
+import { webSearchToolsForAvailability } from './web-search-tool.js';
 
 const CHILD_INSTRUCTION_BOUNDARY = [
   'A child agent inherits the current session permission, privacy, workspace, and skill constraints.',
@@ -116,6 +117,7 @@ export interface HostExecutionModelCompositionInput {
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
+  readonly webSearchAvailable?: boolean;
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -149,9 +151,13 @@ export function createHostExecutionModelComposition(
       );
   const clientCapabilityTools = input.boundTools ? [] : (input.clientCapabilities?.tools ?? []);
   const unscopedCandidateTools = [...defaultTools, ...clientCapabilityTools];
-  const candidateTools = input.deepResearch
+  const deepResearchCandidateTools = input.deepResearch
     ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
     : unscopedCandidateTools;
+  const candidateTools = webSearchToolsForAvailability(
+    deepResearchCandidateTools,
+    input.webSearchAvailable !== false,
+  );
   const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
   const selectedTools = input.plan
     ? selectCollaborationTools({
@@ -268,6 +274,7 @@ export interface HostAiSdkBackendInput {
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
+  readonly resolveWebSearchAvailability?: () => Promise<boolean>;
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
@@ -348,6 +355,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
             input.context.abortSignal,
           )
         : [];
+    const webSearchAvailable = input.resolveWebSearchAvailability
+      ? await readDuringBackendCreation(
+          input.resolveWebSearchAvailability,
+          input.context.abortSignal,
+        )
+      : true;
     const hostTools = [...(input.hostTools ?? []), ...rootTools];
     modelComposition = createHostExecutionModelComposition({
       policy: input.runtimePolicy.runtimePolicy,
@@ -359,6 +372,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
       ...(hostTools.length > 0 ? { hostTools } : {}),
+      webSearchAvailable,
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       ...(input.goalTools ? { goalTools: input.goalTools } : {}),
       ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),

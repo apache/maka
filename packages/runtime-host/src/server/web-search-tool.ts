@@ -9,6 +9,16 @@ import {
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
+const WEB_SEARCH_TOOL_NAME = 'WebSearch';
+
+export function webSearchToolsForAvailability(
+  tools: readonly MakaTool[],
+  available: boolean,
+): MakaTool[] {
+  if (available) return [...tools];
+  return tools.filter((tool) => tool.name !== WEB_SEARCH_TOOL_NAME);
+}
+
 export function createHostWebSearchTool(input: {
   readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveWebSearchExecution'>;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
@@ -69,4 +79,10 @@ export function createHostWebSearchTool(input: {
       }
     },
   });
+}
+
+export async function resolveHostWebSearchAvailability(
+  policy: Pick<RuntimePolicyOperationCoordinator, 'resolveWebSearchExecution'>,
+): Promise<boolean> {
+  return (await policy.resolveWebSearchExecution()).kind === 'ready';
 }

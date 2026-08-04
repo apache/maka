@@ -16,6 +16,7 @@ export interface SettingsRuntimeEffectsDeps {
   botRegistry: BotRegistry;
   keepSystemAwake: KeepSystemAwakeController;
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
+  refreshIdleBackends: () => Promise<void>;
 }
 
 export interface SettingsRuntimeEffects {
@@ -46,6 +47,7 @@ export function createSettingsRuntimeEffects(
     botRegistry,
     keepSystemAwake,
     safeSendToRenderer,
+    refreshIdleBackends,
   } = deps;
 
   async function normalizeSettingsPatch(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsInput> {
@@ -67,6 +69,11 @@ export function createSettingsRuntimeEffects(
       // capability reflects the user's choice without waiting for a relaunch.
       keepSystemAwake.apply(settings.system.keepSystemAwake);
     }
+    if (patch.webSearch || patch.privacy) {
+      void refreshIdleBackends().catch((error) => {
+        console.warn('[settings] failed to refresh backend tool snapshots:', error);
+      });
+    }
   }
 
   async function handleExternalSettingsChange(): Promise<void> {
@@ -76,6 +83,8 @@ export function createSettingsRuntimeEffects(
         network: settings.network,
         botChat: settings.botChat,
         system: settings.system,
+        webSearch: settings.webSearch,
+        privacy: settings.privacy,
       };
       await applySettingsRuntimeEffects(settings, fullPatch);
     } catch (error) {

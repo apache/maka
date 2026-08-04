@@ -118,6 +118,7 @@ import { registerDailyReviewIpc } from './daily-review-ipc-main.js';
 import { registerInspectorIpc } from './inspector-ipc-main.js';
 import { registerUsageIpc } from './usage-ipc-main.js';
 import { registerWebSearchIpc } from './web-search-ipc-main.js';
+import { resolveDesktopWebSearchAvailability } from './web-search/surface.js';
 import { registerNotificationsIpc } from './notifications-ipc-main.js';
 import { registerAppIpc } from './app-ipc-main.js';
 import { createAppUpdateService } from './app-update-service.js';
@@ -746,6 +747,11 @@ const desktopBackendToolSurfaceDeps = {
   deepResearchTools,
   computerUseTools,
   builtinTools,
+  resolveWebSearchAvailability: () =>
+    resolveDesktopWebSearchAvailability({
+      settingsStore,
+      getPrivacyContext: getWorkspacePrivacyContext,
+    }),
   toolEconomy: desktopProductToolSurface.identity.policy.economy,
   planStore,
   getAgentGraphSupervisorTools: (sessionId: string) =>
@@ -1291,6 +1297,7 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
     botRegistry,
     keepSystemAwake,
     safeSendToRenderer,
+    refreshIdleBackends: () => runtime.refreshIdleBackends(),
   });
 
 async function updateAgentSettings(patch: UpdateAppSettingsInput): Promise<AppSettings> {

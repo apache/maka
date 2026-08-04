@@ -30,6 +30,7 @@ import type {
 import type { McpClientManager } from '@maka/mcp';
 import { computerUseToolsForModel } from './computer-use-model-tools.js';
 import type { ReadyConnection } from './chat-readiness.js';
+import { webSearchToolsForAvailability } from './web-search/surface.js';
 
 export interface DesktopBackendToolSurfaceDeps {
   isComputerUseRealModelE2e: boolean;
@@ -42,6 +43,7 @@ export interface DesktopBackendToolSurfaceDeps {
   deepResearchTools: readonly MakaTool[];
   computerUseTools: readonly MakaTool[];
   builtinTools: readonly MakaTool[];
+  resolveWebSearchAvailability: () => Promise<boolean>;
   toolEconomy: boolean;
   planStore: PlanStore;
   getAgentGraphSupervisorTools?: (
@@ -202,10 +204,19 @@ export async function resolveDesktopBackendToolSurface(
           ...buildMcpTools(deps.mcpManager),
           ...(isDeepResearchSession(input.header.labels) ? deps.deepResearchTools : []),
         ];
-  const candidateTools =
+  const deepResearchCandidateTools =
     !input.tools && isDeepResearchSession(input.header.labels)
       ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
       : unscopedCandidateTools;
+  const webSearchAvailable = deepResearchCandidateTools.some(
+    (tool) => tool.name === 'WebSearch',
+  )
+    ? await deps.resolveWebSearchAvailability()
+    : true;
+  const candidateTools = webSearchToolsForAvailability(
+    deepResearchCandidateTools,
+    webSearchAvailable,
+  );
   const toolEconomy = deps.isComputerUseRealModelE2e ? false : deps.toolEconomy;
 
   const planControlTools = input.tools
