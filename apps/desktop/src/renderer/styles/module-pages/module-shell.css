@@ -2,49 +2,7 @@
    ModulePage primitive (Astryx Layout) via data-page-shell="layout" — the
    hand-rolled grid + overflow this file used to own is retired, and with it
    the scroll-containment bug class behind #2236. What remains here is the
-   layout shell, the settings-facing page header, and the shared page bar. */
-.maka-module-main-header {
-  width: min(100%, 900px);
-  margin-inline: auto;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-
-/* Module page titles use the display scale. Negative letter-spacing keeps
-   page-level headings compact at that size.
-
-   A deliberate override of Astryx's own guidance, which reserves display for
-   hero, marketing and data-callout text and says not to use it for document
-   headings. Every heading role in the ladder is weight 600 and tops out at
-   20px, so matching this title on weight would drop it from 25px to 20px —
-   level with the section headings underneath it, collapsing the one size step
-   that makes a page title read as one. Display keeps the size and gives up the
-   weight, which is the trade the vendor's own reasoning endorses at this size
-   (large text needs less weight). Same call at .settingsPageHeader h2;
-   nothing else in the renderer uses display outside a
-   real hero. */
-.maka-module-main-header h2 {
-  font: var(--maka-text-display-2);
-  margin: 0;
-  color: var(--foreground);
-  letter-spacing: var(--tracking-normal);
-}
-
-.maka-module-main-header p {
-  font: var(--maka-text-body);
-  margin: var(--space-1) 0 0;
-  color: var(--foreground-secondary);
-}
-
-/* Keep the lede a readable measure. The header is a flex row, so without a
-   cap the subtitle stretches to the full 900px clamp and outruns the title. */
-.maka-module-main-header [data-slot="page-header-content"] {
-  max-width: 560px;
-}
+   layout shell and the shared page bar. */
 
 /* ── Astryx Layout page shell ──────────────────────────────────────────
    计划提醒 / 每日回顾 render an Astryx `Layout` (header / content / end
@@ -89,12 +47,10 @@
    bug: it gets the pill's translateY(-50%) centering without the pill's
    top:50%, so the full-height strip lands shifted half its height upward —
    over the page header, where it swallows the toolbar's clicks (技能 / MCP
-   with the inspector open; 定时任务 has the same latent strip). Anchor it
-   to the handle itself and drop the stray translate. */
-.maka-module-page .astryx-resize-handle {
-  position: relative;
-}
-
+   with the inspector open; 定时任务 has the same latent strip). Drop the
+   stray translate. The !important is load-bearing: the vendor injects the
+   transform unlayered with :not(#\#) escalation, which beats any layered
+   product rule. */
 .maka-module-page .astryx-resize-handle > :not(.astryx-resize-handle-pill) {
   transform: none !important;
 }
@@ -186,10 +142,6 @@
 }
 
 @media (max-width: 820px) {
-  .maka-module-main-header {
-    display: grid;
-  }
-
   .maka-module-main-actions {
     justify-content: flex-start;
   }

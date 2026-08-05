@@ -14,7 +14,7 @@ export type McpCopy = {
   };
   remove: { title(id: string): string; description: string; confirm: string; cancel: string };
   page: {
-    subtitle: string; actionsAria: string; refreshing: string; refresh: string; add: string;
+    actionsAria: string; refreshing: string; refresh: string; add: string;
     metaInstalled(count: number): string; metaErrors(count: number): string;
     searchMatches(count: number): string;
     workspaceAria: string; toolbarAria: string; setupTitle: string; setupDescription: string; localStdio: string;
@@ -31,8 +31,8 @@ export type McpCopy = {
     cancelling: string; cancel: string; install: string;
   };
   row: {
-    enabledAria(id: string): string; testing: string; test: string; editAria(id: string): string; edit: string;
-    deleteAria(id: string): string; delete: string; tools(count: number): string; diagnostics: string;
+    testing: string; test: string; edit: string;
+    delete: string; tools(count: number): string;
     disabled: string; disconnected: string; connecting: string; connected(count: number): string; failed: string;
   };
   editor: {
@@ -64,7 +64,7 @@ const MCP_COPY = {
     },
     remove: { title: (id) => `删除 MCP「${id}」？`, description: '它提供的工具会从下一次 agent turn 中移除，配置无法自动恢复。', confirm: '删除', cancel: '取消' },
     page: {
-      subtitle: '连接外部应用、数据与服务，为 Maka 安全地扩展新工具。', actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
+      actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
       metaInstalled: (count) => `${count} 个已安装`, metaErrors: (count) => `${count} 个连接异常`,
       searchMatches: (count) => `${count} 个匹配`,
       workspaceAria: 'MCP 市场与已安装项', toolbarAria: 'MCP 浏览操作', setupTitle: '把 Maka 连接到你的工作环境', setupDescription: '从精选模板开始，或添加任意 stdio、Streamable HTTP 与 SSE server。',
@@ -82,8 +82,8 @@ const MCP_COPY = {
       cancelling: '正在取消…', cancel: '取消安装', install: '安装',
     },
     row: {
-      enabledAria: (id) => `${id} 启用状态`, testing: '测试中…', test: '测试', editAria: (id) => `编辑 ${id}`, edit: '编辑',
-      deleteAria: (id) => `删除 ${id}`, delete: '删除', tools: (count) => `${count} 个工具`, diagnostics: '连接诊断',
+      testing: '测试中…', test: '测试', edit: '编辑',
+      delete: '删除', tools: (count) => `${count} 个工具`,
       disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: (count) => `${count} 个工具`, failed: '连接失败',
     },
     editor: {
@@ -116,7 +116,7 @@ const MCP_COPY = {
     },
     remove: { title: (id) => `Delete MCP “${id}”?`, description: 'Its tools will be removed from the next agent turn, and the configuration cannot be restored automatically.', confirm: 'Delete', cancel: 'Cancel' },
     page: {
-      subtitle: 'Connect external apps, data, and services to safely extend Maka with new tools.', actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
+      actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
       metaInstalled: (count) => `${count} installed`, metaErrors: (count) => `${count} ${count === 1 ? 'connection error' : 'connection errors'}`,
       searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
       workspaceAria: 'MCP marketplace and installed servers', toolbarAria: 'MCP browser controls', setupTitle: 'Connect Maka to your work environment', setupDescription: 'Start with a curated template, or add any stdio, Streamable HTTP, or SSE server.',
@@ -134,8 +134,8 @@ const MCP_COPY = {
       cancelling: 'Cancelling…', cancel: 'Cancel installation', install: 'Install',
     },
     row: {
-      enabledAria: (id) => `${id} enabled state`, testing: 'Testing…', test: 'Test', editAria: (id) => `Edit ${id}`, edit: 'Edit',
-      deleteAria: (id) => `Delete ${id}`, delete: 'Delete', tools: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, diagnostics: 'Connection diagnostics',
+      testing: 'Testing…', test: 'Test', edit: 'Edit',
+      delete: 'Delete', tools: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`,
       disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed',
     },
     editor: {
