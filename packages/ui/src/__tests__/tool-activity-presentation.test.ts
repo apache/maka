@@ -517,10 +517,42 @@ describe('tool activity presentation', () => {
         /class="maka-tool-output-command"[^>]*>npm test</,
         `${phase} puts the command in the surface header`,
       );
-      // The command is never handed to Astryx's CodeBlock again — as its
-      // `title` it rendered comment-coloured and tucked against the output.
-      assert.doesNotMatch(markup, /astryx-code-block/, `${phase} keeps the shell path off CodeBlock`);
+      // Neither the command nor the body is handed to Astryx's CodeBlock
+      // again: as its `title` the command rendered comment-coloured and tucked
+      // against the output, and the body's own block nested a second border
+      // inside the panel. The class is `astryx-codeblock`, one word — spelled
+      // with a hyphen this assertion matches nothing and passes on the very
+      // markup it exists to forbid.
+      assert.doesNotMatch(markup, /astryx-codeblock/, `${phase} keeps the shell path off CodeBlock`);
     }
+  });
+
+  // The blocks a detail still draws through CodeBlock — a diff's path header, a
+  // JSON headline — sit beside the command surface, so they have to share its
+  // type tier. `ToolCodeBlock` used to pin Astryx `size="sm"`, the supporting
+  // tier, which rendered them at 12px against the surface's 14px. Astryx's `md`
+  // is `--text-code-size`, the same 0.875rem `--maka-text-code` resolves to.
+  //
+  // `data-size` is the attribute Astryx puts the resolved tier on, so the pin
+  // is visible to a string assertion; the leading and the rebound role tokens
+  // are CSS-only and are not reachable from this harness.
+  it('leaves a tool-detail code block on the code tier, not the supporting one', () => {
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
+        toolUseId: 'tool-code-tier',
+        toolName: 'CustomInspect',
+        status: 'completed',
+        args: { target: 'packages/ui' },
+        result: { kind: 'json', value: { ok: true, detail: 'line one\nline two' } },
+      } satisfies ToolActivityItem,
+    }));
+
+    // Scoped to the block's own tag: the copy affordance Astryx nests inside it
+    // carries `data-size="sm"` of its own, and that icon is not what the pin was
+    // about — a whole-markup match would read it as a regression forever.
+    const block = /<pre[^>]*class="astryx-codeblock[^"]*"[^>]*>/.exec(markup)?.[0];
+    assert.ok(block, 'this result still renders through CodeBlock');
+    assert.match(block, /data-size="md"/, 'the block sits on the code tier');
   });
 
   // The bug this replaced: a running command rendered in a bespoke trow and
