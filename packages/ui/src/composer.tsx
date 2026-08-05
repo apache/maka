@@ -34,6 +34,7 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { type ChatModelChoice, modelChoiceValue } from './chat-model-helpers.js';
 import { appendPromptContextDraft, isReferenceSizedPaste } from './composer-helpers.js';
+import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
 import { useComposerDraft } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
 import {
@@ -1230,7 +1231,7 @@ export const Composer = forwardRef<
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
                     size="sm"
-                    label={quote.label?.trim() || quote.text.slice(0, 48) || copy.pastedQuoteLabel}
+                    label={quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48)) || copy.pastedQuoteLabel}
                     onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
                   />
                 ))}

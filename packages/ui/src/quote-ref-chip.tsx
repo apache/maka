@@ -28,8 +28,9 @@ import { getConversationCopy } from './conversation-copy.js';
  * A quote can carry markdown source verbatim (selection capture keeps the raw
  * text), so a heading line such as `### Description` would render in the chip
  * as cramped literal hashes. The selection capture normalizes whitespace into
- * a single line, so the only marker that can survive is `#{1,6} ` at the start
- * of the excerpt; mid-text `#` runs are treated as content and left alone.
+ * a single line, so an ATX marker can survive at the start of the excerpt
+ * (other line prefixes like `- `, `> `, `1. ` survive too but are out of
+ * scope); mid-text `#` runs are treated as content and left alone.
  *
  * Presentation only — the model still receives `quote.text` verbatim via
  * formatTextWithInlineRefs. CommonMark allows up to six `#` and requires a

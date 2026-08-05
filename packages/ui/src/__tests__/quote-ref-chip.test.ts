@@ -18,6 +18,8 @@ test('leaves non-heading text untouched', () => {
   assert.equal(stripQuoteHeadingMarkers('plain text'), 'plain text');
   assert.equal(stripQuoteHeadingMarkers('.analysis/issue.md ### Description'), '.analysis/issue.md ### Description');
   assert.equal(stripQuoteHeadingMarkers('###Description'), '###Description');
+  assert.equal(stripQuoteHeadingMarkers('######x'), '######x');
+  assert.equal(stripQuoteHeadingMarkers('####### x'), '####### x');
   assert.equal(stripQuoteHeadingMarkers('C# code'), 'C# code');
   assert.equal(stripQuoteHeadingMarkers('#hashtag'), '#hashtag');
   assert.equal(stripQuoteHeadingMarkers(''), '');
