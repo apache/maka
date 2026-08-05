@@ -129,7 +129,7 @@ function findSemanticReplacement(
 }
 
 function exactObservationKey(observation: ActiveToolResultObservation): string {
-  return `${observation.toolName}\u0000${stableStringify(observation.input)}\u0000${observation.bodySha256}`;
+  return `${observation.toolName}\u0000${stableStringify(observation.input)}\u0000${observation.isError ? 'error' : 'success'}\u0000${observation.bodySha256}`;
 }
 
 function describeObservation(toolName: string, input: unknown): ObservationDescriptor | undefined {

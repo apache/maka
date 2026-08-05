@@ -554,6 +554,34 @@ describe('active current-turn tool-result pruning', () => {
     assert.deepEqual(rewritten.messages, messages);
   });
 
+  test('a same-value failure is not an exact duplicate of the last success', async () => {
+    const body = 'SAME_OBSERVATION'.repeat(100);
+    const messages = [
+      largeToolMessage('CustomQuery', 'query-success', body),
+      errorToolMessage('CustomQuery', 'query-failure', body),
+    ];
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages,
+      policy: {
+        enabled: true,
+        maxCurrentResultEstimatedTokens: 10_000,
+        minSupersededResultEstimatedTokens: 1,
+      },
+      stepNumber: 2,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      completedToolCalls: [
+        completedCall('CustomQuery', 'query-success', { query: 'status' }, 0),
+        completedCall('CustomQuery', 'query-failure', { query: 'status' }, 1),
+      ],
+      eligibleToolCallIds: new Set(['query-success']),
+      archiveToolResult: () => ({ artifactId: 'unused' }),
+    });
+
+    assert.equal(rewritten.rewritten, 0);
+    assert.deepEqual(rewritten.messages, messages);
+  });
+
   test('only allowlisted Bash snapshots participate in semantic supersession', async () => {
     const messages = [
       largeToolMessage('Bash', 'status-old', 'OLD_STATUS'.repeat(200)),
