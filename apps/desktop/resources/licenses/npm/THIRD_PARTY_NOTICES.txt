@@ -882,7 +882,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @jackwener/opencli@1.8.4
+Package: @jackwener/opencli@1.8.6
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: git+https://github.com/jackwener/opencli.git
@@ -1081,7 +1081,7 @@ Apache License
 
 ================================================================================
 
-Package: @larksuiteoapi/node-sdk@1.71.1
+Package: @larksuiteoapi/node-sdk@1.72.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/larksuite/node-sdk.git
@@ -3139,7 +3139,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: acorn@8.17.0
+Package: acorn@8.18.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/acornjs/acorn.git
@@ -11537,10 +11537,10 @@ THE SOFTWARE.
 
 ================================================================================
 
-Package: react@19.2.6
+Package: react@19.2.8
 Declared license: MIT
 Selected license: MIT
-Repository: https://github.com/facebook/react.git#packages/react
+Repository: https://github.com/react/react.git#packages/react
 
 --- LICENSE ---
 MIT License
@@ -11567,10 +11567,10 @@ SOFTWARE.
 
 ================================================================================
 
-Package: react-dom@19.2.6
+Package: react-dom@19.2.8
 Declared license: MIT
 Selected license: MIT
-Repository: https://github.com/facebook/react.git#packages/react-dom
+Repository: https://github.com/react/react.git#packages/react-dom
 
 --- LICENSE ---
 MIT License
@@ -13485,7 +13485,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: ws@8.21.0
+Package: ws@8.21.1
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/websockets/ws.git

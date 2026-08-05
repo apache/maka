@@ -23,7 +23,7 @@
       ],
       "project": ["src/**/*.{ts,tsx}", "e2e/**/*.ts", "stories/**/*.{ts,tsx}", "scripts/**/*.mjs"],
       "ignoreDependencies": ["@fontsource-variable/geist", "@fontsource-variable/geist-mono"],
-      "ignoreBinaries": ["taskkill", "plutil", "pkill", "pgrep", "tail"]
+      "ignoreBinaries": ["plutil", "pkill", "pgrep", "tail"]
     },
     "packages/ui": {
       "entry": ["src/**/*.test.ts", "src/**/*.test.tsx", "stories/**/*.@(ts|tsx)"],
