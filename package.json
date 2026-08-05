@@ -92,5 +92,10 @@
     "@jackwener/opencli@1.8.4": true,
     "dugite@3.2.2": true,
     "node-pty@1.2.0-beta.14": true
+  },
+  "overrides": {
+    "@astryxdesign/core": {
+      "react-dom": "19.2.8"
+    }
   }
 }

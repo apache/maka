@@ -11567,10 +11567,10 @@ SOFTWARE.
 
 ================================================================================
 
-Package: react-dom@19.2.6
+Package: react-dom@19.2.8
 Declared license: MIT
 Selected license: MIT
-Repository: https://github.com/facebook/react.git#packages/react-dom
+Repository: https://github.com/react/react.git#packages/react-dom
 
 --- LICENSE ---
 MIT License
