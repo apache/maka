@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { lstat, open, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, normalize, relative } from 'node:path';
 import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
 
@@ -178,6 +177,18 @@ function invalidManifest(message: string): BundledGitRuntimeError {
 
 async function sha256File(path: string): Promise<`sha256:${string}`> {
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  return `sha256:${hash.digest('hex')}`;
+  const file = await open(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    return `sha256:${hash.digest('hex')}`;
+  } finally {
+    await file.close();
+  }
 }
