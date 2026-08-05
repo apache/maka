@@ -22,10 +22,11 @@ export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout>;
  * rather than dropped entirely so an upstream default change cannot silently
  * retune the composer's gutters; `chat-surface-layout.test.tsx` holds the value.
  */
-export function ChatSurfaceLayout({ className, density = 'balanced', ...props }: ChatSurfaceLayoutProps) {
+export function ChatSurfaceLayout({ className, density = 'balanced', conversationKey, ...props }: ChatSurfaceLayoutProps) {
   return (
     <ChatLayout
       {...props}
+      conversationKey={conversationKey}
       density={density}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"

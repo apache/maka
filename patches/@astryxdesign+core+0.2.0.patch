@@ -1,3 +1,114 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
+index 37f2c82..16bf2fc 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
+@@ -62,6 +62,14 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+      * @default 'balanced'
+      */
+     density?: Density;
++    /**
++     * Per-conversation identity for hosts that switch conversations in place
++     * without remounting the layout. When the value changes, ChatLayout
++     * re-locks the scroll ("pinned at bottom") and resets the new-message
++     * baseline, so the first message of the new conversation is not flagged
++     * as unread and the previous conversation's state does not leak over.
++     */
++    conversationKey?: string | number;
+ }
+ export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
+ export declare namespace ChatLayout {
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
+index 8ef54c7..153ae52 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
+@@ -21,7 +21,7 @@
+  * - /apps/storybook/stories/ChatLayout.stories.tsx
+  * - /packages/cli/templates/blocks/components/ChatLayout/ (block examples)
+  */
+-import { useMemo, useRef } from 'react';
++import { useEffect, useMemo, useRef } from 'react';
+ import * as stylex from '@stylexjs/stylex';
+ import "../theme/tokens.stylex.js";
+ import { spacingVars } from "../theme/tokens.stylex.js";
+@@ -184,6 +184,7 @@ export function ChatLayout({
+   className,
+   style,
+   'data-testid': testId,
++  conversationKey,
+   ref,
+   ...rest
+ }) {
+@@ -200,6 +201,31 @@ export function ChatLayout({
+     isLocked: scroll.isLocked,
+     onResize: scroll.scrollIfLocked
+   });
++  // #2205: once auto-follow re-locks (scrollend settled within the lock
++  // threshold, i.e. the user is back at the bottom), the "New messages"
++  // indicator is stale: hasNewMessages only clears via the button's
++  // dismiss(), so scrolling back down kept the label visible. Clearing on
++  // every lock transition makes "at bottom" the authority for the badge.
++  useEffect(() => {
++    if (scroll.isLocked) {
++      newMsgs.dismiss();
++    }
++  }, [scroll.isLocked, newMsgs.dismiss]);
++  // #2205: a conversation switch must reset the scroll lock and the
++  // new-message baseline without remounting the layout — a remount would
++  // drop an in-progress composer draft. Hosts pass a per-conversation key;
++  // when it changes, re-lock to "pinned at bottom" semantics and clear the
++  // previous conversation's flag and last-message baseline, so the first
++  // message of the new conversation is recorded, not flagged as unread.
++  const conversationKeyRef = useRef(conversationKey);
++  useEffect(() => {
++    if (conversationKey === conversationKeyRef.current) {
++      return;
++    }
++    conversationKeyRef.current = conversationKey;
++    scroll.lock();
++    newMsgs.reset();
++  }, [conversationKey, scroll.lock, newMsgs.reset]);
+   const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
+     isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
+     label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
+index 8c509bc..f108f3b 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
+@@ -49,6 +49,13 @@ export function useChatNewMessages({
+   const elementRef = useRef(null);
+   const cleanupRef = useRef(null);
+   const attach = useCallback(el => {
++    // #2205: a fresh content element means a fresh transcript (e.g. a host
++    // that remounts the message container per conversation). Reset the
++    // baseline so the first resize of the new content is recorded as the
++    // new last message, not flagged as unread — only growth while unlocked
++    // after this point is "new messages".
++    lastMessageRef.current = null;
++    setHasNewMessages(false);
+     observeResize(el, () => {
+       onResizeRef.current?.();
+       const messages = el.getElementsByClassName('astryx-chat-message');
+@@ -90,9 +97,19 @@ export function useChatNewMessages({
+   const dismiss = useCallback(() => {
+     setHasNewMessages(false);
+   }, []);
++  // #2205: full baseline reset for a new conversation — clears the flag and
++  // forgets the previous conversation's last message, so the next message
++  // observed is recorded as the baseline rather than flagged as unread.
++  // Used by ChatLayout when `conversationKey` changes (hosts that switch
++  // conversations in place without remounting the layout).
++  const reset = useCallback(() => {
++    lastMessageRef.current = null;
++    setHasNewMessages(false);
++  }, []);
+   return {
+     hasNewMessages,
+     dismiss,
++    reset,
+     contentRef
+   };
+ }
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js b/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js
 index b5a8d9e..89a72cd 100644
 --- a/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js

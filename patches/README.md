@@ -95,3 +95,18 @@ Only `dist/Field/FieldLabel.js` is patched — `package.json` `exports` resolves
 ### Lifecycle
 
 Upstreamable, unlike the `@ai-sdk` patch: the key naming follows `@astryx.fileInput.required`, which upstream already ships for the screen-reader mirror of this same marker. **Delete it when `packages/ui/src/__tests__/astryx-form-controls-localization.test.tsx` passes without it** — `localizes the required marker while keeping aria-required` asserts both halves, the localized marker and the surviving `aria-required`, and `keeps Astryx's English markers when the locale is en` asserts the `en` path did not regress into a raw key. Reinstall without the patch and run `npm --workspace @maka/ui run test`.
+
+## `@astryxdesign/core`: the "New messages" indicator must clear when the user is back at the bottom, and on a fresh transcript
+
+Fixes [#2205](https://github.com/maka-agent/maka-agent/issues/2205). `ChatLayout` owns two pieces of per-conversation state that nothing ever resets:
+
+- `useChatNewMessages` only clears `hasNewMessages` through the button's `dismiss()`; scrolling back to the bottom re-locks auto-follow (`scrollend` inside the 10px lock threshold) but the label stays visible because "at bottom" and "has new messages" are independent.
+- A conversation switch neither remounts `ChatLayout` nor swaps the observed content element (the transcript container is reused), so `lastMessageRef` still points at the previous conversation's last `.astryx-chat-message` node and the first resize of the new conversation's content flags `hasNewMessages`.
+
+Two fixes, one behavioural and one opt-in prop, all in `dist/`:
+
+- `ChatLayout.js` clears the new-message flag whenever the scroll lock becomes active again — `isLocked` is set on mount and by `scrollend` at the bottom, so "at bottom" now owns the badge. A locked transcript never flags new messages, so clearing on lock has no false positives.
+- `ChatLayout` gains an optional `conversationKey` prop. When the value changes it calls `scroll.lock()` (re-lock to "pinned at bottom": `isLocked` true, `isScrolledUp` false) and the new `newMsgs.reset()`, clearing the flag and forgetting the previous conversation's last message. Maka passes the active session id (`conversationKey` on `ChatSurfaceLayout` in `app-shell` and `quote-companion-panel`). This is deliberately **not** a remount — a remount would drop an in-progress composer draft, since Astryx's composer keeps its contenteditable content in internal state (regression caught by `composer-skill-invocation` / `skill-draft-lifecycle` e2e).
+- `useChatNewMessages.js` exposes `reset()` (used above) and still resets `lastMessageRef`/`hasNewMessages` when a fresh content element is attached, covering hosts that swap the message container itself.
+
+**Delete it when** `@astryxdesign/core` ships a `hasNewMessages` reset on lock (or an equivalent "at bottom" notification), a public reset for the new-message baseline, and a way to re-lock the scroll on a conversation switch without remounting. Verify with the issue #2205 repro: scroll up, receive a message, scroll back down — the badge must clear; switch conversations with the badge active — the new conversation must start clean and its composer draft must survive the switch. Patches touch `dist/` and `dist/Chat/ChatLayout.d.ts` (the `conversationKey` prop type); `.map` files are left stale, so stack traces inside these hooks point at upstream `src/` lines.
