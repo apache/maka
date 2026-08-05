@@ -825,6 +825,24 @@ export const ExtensionsSkillsInspector: Story = {
     row.click();
     await waitForStoryText(canvasElement, '固定到技能上下文');
     await waitForStoryText(canvasElement, '声明工具');
+
+    // The inspector's resize handle carries an absolutely positioned hit
+    // strip; a vendor translate bug once shifted it half its height upward,
+    // over the toolbar, swallowing the view switch's clicks. The strip must
+    // stay inside the content row — below the toolbar.
+    const handle = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '.maka-module-page .astryx-resize-handle',
+    );
+    const hitStrip = handle.firstElementChild;
+    if (!(hitStrip instanceof HTMLElement)) throw new Error('Resize handle has no hit strip');
+    const toolbar = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '.maka-module-page-bar',
+    );
+    await expect(hitStrip.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      toolbar.getBoundingClientRect().bottom - 1,
+    );
   },
 };
 
