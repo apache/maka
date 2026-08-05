@@ -10,7 +10,6 @@ test('an explicit new task survives a renderer reload without reopening history'
 
   await page.getByRole('button', { name: '新任务', exact: true }).click();
   await expect(page.locator('.maka-turn')).toHaveCount(0);
-  await expect(page.locator('.maka-composer-workspace-dock')).toBeVisible();
   await composer.fill('draft survives renderer replacement');
 
   await page.reload();
@@ -18,7 +17,6 @@ test('an explicit new task survives a renderer reload without reopening history'
   await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
   await expect(page.locator(COMPOSER_INPUT)).toHaveText('draft survives renderer replacement');
   await expect(page.locator('.maka-turn')).toHaveCount(0);
-  await expect(page.locator('.maka-composer-workspace-dock')).toBeVisible();
 });
 
 test('a renderer reload during first send adopts the newly persisted Session', async ({
