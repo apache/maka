@@ -98,3 +98,73 @@
 .maka-hero-empty-chat:not(.maka-hero-deep-research) h1 {
     font: var(--maka-text-heading-1);
   }
+
+/* The workspace picker's row on the empty-chat canvas. It sits between the
+   greeting and the composer because the project is a session-creation
+   parameter — chosen once, before the first message, and gone with this hero
+   the moment the session exists. See packages/ui/src/workspace-picker.tsx. */
+.maka-hero-workspace {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5);
+}
+
+.maka-workspace-picker {
+  -webkit-app-region: no-drag;
+  min-width: 0;
+  text-align: left;
+}
+
+.maka-workspace-picker svg {
+  flex: 0 0 auto;
+}
+
+.maka-workspace-picker-current {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The project catalog is the only scrollable region. Add Project and the
+   deliberately low-emphasis No Project escape hatch stay fixed below it. */
+.maka-workspace-picker-menu {
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - var(--space-6)));
+}
+
+.maka-workspace-picker-scroll {
+  max-height: 224px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.maka-workspace-picker-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.maka-workspace-picker-scroll::-webkit-scrollbar-thumb {
+  border: var(--border-width-thick) solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
+
+.maka-workspace-picker-status {
+  font: var(--maka-text-supporting);
+  margin-left: auto;
+  color: var(--muted-foreground);
+}
+
+.maka-workspace-picker-check {
+  margin-left: auto;
+}
+
+.maka-workspace-picker-none {
+  color: var(--muted-foreground);
+}

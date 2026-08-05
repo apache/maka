@@ -23,6 +23,7 @@
  * govern, not buried in a 7000-line file.
  */
 
+import type { ReactNode } from 'react';
 import { Sparkles } from './icons.js';
 import { Item } from '@astryxdesign/core/Item';
 
@@ -55,7 +56,17 @@ export function detectDayPeriod(nowMs: number = Date.now()): DayPeriod {
   return 'evening';
 }
 
-export function EmptyChatHero(props: { onPromptSuggestion?(prompt: string): void; userLabel?: string }) {
+export function EmptyChatHero(props: {
+  onPromptSuggestion?(prompt: string): void;
+  userLabel?: string;
+  /**
+   * Session-creation context rendered under the greeting — today the workspace
+   * picker. It belongs to the hero rather than to the composer because it is
+   * fixed once the first message creates the session, so it has to leave the
+   * screen exactly when the hero does. See `workspace-picker.tsx`.
+   */
+  workspaceSlot?: ReactNode;
+}) {
   // Greet the user by name when they've set one in Personalization Settings.
   // Falls back to a neutral title so first-run users don't see "Hi 你, …".
   //
@@ -95,6 +106,9 @@ export function EmptyChatHero(props: { onPromptSuggestion?(prompt: string): void
           {label ? copy.headlineWithLabel(greeting, label) : copy.headlineFallback(greeting, greetingTail)}
         </h1>
       </header>
+      {props.workspaceSlot ? (
+        <div className="maka-hero-workspace">{props.workspaceSlot}</div>
+      ) : null}
     </section>
   );
 }

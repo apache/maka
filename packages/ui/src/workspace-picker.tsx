@@ -1,23 +1,25 @@
 /**
- * Composer workspace picker (issue #1044) — the control that decides where a
- * NEW chat starts. It lives in the composer card's footer control row, beside
- * the model chip, and speaks the same quiet chip dialect as the ＋ menu, the
- * permission shield and the model picker.
+ * Workspace picker (issue #1044) — the control that decides which project a
+ * NEW chat starts in.
  *
- * It renders as a bare child rather than inside a wrapper: the control row
- * owns the gap, so a wrapper would introduce a second spacing authority and
- * group it apart from the controls it belongs with. It used to sit in exactly
- * such a wrapper on a lone bar above the card, which is what made it read as a
- * leftover rather than part of the control surface.
+ * It lives on the empty-chat canvas, under the hero greeting and above the
+ * composer, because that is where its lifetime belongs. The project is a
+ * session-creation parameter: it is fixed the moment the first message creates
+ * the session, and no other entry point changes it afterwards. The composer's
+ * footer control row, where this used to sit, holds controls that persist for
+ * the whole session (＋, the permission shield, the model), so a chip that
+ * vanishes on send broke that row's implicit contract. On the hero it leaves
+ * with the surface it belongs to.
+ *
+ * Reading order follows decision order: greeting → where → what.
  *
  * The current git branch rides along as read-only trigger context (tooltip and
- * accessible name). Switching branches is the agent's job, not a menu's: a
- * checkout rewrites the user's real working tree, and the control that offered
- * it only existed before the first message — see the PR that removed it.
+ * accessible name). Switching branches is the agent's job — see the commit that
+ * removed the branch picker.
  *
- * Purely presentational: the picker is a standard compact menu trigger fed by
- * host-injected props. Shared Button owns its visual and interaction states;
- * local classes only constrain layout and label truncation.
+ * Purely presentational: a standard compact menu trigger fed by host-injected
+ * props. Shared Button owns its visual and interaction states; local classes
+ * only constrain layout and label truncation.
  */
 
 import type { ProjectRecord } from '@maka/core';
@@ -31,7 +33,7 @@ import { AlertTriangle, Check, ChevronDown, FolderOpen, Plus } from './icons.js'
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
-export interface ComposerWorkspacePicker {
+export interface WorkspacePickerModel {
   label?: string;
   branch?: string | null;
   pending?: boolean;
@@ -44,22 +46,21 @@ export interface ComposerWorkspacePicker {
   onSelectNoProject(): void;
 }
 
-export function ComposerWorkspacePickers(props: {
-  workspacePicker: ComposerWorkspacePicker;
-}) {
+export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }) {
   const wp = props.workspacePicker;
   const copy = getConversationCopy(useUiLocale()).workspace;
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(
     wp.defaultOpen ?? false,
   );
   return (
-    /* The workspace picker is a standard compact menu trigger. Shared Button
-       owns its visual and interaction states; local classes only constrain
-       layout and label truncation. */
+    /* The trigger sits high on the canvas with the composer below it, so the
+       menu opens downward, over that content. Opening 'above' here would drop
+       it into the empty upper canvas — the anchoring complaint that moved
+       these controls off their old bar above the card in the first place. */
     <DropdownMenu
       isMenuOpen={workspaceMenuOpen}
       onOpenChange={setWorkspaceMenuOpen}
-      placement="above"
+      placement="below"
       button={{
         label: copy.chooseAriaLabel(
           wp.label ?? copy.current,
@@ -69,17 +70,17 @@ export function ComposerWorkspacePickers(props: {
         endContent: <ChevronDown size={12} aria-hidden="true" />,
         variant: 'ghost',
         size: 'sm',
-        className: 'maka-composer-workspace-picker',
+        className: 'maka-workspace-picker',
         isDisabled: wp.pending === true,
         'aria-busy': wp.pending === true ? 'true' : undefined,
         tooltip: copy.chooseTitle(wp.branch ?? undefined),
         children: wp.label
-          ? <span className="maka-composer-workspace-current">{wp.label}</span>
+          ? <span className="maka-workspace-picker-current">{wp.label}</span>
           : copy.choose,
       }}
-      className="maka-composer-workspace-menu"
+      className="maka-workspace-picker-menu"
     >
-      <div className="maka-composer-project-scroll">
+      <div className="maka-workspace-picker-scroll">
         {wp.projects.map((project) => (
           <DropdownMenuItem
             key={project.id}
@@ -92,9 +93,9 @@ export function ComposerWorkspacePickers(props: {
               : <AlertTriangle size={13} aria-hidden="true" />}
             label={project.name}
             endContent={!project.available
-              ? <span className="maka-composer-project-status">{copy.relink}</span>
+              ? <span className="maka-workspace-picker-status">{copy.relink}</span>
               : project.id === wp.selectedProjectId ? (
-                <Check size={12} aria-hidden="true" className="maka-composer-project-check" />
+                <Check size={12} aria-hidden="true" className="maka-workspace-picker-check" />
               ) : undefined}
           />
         ))}
@@ -109,13 +110,13 @@ export function ComposerWorkspacePickers(props: {
       />
       <Divider orientation="horizontal" />
       <DropdownMenuItem
-        className="maka-composer-no-project"
+        className="maka-workspace-picker-none"
         onClick={() => {
           wp.onSelectNoProject();
         }}
         label={copy.noProject}
         endContent={wp.selectedProjectId === null ? (
-          <Check size={12} aria-hidden="true" className="maka-composer-project-check" />
+          <Check size={12} aria-hidden="true" className="maka-workspace-picker-check" />
         ) : undefined}
       />
     </DropdownMenu>

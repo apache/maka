@@ -158,6 +158,19 @@ const baseChatProps: ChatViewProps = {
   userLabel: '你',
   onNew: noop,
   onPromptSuggestion: noop,
+  // Production wires this whenever the shell has a project catalog
+  // (app-shell.tsx). It only reaches the screen in the draft state, so the
+  // active-session stories below carry it without rendering it.
+  workspacePicker: {
+    label: 'maka-agent',
+    branch: 'opencode/storybook-surface-coverage',
+    projects: catalogProjects.filter((item) => item.archivedAt === undefined),
+    selectedProjectId: 'project-maka',
+    onAdd: noop,
+    onSelectProject: noop,
+    onRelink: noop,
+    onSelectNoProject: noop,
+  },
 };
 
 const baseComposerProps: ComposerProps = {
@@ -195,16 +208,6 @@ const baseComposerProps: ComposerProps = {
     { id: 'commit', name: 'Commit', description: '生成提交信息' },
     { id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
   ],
-  workspacePicker: {
-    label: 'maka-agent',
-    branch: 'opencode/storybook-surface-coverage',
-    projects: catalogProjects.filter((item) => item.archivedAt === undefined),
-    selectedProjectId: 'project-maka',
-    onAdd: noop,
-    onSelectProject: noop,
-    onRelink: noop,
-    onSelectNoProject: noop,
-  },
 };
 
 function ShellFrame(props: {
