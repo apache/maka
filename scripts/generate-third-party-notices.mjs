@@ -19,7 +19,10 @@ const REQUIRED_ASSET_NOTICE_MARKERS = [
   'apps/desktop/src/renderer/settings/provider-brand-marks.tsx',
 ];
 const REQUIRED_ASSET_LICENSE_FILES = [
-  'apps/desktop/node_modules/simple-icons/LICENSE.md',
+  // Vendored from the installed simple-icons tarball (CC0-1.0); the package
+  // hoists to different node_modules depths across majors, so the notice
+  // generator and the packager read the static copy instead.
+  'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
   'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
   'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
   'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
