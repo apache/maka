@@ -29,6 +29,12 @@ import {
   mergeSettings,
 } from '@maka/core';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
+import type {
+  DesktopPricingMutationOutcome,
+  DesktopPricingSettingsPort,
+  DesktopPricingSnapshot,
+} from '../../src/shared/runtime-host-pricing';
+import type { EffectivePricingEntry } from '@maka/runtime-host/protocol';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { withScopedMakaBridge } from '../maka-bridge';
@@ -209,7 +215,6 @@ const usageStats: UsageStats = {
     },
     { tool: 'Bash', calls: 120, success: 118, errors: 2, avgDurationMs: 840 },
   ],
-  pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
 };
 
 const emptyUsageStats: UsageStats = {
@@ -229,7 +234,6 @@ const emptyUsageStats: UsageStats = {
   byProvider: [],
   byModel: [],
   byTool: [],
-  pricing: [],
 };
 
 const singleProviderUsageStats: UsageStats = {
@@ -695,6 +699,140 @@ const withUsageLongTailBridge = withUsageStoryBridge(usageStats, {
   activeTab: 'requests',
 });
 
+const withPricingBridge = withUsageStoryBridge(emptyUsageStats, {
+  activeTab: 'pricing',
+});
+
+function storyPricing(
+  modelKey: string,
+  inputUsdPer1M: number,
+  outputUsdPer1M: number,
+  cacheReadUsdPer1M?: number,
+  cacheWriteUsdPer1M?: number,
+): EffectivePricingEntry['pricing'] {
+  return {
+    modelKey,
+    inputUsdPer1M,
+    outputUsdPer1M,
+    ...(cacheReadUsdPer1M !== undefined ? { cacheReadUsdPer1M } : {}),
+    ...(cacheWriteUsdPer1M !== undefined ? { cacheWriteUsdPer1M } : {}),
+  };
+}
+
+const pricingBuiltinOnly: readonly EffectivePricingEntry[] = [
+  { pricing: storyPricing('anthropic:claude-sonnet-4-5', 3, 15, 0.3, 3.75), source: 'builtin' },
+  { pricing: storyPricing('openai:gpt-4o', 2.5, 10, 1.25), source: 'builtin' },
+];
+
+const pricingMixed: readonly EffectivePricingEntry[] = [
+  {
+    pricing: storyPricing('anthropic:claude-sonnet-4-5', 2, 12, 0.3, 3.75),
+    source: 'custom',
+    resetEffect: 'restore_builtin',
+  },
+  { pricing: storyPricing('openai:gpt-4o', 2.5, 10, 1.25), source: 'builtin' },
+  {
+    pricing: storyPricing('vendor:coder-v2', 0.8, 2.4, 0),
+    source: 'custom',
+    resetEffect: 'become_unpriced',
+  },
+];
+
+const pricingCustomOnly: readonly EffectivePricingEntry[] = [
+  {
+    pricing: storyPricing('Acme:Case-Sensitive-β', 0.00000001, 0.42),
+    source: 'custom',
+    resetEffect: 'become_unpriced',
+  },
+  {
+    pricing: storyPricing('vendor:coder-v2', 0.8, 2.4, 0, 0),
+    source: 'custom',
+    resetEffect: 'become_unpriced',
+  },
+];
+
+function createPricingStoryPort(input: {
+  entries?: readonly EffectivePricingEntry[];
+  load?: 'ready' | 'loading' | 'error';
+  mutation?: 'save' | 'review_required' | 'reconciliation_unavailable';
+}): DesktopPricingSettingsPort {
+  let snapshot: DesktopPricingSnapshot = {
+    hostEpoch: 'storybook-host',
+    connectionId: 'storybook-connection',
+    revision: 7,
+    entries: input.entries ?? [],
+  };
+
+  return {
+    async loadPricingSnapshot() {
+      if (input.load === 'loading') {
+        return new Promise<DesktopPricingSnapshot>(() => undefined);
+      }
+      if (input.load === 'error') throw new Error('Storybook Runtime Host is offline');
+      return snapshot;
+    },
+    async applyPricingMutation({ mutation }): Promise<DesktopPricingMutationOutcome> {
+      if (input.mutation === 'reconciliation_unavailable') {
+        return { kind: 'reconciliation_unavailable', reason: 'outcome_unknown' };
+      }
+      if (input.mutation === 'review_required') {
+        const modelKey = mutation.kind === 'upsert' ? mutation.pricing.modelKey : mutation.modelKey;
+        const latest = mutation.kind === 'upsert'
+          ? mutation.pricing
+          : storyPricing(modelKey, 99, 199, 9, 19);
+        snapshot = storySnapshot(snapshot, [
+          ...snapshot.entries.filter((entry) => entry.pricing.modelKey !== modelKey),
+          { pricing: latest, source: 'builtin' },
+        ]);
+        return { kind: 'review_required', reason: 'revision_conflict', snapshot };
+      }
+
+      if (mutation.kind === 'upsert') {
+        const existing = snapshot.entries.find(
+          (entry) => entry.pricing.modelKey === mutation.pricing.modelKey,
+        );
+        const resetEffect = existing?.source === 'builtin'
+          || (existing?.source === 'custom' && existing.resetEffect === 'restore_builtin')
+          ? 'restore_builtin'
+          : 'become_unpriced';
+        snapshot = storySnapshot(snapshot, [
+          ...snapshot.entries.filter(
+            (entry) => entry.pricing.modelKey !== mutation.pricing.modelKey,
+          ),
+          { pricing: mutation.pricing, source: 'custom', resetEffect },
+        ]);
+      } else {
+        const existing = snapshot.entries.find(
+          (entry) => entry.pricing.modelKey === mutation.modelKey,
+        );
+        const remaining = snapshot.entries.filter(
+          (entry) => entry.pricing.modelKey !== mutation.modelKey,
+        );
+        const bundled = pricingBuiltinOnly.find(
+          (entry) => entry.pricing.modelKey === mutation.modelKey,
+        );
+        snapshot = storySnapshot(snapshot, existing?.source === 'custom'
+          && existing.resetEffect === 'restore_builtin' && bundled
+          ? [...remaining, bundled]
+          : remaining);
+      }
+      return { kind: 'saved', disposition: 'committed', snapshot };
+    },
+  };
+}
+
+function storySnapshot(
+  previous: DesktopPricingSnapshot,
+  entries: readonly EffectivePricingEntry[],
+): DesktopPricingSnapshot {
+  return {
+    ...previous,
+    revision: previous.revision + 1,
+    entries: [...entries].sort((left, right) =>
+      left.pricing.modelKey < right.pricing.modelKey ? -1 : 1),
+  };
+}
+
 const subagentStorySettings = mergeSettings(createDefaultSettings(), {
   subagents: {
     presets: [
@@ -842,6 +980,7 @@ function SettingsStory(props: {
   section: SettingsSection;
   connections?: LlmConnection[];
   defaultSlug?: string | null;
+  createPricingPort?(): DesktopPricingSettingsPort;
 }) {
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
@@ -851,6 +990,9 @@ function SettingsStory(props: {
   // holds both in AppShell state and applies them optimistically on click.
   const [themePref, setThemePref] = useState<ThemePreference>('auto');
   const [themePalette, setThemePalette] = useState<ThemePalette>('default');
+  const [pricingPort] = useState<DesktopPricingSettingsPort | undefined>(
+    () => props.createPricingPort?.(),
+  );
 
   return (
     <ToastProvider>
@@ -884,6 +1026,7 @@ function SettingsStory(props: {
           initialFocusRef={initialFocusRef}
           onOpenDailyReview={noop}
           onOpenSession={noop}
+          pricingPort={pricingPort}
         />
       </div>
     </ToastProvider>
@@ -910,6 +1053,28 @@ async function waitForStoryCondition(predicate: () => boolean, errorMessage: str
     await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
   }
   throw new Error(errorMessage);
+}
+
+async function waitForPricingDialog(canvasElement: HTMLElement): Promise<HTMLDialogElement> {
+  let dialog: HTMLDialogElement | null = null;
+  await waitForStoryCondition(() => {
+    dialog = canvasElement.querySelector<HTMLDialogElement>('dialog[open]')
+      ?? document.querySelector<HTMLDialogElement>('dialog[open]');
+    return dialog !== null;
+  }, 'Pricing editor dialog did not open');
+  return dialog!;
+}
+
+async function openPricingStoryEditor(
+  canvasElement: HTMLElement,
+  buttonLabel: string,
+): Promise<HTMLDialogElement> {
+  const button = await waitForStoryButton(
+    canvasElement,
+    (candidate) => candidate.textContent?.trim() === buttonLabel,
+  );
+  await userEvent.click(button);
+  return waitForPricingDialog(canvasElement);
 }
 
 async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise<HTMLButtonElement> {
@@ -1029,6 +1194,143 @@ export const UsageLongTail: Story = {
 // Real path: the same long-content Usage page at the minimum supported window width.
 export const UsageNarrow: Story = {
   ...UsageLongTail,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
+// Real path: 设置 → 使用统计 → 定价配置, while the semantic Host adapter is loading.
+export const PricingLoading: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ load: 'loading' })}
+    />
+  ),
+};
+
+// Real path: 设置 → 使用统计 → 定价配置, when the authoritative read fails.
+export const PricingReadError: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ load: 'error' })}
+    />
+  ),
+};
+
+// Real path: 设置 → 使用统计 → 定价配置, with bundled prices only.
+export const PricingBuiltinOnly: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ entries: pricingBuiltinOnly })}
+    />
+  ),
+};
+
+// Real path: 设置 → 使用统计 → 定价配置, with all three provenance states.
+export const PricingMixed: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ entries: pricingMixed })}
+    />
+  ),
+};
+
+// Real path: 设置 → 使用统计 → 定价配置, with exact custom-only keys and explicit zero cache rates.
+export const PricingCustomOnly: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ entries: pricingCustomOnly })}
+    />
+  ),
+};
+
+// Real path: 设置 → 使用统计 → 定价配置 → 添加价格, with immediate field validation.
+export const PricingValidation: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ entries: pricingMixed })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openPricingStoryEditor(canvasElement, '添加价格');
+    const inputs = dialog.querySelectorAll<HTMLInputElement>('input');
+    if (inputs.length < 5) throw new Error('Pricing editor fields did not render');
+    await userEvent.type(inputs[0]!, 'vendor:new-model');
+    await userEvent.type(inputs[1]!, '-1');
+    await waitForStoryCondition(
+      () => dialog.textContent?.includes('请输入有限且不小于 0 的数字') === true,
+      'Pricing rate validation did not render',
+    );
+  },
+};
+
+// Real path: 设置 → 使用统计 → 定价配置 → 自定义, after a CAS conflict returns fresh authority.
+export const PricingConflictReview: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({
+        entries: pricingBuiltinOnly,
+        mutation: 'review_required',
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openPricingStoryEditor(canvasElement, '自定义');
+    const save = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === '保存',
+    );
+    if (!save) throw new Error('Pricing save action did not render');
+    await userEvent.click(save);
+    await waitForStoryCondition(
+      () => dialog.textContent?.includes('当前权威值') === true
+        && dialog.textContent.includes('内置')
+        && dialog.textContent.includes('自定义 · 有内置回退'),
+      'Pricing conflict comparison did not render',
+    );
+  },
+};
+
+// Real path: 设置 → 使用统计 → 定价配置 → 自定义, after a response-losing uncertain write.
+export const PricingUncertainBlocked: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({
+        entries: pricingBuiltinOnly,
+        mutation: 'reconciliation_unavailable',
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openPricingStoryEditor(canvasElement, '自定义');
+    const save = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === '保存',
+    );
+    if (!save) throw new Error('Pricing save action did not render');
+    await userEvent.click(save);
+    await waitForStoryCondition(
+      () => dialog.textContent?.includes('暂时无法核对写入结果') === true,
+      'Pricing uncertain blocked state did not render',
+    );
+  },
+};
+
+// Real path: 设置 → 使用统计 → 定价配置 at the minimum supported window width.
+export const PricingNarrow: Story = {
+  ...PricingMixed,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 /**

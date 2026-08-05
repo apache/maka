@@ -52,6 +52,7 @@ import { UsageSettingsPage } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import type { DesktopPricingSettingsPort } from '../../shared/runtime-host-pricing';
 
 const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 
@@ -76,6 +77,8 @@ export function SettingsSurface(props: {
   onOpenDailyReview?(): void;
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
+  /** Isolated M4 seam. Production leaves this unset until the M5 cutover. */
+  pricingPort?: DesktopPricingSettingsPort;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -352,6 +355,7 @@ export function SettingsSurface(props: {
                       section={section}
                       settings={settings}
                       usageStats={usageStats}
+                      pricingPort={props.pricingPort}
                       connections={props.connections}
                       defaultSlug={props.defaultSlug}
                       themePref={props.themePref}
@@ -385,6 +389,7 @@ function SettingsPageBody(props: {
   section: SettingsSection;
   settings: AppSettings;
   usageStats: UsageStats | null;
+  pricingPort?: DesktopPricingSettingsPort;
   connections: LlmConnection[];
   defaultSlug: string | null;
   themePref: ThemePreference;
@@ -440,6 +445,7 @@ function SettingsPageBody(props: {
           onUpdate={props.onUpdateSettings}
           onReload={props.onReloadUsage}
           onOpenSession={props.onOpenSession}
+          pricingPort={props.pricingPort}
         />
       );
     case 'bot-chat':

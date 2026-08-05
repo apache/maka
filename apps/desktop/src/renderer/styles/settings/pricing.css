@@ -1,0 +1,47 @@
+/* Settings → Usage → Pricing. Astryx owns controls, dialogs, banners and
+   table geometry; this file only composes the Pricing-specific hierarchy. */
+
+.settingsPricingPanel,
+.settingsPricingContent {
+  min-width: 0;
+}
+
+.settingsPricingContent {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.settingsPricingLoading {
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+}
+
+.settingsPricingTable {
+  min-width: 0;
+}
+
+.settingsPricingModelKey {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.settingsPricingRate {
+  font-variant-numeric: tabular-nums;
+}
+
+.settingsPricingReviewComparison {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: var(--space-2);
+}
+
+.settingsPricingReviewComparison > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.settingsPricingReviewComparison span {
+  overflow-wrap: anywhere;
+}

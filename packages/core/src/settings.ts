@@ -368,12 +368,6 @@ export interface UsageStats {
     errors: number;
     avgDurationMs: number;
   }>;
-  pricing: Array<{
-    provider: string;
-    model: string;
-    inputPerMTokUsd: number;
-    outputPerMTokUsd: number;
-  }>;
 }
 
 export interface SettingsTestResult {

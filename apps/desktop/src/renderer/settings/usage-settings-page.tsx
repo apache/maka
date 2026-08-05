@@ -29,11 +29,13 @@ import {
   Banner,
 } from '@maka/ui';
 import { ICON_SIZE, Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
+import type { DesktopPricingSettingsPort } from '../../shared/runtime-host-pricing';
 import {
   getUsageSettingsCopy,
   type UsageSettingsCopy,
 } from '../locales/settings-usage-copy';
 import { MetricCard } from './settings-metric-card';
+import { PricingSettingsPanel } from './pricing-settings-panel';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage } from './settings-section';
 import { useActionGuard } from './use-action-guard';
@@ -47,6 +49,7 @@ export function UsageSettingsPage(props: {
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
   onReload(range?: UsageRange): Promise<void>;
   onOpenSession?(sessionId: string): void;
+  pricingPort?: DesktopPricingSettingsPort;
 }) {
   const locale = useUiLocale();
   const copy = getUsageSettingsCopy(locale);
@@ -80,13 +83,13 @@ export function UsageSettingsPage(props: {
       );
   }, [stats, usageDraft.status, normalizedModelFilter]);
 
-  const tabCounts: Record<UsageActiveTab, number> = {
+  const tabCounts: Record<Exclude<UsageActiveTab, 'pricing'>, number> = {
     requests: stats?.logs.length ?? 0,
     providers: stats?.byProvider.length ?? 0,
     models: stats?.byModel.length ?? 0,
     tools: stats?.byTool.length ?? 0,
-    pricing: stats?.pricing.length ?? 0,
   };
+  const isolatedPricingActive = usageDraft.activeTab === 'pricing' && props.pricingPort !== undefined;
 
   async function setRange(range: UsageRange) {
     const saved = await updateUsage({ range });
@@ -117,7 +120,7 @@ export function UsageSettingsPage(props: {
 
   return (
     <SettingsPage className="settingsUsagePage">
-      <div className="settingsUsageOverview">
+      {!isolatedPricingActive ? <div className="settingsUsageOverview">
         <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
           <SegmentedControl
             value={usageDraft.range}
@@ -154,7 +157,7 @@ export function UsageSettingsPage(props: {
           <MetricCard title={copy.totalTokens} value={String(stats?.summary.totalTokens ?? 0)} detail={copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0)} />
           <MetricCard title={copy.cacheTokens} value={String(stats?.summary.cacheTokens ?? 0)} detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)} />
         </div>
-      </div>
+      </div> : null}
 
       <div className="settingsUsageBreakdown">
         <div className="settingsUsageTabsBar">
@@ -168,7 +171,11 @@ export function UsageSettingsPage(props: {
             <Tab value="providers" label={copy.tabs[1]} endContent={<span>{tabCounts.providers}</span>} />
             <Tab value="models" label={copy.tabs[2]} endContent={<span>{tabCounts.models}</span>} />
             <Tab value="tools" label={copy.tabs[3]} endContent={<span>{tabCounts.tools}</span>} />
-            <Tab value="pricing" label={copy.tabs[4]} endContent={<span>{tabCounts.pricing}</span>} />
+            <Tab
+              value="pricing"
+              label={copy.tabs[4]}
+              endContent={props.pricingPort ? undefined : <span>0</span>}
+            />
           </TabList>
         </div>
 
@@ -215,7 +222,9 @@ export function UsageSettingsPage(props: {
 
         {usageDraft.activeTab === 'pricing' ? (
           <div className="settingsUsageTabPanel">
-            <UsagePricingPanel stats={stats} copy={copy} />
+            {props.pricingPort
+              ? <PricingSettingsPanel port={props.pricingPort} />
+              : <UsagePricingPanel copy={copy} />}
           </div>
         ) : null}
       </div>
@@ -392,7 +401,7 @@ function UsageToolsPanel(props: { stats: UsageStats | null; copy: UsageSettingsC
   );
 }
 
-function UsagePricingPanel(props: { stats: UsageStats | null; copy: UsageSettingsCopy }) {
+function UsagePricingPanel(props: { copy: UsageSettingsCopy }) {
   return (
     <UsageStatsTable
       ariaLabel={props.copy.tables.pricingAria}
@@ -402,7 +411,7 @@ function UsagePricingPanel(props: { stats: UsageStats | null; copy: UsageSetting
         { header: props.copy.tables.pricingHeaders[2], numeric: true },
         { header: props.copy.tables.pricingHeaders[3], numeric: true },
       ]}
-      rows={(props.stats?.pricing ?? []).map((row) => [row.provider, row.model, `$${row.inputPerMTokUsd}`, `$${row.outputPerMTokUsd}`])}
+      rows={[]}
       empty={{ Icon: BarChart3, title: props.copy.tables.noPricing, body: props.copy.tables.pricingEmptyBody }}
     />
   );

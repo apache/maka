@@ -112,7 +112,6 @@ export async function readUsageStats(
     byProvider: aggregateBy(modelLogs, 'provider'),
     byModel: aggregateBy(modelLogs, 'model'),
     byTool: toolRows,
-    pricing: [],
   };
 }
 
