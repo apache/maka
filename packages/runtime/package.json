@@ -76,7 +76,7 @@
     "@ai-sdk/google": "^4.0.18",
     "@ai-sdk/openai": "^4.0.16",
     "@ai-sdk/openai-compatible": "^3.0.12",
-    "@larksuiteoapi/node-sdk": "1.71.1",
+    "@larksuiteoapi/node-sdk": "1.72.0",
     "@maka/core": "0.1.0",
     "@maka/code-mode": "0.1.0",
     "@slack/socket-mode": "^3.0.0",
@@ -93,13 +93,13 @@
     "socks": "^2.8.9",
     "socks-proxy-agent": "^10.1.0",
     "undici": "^8.7.0",
-    "ws": "^8.21.0",
+    "ws": "^8.21.1",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@maka/storage": "0.1.0",
     "@types/ws": "^8.18.1",
-    "esbuild": "^0.27.7"
+    "esbuild": "^0.28.1"
   }
 }

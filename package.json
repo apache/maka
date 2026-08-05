@@ -80,7 +80,7 @@
   "devDependencies": {
     "@astryxdesign/cli": "0.3.0",
     "@astryxdesign/core": "0.3.0",
-    "@biomejs/biome": "2.5.4",
+    "@biomejs/biome": "2.5.6",
     "@types/node": "^26.1.2",
     "dugite": "3.2.2",
     "knip": "^6.26.0",
