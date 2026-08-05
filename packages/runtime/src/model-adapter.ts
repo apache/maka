@@ -89,6 +89,8 @@ export interface ModelAdapterInput {
   providerOptions?: Record<string, unknown>;
   newId: () => string;
   now: () => number;
+  /** Test seam; production adapters own one state instance for their lifetime. */
+  openAiResponsesTransportState?: OpenAiResponsesTransportState;
 }
 
 export interface CompactSummaryRequest {
@@ -144,7 +146,7 @@ interface ProviderMiddlewareStreamInput {
 export class ModelAdapter {
   private readonly runtime: ResolvedModelRuntime;
   private readonly openAiChatReasoningTransportState: OpenAiChatReasoningTransportState;
-  private readonly openAiResponsesTransportState = createOpenAiResponsesTransportState();
+  private readonly openAiResponsesTransportState: OpenAiResponsesTransportState;
 
   constructor(private readonly input: ModelAdapterInput) {
     this.runtime = resolveModelRuntime(input.connection, input.modelId);
@@ -153,6 +155,8 @@ export class ModelAdapter {
         ? this.runtime.reasoningReplay.requestField
         : 'observed',
     );
+    this.openAiResponsesTransportState =
+      input.openAiResponsesTransportState ?? createOpenAiResponsesTransportState();
   }
 
   runtimeEventReplaySupport(): ModelAdapterRuntimeEventReplaySupport {
@@ -324,9 +328,8 @@ export class ModelAdapter {
             response?.id &&
             openAiResponsesTransportState.canRecordSemantic(continuation.lane, response.id)
           ) {
-            openAiResponsesTransportState.recordSemantic(continuation.lane, {
+            openAiResponsesTransportState.recordSemanticRequest(continuation.lane, {
               requestMessages: structuredClone(continuation.requestMessages),
-              responseMessages: structuredClone(response.messages ?? []),
               responseId: response.id,
             });
           } else {
@@ -354,6 +357,18 @@ export class ModelAdapter {
 
   endContinuation(lane: string): void {
     this.openAiResponsesTransportState.endLane(lane);
+  }
+
+  recordContinuationResponse(lane: string, responseMessages: readonly ModelMessage[]): void {
+    this.openAiResponsesTransportState.recordSemanticResponse(lane, responseMessages);
+  }
+
+  continuationResponsePending(lane: string): boolean {
+    return this.openAiResponsesTransportState.hasPendingSemantic(lane);
+  }
+
+  clearContinuation(lane: string): void {
+    this.openAiResponsesTransportState.clearSemantic(lane);
   }
 
   dispose(): void {
@@ -570,12 +585,8 @@ interface SdkStreamResult {
   stream: AsyncIterable<AiSdkStreamChunk>;
   usage: Promise<AiSdkUsageLike | undefined>;
   finishReason: Promise<unknown>;
-  request: PromiseLike<{
-    messages?: ModelMessage[];
-  }>;
   response: PromiseLike<{
     id: string;
-    messages?: ModelMessage[];
   }>;
 }
 
@@ -849,16 +860,6 @@ function errorClassFromFailureKind(kind: ModelFailureKind): string {
     case 'unknown':
       return 'Other';
   }
-}
-
-function normalizeRequestMetadata(
-  metadata:
-    | {
-        messages?: ModelMessage[];
-      }
-    | undefined,
-): ModelRequestMetadata | undefined {
-  return metadata?.messages === undefined ? undefined : { messages: metadata.messages };
 }
 
 type TokenCountBreakdown = {

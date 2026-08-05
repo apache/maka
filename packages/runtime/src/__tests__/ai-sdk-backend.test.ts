@@ -82,6 +82,8 @@ import {
   createTestAiSdkBackend,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
+import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
+import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 
 describe('AiSdkBackend model history', () => {
   test('preserves operation-owned audio through the durable request path and redacts its capture', async () => {
@@ -12831,6 +12833,126 @@ describe('AiSdkBackend thinking persistence', () => {
         [assistants[1]!.id, 'final answer'],
       ],
     );
+  });
+
+  test('continues a reasoning tool step from Maka durable replay instead of SDK response shape', async () => {
+    let baseline: OpenAiResponsesSemanticBaseline | undefined;
+    let pending: Omit<OpenAiResponsesSemanticBaseline, 'responseMessages'> | undefined;
+    const transport = {
+      semanticBaseline: () => baseline,
+      hasPendingSemantic: () => pending !== undefined,
+      recordSemanticRequest: (
+        _lane: string,
+        value: Omit<OpenAiResponsesSemanticBaseline, 'responseMessages'>,
+      ) => {
+        pending = value;
+        baseline = undefined;
+      },
+      recordSemanticResponse: (_lane: string, responseMessages: readonly ModelMessage[]) => {
+        if (!pending) return;
+        baseline = { ...pending, responseMessages: structuredClone(responseMessages) };
+        pending = undefined;
+      },
+      clearSemantic: () => {
+        baseline = undefined;
+        pending = undefined;
+      },
+      canRecordSemantic: () => true,
+      wrapFetch: (fetch: typeof globalThis.fetch) => fetch,
+      endLane: () => {},
+      close: () => {},
+    } as unknown as OpenAiResponsesTransportState;
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'response-metadata',
+                  id: 'resp-1',
+                  modelId: 'gpt-5',
+                  timestamp: new Date(0),
+                },
+                { type: 'reasoning-start', id: 'r1' },
+                {
+                  type: 'reasoning-delta',
+                  id: 'r1',
+                  delta: 'inspect first',
+                  providerMetadata: { openai: { itemId: 'reasoning-1' } },
+                },
+                {
+                  type: 'reasoning-end',
+                  id: 'r1',
+                  providerMetadata: {
+                    openai: {
+                      itemId: 'reasoning-1',
+                      reasoningEncryptedContent: 'encrypted-reasoning',
+                    },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'a.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'response-metadata',
+                  id: 'resp-2',
+                  modelId: 'gpt-5',
+                  timestamp: new Date(0),
+                },
+                { type: 'text-start', id: 't2' },
+                { type: 'text-delta', id: 't2', delta: 'done' },
+                { type: 'text-end', id: 't2' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'inspect it');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'openai-main',
+        providerType: 'openai',
+        defaultModel: 'gpt-5',
+      },
+      apiKey: 'openai-test-key',
+      modelId: 'gpt-5',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      openAiResponsesTransportState: transport,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(model.doStreamCalls.length, 2);
+    assert.equal(model.doStreamCalls[1]?.prompt.length, 1);
+    assert.equal(model.doStreamCalls[1]?.prompt[0]?.role, 'tool');
+    assert.equal(model.doStreamCalls[1]?.providerOptions?.openai?.previousResponseId, 'resp-1');
   });
 });
 

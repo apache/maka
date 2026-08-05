@@ -26,6 +26,7 @@ interface LaneState {
   httpFallback: boolean;
   wire?: WireBaseline;
   semantic?: OpenAiResponsesSemanticBaseline;
+  pendingSemantic?: Omit<OpenAiResponsesSemanticBaseline, 'responseMessages'>;
 }
 
 export interface OpenAiResponsesTransportOptions {
@@ -47,15 +48,43 @@ export class OpenAiResponsesTransportState {
     return this.lanes.get(lane)?.semantic;
   }
 
-  recordSemantic(lane: string, baseline: OpenAiResponsesSemanticBaseline): void {
+  hasPendingSemantic(lane: string): boolean {
+    return this.lanes.get(lane)?.pendingSemantic !== undefined;
+  }
+
+  recordSemanticRequest(
+    lane: string,
+    baseline: Omit<OpenAiResponsesSemanticBaseline, 'responseMessages'>,
+  ): void {
     const state = this.lanes.get(lane);
     if (!state || state.httpFallback || state.wire?.responseId !== baseline.responseId) return;
-    state.semantic = baseline;
+    state.semantic = undefined;
+    state.pendingSemantic = baseline;
+  }
+
+  recordSemanticResponse(lane: string, responseMessages: readonly ModelMessage[]): void {
+    const state = this.lanes.get(lane);
+    const pending = state?.pendingSemantic;
+    if (!state || !pending || state.httpFallback || state.wire?.responseId !== pending.responseId) {
+      if (state) {
+        state.semantic = undefined;
+        state.pendingSemantic = undefined;
+      }
+      return;
+    }
+    state.semantic = {
+      ...pending,
+      responseMessages: structuredClone(responseMessages),
+    };
+    state.pendingSemantic = undefined;
   }
 
   clearSemantic(lane: string): void {
     const state = this.lanes.get(lane);
-    if (state) state.semantic = undefined;
+    if (state) {
+      state.semantic = undefined;
+      state.pendingSemantic = undefined;
+    }
   }
 
   canRecordSemantic(lane: string, responseId: string): boolean {
@@ -97,8 +126,14 @@ export class OpenAiResponsesTransportState {
     const prepared = prepareWireRequest(body, state.wire);
     if (!prepared) {
       state.semantic = undefined;
+      state.pendingSemantic = undefined;
       state.httpFallback = true;
-      return failedStream('OpenAI Responses continuation state is unavailable');
+      return failedStream(
+        retryableTransportError(
+          'OpenAI Responses continuation state is unavailable',
+          'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
+        ),
+      );
     }
 
     // A failure on one concurrent lane should prevent new connection attempts,
@@ -107,7 +142,7 @@ export class OpenAiResponsesTransportState {
       state.socket?.readyState !== WebSocket.OPEN && this.failureCooldownActive();
     if (state.httpFallback || failureCooldownActive || state.busy) {
       state.semantic = undefined;
-      if (failureCooldownActive) state.httpFallback = true;
+      state.pendingSemantic = undefined;
       return await httpFetch(input, withJsonBody(cleanInit, prepared.fullBody));
     }
 
@@ -126,6 +161,7 @@ export class OpenAiResponsesTransportState {
       state.busy = false;
       state.httpFallback = true;
       state.semantic = undefined;
+      state.pendingSemantic = undefined;
       terminate(state.socket);
       state.socket = undefined;
       if (isAbort(error, init?.signal)) throw error;
@@ -154,6 +190,7 @@ export class OpenAiResponsesTransportState {
       onFailure: (fallback) => {
         state.busy = false;
         state.semantic = undefined;
+        state.pendingSemantic = undefined;
         state.wire = undefined;
         if (fallback) {
           state.httpFallback = true;
@@ -292,6 +329,14 @@ function websocketResponse(input: {
     input.onFailure(fallback);
     controller.error(error);
   };
+  const failTransport = (error: Error) =>
+    fail(
+      retryableTransportError(
+        error.message || 'OpenAI Responses WebSocket transport failed',
+        'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
+      ),
+      true,
+    );
   const finish = (response: Record<string, unknown>) => {
     if (settled) return;
     settled = true;
@@ -302,7 +347,7 @@ function websocketResponse(input: {
   };
   const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
     if (isBinary) {
-      fail(new Error('Unexpected binary OpenAI Responses WebSocket frame'), true);
+      failTransport(new Error('Unexpected binary OpenAI Responses WebSocket frame'));
       return;
     }
     const text = data.toString();
@@ -315,13 +360,16 @@ function websocketResponse(input: {
     }
     controller.enqueue(encoder.encode(`data: ${text}\n\n`));
     if (!event) return;
-    if (event.type === 'response.completed' || event.type === 'response.done') {
-      finish(isRecord(event.response) ? event.response : {});
-    } else if (
-      event.type === 'response.failed' ||
-      event.type === 'response.incomplete' ||
-      event.type === 'error'
+    if (
+      event.type === 'response.completed' ||
+      event.type === 'response.done' ||
+      (event.type === 'response.incomplete' && incompleteReason(event) === 'max_output_tokens')
     ) {
+      finish(isRecord(event.response) ? event.response : {});
+    } else if (event.type === 'response.incomplete') {
+      const reason = incompleteReason(event) ?? 'unknown';
+      fail(new Error(`OpenAI Responses stream incomplete (${reason})`), false);
+    } else if (event.type === 'response.failed' || event.type === 'error') {
       settled = true;
       cleanup();
       input.onFailure(false);
@@ -329,13 +377,12 @@ function websocketResponse(input: {
       controller.close();
     }
   };
-  const onError = (error: Error) => fail(error, true);
+  const onError = (error: Error) => failTransport(error);
   const onClose = (code: number, reason: Buffer) =>
-    fail(
+    failTransport(
       new Error(
         `OpenAI Responses WebSocket closed before completion (code ${code}${reason.length ? `: ${reason.toString()}` : ''})`,
       ),
-      true,
     );
   const onAbort = () =>
     fail(
@@ -359,7 +406,7 @@ function websocketResponse(input: {
         }
         const { stream: _stream, background: _background, ...body } = input.body;
         input.socket.send(JSON.stringify({ type: 'response.create', ...body }), (error) => {
-          if (error) fail(error, true);
+          if (error) failTransport(error);
         });
       },
       cancel() {
@@ -389,6 +436,11 @@ function connectWebSocket(
       return;
     }
     const socket = new WebSocket(url, { headers, ...(agent ? { agent } : {}) });
+    // `websocketResponse` removes its request-scoped listener after a successful
+    // stream while the OPEN socket remains reusable. ws emits idle protocol
+    // errors unconditionally, so retain one process-safety listener for the
+    // socket's entire lifetime.
+    socket.on('error', ignoreWebSocketError);
     const timer = setTimeout(
       () => finish(new Error('OpenAI Responses WebSocket connect timed out')),
       timeoutMs,
@@ -423,11 +475,11 @@ function connectWebSocket(
   });
 }
 
-function failedStream(message: string): Response {
+function failedStream(error: Error): Response {
   return new Response(
     new ReadableStream({
       start(controller) {
-        controller.error(new Error(message));
+        controller.error(error);
       },
     }),
     { status: 200, headers: { 'content-type': 'text/event-stream' } },
@@ -437,6 +489,7 @@ function failedStream(message: string): Response {
 function invalidateLane(state: LaneState, fallback: boolean): void {
   state.busy = false;
   state.semantic = undefined;
+  state.pendingSemantic = undefined;
   state.wire = undefined;
   state.httpFallback ||= fallback;
   terminate(state.socket);
@@ -445,8 +498,19 @@ function invalidateLane(state: LaneState, fallback: boolean): void {
 
 function terminate(socket: WebSocket | undefined): void {
   if (!socket) return;
-  socket.on('error', () => {});
   socket.terminate();
+}
+
+function ignoreWebSocketError(): void {}
+
+function retryableTransportError(message: string, code: string): Error {
+  return Object.assign(new Error(message), { name: 'OpenAiResponsesTransportError', code });
+}
+
+function incompleteReason(event: Record<string, unknown>): string | undefined {
+  const response = isRecord(event.response) ? event.response : undefined;
+  const details = isRecord(response?.incomplete_details) ? response.incomplete_details : undefined;
+  return typeof details?.reason === 'string' ? details.reason : undefined;
 }
 
 function isAbort(error: unknown, signal: AbortSignal | null | undefined): boolean {

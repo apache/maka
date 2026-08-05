@@ -131,6 +131,8 @@ import {
   type ModelStreamResult,
   type RepairableAiSdkToolCall,
 } from './model-adapter.js';
+import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
+import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import {
   composeRequestProjection,
   type RequestProjection,
@@ -685,6 +687,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   shellRunContextSummary?: () => string | undefined | Promise<string | undefined>;
   /** Provider-native options passed through to ai-sdk. */
   providerOptions?: Record<string, unknown>;
+  /** Test seam for the adapter-owned incremental Responses transport. */
+  openAiResponsesTransportState?: OpenAiResponsesTransportState;
   /** Optional fire-and-forget telemetry hook. Tool implementations remain unaware. */
   recordToolInvocation?: ToolTelemetryRecorder;
   /** Optional Phase 2 SQLite T1/T2 boundary for real tool execution. */
@@ -950,6 +954,9 @@ export class AiSdkBackend implements AgentBackend {
       providerOptions: input.providerOptions,
       newId: this.newId,
       now: this.now,
+      ...(input.openAiResponsesTransportState
+        ? { openAiResponsesTransportState: input.openAiResponsesTransportState }
+        : {}),
     });
     this.compaction = new AiSdkCompaction({
       input,
@@ -2165,6 +2172,27 @@ export class AiSdkBackend implements AgentBackend {
               const settlement = settlements[index];
               if (toolCall && settlement) {
                 settledModelOutputs.set(toolCall.toolCallId, settlement.modelOutput);
+              }
+            }
+
+            const continuationWillRun =
+              (this.maxSteps === undefined || runtimeSteps < this.maxSteps) &&
+              !scope.loopStopRequested &&
+              !scope.aborted;
+            if (
+              continuationWillRun &&
+              this.modelAdapter.continuationResponsePending(scope.turnId)
+            ) {
+              const persistedProjection = await loadDurableTurnProjection();
+              const responseMessages = persistedOpenAiResponsesStepMessages(
+                attemptMessages,
+                persistedProjection,
+                returnedToolCalls.map((toolCall) => toolCall.toolCallId),
+              );
+              if (responseMessages) {
+                this.modelAdapter.recordContinuationResponse(scope.turnId, responseMessages);
+              } else {
+                this.modelAdapter.clearContinuation(scope.turnId);
               }
             }
           }
