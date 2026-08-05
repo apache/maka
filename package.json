@@ -81,7 +81,7 @@
     "@astryxdesign/cli": "0.2.0",
     "@astryxdesign/core": "0.2.0",
     "@biomejs/biome": "2.5.4",
-    "@types/node": "^25.0.0",
+    "@types/node": "^26.1.2",
     "dugite": "3.2.2",
     "knip": "^6.26.0",
     "patch-package": "8.0.1",
