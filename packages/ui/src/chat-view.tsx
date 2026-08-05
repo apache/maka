@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -34,9 +34,23 @@ import {
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
 import { useProgressiveTurnMount } from './use-progressive-turn-mount.js';
+import { createTurnSizeIndex, layoutKeyFor, measureTurnGeometry } from './turn-size-index.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer } from './session-context-layer.js';
+
+// #2224: one geometry cache for the app's single ChatView. Session-keyed
+// inside; module scope only saves threading it through the shell.
+const turnSizeIndex = createTurnSizeIndex();
+
+// Turn heights are set by the reading column's width, not the scroller's:
+// the column is max-width capped and centred, so chrome around the scroller
+// (sidebar, panels) can change the scroller's width without moving a single
+// line break. Key on the column so records survive that chrome.
+function layoutKeyOf(root: HTMLElement): string {
+  const column = root.querySelector<HTMLElement>('.maka-chat-message-list');
+  return layoutKeyFor((column ?? root).clientWidth, root.dataset.density);
+}
 
 export function ChatView(props: {
   messages: StoredMessage[];
@@ -371,13 +385,82 @@ export function ChatView(props: {
   // prompt rail, so presentation caching (#2030) and rail geometry are not
   // window-dependent; only the JSX mapping below is sliced.
   const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
-  const { start: mountStart, filled: turnsFilled, revealTurn } = useProgressiveTurnMount({
-    sessionId: props.activeSession?.id,
+  // #2224: heights measured on a previous visit under the current layout.
+  // With them the unmounted prefix is held by one spacer and each turn's
+  // intrinsic size is seeded, so the scroller's total height stays put while
+  // the fill runs. Without them (first visit, resized window) everything
+  // below degrades to the plain #2052 fill and the warm-up relearns sizes.
+  const sessionId = props.activeSession?.id;
+  // The lookup must land in the same commit as the session switch, or the
+  // scroller paints one frame at its unseeded height and the spacer arrives
+  // as a visible jump. An in-place switch has the scroller ref during
+  // render, so the memo reads it there (once per session, never per token,
+  // clientWidth stays out of the streaming render path). On a fresh mount
+  // the ref is still null, because the scroller is an ancestor host whose
+  // ref attaches after descendant effects; the effect below nudges one
+  // re-render once it exists, and that path pays the one late frame.
+  const [refReady, setRefReady] = useState(0);
+  useEffect(() => {
+    if (scrollRef.current) setRefReady((count) => count + 1);
+  }, [sessionId, scrollRef]);
+  const seededGeometry = useMemo(() => {
+    const root = scrollRef.current;
+    if (!sessionId || !root) return undefined;
+    return turnSizeIndex.lookup(sessionId, layoutKeyOf(root));
+  }, [sessionId, scrollRef, refReady]);
+  const { start: mountStart, filled: turnsFilled, prefixHeight, revealTurn } = useProgressiveTurnMount({
+    sessionId,
     turnIds: orderedTurnIds,
     scrollRef,
     targetTurnId: props.scrollTargetTurn?.turnId,
+    seededGeometry,
   });
   const mountedTurns = mountStart === 0 ? turns : turns.slice(mountStart);
+  // Record geometry once the transcript has settled: fill complete and the
+  // warm-up done, so every turn's box is its remembered final size and
+  // reading it forces no render. An exit-time capture would be too late,
+  // React runs effect cleanups after the next session's DOM is already in.
+  // Streaming turns are still moving and are left out.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!sessionId || !root || !turnsFilled) return;
+    let disposed = false;
+    let timer: number | undefined;
+    // Boxes are only real at the width the warm-up walked under. If the
+    // layout changes while we wait (a sidebar toggle finishing late),
+    // off-screen turns keep remembered sizes from the old width, and a
+    // measurement now would file stale heights under the new key. Give up
+    // instead; the next visit re-learns at the new width.
+    const startKey = layoutKeyOf(root);
+    const measure = () => {
+      if (disposed || layoutKeyOf(root) !== startKey) return;
+      if (root.dataset.turnWarmup !== 'settled') {
+        timer = window.setTimeout(measure, 200);
+        return;
+      }
+      const boxes: Array<{ turnId: string; top: number; height: number }> = [];
+      for (const el of root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')) {
+        if (el.hasAttribute('data-live-streaming')) continue;
+        const turnId = el.getAttribute('data-turn-id');
+        if (!turnId) continue;
+        const rect = el.getBoundingClientRect();
+        boxes.push({ turnId, top: rect.top, height: rect.height });
+      }
+      const geometry = measureTurnGeometry(boxes);
+      if (geometry) {
+        turnSizeIndex.record(sessionId, startKey, geometry);
+        // Published like data-turn-warmup, with the key as the value: a
+        // wait can then ask for the record covering the layout it is about
+        // to rely on, not merely some record from an earlier width.
+        root.dataset.turnGeometry = startKey;
+      }
+    };
+    timer = window.setTimeout(measure, 200);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [sessionId, turnsFilled, orderedTurnIds, scrollRef]);
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -516,11 +599,27 @@ export function ChatView(props: {
           {showEmptyState ? null : (
             <>
               {chat.length === 0 && !streamingActive ? emptyContent : null}
+              {/* #2224: stands in for the unmounted prefix so the scroller's
+                  total height (and the native scrollbar) holds still while
+                  the fill replaces it chunk by chunk. */}
+              {mountStart > 0 && prefixHeight !== undefined && prefixHeight > 0 && (
+                <div
+                  aria-hidden="true"
+                  className="maka-turn-prefix-spacer"
+                  // transition: none matters: the app-wide transition rule
+                  // (even at its near-zero duration) applies height changes
+                  // a frame after the commit, so the fill's same-frame
+                  // scroll compensation would read the old spacer height
+                  // and the anchor would jump by one chunk per step.
+                  style={{ height: prefixHeight, flex: '0 0 auto', transition: 'none' }}
+                />
+              )}
               {mountedTurns.map((turn) => {
                 return (
                   <Fragment key={turn.turnId}>
                     <TurnView
                       turn={turn}
+                      seededHeight={seededGeometry?.heights.get(turn.turnId)}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}

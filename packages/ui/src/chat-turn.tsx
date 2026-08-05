@@ -301,6 +301,12 @@ function MessageCopyButton(props: { text: string }) {
  */
 export const TurnView = memo(function TurnView(props: {
   turn: TurnViewModel;
+  /**
+   * #2224: this turn's height as measured on a previous visit under the
+   * current layout. Seeds contain-intrinsic-size so the placeholder equals
+   * the real size, and marks the turn for the warm-up to skip.
+   */
+  seededHeight?: number;
   userLabel?: string;
   /**
    * PR109d-b: footer actions derived from `TurnStatus` + lineage map
@@ -401,6 +407,12 @@ export const TurnView = memo(function TurnView(props: {
       data-turn-id={turn.turnId}
       data-live-streaming={props.liveStreaming ? 'true' : undefined}
       data-search-highlight={props.searchHighlighted ? 'true' : undefined}
+      data-size-seeded={props.seededHeight !== undefined ? 'true' : undefined}
+      style={
+        props.seededHeight !== undefined
+          ? { containIntrinsicSize: `auto ${props.seededHeight}px` }
+          : undefined
+      }
       tabIndex={props.searchHighlighted ? -1 : undefined}
     >
       {forwardBadges.length > 0 && (

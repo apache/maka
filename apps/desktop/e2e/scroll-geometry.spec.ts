@@ -281,7 +281,27 @@ test('the empty-chat hero centres in the reading column', async ({ window: page 
 // already covered by the pinned settles above.
 test('progressive fill preserves the reading anchor while earlier turns mount', async ({ longTranscriptWindow: page }) => {
   await expect(page.locator('.maka-turn')).toHaveCount(24);
+  // Geometry measured under one width is deliberately invalid under another
+  // (#2224), and it is only recorded when the width held still from fill to
+  // record. The sidebar expansion below finishes AFTER the boot warm-up
+  // settles, so the boot visit refuses to record. One priming round trip
+  // rebuilds the transcript under the expanded width; that visit records,
+  // and the measured journey below returns to a seeded session.
+  await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
+  await page.locator('[data-session-id="e2e-fixture-long-transcript"]').waitFor({ timeout: 10_000 });
+  await page.getByRole('button', { name: '新任务', exact: true }).dispatchEvent('click');
+  await expect(page.locator('.maka-turn')).toHaveCount(0);
+  await page.getByText('超长会话滚动几何').first().dispatchEvent('click');
+  await expect(page.locator('.maka-turn')).toHaveCount(24);
   await settleGeometry(page, { pinned: true });
+  // data-turn-geometry carries the layout key of the record it announces;
+  // ask for the record covering the width the return trip will run under.
+  await page.waitForFunction(() => {
+    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!root) return false;
+    const column = root.querySelector<HTMLElement>('.maka-chat-message-list');
+    return root.dataset.turnGeometry === `${(column ?? root).clientWidth}:${root.dataset.density ?? ''}`;
+  }, undefined, { timeout: 10_000 });
 
   // Widen the fill window so the anchor is sampled while chunks are still
   // mounting; unthrottled, an M-series host can finish the whole fill before
@@ -289,11 +309,7 @@ test('progressive fill preserves the reading anchor while earlier turns mount', 
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 20 });
 
-  await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
-  await page
-    .getByRole('navigation', { name: '对话列表' })
-    .getByRole('button', { name: '扩展', exact: true })
-    .dispatchEvent('click');
+  await page.getByRole('button', { name: '新任务', exact: true }).dispatchEvent('click');
   await expect(page.locator('.maka-turn')).toHaveCount(0);
   // Release the bottom follower the way any upward scroll does (Astryx
   // unlocks on scroll direction, any source), then PROVE the reading state
@@ -308,7 +324,7 @@ test('progressive fill preserves the reading anchor while earlier turns mount', 
   // empty.
   const watchPromise = page.evaluate(
     () =>
-      new Promise<{ maxDrift: number; fillSteps: number }>((resolveWatch, rejectWatch) => {
+      new Promise<{ maxDrift: number; fillSteps: number; heightRange: number }>((resolveWatch, rejectWatch) => {
         const root = document.querySelector('[data-chat-scroll-container="true"]') as HTMLElement;
         const guard = window.setTimeout(() => {
           rejectWatch(new Error('Fill did not complete while watching the anchor'));
@@ -331,6 +347,12 @@ test('progressive fill preserves the reading anchor while earlier turns mount', 
           let turnCount = root.querySelectorAll('[data-turn-id]').length;
           let fillSteps = 0;
           let drift = 0;
+          let minHeight = root.scrollHeight;
+          let maxHeight = root.scrollHeight;
+          const noteHeight = () => {
+            minHeight = Math.min(minHeight, root.scrollHeight);
+            maxHeight = Math.max(maxHeight, root.scrollHeight);
+          };
           const observer = new MutationObserver(() => {
             if (root.dataset.progressiveFill === 'complete') {
               observer.disconnect();
@@ -339,7 +361,8 @@ test('progressive fill preserves the reading anchor while earlier turns mount', 
                 rejectWatch(new Error('Fill completed with no step observed; raise the throttle'));
                 return;
               }
-              resolveWatch({ maxDrift: drift, fillSteps });
+              noteHeight();
+              resolveWatch({ maxDrift: drift, fillSteps, heightRange: maxHeight - minHeight });
               return;
             }
             const count = root.querySelectorAll('[data-turn-id]').length;
@@ -347,6 +370,7 @@ test('progressive fill preserves the reading anchor while earlier turns mount', 
               turnCount = count;
               fillSteps += 1;
               drift = Math.max(drift, Math.abs(anchor.getBoundingClientRect().top - baseTop));
+              noteHeight();
             }
           });
           observer.observe(root, {
@@ -424,6 +448,11 @@ test('progressive fill preserves the reading anchor while earlier turns mount', 
   const watch = await watchPromise;
   expect(watch.fillSteps).toBeGreaterThan(0);
   expect(watch.maxDrift).toBeLessThanOrEqual(2);
+  // #2224: the first visit measured every turn, so the return trip holds the
+  // unmounted prefix with a spacer and the document's total height stays
+  // put while chunks replace it. The bound is sub-pixel rounding at the
+  // spacer boundary, far below anything a scrollbar thumb can show.
+  expect(watch.heightRange, JSON.stringify(watch)).toBeLessThanOrEqual(8);
 
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
 });
