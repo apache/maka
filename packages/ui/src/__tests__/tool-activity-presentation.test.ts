@@ -426,6 +426,73 @@ describe('tool activity presentation', () => {
     assert.match(truncated, /输出已截断/);
   });
 
+  // The row-level counterpart of the sweep below, one level down: the detail
+  // panel used to draw the same command three ways — a CodeBlock card while
+  // streaming, that block's `title` slot once a foreground run settled, and
+  // the panel for a background one. Settling a command must not restyle it.
+  it('gives a command and its output one surface in every phase', () => {
+    const base = {
+      toolUseId: 'tool-command-surface',
+      toolName: 'Bash',
+      activityKind: 'command' as const,
+      args: { command: 'npm test' },
+    };
+    const phases: Record<string, ToolActivityItem> = {
+      live: {
+        ...base,
+        status: 'running',
+        outputChunks: [
+          { seq: 1, stream: 'stdout', text: 'streaming\n', redacted: false, createdAt: 1 },
+        ],
+      },
+      foreground: {
+        ...base,
+        status: 'completed',
+        result: {
+          kind: 'terminal',
+          cwd: '/repo',
+          cmd: 'npm test',
+          status: 'completed',
+          exitCode: 0,
+          output: pipeOutput('settled\n'),
+        },
+      },
+      background: {
+        ...base,
+        status: 'running',
+        result: {
+          kind: 'shell_run',
+          ref: 'maka://runtime/background-tasks/bg-surface',
+          mode: 'pipes',
+          status: 'running',
+          cwd: '/repo',
+          cmd: 'npm test',
+          startedAt: 1,
+          updatedAt: 2,
+          revision: 1,
+          output: pipeOutput('tracked\n'),
+        },
+      },
+    };
+
+    for (const [phase, item] of Object.entries(phases)) {
+      const markup = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+      assert.equal(
+        (markup.match(/data-slot="tool-output"/g) ?? []).length,
+        1,
+        `${phase} draws exactly one surface`,
+      );
+      assert.match(
+        markup,
+        /class="maka-tool-output-command"[^>]*>npm test</,
+        `${phase} puts the command in the surface header`,
+      );
+      // The command is never handed to Astryx's CodeBlock again — as its
+      // `title` it rendered comment-coloured and tucked against the output.
+      assert.doesNotMatch(markup, /astryx-code-block/, `${phase} keeps the shell path off CodeBlock`);
+    }
+  });
+
   // The bug this replaced: a running command rendered in a bespoke trow and
   // switched to Astryx chrome the moment it settled. Crossing a status
   // boundary must not change which component draws the row.

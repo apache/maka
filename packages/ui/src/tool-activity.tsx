@@ -45,6 +45,7 @@ import {
 import {
   TOOL_OUTPUT_BODY_CLASS,
   TOOL_OUTPUT_NOTE_CLASS,
+  ToolOutputSurface,
   ToolResultPreview,
 } from './tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
@@ -191,13 +192,14 @@ export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
     && quietJson.headline !== invocationLine
     ? quietJson.headline
     : undefined;
+  // Live streaming has its own surface below, so this covers only the settled
+  // stack.
   const hasSharedPanelContent =
-    !ownsPanel && (
+    !ownsPanel && !showLiveStream && (
       showInvocation
       || !!resultHeadline
-      || showLiveStream
       || showResult
-      || (!!item.args && !permissionDenied && !invocationLine && !showResult && !showLiveStream)
+      || (!!item.args && !permissionDenied && !invocationLine)
     );
 
   return (
@@ -219,21 +221,25 @@ export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
           />
         )
       )}
+      {/* Streaming uses the same surface the settled result will land in, so a
+          command does not change shape the moment it finishes. It used to be a
+          CodeBlock card for the command with the stream as loose text beside
+          it. */}
+      {showLiveStream && (
+        <ToolOutputSurface
+          kind="live_stream"
+          command={showInvocation ? invocationLine : undefined}
+        >
+          <ToolOutputStream
+            chunks={item.outputChunks!}
+            live={running}
+            truncated={item.outputTruncated === true}
+          />
+        </ToolOutputSurface>
+      )}
       {hasSharedPanelContent && (
         <div data-slot="tool-output" className="maka-tool-output-stack">
-          {showLiveStream && (
-            <>
-              {showInvocation && invocationLine ? (
-                <ToolCodeBlock code={invocationLine} />
-              ) : null}
-              <ToolOutputStream
-                chunks={item.outputChunks!}
-                live={running}
-                truncated={item.outputTruncated === true}
-              />
-            </>
-          )}
-          {!showLiveStream && (() => {
+          {(() => {
             const argsBody = !showInvocation && !resultHeadline && item.args !== undefined
               && !permissionDenied && !showResult
               ? formatQuietJsonValue(item.args, locale).body

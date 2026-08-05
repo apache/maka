@@ -222,6 +222,18 @@
 .maka-tool-output-command {
   font: var(--maka-text-code);
  display: block; min-width: 0; color: var(--foreground); font-variant-ligatures: none; white-space: pre-wrap; word-break: break-word; }
+/* The command reads as the surface's header, not as the first line of the
+   output: it keeps the foreground colour the body gives up, and a hairline
+   separates the two. The rule is on the row rather than the panel so a
+   command with nothing under it (a failed launch) does not end in a stray
+   line — the panel's own 8px gap supplies the space below. */
+.maka-tool-output-command-row { display: flex; min-width: 0; align-items: flex-start; gap: 8px; }
+.maka-tool-output-command-row:not(:last-child) { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.maka-tool-output-command-row .maka-tool-output-command { flex: 1 1 auto; }
+.maka-tool-output-command-copy { flex: 0 0 auto; }
+.maka-tool-output-command-copy[data-copy-feedback="pending"] { cursor: progress; }
+.maka-tool-output-command-copy[data-copy-feedback="copied"] { color: var(--link); }
+.maka-tool-output-command-copy[data-copy-feedback="failed"] { color: var(--destructive); }
 .maka-tool-output-body {
   font: var(--maka-text-code);
  max-height: 256px; margin: 0; overflow-y: auto; color: var(--muted-foreground); font-variant-ligatures: none; scroll-behavior: auto; white-space: pre-wrap; word-break: break-word; }

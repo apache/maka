@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import {
   isShellOutput,
   normalizeSearchUrl,
@@ -7,8 +7,10 @@ import {
   type ShellOutput,
   type ToolResultContent,
 } from '@maka/core';
-import { AlertCircle, Ban, Check, Clock, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
+import { Button as UiButton } from '@astryxdesign/core';
+import { AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
 import { redactSecrets } from '../redact.js';
+import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
 import { AgentSwarmPreview, ExploreAgentPreview, SubagentPreview } from './agent-preview.js';
@@ -34,6 +36,80 @@ export const TOOL_OUTPUT_BODY_CLASS =
 
 export const TOOL_OUTPUT_NOTE_CLASS =
   'maka-tool-output-note';
+
+/**
+ * The one surface a command and its output share.
+ *
+ * A single Bash call used to render three different ways depending on which
+ * branch it landed in: streaming put the command in an Astryx `CodeBlock` card
+ * with the output as loose text beside it, a settled foreground run passed the
+ * command as that CodeBlock's `title` (comment-coloured mono, no rule, tucked
+ * against the body — it read as a commented-out first line rather than a
+ * header), and a settled background run used this panel. So the same call
+ * changed shape as it finished.
+ *
+ * One panel now owns all three: command on top in foreground mono, a hairline,
+ * then the body. The command is the thing worth copying — Astryx's CodeBlock
+ * copy button copied the output and left the command unreachable — so the
+ * action here copies the command and the body keeps its own affordances.
+ */
+export function ToolOutputSurface(props: {
+  kind: string;
+  command?: string;
+  attention?: 'error' | 'warning';
+  children: ReactNode;
+}) {
+  const copyText = getToolActivityCopy(useUiLocale()).copy;
+  const feedback = useClipboardCopyFeedback();
+  const command = props.command?.trim() ? props.command : undefined;
+  // Keyed by the command itself: two surfaces in one turn are independent
+  // rows, and a shared key would flash "copied" on both.
+  const copyKey = `tool-command:${command ?? ''}`;
+  const phase = feedback.phaseFor(copyKey);
+  const label = phase === 'pending'
+    ? copyText.pending
+    : phase === 'copied'
+      ? copyText.copied
+      : phase === 'failed'
+        ? copyText.failed
+        : copyText.idle;
+
+  return (
+    <div
+      data-slot="tool-output"
+      data-kind={props.kind}
+      className={cn(
+        TOOL_OUTPUT_PANEL_CLASS,
+        props.attention === 'error' && 'maka-tool-output-destructive-border',
+        props.attention === 'warning' && 'maka-tool-output-warning-border',
+      )}
+    >
+      {command && (
+        <div className="maka-tool-output-command-row">
+          <code className={TOOL_OUTPUT_COMMAND_CLASS}>{command}</code>
+          <UiButton
+            variant="ghost"
+            size="sm"
+            className="maka-tool-output-command-copy"
+            data-copy-feedback={phase ?? undefined}
+            // Icon-only: the command already fills the row, and a word beside
+            // it would compete with the thing being copied. `label` is the
+            // accessible name in this mode.
+            isIconOnly
+            label={label}
+            aria-busy={phase === 'pending' ? 'true' : undefined}
+            isDisabled={phase === 'pending'}
+            onClick={() => void feedback.copy(copyKey, command)}
+            icon={phase === 'copied'
+              ? <Check size={14} aria-hidden="true" />
+              : <Copy size={14} aria-hidden="true" />}
+          />
+        </div>
+      )}
+      {props.children}
+    </div>
+  );
+}
 
 /** Routes persisted tool results to bounded, kind-specific preview cards. */
 export function ToolResultPreview(props: {
@@ -216,22 +292,15 @@ function TerminalPreview(props: {
   const safeCmd = redactSecrets(props.cmd);
 
   return (
-    <div
-      data-slot="tool-output"
-      data-kind="terminal"
-      className="maka-tool-output-stack"
+    <ToolOutputSurface
+      kind="terminal"
+      command={safeCmd}
+      attention={props.sandboxBlocked ? 'warning' : succeeded ? undefined : 'error'}
     >
       {props.output ? (
-        <ShellOutputBody
-          output={props.output}
-          failed={!succeeded}
-          title={safeCmd.length > 0 ? safeCmd : undefined}
-        />
+        <ShellOutputBody output={props.output} failed={!succeeded} />
       ) : (
-        <>
-          {safeCmd.length > 0 ? <ToolCodeBlock code={safeCmd} /> : null}
-          <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalUnavailable}</p>
-        </>
+        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalUnavailable}</p>
       )}
       {props.failureMessage && (
         <p className={cn(TOOL_OUTPUT_NOTE_CLASS, props.sandboxBlocked ? 'maka-tool-output-warning' : 'maka-tool-output-destructive')}>
@@ -255,7 +324,7 @@ function TerminalPreview(props: {
             : activityCopy.status.sandboxBlocked}
         </p>
       )}
-    </div>
+    </ToolOutputSurface>
   );
 }
 
@@ -272,9 +341,6 @@ function ShellRunPreview(props: {
   const safeCmd = redactSecrets(result.cmd);
   const output = isShellOutput(result.output) ? result.output : undefined;
   const attention = result.status === 'failed' || result.status === 'orphaned' || (result.exitCode !== undefined && result.exitCode !== 0);
-  const attentionBorder = sandboxBlocked
-    ? 'maka-tool-output-warning-border'
-    : 'maka-tool-output-destructive-border';
 
   if (result.mode === 'pty') {
     return (
@@ -299,14 +365,11 @@ function ShellRunPreview(props: {
   const pipeOutput = output?.mode === 'pipes' ? output : undefined;
 
   return (
-    <div
-      data-slot="tool-output"
-      data-kind="shell_run"
-      className={cn(TOOL_OUTPUT_PANEL_CLASS, attention && attentionBorder)}
+    <ToolOutputSurface
+      kind="shell_run"
+      command={safeCmd}
+      attention={attention ? (sandboxBlocked ? 'warning' : 'error') : undefined}
     >
-      {safeCmd.length > 0 && (
-        <code className={TOOL_OUTPUT_COMMAND_CLASS}>{safeCmd}</code>
-      )}
       <p className={TOOL_OUTPUT_NOTE_CLASS}>
         {statusLabel}
         {result.exitCode !== undefined ? ` · ${copy.exitCode(result.exitCode)}` : ''}
@@ -325,7 +388,7 @@ function ShellRunPreview(props: {
       ) : (
         <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutputYet}</p>
       )}
-    </div>
+    </ToolOutputSurface>
   );
 }
 
@@ -423,10 +486,15 @@ function ShellRunStatus(props: {
   }
 }
 
+/**
+ * The output half of a `ToolOutputSurface` — never the command. The command is
+ * the surface's header now, so this renders the same `<pre>` well the live
+ * stream uses instead of its own bordered CodeBlock card, which used to nest a
+ * second border inside the panel and put the command in its title slot.
+ */
 function ShellOutputBody(props: {
   output: ShellOutput;
   failed: boolean;
-  title?: string;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).result;
   if (props.output.mode === 'pty') {
@@ -462,17 +530,9 @@ function ShellOutputBody(props: {
   const code = parts.join('\n');
   return (
     <>
-      {!hasOutput && !props.title && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
-      {(hasOutput || props.title) && (
-        <ToolCodeBlock
-          // No language: shell streams stay contiguous under the tokenizer.
-          code={code || props.title || ''}
-          title={code && props.title ? props.title : undefined}
-        />
-      )}
-      {!hasOutput && props.title && (
-        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>
-      )}
+      {hasOutput
+        ? <pre className={TOOL_OUTPUT_BODY_CLASS}>{code}</pre>
+        : <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
       {(runtimeTruncated || hiddenLines > 0) && (
         <p className={TOOL_OUTPUT_NOTE_CLASS}>
           {hiddenLines > 0 ? copy.streamsTruncated(TOOL_LINE_CAP) : copy.outputTruncated}
