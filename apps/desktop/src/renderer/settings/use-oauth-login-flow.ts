@@ -4,7 +4,6 @@ import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
-export { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 
 // Shared browser-assisted OAuth login-flow controller (device-code
 // polling / loopback PKCE depending on the provider).

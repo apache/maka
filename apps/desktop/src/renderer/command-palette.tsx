@@ -24,8 +24,7 @@ import { useHotkeys } from '@astryxdesign/core/hooks';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import type { Command, CommandKind } from './command-palette-types';
 import { getShellCopy } from './locales/shell-copy';
-export type { Command, CommandKind } from './command-palette-types';
-export { buildCommandList, buildSessionCommands } from './command-palette-commands';
+export type { Command } from './command-palette-types';
 
 // `Command` / `CommandKind` types live in `./command-palette-types`
 // (extracted so non-JSX consumers can import them under the main

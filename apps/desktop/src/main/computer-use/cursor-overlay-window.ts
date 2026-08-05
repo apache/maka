@@ -29,7 +29,7 @@ const requireElectron = createRequire(import.meta.url);
 // Shared cursor-move contract lives in @maka/computer-use so the CLI can drive the
 // same hook against a headless sink. This controller is the Electron implementation
 // of that sink (it also satisfies OverlayCursorSink structurally via ensure/move).
-export type { CursorActionKind, CursorMoveInput } from '@maka/computer-use';
+export type { CursorMoveInput } from '@maka/computer-use';
 import type {
   CursorCancelInput,
   CursorCompleteInput,

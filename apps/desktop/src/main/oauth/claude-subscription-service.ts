@@ -803,4 +803,3 @@ function looksLikeClaudePkceVerifier(value: string): boolean {
  */
 // Re-exported from claude-subscription-helpers.ts so unit tests can import
 // the gate without dragging in the `electron` ESM module.
-export { isSubscriptionExperimentalEnabled } from './claude-subscription-helpers.js';

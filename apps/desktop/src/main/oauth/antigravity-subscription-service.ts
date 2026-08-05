@@ -565,9 +565,5 @@ export interface AntigravityAccountStateSnapshot {
 // Re-exports for the IPC handler + focused protocol tests. The pure
 // helpers keep preview configuration and PKCE logic independent of service state.
 export {
-  ANTIGRAVITY_MISSING_CLIENT_ID_ENVELOPE,
-  ANTIGRAVITY_OAUTH_CONFIG,
-  buildAntigravityAuthorizationUrl,
   isAntigravitySubscriptionExperimentalEnabled,
-  pkceChallengeFromVerifier,
 } from './antigravity-subscription-helpers.js';

@@ -13,17 +13,11 @@ import {
 
 export {
   listManagedSkillSources,
-  MANAGED_SKILL_CATEGORIES,
   readManagedSkillSource,
   resolveManagedSkillSourcesRoot,
   toManagedSkillSourceEntry,
 } from '@maka/runtime';
-export type {
-  ManagedSkillCategory,
-  ManagedSkillSourceEntry,
-  ManagedSkillSourceRecord,
-  ReadManagedSkillSourceResult,
-} from '@maka/runtime';
+export type { ManagedSkillSourceRecord } from '@maka/runtime';
 
 export type ImportManagedSkillSourceResult =
   | { ok: true; source: ManagedSkillSourceRecord }
