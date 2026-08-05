@@ -127,7 +127,6 @@ import { registerNotificationsIpc } from './notifications-ipc-main.js';
 import { registerAppIpc } from './app-ipc-main.js';
 import { createAppUpdateService } from './app-update-service.js';
 import { hasInterruptibleUpdateWork } from './app-update-activity.js';
-import { registerGitIpc } from './git-ipc-main.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
 import { registerOnboardingIpc } from './onboarding-ipc-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
@@ -1151,7 +1150,6 @@ function registerIpc(): void {
     invalidateSkillSelectionReport: systemPromptService.invalidateSkillSelectionReport,
   });
   registerWorkspaceSearchIpc({ getProjectRoot: resolveProjectRootForContext });
-  registerGitIpc({ getProjectRoot: resolveProjectRootForContext });
   registerPlanReminderIpc({ planReminders, getWorkspacePrivacyContext });
   registerAgentGraphIpc({
     coordinator: agentGraphCoordinator,

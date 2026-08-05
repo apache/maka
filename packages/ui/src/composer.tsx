@@ -47,7 +47,7 @@ import {
   type ChatInputActionOwner,
   type ComposerTextPort,
 } from './chat-input-behavior.js';
-import { ComposerWorkspacePickers, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-pickers.js';
+import { ComposerWorkspacePickers, type ComposerWorkspacePicker } from './composer-workspace-pickers.js';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import {
@@ -251,13 +251,6 @@ export const Composer = forwardRef<
       onCancel(): void;
     };
     workspacePicker?: ComposerWorkspacePicker;
-    /**
-     * Git branch picker for the workspace row, shown to the right of
-     * the folder indicator when the workspace is a git repository.
-     * Clicking the trigger opens a Menu listing local branches; selecting
-     * one fires `onSelect` to switch branches (handled in the shell).
-     */
-    branchPicker?: ComposerBranchPicker;
     /**
      * PR-MOVE-PERMISSION-MODE (WAWQAQ 47fe0d0e + a667cf6c): the
      * permission mode picker lives inside the composer left-controls
@@ -1459,19 +1452,16 @@ export const Composer = forwardRef<
                   )}
                 </div>
               ) : null}
-              {/* Project and branch decide where a NEW chat starts, which makes
-                  them send context like the model beside them — so they sit in
-                  this row rather than on a bar of their own above the card,
-                  where they read as leftovers rather than controls. Not gated
-                  on `streaming`: `activeSession` already covers it, since
-                  sending the first message creates the session that hides
-                  these. They stay ahead of the mode marks so the modes keep
-                  trailing the send-context group. */}
+              {/* The project decides where a NEW chat starts, which makes it
+                  send context like the model beside it — so it sits in this
+                  row rather than on a bar of its own above the card, where it
+                  read as a leftover rather than a control. Not gated on
+                  `streaming`: `activeSession` already covers it, since sending
+                  the first message creates the session that hides it. It stays
+                  ahead of the mode marks so the modes keep trailing the
+                  send-context group. */}
               {!props.activeSession && props.workspacePicker ? (
-                <ComposerWorkspacePickers
-                  workspacePicker={props.workspacePicker}
-                  branchPicker={props.branchPicker}
-                />
+                <ComposerWorkspacePickers workspacePicker={props.workspacePicker} />
               ) : null}
               {/* Mode readouts sit after the model pair, so a mode turning on
                   or off never nudges the model and thinking pickers (#1897).

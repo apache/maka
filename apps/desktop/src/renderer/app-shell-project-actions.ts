@@ -15,12 +15,6 @@ export interface SessionProjectInfoState extends RendererAppInfo {
   sessionId: string;
 }
 
-export interface ProjectBranchListState {
-  contextKey: string | null;
-  branches: string[];
-  current?: string;
-}
-
 type RefBox<T> = { current: T };
 
 type ToastApi = {
@@ -43,8 +37,6 @@ export interface AppShellProjectActions {
   openProjectFolder(): Promise<void>;
   openWorkspaceFolder(): Promise<void>;
   openSkillsFolder(): Promise<void>;
-  listGitBranches(sessionId?: string): Promise<{ branches: string[]; current?: string } | null>;
-  checkoutGitBranch(branch: string, sessionId?: string): Promise<void>;
 }
 
 export function createAppShellProjectActions(deps: {
@@ -55,8 +47,6 @@ export function createAppShellProjectActions(deps: {
   setAppInfo: Dispatch<SetStateAction<RendererAppInfo | null>>;
   setSessionProjectInfo: Dispatch<SetStateAction<SessionProjectInfoState | null>>;
   setProjectPickerPending: Dispatch<SetStateAction<boolean>>;
-  setBranchPending: Dispatch<SetStateAction<boolean>>;
-  setBranchList: Dispatch<SetStateAction<ProjectBranchListState | null>>;
   setProjects: Dispatch<SetStateAction<ProjectRecord[]>>;
   setSelectedProjectId: Dispatch<SetStateAction<string | null | undefined>>;
   selectedProjectId: string | null | undefined;
@@ -74,8 +64,6 @@ export function createAppShellProjectActions(deps: {
     setAppInfo,
     setSessionProjectInfo,
     setProjectPickerPending,
-    setBranchPending,
-    setBranchList,
     setProjects,
     setSelectedProjectId,
     selectedProjectId,
@@ -132,7 +120,6 @@ export function createAppShellProjectActions(deps: {
       projectGit: info.projectGit,
     });
     setSelectedProjectId(project.id);
-    setBranchList(null);
     await refreshProjects();
     if (notify) {
       onProjectSelected(sessionId);
@@ -198,7 +185,6 @@ export function createAppShellProjectActions(deps: {
           ? { ...current, projectId: null, projectPath: selection.path }
           : current,
       );
-      setBranchList(null);
       onProjectSelected(sessionId);
     } catch (error) {
       toastApi.error(
@@ -354,67 +340,6 @@ export function createAppShellProjectActions(deps: {
     }
   }
 
-  async function listGitBranches(sessionId?: string): Promise<{ branches: string[]; current?: string } | null> {
-    try {
-      const result = await window.maka.app.listGitBranches(sessionId);
-      if (!result.ok || !result.branches) {
-        if (result.reason && result.reason !== 'not-a-repo') {
-          toastApi.error(copy.branchListFailedTitle, result.message ?? copy.branchListFallback);
-        }
-        return null;
-      }
-      const next = { branches: result.branches, current: result.current };
-      setBranchList({ contextKey: sessionId ?? null, ...next });
-      return next;
-    } catch (error) {
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
-      } else {
-        toastApi.error(
-          copy.branchListFailedTitle,
-          localizedShellErrorMessage(error, copy.branchListFallback, uiLocale),
-        );
-      }
-      return null;
-    }
-  }
-
-  async function checkoutGitBranch(branch: string, sessionId?: string): Promise<void> {
-    if (!branch) return;
-    setBranchPending(true);
-    try {
-      const result = await window.maka.app.checkoutGitBranch(branch, sessionId);
-      if (!result.ok) {
-        toastApi.error(copy.branchCheckoutFailedTitle, result.message ?? copy.branchCheckoutFallback(branch));
-        return;
-      }
-      const nextBranch = result.branch ?? branch;
-      setAppInfo((prev) =>
-        prev && prev.projectPath === projectInfo?.projectPath
-          ? { ...prev, projectGit: { isGitRepo: true, branch: nextBranch } }
-          : prev,
-      );
-      setSessionProjectInfo((prev) =>
-        prev && prev.projectPath === projectInfo?.projectPath
-          ? { ...prev, projectGit: { isGitRepo: true, branch: nextBranch } }
-          : prev,
-      );
-      setBranchList((prev) => (prev?.contextKey === (sessionId ?? null) ? { ...prev, current: nextBranch } : prev));
-      toastApi.success(copy.branchCheckoutSuccessTitle, nextBranch);
-    } catch (error) {
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
-      } else {
-        toastApi.error(
-          copy.branchCheckoutFailedTitle,
-          localizedShellErrorMessage(error, copy.branchCheckoutFallback(branch), uiLocale),
-        );
-      }
-    } finally {
-      setBranchPending(false);
-    }
-  }
-
   return {
     refreshAppInfo,
     refreshProjects,
@@ -430,7 +355,5 @@ export function createAppShellProjectActions(deps: {
     openProjectFolder,
     openWorkspaceFolder,
     openSkillsFolder,
-    listGitBranches,
-    checkoutGitBranch,
   };
 }

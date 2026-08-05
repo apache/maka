@@ -1058,23 +1058,6 @@ const makaBridge = {
     > {
       return ipcRenderer.invoke('app:resolveProjectGitInfo', projectPath);
     },
-    listGitBranches(sessionId?: string): Promise<{
-      ok: boolean;
-      branches?: string[];
-      current?: string;
-      reason?: string;
-      message?: string;
-    }> {
-      return ipcRenderer.invoke('app:listGitBranches', sessionId);
-    },
-    checkoutGitBranch(branch: string, sessionId?: string): Promise<{
-      ok: boolean;
-      branch?: string;
-      reason?: string;
-      message?: string;
-    }> {
-      return ipcRenderer.invoke('app:checkoutGitBranch', branch, sessionId);
-    },
     openArtifactPath(
       artifactId: string,
     ): Promise<

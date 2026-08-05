@@ -681,19 +681,6 @@ export interface MakaBridge {
       | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }
       | { ok: false; reason: 'invalid-path' | 'not-found' }
     >;
-    listGitBranches(sessionId?: string): Promise<{
-      ok: boolean;
-      branches?: string[];
-      current?: string;
-      reason?: string;
-      message?: string;
-    }>;
-    checkoutGitBranch(branch: string, sessionId?: string): Promise<{
-      ok: boolean;
-      branch?: string;
-      reason?: string;
-      message?: string;
-    }>;
     openArtifactPath(
       artifactId: string,
     ): Promise<

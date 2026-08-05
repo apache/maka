@@ -216,35 +216,6 @@
   white-space: nowrap;
 }
 
-.maka-composer-branch-picker {
-  -webkit-app-region: no-drag;
-  min-width: 0;
-  text-align: left;
-}
-
-.maka-composer-branch-picker svg {
-  flex: 0 0 auto;
-}
-
-.maka-composer-branch-current {
-  min-width: 0;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-composer-branch-empty {
-  font: var(--maka-text-supporting);
-  padding: var(--space-2) var(--space-2);
-  color: var(--muted-foreground);
-  text-align: center;
-}
-
-.maka-composer-branch-check {
-  margin-left: auto;
-}
-
 /* The project catalog is the only scrollable region. Add Project and the
    deliberately low-emphasis No Project escape hatch stay fixed below it. */
 .maka-composer-workspace-menu {

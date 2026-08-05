@@ -1285,8 +1285,6 @@ function AppShellContent({
     selectedProjectId,
     currentProjectId,
     currentProject,
-    branchList,
-    branchPending,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
@@ -1304,8 +1302,6 @@ function AppShellContent({
     openProjectFolder,
     openWorkspaceFolder,
     openSkillsFolder,
-    listGitBranches,
-    checkoutGitBranch,
   } = useAppShellProjectContext({
     uiLocale,
     rendererMountedRef,
@@ -2345,21 +2341,6 @@ function AppShellContent({
                     },
                     onSelectNoProject: selectNoProject,
                   }}
-                  branchPicker={
-                    currentProjectId !== null && projectInfo?.projectGit.isGitRepo
-                      ? {
-                          branch: projectInfo.projectGit.branch ?? null,
-                          pending: branchPending,
-                          branches: branchList?.branches ?? [],
-                          onOpen: () => {
-                            void listGitBranches(activeId);
-                          },
-                          onSelect: (branch: string) => {
-                            void checkoutGitBranch(branch, activeId);
-                          },
-                        }
-                      : undefined
-                  }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
                   // Every "cannot change this mid-turn" gate reads `turnActive`,

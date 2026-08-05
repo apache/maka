@@ -165,13 +165,9 @@ export interface ConversationCopy {
     addProject: string;
     noProject: string;
     relink: string;
-    branch: string;
-    noBranches: string;
     currentProject: string;
     chooseTitle: (branch?: string) => string;
     chooseAriaLabel: (label: string, branch?: string) => string;
-    branchTitle: (branch?: string) => string;
-    branchAriaLabel: (branch?: string) => string;
   };
   messages: {
     you: string;
@@ -371,10 +367,9 @@ const CONVERSATION_COPY = {
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', loading: '加载中…' },
     workspace: {
-      choose: '选择项目', current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位', branch: '选择分支', noBranches: '无本地分支', currentProject: '当前项目',
+      choose: '选择项目', current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位', currentProject: '当前项目',
       chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
       chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
-      branchTitle: (branch) => branch ? `分支：${branch}` : '选择分支', branchAriaLabel: (branch) => branch ? `切换分支：${branch}` : '选择分支',
     },
     messages: {
       you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `${seconds} 秒后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, safeResumePending: '正在验证…', safeResume: '安全恢复', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '通过显式技能发送的历史消息暂不支持编辑并重发',
@@ -513,10 +508,9 @@ const CONVERSATION_COPY = {
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', loading: 'Loading…' },
     workspace: {
-      choose: 'Choose project', current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink', branch: 'Choose branch', noBranches: 'No local branches', currentProject: 'Current project',
+      choose: 'Choose project', current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink', currentProject: 'Current project',
       chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
       chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
-      branchTitle: (branch) => branch ? `Branch: ${branch}` : 'Choose branch', branchAriaLabel: (branch) => branch ? `Switch branch: ${branch}` : 'Choose branch',
     },
     messages: {
       you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${seconds}s (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill',

@@ -280,6 +280,5 @@ describe('composer quiet chrome', () => {
       />,
     );
     assert.doesNotMatch(markup, /maka-composer-workspace-picker/);
-    assert.doesNotMatch(markup, /maka-composer-branch-picker/);
   });
 });
