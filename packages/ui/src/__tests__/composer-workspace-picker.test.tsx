@@ -6,11 +6,9 @@ import { Composer } from '../composer.js';
 
 /**
  * The project is a session-creation parameter: it decides where a NEW chat
- * starts and is fixed once the first message creates the session. That lifetime
- * is why the picker sits in the composer's header row — a row that exists only
- * while the caller passes it — rather than in the footer control row, whose
- * other controls persist for the whole session. So these assertions pin the
- * lifetime, not the placement.
+ * starts and is fixed once the first message creates the session. So the host
+ * passes the picker unconditionally and the composer owns the gate — these
+ * assertions pin that lifetime, not the placement.
  */
 describe('Composer workspace picker', () => {
   const workspacePicker = {
@@ -22,7 +20,22 @@ describe('Composer workspace picker', () => {
     onSelectNoProject: () => undefined,
   };
 
-  function render(props: { workspacePicker?: typeof workspacePicker }): string {
+  const activeSession = {
+    id: 'session-1',
+    name: 'Test',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'done' as const,
+    backend: 'fake' as const,
+    llmConnectionSlug: 'fake',
+    connectionLocked: false,
+    model: 'fake',
+    permissionMode: 'ask' as const,
+  };
+
+  function render(props: { activeSession?: typeof activeSession }): string {
     return renderToStaticMarkup(
       <LocaleProvider locale="en">
         <Composer
@@ -30,21 +43,22 @@ describe('Composer workspace picker', () => {
           onStop={() => {}}
           modelLabel="demo-model"
           modelChoices={[]}
-          workspacePicker={props.workspacePicker}
+          activeSession={props.activeSession}
+          workspacePicker={workspacePicker}
         />
       </LocaleProvider>,
     );
   }
 
-  it('renders the picker above the input while the chat is a draft', () => {
-    const markup = render({ workspacePicker });
+  it('renders the picker in the footer controls while the chat is a draft', () => {
+    const markup = render({});
 
     assert.match(markup, /maka-composer-workspace/);
     assert.match(markup, /maka-workspace-picker/);
   });
 
-  it('drops the header row once a session owns the composer', () => {
-    const markup = render({});
+  it('drops it once a session owns the composer, even though the host still passes it', () => {
+    const markup = render({ activeSession });
 
     assert.doesNotMatch(markup, /maka-composer-workspace/);
     assert.doesNotMatch(markup, /maka-workspace-picker/);

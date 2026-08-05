@@ -2,21 +2,22 @@
  * Workspace picker (issue #1044) — the control that decides which project a
  * NEW chat starts in.
  *
- * It lives in the composer's header row, above the input, and only while the
- * chat is a draft. The project is a session-creation parameter: it is fixed the
- * moment the first message creates the session, and no other entry point
- * changes it afterwards — so the row it sits in is passed only in that state
- * and leaves with it.
+ * It sits at the end of the composer footer's send-context group — after the
+ * model and thinking pickers — and only while no session owns the composer. The
+ * project is a session-creation parameter: it is fixed the moment the first
+ * message creates the session, and no other entry point changes it afterwards.
  *
- * Two placements were tried and rejected. The composer's FOOTER row, where this
- * originally sat, holds controls that persist for the whole session (＋, the
- * permission shield, the model); a chip that vanishes on send broke that row's
- * implicit contract. The empty-chat HERO, under the greeting, fixed the
- * lifetime but floated the control in the gap between the greeting and the
- * card, belonging to neither. The header row belongs to the card the user is
- * about to type in, and stays clear of the persistent controls below it.
+ * That group is the right company for it: model, thinking level and permission
+ * mode are all parameters of the send about to happen, and so is the project.
+ * Last in the group is what makes its shorter life cheap — when the first
+ * message unmounts it, nothing to its left moves.
  *
- * Reading order still follows decision order: where → what.
+ * Two other homes were tried. The empty-chat HERO, under the greeting, fixed
+ * the lifetime but floated the control in the gap between the greeting and the
+ * card, belonging to neither. The composer's HEADER row above the input kept it
+ * on the card, but grew the card by a whole row for the draft state alone —
+ * a layout jump on every new task, paid to avoid one chip disappearing from the
+ * end of a row.
  *
  * Built on Astryx `Selector`, the same primitive as the model picker, because
  * picking a project IS choosing a value: one selection out of a catalogue,
@@ -76,9 +77,9 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
   // stay pinned to the menu's bottom edge while only the catalogue scrolls, so
   // "add a project" never falls under the fold on a long list. Selector scrolls
   // its whole list as one region and has no footer slot, so the pinning is done
-  // in CSS: these two rows are marked here and `hero.css` sticks them. See the
-  // sticky block there for why the backdrop is painted by the list rather than
-  // by the rows.
+  // in CSS: these two rows are marked here and `composer.css` sticks them. See
+  // the sticky block there for why the backdrop is painted by the list rather
+  // than by the rows.
   //
   // Both actions carry an icon so every row shares one text axis. Without them
   // the two labels started at the icon column while the projects' text started
@@ -122,10 +123,8 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
       hasSearch
       searchPlaceholder={copy.searchPlaceholder}
       size="sm"
-      // The trigger sits in the composer's header, near the bottom of the
-      // window, so the menu opens upward into the canvas the draft state leaves
-      // empty. Downward it would cover the input the user is about to type in,
-      // and on a short window it would run past the frame.
+      // The trigger sits in the composer footer, at the bottom of the window,
+      // so the menu opens upward like every other control in that row.
       placement="above"
       isDefaultOpen={wp.defaultOpen}
       isDisabled={wp.pending === true}

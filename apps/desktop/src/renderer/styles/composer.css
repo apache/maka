@@ -312,9 +312,9 @@
   opacity: var(--opacity-disabled);
 }
 
-/* The project picker in the composer's header row. It is passed only while the
-   chat is a draft — the project is a session-creation parameter — so this row
-   exists only then. See packages/ui/src/workspace-picker.tsx. */
+/* The project picker, last in the composer footer's send-context group. It is
+   rendered only while no session owns the composer — the project is a
+   session-creation parameter. See packages/ui/src/workspace-picker.tsx. */
 .maka-composer-workspace {
   display: flex;
   align-items: center;

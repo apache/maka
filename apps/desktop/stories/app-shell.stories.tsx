@@ -162,6 +162,20 @@ const baseChatProps: ChatViewProps = {
 
 const baseComposerProps: ComposerProps = {
   draftKey: 'storybook-app-shell',
+  // Production wires this whenever the shell has a project catalog
+  // (app-shell.tsx), unconditionally: the composer renders it only while no
+  // session owns it, so the active-session stories below carry it without
+  // showing it.
+  workspacePicker: {
+    label: 'maka-agent',
+    branch: 'opencode/storybook-surface-coverage',
+    projects: catalogProjects.filter((item) => item.archivedAt === undefined),
+    selectedProjectId: 'project-maka',
+    onAdd: noop,
+    onSelectProject: noop,
+    onRelink: noop,
+    onSelectNoProject: noop,
+  },
   onSend: noop,
   onStop: noop,
   modelLabel: 'Claude Sonnet 4.5',
@@ -457,19 +471,6 @@ export const NewChatComposer: Story = {
         newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
-        // Draft-state only: app-shell.tsx passes this while no session exists,
-        // and the composer's header row exists only while it is passed. The
-        // active-session stories leave it out for the same reason.
-        workspacePicker: {
-          label: 'maka-agent',
-          branch: 'opencode/storybook-surface-coverage',
-          projects: catalogProjects.filter((item) => item.archivedAt === undefined),
-          selectedProjectId: 'project-maka',
-          onAdd: noop,
-          onSelectProject: noop,
-          onRelink: noop,
-          onSelectNoProject: noop,
-        },
       }}
     />
   ),

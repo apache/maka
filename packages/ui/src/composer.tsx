@@ -260,10 +260,9 @@ export const Composer = forwardRef<
      * option (#1611).
      */
     /**
-     * Session-creation context rendered in the composer's header row, above the
-     * input — today the project picker. Passed only while the chat is a draft;
-     * once the first message creates the session the caller stops passing it and
-     * the header row goes with it.
+     * Where a NEW chat starts. Rendered at the end of the footer's send-context
+     * group and only while no session owns the composer: the project is fixed
+     * the moment the first message creates the session.
      */
     workspacePicker?: WorkspacePickerModel;
     permissionMode?: PermissionMode;
@@ -1225,14 +1224,6 @@ export const Composer = forwardRef<
           // render our own into the `sendButton` slot.
           onSubmit={() => {}}
           isDisabled={props.disabled}
-          headerActions={props.workspacePicker ? (
-            // The wrapper is the popover's scope: Astryx's Layer renders the
-            // open menu next to the trigger rather than portaling it, so the
-            // palette rebinding and the pinned-footer rules attach here.
-            <div className="maka-composer-workspace">
-              <WorkspacePicker workspacePicker={props.workspacePicker} />
-            </div>
-          ) : undefined}
           drawer={drawerTokenCount > 0 ? (
             <ChatComposerDrawer count={drawerTokenCount} label={copy.addContext}>
               <div className="maka-composer-context-drawer" role="group" aria-label={copy.addContext}>
@@ -1464,6 +1455,24 @@ export const Composer = forwardRef<
                       onChange={props.onNewChatThinkingLevelChange}
                     />
                   )}
+                </div>
+              ) : null}
+              {/* The project decides where a NEW chat starts, which makes it a
+                  parameter of this send like the model beside it — so it sits
+                  at the end of that group rather than in a header row of its
+                  own, which grew the card by a row for the draft state alone.
+                  Last in the group is what makes it cheap to lose: the first
+                  message creates the session and unmounts it, and nothing to
+                  its left moves. Not gated on `streaming`: `activeSession`
+                  already covers it.
+
+                  The wrapper is the popover's scope — Astryx's Layer renders
+                  the open menu next to the trigger rather than portaling it, so
+                  the palette rebinding and the pinned-footer rules attach
+                  here. */}
+              {!props.activeSession && props.workspacePicker ? (
+                <div className="maka-composer-workspace">
+                  <WorkspacePicker workspacePicker={props.workspacePicker} />
                 </div>
               ) : null}
               {/* Mode readouts sit after the model pair, so a mode turning on
