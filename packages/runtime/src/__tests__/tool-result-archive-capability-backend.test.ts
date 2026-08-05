@@ -9,6 +9,9 @@ import {
   createToolResultArchiveCapability,
   type ToolResultArchiveCapability,
 } from '../tool-result-archive-capability.js';
+import { buildToolResultArchiveResourceRef } from '../tool-result-archive-resource.js';
+import { ARCHIVED_TOOL_RESULT_REWRITE_VERSION } from '../tool-result-archive.js';
+import type { MakaToolContext } from '../tool-runtime.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 // The pruned tool-result placeholder is a runtime-generated protocol value that
@@ -40,7 +43,89 @@ describe('AiSdkBackend tool-result archive capability', () => {
       'a session that archives tool results must advertise the tool its placeholders name',
     );
   });
+
+  test('advertises no ArchiveRead when the session archives nothing', async () => {
+    const capturedTools: string[][] = [];
+    const model = capturingModel(capturedTools);
+
+    await drain(
+      backendWith(model, undefined).send({
+        turnId: 'turn-1',
+        text: 'hello',
+        context: [],
+      }),
+    );
+
+    assert.ok(capturedTools.length > 0, 'expected the model to be called');
+    assert.ok(
+      !capturedTools[0]?.includes('ArchiveRead'),
+      'a session that never archives has nothing to decode, so the CLI stays free of the tool',
+    );
+  });
+
+  test('the decoder reads back what the writer archived', async () => {
+    // Indivisibility is about one authority, not two co-present fields: the
+    // tool the model is told to call must reach the storage the writer used.
+    const store = new Map<string, string>();
+    const archive = createToolResultArchiveCapability({
+      archiveToolResult: async (event) => {
+        store.set(event.bodySha256, event.serializedResult);
+        return { artifactId: `artifact-${event.bodySha256.slice(0, 8)}` };
+      },
+      readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+      readArchivedToolResultResource: async (input) => {
+        const serializedResult = store.get(input.bodySha256);
+        return serializedResult === undefined
+          ? { ok: false, reason: 'not_found' }
+          : { ok: true, serializedResult };
+      },
+    });
+
+    const serializedResult = JSON.stringify({ kind: 'text', text: 'the pruned body' });
+    const bodySha256 = 'a'.repeat(64);
+    const written = await archive.services.archiveToolResult({
+      sessionId: 'session-1',
+      runtimeEventId: 'event-1',
+      turnId: 'turn-1',
+      toolCallId: 'call-1',
+      toolName: 'Bash',
+      result: undefined,
+      serializedResult,
+      bodySha256,
+      originalEstimatedTokens: 1_000,
+      originalBytes: Buffer.byteLength(serializedResult),
+      rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
+      reason: 'active_current_turn_tool_result_pruned_before_next_step',
+    });
+    assert.ok(written, 'the writer must report where it archived the body');
+
+    const page = (await archive.archiveReadTool.impl(
+      {
+        ref: buildToolResultArchiveResourceRef({
+          artifactId: written.artifactId,
+          bodySha256,
+          originalBytes: Buffer.byteLength(serializedResult),
+        }),
+        operation: 'read',
+      },
+      toolContext(),
+    )) as { ok: boolean; content: string };
+
+    assert.equal(page.ok, true, 'the ref the placeholder carries must resolve');
+    assert.equal(page.content, serializedResult);
+  });
 });
+
+function toolContext(): MakaToolContext {
+  return {
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    cwd: '/tmp/maka',
+    toolCallId: 'call-1',
+    abortSignal: new AbortController().signal,
+    emitOutput: () => {},
+  };
+}
 
 function capability(): ToolResultArchiveCapability {
   return createToolResultArchiveCapability({
